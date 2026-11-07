@@ -35,7 +35,7 @@ After setup, files appear under `<local-dir>/<provider>/...`:
 
 Read = `cat`. Write = overwrite, create, or remove files in writable adapter resource directories. The mount daemon picks up the change, queues a writeback, and the cloud delivers to the provider's API.
 
-Current mounts are also self-describing. Start with `<local-dir>/LAYOUT.md`, then read provider-specific `<provider>/.layout.md` files and nearby `_index.json` files instead of hard-coding paths from memory. Entity filenames may use a `<sanitized-name>__<id>` convention, and some providers expose alias views such as `by-title/`, `by-id/`, `by-name/`, or `by-state/`.
+Current mounts are also self-describing. Start with `<local-dir>/LAYOUT.md`, then read provider-specific `<provider>/LAYOUT.md` files and nearby `_index.json` files instead of hard-coding paths from memory. Entity filenames may use a `<sanitized-name>__<id>` convention, and some providers expose alias views such as `by-title/`, `by-id/`, `by-name/`, or `by-state/`.
 
 ## Prerequisites
 
@@ -349,6 +349,63 @@ If the daemon exited, restart:
 ```bash
 relayfile mount my-agent ~/relayfile-mount &
 ```
+
+### Symptom: cloud run marked FAILED but the handler logged `runner.handler.ok`
+
+Everything in the structured run log is `success` — `daily-ship.posted`,
+`runner.handler.ok`, `runner.envelope-stream.ended` — yet the cron/deployment
+run shows **FAILED**. The failure is **post-handler**: the orchestrator's mount
+**flush** (writeback drain on teardown) hung and was killed at its timeout, and
+that non-zero cleanup exit is what stamps the run FAILED. The tell is in the
+sandbox's run-tick log:
+
+```json
+{ "message": "relayfile.mount.cleanup", "flushExitCode": 124, "killAttempted": true, "killExitCode": 0 }
+```
+
+`flushExitCode: 124` is a **timeout** (124 = `timeout` killed the flush). The
+flush can't drain because the **read-side mirror never completed bootstrap** —
+look in the mount log for a sync cycle that fails the same way every tick:
+
+```text
+mount sync cycle failed: mkdir .../slack/channels/<id>/threads/<ts>/replies/<ts2>.json: not a directory
+... detected non-empty state without completed bootstrap; forcing full reconcile (N tracked files)   ← repeats, never clears
+```
+
+Root cause is a **file/directory name collision**: the adapter materializes one
+resource (here a Slack thread reply) as **both** a leaf file `<ts2>.json` **and**
+a directory of the same name (because that reply has its own nested subtree).
+POSIX can't hold both, so every sync cycle aborts before bootstrap completes,
+the mount never reconciles, and the teardown flush hangs → 124 → FAILED. This
+also degrades the handler silently: the partially-synced mount means name/ID
+lookups miss (`*.unresolved` warnings) and Slack writebacks return `ts: ''` (see
+the `creating-cloud-persona` production-correctness checklist for that
+signature). It
+violates the `workspace-layout` invariant that a canonical path is a unique file.
+
+Diagnose a cloud (Daytona-sandboxed) run after the fact — the sandbox is
+labeled with the `deploymentId` from the relaycron execution's response body:
+
+```bash
+# 1. find the sandbox for the failed deployment
+daytona sandbox list --format json --limit 200 \
+  | jq -r '.[] | select(.labels.deploymentId=="<deploymentId>") | .id'
+# 2. it auto-stops; start it, then read the run-tick + mount logs
+daytona sandbox start <sandbox-id>
+daytona sandbox exec <sandbox-id> -- bash -lc \
+  'cat /tmp/.daytona-run-tick-*.log; echo ---; cat /tmp/relayfile-mount.log'
+# 3. confirm the collision, then return the box to stopped
+daytona sandbox exec <sandbox-id> -- bash -lc 'stat -c "%n %F" "<colliding-path>"'
+daytona sandbox stop <sandbox-id>
+```
+
+The fix is **adapter-side** — the adapter must not emit a path as both a file
+and a directory (e.g. nest the reply's children under `replies/<ts2>/` with the
+record at `replies/<ts2>/meta.json` instead of colliding with `replies/<ts2>.json`).
+A handler can't work around it; a partial mirror is not something the persona can
+detect. As a stopgap, a run whose mounts are all read-only inputs (only one
+writeback message to drain) should not let an unreconciled-mirror flush fail the
+whole run — bound or skip the flush for read-only scoped mounts.
 
 ### Symptom: `relayfile setup` hangs at "Connect notion: <URL>"
 

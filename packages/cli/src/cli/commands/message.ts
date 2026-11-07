@@ -1,3 +1,4 @@
+import type { AgentRelayAgent, RelayFileInfo } from '@agent-relay/sdk';
 import { InvalidArgumentError, type Command } from 'commander';
 
 import {
@@ -14,6 +15,7 @@ import {
   messageReadersReceipt,
   resolveExactAgentName,
 } from '../lib/message-delivery-receipts.js';
+import { checkAttachment, readAttachment, saveAttachment } from '../lib/attachments.js';
 
 export type MessageCommandDependencies = SdkCommandDeps;
 
@@ -35,12 +37,75 @@ function parseMessageMode(value: string): 'wait' | 'steer' {
   throw new InvalidArgumentError('mode must be "wait" or "steer"');
 }
 
+function collectFile(value: string, previous: string[] = []): string[] {
+  return [...previous, value];
+}
+
+/** The relay's file API; only a custom messaging backend can lack one. */
+function requireFiles(relay: AgentRelayAgent): NonNullable<AgentRelayAgent['files']> {
+  if (!relay.files) {
+    throw new Error('This Relay client does not support file attachments.');
+  }
+  return relay.files;
+}
+
+/** Upload local files and return the stored files whose ids a message can attach. */
+async function uploadFiles(
+  relay: AgentRelayAgent,
+  filePaths: string[] | undefined
+): Promise<RelayFileInfo[]> {
+  if (!filePaths || filePaths.length === 0) return [];
+  const files = requireFiles(relay);
+  // Check every path before uploading any, so one bad path sends nothing,
+  // then read and upload one file at a time to bound memory.
+  for (const filePath of filePaths) await checkAttachment(filePath);
+  const uploaded: RelayFileInfo[] = [];
+  for (const filePath of filePaths) {
+    uploaded.push(await files.upload(await readAttachment(filePath)));
+  }
+  return uploaded;
+}
+
+function attachmentIds(uploaded: RelayFileInfo[]): { attachments: string[] } | Record<string, never> {
+  return uploaded.length > 0 ? { attachments: uploaded.map((file) => file.id) } : {};
+}
+
 export function registerMessageCommands(
   program: Command,
   overrides: Partial<MessageCommandDependencies> = {}
 ): void {
   const deps = withSdkDefaults(overrides);
   const opts = (o: Record<string, unknown>) => sdkOptionsFromOpts(o);
+
+  /**
+   * Send a DM and print its delivery receipt, exiting non-zero when the
+   * recipient could not be verified. Sending stays agent-scoped for
+   * attribution, while recipient resolution is a workspace-wide roster read;
+   * those credentials stay on independent clients so an ambient/explicit
+   * agent token cannot shadow the workspace key supplied alongside it.
+   */
+  const sendDirectWithReceipt = async (
+    relay: AgentRelayAgent,
+    options: ReturnType<typeof opts>,
+    input: Parameters<AgentRelayAgent['messages']['direct']>[0]
+  ): Promise<void> => {
+    const resolvedRecipient = await Promise.resolve()
+      .then(() => deps.createWorkspaceRelay(options).agents.list())
+      .then((agents) => resolveExactAgentName(agents, input.to))
+      .catch(() => undefined);
+    const receipt = directMessageReceipt(
+      await relay.messages.direct(input),
+      input.to,
+      input.mode,
+      resolvedRecipient
+    );
+    printJson(deps, receipt);
+    const failure = directMessageDeliveryFailure(receipt);
+    if (failure) {
+      deps.error(failure);
+      deps.exit(1);
+    }
+  };
   const group = program
     .command('message')
     .description('Post, read, and react to messages (requires agent token)');
@@ -51,9 +116,16 @@ export function registerMessageCommands(
       .description('Post a message to a channel')
       .argument('<channel>', 'Channel name')
       .argument('<text>', 'Message text')
+      .option(
+        '--file <path>',
+        'Attach a local file (repeatable); an uploaded file may remain stored if sending later fails',
+        collectFile
+      )
   ).action(async (channel: string, text: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
-      printJson(deps, await deps.createAgentRelay(opts(o)).messages.send({ channel, text }));
+      const relay = deps.createAgentRelay(opts(o));
+      const uploaded = await uploadFiles(relay, o.file as string[] | undefined);
+      printJson(deps, await relay.messages.send({ channel, text, ...attachmentIds(uploaded) }));
     });
   });
 
@@ -130,35 +202,23 @@ export function registerMessageCommands(
         'wait (default): inject on idle; steer: inject immediately and may interrupt active work',
         parseMessageMode
       )
+      .option(
+        '--file <path>',
+        'Attach a local file (repeatable); an uploaded file may remain stored if sending later fails',
+        collectFile
+      )
   ).action(async (agent: string, text: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
       const mode = o.mode as 'wait' | 'steer' | undefined;
       const options = opts(o);
       const relay = deps.createAgentRelay(options);
-      // Sending must remain agent-scoped for attribution, while recipient
-      // resolution is a workspace-wide roster read. Keep those credentials on
-      // independent clients so an ambient/explicit agent token cannot shadow
-      // the workspace key supplied alongside it.
-      const resolvedRecipient = await Promise.resolve()
-        .then(() => deps.createWorkspaceRelay(options).agents.list())
-        .then((agents) => resolveExactAgentName(agents, agent))
-        .catch(() => undefined);
-      const receipt = directMessageReceipt(
-        await relay.messages.direct({
-          to: agent,
-          text,
-          ...(mode ? { mode } : {}),
-        }),
-        agent,
-        mode,
-        resolvedRecipient
-      );
-      printJson(deps, receipt);
-      const failure = directMessageDeliveryFailure(receipt);
-      if (failure) {
-        deps.error(failure);
-        deps.exit(1);
-      }
+      const uploaded = await uploadFiles(relay, o.file as string[] | undefined);
+      await sendDirectWithReceipt(relay, options, {
+        to: agent,
+        text,
+        ...(mode ? { mode } : {}),
+        ...attachmentIds(uploaded),
+      });
     });
   });
 
@@ -185,11 +245,18 @@ export function registerMessageCommands(
       .description('Send a direct message to multiple agents')
       .argument('<text>', 'Message text')
       .requiredOption('--to <agents...>', 'Recipient agents')
+      .option(
+        '--file <path>',
+        'Attach a local file (repeatable); an uploaded file may remain stored if sending later fails',
+        collectFile
+      )
   ).action(async (text: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
+      const relay = deps.createAgentRelay(opts(o));
+      const uploaded = await uploadFiles(relay, o.file as string[] | undefined);
       printJson(
         deps,
-        await deps.createAgentRelay(opts(o)).messages.groupDirect({ participants: o.to as string[], text })
+        await relay.messages.groupDirect({ participants: o.to as string[], text, ...attachmentIds(uploaded) })
       );
     });
   });
@@ -270,20 +337,63 @@ export function registerMessageCommands(
   addSdkOptions(
     file
       .command('upload')
-      .description('Upload a file as a message attachment')
+      .description('Upload a file and send it to a channel or an agent')
       .argument('<path>', 'File path')
-      .requiredOption('--channel <channel>', 'Target channel')
-      .option('--text <text>', 'Accompanying message text', '')
+      .option('--channel <channel>', 'Post the file to this channel')
+      .option('--to <agent>', 'Send the file to this agent as a direct message')
+      .option('--text <text>', 'Accompanying message text (defaults to the file name)')
   ).action(async (filePath: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
-      printJson(
-        deps,
-        await deps.createAgentRelay(opts(o)).messages.send({
-          channel: o.channel as string,
-          text: (o.text as string) ?? '',
-          attachments: [{ type: 'file', path: filePath }],
-        })
-      );
+      const channel = o.channel as string | undefined;
+      const to = o.to as string | undefined;
+      if (Boolean(channel) === Boolean(to)) {
+        throw new Error('Pass exactly one of --channel <channel> or --to <agent>.');
+      }
+      const options = opts(o);
+      const relay = deps.createAgentRelay(options);
+      const uploaded = await uploadFiles(relay, [filePath]);
+      const text = (o.text as string | undefined) ?? uploaded[0].filename;
+      if (channel) {
+        printJson(deps, await relay.messages.send({ channel, text, ...attachmentIds(uploaded) }));
+      } else {
+        await sendDirectWithReceipt(relay, options, { to: to as string, text, ...attachmentIds(uploaded) });
+      }
+    });
+  });
+
+  addSdkOptions(
+    file
+      .command('get')
+      .description('Show a stored file, including a short-lived download URL')
+      .argument('<fileId>', 'File id')
+  ).action(async (fileId: string, o: Record<string, unknown>) => {
+    await runSdk(deps, async () => {
+      const files = requireFiles(deps.createAgentRelay(opts(o)));
+      printJson(deps, await files.get(fileId));
+    });
+  });
+
+  addSdkOptions(
+    file
+      .command('download')
+      .description('Download a message attachment to a local file and print its path')
+      .argument('<fileId>', 'File id')
+      .option(
+        '--out <path>',
+        'Output file, or an existing directory (default: .agent-relay/attachments/<fileId>/)'
+      )
+  ).action(async (fileId: string, o: Record<string, unknown>) => {
+    await runSdk(deps, async () => {
+      const files = requireFiles(deps.createAgentRelay(opts(o)));
+      const { file: info, data } = await files.download(fileId);
+      const target = await saveAttachment(fileId, info.filename, data, o.out as string | undefined);
+      printJson(deps, {
+        id: info.id,
+        filename: info.filename,
+        contentType: info.contentType,
+        sizeBytes: data.byteLength,
+        path: target,
+      });
     });
   });
 }

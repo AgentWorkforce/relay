@@ -34,6 +34,8 @@ export type CloudSession = {
 
 export type CloudSessionOptions = {
   apiUrl?: string;
+  /** Cancellation/deadline shared with the operation acquiring this session. */
+  signal?: AbortSignal;
   force?: boolean;
   interactive?: boolean;
   /**
@@ -43,6 +45,8 @@ export type CloudSessionOptions = {
   device?: boolean;
   refreshTimeoutMs?: number;
   env?: NodeJS.ProcessEnv;
+  /** Optional URL policy applied before login credentials are persisted or used, including refresh. */
+  validateApiUrl?: (apiUrl: string) => void;
 };
 
 export type WhoAmIResponse = {
@@ -174,7 +178,7 @@ export type WorkspaceSecretRecord = {
   [key: string]: unknown;
 };
 
-export type WorkflowFileType = 'yaml' | 'ts' | 'py';
+export type WorkflowFileType = 'yaml' | 'ts';
 export type RelayflowVersion = 'v1' | 'v2';
 
 export type PathSubmission = {
@@ -281,8 +285,8 @@ export const REFRESH_TOKEN_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_REFRESH_TIMEOUT_MS = 10_000;
 export const AUTH_FILE_PATH = path.join(os.homedir(), '.agentworkforce/relay', 'cloud-auth.json');
 
-export function defaultApiUrl(): string {
-  return process.env.CLOUD_API_URL?.trim() || 'https://agentrelay.com/cloud';
+export function defaultApiUrl(env: NodeJS.ProcessEnv = process.env): string {
+  return env.CLOUD_API_URL?.trim() || 'https://agentrelay.com/cloud';
 }
 
 export function isSupportedProvider(provider: string): boolean {

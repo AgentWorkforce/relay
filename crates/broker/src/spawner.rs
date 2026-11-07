@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fs, path::Path, process::Stdio, time::Duration};
 
-use crate::relaycast::configure_agent_relay_mcp_with_token;
+use crate::relaycast::configure_agent_relay_mcp_launch;
 use anyhow::{Context, Result};
 use tokio::{
     process::{Child, Command},
@@ -21,6 +21,18 @@ pub(crate) const RELAY_ATTEST_SESSION_ID: &str = "RELAY_ATTEST_SESSION_ID";
 const RELAY_ATTEST_GIT_CONFIG_COUNT: &str = "RELAY_ATTEST_GIT_CONFIG_COUNT";
 const RELAY_ATTEST_GIT_CONFIG_INDEX: &str = "RELAY_ATTEST_GIT_CONFIG_INDEX";
 const RELAY_ATTEST_BROKER_HOOK_PATH: &str = "RELAY_ATTEST_BROKER_HOOK_PATH";
+
+#[cfg(test)]
+pub(crate) use relay_pty::credentials::INHERITED_RELAY_CREDENTIAL_ENV_KEYS;
+/// Relay-owned credentials no spawned worker or spawn-time helper inherits
+/// from the broker's environment; see [`relay_pty::credentials`]. Every worker
+/// spawn strips this list first and then injects only what that worker is meant
+/// to hold: its own `RELAY_AGENT_TOKEN`, its own result callback token, and the
+/// workspace credentials the broker explicitly delegates to agents through its
+/// worker environment.
+pub(crate) use relay_pty::credentials::{
+    remove_inherited_relay_credentials, scrubbed_command, NODE_IDENTITY_ENV_KEYS,
+};
 
 /// Standard client-side git hooks (see githooks(5)). `core.hooksPath` is a
 /// single directory that replaces git's entire hook lookup, not just
@@ -348,7 +360,7 @@ impl Spawner {
             .find(|(k, _)| k == "RELAY_DEFAULT_WORKSPACE")
             .map(|(_, v)| v.as_str());
         let cwd = std::env::current_dir().unwrap_or_default();
-        let mcp_args = configure_agent_relay_mcp_with_token(
+        let mcp_launch = configure_agent_relay_mcp_launch(
             cli,
             child_name,
             api_key,
@@ -358,9 +370,10 @@ impl Spawner {
             agent_token,
             workspaces_json,
             default_workspace,
+            None,
         )
         .await?;
-        for arg in &mcp_args {
+        for arg in &mcp_launch.args {
             cmd.arg(arg);
         }
 
@@ -372,6 +385,7 @@ impl Spawner {
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
 
+        remove_inherited_relay_credentials(&mut cmd);
         let mut child_env = env_vars.to_vec();
         if attestation_env_present(&child_env) {
             match self.commit_hooks_dir() {
@@ -389,10 +403,19 @@ impl Spawner {
         for (key, value) in &child_env {
             cmd.env(key, value);
         }
+        // Credentials the harness's MCP config names by reference.
+        for (key, value) in &mcp_launch.env {
+            cmd.env(key, value);
+        }
         // Inject pre-registered agent token when available so the MCP server
         // starts already authenticated (same as main.rs WorkerRegistry::spawn).
         if let Some(token) = agent_token {
             cmd.env("RELAY_AGENT_TOKEN", token);
+        }
+        // Node identity belongs to the broker/provider process, never to an
+        // agent worker. Explicit spawn env must not be able to add it back.
+        for key in NODE_IDENTITY_ENV_KEYS {
+            cmd.env_remove(key);
         }
         // Disable Claude Code auto-suggestions to prevent accidental acceptance
         // when relay messages are injected into the PTY.
@@ -517,8 +540,8 @@ pub fn spawn_env_vars(
         ("RELAY_CHANNELS".to_string(), channels.to_string()),
         ("RELAY_STRICT_AGENT_NAME".to_string(), "1".to_string()),
     ];
-    // Pass RELAY_BASE_URL to the child only when an override is configured; when
-    // unset, the child inherits the SDK default.
+    // The caller passes the broker's resolved route (explicit or credential-
+    // bound). Only an unbound hosted-default session leaves it unset.
     if let Some(base_url) = base_url.map(str::trim).filter(|value| !value.is_empty()) {
         env.push(("RELAY_BASE_URL".to_string(), base_url.to_string()));
     }
@@ -577,10 +600,65 @@ mod tests {
 
     use super::{
         add_broker_hooks_path, attestation_env_present, git_config_count_with_inherited,
-        spawn_env_vars, terminate_child, with_commit_attestation_env, write_broker_git_hooks,
-        Spawner, RELAY_ATTEST_AGENT_ID, RELAY_ATTEST_JTI, RELAY_ATTEST_SESSION_ID,
-        RELAY_ATTEST_SPONSOR_ID,
+        remove_inherited_relay_credentials, spawn_env_vars, terminate_child,
+        with_commit_attestation_env, write_broker_git_hooks, Spawner,
+        INHERITED_RELAY_CREDENTIAL_ENV_KEYS, RELAY_ATTEST_AGENT_ID, RELAY_ATTEST_JTI,
+        RELAY_ATTEST_SESSION_ID, RELAY_ATTEST_SPONSOR_ID,
     };
+
+    #[test]
+    fn inherited_relay_credentials_cover_broker_node_and_workspace_secrets() {
+        for key in [
+            "RELAY_BROKER_API_KEY",
+            "RELAY_NODE_TOKEN",
+            "RELAY_NODE_ID",
+            "AGENT_RELAY_ENROLLED_NODE_ID",
+            "RELAY_AGENT_IDENTITY_KEY",
+            "RELAY_AGENT_TOKEN",
+            "AGENT_RELAY_RESULT_TOKEN",
+            "RELAY_API_KEY",
+            "RELAY_WORKSPACE_KEY",
+            "AGENT_RELAY_WORKSPACE_KEY",
+            "RELAY_WORKSPACES_JSON",
+        ] {
+            assert!(
+                INHERITED_RELAY_CREDENTIAL_ENV_KEYS.contains(&key),
+                "{key} must be stripped from worker environments"
+            );
+        }
+    }
+
+    #[test]
+    fn remove_inherited_relay_credentials_strips_every_key_and_later_env_wins() {
+        let mut command = Command::new("true");
+        remove_inherited_relay_credentials(&mut command);
+        command.env("RELAY_AGENT_TOKEN", "worker-own-token");
+
+        let envs: std::collections::HashMap<String, Option<String>> = command
+            .as_std()
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        for key in INHERITED_RELAY_CREDENTIAL_ENV_KEYS {
+            if *key == "RELAY_AGENT_TOKEN" {
+                continue;
+            }
+            assert_eq!(envs.get(*key), Some(&None), "{key} should be removed");
+        }
+        assert_eq!(
+            envs.get("RELAY_AGENT_TOKEN"),
+            Some(&Some("worker-own-token".to_string())),
+            "a worker's own token set after the scrub must survive"
+        );
+        // Non-relay environment is left to normal inheritance.
+        assert!(!envs.contains_key("PATH"));
+        assert!(!envs.contains_key("ANTHROPIC_API_KEY"));
+    }
 
     fn git(repo: &Path, args: &[&str], env: &[(String, String)]) -> std::process::Output {
         StdCommand::new("git")
@@ -659,6 +737,13 @@ mod tests {
             .find(|(k, _)| k == "AGENT_RELAY_ORIGIN_ACTOR")
             .map(|(_, v)| v.as_str());
         assert_eq!(origin_actor, Some("agent-relay-cli/agent/codex"));
+        assert_eq!(
+            env.iter()
+                .find(|(key, _)| key == "RELAY_BASE_URL")
+                .map(|(_, value)| value.as_str()),
+            Some("https://gw"),
+            "the resolved broker route must reach the spawned MCP process"
+        );
     }
 
     #[test]

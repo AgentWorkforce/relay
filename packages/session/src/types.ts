@@ -54,8 +54,7 @@ export interface Turn {
 }
 
 export type ResumeMode =
-  | { mode: 'native'; nativeResumeId: string }
-  | { mode: 'inject'; contextPrompt: string };
+  { mode: 'native'; nativeResumeId: string } | { mode: 'inject'; contextPrompt: string };
 
 export interface ResumeSessionResult {
   session: RelaySession;

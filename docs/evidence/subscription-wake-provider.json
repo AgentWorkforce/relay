@@ -1,0 +1,11 @@
+{
+  "id": "3843931114454384640",
+  "guid": "89e65110-b580-11f1-8407-405863f40b35",
+  "delivered_at": "2026-09-21T05:51:51.082Z",
+  "event": "issue_comment",
+  "action": "created",
+  "status_code": 200,
+  "duration": 0.32,
+  "comment_id": "5755994597",
+  "repository": "AgentWorkforce/cloud"
+}

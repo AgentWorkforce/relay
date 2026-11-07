@@ -31,6 +31,7 @@ import {
   type AttachSnapshotConnection,
   type AttachSnapshotDeps,
 } from '../lib/attach.js';
+import { describeMissingBrokerConnection, resolveBrokerConnection } from '../lib/broker-connection.js';
 import { resolveFleetHint } from '../lib/fleet-hint.js';
 import { defaultExit, runSignalHandler } from '../lib/exit.js';
 
@@ -178,55 +179,16 @@ function isStringObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function readString(obj: unknown, key: string): string | undefined {
-  if (!isStringObject(obj)) return undefined;
-  const value = obj[key];
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  return trimmed === '' ? undefined : trimmed;
-}
-
 /**
- * Resolve the broker connection to use for `view`, in priority order:
- *
- *  1. `--broker-url` / `--api-key` CLI flags
- *  2. `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY` environment variables
- *  3. `<state-dir>/connection.json` (default `.agentworkforce/relay/connection.json`)
- *
- * Matches the resolution order used by `agent-relay-broker dump-pty` so users
- * don't have to learn two patterns.
+ * Resolve the broker connection to use for `view`. Delegates to the shared
+ * {@link resolveBrokerConnection} so `view` honours `--state-dir` exactly like
+ * every other local broker verb.
  */
 export function resolveViewBrokerConnection(
   options: { brokerUrl?: string; apiKey?: string; stateDir?: string; requestTimeoutMs?: number },
   deps: ViewDependencies
 ): ViewBrokerConnection | null {
-  const explicitUrl = trimOrUndefined(options.brokerUrl);
-  const envUrl = trimOrUndefined(deps.env.RELAY_BROKER_URL);
-  const stateDir = options.stateDir ? path.resolve(options.stateDir) : deps.getDefaultStateDir();
-  const connectionFile = deps.readConnectionFile(stateDir);
-  const fileUrl = readString(connectionFile, 'url');
-
-  const resolveApiKey = (): string | undefined => {
-    const explicit = trimOrUndefined(options.apiKey);
-    if (explicit) return explicit;
-    const fromEnv = trimOrUndefined(deps.env.RELAY_BROKER_API_KEY);
-    if (fromEnv) return fromEnv;
-    return readString(connectionFile, 'api_key');
-  };
-
-  const url = explicitUrl ?? envUrl ?? fileUrl;
-  if (!url) return null;
-
-  return {
-    url: url.replace(/\/+$/, ''),
-    apiKey: resolveApiKey(),
-    ...(options.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: options.requestTimeoutMs }),
-  };
-}
-
-function trimOrUndefined(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : undefined;
+  return resolveBrokerConnection(options, deps);
 }
 
 /** Convert an `http(s)://host:port` base URL to the matching `ws(s)://…/ws`. */
@@ -413,10 +375,7 @@ export async function runViewSession(
 
   const connection = resolveViewBrokerConnection(options, deps);
   if (!connection) {
-    deps.error(
-      'Error: could not locate broker connection. Pass --broker-url, set RELAY_BROKER_URL, ' +
-        'or run from a directory containing .agentworkforce/relay/connection.json.'
-    );
+    deps.error(describeMissingBrokerConnection(options, deps));
     return 1;
   }
 

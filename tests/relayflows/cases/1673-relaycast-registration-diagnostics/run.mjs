@@ -17,6 +17,7 @@ const NO_TERMINAL_SLEEP_MAX_MS = RETRY_AFTER_MILLISECONDS / 2;
 const ERROR_CODE = 'registration_backend_overloaded';
 const ERROR_MESSAGE = 'relayflow deterministic registration failure';
 const REQUEST_ID = 'relayflow-1673-request';
+const EXPECTED_TRANSIENT_ATTEMPTS = 3;
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
 const binaryPath = await requiredExecutable('RELAY_PR_PROOF_BROKER_BINARY');
@@ -146,11 +147,15 @@ try {
     !commandStderr.includes(`request_id: ${REQUEST_ID}`);
   const headObserved =
     completed.status !== 0 &&
-    observations.requestCount === 1 &&
+    observations.requestCount === EXPECTED_TRANSIENT_ATTEMPTS &&
     terminalReturnMs < NO_TERMINAL_SLEEP_MAX_MS &&
-    [`(${RESPONSE_STATUS})`, ERROR_CODE, ERROR_MESSAGE, `request_id: ${REQUEST_ID}`, 'attempts: 1'].every(
-      (marker) => commandStderr.includes(marker)
-    );
+    [
+      `(${RESPONSE_STATUS})`,
+      ERROR_CODE,
+      ERROR_MESSAGE,
+      `request_id: ${REQUEST_ID}`,
+      `attempts: ${EXPECTED_TRANSIENT_ATTEMPTS}`,
+    ].every((marker) => commandStderr.includes(marker));
 
   let outcome;
   let signature;
@@ -161,8 +166,8 @@ try {
     details = `The base broker sent ${observations.requestCount} unsafe registration POSTs in ${elapsedMs}ms and ended with Max retries exceeded, without the terminal 503 diagnostic.`;
   } else if (headObserved) {
     outcome = 'fixed';
-    signature = 'registration_503_diagnostic_preserved_without_replay';
-    details = `The head broker sent one unsafe registration POST and returned the terminal ${RESPONSE_STATUS} code, message, request ID, and attempts ${terminalReturnMs}ms after the response, without sleeping for Retry-After: ${RETRY_AFTER_SECONDS}.`;
+    signature = 'registration_503_diagnostic_preserved_with_bounded_retries';
+    details = `The head broker made exactly ${EXPECTED_TRANSIENT_ATTEMPTS} bounded transient registration attempts and returned the terminal ${RESPONSE_STATUS} code, message, request ID, and attempt count ${terminalReturnMs}ms after the final response, without sleeping again after exhausting its retry budget.`;
   } else {
     throw new Error(
       `Unexpected compiled registration observation: ${JSON.stringify({

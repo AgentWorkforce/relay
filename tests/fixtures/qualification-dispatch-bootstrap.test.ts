@@ -27,50 +27,51 @@ function requireObject(value: unknown, label: string): Record<string, unknown> {
 }
 
 describe('qualification workflow dispatch bootstrap', () => {
-  it.each([
-    [
-      'relay-package-qualification.yml',
-      'Relay package qualification',
-      'Refuse to claim package qualification from the bootstrap',
-      'Select a qualification/<nonce> ref containing the complete candidate producer.',
-    ],
-    [
-      'relay-cleanroom-qualification.yml',
-      'Relay orchestration cleanroom qualification',
-      'Refuse to claim cleanroom qualification from the bootstrap',
-      'Select a qualification/<nonce> ref containing the complete cleanroom verifier.',
-    ],
-  ])(
-    'exposes only a manual default-branch dispatch contract for %s',
-    async (file, name, stepName, diagnostic) => {
-      const { source, value } = await workflow(file);
-      expect(value.name).toBe(name);
-      expect(Object.keys(requireObject(value.on, `${file} triggers`))).toEqual(['workflow_dispatch']);
-      expect(value.permissions).toEqual({});
+  it('keeps the package producer source-bound while refusing secrets and schedules', async () => {
+    const { source, value } = await workflow('relay-package-qualification.yml');
+    expect(value.name).toBe('Relay package qualification');
+    expect(Object.keys(requireObject(value.on, 'package triggers'))).toEqual(['workflow_dispatch']);
+    expect(value.permissions).toEqual({ contents: 'read' });
+    expect(Object.keys(requireObject(value.jobs, 'package jobs'))).toEqual(['attest']);
+    expect(source).toContain('actions/checkout@');
+    expect(source).toContain('actions/upload-artifact@');
+    expect(source).toContain('artifact-digest');
+    expect(source).not.toContain('secrets.');
+    expect(source).not.toContain('schedule:');
+    expect(source).not.toContain('release:');
+    expect(source).not.toContain('repository_dispatch:');
+    expect(source).not.toContain('environment: snapshot-qualification');
+  });
 
-      const jobs = requireObject(value.jobs, `${file} jobs`);
-      expect(Object.keys(jobs)).toEqual(['dispatch-bootstrap-only']);
-      const job = requireObject(jobs['dispatch-bootstrap-only'], `${file} bootstrap job`);
-      expect(job).toEqual({
-        'runs-on': 'ubuntu-24.04',
-        'timeout-minutes': 1,
-        steps: [
-          {
-            name: stepName,
-            run: `echo "::error title=Dispatch bootstrap only::${diagnostic}"\nexit 1\n`,
-          },
-        ],
-      });
+  it('keeps the cleanroom workflow as a no-secret manual bootstrap', async () => {
+    const file = 'relay-cleanroom-qualification.yml';
+    const { source, value } = await workflow(file);
+    expect(value.name).toBe('Relay orchestration cleanroom qualification');
+    expect(Object.keys(requireObject(value.on, `${file} triggers`))).toEqual(['workflow_dispatch']);
+    expect(value.permissions).toEqual({});
 
-      expect(source).not.toContain('secrets.');
-      expect(source).not.toContain('actions/checkout');
-      expect(source).not.toContain('actions/upload-artifact');
-      expect(source).not.toContain('schedule:');
-      expect(source).not.toContain('release:');
-      expect(source).not.toContain('repository_dispatch:');
-      expect(source).not.toContain('environment: snapshot-qualification');
-    }
-  );
+    const jobs = requireObject(value.jobs, `${file} jobs`);
+    expect(Object.keys(jobs)).toEqual(['dispatch-bootstrap-only']);
+    const job = requireObject(jobs['dispatch-bootstrap-only'], `${file} bootstrap job`);
+    expect(job).toEqual({
+      'runs-on': 'ubuntu-24.04',
+      'timeout-minutes': 1,
+      steps: [
+        {
+          name: 'Refuse to claim cleanroom qualification from the bootstrap',
+          run: 'echo "::error title=Dispatch bootstrap only::Select a qualification/<nonce> ref containing the complete cleanroom verifier."\nexit 1\n',
+        },
+      ],
+    });
+
+    expect(source).not.toContain('secrets.');
+    expect(source).not.toContain('actions/checkout');
+    expect(source).not.toContain('actions/upload-artifact');
+    expect(source).not.toContain('schedule:');
+    expect(source).not.toContain('release:');
+    expect(source).not.toContain('repository_dispatch:');
+    expect(source).not.toContain('environment: snapshot-qualification');
+  });
 
   it('keeps the cleanroom dispatch inputs compatible with the candidate workflow', async () => {
     const { value } = await workflow('relay-cleanroom-qualification.yml');
@@ -99,18 +100,18 @@ describe('qualification workflow dispatch bootstrap', () => {
     });
   });
 
-  it('cannot upload or attest qualification evidence from either bootstrap workflow', async () => {
-    for (const file of ['relay-package-qualification.yml', 'relay-cleanroom-qualification.yml']) {
-      const { source } = await workflow(file);
-      for (const forbidden of [
-        'artifact-digest',
-        'qualification.seal.json',
-        'relay-package-qualification-attestation.json',
-        'runtime-effects.json',
-        'verify-full-relay-fleet',
-      ]) {
-        expect(source, `${file} must not produce ${forbidden}`).not.toContain(forbidden);
-      }
+  it('cannot upload or attest qualification evidence from the cleanroom bootstrap', async () => {
+    const { source } = await workflow('relay-cleanroom-qualification.yml');
+    for (const forbidden of [
+      'artifact-digest',
+      'qualification.seal.json',
+      'relay-package-qualification-attestation.json',
+      'runtime-effects.json',
+      'verify-full-relay-fleet',
+    ]) {
+      expect(source, `relay-cleanroom-qualification.yml must not produce ${forbidden}`).not.toContain(
+        forbidden
+      );
     }
   });
 });

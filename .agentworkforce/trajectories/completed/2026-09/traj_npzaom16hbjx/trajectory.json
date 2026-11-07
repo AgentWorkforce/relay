@@ -1,0 +1,69 @@
+{
+  "id": "traj_npzaom16hbjx",
+  "version": 1,
+  "task": {
+    "title": "Harden PR 1839 replay identity and document volatile dedupe boundary",
+    "source": {
+      "system": "plain",
+      "id": "AgentWorkforce/relay#1837"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-22T09:37:21.319Z",
+  "completedAt": "2026-09-22T09:38:43.272Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-22T09:38:42.842Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_4y38e5rzty7t",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-22T09:38:42.842Z",
+      "endedAt": "2026-09-22T09:38:43.272Z",
+      "events": [
+        {
+          "ts": 1790069922843,
+          "type": "decision",
+          "content": "Fail closed when a seen message and sequence reappear under a different delivery ID: Fail closed when a seen message and sequence reappear under a different delivery ID",
+          "raw": {
+            "question": "Fail closed when a seen message and sequence reappear under a different delivery ID",
+            "chosen": "Fail closed when a seen message and sequence reappear under a different delivery ID",
+            "alternatives": [],
+            "reasoning": "Recovery must require exact delivery identity; otherwise a D1-to-D2 replay can bypass custody and PTY completion fencing and reinject the message"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1790069923077,
+          "type": "decision",
+          "content": "Scope dedupe guarantee to the live worker process and 512 completions: Scope dedupe guarantee to the live worker process and 512 completions",
+          "raw": {
+            "question": "Scope dedupe guarantee to the live worker process and 512 completions",
+            "chosen": "Scope dedupe guarantee to the live worker process and 512 completions",
+            "alternatives": [],
+            "reasoning": "The PTY completion cache and broker receipt book are volatile bounded FIFOs; restart cannot safely claim recovery of existing held queues without durable evidence or live migration"
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "PR 1839 now rejects conflicting delivery-ID replays, tests D1-to-D2 fail-closed behavior, and documents/tests the restart and eviction boundary for finn-mini and kjg-lap",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "7aa1c2aad2deb5ce97bb23a95bc9d3c1f6fc4799",
+    "endRef": "7aa1c2aad2deb5ce97bb23a95bc9d3c1f6fc4799"
+  }
+}

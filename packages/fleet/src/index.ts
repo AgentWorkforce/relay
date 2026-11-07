@@ -1,7 +1,7 @@
 import { isAbsolute } from 'node:path';
 
 import { z } from 'zod';
-import { claude, codex, definePtyHarness, gemini, type PtyHarness } from '@agent-relay/harnesses';
+import { claude, codex, definePtyHarness, gemini, muse, type PtyHarness } from '@agent-relay/harnesses';
 import { resolveStaticHarnessConfig, type StaticPtyHarnessDefinition } from '@agent-relay/harness-driver';
 import type {
   AgentSpec,
@@ -56,6 +56,8 @@ export interface FleetAgentRegistrationMetadata {
 
 export interface FleetSpawnAgentInput {
   agent: AgentSpec;
+  /** Defaults to true. False returns explicit unverified placement, never readiness. */
+  verifyReady?: boolean;
   initialTask?: string;
   registrationMetadata?: FleetAgentRegistrationMetadata;
   skipRelayPrompt?: boolean;
@@ -179,6 +181,8 @@ const spawnInputSchema = z
 export type SpawnInput = z.infer<typeof spawnInputSchema>;
 
 export interface SpawnHandlerOptions {
+  /** Defaults to true; legacy engines may opt out only for placement-only handlers. */
+  verifyReady?: boolean;
   model?: string;
   args?: string[];
   channels?: string[];
@@ -189,6 +193,14 @@ export interface SpawnHandlerOptions {
   metadata?: Record<string, JsonValue>;
 }
 
+/**
+ * Largest `maxAgents` a node definition may declare. This is the single shared
+ * range for the cap: the Rust broker parses `AGENT_RELAY_NODE_MAX_AGENTS` as a
+ * `u32`, so a larger value would fail broker parsing and silently report
+ * unlimited capacity while the sidecar still advertised the configured number.
+ */
+export const MAX_FLEET_NODE_AGENTS = 4294967295;
+
 export function defineNode(input: FleetNodeDefinitionInput): FleetNodeDefinition {
   const name = nonEmpty(input.name, 'node name');
   const repoPaths = normalizeFleetRepoPaths(input.repoPaths);
@@ -196,8 +208,11 @@ export function defineNode(input: FleetNodeDefinitionInput): FleetNodeDefinition
   if (capabilityEntries.length === 0) {
     throw new Error('defineNode requires at least one capability');
   }
-  if (input.maxAgents !== undefined && (!Number.isInteger(input.maxAgents) || input.maxAgents <= 0)) {
-    throw new Error('maxAgents must be a positive integer');
+  if (
+    input.maxAgents !== undefined &&
+    (!Number.isInteger(input.maxAgents) || input.maxAgents <= 0 || input.maxAgents > MAX_FLEET_NODE_AGENTS)
+  ) {
+    throw new Error(`maxAgents must be a positive integer no larger than ${MAX_FLEET_NODE_AGENTS}`);
   }
 
   const capabilities: Record<string, FleetCapability> = {};
@@ -309,6 +324,7 @@ export function spawn(
 
     return ctx.spawnAgent({
       agent,
+      ...(options.verifyReady !== undefined ? { verifyReady: options.verifyReady } : {}),
       ...(task !== undefined ? { initialTask: task } : {}),
       ...(metadata ? { registrationMetadata: metadata } : {}),
       skipRelayPrompt: input.skip_relay_prompt ?? options.skipRelayPrompt ?? false,
@@ -437,6 +453,7 @@ export function defineDefaultLocalNode(input: {
     ['claude', claude],
     ['codex', codex],
     ['gemini', gemini],
+    ['muse', muse],
   ]);
   for (const agent of input.teams?.agents ?? []) {
     const cli = agent.cli?.trim();
@@ -552,4 +569,12 @@ function parseWithSchema<T>(schema: ZodLikeSchema<T>, input: unknown): T {
   throw new Error(message);
 }
 
-export * from './serve-node.js';
+export { serveNode, startServeNode } from './serve-node.js';
+export type {
+  NodeEngineConnection,
+  FleetTriggerSyncTrigger,
+  FleetTriggerSyncClient,
+  FleetLogger,
+  ServeNodeOptions,
+  RunningNode,
+} from './serve-node.js';

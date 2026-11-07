@@ -1,0 +1,37 @@
+{
+  "id": "compact_x2t2gg1so54f",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-11T11:59:19.711Z",
+  "sourceTrajectories": [
+    "traj_4fb0m0ojackj"
+  ],
+  "dateRange": {
+    "start": "2026-09-11T11:57:23.186Z",
+    "end": "2026-09-11T11:59:19.144Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "architecture",
+      "decisions": [
+        {
+          "question": "Combine platform ownership check with explicit local-only startup; preserve all merged release notes",
+          "chosen": "Combine platform ownership check with explicit local-only startup; preserve all merged release notes",
+          "reasoning": "Main added fail-closed macOS/Linux startup ownership verification. Rebase retains both behaviors. Delivery implementation, degraded module, recovery tests and proof case are byte-identical to reviewed head d7a627553.",
+          "fromTrajectory": "traj_4fb0m0ojackj"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}

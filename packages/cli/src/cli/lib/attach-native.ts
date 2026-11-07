@@ -12,6 +12,7 @@ import {
 import {
   defaultStateDir,
   readConnectionFileFromDisk,
+  describeMissingBrokerConnection,
   resolveBrokerConnection,
   type BrokerConnection,
 } from './broker-connection.js';
@@ -134,7 +135,7 @@ export async function attachNative(
   });
   if (!connection) {
     (overrides.output?.stderr ?? ((text: string) => process.stderr.write(text)))(
-      'Error: could not locate broker connection.\n'
+      `${describeMissingBrokerConnection(options, { getDefaultStateDir: defaultStateDir })}\n`
     );
     return 1;
   }

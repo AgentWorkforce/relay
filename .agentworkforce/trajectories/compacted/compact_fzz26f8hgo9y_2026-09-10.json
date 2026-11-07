@@ -1,0 +1,75 @@
+{
+  "id": "compact_fzz26f8hgo9y",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-10T11:35:10.845Z",
+  "sourceTrajectories": [
+    "traj_bl7fngii53oq"
+  ],
+  "dateRange": {
+    "start": "2026-09-10T05:19:58.099Z",
+    "end": "2026-09-10T11:35:09.983Z"
+  },
+  "summary": {
+    "totalDecisions": 2,
+    "totalEvents": 4,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "testing",
+      "decisions": [
+        {
+          "question": "Pin unscoped nonempty outboxes and retain exhausted local deliveries during recipient absence",
+          "chosen": "Pin unscoped nonempty outboxes and retain exhausted local deliveries during recipient absence",
+          "reasoning": "CodeRabbit identified valid privacy and data-integrity holes. Regression tests failed on the prior implementation. Reset the handoff failure budget while waiting so a respawn can actually receive retained work, and preserve original outbox bytes on destination mismatch.",
+          "fromTrajectory": "traj_bl7fngii53oq"
+        },
+        {
+          "question": "Preserve roster and identity safety across the main rebase",
+          "chosen": "Preserve roster and identity safety across the main rebase",
+          "reasoning": "Read merged software-garden#510 and relaycast#401 diffs. Stale roster snapshots are dispatch-only evidence; offline owners and all durable node associations remain protected. Combined upstream status timeout warnings and startup/cleanup tests with local degraded behavior. Local workers create no Relaycast identity, so exclude them from remote owned-generation cleanup and prove exited names can respawn during an outage.",
+          "fromTrajectory": "traj_bl7fngii53oq"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    ".agentworkforce/trajectories/active/traj_bl7fngii53oq/trajectory.json",
+    ".agentworkforce/trajectories/compacted/compact_ah4a5rcyq7wq_2026-09-09.json",
+    ".agentworkforce/trajectories/compacted/compact_ah4a5rcyq7wq_2026-09-09.md",
+    "CHANGELOG.md",
+    "crates/broker/src/cli/mod.rs",
+    "crates/broker/src/listen_api.rs",
+    "crates/broker/src/relaycast/ws.rs",
+    "crates/broker/src/runtime/api.rs",
+    "crates/broker/src/runtime/degraded.rs",
+    "crates/broker/src/runtime/delivery.rs",
+    "crates/broker/src/runtime/event_loop.rs",
+    "crates/broker/src/runtime/fleet.rs",
+    "crates/broker/src/runtime/init.rs",
+    "crates/broker/src/runtime/mod.rs",
+    "crates/broker/src/runtime/session.rs",
+    "crates/broker/src/runtime/tests.rs",
+    "crates/broker/src/worker.rs",
+    "packages/cli/README.md",
+    "packages/cli/src/cli/commands/core.test.ts",
+    "packages/cli/src/cli/commands/core.ts",
+    "packages/cli/src/cli/commands/node.ts",
+    "packages/cli/src/cli/commands/status.test.ts",
+    "packages/cli/src/cli/commands/status.ts",
+    "packages/cli/src/cli/lib/broker-lifecycle.ts",
+    "packages/harness-driver/src/protocol.ts",
+    "tests/relayflows/cases/broker-local-only/case.json",
+    "tests/relayflows/cases/broker-local-only/run.mjs"
+  ],
+  "commits": [
+    "8f3bb080b0593815f7512d6f47ee77c876c158cb",
+    "bc4c177dcfab13777dd859f11e4723deb7f3c10c",
+    "5717d1b9bcbf1df81f2978883a0325b99af1d280"
+  ]
+}

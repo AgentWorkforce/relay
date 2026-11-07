@@ -490,7 +490,7 @@ describe('AgentRelay observer mode', () => {
     // A partial messaging fake: observer mode never uses the workspace
     // client's event stream and register/reconnect throw at the facade.
     const messaging = {
-      workspace: { info: vi.fn(async () => ({})), fleetNodes: {} },
+      workspace: { info: vi.fn(async () => ({})) },
       agents: {},
       events: undefined,
     } as unknown as RelayMessaging;

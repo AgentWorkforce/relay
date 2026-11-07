@@ -1,0 +1,9 @@
+{
+  // The deploy workflow typechecks only the hosted flows before it redeploys
+  // them. `../tsconfig.json` covers every generator under `flows/`, and those
+  // import workspace packages whose types live in an unbuilt `dist/`; the
+  // hosted flows depend only on published packages, so this narrower project
+  // passes on a plain `npm ci` with no workspace build.
+  "extends": "../tsconfig.json",
+  "include": ["**/*.ts"]
+}

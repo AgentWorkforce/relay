@@ -25,7 +25,7 @@ import {
   resolveObserverBaseUrl,
 } from '../lib/observer-url.js';
 import { printJson, runSdk, withSdkDefaults, type SdkCommandDeps } from '../lib/sdk-command.js';
-import { resolveBaseUrl, resolveWorkspaceKey } from '../lib/sdk-client.js';
+import { resolveWorkspaceTransport } from '../lib/sdk-client.js';
 
 const MAX_CHANNEL_FILTERS = 50;
 
@@ -100,11 +100,12 @@ function parseChannels(value: string): string[] {
  * `undefined` and an absent key differently.
  */
 function connection(options: Record<string, unknown>): { workspaceKey: string; baseUrl?: string } {
-  const baseUrl = resolveBaseUrl({ baseUrl: options.baseUrl as string | undefined });
+  const { workspaceKey, baseUrl } = resolveWorkspaceTransport({
+    workspaceKey: options.workspaceKey as string | undefined,
+    baseUrl: options.baseUrl as string | undefined,
+  });
   return {
-    workspaceKey: resolveWorkspaceKey({
-      workspaceKey: options.workspaceKey as string | undefined,
-    }),
+    workspaceKey,
     ...(baseUrl ? { baseUrl } : {}),
   };
 }

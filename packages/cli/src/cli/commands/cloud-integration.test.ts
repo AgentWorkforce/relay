@@ -287,4 +287,53 @@ describe('registerCloudIntegrationCommands', () => {
     );
     expect(vi.mocked(deps.error).mock.calls.flat().join('\n')).not.toContain('private server detail');
   });
+
+  it.each([400, 409])('explains an unsupported provider returned with HTTP %s', async (status) => {
+    const { program, deps } = harness();
+    vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
+      response: response(
+        { error: 'unknown_provider', message: 'private server detail', token: 'secret' },
+        status
+      ),
+      auth,
+    });
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'integration',
+        'connect',
+        'gitlab-pat',
+        '--workspace',
+        'rw_7ccfea89',
+      ])
+    ).rejects.toThrow('exit:1');
+    expect(deps.error).toHaveBeenCalledWith(
+      'This provider is not supported for workspace connections on this Cloud endpoint. Check `agent-relay cloud integration catalog`, using the same `--api-url` if set.'
+    );
+    expect(vi.mocked(deps.error).mock.calls.flat().join('\n')).not.toMatch(/private server detail|secret/);
+  });
+
+  it('keeps an actual lifecycle conflict distinct from an unsupported provider', async () => {
+    const { program, deps } = harness();
+    vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
+      response: response({ error: 'integration_refresh_conflict', message: 'private server detail' }, 409),
+      auth,
+    });
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'integration',
+        'connections',
+        '--workspace',
+        'rw_7ccfea89',
+      ])
+    ).rejects.toThrow('exit:1');
+    expect(deps.error).toHaveBeenCalledWith(
+      'The integration operation conflicts with its current lifecycle state.'
+    );
+  });
 });

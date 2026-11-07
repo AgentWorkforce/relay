@@ -23,7 +23,6 @@ const workspacePackages = [
   'hooks',
   'integration-prompts',
   'memory',
-  'policy',
   'runtime',
   'sdk',
   'session',
@@ -50,13 +49,7 @@ const workspaceAliases = workspacePackages.flatMap((packageName) => {
 
 export default defineConfig({
   resolve: {
-    alias: [
-      ...workspaceAliases,
-      {
-        find: '@agent-relay/brand/brand.css',
-        replacement: path.resolve(__dirname, './packages/brand/brand.css'),
-      },
-    ],
+    alias: workspaceAliases,
   },
   test: {
     globals: true,

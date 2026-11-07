@@ -23,9 +23,13 @@ export const gemini: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'g
 
 export const cursor: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'cursor-agent' });
 
+export const devin: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'devin' });
+
 export const droid: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'droid' });
 
 export const opencode = defineManagedHarness('opencode', { runtime: 'pty', command: 'opencode' });
+
+export const muse: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'muse' });
 
 export const aider: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'aider' });
 

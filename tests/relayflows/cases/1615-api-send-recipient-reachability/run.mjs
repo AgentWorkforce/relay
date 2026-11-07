@@ -51,7 +51,13 @@ const fakeClaudeSource = String.raw`#!/usr/bin/env node
 process.stdin.setRawMode?.(true);
 process.stdin.resume();
 process.stdout.write('RELAYFLOW_RECIPIENT_READY\r\n❯');
-process.stdin.on('data', (chunk) => process.stdout.write(chunk));
+// Like the real composer, redraw the prompt after Enter submits a line, so
+// the broker's pre-write composer check can prove readiness for the next
+// message instead of seeing only the previous message's echo at the cursor.
+process.stdin.on('data', (chunk) => {
+  process.stdout.write(chunk);
+  if (chunk.includes(13)) process.stdout.write('\r\n❯');
+});
 `;
 
 let broker;

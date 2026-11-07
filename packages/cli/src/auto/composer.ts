@@ -21,7 +21,7 @@ export type OnboardingVariant = 'bare' | 'one-liner' | 'brief' | 'skill';
  * Which CLI harness to use for an agent.
  * Extend as opencode model evals complete and confirm role fitness.
  */
-export type WorkerCli = 'claude' | 'codex' | 'opencode' | 'gemini' | 'droid';
+export type WorkerCli = 'claude' | 'codex' | 'opencode' | 'gemini' | 'droid' | 'devin';
 
 /**
  * Roles from the choosing-swarm-patterns skill.

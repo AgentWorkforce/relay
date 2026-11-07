@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1810-deploy-listeners-empty-cloud-url",
+  "kind": "bugfix",
+  "title": "Listener reconcile tolerates an empty FLOWS_CLOUD_URL and surfaces CLI refusals",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1810-deploy-listeners-empty-cloud-url/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 600,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "reconcile_refused_on_empty_cloud_url"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "reconcile_ignores_empty_cloud_url_and_echoes_refusals"
+    }
+  }
+}

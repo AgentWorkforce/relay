@@ -11,10 +11,18 @@ vi.mock('./auth.js', () => ({
 }));
 
 import {
+  AGENT37_RELAYCAST_ORIGIN,
+  CANONICAL_RELAYCAST_ORIGIN,
   CloudFleetSandboxProvisionError,
+  DEV_CLOUD_API_URL,
+  DEV_RELAYCAST_ORIGIN,
   deleteCloudFleetSandbox,
+  attachCloudFleetSandboxRelayfile,
   ensureCloudFleetSandbox,
+  materializeCloudRelayfileRepository,
+  normalizeRelaycastTarget,
 } from './fleet-sandbox.js';
+import { CloudAuthError } from './types.js';
 
 const auth = {
   accessToken: 'access',
@@ -23,7 +31,50 @@ const auth = {
   apiUrl: 'https://agentrelay.test/cloud',
 };
 const refreshedAuth = { ...auth, accessToken: 'refreshed' };
+const devAuth = { ...auth, apiUrl: DEV_CLOUD_API_URL };
 const CLOUD_WORKSPACE_ID = '50587328-441d-4acb-b8f3-dbe1b3c5de99';
+const SANDBOX_ID = 'sbx_123e4567-e89b-42d3-a456-426614174000';
+const DAYTONA_PROVIDER_SANDBOX_ID = '223e4567-e89b-42d3-a456-426614174000';
+const SANDBOX_NAME = 'fleet-sandbox-123e4567-e89b-42d3-a456-426614174000';
+const RELAYCAST_TARGET = {
+  route: 'agent37-isolated' as const,
+  baseUrl: AGENT37_RELAYCAST_ORIGIN,
+  workspaceId: 'rw_abc',
+  relaycastApiKey: 'rk_live_agent37',
+};
+const CANONICAL_RELAYCAST_TARGET = {
+  route: 'canonical' as const,
+  baseUrl: CANONICAL_RELAYCAST_ORIGIN,
+  workspaceId: 'rw_abc',
+  relaycastApiKey: 'rk_live_canonical',
+};
+const DEV_RELAYCAST_TARGET = {
+  route: 'canonical' as const,
+  baseUrl: DEV_RELAYCAST_ORIGIN,
+  workspaceId: 'rw_abc',
+  relaycastApiKey: 'rk_live_dev',
+};
+const NON_AGENT_PROVIDER_IDS = ['daytona', 'e2b', 'vercel', 'freestyle', 'microsandbox'] as const;
+const PROVIDER_OUTCOME_MATRIX = NON_AGENT_PROVIDER_IDS.flatMap((providerId) =>
+  (['provisioned', 'reused'] as const).map((outcome) => ({ providerId, outcome }))
+);
+
+function preparationEnvelope(
+  state: 'pending' | 'ready' | 'terminal' | 'cleanup_pending',
+  phase: string,
+  generation: number,
+  extra: Record<string, unknown> = {}
+) {
+  return {
+    version: 1,
+    mode: 'async-v1',
+    sandboxId: SANDBOX_ID,
+    state,
+    phase,
+    generation,
+    ...extra,
+  };
+}
 
 describe('Cloud fleet sandbox client', () => {
   beforeEach(() => {
@@ -33,6 +84,599 @@ describe('Cloud fleet sandbox client', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('attaches context once to the exact existing sandbox without choosing a checkout destination', async () => {
+    mocks.authorizedApiFetch.mockResolvedValue({
+      auth,
+      response: Response.json({
+        sandboxId: SANDBOX_ID,
+        relayWorkspaceId: 'rw_abc',
+        relayfileMounted: true,
+        relayfileMountPath: '/home/node/workspace',
+      }),
+    });
+    const result = await attachCloudFleetSandboxRelayfile({
+      cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+      sandboxId: SANDBOX_ID,
+      paths: ['/linear'],
+    });
+    expect(result.relayfileMountPath).toBe('/home/node/workspace');
+    expect(mocks.authorizedApiFetch).toHaveBeenCalledExactlyOnceWith(
+      auth,
+      `/api/v1/workspaces/${CLOUD_WORKSPACE_ID}/sandboxes/${SANDBOX_ID}/relayfile-mount`,
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ paths: ['/linear'] }),
+        signal: expect.any(AbortSignal),
+      }),
+      { interactive: false }
+    );
+  });
+
+  it('refuses to attach through a stored login bound to a different Cloud origin', async () => {
+    await expect(
+      attachCloudFleetSandboxRelayfile(
+        { cloudWorkspaceId: CLOUD_WORKSPACE_ID, sandboxId: SANDBOX_ID },
+        { apiUrl: DEV_CLOUD_API_URL }
+      )
+    ).rejects.toThrow(`cloud login --api-url ${DEV_CLOUD_API_URL.replace(/\/+$/, '')} --force`);
+    expect(mocks.authorizedApiFetch).not.toHaveBeenCalled();
+
+    mocks.authorizedApiFetch.mockResolvedValue({
+      auth,
+      response: Response.json({
+        sandboxId: SANDBOX_ID,
+        relayWorkspaceId: 'rw_abc',
+        relayfileMounted: true,
+        relayfileMountPath: '/home/node/workspace',
+      }),
+    });
+    await expect(
+      attachCloudFleetSandboxRelayfile(
+        { cloudWorkspaceId: CLOUD_WORKSPACE_ID, sandboxId: SANDBOX_ID },
+        { apiUrl: `${auth.apiUrl}/` }
+      )
+    ).resolves.toMatchObject({ relayfileMounted: true });
+  });
+
+  it.each([
+    { sandboxId: 'sbx_wrong', relayfileMounted: true },
+    { sandboxId: SANDBOX_ID, relayfileMounted: false },
+  ])('rejects an attachment response that does not prove the requested mount (%j)', async (payload) => {
+    mocks.authorizedApiFetch.mockResolvedValue({
+      auth,
+      response: Response.json({
+        relayWorkspaceId: 'rw_abc',
+        relayfileMountPath: '/home/node/workspace',
+        ...payload,
+      }),
+    });
+    await expect(
+      attachCloudFleetSandboxRelayfile({ cloudWorkspaceId: CLOUD_WORKSPACE_ID, sandboxId: SANDBOX_ID })
+    ).rejects.toThrow('did not confirm');
+  });
+
+  it('includes stalled Cloud authentication in the attachment timeout and never sends a late POST', async () => {
+    let finishAuth!: (value: { auth: typeof auth; client: object }) => void;
+    mocks.ensureCloudSession.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishAuth = resolve;
+        })
+    );
+    await expect(
+      attachCloudFleetSandboxRelayfile(
+        { cloudWorkspaceId: CLOUD_WORKSPACE_ID, sandboxId: SANDBOX_ID },
+        { timeoutMs: 20 }
+      )
+    ).rejects.toMatchObject({ name: 'TimeoutError' });
+    const signal = mocks.ensureCloudSession.mock.calls[0][0].signal as AbortSignal;
+    expect(signal.aborted).toBe(true);
+    finishAuth({ auth, client: {} });
+    await Promise.resolve();
+    expect(mocks.authorizedApiFetch).not.toHaveBeenCalled();
+  });
+
+  it('polls confirmed detached preparation on the same sandbox and authentication deadline', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        auth: refreshedAuth,
+        response: Response.json(
+          {
+            sandboxId: SANDBOX_ID,
+            relayfileMounted: false,
+            state: 'pending',
+            phase: 'relayfile_mount_bootstrap',
+          },
+          { status: 202, headers: { 'Retry-After': '0' } }
+        ),
+      })
+      .mockResolvedValueOnce({
+        auth: refreshedAuth,
+        response: Response.json({
+          sandboxId: SANDBOX_ID,
+          relayWorkspaceId: 'rw_abc',
+          relayfileMounted: true,
+          relayfileMountPath: '/home/node/workspace',
+        }),
+      });
+    await expect(
+      attachCloudFleetSandboxRelayfile({ cloudWorkspaceId: CLOUD_WORKSPACE_ID, sandboxId: SANDBOX_ID })
+    ).resolves.toMatchObject({ relayfileMounted: true });
+    const calls = mocks.authorizedApiFetch.mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[1][0]).toEqual(refreshedAuth);
+    expect(calls[1][1]).toEqual(calls[0][1]);
+    expect(calls[1][2].signal).toBe(calls[0][2].signal);
+    expect(mocks.ensureCloudSession.mock.calls[0][0].signal).toBe(calls[0][2].signal);
+  });
+
+  it('does not poll pending preparation for a different sandbox', async () => {
+    mocks.authorizedApiFetch.mockResolvedValue({
+      auth,
+      response: Response.json(
+        {
+          sandboxId: 'sbx_wrong',
+          relayfileMounted: false,
+          state: 'pending',
+          phase: 'relayfile_mount_bootstrap',
+        },
+        { status: 202 }
+      ),
+    });
+    await expect(
+      attachCloudFleetSandboxRelayfile({ cloudWorkspaceId: CLOUD_WORKSPACE_ID, sandboxId: SANDBOX_ID })
+    ).rejects.toThrow('did not confirm pending');
+    expect(mocks.authorizedApiFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['/linear/**', '/linear/../secret', 'relative', '/'])(
+    'rejects a path the Cloud attachment route cannot accept (%s)',
+    async (path) => {
+      await expect(
+        attachCloudFleetSandboxRelayfile({
+          cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+          sandboxId: SANDBOX_ID,
+          paths: [path],
+        })
+      ).rejects.toThrow('absolute exact roots');
+      expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
+    }
+  );
+
+  it('does not retry a failed optional attachment or allocate a replacement sandbox', async () => {
+    mocks.authorizedApiFetch.mockResolvedValue({
+      auth,
+      response: Response.json({ error: 'mount timed out' }, { status: 503 }),
+    });
+    await expect(
+      attachCloudFleetSandboxRelayfile({ cloudWorkspaceId: CLOUD_WORKSPACE_ID, sandboxId: SANDBOX_ID })
+    ).rejects.toThrow('mount timed out');
+    expect(mocks.authorizedApiFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('normalizes a closed Agent37 Relaycast target', () => {
+    expect(
+      normalizeRelaycastTarget({ ...RELAYCAST_TARGET, baseUrl: `${AGENT37_RELAYCAST_ORIGIN}/` })
+    ).toEqual(RELAYCAST_TARGET);
+    expect(
+      normalizeRelaycastTarget({
+        route: 'canonical',
+        baseUrl: CANONICAL_RELAYCAST_ORIGIN,
+        workspaceId: 'rw_abc',
+        relaycastApiKey: 'rk_live_canonical',
+      })
+    ).toMatchObject({ route: 'canonical', baseUrl: CANONICAL_RELAYCAST_ORIGIN });
+  });
+
+  it('trusts the dev canonical Relaycast origin only for the exact dev Cloud API', () => {
+    expect(normalizeRelaycastTarget(DEV_RELAYCAST_TARGET, DEV_CLOUD_API_URL)).toEqual(DEV_RELAYCAST_TARGET);
+    expect(
+      normalizeRelaycastTarget({
+        ...RELAYCAST_TARGET,
+        route: 'canonical',
+        baseUrl: 'https://armadillo.agentrelay.com',
+      }).baseUrl
+    ).toBe('https://armadillo.agentrelay.com');
+
+    for (const apiUrl of [
+      undefined,
+      'https://agentrelay.com/cloud',
+      'https://dev.agentrelay.com',
+      'https://dev.agentrelay.com/cloud/',
+      'https://dev.agentrelay.com/cloud/other',
+      'https://dev.agentrelay.com/cloud?redirect=https://evil.example',
+      'https://user:pass@dev.agentrelay.com/cloud',
+    ]) {
+      expect(() => normalizeRelaycastTarget(DEV_RELAYCAST_TARGET, apiUrl)).toThrow(
+        /untrusted relaycastTarget.baseUrl/
+      );
+    }
+  });
+
+  it.each([
+    { route: 'agent37-isolated', baseUrl: 'https://evil.example' },
+    { route: 'canonical', baseUrl: AGENT37_RELAYCAST_ORIGIN },
+    { route: 'agent37-isolated', baseUrl: 'https://agent37-cast.agentrelay.com/path' },
+    { route: 'agent37-isolated', baseUrl: 'https://user:pass@agent37-cast.agentrelay.com' },
+  ])('rejects a route mapped to an untrusted Relaycast origin', (target) => {
+    expect(() => normalizeRelaycastTarget({ ...RELAYCAST_TARGET, ...target })).toThrow(/relaycast/i);
+  });
+
+  it.each([
+    { ...RELAYCAST_TARGET, relaycastApiKey: 'rk_test_not_live' },
+    { ...RELAYCAST_TARGET, workspaceId: '' },
+    { ...RELAYCAST_TARGET, relaycastApiKey: undefined },
+  ])('rejects an incomplete Relaycast target', (target) => {
+    expect(() => normalizeRelaycastTarget(target)).toThrow(/Relaycast|workspace/);
+  });
+
+  it('rejects the legacy generic API key field', () => {
+    expect(() =>
+      normalizeRelaycastTarget({
+        route: RELAYCAST_TARGET.route,
+        baseUrl: RELAYCAST_TARGET.baseUrl,
+        workspaceId: RELAYCAST_TARGET.workspaceId,
+        apiKey: RELAYCAST_TARGET.relaycastApiKey,
+      })
+    ).toThrow(/API key/);
+  });
+
+  it('waits for an exact Relayfile repository working tree without receiving GitHub credentials', async () => {
+    const revision = '0123456789abcdef0123456789abcdef01234567';
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth: refreshedAuth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({ ok: true, jobId: 'clone-job-1', status: 'queued' }, { status: 202 }),
+        auth: refreshedAuth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          ok: true,
+          job: {
+            owner: 'AgentWorkforce',
+            repo: 'cloud',
+            ref: revision,
+            status: 'running',
+          },
+        }),
+        auth: refreshedAuth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          ok: true,
+          job: {
+            owner: 'AgentWorkforce',
+            repo: 'cloud',
+            ref: revision,
+            status: 'completed',
+            headSha: revision,
+            filesWritten: 0,
+            sourceProfile: 'complete-v1',
+            materialization: {
+              mode: 'relayfile_export',
+              sourceProfile: 'complete-v1',
+              headSha: revision,
+              filesExpected: 0,
+              contentRoot: '/github/repos/AgentWorkforce/cloud/contents',
+              sentinelPath: '/github/repos/AgentWorkforce/cloud/.relayfile/clone.json',
+              exportParams: { format: 'tar', decode: 'github-working-tree', gzip: false },
+            },
+          },
+        }),
+        auth: refreshedAuth,
+      });
+
+    await expect(
+      materializeCloudRelayfileRepository(
+        {
+          workspaceId: 'rw_abc',
+          repository: 'AgentWorkforce/cloud',
+          revision,
+        },
+        { pollIntervalMs: 1 }
+      )
+    ).resolves.toEqual({
+      cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+      repository: 'AgentWorkforce/cloud',
+      revision,
+      filesWritten: 0,
+      sourceProfile: 'complete-v1',
+      contentRoot: '/github/repos/AgentWorkforce/cloud/contents',
+      sentinelPath: '/github/repos/AgentWorkforce/cloud/.relayfile/clone.json',
+    });
+
+    const requestCall = mocks.authorizedApiFetch.mock.calls[1];
+    expect(requestCall?.[1]).toBe('/api/v1/github/clone/request');
+    expect(JSON.parse(String(requestCall?.[2]?.body))).toEqual({
+      workspaceId: CLOUD_WORKSPACE_ID,
+      owner: 'AgentWorkforce',
+      repo: 'cloud',
+      ref: revision,
+      mode: 'full',
+      sourceProfile: 'complete-v1',
+    });
+    expect(JSON.stringify(requestCall)).not.toContain('githubToken');
+  });
+
+  it('rejects a completed clone that did not produce the requested live Relayfile revision', async () => {
+    const revision = '0123456789abcdef0123456789abcdef01234567';
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({ ok: true, jobId: 'clone-job-2', status: 'queued' }, { status: 202 }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          ok: true,
+          job: {
+            owner: 'AgentWorkforce',
+            repo: 'cloud',
+            ref: revision,
+            status: 'completed',
+            headSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            filesWritten: 12,
+            materialization: { mode: 'local_archive' },
+          },
+        }),
+        auth,
+      });
+
+    await expect(
+      materializeCloudRelayfileRepository(
+        { workspaceId: 'rw_abc', repository: 'AgentWorkforce/cloud', revision },
+        { pollIntervalMs: 1 }
+      )
+    ).rejects.toThrow(/did not prove a live Relayfile working tree/);
+  });
+
+  it('rejects a clone whose materialization file count disagrees with the job', async () => {
+    const revision = '0123456789abcdef0123456789abcdef01234567';
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({ response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }), auth })
+      .mockResolvedValueOnce({
+        response: Response.json({ ok: true, jobId: 'clone-job-count', status: 'queued' }, { status: 202 }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          ok: true,
+          job: {
+            owner: 'AgentWorkforce',
+            repo: 'cloud',
+            ref: revision,
+            status: 'completed',
+            headSha: revision,
+            filesWritten: 4,
+            sourceProfile: 'complete-v1',
+            materialization: {
+              mode: 'relayfile_export',
+              sourceProfile: 'complete-v1',
+              headSha: revision,
+              filesExpected: 3,
+              contentRoot: '/github/repos/AgentWorkforce/cloud/contents',
+              sentinelPath: '/github/repos/AgentWorkforce/cloud/.relayfile/clone.json',
+            },
+          },
+        }),
+        auth,
+      });
+
+    await expect(
+      materializeCloudRelayfileRepository(
+        { workspaceId: 'rw_abc', repository: 'AgentWorkforce/cloud', revision },
+        { pollIntervalMs: 1 }
+      )
+    ).rejects.toThrow(/did not prove a live Relayfile working tree/);
+  });
+
+  it('rejects a provisioned response with an untrusted server-owned Relaycast route', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          outcome: 'provisioned',
+          providerId: 'agent37',
+          nodeId: 'node-1',
+          nodeName: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          relayWorkspaceId: 'rw_abc',
+          relaycastTarget: { ...RELAYCAST_TARGET, baseUrl: 'https://evil.example' },
+          relayfileMounted: true,
+        }),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        workloadProfile: 'long-running-agent',
+      })
+    ).rejects.toThrow(/untrusted relaycastTarget.baseUrl/);
+  });
+
+  it('rejects a canonical target for an explicitly requested Agent37 provider', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          outcome: 'provisioned',
+          providerId: 'agent37',
+          nodeId: 'node-1',
+          nodeName: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          relayWorkspaceId: 'rw_abc',
+          relaycastTarget: {
+            route: 'canonical',
+            baseUrl: CANONICAL_RELAYCAST_ORIGIN,
+            workspaceId: 'rw_abc',
+            relaycastApiKey: 'rk_live_canonical',
+          },
+          relayfileMounted: false,
+        }),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        providerId: 'agent37',
+        mountRelayfile: false,
+      })
+    ).rejects.toThrow(/mapped Agent37 to a non-isolated/);
+  });
+
+  it('accepts the canonical dev target for Agent37 only when authenticated to dev Cloud', async () => {
+    mocks.ensureCloudSession.mockResolvedValue({ auth: devAuth, client: {} });
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth: devAuth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            providerId: 'agent37',
+            nodeId: 'node-dev',
+            nodeName: SANDBOX_NAME,
+            sandboxId: SANDBOX_ID,
+            providerSandboxId: 'provider-dev',
+            relayWorkspaceId: 'rw_abc',
+            relaycastTarget: DEV_RELAYCAST_TARGET,
+            relayfileMounted: true,
+          },
+          { status: 201 }
+        ),
+        auth: devAuth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox(
+        {
+          workspaceId: 'rw_abc',
+          name: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          requiredCapability: 'spawn:codex',
+          providerId: 'agent37',
+          forceProvision: true,
+          workloadProfile: 'long-running-agent',
+        },
+        { apiUrl: DEV_CLOUD_API_URL }
+      )
+    ).resolves.toMatchObject({
+      outcome: 'provisioned',
+      providerId: 'agent37',
+      relaycastTarget: DEV_RELAYCAST_TARGET,
+    });
+  });
+
+  it('validates the target against the auth returned by the ensure request', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            providerId: 'agent37',
+            nodeId: 'node-refreshed-dev',
+            nodeName: SANDBOX_NAME,
+            sandboxId: SANDBOX_ID,
+            providerSandboxId: 'provider-refreshed-dev',
+            relayWorkspaceId: 'rw_abc',
+            relaycastTarget: DEV_RELAYCAST_TARGET,
+            relayfileMounted: true,
+          },
+          { status: 201 }
+        ),
+        auth: devAuth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        providerId: 'agent37',
+        forceProvision: true,
+        workloadProfile: 'long-running-agent',
+      })
+    ).resolves.toMatchObject({ relaycastTarget: DEV_RELAYCAST_TARGET });
+  });
+
+  it('validates an async-prepared Relaycast target against the auth that read the ready record', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'agent_relay_cli_bootstrap', 0), {
+          status: 202,
+        }),
+        // Only the read of the ready record carries DEV auth, so this proves
+        // normalization uses the auth that read the record, not the ensure's.
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          preparationEnvelope('ready', 'broker_visible', 1, {
+            result: {
+              outcome: 'provisioned',
+              providerId: 'agent37',
+              nodeId: 'node-async-dev',
+              nodeName: SANDBOX_NAME,
+              sandboxId: SANDBOX_ID,
+              providerSandboxId: 'provider-async-dev',
+              relayWorkspaceId: 'rw_abc',
+              relaycastTarget: DEV_RELAYCAST_TARGET,
+              relayfileMounted: true,
+            },
+          })
+        ),
+        auth: devAuth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox(
+        {
+          workspaceId: 'rw_abc',
+          name: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          requiredCapability: 'spawn:codex',
+          forceProvision: true,
+          preparationMode: 'async-v1',
+        },
+        { preparationPollIntervalMs: 1 }
+      )
+    ).resolves.toMatchObject({
+      nodeId: 'node-async-dev',
+      relaycastTarget: DEV_RELAYCAST_TARGET,
+      relaycastCloudApiUrl: DEV_CLOUD_API_URL,
+    });
   });
 
   it('resolves the unified workspace and provisions a ready mounted sandbox', async () => {
@@ -46,9 +690,11 @@ describe('Cloud fleet sandbox client', () => {
           {
             outcome: 'provisioned',
             nodeId: 'node-1',
-            nodeName: 'daytona-codex',
-            sandboxId: 'sandbox-1',
+            nodeName: SANDBOX_NAME,
+            sandboxId: SANDBOX_ID,
+            providerSandboxId: 'provider-sandbox-1',
             relayWorkspaceId: 'rw_abc',
+            relaycastTarget: RELAYCAST_TARGET,
             relayfileMounted: true,
             relayfileMountPath: '/workspace',
             providerId: 'agent37',
@@ -60,7 +706,8 @@ describe('Cloud fleet sandbox client', () => {
 
     const result = await ensureCloudFleetSandbox({
       workspaceId: 'rw_abc',
-      name: 'daytona-codex',
+      name: SANDBOX_NAME,
+      sandboxId: SANDBOX_ID,
       requiredCapability: 'spawn:codex',
       maxAgents: 1,
       mountRelayfile: true,
@@ -81,7 +728,8 @@ describe('Cloud fleet sandbox client', () => {
     expect(ensureCall?.[1]).toBe('/api/v1/fleet/nodes/sandbox/ensure');
     expect(JSON.parse(String(ensureCall?.[2]?.body))).toEqual({
       workspaceId: CLOUD_WORKSPACE_ID,
-      name: 'daytona-codex',
+      sandboxId: SANDBOX_ID,
+      name: SANDBOX_NAME,
       requiredCapability: 'spawn:codex',
       maxAgents: 1,
       mountRelayfile: true,
@@ -93,12 +741,2088 @@ describe('Cloud fleet sandbox client', () => {
       outcome: 'provisioned',
       cloudWorkspaceId: CLOUD_WORKSPACE_ID,
       nodeId: 'node-1',
-      nodeName: 'daytona-codex',
-      sandboxId: 'sandbox-1',
+      nodeName: SANDBOX_NAME,
+      sandboxId: SANDBOX_ID,
+      providerSandboxId: 'provider-sandbox-1',
       relayWorkspaceId: 'rw_abc',
+      relaycastTarget: RELAYCAST_TARGET,
+      relaycastCloudApiUrl: refreshedAuth.apiUrl,
       relayfileMounted: true,
       relayfileMountPath: '/workspace',
       providerId: 'agent37',
+    });
+  });
+
+  it('advances async preparation one durable phase per request and reports deduplicated progress', async () => {
+    const progress = vi.fn();
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth: refreshedAuth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'agent_relay_cli_bootstrap', 0), {
+          status: 202,
+        }),
+        auth: refreshedAuth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'agent_relay_cli_bootstrap', 0), {
+          status: 202,
+        }),
+        auth: refreshedAuth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'relayfile_mount_bootstrap', 1), {
+          status: 202,
+        }),
+        auth: refreshedAuth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          preparationEnvelope('ready', 'broker_visible', 2, {
+            result: {
+              outcome: 'provisioned',
+              nodeId: 'node-async',
+              nodeName: SANDBOX_NAME,
+              sandboxId: SANDBOX_ID,
+              providerSandboxId: 'provider-async',
+              relayWorkspaceId: 'rw_abc',
+              relaycastTarget: RELAYCAST_TARGET,
+              relayfileMounted: true,
+              relayfileMountPath: '/workspace',
+              providerId: 'agent37',
+            },
+          })
+        ),
+        auth: refreshedAuth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox(
+        {
+          workspaceId: 'rw_abc',
+          name: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          requiredCapability: 'spawn:codex',
+          forceProvision: true,
+          preparationMode: 'async-v1',
+        },
+        { preparationPollIntervalMs: 1, onPreparationProgress: progress }
+      )
+    ).resolves.toMatchObject({
+      outcome: 'provisioned',
+      sandboxId: SANDBOX_ID,
+      nodeId: 'node-async',
+      providerId: 'agent37',
+    });
+
+    const requests = mocks.authorizedApiFetch.mock.calls.slice(1);
+    expect(requests.map((call) => [call[1], call[2]?.method])).toEqual([
+      ['/api/v1/fleet/nodes/sandbox/ensure', 'POST'],
+      [`/api/v1/fleet/nodes/sandbox/${SANDBOX_ID}/preparation?workspaceId=${CLOUD_WORKSPACE_ID}`, 'GET'],
+      [`/api/v1/fleet/nodes/sandbox/${SANDBOX_ID}/preparation`, 'POST'],
+      [`/api/v1/fleet/nodes/sandbox/${SANDBOX_ID}/preparation`, 'POST'],
+    ]);
+    const ensureBody = JSON.parse(String(requests[0]?.[2]?.body));
+    expect(ensureBody).toMatchObject({
+      preparationMode: 'async-v1',
+      sandboxId: SANDBOX_ID,
+    });
+    // Cloud routes unpinned async-v1 to Agent37 itself; naming the provider
+    // would switch Cloud to the strict explicit-provider path (relay#1656).
+    expect(ensureBody).not.toHaveProperty('providerId');
+    expect(progress.mock.calls.map(([value]) => value)).toEqual([
+      expect.objectContaining({ state: 'pending', phase: 'agent_relay_cli_bootstrap', generation: 0 }),
+      expect.objectContaining({ state: 'pending', phase: 'relayfile_mount_bootstrap', generation: 1 }),
+      expect.objectContaining({ state: 'ready', phase: 'broker_visible', generation: 2 }),
+    ]);
+  });
+
+  it('accepts an older Cloud capability-routing an unpinned async request to another provider', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            nodeId: 'node-routed',
+            nodeName: SANDBOX_NAME,
+            sandboxId: SANDBOX_ID,
+            providerSandboxId: DAYTONA_PROVIDER_SANDBOX_ID,
+            relayWorkspaceId: 'rw_abc',
+            relayfileMounted: true,
+            providerId: 'daytona',
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        preparationMode: 'async-v1',
+      })
+    ).resolves.toMatchObject({
+      outcome: 'provisioned',
+      sandboxId: SANDBOX_ID,
+      providerId: 'daytona',
+    });
+    const ensureBody = JSON.parse(String(mocks.authorizedApiFetch.mock.calls[1]?.[2]?.body));
+    expect(ensureBody).toMatchObject({ preparationMode: 'async-v1', sandboxId: SANDBOX_ID });
+    expect(ensureBody).not.toHaveProperty('providerId');
+  });
+
+  it('accepts a synchronous 201 result when an older Cloud ignores async preparation mode', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            nodeId: 'node-from-old-cloud',
+            nodeName: SANDBOX_NAME,
+            sandboxId: SANDBOX_ID,
+            providerSandboxId: 'provider-from-old-cloud',
+            relayWorkspaceId: 'rw_abc',
+            relaycastTarget: RELAYCAST_TARGET,
+            relayfileMounted: true,
+            relayfileMountPath: '/workspace',
+            providerId: 'agent37',
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        preparationMode: 'async-v1',
+      })
+    ).resolves.toMatchObject({
+      outcome: 'provisioned',
+      nodeId: 'node-from-old-cloud',
+      sandboxId: SANDBOX_ID,
+    });
+
+    expect(mocks.authorizedApiFetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(mocks.authorizedApiFetch.mock.calls[1]?.[2]?.body))).toMatchObject({
+      preparationMode: 'async-v1',
+      sandboxId: SANDBOX_ID,
+    });
+  });
+
+  it('retries synchronously when an older Cloud rejects the async preparation field', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({ error: 'Unrecognized key: preparationMode' }, { status: 400 }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            nodeId: 'node-after-compatibility-retry',
+            nodeName: SANDBOX_NAME,
+            sandboxId: SANDBOX_ID,
+            providerSandboxId: 'provider-after-compatibility-retry',
+            relayWorkspaceId: 'rw_abc',
+            relaycastTarget: RELAYCAST_TARGET,
+            relayfileMounted: true,
+            providerId: 'agent37',
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        preparationMode: 'async-v1',
+      })
+    ).resolves.toMatchObject({
+      outcome: 'provisioned',
+      nodeId: 'node-after-compatibility-retry',
+      sandboxId: SANDBOX_ID,
+    });
+
+    const ensureRequests = mocks.authorizedApiFetch.mock.calls.slice(1);
+    expect(ensureRequests).toHaveLength(2);
+    expect(JSON.parse(String(ensureRequests[0]?.[2]?.body))).toHaveProperty('preparationMode', 'async-v1');
+    expect(JSON.parse(String(ensureRequests[1]?.[2]?.body))).not.toHaveProperty('preparationMode');
+  });
+
+  it('does not replay ensure for an unrelated 400 response', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({ error: 'Repository revision is invalid' }, { status: 400 }),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        preparationMode: 'async-v1',
+      })
+    ).rejects.toThrow('Repository revision is invalid');
+
+    expect(mocks.authorizedApiFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries an accepted async preparation after rate limiting through durable status', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'provider_allocation', 0), {
+          status: 202,
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({ error: 'rate limited' }, { status: 429, headers: { 'retry-after': '0' } }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'agent_relay_cli_bootstrap', 1), {
+          status: 202,
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          preparationEnvelope('ready', 'broker_visible', 2, {
+            result: {
+              outcome: 'provisioned',
+              nodeId: 'node-after-rate-limit',
+              nodeName: SANDBOX_NAME,
+              sandboxId: SANDBOX_ID,
+              providerSandboxId: 'provider-after-rate-limit',
+              relayWorkspaceId: 'rw_abc',
+              relaycastTarget: RELAYCAST_TARGET,
+              relayfileMounted: false,
+              providerId: 'agent37',
+            },
+          })
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox(
+        {
+          workspaceId: 'rw_abc',
+          name: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          requiredCapability: 'spawn:codex',
+          forceProvision: true,
+          preparationMode: 'async-v1',
+        },
+        { preparationPollIntervalMs: 1 }
+      )
+    ).resolves.toMatchObject({ nodeId: 'node-after-rate-limit', sandboxId: SANDBOX_ID });
+
+    expect(mocks.authorizedApiFetch.mock.calls.slice(2).map((call) => call[2]?.method)).toEqual([
+      'GET',
+      'GET',
+      'POST',
+    ]);
+  });
+
+  it('recovers a dropped initial async ensure response by reading durable status without replaying ensure', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockRejectedValueOnce(new TypeError('connection reset'))
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'provider_allocation', 0), {
+          status: 202,
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          preparationEnvelope('ready', 'broker_visible', 1, {
+            result: {
+              outcome: 'provisioned',
+              nodeId: 'node-recovered',
+              nodeName: SANDBOX_NAME,
+              sandboxId: SANDBOX_ID,
+              providerSandboxId: 'provider-recovered',
+              relayWorkspaceId: 'rw_abc',
+              relaycastTarget: RELAYCAST_TARGET,
+              relayfileMounted: false,
+              providerId: 'agent37',
+            },
+          })
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox(
+        {
+          workspaceId: 'rw_abc',
+          name: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          requiredCapability: 'spawn:codex',
+          forceProvision: true,
+          preparationMode: 'async-v1',
+        },
+        { preparationPollIntervalMs: 1 }
+      )
+    ).resolves.toMatchObject({ nodeId: 'node-recovered', sandboxId: SANDBOX_ID });
+
+    expect(
+      mocks.authorizedApiFetch.mock.calls.filter((call) => call[1] === '/api/v1/fleet/nodes/sandbox/ensure')
+    ).toHaveLength(1);
+    expect(mocks.authorizedApiFetch.mock.calls[2]?.[2]?.method).toBe('GET');
+  });
+
+  it('recovers an initial async 5xx by reading durable status without replaying ensure', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({ error: 'gateway response lost' }, { status: 504 }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'provider_allocation', 0), {
+          status: 202,
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          preparationEnvelope('ready', 'broker_visible', 1, {
+            result: {
+              outcome: 'provisioned',
+              nodeId: 'node-after-gateway',
+              nodeName: SANDBOX_NAME,
+              sandboxId: SANDBOX_ID,
+              providerSandboxId: 'provider-after-gateway',
+              relayWorkspaceId: 'rw_abc',
+              relaycastTarget: RELAYCAST_TARGET,
+              relayfileMounted: false,
+              providerId: 'agent37',
+            },
+          })
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox(
+        {
+          workspaceId: 'rw_abc',
+          name: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          requiredCapability: 'spawn:codex',
+          forceProvision: true,
+          preparationMode: 'async-v1',
+        },
+        { preparationPollIntervalMs: 1 }
+      )
+    ).resolves.toMatchObject({ nodeId: 'node-after-gateway', sandboxId: SANDBOX_ID });
+
+    expect(
+      mocks.authorizedApiFetch.mock.calls.filter((call) => call[1] === '/api/v1/fleet/nodes/sandbox/ensure')
+    ).toHaveLength(1);
+    expect(mocks.authorizedApiFetch.mock.calls[2]?.[2]?.method).toBe('GET');
+  });
+
+  it('recovers a successful async ensure with a truncated envelope through durable status', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: new Response(null, { status: 202 }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'provider_allocation', 0), {
+          status: 202,
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          preparationEnvelope('ready', 'broker_visible', 1, {
+            result: {
+              outcome: 'provisioned',
+              nodeId: 'node-after-truncated-ensure',
+              nodeName: SANDBOX_NAME,
+              sandboxId: SANDBOX_ID,
+              providerSandboxId: 'provider-after-truncated-ensure',
+              relayWorkspaceId: 'rw_abc',
+              relaycastTarget: RELAYCAST_TARGET,
+              relayfileMounted: false,
+              providerId: 'agent37',
+            },
+          })
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox(
+        {
+          workspaceId: 'rw_abc',
+          name: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          requiredCapability: 'spawn:codex',
+          forceProvision: true,
+          preparationMode: 'async-v1',
+        },
+        { preparationPollIntervalMs: 1 }
+      )
+    ).resolves.toMatchObject({ nodeId: 'node-after-truncated-ensure', sandboxId: SANDBOX_ID });
+
+    expect(
+      mocks.authorizedApiFetch.mock.calls.filter((call) => call[1] === '/api/v1/fleet/nodes/sandbox/ensure')
+    ).toHaveLength(1);
+    expect(mocks.authorizedApiFetch.mock.calls[2]?.[2]?.method).toBe('GET');
+  });
+
+  it('preserves an initial async sandbox identity mismatch instead of polling the wrong record', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          ...preparationEnvelope('pending', 'provider_allocation', 0),
+          sandboxId: 'sbx_00000000-0000-4000-8000-000000000099',
+        }),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox(
+        {
+          workspaceId: 'rw_abc',
+          name: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          requiredCapability: 'spawn:codex',
+          forceProvision: true,
+          preparationMode: 'async-v1',
+        },
+        { preparationPollIntervalMs: 1 }
+      )
+    ).rejects.toThrow(/returned sandboxId .* instead of requested sandboxId/u);
+
+    expect(mocks.authorizedApiFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('bounds status polling when the initial async request was never accepted', async () => {
+    vi.spyOn(Date, 'now').mockReturnValueOnce(0).mockReturnValue(110_001);
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockRejectedValueOnce(new TypeError('connection refused'))
+      .mockResolvedValueOnce({
+        response: Response.json({ error: 'not found' }, { status: 404 }),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox(
+      {
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        preparationMode: 'async-v1',
+      },
+      { preparationPollIntervalMs: 1 }
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({
+      sandboxId: SANDBOX_ID,
+      providerId: undefined,
+      outcomeUnknown: true,
+      confirmedProvisioned: false,
+    });
+    expect(mocks.authorizedApiFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('wraps the internal async deadline with accepted cleanup identity', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'provider_allocation', 0), {
+          status: 202,
+        }),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox(
+      {
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        preparationMode: 'async-v1',
+      },
+      { timeoutMs: 5, preparationPollIntervalMs: 20 }
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({
+      sandboxId: SANDBOX_ID,
+      providerId: 'agent37',
+      confirmedProvisioned: true,
+      outcomeUnknown: false,
+    });
+  });
+
+  it('attributes Agent37 cleanup identity once status confirms a lost unpinned async ensure', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'provider_allocation', 0)),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox(
+      {
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        preparationMode: 'async-v1',
+      },
+      { timeoutMs: 40, preparationPollIntervalMs: 1 }
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({
+      sandboxId: SANDBOX_ID,
+      providerId: 'agent37',
+      confirmedProvisioned: true,
+      outcomeUnknown: false,
+    });
+  });
+
+  it('rejects a confirmed unpinned async ready result attributed to another provider', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          preparationEnvelope('ready', 'broker_visible', 1, {
+            result: {
+              outcome: 'provisioned',
+              nodeId: 'node-wrong-provider',
+              nodeName: SANDBOX_NAME,
+              sandboxId: SANDBOX_ID,
+              providerSandboxId: DAYTONA_PROVIDER_SANDBOX_ID,
+              relayWorkspaceId: 'rw_abc',
+              relayfileMounted: true,
+              providerId: 'daytona',
+            },
+          })
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        preparationMode: 'async-v1',
+      })
+    ).rejects.toThrow('Cloud returned provider daytona instead of requested provider agent37.');
+  });
+
+  it('preserves caller cancellation after async preparation was accepted', async () => {
+    const controller = new AbortController();
+    const cancelled = new Error('caller cancelled');
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockImplementationOnce(async () => {
+        controller.abort(cancelled);
+        return {
+          response: Response.json(preparationEnvelope('pending', 'provider_allocation', 0), {
+            status: 202,
+          }),
+          auth,
+        };
+      });
+
+    await expect(
+      ensureCloudFleetSandbox(
+        {
+          workspaceId: 'rw_abc',
+          name: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          requiredCapability: 'spawn:codex',
+          forceProvision: true,
+          preparationMode: 'async-v1',
+        },
+        { signal: controller.signal, preparationPollIntervalMs: 1 }
+      )
+    ).rejects.toBe(cancelled);
+  });
+
+  it('reads durable status after a dropped async advance before issuing another advance', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'provider_allocation', 0), {
+          status: 202,
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'provider_allocation', 0), {
+          status: 202,
+        }),
+        auth,
+      })
+      .mockRejectedValueOnce(new TypeError('advance response dropped'))
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'agent_relay_cli_bootstrap', 1), {
+          status: 202,
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          preparationEnvelope('ready', 'broker_visible', 2, {
+            result: {
+              outcome: 'provisioned',
+              nodeId: 'node-after-drop',
+              nodeName: SANDBOX_NAME,
+              sandboxId: SANDBOX_ID,
+              providerSandboxId: 'provider-after-drop',
+              relayWorkspaceId: 'rw_abc',
+              relaycastTarget: RELAYCAST_TARGET,
+              relayfileMounted: false,
+              providerId: 'agent37',
+            },
+          })
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox(
+        {
+          workspaceId: 'rw_abc',
+          name: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          requiredCapability: 'spawn:codex',
+          forceProvision: true,
+          preparationMode: 'async-v1',
+        },
+        { preparationPollIntervalMs: 1 }
+      )
+    ).resolves.toMatchObject({ nodeId: 'node-after-drop' });
+
+    expect(mocks.authorizedApiFetch.mock.calls.slice(2).map((call) => call[2]?.method)).toEqual([
+      'GET',
+      'POST',
+      'GET',
+      'POST',
+    ]);
+  });
+
+  it('surfaces a durable terminal async failure without retrying it', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'provider_allocation', 0), {
+          status: 202,
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          preparationEnvelope('terminal', 'cleanup', 1, {
+            failure: {
+              code: 'preparation_failed',
+              error: 'Sandbox preparation failed.',
+              phase: 'relayfile_mount_bootstrap',
+            },
+          }),
+          { status: 502 }
+        ),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox(
+      {
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        preparationMode: 'async-v1',
+      },
+      { preparationPollIntervalMs: 1 }
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({
+      confirmedProvisioned: false,
+      outcomeUnknown: false,
+      sandboxAbsent: true,
+      sandboxId: SANDBOX_ID,
+      preparationFailure: { code: 'preparation_failed', phase: 'relayfile_mount_bootstrap' },
+    });
+    expect((error as Error).message).toContain('relayfile_mount_bootstrap');
+    expect(mocks.authorizedApiFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('reports the production initial_sync_deadline mount failure as a typed proven-absent failure, not an unknown outcome', async () => {
+    const preparationPath = `/api/v1/fleet/nodes/sandbox/${SANDBOX_ID}/preparation`;
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'relayfile_mount', 3), { status: 202 }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'relayfile_mount', 3), { status: 202 }),
+        auth,
+      })
+      // Cloud build 6b8f1de8, smoke B: the mount's initial sync hit the 250 s
+      // deadline. Under async-v1 that tick moves the record to cleanup.
+      .mockResolvedValueOnce({
+        response: Response.json(
+          preparationEnvelope('cleanup_pending', 'cleanup', 4, {
+            failure: {
+              code: 'relayfile_mount_failed',
+              error: 'Relayfile mount failed during relayfile_mount. Retry provisioning the sandbox.',
+              phase: 'relayfile_mount',
+              causeStage: 'initial_sync_deadline',
+            },
+          }),
+          { status: 202 }
+        ),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          preparationEnvelope('terminal', 'cleanup', 5, {
+            failure: {
+              code: 'relayfile_mount_failed',
+              error: 'Relayfile mount failed during relayfile_mount. Retry provisioning the sandbox.',
+              phase: 'relayfile_mount',
+              causeStage: 'initial_sync_deadline',
+            },
+          }),
+          { status: 502 }
+        ),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox(
+      {
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        preparationMode: 'async-v1',
+      },
+      { preparationPollIntervalMs: 1 }
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({
+      sandboxId: SANDBOX_ID,
+      nodeName: SANDBOX_NAME,
+      sandboxAbsent: true,
+      confirmedProvisioned: false,
+      outcomeUnknown: false,
+      preparationFailure: {
+        code: 'relayfile_mount_failed',
+        phase: 'relayfile_mount',
+        causeStage: 'initial_sync_deadline',
+      },
+    });
+    expect((error as Error).message).toContain('relayfile_mount_failed, initial_sync_deadline');
+    // One ensure, never replayed; Cloud-owned cleanup is observed, never advanced.
+    expect(mocks.authorizedApiFetch.mock.calls.slice(1).map((call) => [call[1], call[2]?.method])).toEqual([
+      ['/api/v1/fleet/nodes/sandbox/ensure', 'POST'],
+      [`${preparationPath}?workspaceId=${CLOUD_WORKSPACE_ID}`, 'GET'],
+      [preparationPath, 'POST'],
+      [`${preparationPath}?workspaceId=${CLOUD_WORKSPACE_ID}`, 'GET'],
+    ]);
+  });
+
+  it('paces preparation by the Retry-After that Cloud sends with pending progress', async () => {
+    const pending = () =>
+      new Response(JSON.stringify(preparationEnvelope('pending', 'relayfile_mount', 3)), {
+        status: 202,
+        headers: { 'content-type': 'application/json', 'retry-after': '0' },
+      });
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({ response: pending(), auth })
+      .mockResolvedValueOnce({ response: pending(), auth })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          preparationEnvelope('ready', 'broker_visible', 4, {
+            result: {
+              outcome: 'provisioned',
+              providerId: 'agent37',
+              nodeId: 'node-paced',
+              nodeName: SANDBOX_NAME,
+              sandboxId: SANDBOX_ID,
+              providerSandboxId: 'provider-paced',
+              relayWorkspaceId: 'rw_abc',
+              relaycastTarget: RELAYCAST_TARGET,
+              relayfileMounted: true,
+            },
+          })
+        ),
+        auth,
+      });
+
+    // A 60 s default interval would time this test out if Retry-After were ignored.
+    await expect(
+      ensureCloudFleetSandbox(
+        {
+          workspaceId: 'rw_abc',
+          name: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          requiredCapability: 'spawn:codex',
+          forceProvision: true,
+          preparationMode: 'async-v1',
+        },
+        { preparationPollIntervalMs: 60_000 }
+      )
+    ).resolves.toMatchObject({ nodeId: 'node-paced' });
+  });
+
+  it('surfaces an older Cloud typed relayfile_mount_failed 503 immediately instead of polling a missing status route', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      // An older Cloud ignores preparationMode and answers synchronously with
+      // the production smoke B failure.
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            error:
+              'Relayfile mount failed during relayfile_mount: initial sync deadline exceeded. Retry provisioning the sandbox.',
+            code: 'relayfile_mount_failed',
+            phase: 'relayfile_mount',
+            causeStage: 'initial_sync_deadline',
+            sandboxId: SANDBOX_ID,
+          },
+          { status: 503 }
+        ),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox(
+      {
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        preparationMode: 'async-v1',
+      },
+      { preparationPollIntervalMs: 1 }
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({ sandboxId: SANDBOX_ID, sandboxAbsent: false });
+    expect((error as Error).message).toContain('(relayfile_mount_failed, initial_sync_deadline)');
+    // No status reads: the typed body is a complete synchronous answer.
+    expect(mocks.authorizedApiFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('surfaces an older Cloud typed capacity 503 as a definitive pre-allocation rejection without polling', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            error: 'Sandbox capacity is exhausted before allocation; no sandbox was created',
+            code: 'sandbox_capacity_exhausted',
+            capacity: [{ provider: 'agent37', current: 14, limit: 10 }],
+            retryable: true,
+            no_sandbox_created: true,
+          },
+          { status: 503 }
+        ),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox(
+      {
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        preparationMode: 'async-v1',
+      },
+      { preparationPollIntervalMs: 1 }
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      code: 'sandbox_capacity_exhausted',
+      noSandboxCreated: true,
+      retryable: true,
+      capacity: [{ provider: 'agent37', current: 14, limit: 10 }],
+    });
+    expect(mocks.authorizedApiFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('reconciles a lost final advance response by exact identity before reporting terminal', async () => {
+    const preparationPath = `/api/v1/fleet/nodes/sandbox/${SANDBOX_ID}/preparation`;
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'relayfile_mount', 3), { status: 202 }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'relayfile_mount', 3), { status: 202 }),
+        auth,
+      })
+      // The advance that ran the failing mount tick loses its response.
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce({
+        response: Response.json(
+          preparationEnvelope('terminal', 'cleanup', 5, {
+            failure: {
+              code: 'relayfile_mount_failed',
+              error: 'Relayfile mount failed during relayfile_mount. Retry provisioning the sandbox.',
+              phase: 'relayfile_mount',
+              causeStage: 'initial_sync_deadline',
+            },
+          }),
+          { status: 502 }
+        ),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox(
+      {
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        preparationMode: 'async-v1',
+      },
+      { preparationPollIntervalMs: 1 }
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      sandboxId: SANDBOX_ID,
+      sandboxAbsent: true,
+      outcomeUnknown: false,
+      preparationFailure: { code: 'relayfile_mount_failed', causeStage: 'initial_sync_deadline' },
+    });
+    expect(mocks.authorizedApiFetch.mock.calls.slice(1).map((call) => [call[1], call[2]?.method])).toEqual([
+      ['/api/v1/fleet/nodes/sandbox/ensure', 'POST'],
+      [`${preparationPath}?workspaceId=${CLOUD_WORKSPACE_ID}`, 'GET'],
+      [preparationPath, 'POST'],
+      [`${preparationPath}?workspaceId=${CLOUD_WORKSPACE_ID}`, 'GET'],
+    ]);
+  });
+
+  it('observes cleanup_pending without advancing until Cloud reports terminal', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('cleanup_pending', 'cleanup', 1), {
+          status: 202,
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('cleanup_pending', 'cleanup', 1), {
+          status: 202,
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          preparationEnvelope('terminal', 'cleanup', 2, {
+            failure: {
+              code: 'preparation_deadline_exceeded',
+              error: 'Sandbox preparation deadline exceeded.',
+              phase: 'cleanup',
+            },
+          }),
+          { status: 502 }
+        ),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox(
+      {
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        preparationMode: 'async-v1',
+      },
+      { preparationPollIntervalMs: 1 }
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({ confirmedProvisioned: false, sandboxAbsent: true, sandboxId: SANDBOX_ID });
+    expect(mocks.authorizedApiFetch.mock.calls.slice(2).map((call) => call[2]?.method)).toEqual([
+      'GET',
+      'GET',
+    ]);
+  });
+
+  it('surfaces an initial async authentication failure without polling', async () => {
+    const authError = new CloudAuthError('AUTH_REFRESH_EXPIRED', 'Sign in again.');
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockRejectedValueOnce(authError);
+
+    await expect(
+      ensureCloudFleetSandbox(
+        {
+          workspaceId: 'rw_abc',
+          name: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          requiredCapability: 'spawn:codex',
+          providerId: 'agent37',
+          forceProvision: true,
+          preparationMode: 'async-v1',
+        },
+        { preparationPollIntervalMs: 1 }
+      )
+    ).rejects.toBe(authError);
+    expect(mocks.authorizedApiFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('reconciles an envelope-shaped but invalid 5xx ensure body through durable status', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          { version: 1, mode: 'async-v1', sandboxId: SANDBOX_ID, state: 'exploded', generation: -1 },
+          { status: 502 }
+        ),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          preparationEnvelope('ready', 'broker_visible', 2, {
+            result: {
+              outcome: 'provisioned',
+              providerId: 'agent37',
+              nodeId: 'node-after-invalid-5xx',
+              nodeName: SANDBOX_NAME,
+              sandboxId: SANDBOX_ID,
+              providerSandboxId: 'provider-after-invalid-5xx',
+              relayWorkspaceId: 'rw_abc',
+              relaycastTarget: RELAYCAST_TARGET,
+              relayfileMounted: true,
+            },
+          })
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox(
+        {
+          workspaceId: 'rw_abc',
+          name: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          requiredCapability: 'spawn:codex',
+          forceProvision: true,
+          preparationMode: 'async-v1',
+        },
+        { preparationPollIntervalMs: 1 }
+      )
+    ).resolves.toMatchObject({ nodeId: 'node-after-invalid-5xx', sandboxId: SANDBOX_ID });
+    expect(mocks.authorizedApiFetch.mock.calls[2]?.[2]?.method).toBe('GET');
+  });
+
+  it('reconciles a truncated successful advance through durable status instead of failing the sandbox', async () => {
+    const preparationPath = `/api/v1/fleet/nodes/sandbox/${SANDBOX_ID}/preparation`;
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'relayfile_mount', 3), { status: 202 }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'relayfile_mount', 3), { status: 202 }),
+        auth,
+      })
+      // The advance committed its tick, but the body was cut off in transit.
+      .mockResolvedValueOnce({ response: new Response('{"version":1,"mo', { status: 200 }), auth })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          preparationEnvelope('ready', 'broker_visible', 4, {
+            result: {
+              outcome: 'provisioned',
+              providerId: 'agent37',
+              nodeId: 'node-after-truncated-advance',
+              nodeName: SANDBOX_NAME,
+              sandboxId: SANDBOX_ID,
+              providerSandboxId: 'provider-after-truncated-advance',
+              relayWorkspaceId: 'rw_abc',
+              relaycastTarget: RELAYCAST_TARGET,
+              relayfileMounted: true,
+            },
+          })
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox(
+        {
+          workspaceId: 'rw_abc',
+          name: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          requiredCapability: 'spawn:codex',
+          forceProvision: true,
+          preparationMode: 'async-v1',
+        },
+        { preparationPollIntervalMs: 1 }
+      )
+    ).resolves.toMatchObject({ nodeId: 'node-after-truncated-advance', sandboxId: SANDBOX_ID });
+    expect(mocks.authorizedApiFetch.mock.calls.slice(1).map((call) => [call[1], call[2]?.method])).toEqual([
+      ['/api/v1/fleet/nodes/sandbox/ensure', 'POST'],
+      [`${preparationPath}?workspaceId=${CLOUD_WORKSPACE_ID}`, 'GET'],
+      [preparationPath, 'POST'],
+      [`${preparationPath}?workspaceId=${CLOUD_WORKSPACE_ID}`, 'GET'],
+    ]);
+  });
+
+  it('surfaces a compatibility-retry authentication failure unchanged', async () => {
+    const authError = new CloudAuthError('AUTH_REFRESH_EXPIRED', 'Sign in again.');
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({ error: 'Unrecognized key: preparationMode' }, { status: 400 }),
+        auth,
+      })
+      .mockRejectedValueOnce(authError);
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        preparationMode: 'async-v1',
+      })
+    ).rejects.toBe(authError);
+    expect(mocks.authorizedApiFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('preserves caller cancellation during the compatibility retry', async () => {
+    const controller = new AbortController();
+    const cancelled = new Error('caller cancelled');
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({ error: 'Unrecognized key: preparationMode' }, { status: 400 }),
+        auth,
+      })
+      .mockImplementationOnce(async () => {
+        controller.abort(cancelled);
+        throw new DOMException('This operation was aborted', 'AbortError');
+      });
+
+    await expect(
+      ensureCloudFleetSandbox(
+        {
+          workspaceId: 'rw_abc',
+          name: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          requiredCapability: 'spawn:codex',
+          forceProvision: true,
+          preparationMode: 'async-v1',
+        },
+        { signal: controller.signal }
+      )
+    ).rejects.toBe(cancelled);
+  });
+
+  it('surfaces an async polling authentication failure without retrying it', async () => {
+    const authError = new CloudAuthError('AUTH_REFRESH_EXPIRED', 'Sign in again.');
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'provider_allocation', 0), {
+          status: 202,
+        }),
+        auth,
+      })
+      .mockRejectedValueOnce(authError);
+
+    await expect(
+      ensureCloudFleetSandbox(
+        {
+          workspaceId: 'rw_abc',
+          name: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          requiredCapability: 'spawn:codex',
+          providerId: 'agent37',
+          forceProvision: true,
+          preparationMode: 'async-v1',
+        },
+        { preparationPollIntervalMs: 1 }
+      )
+    ).rejects.toBe(authError);
+    expect(mocks.authorizedApiFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('marks an invalid ready result safe only after exact async cleanup identity is proven', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          preparationEnvelope('ready', 'broker_visible', 1, {
+            result: {
+              outcome: 'provisioned',
+              nodeId: 'node-invalid-ready',
+              nodeName: SANDBOX_NAME,
+              sandboxId: SANDBOX_ID,
+              relayWorkspaceId: 'rw_abc',
+              relaycastTarget: RELAYCAST_TARGET,
+              relayfileMounted: true,
+              providerId: 'agent37',
+            },
+          })
+        ),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox({
+      workspaceId: 'rw_abc',
+      name: SANDBOX_NAME,
+      sandboxId: SANDBOX_ID,
+      requiredCapability: 'spawn:codex',
+      forceProvision: true,
+      preparationMode: 'async-v1',
+      repos: ['AgentWorkforce/relay'],
+      repoRevisions: { 'AgentWorkforce/relay': '0123456789abcdef0123456789abcdef01234567' },
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({
+      sandboxId: SANDBOX_ID,
+      nodeName: SANDBOX_NAME,
+      providerId: 'agent37',
+      confirmedProvisioned: true,
+      outcomeUnknown: false,
+    });
+  });
+
+  it('rejects an invalid sandbox identity before contacting Cloud', async () => {
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        sandboxId: 'sandbox-1',
+        forceProvision: true,
+      })
+    ).rejects.toThrow('sandboxId must match lowercase sbx_<UUID>');
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        sandboxId: 'sbx_123E4567-e89b-42d3-a456-426614174000',
+        forceProvision: true,
+      })
+    ).rejects.toThrow('sandboxId must match lowercase sbx_<UUID>');
+
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
+    expect(mocks.authorizedApiFetch).not.toHaveBeenCalled();
+  });
+
+  it('accepts a legacy non-Agent37 provisioned response without a Relaycast target', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            nodeId: 'node-legacy',
+            nodeName: 'legacy-custom-node',
+            sandboxId: 'legacy-public-sandbox',
+            providerSandboxId: 'legacy-provider-sandbox',
+            relayWorkspaceId: 'rw_abc',
+            relayfileMounted: true,
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        name: 'legacy-custom-node',
+        workloadProfile: 'long-running-agent',
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        outcome: 'provisioned',
+        nodeName: 'legacy-custom-node',
+        relayWorkspaceId: 'rw_abc',
+      })
+    );
+
+    const ensureBody = JSON.parse(String(mocks.authorizedApiFetch.mock.calls[1]?.[2]?.body));
+    expect(ensureBody).toMatchObject({
+      name: 'legacy-custom-node',
+      workloadProfile: 'long-running-agent',
+    });
+    expect(ensureBody).not.toHaveProperty('sandboxId');
+  });
+
+  it.each(['provisioned', 'provisioning_timeout'] as const)(
+    'accepts an older Cloud %s response without providerSandboxId when the exact public identity matches',
+    async (outcome) => {
+      mocks.authorizedApiFetch
+        .mockResolvedValueOnce({
+          response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+          auth,
+        })
+        .mockResolvedValueOnce({
+          response: Response.json(
+            outcome === 'provisioned'
+              ? {
+                  outcome,
+                  nodeId: 'node-legacy',
+                  nodeName: SANDBOX_NAME,
+                  sandboxId: SANDBOX_ID,
+                  relayWorkspaceId: 'rw_abc',
+                  relaycastTarget: RELAYCAST_TARGET,
+                  relayfileMounted: true,
+                  providerId: 'agent37',
+                }
+              : {
+                  outcome,
+                  nodeName: SANDBOX_NAME,
+                  sandboxId: SANDBOX_ID,
+                  relayWorkspaceId: 'rw_abc',
+                  waitedMs: 90_000,
+                  providerId: 'agent37',
+                },
+            { status: outcome === 'provisioned' ? 201 : 202 }
+          ),
+          auth,
+        });
+
+      const result = await ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        sandboxId: SANDBOX_ID,
+        name: SANDBOX_NAME,
+        forceProvision: true,
+        workloadProfile: 'long-running-agent',
+      });
+
+      expect(result).toMatchObject({
+        outcome,
+        sandboxId: SANDBOX_ID,
+        nodeName: SANDBOX_NAME,
+        providerId: 'agent37',
+      });
+      expect(result).not.toHaveProperty('providerSandboxId');
+    }
+  );
+
+  it('classifies a capacity 503 as a definitive pre-allocation rejection', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            error: 'Sandbox capacity is exhausted before allocation; no sandbox was created',
+            code: 'sandbox_capacity_exhausted',
+            capacity: [{ provider: 'agent37', current: 14, limit: 10 }],
+            retryable: true,
+            no_sandbox_created: true,
+          },
+          { status: 503 }
+        ),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox({
+      workspaceId: 'rw_abc',
+      requiredCapability: 'spawn:codex',
+      sandboxId: SANDBOX_ID,
+      name: SANDBOX_NAME,
+      forceProvision: true,
+      providerId: 'agent37',
+      workloadProfile: 'long-running-agent',
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({
+      code: 'sandbox_capacity_exhausted',
+      providerId: 'agent37',
+      sandboxId: undefined,
+      confirmedProvisioned: false,
+      outcomeUnknown: false,
+      noSandboxCreated: true,
+      retryable: true,
+      capacity: [{ provider: 'agent37', current: 14, limit: 10 }],
+    });
+    expect(String(error)).toContain('agent37: 14 current / 10 limit');
+    expect(String(error)).toContain('No sandbox was created');
+  });
+
+  it.each([
+    ['current', 14.5, 10],
+    ['limit', 14, 10.5],
+  ])(
+    'keeps a capacity 503 with fractional %s on the conservative unknown path',
+    async (_field, current, limit) => {
+      mocks.authorizedApiFetch
+        .mockResolvedValueOnce({
+          response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+          auth,
+        })
+        .mockResolvedValueOnce({
+          response: Response.json(
+            {
+              error: 'Sandbox capacity is exhausted before allocation; no sandbox was created',
+              code: 'sandbox_capacity_exhausted',
+              capacity: [{ provider: 'agent37', current, limit }],
+              retryable: true,
+              no_sandbox_created: true,
+            },
+            { status: 503 }
+          ),
+          auth,
+        });
+
+      const error = await ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        sandboxId: SANDBOX_ID,
+        name: SANDBOX_NAME,
+        forceProvision: true,
+        providerId: 'agent37',
+        workloadProfile: 'long-running-agent',
+      }).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+      expect(error).toMatchObject({
+        code: undefined,
+        sandboxId: SANDBOX_ID,
+        confirmedProvisioned: false,
+        outcomeUnknown: true,
+        noSandboxCreated: false,
+        retryable: false,
+        capacity: [],
+      });
+    }
+  );
+
+  it.each(['provisioned', 'provisioning_timeout'] as const)(
+    'requires a valid Daytona providerSandboxId for %s responses',
+    async (outcome) => {
+      for (const providerSandboxId of [undefined, 'not-a-daytona-uuid']) {
+        mocks.authorizedApiFetch
+          .mockResolvedValueOnce({ response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }), auth })
+          .mockResolvedValueOnce({
+            response: Response.json(
+              outcome === 'provisioned'
+                ? {
+                    outcome,
+                    nodeId: 'node-daytona',
+                    nodeName: SANDBOX_NAME,
+                    sandboxId: SANDBOX_ID,
+                    providerSandboxId,
+                    relayWorkspaceId: 'rw_abc',
+                    relayfileMounted: true,
+                    providerId: 'daytona',
+                  }
+                : {
+                    outcome,
+                    nodeName: SANDBOX_NAME,
+                    sandboxId: SANDBOX_ID,
+                    providerSandboxId,
+                    relayWorkspaceId: 'rw_abc',
+                    waitedMs: 90_000,
+                    providerId: 'daytona',
+                  },
+              { status: outcome === 'provisioned' ? 201 : 202 }
+            ),
+            auth,
+          });
+
+        await expect(
+          ensureCloudFleetSandbox({
+            workspaceId: 'rw_abc',
+            requiredCapability: 'spawn:codex',
+            sandboxId: SANDBOX_ID,
+            name: SANDBOX_NAME,
+            forceProvision: true,
+            providerId: 'daytona',
+            workloadProfile: 'long-running-agent',
+          })
+        ).rejects.toThrow('valid Daytona providerSandboxId');
+      }
+    }
+  );
+
+  it.each([
+    ['provisioned', 201],
+    ['provisioning_timeout', 202],
+  ] as const)(
+    'marks a matched %s Daytona response with an invalid providerSandboxId safe for exact-ID cleanup',
+    async (outcome, status) => {
+      for (const providerSandboxId of [undefined, 'not-a-daytona-uuid']) {
+        mocks.authorizedApiFetch
+          .mockResolvedValueOnce({ response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }), auth })
+          .mockResolvedValueOnce({
+            response: Response.json(
+              outcome === 'provisioned'
+                ? {
+                    outcome,
+                    nodeId: 'node-daytona',
+                    nodeName: SANDBOX_NAME,
+                    sandboxId: SANDBOX_ID,
+                    providerSandboxId,
+                    relayWorkspaceId: 'rw_abc',
+                    relayfileMounted: true,
+                    providerId: 'daytona',
+                  }
+                : {
+                    outcome,
+                    nodeName: SANDBOX_NAME,
+                    sandboxId: SANDBOX_ID,
+                    providerSandboxId,
+                    relayWorkspaceId: 'rw_abc',
+                    waitedMs: 90_000,
+                    providerId: 'daytona',
+                  },
+              { status }
+            ),
+            auth,
+          });
+
+        const error = await ensureCloudFleetSandbox({
+          workspaceId: 'rw_abc',
+          requiredCapability: 'spawn:codex',
+          sandboxId: SANDBOX_ID,
+          name: SANDBOX_NAME,
+          forceProvision: true,
+          providerId: 'daytona',
+          workloadProfile: 'long-running-agent',
+        }).catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+        expect(error).toMatchObject({
+          cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+          sandboxId: SANDBOX_ID,
+          nodeName: SANDBOX_NAME,
+          providerId: 'daytona',
+          confirmedProvisioned: true,
+          outcomeUnknown: false,
+        });
+      }
+    }
+  );
+
+  it.each(['provisioned', 'provisioning_timeout'] as const)(
+    'returns the exact Daytona providerSandboxId for %s responses',
+    async (outcome) => {
+      mocks.authorizedApiFetch
+        .mockResolvedValueOnce({ response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }), auth })
+        .mockResolvedValueOnce({
+          response: Response.json(
+            outcome === 'provisioned'
+              ? {
+                  outcome,
+                  nodeId: 'node-daytona',
+                  nodeName: SANDBOX_NAME,
+                  sandboxId: SANDBOX_ID,
+                  providerSandboxId: DAYTONA_PROVIDER_SANDBOX_ID,
+                  relayWorkspaceId: 'rw_abc',
+                  relayfileMounted: true,
+                  providerId: 'daytona',
+                }
+              : {
+                  outcome,
+                  nodeName: SANDBOX_NAME,
+                  sandboxId: SANDBOX_ID,
+                  providerSandboxId: DAYTONA_PROVIDER_SANDBOX_ID,
+                  relayWorkspaceId: 'rw_abc',
+                  waitedMs: 90_000,
+                  providerId: 'daytona',
+                },
+            { status: outcome === 'provisioned' ? 201 : 202 }
+          ),
+          auth,
+        });
+
+      await expect(
+        ensureCloudFleetSandbox({
+          workspaceId: 'rw_abc',
+          requiredCapability: 'spawn:codex',
+          sandboxId: SANDBOX_ID,
+          name: SANDBOX_NAME,
+          forceProvision: true,
+          providerId: 'daytona',
+          workloadProfile: 'long-running-agent',
+        })
+      ).resolves.toMatchObject({ sandboxId: SANDBOX_ID, providerSandboxId: DAYTONA_PROVIDER_SANDBOX_ID });
+    }
+  );
+
+  it('requires a deterministic name whenever a sandbox identity is supplied', async () => {
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        sandboxId: SANDBOX_ID,
+        name: 'custom-name',
+        forceProvision: true,
+        workloadProfile: 'long-running-agent',
+      })
+    ).rejects.toThrow(SANDBOX_NAME);
+
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
+    expect(mocks.authorizedApiFetch).not.toHaveBeenCalled();
+  });
+
+  it.each(['provisioned', 'provisioning_timeout'] as const)(
+    'fails closed when Cloud echoes a different sandbox identity for %s',
+    async (outcome) => {
+      mocks.authorizedApiFetch
+        .mockResolvedValueOnce({
+          response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+          auth,
+        })
+        .mockResolvedValueOnce({
+          response: Response.json(
+            outcome === 'provisioned'
+              ? {
+                  outcome,
+                  nodeId: 'node-other',
+                  nodeName: SANDBOX_NAME,
+                  sandboxId: 'sbx_223e4567-e89b-42d3-a456-426614174000',
+                  relayWorkspaceId: 'rw_abc',
+                  relayfileMounted: true,
+                }
+              : {
+                  outcome,
+                  sandboxId: 'sbx_223e4567-e89b-42d3-a456-426614174000',
+                  relayWorkspaceId: 'rw_abc',
+                  nodeName: SANDBOX_NAME,
+                  waitedMs: 90_000,
+                },
+            { status: outcome === 'provisioned' ? 201 : 202 }
+          ),
+          auth,
+        });
+
+      const error = await ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        sandboxId: SANDBOX_ID,
+        name: SANDBOX_NAME,
+        forceProvision: true,
+        workloadProfile: 'long-running-agent',
+      }).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+      expect(error).toMatchObject({
+        cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+        nodeName: SANDBOX_NAME,
+        outcomeUnknown: true,
+        sandboxId: SANDBOX_ID,
+      });
+      expect(String(error)).toContain(`instead of requested sandboxId ${SANDBOX_ID}`);
+    }
+  );
+
+  it.each(['provisioned', 'provisioning_timeout'] as const)(
+    'fails closed when Cloud echoes a different deterministic node name for %s',
+    async (outcome) => {
+      mocks.authorizedApiFetch
+        .mockResolvedValueOnce({
+          response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+          auth,
+        })
+        .mockResolvedValueOnce({
+          response: Response.json(
+            outcome === 'provisioned'
+              ? {
+                  outcome,
+                  nodeId: 'node-other',
+                  nodeName: 'fleet-sandbox-other',
+                  sandboxId: SANDBOX_ID,
+                  relayWorkspaceId: 'rw_abc',
+                  relayfileMounted: true,
+                }
+              : {
+                  outcome,
+                  sandboxId: SANDBOX_ID,
+                  relayWorkspaceId: 'rw_abc',
+                  nodeName: 'fleet-sandbox-other',
+                  waitedMs: 90_000,
+                },
+            { status: outcome === 'provisioned' ? 201 : 202 }
+          ),
+          auth,
+        });
+
+      const error = await ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        sandboxId: SANDBOX_ID,
+        name: SANDBOX_NAME,
+        forceProvision: true,
+        workloadProfile: 'long-running-agent',
+      }).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+      expect(error).toMatchObject({
+        cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+        nodeName: SANDBOX_NAME,
+        outcomeUnknown: true,
+        sandboxId: SANDBOX_ID,
+      });
+      expect(String(error)).toContain(`instead of requested nodeName ${SANDBOX_NAME}`);
+    }
+  );
+
+  it.each([
+    ['malformed success', { outcome: 'provisioned' }],
+    ['unknown success outcome', { outcome: 'future_cloud_outcome', nodeName: SANDBOX_NAME }],
+  ])('rejects a mismatched sandbox identity before parsing a %s response', async (_case, responseFields) => {
+    const returnedSandboxId = 'sbx_223e4567-e89b-42d3-a456-426614174000';
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({ ...responseFields, sandboxId: returnedSandboxId }, { status: 201 }),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox({
+      workspaceId: 'rw_abc',
+      requiredCapability: 'spawn:codex',
+      sandboxId: SANDBOX_ID,
+      name: SANDBOX_NAME,
+      forceProvision: true,
+      workloadProfile: 'long-running-agent',
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({
+      cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+      nodeName: SANDBOX_NAME,
+      outcomeUnknown: true,
+      sandboxId: SANDBOX_ID,
+    });
+    expect(String(error)).toContain(`instead of requested sandboxId ${SANDBOX_ID}`);
+  });
+
+  it('does not trust a mismatched sandbox identity from a non-OK response for cleanup', async () => {
+    const returnedSandboxId = 'sbx_223e4567-e89b-42d3-a456-426614174000';
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            error: 'provider rejected request',
+            nodeName: 'untrusted-node-name',
+            sandboxId: returnedSandboxId,
+            providerSandboxId: 'untrusted-provider-sandbox',
+            providerId: 'agent37',
+          },
+          { status: 502 }
+        ),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox({
+      workspaceId: 'rw_abc',
+      requiredCapability: 'spawn:codex',
+      sandboxId: SANDBOX_ID,
+      name: SANDBOX_NAME,
+      forceProvision: true,
+      workloadProfile: 'long-running-agent',
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({
+      cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+      nodeName: SANDBOX_NAME,
+      outcomeUnknown: true,
+      sandboxId: undefined,
+      providerId: undefined,
+    });
+    expect(String(error)).toContain(`instead of requested sandboxId ${SANDBOX_ID}`);
+  });
+
+  it('does not expose a matching sandbox identity from a non-OK response for cleanup', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            error: 'provider request failed after allocation',
+            nodeName: SANDBOX_NAME,
+            sandboxId: SANDBOX_ID,
+            providerSandboxId: 'provider-sandbox-1',
+            providerId: 'agent37',
+          },
+          { status: 502 }
+        ),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox({
+      workspaceId: 'rw_abc',
+      requiredCapability: 'spawn:codex',
+      sandboxId: SANDBOX_ID,
+      name: SANDBOX_NAME,
+      forceProvision: true,
+      workloadProfile: 'long-running-agent',
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({
+      cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+      nodeName: SANDBOX_NAME,
+      outcomeUnknown: true,
+      sandboxId: SANDBOX_ID,
+      providerId: undefined,
+    });
+  });
+
+  it.each([500, 502, 503, 504])(
+    'marks an identifier-less server failure (%s) unknown without exposing a cleanup ID',
+    async (status) => {
+      mocks.authorizedApiFetch
+        .mockResolvedValueOnce({
+          response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+          auth,
+        })
+        .mockResolvedValueOnce({
+          response: Response.json({ error: 'provider timed out after allocation' }, { status }),
+          auth,
+        });
+
+      const error = await ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        sandboxId: SANDBOX_ID,
+        name: SANDBOX_NAME,
+        providerId: 'e2b',
+        forceProvision: true,
+        workloadProfile: 'long-running-agent',
+      }).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+      expect(error).toMatchObject({
+        cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+        nodeName: SANDBOX_NAME,
+        providerId: 'e2b',
+        outcomeUnknown: true,
+        sandboxId: SANDBOX_ID,
+      });
+      expect(String(error)).toContain('provider timed out after allocation');
+    }
+  );
+
+  it('keeps a proven client error ordinary when a stable sandbox ID was supplied', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({ error: 'invalid capability' }, { status: 422 }),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox({
+      workspaceId: 'rw_abc',
+      requiredCapability: 'spawn:codex',
+      sandboxId: SANDBOX_ID,
+      name: SANDBOX_NAME,
+      forceProvision: true,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).not.toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({ message: expect.stringContaining('invalid capability') });
+  });
+
+  it('does not expose a matching sandbox identity from a malformed success for cleanup', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            nodeName: SANDBOX_NAME,
+            sandboxId: SANDBOX_ID,
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox({
+      workspaceId: 'rw_abc',
+      requiredCapability: 'spawn:codex',
+      sandboxId: SANDBOX_ID,
+      name: SANDBOX_NAME,
+      forceProvision: true,
+      workloadProfile: 'long-running-agent',
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({
+      cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+      nodeName: SANDBOX_NAME,
+      outcomeUnknown: true,
+      sandboxId: SANDBOX_ID,
+      providerId: undefined,
     });
   });
 
@@ -115,8 +2839,14 @@ describe('Cloud fleet sandbox client', () => {
             nodeId: 'node-1',
             nodeName: 'jit-repos-node',
             sandboxId: 'sandbox-9',
+            providerSandboxId: 'provider-sandbox-9',
             relayWorkspaceId: 'rw_abc',
+            relaycastTarget: RELAYCAST_TARGET,
             relayfileMounted: true,
+            repoRevisions: {
+              'AgentWorkforce/factory': '0123456789abcdef0123456789abcdef01234567',
+              'AgentWorkforce/relay': '89abcdef0123456789abcdef0123456789abcdef',
+            },
           },
           { status: 201 }
         ),
@@ -128,6 +2858,10 @@ describe('Cloud fleet sandbox client', () => {
       requiredCapability: 'spawn:codex',
       forceProvision: true,
       repos: ['AgentWorkforce/factory', 'AgentWorkforce/relay'],
+      repoRevisions: {
+        'AgentWorkforce/factory': '0123456789abcdef0123456789abcdef01234567',
+        'AgentWorkforce/relay': '89abcdef0123456789abcdef0123456789abcdef',
+      },
     });
 
     const ensureCall = mocks.authorizedApiFetch.mock.calls[1];
@@ -136,7 +2870,50 @@ describe('Cloud fleet sandbox client', () => {
       requiredCapability: 'spawn:codex',
       forceProvision: true,
       repos: ['AgentWorkforce/factory', 'AgentWorkforce/relay'],
+      repoRevisions: {
+        'AgentWorkforce/factory': '0123456789abcdef0123456789abcdef01234567',
+        'AgentWorkforce/relay': '89abcdef0123456789abcdef0123456789abcdef',
+      },
     });
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['mismatched', { 'AgentWorkforce/cloud': 'fedcba9876543210fedcba9876543210fedcba98' }],
+  ] as const)('rejects a %s echoed repository revision', async (_label, echoed) => {
+    const revision = '0123456789abcdef0123456789abcdef01234567';
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            nodeId: 'node-1',
+            nodeName: SANDBOX_NAME,
+            sandboxId: SANDBOX_ID,
+            providerSandboxId: 'provider-sandbox-1',
+            relayWorkspaceId: 'rw_abc',
+            relaycastTarget: RELAYCAST_TARGET,
+            relayfileMounted: true,
+            ...(echoed === undefined ? {} : { repoRevisions: echoed }),
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        repos: ['AgentWorkforce/cloud'],
+        repoRevisions: { 'AgentWorkforce/cloud': revision },
+        forceProvision: true,
+      })
+    ).rejects.toThrow(/did not echo the requested repository revisions/);
   });
 
   it('forwards bounded Relayfile mount paths into the ensure request body', async () => {
@@ -152,7 +2929,9 @@ describe('Cloud fleet sandbox client', () => {
             nodeId: 'node-1',
             nodeName: 'scoped-reviewer',
             sandboxId: 'sandbox-scoped',
+            providerSandboxId: 'provider-sandbox-scoped',
             relayWorkspaceId: 'rw_abc',
+            relaycastTarget: RELAYCAST_TARGET,
             relayfileMounted: true,
           },
           { status: 201 }
@@ -174,6 +2953,63 @@ describe('Cloud fleet sandbox client', () => {
       forceProvision: true,
       relayfilePaths: ['/live-review/run-123/**'],
     });
+  });
+
+  it('rejects incomplete revision maps before Cloud authentication', async () => {
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        repos: ['AgentWorkforce/cloud', 'AgentWorkforce/relay'],
+        repoRevisions: { 'AgentWorkforce/cloud': '0123456789abcdef0123456789abcdef01234567' },
+      })
+    ).rejects.toThrow('cover every requested repository');
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects duplicate repositories before Cloud authentication', async () => {
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        repos: ['AgentWorkforce/relay', 'AgentWorkforce/relay'],
+      })
+    ).rejects.toThrow('must not contain duplicates');
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects case-insensitive duplicate repositories before Cloud authentication', async () => {
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        repos: ['AgentWorkforce/relay', 'agentworkforce/RELAY'],
+      })
+    ).rejects.toThrow('must not contain duplicates');
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects checkout basename collisions before Cloud authentication', async () => {
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        repos: ['owner-a/tools', 'owner-b/tools'],
+      })
+    ).rejects.toThrow('unique checkout names');
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects more than sixteen repositories before Cloud authentication', async () => {
+    const repos = Array.from({ length: 17 }, (_, index) => `AgentWorkforce/repo-${index}`);
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        repos,
+      })
+    ).rejects.toThrow('at most 16 repositories');
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
   });
 
   it('rejects an explicitly empty Relayfile path list before provisioning', async () => {
@@ -203,7 +3039,9 @@ describe('Cloud fleet sandbox client', () => {
             nodeId: 'node-e2b',
             nodeName: 'e2b-reviewer',
             sandboxId: 'sandbox-e2b',
+            providerSandboxId: 'provider-sandbox-e2b',
             relayWorkspaceId: 'rw_abc',
+            relaycastTarget: CANONICAL_RELAYCAST_TARGET,
             relayfileMounted: true,
           },
           { status: 201 }
@@ -242,6 +3080,7 @@ describe('Cloud fleet sandbox client', () => {
           status: 'online',
           activeAgents: 0,
           maxAgents: 1,
+          relaycastTarget: CANONICAL_RELAYCAST_TARGET,
         }),
         auth,
       });
@@ -260,6 +3099,251 @@ describe('Cloud fleet sandbox client', () => {
     );
   });
 
+  it.each(PROVIDER_OUTCOME_MATRIX)(
+    'accepts the canonical Relaycast target for the $providerId $outcome result',
+    async ({ providerId, outcome }) => {
+      mocks.authorizedApiFetch
+        .mockResolvedValueOnce({
+          response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+          auth,
+        })
+        .mockResolvedValueOnce({
+          response: Response.json(
+            outcome === 'provisioned'
+              ? {
+                  outcome,
+                  providerId,
+                  nodeId: `node-${providerId}`,
+                  nodeName: `${providerId}-reviewer`,
+                  sandboxId: `sandbox-${providerId}`,
+                  providerSandboxId:
+                    providerId === 'daytona' ? DAYTONA_PROVIDER_SANDBOX_ID : `provider-sandbox-${providerId}`,
+                  relayWorkspaceId: 'rw_abc',
+                  relaycastTarget: CANONICAL_RELAYCAST_TARGET,
+                  relayfileMounted: true,
+                }
+              : {
+                  outcome,
+                  providerId,
+                  nodeId: `node-${providerId}`,
+                  nodeName: `${providerId}-reviewer`,
+                  status: 'online',
+                  activeAgents: 0,
+                  maxAgents: 1,
+                  relaycastTarget: CANONICAL_RELAYCAST_TARGET,
+                },
+            { status: outcome === 'provisioned' ? 201 : 200 }
+          ),
+          auth,
+        });
+
+      await expect(
+        ensureCloudFleetSandbox({
+          workspaceId: 'rw_abc',
+          requiredCapability: 'spawn:codex',
+          providerId,
+        })
+      ).resolves.toEqual(
+        expect.objectContaining({
+          outcome,
+          providerId,
+          relaycastTarget: CANONICAL_RELAYCAST_TARGET,
+        })
+      );
+    }
+  );
+
+  it.each(PROVIDER_OUTCOME_MATRIX)(
+    'accepts a legacy $providerId $outcome result without a Relaycast target',
+    async ({ providerId, outcome }) => {
+      mocks.authorizedApiFetch
+        .mockResolvedValueOnce({
+          response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+          auth,
+        })
+        .mockResolvedValueOnce({
+          response: Response.json(
+            outcome === 'provisioned'
+              ? {
+                  outcome,
+                  providerId,
+                  nodeId: `node-${providerId}`,
+                  nodeName: `${providerId}-reviewer`,
+                  sandboxId: `sandbox-${providerId}`,
+                  providerSandboxId:
+                    providerId === 'daytona' ? DAYTONA_PROVIDER_SANDBOX_ID : `provider-sandbox-${providerId}`,
+                  relayWorkspaceId: 'rw_abc',
+                  relayfileMounted: true,
+                }
+              : {
+                  outcome,
+                  providerId,
+                  nodeId: `node-${providerId}`,
+                  nodeName: `${providerId}-reviewer`,
+                  status: 'online',
+                  activeAgents: 0,
+                  maxAgents: 1,
+                },
+            { status: outcome === 'provisioned' ? 201 : 200 }
+          ),
+          auth,
+        });
+
+      await expect(
+        ensureCloudFleetSandbox({
+          workspaceId: 'rw_abc',
+          requiredCapability: 'spawn:codex',
+          providerId,
+        })
+      ).resolves.toEqual(
+        expect.not.objectContaining({
+          relaycastTarget: expect.anything(),
+        })
+      );
+    }
+  );
+
+  it.each(PROVIDER_OUTCOME_MATRIX)(
+    'rejects an Agent37 Relaycast target for the $providerId $outcome result',
+    async ({ providerId, outcome }) => {
+      mocks.authorizedApiFetch
+        .mockResolvedValueOnce({
+          response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+          auth,
+        })
+        .mockResolvedValueOnce({
+          response: Response.json(
+            outcome === 'provisioned'
+              ? {
+                  outcome,
+                  providerId,
+                  nodeId: `node-${providerId}`,
+                  nodeName: `${providerId}-reviewer`,
+                  sandboxId: `sandbox-${providerId}`,
+                  providerSandboxId:
+                    providerId === 'daytona' ? DAYTONA_PROVIDER_SANDBOX_ID : `provider-sandbox-${providerId}`,
+                  relayWorkspaceId: 'rw_abc',
+                  relaycastTarget: RELAYCAST_TARGET,
+                  relayfileMounted: true,
+                }
+              : {
+                  outcome,
+                  providerId,
+                  nodeId: `node-${providerId}`,
+                  nodeName: `${providerId}-reviewer`,
+                  status: 'online',
+                  activeAgents: 0,
+                  maxAgents: 1,
+                  relaycastTarget: RELAYCAST_TARGET,
+                },
+            { status: outcome === 'provisioned' ? 201 : 200 }
+          ),
+          auth,
+        });
+
+      await expect(
+        ensureCloudFleetSandbox({
+          workspaceId: 'rw_abc',
+          requiredCapability: 'spawn:codex',
+          providerId,
+        })
+      ).rejects.toThrow(/non-canonical Relaycast target/);
+    }
+  );
+
+  it('requires and validates the isolated target for a reused Agent37 sandbox', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          outcome: 'reused',
+          providerId: 'agent37',
+          nodeId: 'node-agent37',
+          nodeName: 'agent37-reviewer',
+          status: 'online',
+          activeAgents: 0,
+          maxAgents: 1,
+          relaycastTarget: RELAYCAST_TARGET,
+        }),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        providerId: 'agent37',
+        mountRelayfile: false,
+      })
+    ).resolves.toEqual(expect.objectContaining({ outcome: 'reused', relaycastTarget: RELAYCAST_TARGET }));
+  });
+
+  it('rejects a reused Agent37 response that omits its isolated target', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          outcome: 'reused',
+          providerId: 'agent37',
+          nodeId: 'node-agent37',
+          nodeName: 'agent37-reviewer',
+          status: 'online',
+          activeAgents: 0,
+          maxAgents: 1,
+        }),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        providerId: 'agent37',
+      })
+    ).rejects.toThrow(/missing the Agent37 Relaycast target/);
+  });
+
+  it('rejects a provisioned Agent37 response that omits its isolated target', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            providerId: 'agent37',
+            nodeId: 'node-agent37',
+            nodeName: SANDBOX_NAME,
+            sandboxId: SANDBOX_ID,
+            relayWorkspaceId: 'rw_abc',
+            relayfileMounted: true,
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        providerId: 'agent37',
+        sandboxId: SANDBOX_ID,
+        name: SANDBOX_NAME,
+        forceProvision: true,
+        workloadProfile: 'long-running-agent',
+      })
+    ).rejects.toThrow(/missing the Agent37 Relaycast target/);
+  });
+
   it('keeps router-selected responses forward compatible when no exact provider was requested', async () => {
     mocks.authorizedApiFetch
       .mockResolvedValueOnce({
@@ -274,7 +3358,9 @@ describe('Cloud fleet sandbox client', () => {
             nodeId: 'node-future',
             nodeName: 'future-reviewer',
             sandboxId: 'sandbox-future',
+            providerSandboxId: 'provider-sandbox-future',
             relayWorkspaceId: 'rw_abc',
+            relaycastTarget: RELAYCAST_TARGET,
             relayfileMounted: true,
           },
           { status: 201 }
@@ -295,7 +3381,7 @@ describe('Cloud fleet sandbox client', () => {
     );
   });
 
-  it('rejects and preserves cleanup identity when Cloud cannot prove the requested provider', async () => {
+  it('rejects without exposing cleanup identity when Cloud cannot prove the requested provider', async () => {
     mocks.authorizedApiFetch
       .mockResolvedValueOnce({
         response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
@@ -309,7 +3395,9 @@ describe('Cloud fleet sandbox client', () => {
             nodeId: 'node-1',
             nodeName: 'wrong-provider',
             sandboxId: 'sandbox-1',
+            providerSandboxId: 'provider-sandbox-1',
             relayWorkspaceId: 'rw_abc',
+            relaycastTarget: RELAYCAST_TARGET,
             relayfileMounted: true,
           },
           { status: 201 }
@@ -325,9 +3413,9 @@ describe('Cloud fleet sandbox client', () => {
 
     expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
     expect(error).toMatchObject({
-      sandboxId: 'sandbox-1',
-      nodeName: 'wrong-provider',
-      providerId: 'daytona',
+      sandboxId: undefined,
+      nodeName: undefined,
+      providerId: 'e2b',
       outcomeUnknown: true,
     });
     expect(String(error)).toContain('instead of requested provider e2b');
@@ -337,7 +3425,7 @@ describe('Cloud fleet sandbox client', () => {
     ['missing', undefined],
     ['invalid', 'modal'],
   ])(
-    'preserves the requested provider for cleanup when a %s provider proof arrives on a 201 response',
+    'rejects without cleanup identity when a %s provider proof arrives on a 201 response',
     async (_case, providerId) => {
       mocks.authorizedApiFetch
         .mockResolvedValueOnce({
@@ -351,6 +3439,7 @@ describe('Cloud fleet sandbox client', () => {
               nodeId: 'node-e2b',
               nodeName: 'e2b-reviewer',
               sandboxId: 'sandbox-e2b',
+              providerSandboxId: 'provider-sandbox-e2b',
               relayWorkspaceId: 'rw_abc',
               relayfileMounted: true,
               ...(providerId === undefined ? {} : { providerId }),
@@ -369,8 +3458,8 @@ describe('Cloud fleet sandbox client', () => {
       expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
       expect(error).toMatchObject({
         cloudWorkspaceId: CLOUD_WORKSPACE_ID,
-        sandboxId: 'sandbox-e2b',
-        nodeName: 'e2b-reviewer',
+        sandboxId: undefined,
+        nodeName: undefined,
         providerId: 'e2b',
         outcomeUnknown: true,
       });
@@ -381,7 +3470,7 @@ describe('Cloud fleet sandbox client', () => {
     ['missing', undefined],
     ['invalid', 'modal'],
   ])(
-    'preserves the requested provider for cleanup when a %s provider proof arrives on a 202 timeout response',
+    'rejects without cleanup identity when a %s provider proof arrives on a 202 timeout response',
     async (_case, providerId) => {
       mocks.authorizedApiFetch
         .mockResolvedValueOnce({
@@ -393,6 +3482,7 @@ describe('Cloud fleet sandbox client', () => {
             {
               outcome: 'provisioning_timeout',
               sandboxId: 'sandbox-e2b',
+              providerSandboxId: 'provider-sandbox-e2b',
               relayWorkspaceId: 'rw_abc',
               nodeName: 'e2b-reviewer',
               waitedMs: 90_000,
@@ -412,8 +3502,8 @@ describe('Cloud fleet sandbox client', () => {
       expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
       expect(error).toMatchObject({
         cloudWorkspaceId: CLOUD_WORKSPACE_ID,
-        sandboxId: 'sandbox-e2b',
-        nodeName: 'e2b-reviewer',
+        sandboxId: undefined,
+        nodeName: undefined,
         providerId: 'e2b',
         outcomeUnknown: true,
       });
@@ -424,7 +3514,7 @@ describe('Cloud fleet sandbox client', () => {
     ['missing', undefined],
     ['invalid', 'modal'],
   ])(
-    'preserves the requested provider for cleanup when a %s provider proof arrives on a non-OK response',
+    'rejects without cleanup identity when a %s provider proof arrives on a non-OK response',
     async (_case, providerId) => {
       mocks.authorizedApiFetch
         .mockResolvedValueOnce({
@@ -437,6 +3527,7 @@ describe('Cloud fleet sandbox client', () => {
               error: 'provider rejected request',
               nodeName: 'e2b-reviewer',
               sandboxId: 'sandbox-e2b',
+              providerSandboxId: 'provider-sandbox-e2b',
               ...(providerId === undefined ? {} : { providerId }),
             },
             { status: 502 }
@@ -453,9 +3544,10 @@ describe('Cloud fleet sandbox client', () => {
       expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
       expect(error).toMatchObject({
         cloudWorkspaceId: CLOUD_WORKSPACE_ID,
-        sandboxId: 'sandbox-e2b',
-        nodeName: 'e2b-reviewer',
+        sandboxId: undefined,
+        nodeName: undefined,
         providerId: 'e2b',
+        outcomeUnknown: true,
       });
     }
   );
@@ -473,7 +3565,9 @@ describe('Cloud fleet sandbox client', () => {
             nodeId: 'node-1',
             nodeName: 'bare-node',
             sandboxId: 'sandbox-10',
+            providerSandboxId: 'provider-sandbox-10',
             relayWorkspaceId: 'rw_abc',
+            relaycastTarget: RELAYCAST_TARGET,
             relayfileMounted: true,
           },
           { status: 201 }
@@ -504,7 +3598,9 @@ describe('Cloud fleet sandbox client', () => {
             nodeId: 'node-1',
             nodeName: 'bare-node',
             sandboxId: 'sandbox-11',
+            providerSandboxId: 'provider-sandbox-11',
             relayWorkspaceId: 'rw_abc',
+            relaycastTarget: RELAYCAST_TARGET,
             relayfileMounted: true,
           },
           { status: 201 }
@@ -534,10 +3630,10 @@ describe('Cloud fleet sandbox client', () => {
           {
             outcome: 'provisioning_timeout',
             sandboxId: 'sandbox-1',
+            providerSandboxId: 'provider-sandbox-1',
             relayWorkspaceId: 'rw_abc',
             nodeName: 'daytona-codex',
             waitedMs: 90_000,
-            providerId: 'agent37',
           },
           { status: 202 }
         ),
@@ -552,6 +3648,7 @@ describe('Cloud fleet sandbox client', () => {
     ).resolves.toMatchObject({
       outcome: 'provisioning_timeout',
       sandboxId: 'sandbox-1',
+      providerSandboxId: 'provider-sandbox-1',
       nodeName: 'daytona-codex',
       waitedMs: 90_000,
     });
@@ -578,7 +3675,9 @@ describe('Cloud fleet sandbox client', () => {
               nodeId: 'node-1',
               nodeName: 'daytona-codex',
               sandboxId: 'sandbox-1',
+              providerSandboxId: DAYTONA_PROVIDER_SANDBOX_ID,
               relayWorkspaceId: 'rw_abc',
+              relaycastTarget: CANONICAL_RELAYCAST_TARGET,
               relayfileMounted: true,
               providerId: 'daytona',
             },
@@ -603,6 +3702,108 @@ describe('Cloud fleet sandbox client', () => {
     expect(signals[1]?.aborted).toBe(false);
   });
 
+  it.each([
+    ['zero poll interval', { pollIntervalMs: 0 }],
+    ['infinite poll interval', { pollIntervalMs: Number.POSITIVE_INFINITY }],
+    ['negative request timeout', { timeoutMs: -1 }],
+  ])('rejects invalid timer values before making a request (%s)', async (_label, options) => {
+    await expect(
+      materializeCloudRelayfileRepository(
+        {
+          workspaceId: 'rw_abc',
+          repository: 'AgentWorkforce/cloud',
+          revision: '0123456789abcdef0123456789abcdef01234567',
+        },
+        options
+      )
+    ).rejects.toThrow(/milliseconds/);
+    expect(mocks.authorizedApiFetch).not.toHaveBeenCalled();
+  });
+
+  it('floors a positive fractional materialization poll interval', async () => {
+    const revision = '0123456789abcdef0123456789abcdef01234567';
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({ response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }), auth })
+      .mockResolvedValueOnce({
+        response: Response.json({ ok: true, jobId: 'clone-job-fraction', status: 'queued' }, { status: 202 }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          ok: true,
+          job: {
+            owner: 'AgentWorkforce',
+            repo: 'cloud',
+            ref: revision,
+            status: 'running',
+          },
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          ok: true,
+          job: {
+            owner: 'AgentWorkforce',
+            repo: 'cloud',
+            ref: revision,
+            status: 'completed',
+            headSha: revision,
+            filesWritten: 0,
+            sourceProfile: 'complete-v1',
+            materialization: {
+              mode: 'relayfile_export',
+              sourceProfile: 'complete-v1',
+              headSha: revision,
+              filesExpected: 0,
+              contentRoot: '/github/repos/AgentWorkforce/cloud/contents',
+              sentinelPath: '/github/repos/AgentWorkforce/cloud/.relayfile/clone.json',
+            },
+          },
+        }),
+        auth,
+      });
+    const delaySpy = vi.spyOn(globalThis, 'setTimeout');
+
+    await materializeCloudRelayfileRepository(
+      { workspaceId: 'rw_abc', repository: 'AgentWorkforce/cloud', revision },
+      { pollIntervalMs: 0.5 }
+    );
+
+    expect(delaySpy).toHaveBeenCalledWith(expect.any(Function), 1);
+  });
+
+  it('clamps oversized request timeouts to the maximum timer duration', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({ response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }), auth })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            nodeId: 'node-1',
+            nodeName: 'daytona-codex',
+            sandboxId: 'sandbox-1',
+            providerSandboxId: DAYTONA_PROVIDER_SANDBOX_ID,
+            relayWorkspaceId: 'rw_abc',
+            relaycastTarget: CANONICAL_RELAYCAST_TARGET,
+            relayfileMounted: true,
+            providerId: 'daytona',
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    await ensureCloudFleetSandbox(
+      { workspaceId: 'rw_abc', requiredCapability: 'spawn:codex' },
+      { timeoutMs: 2_147_483_648 }
+    );
+
+    expect(timeoutSpy).toHaveBeenNthCalledWith(1, 2_147_483_647);
+    expect(timeoutSpy).toHaveBeenNthCalledWith(2, 2_147_483_647);
+  });
+
   it('keeps the default provisioning budget beyond the mounted server deadline', async () => {
     const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
     mocks.authorizedApiFetch
@@ -617,7 +3818,9 @@ describe('Cloud fleet sandbox client', () => {
             nodeId: 'node-1',
             nodeName: 'daytona-codex',
             sandboxId: 'sandbox-1',
+            providerSandboxId: DAYTONA_PROVIDER_SANDBOX_ID,
             relayWorkspaceId: 'rw_abc',
+            relaycastTarget: CANONICAL_RELAYCAST_TARGET,
             relayfileMounted: true,
             providerId: 'daytona',
           },
@@ -664,7 +3867,7 @@ describe('Cloud fleet sandbox client', () => {
     expect(mocks.authorizedApiFetch).toHaveBeenCalledTimes(1);
   });
 
-  it('preserves the sandbox identity from a malformed successful response', async () => {
+  it('does not expose an unrequested sandbox identity from a malformed successful response', async () => {
     mocks.authorizedApiFetch
       .mockResolvedValueOnce({
         response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
@@ -676,6 +3879,7 @@ describe('Cloud fleet sandbox client', () => {
             outcome: 'provisioned',
             nodeName: 'daytona-codex',
             sandboxId: 'sandbox-1',
+            providerSandboxId: 'provider-sandbox-1',
             relayWorkspaceId: 'rw_abc',
             relayfileMounted: true,
           },
@@ -692,10 +3896,36 @@ describe('Cloud fleet sandbox client', () => {
     expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
     expect(error).toMatchObject({
       cloudWorkspaceId: CLOUD_WORKSPACE_ID,
-      sandboxId: 'sandbox-1',
-      nodeName: 'daytona-codex',
+      sandboxId: undefined,
+      nodeName: undefined,
       outcomeUnknown: true,
     });
+  });
+
+  it('does not copy a caller sandbox identity into an unknown-response error', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockRejectedValueOnce(new Error('request timed out'));
+
+    const error = await ensureCloudFleetSandbox({
+      workspaceId: 'rw_abc',
+      requiredCapability: 'spawn:codex',
+      sandboxId: SANDBOX_ID,
+      name: SANDBOX_NAME,
+      forceProvision: true,
+      workloadProfile: 'long-running-agent',
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({
+      cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+      nodeName: SANDBOX_NAME,
+      outcomeUnknown: true,
+    });
+    expect(error).toMatchObject({ sandboxId: SANDBOX_ID });
   });
 
   it('rejects a timeout response that omits waitedMs', async () => {
@@ -709,6 +3939,7 @@ describe('Cloud fleet sandbox client', () => {
           {
             outcome: 'provisioning_timeout',
             sandboxId: 'sandbox-1',
+            providerSandboxId: 'provider-sandbox-1',
             relayWorkspaceId: 'rw_abc',
             nodeName: 'daytona-codex',
           },
