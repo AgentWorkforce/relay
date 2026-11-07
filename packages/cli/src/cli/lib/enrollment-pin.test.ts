@@ -35,7 +35,7 @@ describe('linkEnrolledNodeToProjectPin', () => {
     expect(result).toMatchObject({
       status: 'linked',
       nodeId: 'node_abc',
-      workspaceVerified: false,
+      workspaceVerified: true,
     });
     expect(readProjectWorkspaceSession(dataDir)).toEqual({
       workspaceKey: 'rk_live_pinned',
