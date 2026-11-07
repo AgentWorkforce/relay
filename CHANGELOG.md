@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Copilot stop hooks release their idle wait when the person cancels or starts another turn, without claiming a queued Relay message.
 - `agents.integrations.subscribe` and session socket subscriptions exclude leftover provider events after the last subscription is removed.
 - `agent-relay file` accepts private JSON integration metadata files on Unix.
 - `agent-relay flows` reports GitLab setup requirements and resumes human-approved repository runs with their original access.

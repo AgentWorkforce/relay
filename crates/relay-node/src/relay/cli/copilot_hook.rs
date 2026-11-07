@@ -1,4 +1,5 @@
 use super::{session_hook_socket, socket_response};
+use crate::relay::copilot::{stop_wait, CopilotConfig};
 use anyhow::Result;
 use serde::{
     de::{DeserializeOwned, IgnoredAny},
@@ -12,10 +13,19 @@ use std::time::Duration;
 /// waits without model calls, and returns when the person cancels the hook,
 /// setup is removed, the runtime exits, or the configured timeout approaches.
 pub fn copilot_hook(development: bool, event: &str) -> Result<()> {
-    let Some(value) = input(std::io::stdin().lock(), event) else {
+    let Some(mut value) = input(std::io::stdin().lock(), event) else {
         std::io::stdout().write_all(b"{}\n")?;
         return Ok(());
     };
+    if value["relayEvent"] == "stop" && value["stopReason"] == "end_turn" {
+        let stamp = super::paths::home().ok().and_then(|home| {
+            let config = CopilotConfig::from_env(&|key| std::env::var(key).ok(), &home);
+            stop_wait::snapshot(&config, value["sessionId"].as_str()?)
+        });
+        if let Some(stamp) = stamp {
+            value["relayJournal"] = stamp;
+        }
+    }
     let input = serde_json::to_vec(&value)?;
     let Some(socket) = session_hook_socket(None, development) else {
         return Ok(());
@@ -70,6 +80,7 @@ struct Hook<A> {
     stop_reason: Option<String>,
     tool_name: Option<String>,
     tool_args: Option<A>,
+    timestamp: Option<u64>,
 }
 impl<A> Hook<A> {
     fn fields(&self) -> serde_json::Map<String, Value> {
@@ -86,6 +97,9 @@ impl<A> Hook<A> {
                     json!(text.chars().take(limit).collect::<String>()),
                 );
             }
+        }
+        if let Some(timestamp) = self.timestamp {
+            fields.insert("timestamp".into(), json!(timestamp));
         }
         fields
     }
@@ -137,7 +151,10 @@ fn answer(bytes: &[u8]) -> Option<Value> {
     (value["ok"] == true && value["data"].is_object()).then(|| value["data"].clone())
 }
 fn waits(value: &Value) -> bool {
-    value["relayEvent"] == "stop" && value["stopReason"] == "end_turn"
+    value["relayEvent"] == "stop"
+        && value["stopReason"] == "end_turn"
+        && value["timestamp"].as_u64().is_some()
+        && value["relayJournal"].is_object()
 }
 
 #[cfg(test)]
@@ -185,12 +202,14 @@ mod tests {
     }
     #[test]
     fn hook_forwards_identity_without_large_tool_results_or_client_binding() {
-        let payload = json!({"sessionId":"native-id","cwd":"/fixture","initialPrompt":"x".repeat(1000),"toolResult":"x".repeat(5 * 1024 * 1024),"toolArgs":{"patch":"x".repeat(5 * 1024 * 1024)},"relayBinding":"forged"});
+        let payload = json!({"sessionId":"native-id","cwd":"/fixture","timestamp":1794029389427_u64,"relayJournal":{"identity":"forged"},"initialPrompt":"x".repeat(1000),"toolResult":"x".repeat(5 * 1024 * 1024),"toolArgs":{"patch":"x".repeat(5 * 1024 * 1024)},"relayBinding":"forged"});
         let value = input(serde_json::to_vec(&payload).unwrap().as_slice(), "tool").unwrap();
         assert_eq!(value["sessionId"], "native-id");
         assert_eq!(value["initialPrompt"].as_str().unwrap().len(), 96);
         assert!(value.get("toolResult").is_none());
         assert!(value.get("relayBinding").is_none());
+        assert!(value.get("relayJournal").is_none());
+        assert_eq!(value["timestamp"], 1794029389427_u64);
         assert!(serde_json::to_vec(&value).unwrap().len() < 1024);
     }
     #[test]
@@ -213,6 +232,11 @@ mod tests {
         assert!(!waits(
             &json!({"relayEvent":"tool","stopReason":"end_turn"})
         ));
-        assert!(waits(&json!({"relayEvent":"stop","stopReason":"end_turn"})));
+        assert!(!waits(
+            &json!({"relayEvent":"stop","stopReason":"end_turn"})
+        ));
+        assert!(waits(
+            &json!({"relayEvent":"stop","stopReason":"end_turn", "timestamp":123, "relayJournal":{}})
+        ));
     }
 }
