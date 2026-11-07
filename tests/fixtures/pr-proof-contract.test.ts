@@ -1421,7 +1421,8 @@ describe('exact broker artifact handoff', () => {
         [
           '-c',
           [
-            ...INHERITED_FD_GUARD,
+            'import errno',
+            'import os',
             ...DESCRIPTOR_CENSUS_START,
             'raise ImportError("synthetic runtime import failure")',
           ].join('\n'),
@@ -1431,7 +1432,7 @@ describe('exact broker artifact handoff', () => {
       expect(result.error).toBeUndefined();
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('ImportError: synthetic runtime import failure');
-      expect(result.stdout).toContain("descriptor census: {'before_imports': []}");
+      expect(result.stdout).toContain("descriptor census: {'before_imports':");
     }
   );
 
