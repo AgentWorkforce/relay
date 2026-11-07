@@ -1844,11 +1844,14 @@ describe('fleet command support', () => {
     // strictly before materialization.
     expect(resolveSandboxRepository.mock.calls[0]?.[3]).toBe('identity');
     expect(resolveSandboxRepository).toHaveBeenNthCalledWith(2, expect.any(String), undefined);
-    expect(materializeCloudRelayfileRepository).toHaveBeenCalledWith({
-      workspaceId: 'rw_abc',
-      repository: 'AgentWorkforce/cloud',
-      revision,
-    });
+    expect(materializeCloudRelayfileRepository).toHaveBeenCalledWith(
+      {
+        workspaceId: 'rw_abc',
+        repository: 'AgentWorkforce/cloud',
+        revision,
+      },
+      { onProgress: expect.any(Function) }
+    );
     expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
       expect.objectContaining({
         mountRelayfile: true,

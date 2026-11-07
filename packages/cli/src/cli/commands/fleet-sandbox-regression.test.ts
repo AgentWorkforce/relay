@@ -372,11 +372,14 @@ describe('fleet sandbox command regressions', () => {
     );
 
     expect(events).toEqual(['materialize', 'ensure', 'spawn']);
-    expect(materialize).toHaveBeenCalledWith({
-      workspaceId: TARGET.workspaceId,
-      repository: selection.repository,
-      revision: REVISION,
-    });
+    expect(materialize).toHaveBeenCalledWith(
+      {
+        workspaceId: TARGET.workspaceId,
+        repository: selection.repository,
+        revision: REVISION,
+      },
+      { onProgress: expect.any(Function) }
+    );
     expect(ensure).toHaveBeenCalledWith(
       expect.objectContaining({
         sandboxId: REPLAY_SANDBOX_ID,
