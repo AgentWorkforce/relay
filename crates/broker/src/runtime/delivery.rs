@@ -7,7 +7,9 @@ pub(crate) struct PendingDelivery {
     pub(super) attempts: u32,
     /// Consecutive broker-to-worker handoff failures. Successful writes reset
     /// this count because waiting for the PTY to acknowledge an already queued
-    /// delivery is not a failed delivery attempt.
+    /// delivery is not a failed delivery attempt. The exception is a worker
+    /// that reported `blocked_on_send`: it drops the re-send as a duplicate,
+    /// so the handoff counts against the budget and the delivery dead-letters.
     pub(super) failed_attempts: u32,
     pub(super) next_retry_at: Instant,
     pub(super) queued_at_ms: u64,
@@ -973,6 +975,11 @@ pub(crate) async fn insert_and_attempt_delivery(
     Ok(delivery_id)
 }
 
+/// `last_error` for a delivery handed to a worker that reported
+/// `blocked_on_send`: the handoff succeeded but nothing was injected.
+pub(crate) const BLOCKED_ON_SEND_NOT_INJECTED: &str =
+    "worker blocked_on_send; delivery not injected";
+
 pub(crate) async fn retry_pending_delivery(
     delivery_id: &DeliveryId,
     workers: &mut WorkerRegistry,
@@ -1027,6 +1034,18 @@ pub(crate) async fn retry_pending_delivery(
         return Ok(DeliveryAttemptOutcome::Noop);
     }
 
+    // A worker that reported `blocked_on_send` keeps queued deliveries behind
+    // a gate it cannot clear by itself, and drops a re-sent delivery it
+    // already holds as a duplicate. A successful handoff to it is therefore
+    // not progress: count it against the retry budget so the delivery
+    // dead-letters visibly instead of being re-sent forever. A worker that is
+    // merely busy (Working) keeps the old behaviour so a long turn never
+    // dead-letters wait-mode messages.
+    let worker_blocked_on_send = workers
+        .workers
+        .get(&pending.worker_name)
+        .is_some_and(|handle| handle.state == crate::worker::AgentWorkState::BlockedOnSend);
+
     match workers
         .deliver(&pending.worker_name, pending.delivery.clone())
         .await
@@ -1034,10 +1053,15 @@ pub(crate) async fn retry_pending_delivery(
         Ok(()) => {
             if let Some(current) = pending_deliveries.get_mut(delivery_id) {
                 current.attempts = current.attempts.saturating_add(1);
-                current.failed_attempts = 0;
                 current.next_retry_at = Instant::now()
                     + delivery_ack_timeout(&current.delivery.injection_mode, retry_interval);
-                current.last_error = None;
+                if worker_blocked_on_send {
+                    current.failed_attempts = current.failed_attempts.saturating_add(1);
+                    current.last_error = Some(BLOCKED_ON_SEND_NOT_INJECTED.to_string());
+                } else {
+                    current.failed_attempts = 0;
+                    current.last_error = None;
+                }
                 return Ok(DeliveryAttemptOutcome::Attempted {
                     worker_name: current.worker_name.clone(),
                     attempts: current.attempts,

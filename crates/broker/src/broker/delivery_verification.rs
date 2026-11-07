@@ -362,7 +362,10 @@ fn composer_candidates(snapshot: &Snapshot, cli: &str) -> Vec<String> {
             .collect();
     }
     let is_prompt = |line: &str| {
-        let trimmed = line.trim_start();
+        // Claude paints its prompt as `❯` + U+00A0 (no-break space); treat it
+        // as an ordinary space so the live composer is recognised.
+        let normalized = line.trim_start().replace('\u{a0}', " ");
+        let trimmed = normalized.as_str();
         if lower.contains("codex") {
             trimmed == "›"
                 || trimmed.starts_with("› ")
@@ -544,6 +547,62 @@ pub(crate) fn failed_draft_released(cli: &str, expected_echo: &str, snapshot: &S
     let tail = expected_tail(expected_echo);
     tail.is_empty()
         || (composer_is_idle(snapshot, cli) && !composer_holds_tail(snapshot, cli, &tail))
+}
+
+/// Most blank rows below a bare prompt that may be cleared as residue.
+pub(crate) const MAX_BLANK_COMPOSER_RESIDUE_ROWS: usize = 4;
+
+/// Rows of line-break residue left in an otherwise empty Claude composer.
+///
+/// A failed injection can leave only its line breaks behind: the composer
+/// renders as a bare `❯` row followed by blank rows, with the cursor on the
+/// last blank row and the composer frame's rule below it. That is not idle (the
+/// cursor is not on the prompt row), so the failed-draft latch would wait
+/// forever. Returns the number of blank rows between the prompt and the cursor
+/// when — and only when — no text exists anywhere in that composer, so erasing
+/// them can never touch a human draft. `None` for every other state.
+pub(crate) fn blank_composer_residue_rows(cli: &str, snapshot: &Snapshot) -> Option<usize> {
+    if !cli.to_ascii_lowercase().contains("claude")
+        || snapshot.has_visible_text_at_or_after_cursor()
+    {
+        return None;
+    }
+    let screen = snapshot.to_plain();
+    let lines: Vec<&str> = screen.lines().collect();
+    let cursor = (snapshot.cursor.0 as usize).checked_sub(1)?;
+    if cursor >= lines.len() {
+        return None;
+    }
+    let mut row = cursor;
+    while lines[row].trim().is_empty() {
+        if cursor - row >= MAX_BLANK_COMPOSER_RESIDUE_ROWS {
+            return None;
+        }
+        row = row.checked_sub(1)?;
+    }
+    if !matches!(lines[row].trim(), "❯" | ">") {
+        return None;
+    }
+    let blank_rows = cursor - row;
+    if blank_rows == 0 {
+        return None;
+    }
+    // The composer must close with its frame rule below the cursor; any text
+    // there could be the rest of a draft the cursor was moved up into.
+    let below = lines[cursor + 1..]
+        .iter()
+        .find(|line| !line.trim().is_empty())?;
+    let rule = below.trim();
+    if !rule.chars().all(|c| matches!(c, '─' | '━' | '╌' | '-')) {
+        return None;
+    }
+    Some(blank_rows)
+}
+
+/// Bytes that erase [`blank_composer_residue_rows`] line breaks: one
+/// backspace per blank row joins each back onto the prompt row.
+pub(crate) fn blank_composer_residue_cleanup(rows: usize) -> Vec<u8> {
+    vec![0x7f; rows]
 }
 
 /// Distinguish terminal echo from actual harness acceptance.
@@ -1885,5 +1944,51 @@ mod tests {
         throttle.record(DeliveryOutcome::Success);
         throttle.record(DeliveryOutcome::Success);
         assert_eq!(throttle.delay(), Duration::from_millis(100));
+    }
+
+    /// Last 24 rows of desktop-upgrade-sf's PTY (relay broker snapshot, 2026-10-19):
+    /// Claude idle after a turn, but its composer holds one line break left by
+    /// a failed injection, so the cursor sits at [22,3] under a bare `❯ `.
+    const LIVE_CLAUDE_NEWLINE_RESIDUE: &str = "  codex-relay-desktop-249119, this time about dogpatch-mini, which needed no\r\n  upgrade.\r\n\r\n  It prompted a quick read-only check of sf-mini:\r\n\r\n  - Installed: Relay Desktop 2026.10.47, build 84, running. I installed\r\n    2026.10.45 (build 81) on Oct 16, so someone else has upgraded it since.\r\n  - Latest release: v2026.10.48, published Oct 18 04:26 UTC. sf-mini is one\r\n    release behind.\r\n  - Build number: dogpatch-mini reports 2026.10.48 as build 84, the same build\r\n    number sf-mini shows for 2026.10.47. That could be a typo in their report or\r\n    a release build number that wasn't bumped. It doesn't matter for this\r\n    machine.\r\n\r\n  If you want sf-mini on 2026.10.48, say so and I'll do the same upgrade as\r\n  before.\r\n\r\n✻ Worked for 31s · done 11:43 PM\r\n\r\n────────────────────────────────────────────────────────────────────────────────\r\n❯ \r\n\r\n────────────────────────────────────────────────────────────────────────────────\r\n  ⏵⏵ bypass permissions on (shift+tab to cycle)";
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn blank_composer_residue_holds_the_failed_draft_latch_until_cleared() {
+        let expected = "Nudge: please ack the relay-desktop#577 read-only validation ask";
+        let (_pty, residue) =
+            codex_snapshot(&format!("{LIVE_CLAUDE_NEWLINE_RESIDUE}\x1b[22;3H")).await;
+        assert_eq!(residue.cursor, (22, 3));
+        // The bug: an empty-but-two-row composer never reads as idle, so the
+        // latch never released and every later delivery waited forever.
+        assert!(!composer_is_idle(&residue, "claude"));
+        assert!(!failed_draft_released("claude", expected, &residue));
+        assert_eq!(blank_composer_residue_rows("claude", &residue), Some(1));
+        assert_eq!(blank_composer_residue_cleanup(1), vec![0x7f]);
+        assert_eq!(blank_composer_residue_rows("codex", &residue), None);
+
+        // Once the line break is erased the cursor is back on the prompt row.
+        let (_pty, cleared) =
+            codex_snapshot(&format!("{LIVE_CLAUDE_NEWLINE_RESIDUE}\x1b[21;3H")).await;
+        // The live prompt row is `❯` + U+00A0; it must still anchor the composer.
+        assert_eq!(cleared.to_plain().lines().nth(20), Some("❯\u{a0}"));
+        assert!(composer_is_idle(&cleared, "claude"));
+        assert!(failed_draft_released("claude", expected, &cleared));
+        assert_eq!(blank_composer_residue_rows("claude", &cleared), None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn blank_composer_residue_never_matches_a_composer_holding_text() {
+        let text_on_cursor_row = "  codex-relay-desktop-249119, this time about dogpatch-mini, which needed no\r\n  upgrade.\r\n\r\n  It prompted a quick read-only check of sf-mini:\r\n\r\n  - Installed: Relay Desktop 2026.10.47, build 84, running. I installed\r\n    2026.10.45 (build 81) on Oct 16, so someone else has upgraded it since.\r\n  - Latest release: v2026.10.48, published Oct 18 04:26 UTC. sf-mini is one\r\n    release behind.\r\n  - Build number: dogpatch-mini reports 2026.10.48 as build 84, the same build\r\n    number sf-mini shows for 2026.10.47. That could be a typo in their report or\r\n    a release build number that wasn't bumped. It doesn't matter for this\r\n    machine.\r\n\r\n  If you want sf-mini on 2026.10.48, say so and I'll do the same upgrade as\r\n  before.\r\n\r\n✻ Worked for 31s · done 11:43 PM\r\n\r\n────────────────────────────────────────────────────────────────────────────────\r\n❯ \r\ndraft continues\r\n────────────────────────────────────────────────────────────────────────────────\r\n  ⏵⏵ bypass permissions on (shift+tab to cycle)";
+        let (_pty, snap) = codex_snapshot(&format!("{text_on_cursor_row}\x1b[22;3H")).await;
+        assert_eq!(blank_composer_residue_rows("claude", &snap), None);
+
+        let text_on_prompt_row = "  codex-relay-desktop-249119, this time about dogpatch-mini, which needed no\r\n  upgrade.\r\n\r\n  It prompted a quick read-only check of sf-mini:\r\n\r\n  - Installed: Relay Desktop 2026.10.47, build 84, running. I installed\r\n    2026.10.45 (build 81) on Oct 16, so someone else has upgraded it since.\r\n  - Latest release: v2026.10.48, published Oct 18 04:26 UTC. sf-mini is one\r\n    release behind.\r\n  - Build number: dogpatch-mini reports 2026.10.48 as build 84, the same build\r\n    number sf-mini shows for 2026.10.47. That could be a typo in their report or\r\n    a release build number that wasn't bumped. It doesn't matter for this\r\n    machine.\r\n\r\n  If you want sf-mini on 2026.10.48, say so and I'll do the same upgrade as\r\n  before.\r\n\r\n✻ Worked for 31s · done 11:43 PM\r\n\r\n────────────────────────────────────────────────────────────────────────────────\r\n❯ my own draft\r\n\r\n────────────────────────────────────────────────────────────────────────────────\r\n  ⏵⏵ bypass permissions on (shift+tab to cycle)";
+        let (_pty, snap) = codex_snapshot(&format!("{text_on_prompt_row}\x1b[22;3H")).await;
+        assert_eq!(blank_composer_residue_rows("claude", &snap), None);
+
+        let text_after_cursor = "  codex-relay-desktop-249119, this time about dogpatch-mini, which needed no\r\n  upgrade.\r\n\r\n  It prompted a quick read-only check of sf-mini:\r\n\r\n  - Installed: Relay Desktop 2026.10.47, build 84, running. I installed\r\n    2026.10.45 (build 81) on Oct 16, so someone else has upgraded it since.\r\n  - Latest release: v2026.10.48, published Oct 18 04:26 UTC. sf-mini is one\r\n    release behind.\r\n  - Build number: dogpatch-mini reports 2026.10.48 as build 84, the same build\r\n    number sf-mini shows for 2026.10.47. That could be a typo in their report or\r\n    a release build number that wasn't bumped. It doesn't matter for this\r\n    machine.\r\n\r\n  If you want sf-mini on 2026.10.48, say so and I'll do the same upgrade as\r\n  before.\r\n\r\n✻ Worked for 31s · done 11:43 PM\r\n\r\n────────────────────────────────────────────────────────────────────────────────\r\n❯ \r\n  later text\r\n────────────────────────────────────────────────────────────────────────────────\r\n  ⏵⏵ bypass permissions on (shift+tab to cycle)";
+        let (_pty, snap) = codex_snapshot(&format!("{text_after_cursor}\x1b[22;1H")).await;
+        assert_eq!(blank_composer_residue_rows("claude", &snap), None);
     }
 }

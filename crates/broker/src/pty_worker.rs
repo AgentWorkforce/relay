@@ -28,10 +28,11 @@ use tokio::{
 use crate::broker::{
     continuity::parse_continuity_command,
     delivery_verification::{
-        assess_harness_acceptance, current_timestamp_ms, delivery_injected_event_payload,
-        delivery_queued_event_payload, draft_visible_at_cursor, failed_draft_released,
-        DeliveryOutcome, HarnessAcceptance, PendingActivity, PendingVerification, ThrottleState,
-        VerificationOutput, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
+        assess_harness_acceptance, blank_composer_residue_cleanup, blank_composer_residue_rows,
+        current_timestamp_ms, delivery_injected_event_payload, delivery_queued_event_payload,
+        draft_visible_at_cursor, failed_draft_released, DeliveryOutcome, HarnessAcceptance,
+        PendingActivity, PendingVerification, ThrottleState, VerificationOutput,
+        ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
         MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
     },
     injection_format::{format_injection_for_worker_with_workspace, McpReminderThrottle},
@@ -115,6 +116,24 @@ struct FailedComposerLatch {
     latched_at: Instant,
     /// The terminal stuck signal has been sent for this latch.
     escalated: bool,
+    /// Blank-row residue cleanups already sent for this latch.
+    residue_cleanups: u8,
+    /// When the last residue cleanup was written.
+    last_residue_cleanup: Option<Instant>,
+}
+
+/// Most blank-row residue cleanups one latch may send before it gives up.
+const MAX_RESIDUE_CLEANUPS: u8 = 3;
+
+/// Minimum spacing between residue cleanups so the harness can repaint.
+const RESIDUE_CLEANUP_SPACING: Duration = Duration::from_secs(2);
+
+/// Whether the latch may erase blank-row composer residue now.
+fn residue_cleanup_due(latch: &FailedComposerLatch, now: Instant) -> bool {
+    latch.residue_cleanups < MAX_RESIDUE_CLEANUPS
+        && latch
+            .last_residue_cleanup
+            .is_none_or(|at| now.duration_since(at) >= RESIDUE_CLEANUP_SPACING)
 }
 
 /// How long a visibly stuck draft may hold injection before the worker sends
@@ -161,6 +180,8 @@ fn latch_failed_written_delivery(
         expected_echo: expected_echo.to_string(),
         latched_at: Instant::now(),
         escalated: false,
+        residue_cleanups: 0,
+        last_residue_cleanup: None,
     });
 }
 
@@ -3123,22 +3144,41 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                 // Release the failed-draft latch once the composer no longer
                 // holds that body (the harness took it late, or a human
                 // submitted or cleared it). Until then queued deliveries wait.
-                if let Some(latch) = failed_composer_latch.as_ref() {
+                // A composer left holding only blank rows (line breaks from the
+                // failed body) is not idle and would hold the latch forever;
+                // erase exactly those rows, never any text.
+                if let Some(latch) = failed_composer_latch.as_mut() {
                     if pending_verifications.is_empty()
                         && pending_recovery_writes.is_empty()
                         && active_injection.is_none()
-                        && failed_draft_released(
-                            &resolved_cli,
-                            &latch.expected_echo,
-                            &Snapshot::capture(&pty),
-                        )
                     {
-                        tracing::info!(
-                            delivery_id = %latch.delivery_id,
-                            event_id = %latch.event_id,
-                            "failed delivery left the composer; resuming injection"
-                        );
-                        failed_composer_latch = None;
+                        let snapshot = Snapshot::capture(&pty);
+                        if failed_draft_released(&resolved_cli, &latch.expected_echo, &snapshot) {
+                            tracing::info!(
+                                delivery_id = %latch.delivery_id,
+                                event_id = %latch.event_id,
+                                "failed delivery left the composer; resuming injection"
+                            );
+                            failed_composer_latch = None;
+                        } else if let Some(rows) =
+                            blank_composer_residue_rows(&resolved_cli, &snapshot)
+                        {
+                            let now = Instant::now();
+                            if residue_cleanup_due(latch, now) {
+                                latch.residue_cleanups = latch.residue_cleanups.saturating_add(1);
+                                latch.last_residue_cleanup = Some(now);
+                                tracing::warn!(
+                                    delivery_id = %latch.delivery_id,
+                                    rows,
+                                    attempt = latch.residue_cleanups,
+                                    "failed draft left only blank rows in the composer; erasing them"
+                                );
+                                warn_on_auto_response_write(
+                                    pty.submit_write(blank_composer_residue_cleanup(rows)),
+                                    "failed_draft_residue_cleanup",
+                                );
+                            }
+                        }
                     }
                 }
                 // A draft still stuck after the bounded timeout gets one
@@ -4941,6 +4981,30 @@ mod tests {
     }
 
     #[test]
+    fn residue_cleanup_is_bounded_and_spaced() {
+        let mut latch = FailedComposerLatch {
+            delivery_id: DeliveryId::from("del_failed"),
+            event_id: EventId::from("evt_failed"),
+            expected_echo: "Relay message from Lead [evt]: failed".to_string(),
+            latched_at: Instant::now(),
+            escalated: false,
+            residue_cleanups: 0,
+            last_residue_cleanup: None,
+        };
+        let start = Instant::now();
+        assert!(residue_cleanup_due(&latch, start));
+        latch.residue_cleanups = 1;
+        latch.last_residue_cleanup = Some(start);
+        assert!(!residue_cleanup_due(&latch, start), "spaced");
+        assert!(residue_cleanup_due(&latch, start + RESIDUE_CLEANUP_SPACING));
+        latch.residue_cleanups = MAX_RESIDUE_CLEANUPS;
+        assert!(
+            !residue_cleanup_due(&latch, start + RESIDUE_CLEANUP_SPACING * 10),
+            "bounded"
+        );
+    }
+
+    #[test]
     fn latched_worker_reports_blocked_only_when_the_latch_is_the_sole_blocker() {
         let latch = FailedComposerLatch {
             delivery_id: DeliveryId::from("del_failed"),
@@ -4948,6 +5012,8 @@ mod tests {
             expected_echo: "Relay message from Lead [evt]: failed".to_string(),
             latched_at: Instant::now(),
             escalated: false,
+            residue_cleanups: 0,
+            last_residue_cleanup: None,
         };
         assert!(failed_draft_latch_is_sole_blocker(
             Some(&latch),
