@@ -1,7 +1,12 @@
 use super::*;
+use crate::relay::links::DEFAULT_SITE_URL;
 use std::collections::HashMap;
 
 const LOCAL: &str = "http://127.0.0.1:8787";
+/// A build made for its own site, and the Relaycast origin its sign-in
+/// recorded.
+const SITE: &str = "https://relay.corp.test";
+const SITE_RELAYCAST: &str = "https://cast.relay.corp.test";
 
 /// A home with the CLI's state directory and a project checkout.
 struct Machine {
@@ -79,9 +84,30 @@ impl Machine {
         self
     }
 
+    /// Resolves as the default build does.
     fn resolve(&self) -> Result<Option<Workspace>, String> {
+        self.resolve_at(DEFAULT_SITE_URL, None)
+    }
+
+    /// Resolves as a build for `site` does, whose sign-in recorded
+    /// `site_relaycast`.
+    fn resolve_at(
+        &self,
+        site: &str,
+        site_relaycast: Option<&str>,
+    ) -> Result<Option<Workspace>, String> {
         let env = self.env.clone();
-        resolve(&move |key: &str| env.get(key).cloned(), &self.relay)
+        resolve_for_site(
+            &move |key: &str| env.get(key).cloned(),
+            &self.relay,
+            site,
+            site_relaycast,
+        )
+    }
+
+    /// Resolves as [`SITE`]'s build does.
+    fn resolve_in_site(&self) -> Result<Option<Workspace>, String> {
+        self.resolve_at(SITE, Some(SITE_RELAYCAST))
     }
 
     fn found(&self) -> Workspace {
@@ -302,6 +328,86 @@ fn an_unbound_credential_goes_to_the_hosted_default() {
 }
 
 #[test]
+fn a_site_build_refuses_an_unbound_credential() {
+    let machine = Machine::new()
+        .store("hosted", &[("hosted", "rk_live_hosted000")])
+        .bind(&[("rk_live_other0000", "https://relay.corp.test")]);
+    // The default build sends it to the hosted default, as before.
+    assert_eq!(machine.found().base_url, DEFAULT_BASE_URL);
+    let error = machine.resolve_in_site().unwrap_err();
+    assert!(
+        error.contains(origin_binding::ORIGIN_BINDINGS_FILE),
+        "{error}"
+    );
+    assert!(error.contains(SITE), "{error}");
+    assert!(error.contains(BASE_URL_ENV), "{error}");
+    assert!(error.contains(WORKSPACE_STORE_FILE), "{error}");
+    assert!(!error.contains(DEFAULT_BASE_URL), "{error}");
+    assert!(!error.contains("rk_live"), "{error}");
+    // With no bindings file at all, too, and even when the site's sign-in
+    // named a Relaycast origin: that is the account's, not this key's.
+    let machine = Machine::new().env("RELAY_WORKSPACE_KEY", "rk_live_hosted000");
+    assert_eq!(machine.found().base_url, DEFAULT_BASE_URL);
+    assert!(machine.resolve_in_site().is_err());
+    assert!(machine.resolve_at(SITE, None).is_err());
+}
+
+#[test]
+fn a_site_build_never_presumes_armadillo_for_an_unseen_armadillo_key() {
+    for key in ["ar_ws_0123456789abcdef", "ar_ag_0123456789abcdef"] {
+        let machine = Machine::new().env("RELAY_WORKSPACE_KEY", key);
+        if key.starts_with("ar_ws_") {
+            // The default build presumes armadillo, as before.
+            assert_eq!(machine.found().base_url, ARMADILLO_ORIGIN);
+        } else {
+            // An agent token is not a workspace key in either build.
+            assert!(machine.resolve().is_err());
+        }
+        let error = machine.resolve_in_site().unwrap_err();
+        assert!(!error.contains(ARMADILLO_ORIGIN), "{error}");
+        if key.starts_with("ar_ws_") {
+            assert!(
+                error.contains(origin_binding::ORIGIN_BINDINGS_FILE),
+                "{error}"
+            );
+            assert!(error.contains(SITE), "{error}");
+        }
+    }
+}
+
+#[test]
+fn a_site_build_uses_a_recorded_server_or_relay_base_url() {
+    let found = Machine::new()
+        .store("local", &[("local", "rk_live_local0000")])
+        .bind(&[("rk_live_local0000", LOCAL)])
+        .resolve_in_site()
+        .unwrap()
+        .unwrap();
+    assert_eq!(key_and_origin(&found), ("rk_live_local0000", LOCAL));
+    let found = Machine::new()
+        .env("RELAY_WORKSPACE_KEY", "ar_ws_0123456789abcdef")
+        .bind(&[("ar_ws_0123456789abcdef", SITE_RELAYCAST)])
+        .resolve_in_site()
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.base_url, SITE_RELAYCAST);
+    let found = Machine::new()
+        .store("hosted", &[("hosted", "rk_live_hosted000")])
+        .env(BASE_URL_ENV, "https://relay.corp.test/relaycast/")
+        .resolve_in_site()
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.base_url, "https://relay.corp.test/relaycast");
+    // A malformed RELAY_BASE_URL still never falls back, in either build.
+    let error = Machine::new()
+        .store("hosted", &[("hosted", "rk_live_hosted000")])
+        .env(BASE_URL_ENV, "not a url")
+        .resolve_in_site()
+        .unwrap_err();
+    assert!(error.contains(BASE_URL_ENV), "{error}");
+}
+
+#[test]
 fn a_bound_credential_goes_only_to_its_server() {
     // relay init's local server: http on loopback with a port.
     let found = Machine::new()
@@ -519,6 +625,55 @@ fn untrusted_or_incomplete_routes_are_refused() {
         let machine = Machine::new().in_project().pin(pin.clone());
         assert!(machine.resolve().is_err(), "{pin}");
     }
+}
+
+#[test]
+fn a_site_build_trusts_only_routes_to_its_own_relaycast() {
+    let pin = |route: &str, base_url: &str| {
+        serde_json::json!({
+            "workspaceKey": "rk_live_project00",
+            "relaycastRoute": route,
+            "relaycastBaseUrl": base_url,
+        })
+    };
+    // The hosted gateways count only in the default build.
+    for (route, base_url) in [
+        ("canonical", CANONICAL_RELAYCAST_ORIGIN),
+        ("canonical", ARMADILLO_ORIGIN),
+    ] {
+        let machine = Machine::new().in_project().pin(pin(route, base_url));
+        assert_eq!(machine.found().base_url, base_url);
+        let error = machine.resolve_in_site().unwrap_err();
+        assert!(error.contains("not trusted"), "{error}");
+        assert!(error.contains(SITE), "{error}");
+        assert!(error.contains(SITE_RELAYCAST), "{error}");
+    }
+    let dev = Machine::new().in_project().pin(serde_json::json!({
+        "workspaceKey": "rk_live_project00",
+        "relaycastRoute": "canonical",
+        "relaycastBaseUrl": DEV_RELAYCAST_ORIGIN,
+        "relaycastCloudApiUrl": DEV_CLOUD_API_URL,
+    }));
+    assert_eq!(dev.found().base_url, DEV_RELAYCAST_ORIGIN);
+    assert!(dev.resolve_in_site().is_err());
+    // The site's own Relaycast origin is the one that counts there.
+    let own = Machine::new()
+        .in_project()
+        .pin(pin("canonical", &format!("{SITE_RELAYCAST}/")));
+    assert!(own.resolve().is_err());
+    assert_eq!(
+        key_and_origin(&own.resolve_in_site().unwrap().unwrap()),
+        ("rk_live_project00", SITE_RELAYCAST)
+    );
+    // With no origin from the site's sign-in, no route is trusted.
+    let error = own.resolve_at(SITE, None).unwrap_err();
+    assert!(error.contains("named none"), "{error}");
+    // An isolated route needs its route credential in a site build too.
+    let isolated = Machine::new()
+        .in_project()
+        .pin(pin("agent37-isolated", SITE_RELAYCAST));
+    let error = isolated.resolve_in_site().unwrap_err();
+    assert!(error.contains("isolated"), "{error}");
 }
 
 #[test]

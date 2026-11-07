@@ -11,6 +11,7 @@
 //! against `packages/contracts/fixtures/relaycast-origin-binding.json`.
 
 use super::ARMADILLO_ORIGIN;
+use crate::relay::links;
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
@@ -32,17 +33,28 @@ pub struct OriginBindings {
 }
 
 impl OriginBindings {
-    /// The server `credential` belongs to: its binding, else armadillo for a
-    /// credential armadillo issued, whose format says so.
+    /// The server `credential` belongs to: its binding, else, in the default
+    /// build, armadillo for a credential armadillo issued, whose format says
+    /// so. A site build ([`links::is_site_build`]) presumes no hosted server:
+    /// only a recorded binding counts.
     pub fn bound(&self, credential: &str) -> Option<&str> {
-        self.origins
+        self.bound_for_site(credential, links::built_in_site_url())
+    }
+
+    /// [`OriginBindings::bound`] for a build whose built-in site is `site`.
+    pub fn bound_for_site(&self, credential: &str, site: &str) -> Option<&str> {
+        let recorded = self
+            .origins
             .get(&credential_fingerprint(credential))
-            .map(String::as_str)
-            .or_else(|| {
-                let credential = credential.trim();
-                (credential.starts_with("ar_ws_") || credential.starts_with("ar_ag_"))
-                    .then_some(ARMADILLO_ORIGIN)
-            })
+            .map(String::as_str);
+        if links::is_site_build_for(site) {
+            return recorded;
+        }
+        recorded.or_else(|| {
+            let credential = credential.trim();
+            (credential.starts_with("ar_ws_") || credential.starts_with("ar_ag_"))
+                .then_some(ARMADILLO_ORIGIN)
+        })
     }
 }
 
@@ -177,7 +189,11 @@ pub fn is_hosted(base_url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::relay::links::DEFAULT_SITE_URL;
     use serde::Deserialize;
+
+    /// A build made for its own site.
+    const SITE: &str = "https://relay.corp.test";
 
     #[derive(Deserialize)]
     struct SharedVector {
@@ -220,14 +236,17 @@ mod tests {
         let bindings = read_bindings(&path).unwrap();
         // The fingerprint trims, as the CLI's does.
         assert_eq!(
-            bindings.bound(vector.credential.trim()),
+            bindings.bound_for_site(vector.credential.trim(), DEFAULT_SITE_URL),
             Some(vector.normalized_base_url.as_str())
         );
         assert_eq!(
-            bindings.bound(&vector.credential),
+            bindings.bound_for_site(&vector.credential, DEFAULT_SITE_URL),
             Some(vector.normalized_base_url.as_str())
         );
-        assert_eq!(bindings.bound("rk_live_some_other_key"), None);
+        assert_eq!(
+            bindings.bound_for_site("rk_live_some_other_key", DEFAULT_SITE_URL),
+            None
+        );
     }
 
     #[test]
@@ -239,10 +258,22 @@ mod tests {
             &format!(r#"{{"version":1,"origins":{{"{fingerprint}":"{ARMADILLO_ORIGIN}"}}}}"#),
         );
         let bindings = read_bindings(&path).unwrap();
-        assert_eq!(bindings.bound("rk_live_armadillo"), Some(ARMADILLO_ORIGIN));
-        assert_eq!(bindings.bound("rk_live_old_key"), None);
-        assert_eq!(bindings.bound("ar_ws_never_seen"), Some(ARMADILLO_ORIGIN));
-        assert_eq!(bindings.bound("ar_ag_never_seen"), Some(ARMADILLO_ORIGIN));
+        assert_eq!(
+            bindings.bound_for_site("rk_live_armadillo", DEFAULT_SITE_URL),
+            Some(ARMADILLO_ORIGIN)
+        );
+        assert_eq!(
+            bindings.bound_for_site("rk_live_old_key", DEFAULT_SITE_URL),
+            None
+        );
+        assert_eq!(
+            bindings.bound_for_site("ar_ws_never_seen", DEFAULT_SITE_URL),
+            Some(ARMADILLO_ORIGIN)
+        );
+        assert_eq!(
+            bindings.bound_for_site("ar_ag_never_seen", DEFAULT_SITE_URL),
+            Some(ARMADILLO_ORIGIN)
+        );
         for gateway in [
             "https://cast.agentrelay.com",
             "https://agent37-cast.agentrelay.com",
@@ -256,10 +287,38 @@ mod tests {
     }
 
     #[test]
+    fn a_site_build_counts_only_recorded_bindings() {
+        let dir = tempfile::tempdir().unwrap();
+        let fingerprint = credential_fingerprint("rk_live_selfhost0");
+        let path = write(
+            dir.path(),
+            &format!(
+                r#"{{"version":1,"origins":{{"{fingerprint}":"https://cast.relay.corp.test"}}}}"#
+            ),
+        );
+        let bindings = read_bindings(&path).unwrap();
+        assert_eq!(
+            bindings.bound_for_site("rk_live_selfhost0", SITE),
+            Some("https://cast.relay.corp.test")
+        );
+        for unseen in ["ar_ws_never_seen", "ar_ag_never_seen"] {
+            assert_eq!(
+                bindings.bound_for_site(unseen, DEFAULT_SITE_URL),
+                Some(ARMADILLO_ORIGIN)
+            );
+            assert_eq!(bindings.bound_for_site(unseen, SITE), None);
+        }
+        assert_eq!(bindings.bound_for_site("rk_live_old_key", SITE), None);
+    }
+
+    #[test]
     fn a_missing_file_binds_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let bindings = read_bindings(&bindings_path(dir.path())).unwrap();
-        assert_eq!(bindings.bound("rk_live_anything"), None);
+        assert_eq!(
+            bindings.bound_for_site("rk_live_anything", DEFAULT_SITE_URL),
+            None
+        );
     }
 
     #[test]

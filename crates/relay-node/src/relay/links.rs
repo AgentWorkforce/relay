@@ -41,6 +41,20 @@ pub fn built_in_site_url() -> &'static str {
     }
 }
 
+/// Whether this build was made for its own site: `AGENT_RELAY_SITE_URL`
+/// named one other than [`DEFAULT_SITE_URL`] when it was built. Such a build
+/// uses only its own site's values and fails loudly where the default build
+/// would fall back to Agent Relay's public gateways.
+pub fn is_site_build() -> bool {
+    is_site_build_for(built_in_site_url())
+}
+
+/// [`is_site_build`] for a build whose built-in site is `site`, so the
+/// rules of both builds can be exercised in one.
+pub fn is_site_build_for(site: &str) -> bool {
+    site != DEFAULT_SITE_URL
+}
+
 /// The scheme of the links this build opens (`agentrelay://…`):
 /// `AGENT_RELAY_URL_SCHEME` when it was built (checked by `build.rs`: never
 /// one of the web's), else [`DEFAULT_URL_SCHEME`]. One scheme per build, so
@@ -373,6 +387,18 @@ mod tests {
         assert_eq!(
             parse_link_for("https://message?to=alice", "https", DEFAULT_SITE_URL),
             Err(LinkError::NotALink)
+        );
+    }
+
+    #[test]
+    fn a_site_build_is_one_made_for_another_site() {
+        assert!(!is_site_build_for(DEFAULT_SITE_URL));
+        assert!(is_site_build_for("https://relay.corp.test"));
+        assert_eq!(
+            is_site_build(),
+            built_in_site_url() != DEFAULT_SITE_URL,
+            "{}",
+            built_in_site_url()
         );
     }
 

@@ -404,19 +404,21 @@ impl Core {
 
     /// The workspace this daemon uses now: the `agent-relay` CLI's when it
     /// selects one, else the signed-in account's (`workspace::resolve`).
-    /// `None` when neither names one or the CLI's may not be used.
+    /// `None` when neither names one or the one selected may not be used.
     pub fn discover(&self) -> Option<Workspace> {
         self.discovery().ok().flatten()
     }
 
-    /// Like [`Core::discover`], with the printable reason the CLI's
-    /// selection may not be used.
-    fn discovery(&self) -> Result<Option<Workspace>, String> {
+    /// Like [`Core::discover`], with the printable reason the selected
+    /// workspace may not be used: the CLI's, or in a build for its own site
+    /// the account's.
+    fn discovery(&self) -> Result<Option<Workspace>, workspace::Refusal> {
         let env = |key: &str| self.config.env.get(key).cloned();
-        workspace::resolve(
+        workspace::resolve_for_site(
             app_store::load_cloud(&self.config.app_data_dir).as_ref(),
             &env,
             &self.config.home,
+            crate::relay::links::built_in_site_url(),
         )
     }
 
@@ -426,7 +428,7 @@ impl Core {
     pub fn rediscover_workspace(&self) -> bool {
         let (found, problem) = match self.discovery() {
             Ok(found) => (found, None),
-            Err(problem) => (None, Some(problem)),
+            Err(refusal) => (None, Some(refusal.activity())),
         };
         let new_problem = {
             let mut reported = self.discovery_problem.lock().unwrap();
@@ -435,10 +437,7 @@ impl Core {
             new
         };
         if let (true, Some(problem)) = (new_problem, &problem) {
-            self.hub.activity(
-                Level::Warning,
-                format!("Not using the agent-relay CLI's workspace: {problem}"),
-            );
+            self.hub.activity(Level::Warning, problem.clone());
         }
         let changed = {
             let mut current = self.workspace.lock().unwrap();
@@ -457,7 +456,7 @@ impl Core {
                         workspace.base_url
                     ),
                 ),
-                // A refused CLI selection was reported above.
+                // A refused selection was reported above.
                 None if problem.is_some() => {}
                 None => self.hub.activity(
                     Level::Warning,
