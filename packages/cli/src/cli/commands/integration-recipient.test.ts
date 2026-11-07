@@ -20,12 +20,14 @@ describe('subscription recipient launch', () => {
   };
   let handle: {
     channels?: string[];
+    exit?: { reason: string; code?: number; signal?: string | null };
     waitForReady: ReturnType<typeof vi.fn>;
     release: ReturnType<typeof vi.fn>;
   };
   beforeEach(() => {
     handle = {
       channels: [],
+      exit: { reason: 'exited', code: 1, signal: null },
       waitForReady: vi.fn(async () => ({ reason: 'ready', pid: 123 })),
       release: vi.fn(async () => {}),
     };
@@ -93,6 +95,24 @@ describe('subscription recipient launch', () => {
     expect(handle.release).toHaveBeenCalledOnce();
     expect(client.disconnect).toHaveBeenCalledOnce();
   });
+  it('reports the reaped exit status when PTY-close races the richer event', async () => {
+    let enriched = false;
+    Object.defineProperty(handle, 'exit', {
+      get: () => (enriched ? { reason: 'exited', code: 1, signal: null } : { reason: 'exited' }),
+    });
+    handle.waitForReady.mockResolvedValue({ reason: 'exited', exit: { reason: 'exited' } });
+    const pending = launchSubscriptionRecipient(input);
+    setTimeout(() => {
+      enriched = true;
+    }, 200);
+    await expect(pending).rejects.toThrow('exited ({"reason":"exited","code":1,"signal":null})');
+    expect(handle.release).toHaveBeenCalledWith('subscription startup failed', { deleteIdentity: true });
+  });
+  it('reports the observed exit when no code-bearing event arrives within grace', async () => {
+    Object.defineProperty(handle, 'exit', { get: () => ({ reason: 'exited' }) });
+    handle.waitForReady.mockResolvedValue({ reason: 'exited', exit: { reason: 'exited' } });
+    await expect(launchSubscriptionRecipient(input)).rejects.toThrow('exited ({"reason":"exited"})');
+  }, 10_000);
   it('refuses an older broker before it can join default channels or reuse an identity', async () => {
     client.getSession.mockResolvedValue({ workspace_key: 'rk_live_explicit' });
     await expect(launchSubscriptionRecipient(input)).rejects.toThrow('isolated, create-only spawn support');

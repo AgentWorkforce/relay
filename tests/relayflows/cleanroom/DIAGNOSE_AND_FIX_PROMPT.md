@@ -33,10 +33,10 @@ Daytona CLI/API reported a version mismatch: CLI `0.205.1`, API `0.210.0`.
 Do not replace the evidence below with a smaller smoke test. The repeatable
 Relay-only board is defined by:
 
-- `tests/relayflows/cleanroom/fleet-daytona.matrix.json` (108 operations);
+- `tests/relayflows/cleanroom/fleet-daytona.matrix.json` (110 operations);
 - `scripts/verify-features/fleet-daytona.mjs` (operator-host runner, evidence,
   cleanup, and campaign aggregation);
-- `workflows/verify-fleet-daytona.ts` (supervision and independent signoff);
+- `flows/verify/fleet-daytona.spec.ts` (Flows v2 supervision and independent signoff);
 - `tests/fixtures/verify-fleet-daytona.test.ts` (static safety and coverage
   contracts).
 
@@ -194,8 +194,8 @@ The repaired diagnostic harness must preserve these invariants:
 - bind context, static gates, coverage, reviews, and final acceptance to the
   same source manifest. Runtime `.agentworkforce/trajectories/` changes may be
   excluded from the content digest, but the directory must remain tracked;
-- require exactly 156 unique, schema-validated coverage rows: 12 state-machine
-  transitions, 23 injected faults, 13 acceptance gates, and all 108 Fleet
+- require exactly 158 unique, schema-validated coverage rows: 12 state-machine
+  transitions, 23 injected faults, 13 acceptance gates, and all 110 Fleet
   operations. Every row must map bidirectionally to a bug or unknown;
 - treat every unresolved `CRITICAL` or `HIGH` bug as a promotion blocker,
   including `CONFIRMED`, `IN_PROGRESS`, and `BLOCKED`, not only a literal
@@ -275,7 +275,7 @@ and passed all 266 changed-surface tests. Both exact sandbox IDs were then
 deleted and proved absent. Preserve the full IDs and hashes in
 `RELAY_PRERELEASE_DAYTONA_2026-09-05.md`.
 
-Do not promote this package proof into a Fleet pass. The live 108-operation
+Do not promote this package proof into a Fleet pass. The live 110-operation
 board still cannot select the candidate's immutable snapshot/data plane or
 create and reclaim the required canonical ephemeral Cloud workspace. Cloud
 issues #3349 and #3351 remain the hard boundary. The next valid Fleet proof is
@@ -445,8 +445,6 @@ The two baseline runs with no Daytona sandbox failed in stages 1-2 or their boun
   counts.
 - Two broad Vitest batches passed 930 tests total, with five provider-backed tests skipped for missing credentials.
 - The native broker integration run hung in `lockfile.test.js` and left at least ten persistent broker processes. `SIGTERM` did not stop them; cleanup required `SIGKILL`.
-- Python SDK: 287 passed, two skipped, four failed. Three failures invoke the removed top-level `agent-relay run`; one expects `sessionId` to be absent but receives `sessionId: None`.
-- The Python editable install fails unless a broker binary has first been staged at the package's expected path; the clean-room setup did not stage it.
 - OpenCode plugin setup attempted to install the nonexistent npm peer package `opencode@>=0.1.0` and failed with E404. Running the plugin tests from existing root dependencies passed 28 tests.
 - The Gemini extension checks passed. Swift could not run because the stock image has no Swift toolchain.
 - Two integration CLI assertions still expect removed top-level `swarm --dry-run` and `workflows list` commands.
@@ -577,7 +575,7 @@ Trace the fleet sandbox request through Cloud's ensure endpoint, Daytona create,
 7. **Quota behavior:** add a preflight or typed provider-capacity error with requested/current/limit values. A quota failure must create no database ghost, node, agent, or sandbox. Generic HTTP 500 is unacceptable.
 8. **Attach resilience:** retry bounded transient 429/503/database-overloaded terminal-session creation according to `Retry-After`, without duplicating a session.
 9. **Image contract:** make the shipped smoke entrypoint self-contained and verify `/opt/relay-smoke` exists in the built image. Either size the image/sandbox so documented clean installs and native tests work, or split build/test snapshots and declare their resource/toolchain requirements explicitly.
-10. **Test drift:** fix stale CLI expectations, Python packaging/CLI drift, `sessionId` parity, OpenCode peer installation, Swift provisioning, and broker integration cleanup. A timed-out test must terminate every descendant broker without requiring manual `SIGKILL`.
+10. **Test drift:** fix stale CLI expectations, `sessionId` parity, OpenCode peer installation, Swift provisioning, and broker integration cleanup. A timed-out test must terminate every descendant broker without requiring manual `SIGKILL`.
 11. **Observability:** all accepted operations must expose phase, correlation ID, timestamps, retry count, owned resource IDs, and final cleanup status. Add alerts for old pending runs, never-claimed jobs, zero-agent started fleet sandboxes, and cleanup retries exhausted.
 
 ## Deterministic tests to add

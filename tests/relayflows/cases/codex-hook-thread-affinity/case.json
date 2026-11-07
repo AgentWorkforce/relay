@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "id": "codex-hook-thread-affinity",
+  "kind": "bugfix",
+  "title": "Only the consuming Codex thread may take its hook messages",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/codex-hook-thread-affinity/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": { "outcome": "bug", "signature": "subagent_hook_consumes_parent_offer" },
+    "head": { "outcome": "fixed", "signature": "codex_hook_consumption_matches_caller_thread" }
+  }
+}

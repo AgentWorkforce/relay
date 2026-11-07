@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    sync::{broadcast, mpsc, Notify, RwLock},
+    sync::{broadcast, mpsc, watch, Notify, RwLock},
     time::{timeout, MissedTickBehavior},
 };
 use uuid::Uuid;
@@ -88,6 +88,8 @@ mod relaycast_events;
 mod session;
 mod spawn_spec;
 mod system;
+mod task_store;
+mod tasks;
 #[cfg(test)]
 mod tests;
 mod util;
@@ -115,3 +117,7 @@ pub(crate) use session::*;
 pub(crate) use spawn_spec::*;
 pub(crate) use system::*;
 pub(crate) use util::*;
+
+pub(crate) fn task_request_prefix() -> &'static str {
+    task_store::TASK_REQUEST_PREFIX
+}

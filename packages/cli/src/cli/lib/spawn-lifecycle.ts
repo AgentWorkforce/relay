@@ -10,13 +10,14 @@ function text(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value : undefined;
 }
 
+// `handler_node_id` is the node placement chose, snapshotted before any send,
+// so it is present even when the send failed; only `dispatched_node_id` (or a
+// status the node itself moved) shows the node received the invocation.
 function dispatchEvidence(value: Record<string, unknown>): SpawnDispatchState {
   const status = text(value.status)?.toLowerCase();
   if (
     text(value.dispatchedNodeId) ||
     text(value.dispatched_node_id) ||
-    text(value.handlerNodeId) ||
-    text(value.handler_node_id) ||
     (status !== undefined && (DISPATCHED.has(status) || SUCCESS.has(status)))
   ) {
     return 'dispatched';
@@ -32,9 +33,12 @@ export function spawnLifecycleState(value: Record<string, unknown>): SpawnLifecy
       value.output !== null && typeof value.output === 'object'
         ? (value.output as Record<string, unknown>)
         : value;
-    // A terminal success status without explicit launch and readiness proof is
-    // a failed spawn, not a live-but-uncertain one. Genuine uncertainty is
-    // reserved for non-terminal acknowledgements and confirmation timeouts.
+    // Every caller of this receipt (MCP spawn, `fleet spawn --auto-place`)
+    // requires proven readiness. A terminal success without explicit launch and
+    // readiness proof is a failed spawn, not a live-but-uncertain one. Genuine
+    // uncertainty is reserved for non-terminal acknowledgements and confirmation
+    // timeouts. The unverified targeted path does not reach here: it keeps the
+    // SDK's own placement evidence (see `spawnInvocationWithMergedPlacement`).
     return output.spawned === true && output.ready === true ? 'ready' : 'failed';
   }
   if (status && FAILURE.has(status)) return 'failed';

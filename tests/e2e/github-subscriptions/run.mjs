@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { emitStimulus } from './emission.mjs';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { fixturePathGlob, fixtureTitle, assertProducerWorkspace } from './fixture-scope.mjs';
+import { captureNangoForwards, nangoLogsCall } from './nango-proof.mjs';
+import { fixturePathGlob, fixtureTitle, assertProducerWorkspace, fixtureExpected } from './fixture-scope.mjs';
 import {
   correlate,
   releaseOwnedWorker,
@@ -12,6 +13,8 @@ import {
   claudeReceiverArgs,
   hasContinuousCoverage,
   capturedStimuliPass,
+  digest,
+  collectUnseenMessages,
 } from './proof.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -25,13 +28,15 @@ if (
     'unsubscribe',
     'collect',
     'emit',
+    'resolve',
+    'capture-nango',
     'assert',
     'cleanup',
     'receiver-task',
   ].includes(command)
 ) {
   console.error(
-    'Usage: node tests/e2e/github-subscriptions/run.mjs <preflight|prepare|subscribe|unsubscribe|collect|emit|assert|cleanup|receiver-task> config.json [arguments]'
+    'Usage: node tests/e2e/github-subscriptions/run.mjs <preflight|prepare|subscribe|unsubscribe|collect|emit|resolve|capture-nango|assert|cleanup|receiver-task> config.json [arguments]'
   );
   process.exit(2);
 }
@@ -74,20 +79,19 @@ const gh = (endpoint, method = 'GET', body) => {
   });
   return result.trim() ? JSON.parse(result) : null;
 };
-const cast = async (endpoint) => {
+const cast = async (endpoint, signal) => {
   if (!process.env.RELAY_WORKSPACE_KEY) throw new Error('RELAY_WORKSPACE_KEY is required');
   const res = await fetch(new URL(endpoint, config.castUrl), {
     headers: {
       authorization: `Bearer ${process.env.RELAY_WORKSPACE_KEY}`,
       'user-agent': 'agent-relay/11.10.4',
     },
-    signal: AbortSignal.timeout(20000),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20000)]) : AbortSignal.timeout(20000),
   });
   if (!res.ok) throw new Error(`Relaycast ${endpoint}: HTTP ${res.status}`);
   return (await res.json()).data;
 };
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
-const fixtureName = (repo) => repo.split('/')[1];
 const readLines = (name) =>
   existsSync(path.join(out, name))
     ? readFileSync(path.join(out, name), 'utf8')
@@ -236,9 +240,15 @@ const publicBinding = (b) =>
       .map((k) => [k, b[k]])
   );
 const sameBinding = (a, b) =>
-  ['provider', 'pathGlob', 'channel', 'webhookId', 'subscriptionId', 'webhookSubscriptionId'].every(
-    (k) => a[k] === b[k]
-  );
+  [
+    'provider',
+    'pathGlob',
+    'channel',
+    'webhookId',
+    'subscriptionId',
+    'webhookSubscriptionId',
+    'webhookSubscriptionWorkspaceId',
+  ].every((k) => a[k] === b[k]);
 async function subscriptions(remove = false) {
   const { RelayfileControlPlaneClient } = await import('@relayfile/client');
   const { HarnessDriverClient } = await import(path.join(root, 'packages/harness-driver/dist/index.js'));
@@ -260,13 +270,16 @@ async function subscriptions(remove = false) {
     const hooksBefore = (await cast('/v1/webhooks')).map((h) => ({ id: h.webhook_id ?? h.id }));
     const subscriptionsBefore = (await cast('/v1/subscriptions')).map((x) => ({ id: x.id }));
     // No resources or workers are created before all inventories succeed.
-    record('subscription-inventory-before', {
+    const inventory = {
       at: new Date().toISOString(),
       bindings: before,
       hooks: hooksBefore,
       relaySubscriptions: subscriptionsBefore,
       subscriptions: remoteSubscriptions.map((x) => ({ id: x.subscriptionId, pathGlobs: x.pathGlobs })),
-    });
+    };
+    if (!existsSync(path.join(out, 'subscription-inventory-before.json')))
+      record('subscription-inventory-before', inventory);
+    appendFileSync(path.join(out, 'subscription-inventory-journal.jsonl'), JSON.stringify(inventory) + '\n');
     const cli = path.join(root, 'packages/cli/dist/cli/index.js');
     const invoke = (argv) =>
       execFileSync(process.execPath, [cli, 'integration', ...argv, '--base-url', config.castUrl], {
@@ -285,7 +298,7 @@ async function subscriptions(remove = false) {
           throw new Error(
             `Binding changed outside this run: ${owned.pathGlob}; reconcile ownership before cleanup`
           );
-        invoke(['unsubscribe', '--provider', 'github', '--resource', owned.pathGlob]);
+        invoke(['unsubscribe', 'github', '--resource', owned.pathGlob]);
         const remaining = await cp.listBindings();
         if (remaining.some((b) => b.provider === 'github' && b.pathGlob === owned.pathGlob))
           throw new Error('Owned binding survived unsubscribe');
@@ -422,12 +435,13 @@ async function collect() {
   let channels = [...new Set([...Object.values(config.actors), ...(config.negativeChannels ?? [])])];
   const seen = new Set(readLines('messages.jsonl').map((m) => m.id));
   let stop = false;
-  process.once('SIGINT', () => {
+  const cancellation = new AbortController();
+  const stopCollection = () => {
     stop = true;
-  });
-  process.once('SIGTERM', () => {
-    stop = true;
-  });
+    cancellation.abort();
+  };
+  process.once('SIGINT', stopCollection);
+  process.once('SIGTERM', stopCollection);
   const end = Date.now() + (config.collectionSeconds ?? 1800) * 1000;
   client.onEvent((event) => {
     if (!actorNames.has(event.name)) return;
@@ -470,7 +484,16 @@ async function collect() {
         // Preserve continuous observation during a concurrent config rewrite.
       }
       for (const channel of channels) {
-        const messages = await cast(`/v1/channels/${encodeURIComponent(channel)}/messages?limit=100`);
+        const messages = await collectUnseenMessages(
+          (before, limit) =>
+            cast(
+              `/v1/channels/${encodeURIComponent(channel)}/messages?limit=${limit}` +
+                (before ? `&before=${encodeURIComponent(before)}` : ''),
+              cancellation.signal
+            ),
+          seen,
+          Date.parse(manifest.createdAt)
+        );
         for (const m of messages)
           if (!seen.has(m.id)) {
             seen.add(m.id);
@@ -487,94 +510,59 @@ async function collect() {
       );
       await pause(2000);
     }
+  } catch (error) {
+    if (!(stop && error?.name === 'AbortError')) throw error;
   } finally {
+    process.removeListener('SIGINT', stopCollection);
+    process.removeListener('SIGTERM', stopCollection);
     client.disconnect();
   }
 }
 
 function emit() {
-  const [repoShort, kind = 'comment'] = args;
-  const fixture = manifest.fixtures.find((f) => fixtureName(f.repo) === repoShort);
-  if (!fixture?.pr) throw new Error('Prepare the owned repository fixture first');
-  if (!['comment', 'review', 'thread', 'merge', 'ci'].includes(kind))
-    throw new Error('Unknown semantic stimulus');
-  const events = readLines('events.jsonl');
-  const lastStimulus = manifest.stimuli.at(-1);
-  const idleAfter = lastStimulus?.createdAt ?? manifest.createdAt;
-  const idle = events.findLast(
-    (e) => e.kind === 'agent_idle' && e.name === config.receiver && e.observedAt > idleAfter
-  );
-  if (!idle && !args.includes('--busy'))
-    throw new Error('No new observed idle boundary; collect first and wait for the receiver');
-  const nonce = randomBytes(16).toString('hex');
-  const text = `GHSUB_EVENT_NONCE=${nonce}`;
-  const stimulus = {
-    repo: fixture.repo,
-    pr: fixture.pr,
-    kind,
-    nonce,
-    createdAt: new Date().toISOString(),
-    idleAfter,
-    busy: args.includes('--busy'),
-  };
-  // Write intent before the provider mutation. Failed/uncertain mutations are retained for reconciliation.
-  manifest.stimuli.push(stimulus);
-  save();
-  let response;
-  if (kind === 'comment') {
-    response = gh(`repos/${fixture.repo}/issues/${fixture.pr}/comments`, 'POST', { body: text });
-    fixture.comments.push({ id: response.id, endpoint: `issues/comments/${response.id}` });
-  } else if (kind === 'review') {
-    response = gh(`repos/${fixture.repo}/pulls/${fixture.pr}/reviews`, 'POST', {
-      event: 'COMMENT',
-      body: text,
-    });
-    fixture.reviews.push(response.id);
-  } else if (kind === 'thread') {
-    response = gh(`repos/${fixture.repo}/pulls/${fixture.pr}/comments`, 'POST', {
-      body: text,
-      commit_id: fixture.headSha,
-      path: fixture.file,
-      side: 'RIGHT',
-      line: 2,
-    });
-    fixture.comments.push({ id: response.id, endpoint: `pulls/comments/${response.id}` });
-    if (response.in_reply_to_id != null) throw new Error('Expected a new review thread root');
-  } else if (kind === 'merge') {
-    const pr = gh(`repos/${fixture.repo}/pulls/${fixture.pr}`);
-    if (
-      pr.base.ref !== fixture.base ||
-      pr.head.ref !== fixture.head ||
-      !fixture.branches.includes(pr.base.ref)
-    )
-      throw new Error('Refusing merge outside owned fixture branches');
-    gh(`repos/${fixture.repo}/pulls/${fixture.pr}`, 'PATCH', { body: text });
-    response = gh(`repos/${fixture.repo}/pulls/${fixture.pr}/merge`, 'PUT', {
-      sha: pr.head.sha,
-      merge_method: 'merge',
-      commit_title: `Fixture only ${config.runId}`,
-      commit_message: text,
-    });
-    if (!response.merged) throw new Error('Fixture merge did not complete');
-    fixture.merged = true;
-  } else {
-    // A genuine GitHub Actions check_run.completed; no synthetic check completion or product merge.
-    const workflow = `name: ${text}\non:\n  push:\n    branches: ['${fixture.head}']\npermissions:\n  contents: read\njobs:\n  fixture:\n    name: ${text}\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo subscription-fixture\n`;
-    const workflowPath = `.github/workflows/ghsub-${config.runId}.yml`;
-    response = gh(`repos/${fixture.repo}/contents/${workflowPath}`, 'PUT', {
-      branch: fixture.head,
-      message: text,
-      content: Buffer.from(workflow).toString('base64'),
-      ...(fixture.workflowSha ? { sha: fixture.workflowSha } : {}),
-    });
-    fixture.workflowSha = response.content.sha;
-    fixture.headSha = response.commit.sha;
+  emitStimulus({ args, manifest, config, readLines, save, gh });
+}
+
+function resolveStimuli() {
+  for (const stimulus of manifest.stimuli.filter((s) => s.kind === 'ci' && s.accepted && !s.expected)) {
+    const data = gh(`repos/${stimulus.repo}/commits/${stimulus.headSha}/check-runs?per_page=100`);
+    if (data.total_count > data.check_runs.length) throw new Error('Check-run inventory requires pagination');
+    const runs = data.check_runs.filter(
+      (r) =>
+        r.name === `GHSUB_EVENT_NONCE=${stimulus.nonce} GHSUB_EXPECT_KIND=ci` &&
+        r.app?.slug === 'github-actions' &&
+        r.head_sha === stimulus.headSha
+    );
+    if (runs.length !== 1 || runs[0].status !== 'completed' || runs[0].conclusion !== 'success')
+      throw new Error('Expected one successful completed real fixture Actions check');
+    stimulus.providerId = String(runs[0].id);
+    stimulus.url = runs[0].html_url;
+    stimulus.expected = fixtureExpected(stimulus, runs[0], config.runId);
+    save();
   }
-  stimulus.providerId = response.id ?? response.sha ?? response.commit?.sha;
-  stimulus.url = response.html_url ?? response.content?.html_url ?? fixture.url;
-  stimulus.accepted = true;
-  save();
-  console.log(JSON.stringify({ repo: stimulus.repo, kind, url: stimulus.url, at: stimulus.createdAt }));
+}
+
+async function captureNango() {
+  if (!config.nango?.destination || !config.nango?.connectionId || !config.nango?.providerConfigKey)
+    throw new Error('Pin the normal Cloud Nango destination, connection, and integration in config.nango');
+  const captures = [];
+  for (const stimulus of manifest.stimuli.filter((s) => s.accepted)) {
+    const from = Date.parse(stimulus.createdAt);
+    const capture = await captureNangoForwards(
+      (name, args) => nangoLogsCall(name, args, process.env.NANGO_SECRET_KEY),
+      { ...config.nango, repo: stimulus.repo, nonce: stimulus.nonce },
+      { from: new Date(from).toISOString(), to: new Date(Math.min(Date.now(), from + 120000)).toISOString() }
+    );
+    captures.push({ repo: stimulus.repo, kind: stimulus.kind, ...capture });
+    record('nango-forward-evidence', { at: new Date().toISOString(), captures });
+  }
+  // Receipts alone do not establish application or agent action.
+  console.log(
+    JSON.stringify({
+      capturedStimuli: captures.length,
+      matchingForwards: captures.reduce((n, c) => n + c.receipts.length, 0),
+    })
+  );
 }
 
 function assertProof() {
@@ -592,6 +580,7 @@ function assertProof() {
       webhookAgentId: config.webhookAgentId,
       channel: config.actors[config.receiver],
       requireIdle: !stimulus.busy,
+      strictFixture: true,
     }),
   }));
   const coverage = readLines('coverage.jsonl');
@@ -603,10 +592,13 @@ function assertProof() {
           coverage,
           channel,
           Date.parse(stimulus.createdAt),
-          (config.negativeWindowSeconds ?? 120) * 1000
+          Math.max(120, config.negativeWindowSeconds ?? 120) * 1000
         ) &&
         !messages.some(
-          (m) => m.channel === channel && m.text?.includes(`GHSUB_EVENT_NONCE=${stimulus.nonce}`)
+          (m) =>
+            m.channel === channel &&
+            (m.text?.includes(`GHSUB_EVENT_NONCE=${stimulus.nonce}`) ||
+              m.text?.includes(`GHSUB_ACK ${digest(stimulus.nonce)}`))
         ),
     }))
   );
@@ -639,6 +631,9 @@ function cleanup() {
     for (const branch of [...fixture.branches]) {
       if (!branch.startsWith(`ghsub-demo/${config.runId}/`))
         throw new Error('Refusing unowned branch deletion');
+      const expectedSha = branch === fixture.head ? fixture.headSha : (fixture.baseSha ?? fixture.startSha);
+      if (gh(`repos/${fixture.repo}/git/ref/heads/${branch}`).object.sha !== expectedSha)
+        throw new Error('Owned branch advanced outside the manifest; refusing deletion');
       gh(`repos/${fixture.repo}/git/refs/heads/${branch}`, 'DELETE');
       fixture.branches = fixture.branches.filter((b) => b !== branch);
       save();
@@ -656,6 +651,8 @@ try {
   if (command === 'unsubscribe') await subscriptions(true);
   if (command === 'collect') await collect();
   if (command === 'emit') emit();
+  if (command === 'resolve') resolveStimuli();
+  if (command === 'capture-nango') await captureNango();
   if (command === 'assert') assertProof();
   if (command === 'cleanup') cleanup();
   if (command === 'receiver-task') console.log(receiverTask);

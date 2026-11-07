@@ -1,11 +1,7 @@
 ---
-name: creating-agent-skills-skill
+name: creating-agent-skills
 description: Use when creating Agent Skills packages (SKILL.md format) for Codex CLI, GitHub Copilot, or Amp - provides the agentskills.io specification with frontmatter constraints, directory structure, and validation rules
 ---
-
-# Creating Agent Skills
-
-Use when creating Agent Skills packages (SKILL.md format) for Codex CLI, GitHub Copilot, or Amp - provides the agentskills.io specification with frontmatter constraints, directory structure, and validation rules
 
 ### Overview
 

@@ -1,0 +1,380 @@
+{
+  "version": "1.0.0",
+  "id": "881766aa-3474-48af-b485-9277df7747a0",
+  "timestamp": "2026-09-21T00:05:41.039Z",
+  "trajectory": "traj_t5bpsdj37huc",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/active/traj_t5bpsdj37huc/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 103,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 5,
+              "end_line": 15,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/api.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 429,
+              "end_line": 562,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 733,
+              "end_line": 738,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 766,
+              "end_line": 772,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 802,
+              "end_line": 807,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/maintenance.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 658,
+              "end_line": 664,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 681,
+              "end_line": 686,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/relaycast_events.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 639,
+              "end_line": 662,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 865,
+              "end_line": 871,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 890,
+              "end_line": 895,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/tests.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 458,
+              "end_line": 474,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/worker_events.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1421,
+              "end_line": 1427,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/worker.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 5,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 255,
+              "end_line": 261,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 367,
+              "end_line": 373,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 574,
+              "end_line": 580,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 587,
+              "end_line": 593,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 598,
+              "end_line": 604,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 615,
+              "end_line": 621,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 627,
+              "end_line": 633,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 673,
+              "end_line": 679,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 717,
+              "end_line": 723,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 817,
+              "end_line": 829,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 849,
+              "end_line": 864,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 970,
+              "end_line": 976,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 1073,
+              "end_line": 1085,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 1105,
+              "end_line": 1120,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 1422,
+              "end_line": 1433,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 1602,
+              "end_line": 1620,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 1637,
+              "end_line": 1643,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 1814,
+              "end_line": 1820,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 1838,
+              "end_line": 1844,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 1852,
+              "end_line": 1858,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 2056,
+              "end_line": 2146,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 2170,
+              "end_line": 2187,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 2194,
+              "end_line": 2202,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 2888,
+              "end_line": 2894,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 2932,
+              "end_line": 2938,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 2967,
+              "end_line": 2973,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 3034,
+              "end_line": 3040,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 3877,
+              "end_line": 3883,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 3917,
+              "end_line": 3951,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 3959,
+              "end_line": 4079,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            },
+            {
+              "start_line": 4457,
+              "end_line": 4463,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/tests/muse_startup_cli.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 141,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/muse-unattended-startup/case.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 13,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/muse-unattended-startup/run.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 243,
+              "revision": "ec88d7995fbf1573440dca757db074feb0c473a2"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

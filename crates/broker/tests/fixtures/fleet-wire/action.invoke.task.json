@@ -1,0 +1,23 @@
+{
+  "v": 1,
+  "type": "action.invoke",
+  "invocation_id": "inv-task",
+  "action": "task.run",
+  "input": {
+    "cli": "claude",
+    "task": "Return 42",
+    "task_context": {
+      "run_id": "run",
+      "step_id": "step",
+      "dispatch_id": "dispatch",
+      "timeout_ms": 60000
+    }
+  },
+  "task_execution": {
+    "execution_id": "inv-task/1",
+    "run_id": "run",
+    "step_id": "step",
+    "dispatch_id": "dispatch",
+    "deadline": "2026-01-01T00:01:00.000Z"
+  }
+}

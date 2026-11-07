@@ -34,7 +34,11 @@ function commandRecord(command, names) {
     path: commandPath,
     aliases: command.aliases().sort((left, right) => left.localeCompare(right, 'en')),
     hidden: command._hidden === true,
-    leaf: command.commands.length === 0,
+    // Commander permits an executable compatibility command to also own
+    // subcommands. Treat either an action handler or a structural leaf as an
+    // executable leaf so the qualification board cannot silently drop the
+    // legacy parent path when a spelled-out child is added.
+    leaf: typeof command._actionHandler === 'function' || command.commands.length === 0,
     arguments: command.registeredArguments.map((argument) => ({
       name: argument.name(),
       required: argument.required === true,

@@ -150,6 +150,26 @@ describe('serveNode', () => {
     await running.stop();
   });
 
+  it.each([true, false])(
+    'rejects unverified delegated output only when verifyReady=%s',
+    async (verifyReady) => {
+      const fetchMock = vi.fn(async () =>
+        Response.json({ data: { status: 'completed', output: { spawned: true, ready: false } } })
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      const { running, sock, delegation } = await delegateForConfirmation(verifyReady);
+      sock.emit({ v: 1, id: delegation.id, type: 'reply', ok: true, data: { invocation_id: 'child' } });
+      await vi.waitFor(() => expect(sock.sentOfType('action.result')).toHaveLength(1));
+      const result = sock.sentOfType('action.result')[0]!;
+      if (verifyReady) expect(result.error).toBeTruthy();
+      else {
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(result.output).toMatchObject({ ready: false });
+      }
+      await running.stop();
+    }
+  );
+
   it.each(['pending', 'dispatched', 'invoked', 'running', 'read-timeout'])(
     'keeps confirming through %s without dispatching another child',
     async (state) => {
@@ -258,9 +278,49 @@ describe('serveNode', () => {
     const register = sock.lastRegister();
     expect(register).toMatchObject({ type: 'node.register', name: 'data-pipeline', node_id: 'node_a' });
     expect(register.provider).toMatchObject({ name: 'data-pipeline' });
-    expect(register.capabilities).toEqual([{ name: 'run-etl', kind: 'action' }]);
+    expect(register.capabilities).toEqual([
+      { name: 'run-etl', kind: 'action', metadata: { 'relay.action-caller': 'v1' } },
+    ]);
 
     sock.emit(acceptAll(register));
+    await flush();
+    await running.stop();
+  });
+
+  it('reports the definition maxAgents in the register frame', async () => {
+    const node = defineNode({
+      name: 'sf-frame',
+      maxAgents: 15,
+      capabilities: {
+        'spawn:grok': spawn({ runtime: 'pty', command: 'grok' }),
+      },
+    });
+    const running = startServeNode({ definition: node, connection, reconnect: false });
+
+    const sock = socket();
+    sock.open();
+    const register = sock.lastRegister();
+    expect(register.max_agents).toBe(15);
+
+    sock.emit(acceptAll(register));
+    await flush();
+    await running.stop();
+  });
+
+  it('registers max_agents 0 (unlimited) when the definition declares no cap', async () => {
+    const node = defineNode({
+      name: 'unbounded',
+      capabilities: {
+        'run-etl': action({ input: z.object({ date: z.string() }) }, async () => 'done'),
+      },
+    });
+    const running = startServeNode({ definition: node, connection, reconnect: false });
+
+    const sock = socket();
+    sock.open();
+    expect(sock.lastRegister().max_agents).toBe(0);
+
+    sock.emit(acceptAll(sock.lastRegister()));
     await flush();
     await running.stop();
   });
@@ -501,7 +561,9 @@ describe('serveNode', () => {
     sock.open();
     const register = sock.lastRegister();
     // The spawn definition registers as an invokable (shadow) action.
-    expect(register.capabilities).toEqual([{ name: 'spawn:codex', kind: 'action' }]);
+    expect(register.capabilities).toEqual([
+      { name: 'spawn:codex', kind: 'action', metadata: { 'relay.action-caller': 'v1' } },
+    ]);
     sock.emit(acceptAll(register));
     await flush();
 

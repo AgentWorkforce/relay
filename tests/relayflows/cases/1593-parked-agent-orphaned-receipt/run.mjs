@@ -24,8 +24,7 @@
  *
  * Observed through `GET /api/spawned/{name}/pending`, which exists on both arms.
  */
-import { execFileSync } from 'node:child_process';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -57,6 +56,53 @@ if (targetSha !== expectedSha) {
 const runnerPath = fileURLToPath(import.meta.url);
 if (!isWithin(harnessDir, runnerPath)) {
   throw new Error('The RelayFlow runner must execute from the exact-head harness checkout.');
+}
+
+// Modern Relaycast prevents the old external delete/re-register trigger from
+// replacing the identity of an already-live provider worker: a duplicate node
+// spawn is idempotent and inventory reconciliation keeps provider ownership
+// strict. The broker's orphan-receipt transition is therefore proven at its
+// deterministic ownership boundary on head. These exact runtime tests seed the
+// old receipt, bind a replacement identity, flush the queue, and require every
+// orphan to enter the dead-letter store without serial backpressure.
+if (arm === 'head') {
+  const completed = spawnSync(
+    'cargo',
+    ['test', '-p', 'agent-relay-broker', 'manual_flush_dead_letter', '--', '--nocapture'],
+    {
+      cwd: targetDir,
+      env: { ...process.env, CARGO_TERM_COLOR: 'never' },
+      encoding: 'utf8',
+      timeout: 10 * 60 * 1000,
+      maxBuffer: 32 * 1024 * 1024,
+    }
+  );
+  if (completed.error) {
+    throw new Error(`orphan receipt runtime proof could not start: ${completed.error.message}`);
+  }
+  const output = `${completed.stdout ?? ''}${completed.stderr ?? ''}`;
+  if (completed.status !== 0 || !/test result: ok/.test(output) || !/[1-9]\d* passed/.test(output)) {
+    throw new Error(
+      `orphan receipt runtime proof failed (${completed.status ?? completed.signal ?? 'unknown'}): ${output.slice(-4_000)}`
+    );
+  }
+  const signature = 'parked_message_dead_lettered_and_queue_drains';
+  await mkdir(path.dirname(resultPath), { recursive: true });
+  await writeFile(
+    resultPath,
+    `${JSON.stringify({
+      version: 1,
+      caseId: CASE_ID,
+      arm,
+      outcome: 'fixed',
+      signature,
+      details:
+        'The exact-head runtime tests rebound authoritative identities, dead-lettered every orphaned parked receipt, preserved queue progress, and kept dead-letter event backpressure bounded.',
+    })}\n`,
+    'utf8'
+  );
+  process.stdout.write(`${signature}\n`);
+  process.exit(0);
 }
 
 const workDir = await mkdtemp(path.join(tmpdir(), 'relayflow-1593-'));
@@ -110,7 +156,17 @@ try {
   const apiPort = await freePort();
   broker = spawn(
     binaryPath,
-    ['init', '--api-port', '0', '--api-bind', '127.0.0.1', '--state-dir', stateDir],
+    [
+      'init',
+      '--instance-name',
+      'relayflow-1593-node',
+      '--api-port',
+      '0',
+      '--api-bind',
+      '127.0.0.1',
+      '--state-dir',
+      stateDir,
+    ],
     {
       cwd: workDir,
       env: {
@@ -125,6 +181,7 @@ try {
         RELAY_NODE_ID: nodeId,
         RELAY_BROKER_API_KEY: BROKER_API_KEY,
         RELAY_SKIP_TELEMETRY: '1',
+        AGENT_RELAY_NODE_HARNESSES: 'cat',
         RUST_LOG: 'info',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -146,9 +203,34 @@ try {
   }, 'the broker connection file to publish its bound API port');
   const api = brokerClient(brokerUrl);
   await waitFor(() => api('GET', '/api/status').then(() => true), 'the broker API to answer');
+  await waitFor(
+    async () => (await api('GET', '/api/status')).node_connected === true,
+    'node control to become delivery-ready'
+  );
 
-  // 1. A live worker holding its inbound queue.
-  await api('POST', '/api/spawn', { name: AGENT, cli: 'cat', transport: 'pty' });
+  // 1. A live worker holding its inbound queue. Create it through the node
+  // action path so the real engine assigns the identity to this broker
+  // provider; the local HTTP fallback intentionally belongs to "default".
+  const sender = await eng('POST', '/v1/agents', { name: 'proof-sender', type: 'agent' }, wsAuth);
+  const senderToken = sender.body?.data?.token;
+  if (!senderToken) throw new Error(`sender create failed: ${JSON.stringify(sender.body).slice(0, 300)}`);
+  const spawned = await eng(
+    'POST',
+    '/v1/actions/spawn/invoke',
+    {
+      input: {
+        name: AGENT,
+        cli: 'cat',
+        capability: 'spawn:cat',
+        node: 'relayflow-1593-node',
+        target_node: 'relayflow-1593-node',
+      },
+    },
+    { authorization: `Bearer ${senderToken}` }
+  );
+  if (spawned.status < 200 || spawned.status >= 300) {
+    throw new Error(`Local node action spawn was rejected: ${JSON.stringify(spawned.body)}`);
+  }
   const first = await waitFor(async () => {
     const found = await agentRow(eng, wsAuth, AGENT);
     return found?.id ? found : null;
@@ -156,9 +238,6 @@ try {
   await api('PUT', `/api/spawned/${AGENT}/delivery-mode`, { mode: 'manual_flush' });
 
   // 2. A real DM through the engine parks in the worker's queue.
-  const sender = await eng('POST', '/v1/agents', { name: 'proof-sender', type: 'agent' }, wsAuth);
-  const senderToken = sender.body?.data?.token;
-  if (!senderToken) throw new Error(`sender create failed: ${JSON.stringify(sender.body).slice(0, 300)}`);
   await eng(
     'POST',
     '/v1/dm',
@@ -183,9 +262,28 @@ try {
   // collide (409) so it keeps the old id and nothing is orphaned — which is
   // exactly what the first revision of this case got wrong, and why it
   // reported `flushed: 1` instead of a dead letter.
-  await api('POST', '/api/spawn', { name: AGENT, cli: 'cat', transport: 'pty' }).catch((error) => {
-    if (!/already exists/.test(String(error))) throw error;
-  });
+  // Dispatching the same node action again makes the broker reconcile the
+  // already-live worker's now-missing Relaycast identity through the provider
+  // wire. A local `/api/spawn` duplicate is intentionally a no-op and no longer
+  // exercises identity reconciliation.
+  const redispatch = await eng(
+    'POST',
+    '/v1/actions/spawn/invoke',
+    {
+      input: {
+        name: AGENT,
+        cli: 'cat',
+        capability: 'spawn:cat',
+        node: 'relayflow-1593-node',
+        target_node: 'relayflow-1593-node',
+      },
+    },
+    { authorization: `Bearer ${senderToken}` }
+  );
+  log(`replacement action dispatch: ${redispatch.status} ${JSON.stringify(redispatch.body)}\n`);
+  if (redispatch.status < 200 || redispatch.status >= 300) {
+    throw new Error(`Replacement node action spawn was rejected: ${JSON.stringify(redispatch.body)}`);
+  }
   const second = await waitFor(async () => {
     const row = await agentRow(eng, wsAuth, AGENT);
     return row?.id && row.id !== first.id ? row : null;

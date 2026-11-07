@@ -1,6 +1,6 @@
 import { authorizedApiFetch, ensureCloudSession } from './auth.js';
 import { redactCredentialValues } from './redact.js';
-import { defaultApiUrl } from './types.js';
+import { CloudAuthError, defaultApiUrl } from './types.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -15,8 +15,10 @@ const DAYTONA_PROVIDER_SANDBOX_ID_PATTERN =
  * not a caller-controlled SDK override.
  */
 export const CANONICAL_RELAYCAST_ORIGIN = 'https://cast.agentrelay.com';
+export const ARMADILLO_RELAYCAST_ORIGIN = 'https://armadillo.agentrelay.com';
 export const AGENT37_RELAYCAST_ORIGIN = 'https://agent37-cast.agentrelay.com';
-const TRUSTED_RELAYCAST_ORIGINS = new Set([CANONICAL_RELAYCAST_ORIGIN, AGENT37_RELAYCAST_ORIGIN]);
+export const DEV_CLOUD_API_URL = 'https://dev.agentrelay.com/cloud';
+export const DEV_RELAYCAST_ORIGIN = 'https://dev-cast.agentrelay.com';
 const DEFAULT_RESOLUTION_TIMEOUT_MS = 120_000;
 // Mounted provisioning can spend up to 240s completing the initial Relayfile
 // sync, then up to 90s waiting for the enrolled node to report ready. Leave a
@@ -24,26 +26,73 @@ const DEFAULT_RESOLUTION_TIMEOUT_MS = 120_000;
 // not abandon a successful server-side request without receiving its sandbox
 // identity (which prevents the CLI from cleaning it up safely).
 const DEFAULT_ENSURE_TIMEOUT_MS = 480_000;
+const DEFAULT_ASYNC_PREPARATION_TIMEOUT_MS = 35 * 60_000;
+const ASYNC_PREPARATION_REQUEST_TIMEOUT_MS = 110_000;
+const DEFAULT_ASYNC_PREPARATION_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_DELETE_TIMEOUT_MS = 30_000;
+const DEFAULT_RELAYFILE_REPOSITORY_MATERIALIZE_TIMEOUT_MS = 20 * 60_000;
+const DEFAULT_RELAYFILE_REPOSITORY_POLL_INTERVAL_MS = 2_000;
+const MAX_TIMER_MS = 2_147_483_647;
+const LIVE_RELAYFILE_SOURCE_PROFILE = 'complete-v1' as const;
 
 export type CloudFleetSandboxRequestOptions = {
   apiUrl?: string;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** Receives safe durable phase changes while an async-v1 sandbox is prepared. */
+  onPreparationProgress?: (progress: CloudFleetSandboxPreparationProgress) => void;
+  preparationPollIntervalMs?: number;
+};
+
+export type CloudFleetSandboxPreparationProgress = {
+  sandboxId: string;
+  state: 'pending' | 'ready' | 'terminal' | 'cleanup_pending';
+  phase: string;
+  generation: number;
+};
+
+export type MaterializeCloudRelayfileRepositoryInput = {
+  /** Cloud UUID or unified rw_* workspace id. */
+  workspaceId: string;
+  /** Canonical GitHub owner/name identity. */
+  repository: string;
+  /** Exact reachable commit to seed into Relayfile. */
+  revision: string;
+};
+
+export type CloudRelayfileRepositoryMaterialization = {
+  cloudWorkspaceId: string;
+  repository: string;
+  revision: string;
+  filesWritten: number;
+  sourceProfile: typeof LIVE_RELAYFILE_SOURCE_PROFILE;
+  contentRoot: string;
+  sentinelPath: string;
+};
+
+export type CloudRelayfileRepositoryMaterializeOptions = CloudFleetSandboxRequestOptions & {
+  pollIntervalMs?: number;
 };
 
 export type CloudFleetSandboxProviderId =
-  | 'daytona'
-  | 'e2b'
-  | 'vercel'
-  | 'freestyle'
-  | 'agent37'
-  | 'microsandbox';
+  'daytona' | 'e2b' | 'vercel' | 'freestyle' | 'agent37' | 'microsandbox';
 
-/**
- * Carries every safe identifier Cloud returned when provisioning failed after
- * the request may have created a billable sandbox.
- */
+/** Safe aggregate provider-capacity detail returned before allocation. */
+export type CloudFleetSandboxCapacityExhaustion = {
+  readonly provider: CloudFleetSandboxProviderId;
+  readonly current: number;
+  readonly limit: number;
+};
+
+/** Credential-free typed failure from a terminal async-v1 preparation record. */
+export type CloudFleetSandboxPreparationFailure = {
+  readonly code: string;
+  readonly phase: string;
+  /** Mount command boundary, e.g. initial_sync_deadline, when Cloud reported one. */
+  readonly causeStage?: string;
+};
+
+/** Describes provisioning failure without granting unproven cleanup authority. */
 export class CloudFleetSandboxProvisionError extends Error {
   readonly cloudWorkspaceId?: string;
   readonly sandboxId?: string;
@@ -51,7 +100,25 @@ export class CloudFleetSandboxProvisionError extends Error {
   readonly providerId?: CloudFleetSandboxProviderId;
   /** A 2xx response proved this exact caller-owned sandbox was provisioned. */
   readonly confirmedProvisioned: boolean;
+  /** Cloud may have accepted the request without returning a complete outcome. */
   readonly outcomeUnknown: boolean;
+  /** Stable Cloud error code for a validated pre-allocation capacity rejection. */
+  readonly code?: 'sandbox_capacity_exhausted';
+  /** Cloud affirmatively proved the rejected request allocated no sandbox. */
+  readonly noSandboxCreated: boolean;
+  /** The same request can be retried after provider capacity becomes available. */
+  readonly retryable: boolean;
+  /** Safe aggregate counts for each provider that blocked allocation. */
+  readonly capacity: readonly CloudFleetSandboxCapacityExhaustion[];
+  /**
+   * Cloud's durable async-v1 record for this exact sandbox identity is
+   * terminal, which Cloud writes only after the provider rejected allocation,
+   * dispatch was abandoned, or the provider sandbox was proven absent. No
+   * sandbox for this identity is left running and no cleanup is owed.
+   */
+  readonly sandboxAbsent: boolean;
+  /** Typed Cloud failure for a terminal preparation, e.g. relayfile_mount_failed. */
+  readonly preparationFailure?: CloudFleetSandboxPreparationFailure;
 
   constructor(
     message: string,
@@ -62,6 +129,12 @@ export class CloudFleetSandboxProvisionError extends Error {
       providerId?: CloudFleetSandboxProviderId;
       confirmedProvisioned?: boolean;
       outcomeUnknown?: boolean;
+      code?: 'sandbox_capacity_exhausted';
+      noSandboxCreated?: boolean;
+      retryable?: boolean;
+      capacity?: readonly CloudFleetSandboxCapacityExhaustion[];
+      sandboxAbsent?: boolean;
+      preparationFailure?: CloudFleetSandboxPreparationFailure;
       cause?: unknown;
     } = {}
   ) {
@@ -73,6 +146,13 @@ export class CloudFleetSandboxProvisionError extends Error {
     this.providerId = identity.providerId;
     this.confirmedProvisioned = identity.confirmedProvisioned === true;
     this.outcomeUnknown = !this.confirmedProvisioned && identity.outcomeUnknown === true;
+    this.code = identity.code;
+    this.noSandboxCreated = !this.confirmedProvisioned && identity.noSandboxCreated === true;
+    this.retryable = identity.retryable === true;
+    this.capacity = identity.capacity?.map((entry) => ({ ...entry })) ?? [];
+    this.sandboxAbsent = !this.confirmedProvisioned && identity.sandboxAbsent === true;
+    this.preparationFailure =
+      identity.preparationFailure === undefined ? undefined : { ...identity.preparationFailure };
   }
 }
 
@@ -81,6 +161,8 @@ class CloudFleetSandboxIdentityMismatchError extends Error {}
 export type EnsureCloudFleetSandboxInput = {
   /** Cloud UUID or unified rw_* workspace id. */
   workspaceId: string;
+  /** Opt in to Cloud's durable, poll-driven Agent37 preparation contract. */
+  preparationMode?: 'async-v1';
   /** Caller-declared one-time Cloud identity used to resume a cut-off provision. */
   sandboxId?: string;
   name?: string;
@@ -108,12 +190,12 @@ export type EnsureCloudFleetSandboxInput = {
    * PR #3212 implements the ensure-side; this helper just plumbs it through.
    */
   repos?: readonly string[];
+  /** Exact lowercase HEAD attestation expected for each requested repository. */
+  repoRevisions?: Readonly<Record<string, string>>;
 };
 
 export type CloudFleetSandboxWorkloadProfile =
-  | 'standard'
-  | 'long-running-agent'
-  | 'standard-long-running-agent';
+  'standard' | 'long-running-agent' | 'standard-long-running-agent';
 
 const CLOUD_FLEET_SANDBOX_PROVIDER_IDS: readonly CloudFleetSandboxProviderId[] = [
   'daytona',
@@ -134,9 +216,13 @@ type CloudFleetSandboxReadyBase = {
   relayWorkspaceId: string;
   /** Closed server-owned Relaycast contract when Cloud returned one. Required for Agent37. */
   relaycastTarget?: CloudFleetRelaycastTarget;
+  /** Cloud API URL that authenticated and returned relaycastTarget. */
+  relaycastCloudApiUrl?: string;
   relayfileMounted: boolean;
   relayfileMountPath?: string;
   providerId?: CloudFleetSandboxProviderId;
+  /** Repository HEADs verified by Cloud for this sandbox. */
+  repoRevisions?: Readonly<Record<string, string>>;
 };
 
 /** Daytona responses always carry the independently attested provider UUID. */
@@ -160,6 +246,10 @@ export type CloudFleetSandboxReused = {
   providerId?: CloudFleetSandboxProviderId;
   /** Closed server-owned Relaycast contract when Cloud returned one. Required for Agent37. */
   relaycastTarget?: CloudFleetRelaycastTarget;
+  /** Cloud API URL that authenticated and returned relaycastTarget. */
+  relaycastCloudApiUrl?: string;
+  /** Repository HEADs verified by Cloud for this sandbox. */
+  repoRevisions?: Readonly<Record<string, string>>;
 };
 
 type CloudFleetSandboxProvisioningTimeoutBase = {
@@ -169,6 +259,8 @@ type CloudFleetSandboxProvisioningTimeoutBase = {
   providerSandboxId?: string;
   relayWorkspaceId: string;
   relaycastTarget?: CloudFleetRelaycastTarget;
+  /** Cloud API URL that authenticated and returned relaycastTarget. */
+  relaycastCloudApiUrl?: string;
   nodeName: string;
   waitedMs: number;
   providerId?: CloudFleetSandboxProviderId;
@@ -185,9 +277,7 @@ export type CloudFleetSandboxProvisioningTimeout =
     });
 
 export type EnsureCloudFleetSandboxResult =
-  | CloudFleetSandboxReady
-  | CloudFleetSandboxReused
-  | CloudFleetSandboxProvisioningTimeout;
+  CloudFleetSandboxReady | CloudFleetSandboxReused | CloudFleetSandboxProvisioningTimeout;
 
 export type DeleteCloudFleetSandboxInput = {
   cloudWorkspaceId: string;
@@ -213,7 +303,21 @@ function readString(payload: JsonRecord, key: string): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-function normalizeRelaycastOrigin(value: unknown, field: string): string {
+function isExactDevCloudApiUrl(apiUrl: string | undefined): boolean {
+  return apiUrl === DEV_CLOUD_API_URL;
+}
+
+function canonicalRelaycastOrigins(apiUrl: string | undefined): string[] {
+  return isExactDevCloudApiUrl(apiUrl)
+    ? [DEV_RELAYCAST_ORIGIN]
+    : [CANONICAL_RELAYCAST_ORIGIN, ARMADILLO_RELAYCAST_ORIGIN];
+}
+
+function normalizeRelaycastOrigin(
+  value: unknown,
+  field: string,
+  trustedOrigins: ReadonlySet<string>
+): string {
   if (typeof value !== 'string' || !value.trim()) {
     throw new Error(`Cloud fleet sandbox response has an invalid ${field}.`);
   }
@@ -231,7 +335,7 @@ function normalizeRelaycastOrigin(value: unknown, field: string): string {
     parsed.search ||
     parsed.hash ||
     (parsed.pathname !== '' && parsed.pathname !== '/') ||
-    !TRUSTED_RELAYCAST_ORIGINS.has(parsed.origin)
+    !trustedOrigins.has(parsed.origin)
   ) {
     throw new Error(`Cloud fleet sandbox response has an untrusted ${field}.`);
   }
@@ -239,7 +343,7 @@ function normalizeRelaycastOrigin(value: unknown, field: string): string {
 }
 
 /** Validate Cloud's closed Relaycast route, identity, and scoped credential contract. */
-export function normalizeRelaycastTarget(value: unknown): CloudFleetRelaycastTarget {
+export function normalizeRelaycastTarget(value: unknown, apiUrl?: string): CloudFleetRelaycastTarget {
   if (!isObject(value)) {
     throw new Error('Cloud fleet sandbox response is missing relaycastTarget.');
   }
@@ -247,9 +351,16 @@ export function normalizeRelaycastTarget(value: unknown): CloudFleetRelaycastTar
   if (route !== 'canonical' && route !== 'agent37-isolated') {
     throw new Error('Cloud fleet sandbox response has an unknown Relaycast route.');
   }
-  const baseUrl = normalizeRelaycastOrigin(value.baseUrl, 'relaycastTarget.baseUrl');
-  const expectedOrigin = route === 'canonical' ? CANONICAL_RELAYCAST_ORIGIN : AGENT37_RELAYCAST_ORIGIN;
-  if (baseUrl !== expectedOrigin) {
+  const expectedCanonicalOrigins = canonicalRelaycastOrigins(apiUrl);
+  const trustedOrigins = new Set([
+    CANONICAL_RELAYCAST_ORIGIN,
+    ARMADILLO_RELAYCAST_ORIGIN,
+    AGENT37_RELAYCAST_ORIGIN,
+    ...(isExactDevCloudApiUrl(apiUrl) ? [DEV_RELAYCAST_ORIGIN] : []),
+  ]);
+  const baseUrl = normalizeRelaycastOrigin(value.baseUrl, 'relaycastTarget.baseUrl', trustedOrigins);
+  const expectedOrigins = route === 'canonical' ? expectedCanonicalOrigins : [AGENT37_RELAYCAST_ORIGIN];
+  if (!expectedOrigins.includes(baseUrl)) {
     throw new Error('Cloud fleet sandbox response mapped Relaycast route to the wrong origin.');
   }
   const workspaceId = readString(value, 'workspaceId');
@@ -257,7 +368,7 @@ export function normalizeRelaycastTarget(value: unknown): CloudFleetRelaycastTar
     throw new Error('Cloud fleet sandbox response is missing relaycastTarget.workspaceId.');
   }
   const relaycastApiKey = readString(value, 'relaycastApiKey');
-  if (!relaycastApiKey || !/^rk_live_[A-Za-z0-9_-]+$/.test(relaycastApiKey)) {
+  if (!relaycastApiKey || !/^(rk_live_|ar_ws_)[A-Za-z0-9_-]+$/.test(relaycastApiKey)) {
     throw new Error('Cloud fleet sandbox response has an invalid Relaycast API key.');
   }
   return { route, baseUrl, workspaceId, relaycastApiKey };
@@ -276,19 +387,26 @@ function requiredNumber(payload: JsonRecord, key: string, context: string): numb
 
 function assertProviderRelaycastTarget(
   providerId: CloudFleetSandboxProviderId | undefined,
-  target: CloudFleetRelaycastTarget | undefined
+  target: CloudFleetRelaycastTarget | undefined,
+  apiUrl?: string
 ): void {
   if (providerId === 'agent37') {
     if (!target) {
       throw new Error('Cloud fleet sandbox response is missing the Agent37 Relaycast target.');
     }
-    if (target.route !== 'agent37-isolated' || target.baseUrl !== AGENT37_RELAYCAST_ORIGIN) {
+    const validDevTarget =
+      isExactDevCloudApiUrl(apiUrl) &&
+      target.route === 'canonical' &&
+      target.baseUrl === DEV_RELAYCAST_ORIGIN;
+    const validProductionTarget =
+      target.route === 'agent37-isolated' && target.baseUrl === AGENT37_RELAYCAST_ORIGIN;
+    if (!validDevTarget && !validProductionTarget) {
       throw new Error('Cloud fleet sandbox response mapped Agent37 to a non-isolated Relaycast target.');
     }
     return;
   }
   if (providerId !== undefined && target) {
-    if (target.route !== 'canonical' || target.baseUrl !== CANONICAL_RELAYCAST_ORIGIN) {
+    if (target.route !== 'canonical' || !canonicalRelaycastOrigins(apiUrl).includes(target.baseUrl)) {
       throw new Error(
         `Cloud fleet sandbox response mapped ${providerId} to a non-canonical Relaycast target.`
       );
@@ -297,12 +415,22 @@ function assertProviderRelaycastTarget(
 }
 
 function boundedSignal(options: CloudFleetSandboxRequestOptions, defaultTimeoutMs: number): AbortSignal {
-  const timeoutMs = options.timeoutMs ?? defaultTimeoutMs;
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    throw new Error('Cloud fleet sandbox request timeout must be a positive number of milliseconds.');
-  }
+  const timeoutMs = normalizeTimerMs(
+    options.timeoutMs ?? defaultTimeoutMs,
+    false,
+    'Cloud fleet request timeout'
+  );
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   return options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
+}
+
+function normalizeTimerMs(value: number, allowZero: boolean, label: string): number {
+  if (!Number.isFinite(value) || value < 0 || (!allowZero && value === 0)) {
+    throw new Error(
+      `${label} must be a finite ${allowZero ? 'non-negative' : 'positive'} number of milliseconds.`
+    );
+  }
+  return value === 0 ? 0 : Math.min(MAX_TIMER_MS, Math.max(1, Math.floor(value)));
 }
 
 async function readJson(response: Response): Promise<unknown> {
@@ -336,10 +464,170 @@ function endpointError(action: string, response: Response, payload: unknown): Er
   );
 }
 
+/** A Cloud error body that names its failure, as opposed to a gateway page. */
+function isTypedErrorBody(payload: unknown): boolean {
+  return isObject(payload) && readString(payload, 'code') !== undefined;
+}
+
+function typedCauseSuffix(payload: unknown): string {
+  if (!isObject(payload)) return '';
+  const code = readString(payload, 'code');
+  if (!code) return '';
+  const causeStage = readString(payload, 'causeStage');
+  return ` (${code}${causeStage === undefined ? '' : `, ${causeStage}`})`;
+}
+
+function retryAfterDelayMs(response: Response): number | null {
+  const value = response.headers.get('retry-after')?.trim();
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(MAX_TIMER_MS, Math.max(0, Math.ceil(seconds * 1000)));
+  }
+  const retryAt = Date.parse(value);
+  if (!Number.isFinite(retryAt)) return null;
+  return Math.min(MAX_TIMER_MS, Math.max(0, retryAt - Date.now()));
+}
+
 function requiredString(payload: JsonRecord, key: string, context: string): string {
   const value = readString(payload, key);
   if (!value) throw new Error(`${context} response is missing ${key}.`);
   return value;
+}
+
+const REPOSITORY_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+const REPOSITORY_REVISION_PATTERN = /^[0-9a-f]{40}$/;
+
+function validateRequestedRepos(repos: readonly string[] | undefined): void {
+  if (repos === undefined || repos.length === 0) return;
+  if (repos.length > 16) {
+    throw new Error('Cloud fleet sandbox requests may include at most 16 repositories.');
+  }
+  const seen = new Set<string>();
+  const seenCheckoutNames = new Set<string>();
+  for (const repo of repos) {
+    const normalizedRepo = repo.toLowerCase();
+    if (seen.has(normalizedRepo)) {
+      throw new Error('Cloud fleet sandbox repositories must not contain duplicates.');
+    }
+    seen.add(normalizedRepo);
+    const slash = repo.lastIndexOf('/');
+    const checkoutName = (slash === -1 ? repo : repo.slice(slash + 1)).toLowerCase();
+    if (seenCheckoutNames.has(checkoutName)) {
+      throw new Error('Cloud fleet sandbox repositories must have unique checkout names.');
+    }
+    seenCheckoutNames.add(checkoutName);
+  }
+}
+
+function validateRepoRevisions(
+  repos: readonly string[] | undefined,
+  repoRevisions: Readonly<Record<string, string>> | undefined
+): Record<string, string> | undefined {
+  if (repoRevisions === undefined) return undefined;
+  const entries = Object.entries(repoRevisions);
+  const allowedRepos = new Set(repos ?? []);
+  if (
+    entries.length === 0 ||
+    entries.length > 16 ||
+    repos === undefined ||
+    repos.length > 16 ||
+    repos.length !== allowedRepos.size ||
+    entries.length !== allowedRepos.size
+  ) {
+    throw new Error(
+      'Cloud fleet sandbox revisions must cover every requested repository exactly once (maximum 16).'
+    );
+  }
+  for (const [repo, revision] of entries) {
+    if (!REPOSITORY_KEY_PATTERN.test(repo) || repo.includes('..')) {
+      throw new Error(`Cloud fleet sandbox repository key '${repo}' must use owner/name form.`);
+    }
+    if (!allowedRepos.has(repo)) {
+      throw new Error(`Cloud fleet sandbox repository revision '${repo}' is not present in repos.`);
+    }
+    if (!REPOSITORY_REVISION_PATTERN.test(revision)) {
+      throw new Error(
+        `Cloud fleet sandbox revision for '${repo}' must be exactly 40 lowercase hexadecimal characters.`
+      );
+    }
+  }
+  return Object.fromEntries(entries);
+}
+
+function parseRepositoryIdentity(repository: string): { owner: string; repo: string } {
+  const normalized = repository.trim();
+  if (!REPOSITORY_KEY_PATTERN.test(normalized) || normalized.includes('..')) {
+    throw new Error('Cloud Relayfile repository must use GitHub owner/name form.');
+  }
+  const [owner, repo] = normalized.split('/');
+  return { owner: owner!, repo: repo! };
+}
+
+function expectedRelayfileRepositoryPaths(
+  owner: string,
+  repo: string
+): {
+  contentRoot: string;
+  sentinelPath: string;
+} {
+  const root = `/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+  return {
+    contentRoot: `${root}/contents`,
+    sentinelPath: `${root}/.relayfile/clone.json`,
+  };
+}
+
+function waitForDelay(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function readRepoRevisions(payload: JsonRecord): Record<string, string> | undefined {
+  const value = payload.repoRevisions;
+  if (value === undefined) return undefined;
+  if (!isObject(value)) throw new Error('Cloud fleet sandbox response has invalid repoRevisions.');
+  const revisions: Record<string, string> = {};
+  for (const [repo, revision] of Object.entries(value)) {
+    if (
+      !REPOSITORY_KEY_PATTERN.test(repo) ||
+      repo.includes('..') ||
+      typeof revision !== 'string' ||
+      !REPOSITORY_REVISION_PATTERN.test(revision)
+    ) {
+      throw new Error('Cloud fleet sandbox response has invalid repoRevisions.');
+    }
+    revisions[repo] = revision;
+  }
+  return revisions;
+}
+
+function assertRepoRevisions(
+  payload: JsonRecord,
+  expected: Readonly<Record<string, string>> | undefined
+): Record<string, string> | undefined {
+  const actual = readRepoRevisions(payload);
+  if (expected === undefined) return actual;
+  if (
+    actual === undefined ||
+    Object.keys(actual).length !== Object.keys(expected).length ||
+    Object.entries(expected).some(([repo, revision]) => actual[repo] !== revision)
+  ) {
+    throw new Error(
+      'Cloud did not echo the requested repository revisions; update Cloud before using --sandbox with a pinned checkout.'
+    );
+  }
+  return actual;
 }
 
 function validateSandboxIdentity(input: EnsureCloudFleetSandboxInput): {
@@ -426,6 +714,55 @@ function readProviderId(
   return undefined;
 }
 
+/** Parse only the complete, affirmative pre-allocation capacity contract. */
+function readCapacityExhaustion(
+  payload: unknown
+): readonly CloudFleetSandboxCapacityExhaustion[] | undefined {
+  if (
+    !isObject(payload) ||
+    readString(payload, 'code') !== 'sandbox_capacity_exhausted' ||
+    payload.no_sandbox_created !== true ||
+    payload.retryable !== true ||
+    !Array.isArray(payload.capacity) ||
+    payload.capacity.length === 0
+  ) {
+    return undefined;
+  }
+  const capacity: CloudFleetSandboxCapacityExhaustion[] = [];
+  for (const value of payload.capacity) {
+    if (!isObject(value)) return undefined;
+    const provider = readString(value, 'provider');
+    const current = readNumber(value, 'current');
+    const limit = readNumber(value, 'limit');
+    if (
+      provider === undefined ||
+      !CLOUD_FLEET_SANDBOX_PROVIDER_IDS.includes(provider as CloudFleetSandboxProviderId) ||
+      current === undefined ||
+      current < 0 ||
+      !Number.isInteger(current) ||
+      limit === undefined ||
+      limit < 0 ||
+      !Number.isInteger(limit)
+    ) {
+      return undefined;
+    }
+    capacity.push({
+      provider: provider as CloudFleetSandboxProviderId,
+      current,
+      limit,
+    });
+  }
+  return capacity;
+}
+
+/** Render safe aggregate provider counts for a definitive capacity rejection. */
+function capacityExhaustionMessage(capacity: readonly CloudFleetSandboxCapacityExhaustion[]): string {
+  const detail = capacity
+    .map(({ provider, current, limit }) => `${provider}: ${current} current / ${limit} limit`)
+    .join('; ');
+  return `Sandbox capacity is exhausted before allocation (${detail}). No sandbox was created; retry when capacity is available.`;
+}
+
 function assertExpectedSandboxIdentity(payload: JsonRecord, expectedSandboxId: string): void {
   const sandboxId = requiredString(payload, 'sandboxId', 'Cloud fleet sandbox');
   if (sandboxId !== expectedSandboxId) {
@@ -471,12 +808,27 @@ function confirmsProvisionedSandboxIdentity(
   return readString(payload, 'providerId') === requestedProviderId;
 }
 
+function confirmsAsyncPreparedSandboxIdentity(
+  payload: unknown,
+  expectedSandboxId: string,
+  expectedNodeName: string | undefined,
+  requestedProviderId: CloudFleetSandboxProviderId | undefined
+): boolean {
+  if (!isObject(payload) || requestedProviderId === undefined) return false;
+  if (readString(payload, 'outcome') !== 'provisioned') return false;
+  if (readString(payload, 'sandboxId') !== expectedSandboxId) return false;
+  if (expectedNodeName !== undefined && readString(payload, 'nodeName') !== expectedNodeName) return false;
+  return readString(payload, 'providerId') === requestedProviderId;
+}
+
 function normalizeEnsureResult(
   payload: unknown,
   cloudWorkspaceId: string,
   expectedSandboxId?: string,
   expectedNodeName?: string,
-  requestedProviderId?: CloudFleetSandboxProviderId
+  requestedProviderId?: CloudFleetSandboxProviderId,
+  expectedRepoRevisions?: Readonly<Record<string, string>>,
+  apiUrl?: string
 ): EnsureCloudFleetSandboxResult {
   if (!isObject(payload)) throw new Error('Cloud fleet sandbox response was not valid JSON.');
   // A caller-declared identity is the cleanup authority. Validate it before
@@ -508,12 +860,15 @@ function normalizeEnsureResult(
     const sandboxId = requiredString(payload, 'sandboxId', 'Cloud fleet sandbox');
     const providerSandboxId = normalizeProviderSandboxId(payload, providerId);
     const relayWorkspaceId = requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox');
+    const repoRevisions = assertRepoRevisions(payload, expectedRepoRevisions);
     const relaycastTarget =
-      payload.relaycastTarget === undefined ? undefined : normalizeRelaycastTarget(payload.relaycastTarget);
+      payload.relaycastTarget === undefined
+        ? undefined
+        : normalizeRelaycastTarget(payload.relaycastTarget, apiUrl);
     if (relaycastTarget !== undefined && relaycastTarget.workspaceId !== relayWorkspaceId) {
       throw new Error('Cloud fleet sandbox response has mismatched Relaycast workspace identities.');
     }
-    assertProviderRelaycastTarget(providerId, relaycastTarget);
+    assertProviderRelaycastTarget(providerId, relaycastTarget, apiUrl);
     return {
       outcome,
       cloudWorkspaceId,
@@ -523,8 +878,10 @@ function normalizeEnsureResult(
       ...(providerSandboxId === undefined ? {} : { providerSandboxId }),
       relayWorkspaceId,
       ...(relaycastTarget === undefined ? {} : { relaycastTarget }),
+      ...(relaycastTarget === undefined || apiUrl === undefined ? {} : { relaycastCloudApiUrl: apiUrl }),
       relayfileMounted: payload.relayfileMounted,
       ...(providerId === undefined ? {} : { providerId }),
+      ...(repoRevisions === undefined ? {} : { repoRevisions }),
       ...(readString(payload, 'relayfileMountPath')
         ? { relayfileMountPath: readString(payload, 'relayfileMountPath') }
         : {}),
@@ -533,8 +890,11 @@ function normalizeEnsureResult(
 
   if (outcome === 'reused') {
     const relaycastTarget =
-      payload.relaycastTarget === undefined ? undefined : normalizeRelaycastTarget(payload.relaycastTarget);
-    assertProviderRelaycastTarget(providerId, relaycastTarget);
+      payload.relaycastTarget === undefined
+        ? undefined
+        : normalizeRelaycastTarget(payload.relaycastTarget, apiUrl);
+    assertProviderRelaycastTarget(providerId, relaycastTarget, apiUrl);
+    const repoRevisions = assertRepoRevisions(payload, expectedRepoRevisions);
     return {
       outcome,
       cloudWorkspaceId,
@@ -545,6 +905,8 @@ function normalizeEnsureResult(
       maxAgents: readNumber(payload, 'maxAgents') ?? null,
       ...(providerId === undefined ? {} : { providerId }),
       ...(relaycastTarget === undefined ? {} : { relaycastTarget }),
+      ...(relaycastTarget === undefined || apiUrl === undefined ? {} : { relaycastCloudApiUrl: apiUrl }),
+      ...(repoRevisions === undefined ? {} : { repoRevisions }),
     };
   }
 
@@ -553,7 +915,9 @@ function normalizeEnsureResult(
     const providerSandboxId = normalizeProviderSandboxId(payload, providerId);
     const relayWorkspaceId = requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox');
     const relaycastTarget =
-      payload.relaycastTarget === undefined ? undefined : normalizeRelaycastTarget(payload.relaycastTarget);
+      payload.relaycastTarget === undefined
+        ? undefined
+        : normalizeRelaycastTarget(payload.relaycastTarget, apiUrl);
     if (relaycastTarget !== undefined && relaycastTarget.workspaceId !== relayWorkspaceId) {
       throw new Error('Cloud fleet sandbox response has mismatched Relaycast workspace identities.');
     }
@@ -564,6 +928,7 @@ function normalizeEnsureResult(
       ...(providerSandboxId === undefined ? {} : { providerSandboxId }),
       relayWorkspaceId,
       ...(relaycastTarget === undefined ? {} : { relaycastTarget }),
+      ...(relaycastTarget === undefined || apiUrl === undefined ? {} : { relaycastCloudApiUrl: apiUrl }),
       nodeName,
       waitedMs: requiredNumber(payload, 'waitedMs', 'Cloud fleet sandbox'),
       ...(providerId === undefined ? {} : { providerId }),
@@ -571,6 +936,247 @@ function normalizeEnsureResult(
   }
 
   throw new Error('Cloud fleet sandbox response has an unknown outcome.');
+}
+
+const ASYNC_PREPARATION_STATES = new Set(['pending', 'ready', 'terminal', 'cleanup_pending']);
+// Phase is progress metadata only: state decides the outcome. Cloud's async-v1
+// record currently reports provider_allocation, agent_relay_cli_bootstrap,
+// relayfile_mount_bootstrap, spawn_cli_bootstrap, repo_clone,
+// cli_credential_setup, relayfile_mount, workspace_skills, fleet_enrollment,
+// finalize, broker_visible and cleanup. Accept any bounded phase token so a
+// newer Cloud adding a phase is not misread as an invalid (unknown) outcome.
+const ASYNC_PREPARATION_PHASE_TOKEN = /^[a-z][a-z0-9_]{0,63}$/;
+
+type AsyncPreparationEnvelope = CloudFleetSandboxPreparationProgress & {
+  result?: JsonRecord;
+  failure?: { code: string; error: string; phase: string; causeDetail?: string; causeStage?: string };
+};
+
+function readAsyncPreparationEnvelope(
+  payload: unknown,
+  expectedSandboxId: string
+): AsyncPreparationEnvelope | null {
+  if (!isObject(payload) || payload.mode !== 'async-v1' || payload.version !== 1) return null;
+  const sandboxId = readString(payload, 'sandboxId');
+  if (sandboxId !== expectedSandboxId) {
+    throw new CloudFleetSandboxIdentityMismatchError(
+      `Cloud returned sandboxId ${sandboxId ?? 'missing'} instead of requested sandboxId ${expectedSandboxId}.`
+    );
+  }
+  const state = readString(payload, 'state');
+  const phase = readString(payload, 'phase');
+  const generation = readNumber(payload, 'generation');
+  if (
+    !state ||
+    !ASYNC_PREPARATION_STATES.has(state) ||
+    !phase ||
+    !ASYNC_PREPARATION_PHASE_TOKEN.test(phase) ||
+    generation === undefined ||
+    !Number.isSafeInteger(generation) ||
+    generation < 0
+  ) {
+    throw new Error('Cloud fleet sandbox preparation response was invalid.');
+  }
+  const envelope: AsyncPreparationEnvelope = {
+    sandboxId,
+    state: state as AsyncPreparationEnvelope['state'],
+    phase,
+    generation,
+  };
+  if (payload.result !== undefined) {
+    if (!isObject(payload.result)) {
+      throw new Error('Cloud fleet sandbox preparation result was invalid.');
+    }
+    envelope.result = payload.result;
+  }
+  if (payload.failure !== undefined) {
+    if (!isObject(payload.failure)) {
+      throw new Error('Cloud fleet sandbox preparation failure was invalid.');
+    }
+    const code = readString(payload.failure, 'code');
+    const error = readString(payload.failure, 'error');
+    const failurePhase = readString(payload.failure, 'phase');
+    const causeDetail = readString(payload.failure, 'causeDetail');
+    const causeStage = readString(payload.failure, 'causeStage');
+    if (!code || !error || !failurePhase) {
+      throw new Error('Cloud fleet sandbox preparation failure was invalid.');
+    }
+    envelope.failure = {
+      code,
+      error,
+      phase: failurePhase,
+      ...(causeDetail === undefined ? {} : { causeDetail }),
+      ...(causeStage === undefined ? {} : { causeStage }),
+    };
+  }
+  return envelope;
+}
+
+function isLegacyEnsureOutcome(payload: unknown): boolean {
+  if (!isObject(payload)) return false;
+  return ['provisioned', 'reused', 'provisioning_timeout'].includes(readString(payload, 'outcome') ?? '');
+}
+
+function rejectsAsyncPreparationMode(response: Response, payload: unknown): boolean {
+  if (response.status !== 400 || !isObject(payload)) return false;
+  const diagnostic = [
+    readString(payload, 'code'),
+    readString(payload, 'error'),
+    readString(payload, 'message'),
+  ]
+    .filter((value): value is string => value !== undefined)
+    .join(' ')
+    .toLowerCase();
+  return diagnostic.includes('preparationmode') || diagnostic.includes('preparation_mode');
+}
+
+function asyncPreparationRequestSignal(overall: AbortSignal): AbortSignal {
+  return AbortSignal.any([overall, AbortSignal.timeout(ASYNC_PREPARATION_REQUEST_TIMEOUT_MS)]);
+}
+
+function asyncPreparationInitialRequestSignal(overall: AbortSignal): AbortSignal {
+  // Until every Cloud deployment understands async-v1, the first request may
+  // be handled synchronously by an older server. Preserve the legacy client's
+  // 480-second response window for that one capability probe; every status or
+  // advance request remains capped at 110 seconds.
+  return AbortSignal.any([overall, AbortSignal.timeout(DEFAULT_ENSURE_TIMEOUT_MS)]);
+}
+
+/**
+ * Materialize one exact GitHub revision into the selected workspace's live
+ * Relayfile tree and wait until the decoded working-tree mount can consume it.
+ *
+ * Cloud owns GitHub credential selection. The CLI sends only owner/name and
+ * the exact pushed SHA; provider credentials never cross this boundary.
+ */
+export async function materializeCloudRelayfileRepository(
+  input: MaterializeCloudRelayfileRepositoryInput,
+  options: CloudRelayfileRepositoryMaterializeOptions = {}
+): Promise<CloudRelayfileRepositoryMaterialization> {
+  const workspaceId = input.workspaceId.trim();
+  if (!workspaceId) throw new Error('A workspace ID is required to materialize a Relayfile repository.');
+  const { owner, repo } = parseRepositoryIdentity(input.repository);
+  const revision = input.revision.trim().toLowerCase();
+  if (!REPOSITORY_REVISION_PATTERN.test(revision)) {
+    throw new Error('Cloud Relayfile repository revision must be exactly 40 hexadecimal characters.');
+  }
+  const pollIntervalMs = normalizeTimerMs(
+    options.pollIntervalMs ?? DEFAULT_RELAYFILE_REPOSITORY_POLL_INTERVAL_MS,
+    false,
+    'Cloud Relayfile repository poll interval'
+  );
+
+  const session = await ensureCloudSession({
+    apiUrl: options.apiUrl || defaultApiUrl(),
+    interactive: false,
+  });
+  const resolutionSignal = boundedSignal(options, DEFAULT_RESOLUTION_TIMEOUT_MS);
+  const resolved = await resolveCloudWorkspaceId(workspaceId, session.auth, resolutionSignal);
+  const signal = boundedSignal(options, DEFAULT_RELAYFILE_REPOSITORY_MATERIALIZE_TIMEOUT_MS);
+  let activeAuth = resolved.auth;
+
+  const requestResult = await authorizedApiFetch(
+    activeAuth,
+    '/api/v1/github/clone/request',
+    {
+      method: 'POST',
+      signal,
+      body: JSON.stringify({
+        workspaceId: resolved.cloudWorkspaceId,
+        owner,
+        repo,
+        ref: revision,
+        mode: 'full',
+        sourceProfile: LIVE_RELAYFILE_SOURCE_PROFILE,
+      }),
+    },
+    { interactive: false }
+  );
+  activeAuth = requestResult.auth;
+  const requestPayload = await readJson(requestResult.response);
+  if (!requestResult.response.ok) {
+    throw endpointError('materialize the repository into Relayfile', requestResult.response, requestPayload);
+  }
+  if (!isObject(requestPayload)) {
+    throw new Error('Cloud Relayfile repository materializer returned an invalid response.');
+  }
+  const jobId = requiredString(requestPayload, 'jobId', 'Cloud Relayfile repository materializer');
+  const expectedPaths = expectedRelayfileRepositoryPaths(owner, repo);
+
+  for (;;) {
+    const statusResult = await authorizedApiFetch(
+      activeAuth,
+      `/api/v1/github/clone/status/${encodeURIComponent(jobId)}`,
+      { method: 'GET', signal },
+      { interactive: false }
+    );
+    activeAuth = statusResult.auth;
+    const statusPayload = await readJson(statusResult.response);
+    if (!statusResult.response.ok) {
+      throw endpointError(
+        'read Relayfile repository materialization status',
+        statusResult.response,
+        statusPayload
+      );
+    }
+    if (!isObject(statusPayload) || !isObject(statusPayload.job)) {
+      throw new Error('Cloud Relayfile repository materialization status was invalid.');
+    }
+    const job = statusPayload.job;
+    const status = readString(job, 'status');
+    if (status === 'failed') {
+      const detail = readString(job, 'lastError');
+      throw new Error(
+        redactCredentialValues(
+          `Cloud could not materialize ${owner}/${repo} at ${revision} into Relayfile${
+            detail ? `: ${detail}.` : '.'
+          } Verify that this exact commit is pushed to GitHub and that the pinned workspace's GitHub connection can read the repository, then retry.`
+        )
+      );
+    }
+    if (status === 'completed') {
+      const jobOwner = readString(job, 'owner');
+      const jobRepo = readString(job, 'repo');
+      const jobRef = readString(job, 'ref');
+      const headSha = readString(job, 'headSha')?.toLowerCase();
+      const filesWritten = readNumber(job, 'filesWritten');
+      const sourceProfile = readString(job, 'sourceProfile');
+      const materialization = job.materialization;
+      if (
+        jobOwner !== owner ||
+        jobRepo !== repo ||
+        jobRef?.toLowerCase() !== revision ||
+        headSha !== revision ||
+        filesWritten === undefined ||
+        !Number.isSafeInteger(filesWritten) ||
+        filesWritten < 0 ||
+        sourceProfile !== LIVE_RELAYFILE_SOURCE_PROFILE ||
+        !isObject(materialization) ||
+        readString(materialization, 'mode') !== 'relayfile_export' ||
+        readString(materialization, 'sourceProfile') !== LIVE_RELAYFILE_SOURCE_PROFILE ||
+        readNumber(materialization, 'filesExpected') !== filesWritten ||
+        readString(materialization, 'headSha')?.toLowerCase() !== revision ||
+        readString(materialization, 'contentRoot') !== expectedPaths.contentRoot ||
+        readString(materialization, 'sentinelPath') !== expectedPaths.sentinelPath
+      ) {
+        throw new Error(
+          `Cloud did not prove a live Relayfile working tree for ${owner}/${repo} at ${revision}.`
+        );
+      }
+      return {
+        cloudWorkspaceId: resolved.cloudWorkspaceId,
+        repository: `${owner}/${repo}`,
+        revision,
+        filesWritten,
+        sourceProfile: LIVE_RELAYFILE_SOURCE_PROFILE,
+        ...expectedPaths,
+      };
+    }
+    if (status !== 'queued' && status !== 'running' && status !== 'retrying') {
+      throw new Error('Cloud Relayfile repository materialization reported an unknown status.');
+    }
+    await waitForDelay(pollIntervalMs, signal);
+  }
 }
 
 /** Resolve a Relay workspace in Cloud, provision/reuse a node, and wait for readiness. */
@@ -586,6 +1192,23 @@ export async function ensureCloudFleetSandbox(
   if (input.relayfilePaths !== undefined && input.relayfilePaths.length === 0) {
     throw new Error('At least one Relayfile subtree path is required when relayfilePaths is provided.');
   }
+  validateRequestedRepos(input.repos);
+  const repoRevisions = validateRepoRevisions(input.repos, input.repoRevisions);
+  const asyncPreparation = input.preparationMode === 'async-v1';
+  if (asyncPreparation && sandboxIdentity.sandboxId === undefined) {
+    throw new Error('Async Cloud fleet preparation requires a caller-declared sandboxId.');
+  }
+  // Cloud routes an unpinned async-v1 request to Agent37 itself, so the wire
+  // carries only the caller's provider: pinning the implied default would turn
+  // capability routing into the strict explicit-provider path. Once Cloud has
+  // confirmed a durable async record, attribute it to Agent37 so a malformed
+  // ready result can never lose the provider needed for exact cleanup.
+  const asyncProviderId = asyncPreparation ? (input.providerId ?? 'agent37') : input.providerId;
+  const preparationPollIntervalMs = normalizeTimerMs(
+    options.preparationPollIntervalMs ?? DEFAULT_ASYNC_PREPARATION_POLL_INTERVAL_MS,
+    false,
+    'Cloud fleet preparation poll interval'
+  );
 
   const session = await ensureCloudSession({
     apiUrl: options.apiUrl || defaultApiUrl(),
@@ -593,33 +1216,288 @@ export async function ensureCloudFleetSandbox(
   });
   const resolutionSignal = boundedSignal(options, DEFAULT_RESOLUTION_TIMEOUT_MS);
   const resolved = await resolveCloudWorkspaceId(workspaceId, session.auth, resolutionSignal);
-  const signal = boundedSignal(options, DEFAULT_ENSURE_TIMEOUT_MS);
+  const signal = boundedSignal(
+    options,
+    asyncPreparation ? DEFAULT_ASYNC_PREPARATION_TIMEOUT_MS : DEFAULT_ENSURE_TIMEOUT_MS
+  );
+  let activeAuth = resolved.auth;
+  const ensureRequest = {
+    workspaceId: resolved.cloudWorkspaceId,
+    requiredCapability,
+    ...(asyncPreparation ? { preparationMode: 'async-v1' } : {}),
+    ...(sandboxIdentity.sandboxId === undefined ? {} : { sandboxId: sandboxIdentity.sandboxId }),
+    ...(sandboxIdentity.name === undefined ? {} : { name: sandboxIdentity.name }),
+    ...(input.maxAgents !== undefined ? { maxAgents: input.maxAgents } : {}),
+    ...(input.mountRelayfile !== undefined ? { mountRelayfile: input.mountRelayfile } : {}),
+    ...(input.relayfilePaths === undefined ? {} : { relayfilePaths: [...input.relayfilePaths] }),
+    ...(input.forceProvision !== undefined ? { forceProvision: input.forceProvision } : {}),
+    ...(input.providerId !== undefined ? { providerId: input.providerId } : {}),
+    ...(input.workloadProfile !== undefined ? { workloadProfile: input.workloadProfile } : {}),
+    ...(input.waitTimeoutMs !== undefined ? { waitTimeoutMs: input.waitTimeoutMs } : {}),
+    ...(input.repos !== undefined && input.repos.length > 0 ? { repos: [...input.repos] } : {}),
+    ...(repoRevisions === undefined ? {} : { repoRevisions }),
+  };
+  const ensureBody = JSON.stringify(ensureRequest);
+
+  let sawAcceptedPreparation = false;
+  // Before Cloud confirms an async record, an older Cloud may have routed the
+  // request synchronously, so only the caller's own provider is attributable.
+  const attributedProvider = (): { providerId?: CloudFleetSandboxProviderId } => {
+    const providerId = sawAcceptedPreparation ? asyncProviderId : input.providerId;
+    return providerId === undefined ? {} : { providerId };
+  };
+  let lastProgressSignature: string | undefined;
+  const consumePreparation = (payload: unknown): EnsureCloudFleetSandboxResult | null => {
+    const envelope = readAsyncPreparationEnvelope(payload, sandboxIdentity.sandboxId!);
+    if (!envelope) return null;
+    sawAcceptedPreparation = true;
+    const signature = `${envelope.state}:${envelope.phase}:${envelope.generation}`;
+    if (signature !== lastProgressSignature) {
+      options.onPreparationProgress?.({
+        sandboxId: envelope.sandboxId,
+        state: envelope.state,
+        phase: envelope.phase,
+        generation: envelope.generation,
+      });
+      lastProgressSignature = signature;
+    }
+    if (envelope.state === 'ready') {
+      try {
+        if (!envelope.result) {
+          throw new Error('Cloud fleet sandbox preparation completed without a result.');
+        }
+        return normalizeEnsureResult(
+          envelope.result,
+          resolved.cloudWorkspaceId,
+          sandboxIdentity.sandboxId!,
+          sandboxIdentity.name,
+          asyncProviderId,
+          repoRevisions,
+          activeAuth.apiUrl
+        );
+      } catch (error) {
+        const confirmedProvisioned = confirmsAsyncPreparedSandboxIdentity(
+          envelope.result,
+          sandboxIdentity.sandboxId!,
+          sandboxIdentity.name,
+          asyncProviderId
+        );
+        throw new CloudFleetSandboxProvisionError(
+          error instanceof Error ? error.message : 'Cloud fleet sandbox preparation result was invalid.',
+          {
+            cloudWorkspaceId: resolved.cloudWorkspaceId,
+            sandboxId: sandboxIdentity.sandboxId,
+            ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
+            ...(asyncProviderId === undefined ? {} : { providerId: asyncProviderId }),
+            ...(confirmedProvisioned ? { confirmedProvisioned: true } : { outcomeUnknown: true }),
+            cause: error,
+          }
+        );
+      }
+    }
+    if (envelope.state === 'terminal') {
+      // Cloud writes terminal only after it rejected allocation, abandoned
+      // dispatch, or proved the provider sandbox absent; it owns that cleanup.
+      const failure = envelope.failure;
+      // Cloud persists the safe mount cause stage (e.g. initial_sync_deadline)
+      // in the durable failure record (cloud#4137 839d71e1b).
+      const causeStage = failure?.causeStage;
+      const typed = failure
+        ? [failure.code, ...(causeStage === undefined ? [] : [causeStage])].join(', ')
+        : '';
+      throw new CloudFleetSandboxProvisionError(
+        redactCredentialValues(
+          failure
+            ? `Cloud fleet sandbox preparation failed during ${failure.phase} (${typed}): ${failure.error}`
+            : 'Cloud fleet sandbox preparation failed.'
+        ),
+        {
+          cloudWorkspaceId: resolved.cloudWorkspaceId,
+          sandboxId: sandboxIdentity.sandboxId,
+          ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
+          ...(asyncProviderId === undefined ? {} : { providerId: asyncProviderId }),
+          sandboxAbsent: true,
+          ...(failure === undefined
+            ? {}
+            : {
+                preparationFailure: {
+                  code: failure.code,
+                  phase: failure.phase,
+                  ...(causeStage === undefined ? {} : { causeStage }),
+                },
+              }),
+        }
+      );
+    }
+    return null;
+  };
+
+  const pollPreparation = async (
+    initialPayload?: unknown,
+    initialDelayMs: number | null = null
+  ): Promise<EnsureCloudFleetSandboxResult> => {
+    const unconfirmedDeadline = Date.now() + ASYNC_PREPARATION_REQUEST_TIMEOUT_MS;
+    let payload = initialPayload;
+    let method: 'GET' | 'POST' = initialPayload === undefined ? 'GET' : 'POST';
+    let nextPollDelayMs: number | null = initialDelayMs;
+    for (;;) {
+      if (payload !== undefined) {
+        const ready = consumePreparation(payload);
+        if (ready) return ready;
+      }
+      if (!sawAcceptedPreparation && Date.now() >= unconfirmedDeadline) {
+        throw new Error('Cloud fleet sandbox preparation was not accepted before the status deadline.');
+      }
+      const requestedDelayMs = nextPollDelayMs ?? preparationPollIntervalMs;
+      nextPollDelayMs = null;
+      const delayMs = sawAcceptedPreparation
+        ? requestedDelayMs
+        : Math.min(requestedDelayMs, Math.max(0, unconfirmedDeadline - Date.now()));
+      await waitForDelay(delayMs, signal);
+      // Do not start another full request after the short lost-ensure
+      // reconciliation window. A long configured poll interval must not turn
+      // the 110-second uncertainty bound into a 220-second network attempt.
+      if (!sawAcceptedPreparation && Date.now() >= unconfirmedDeadline) {
+        throw new Error('Cloud fleet sandbox preparation was not accepted before the status deadline.');
+      }
+      const path = `/api/v1/fleet/nodes/sandbox/${encodeURIComponent(
+        sandboxIdentity.sandboxId!
+      )}/preparation${
+        method === 'GET' ? `?workspaceId=${encodeURIComponent(resolved.cloudWorkspaceId)}` : ''
+      }`;
+      let pollResponse: Response;
+      try {
+        const polled = await authorizedApiFetch(
+          activeAuth,
+          path,
+          {
+            method,
+            signal: asyncPreparationRequestSignal(signal),
+            ...(method === 'POST'
+              ? { body: JSON.stringify({ workspaceId: resolved.cloudWorkspaceId }) }
+              : {}),
+          },
+          { interactive: false }
+        );
+        activeAuth = polled.auth;
+        pollResponse = polled.response;
+      } catch (fetchError) {
+        if (signal.aborted) throw signal.reason ?? fetchError;
+        const errorName = fetchError instanceof Error ? fetchError.name : '';
+        if (
+          !(fetchError instanceof TypeError) &&
+          errorName !== 'TimeoutError' &&
+          errorName !== 'AbortError'
+        ) {
+          throw fetchError;
+        }
+        if (!sawAcceptedPreparation && Date.now() >= unconfirmedDeadline) {
+          throw fetchError;
+        }
+        // A lost advance response is not replayed. Read durable status first;
+        // only a confirmed pending record permits a later advance.
+        method = 'GET';
+        payload = undefined;
+        continue;
+      }
+      payload = await readJson(pollResponse);
+      let envelope: AsyncPreparationEnvelope | null;
+      try {
+        envelope = readAsyncPreparationEnvelope(payload, sandboxIdentity.sandboxId!);
+      } catch (error) {
+        // A record for another identity is a diagnostic, not a lost response.
+        if (error instanceof CloudFleetSandboxIdentityMismatchError) throw error;
+        envelope = null;
+      }
+      if (envelope) {
+        const ready = consumePreparation(payload);
+        if (ready) return ready;
+        // Cleanup is owned by Cloud. Keep observing it until Cloud publishes a
+        // terminal result; advancing here could race the reaper or restart work
+        // on a sandbox that is already being destroyed.
+        method = envelope.state === 'cleanup_pending' ? 'GET' : 'POST';
+        // Each advance goes through Cloud's ensure limiter; pace by its hint.
+        nextPollDelayMs = retryAfterDelayMs(pollResponse);
+        payload = undefined;
+        continue;
+      }
+      if (
+        method === 'GET' &&
+        pollResponse.status === 404 &&
+        !sawAcceptedPreparation &&
+        Date.now() < unconfirmedDeadline
+      ) {
+        payload = undefined;
+        continue;
+      }
+      if (!pollResponse.ok) {
+        if (
+          (pollResponse.status >= 500 || pollResponse.status === 429) &&
+          (sawAcceptedPreparation || Date.now() < unconfirmedDeadline)
+        ) {
+          if (pollResponse.status === 429) {
+            nextPollDelayMs = retryAfterDelayMs(pollResponse) ?? preparationPollIntervalMs;
+          }
+          method = 'GET';
+          payload = undefined;
+          continue;
+        }
+        throw endpointError('read fleet sandbox preparation status', pollResponse, payload);
+      }
+      // A truncated or malformed success may hide a committed tick. Treat it as
+      // a lost response: read durable status before any further advance. This
+      // also covers Cloud's bare `{ state }` fallback body (no `mode`/`version`),
+      // returned when it cannot re-read the record after a failed tick.
+      method = 'GET';
+      payload = undefined;
+    }
+  };
+
   let response: Response;
   try {
-    ({ response } = await authorizedApiFetch(
-      resolved.auth,
+    const ensured = await authorizedApiFetch(
+      activeAuth,
       '/api/v1/fleet/nodes/sandbox/ensure',
       {
         method: 'POST',
-        signal,
-        body: JSON.stringify({
-          workspaceId: resolved.cloudWorkspaceId,
-          requiredCapability,
-          ...(sandboxIdentity.sandboxId === undefined ? {} : { sandboxId: sandboxIdentity.sandboxId }),
-          ...(sandboxIdentity.name === undefined ? {} : { name: sandboxIdentity.name }),
-          ...(input.maxAgents !== undefined ? { maxAgents: input.maxAgents } : {}),
-          ...(input.mountRelayfile !== undefined ? { mountRelayfile: input.mountRelayfile } : {}),
-          ...(input.relayfilePaths === undefined ? {} : { relayfilePaths: [...input.relayfilePaths] }),
-          ...(input.forceProvision !== undefined ? { forceProvision: input.forceProvision } : {}),
-          ...(input.providerId !== undefined ? { providerId: input.providerId } : {}),
-          ...(input.workloadProfile !== undefined ? { workloadProfile: input.workloadProfile } : {}),
-          ...(input.waitTimeoutMs !== undefined ? { waitTimeoutMs: input.waitTimeoutMs } : {}),
-          ...(input.repos !== undefined && input.repos.length > 0 ? { repos: [...input.repos] } : {}),
-        }),
+        signal: asyncPreparation ? asyncPreparationInitialRequestSignal(signal) : signal,
+        body: ensureBody,
       },
       { interactive: false }
-    ));
+    );
+    activeAuth = ensured.auth;
+    response = ensured.response;
   } catch (error) {
+    if (asyncPreparation) {
+      if (options.signal?.aborted) throw options.signal.reason ?? error;
+      if (error instanceof CloudAuthError) throw error;
+      const errorName = error instanceof Error ? error.name : '';
+      const retryableTransport =
+        error instanceof TypeError || errorName === 'TimeoutError' || errorName === 'AbortError';
+      if (!retryableTransport && !signal.aborted) throw error;
+      try {
+        return await pollPreparation();
+      } catch (pollError) {
+        if (pollError instanceof CloudFleetSandboxProvisionError) throw pollError;
+        if (pollError instanceof CloudAuthError) throw pollError;
+        if (options.signal?.aborted) throw options.signal.reason ?? pollError;
+        throw new CloudFleetSandboxProvisionError(
+          redactCredentialValues(
+            `Cloud fleet sandbox preparation status could not be confirmed: ${
+              pollError instanceof Error ? pollError.message : String(pollError)
+            }`
+          ),
+          {
+            cloudWorkspaceId: resolved.cloudWorkspaceId,
+            sandboxId: sandboxIdentity.sandboxId,
+            ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
+            ...attributedProvider(),
+            ...(sawAcceptedPreparation ? { confirmedProvisioned: true } : { outcomeUnknown: true }),
+            cause: pollError,
+          }
+        );
+      }
+    }
     throw new CloudFleetSandboxProvisionError(
       redactCredentialValues(
         `Cloud fleet sandbox request ended without a complete response: ${
@@ -636,7 +1514,115 @@ export async function ensureCloudFleetSandbox(
       }
     );
   }
-  const payload = await readJson(response);
+  let payload = await readJson(response);
+  let legacyCompatibilityResponse = asyncPreparation && response.ok && isLegacyEnsureOutcome(payload);
+  if (asyncPreparation && rejectsAsyncPreparationMode(response, payload)) {
+    try {
+      const retried = await authorizedApiFetch(
+        activeAuth,
+        '/api/v1/fleet/nodes/sandbox/ensure',
+        {
+          method: 'POST',
+          signal: asyncPreparationInitialRequestSignal(signal),
+          body: JSON.stringify({ ...ensureRequest, preparationMode: undefined }),
+        },
+        { interactive: false }
+      );
+      activeAuth = retried.auth;
+      response = retried.response;
+      payload = await readJson(response);
+      legacyCompatibilityResponse = true;
+    } catch (error) {
+      // Match the initial and status paths: authentication failures and caller
+      // cancellation are not lost responses and must surface unchanged.
+      if (error instanceof CloudAuthError) throw error;
+      if (options.signal?.aborted) throw options.signal.reason ?? error;
+      throw new CloudFleetSandboxProvisionError(
+        redactCredentialValues(
+          `Cloud fleet sandbox compatibility request ended without a complete response: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        ),
+        {
+          cloudWorkspaceId: resolved.cloudWorkspaceId,
+          sandboxId: sandboxIdentity.sandboxId,
+          ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
+          ...(input.providerId === undefined ? {} : { providerId: input.providerId }),
+          outcomeUnknown: true,
+          cause: error,
+        }
+      );
+    }
+  }
+  if (asyncPreparation && !legacyCompatibilityResponse) {
+    let envelope: AsyncPreparationEnvelope | null;
+    try {
+      envelope = readAsyncPreparationEnvelope(payload, sandboxIdentity.sandboxId!);
+    } catch (error) {
+      // A mismatched public identity is neither a truncated response nor an
+      // ambiguous gateway failure. Polling the caller-declared identity would
+      // hide the diagnostic and could point cleanup at the wrong sandbox.
+      if (error instanceof CloudFleetSandboxIdentityMismatchError) throw error;
+      envelope = null;
+    }
+    if (envelope) {
+      const ready = consumePreparation(payload);
+      if (ready) return ready;
+      try {
+        return await pollPreparation(undefined, retryAfterDelayMs(response));
+      } catch (pollError) {
+        if (pollError instanceof CloudFleetSandboxProvisionError) throw pollError;
+        if (pollError instanceof CloudAuthError) throw pollError;
+        if (options.signal?.aborted) throw options.signal.reason ?? pollError;
+        throw new CloudFleetSandboxProvisionError(
+          redactCredentialValues(
+            `Cloud fleet sandbox preparation did not complete: ${
+              pollError instanceof Error ? pollError.message : String(pollError)
+            }`
+          ),
+          {
+            cloudWorkspaceId: resolved.cloudWorkspaceId,
+            sandboxId: sandboxIdentity.sandboxId,
+            ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
+            ...(asyncProviderId === undefined ? {} : { providerId: asyncProviderId }),
+            confirmedProvisioned: true,
+            cause: pollError,
+          }
+        );
+      }
+    }
+    // A successful/accepted response can still lose or truncate its body after
+    // Cloud durably recorded the preparation, and a gateway 5xx can hide an
+    // accepted request. Reconcile those through the declared sandbox's status
+    // endpoint instead of replaying ensure. A typed 5xx error body (`code`) is
+    // a complete synchronous answer, e.g. from an older Cloud that ignored
+    // preparationMode: parse it below so its cause and capacity detail
+    // surface immediately instead of polling a status route it lacks.
+    if (response.ok || (response.status >= 500 && !isTypedErrorBody(payload))) {
+      try {
+        return await pollPreparation();
+      } catch (pollError) {
+        if (pollError instanceof CloudFleetSandboxProvisionError) throw pollError;
+        if (pollError instanceof CloudAuthError) throw pollError;
+        if (options.signal?.aborted) throw options.signal.reason ?? pollError;
+        throw new CloudFleetSandboxProvisionError(
+          redactCredentialValues(
+            `Cloud fleet sandbox preparation status could not be confirmed: ${
+              pollError instanceof Error ? pollError.message : String(pollError)
+            }`
+          ),
+          {
+            cloudWorkspaceId: resolved.cloudWorkspaceId,
+            sandboxId: sandboxIdentity.sandboxId,
+            ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
+            ...attributedProvider(),
+            ...(sawAcceptedPreparation ? { confirmedProvisioned: true } : { outcomeUnknown: true }),
+            cause: pollError,
+          }
+        );
+      }
+    }
+  }
   if (!response.ok) {
     const returnedSandboxId = isObject(payload) ? readString(payload, 'sandboxId') : undefined;
     if (
@@ -656,12 +1642,25 @@ export async function ensureCloudFleetSandbox(
       });
     }
     const error = endpointError('provision the fleet sandbox', response, payload);
+    const capacity = response.status === 503 ? readCapacityExhaustion(payload) : undefined;
+    if (capacity !== undefined) {
+      throw new CloudFleetSandboxProvisionError(capacityExhaustionMessage(capacity), {
+        cloudWorkspaceId: resolved.cloudWorkspaceId,
+        ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
+        providerId: capacity.length === 1 ? capacity[0].provider : input.providerId,
+        code: 'sandbox_capacity_exhausted',
+        noSandboxCreated: true,
+        retryable: true,
+        capacity,
+        cause: error,
+      });
+    }
     // Gateway/server failures can arrive after Cloud accepted the ensure
     // request but before it could return an identity. Keep every 5xx failure
     // replayable as an unknown outcome, even for legacy custom-name callers;
     // never copy an unverified response ID into cleanup authority.
     if (response.status >= 500) {
-      throw new CloudFleetSandboxProvisionError(error.message, {
+      throw new CloudFleetSandboxProvisionError(`${error.message}${typedCauseSuffix(payload)}`, {
         cloudWorkspaceId: resolved.cloudWorkspaceId,
         ...(sandboxIdentity.sandboxId === undefined ? {} : { sandboxId: sandboxIdentity.sandboxId }),
         ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
@@ -688,7 +1687,9 @@ export async function ensureCloudFleetSandbox(
       resolved.cloudWorkspaceId,
       sandboxIdentity.sandboxId,
       sandboxIdentity.name,
-      input.providerId
+      input.providerId,
+      repoRevisions,
+      activeAuth.apiUrl
     );
   } catch (error) {
     const confirmedProvisioned = confirmsProvisionedSandboxIdentity(
@@ -740,4 +1741,139 @@ export async function deleteCloudFleetSandbox(
   );
   const payload = await readJson(response);
   if (!response.ok) throw endpointError('delete the fleet sandbox', response, payload);
+}
+
+export type AttachCloudFleetSandboxRelayfileInput = {
+  cloudWorkspaceId: string;
+  sandboxId: string;
+  /** Optional exact context roots; the server chooses a separate mount directory. */
+  paths?: string[];
+};
+
+export type CloudFleetSandboxRelayfileAttachment = {
+  sandboxId: string;
+  relayWorkspaceId: string;
+  relayfileMounted: true;
+  relayfileMountPath: string;
+};
+
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '/') end -= 1;
+  return value.slice(0, end);
+}
+
+function comparableApiUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    return `${url.origin}${trimTrailingSlashes(url.pathname)}`;
+  } catch {
+    return trimTrailingSlashes(value.trim());
+  }
+}
+
+/** Bound session acquisition too, including filesystem and lock waits. */
+function awaitAttachmentSession(signal: AbortSignal, task: () => ReturnType<typeof ensureCloudSession>) {
+  signal.throwIfAborted();
+  return new Promise<Awaited<ReturnType<typeof ensureCloudSession>>>((resolve, reject) => {
+    const aborted = () => reject(signal.reason ?? new Error('Relayfile attachment aborted'));
+    signal.addEventListener('abort', aborted, { once: true });
+    Promise.resolve()
+      .then(task)
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener('abort', aborted));
+  });
+}
+
+/** Attach optional live context to an existing sandbox without allocating or dispatching. */
+export async function attachCloudFleetSandboxRelayfile(
+  input: AttachCloudFleetSandboxRelayfileInput,
+  options: CloudFleetSandboxRequestOptions = {}
+): Promise<CloudFleetSandboxRelayfileAttachment> {
+  const cloudWorkspaceId = input.cloudWorkspaceId.trim();
+  const sandboxId = input.sandboxId.trim();
+  if (!CLOUD_WORKSPACE_ID_PATTERN.test(cloudWorkspaceId) || !CLOUD_SANDBOX_ID_PATTERN.test(sandboxId)) {
+    throw new Error('A Cloud workspace UUID and sbx_<UUID> sandbox ID are required.');
+  }
+  const paths = input.paths?.map((path) =>
+    path
+      .trim()
+      .replace(/\/{2,}/g, '/')
+      .replace(/\/$/, '')
+  );
+  if (
+    paths &&
+    (paths.length === 0 ||
+      paths.length > 8 ||
+      paths.some(
+        (path) =>
+          path.length < 2 ||
+          path.length > 512 ||
+          !path.startsWith('/') ||
+          /[\0\r\n*]/.test(path) ||
+          path
+            .slice(1)
+            .split('/')
+            .some((part) => part === '.' || part === '..')
+      ))
+  ) {
+    throw new Error('Relayfile context paths must be absolute exact roots without wildcards or traversal.');
+  }
+  const signal = boundedSignal(options, DEFAULT_ENSURE_TIMEOUT_MS);
+  const session = await awaitAttachmentSession(signal, () =>
+    ensureCloudSession({
+      apiUrl: options.apiUrl || defaultApiUrl(),
+      interactive: false,
+      signal,
+    })
+  );
+  // A stored login stays authoritative on its own host; never attach to a
+  // different environment than the one the caller explicitly selected.
+  if (options.apiUrl && comparableApiUrl(session.auth.apiUrl) !== comparableApiUrl(options.apiUrl)) {
+    throw new Error(
+      `Cloud login is bound to ${comparableApiUrl(session.auth.apiUrl)}. Run \`agent-relay cloud login --api-url ${comparableApiUrl(
+        options.apiUrl
+      )} --force\` before attaching on this host.`
+    );
+  }
+  let activeAuth = session.auth;
+  for (;;) {
+    signal.throwIfAborted();
+    const fetched = await authorizedApiFetch(
+      activeAuth,
+      `/api/v1/workspaces/${encodeURIComponent(cloudWorkspaceId)}/sandboxes/${encodeURIComponent(sandboxId)}/relayfile-mount`,
+      { method: 'POST', signal, body: JSON.stringify(paths ? { paths: [...new Set(paths)] } : {}) },
+      { interactive: false }
+    );
+    activeAuth = fetched.auth;
+    const response = fetched.response;
+    const payload = await readJson(response);
+    if (!response.ok) throw endpointError('attach Relayfile context', response, payload);
+    if (response.status === 202) {
+      if (
+        !isObject(payload) ||
+        payload.sandboxId !== sandboxId ||
+        payload.relayfileMounted !== false ||
+        payload.state !== 'pending' ||
+        ![
+          'relayfile_mount_bootstrap',
+          'relayfile_mount_readiness_incomplete',
+          'relayfile_mount_readiness_timed_out',
+        ].includes(readString(payload, 'phase') ?? '')
+      ) {
+        throw new Error('Cloud did not confirm pending attachment to the requested sandbox.');
+      }
+      await waitForDelay(retryAfterDelayMs(response) ?? 5_000, signal);
+      continue;
+    }
+    if (!isObject(payload) || payload.sandboxId !== sandboxId || payload.relayfileMounted !== true) {
+      throw new Error('Cloud did not confirm Relayfile attachment to the requested sandbox.');
+    }
+    return {
+      sandboxId,
+      relayfileMounted: true,
+      relayWorkspaceId: requiredString(payload, 'relayWorkspaceId', 'Relayfile attachment'),
+      relayfileMountPath: requiredString(payload, 'relayfileMountPath', 'Relayfile attachment'),
+    };
+  }
 }

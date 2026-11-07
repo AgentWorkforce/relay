@@ -150,8 +150,7 @@ export async function connectProvider(options: ConnectProviderOptions): Promise<
   auth = refreshedAuth;
 
   const start = (await createResponse.json().catch(() => null)) as
-    | (AuthSessionResponse & { error?: string; message?: string })
-    | null;
+    (AuthSessionResponse & { error?: string; message?: string }) | null;
 
   if (!createResponse.ok || !start?.sessionId) {
     const detail = start?.error || start?.message || `${createResponse.status} ${createResponse.statusText}`;

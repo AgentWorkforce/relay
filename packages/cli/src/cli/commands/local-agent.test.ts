@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { Command } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -16,6 +20,7 @@ import {
   withDeliveryStatus,
   type LocalAgentDependencies,
 } from './local-agent.js';
+import { MAX_TASK_BODY_BYTES } from '../lib/task-input.js';
 
 function harness(overrides: Partial<LocalAgentDependencies> = {}) {
   const client = {
@@ -79,6 +84,69 @@ describe('local agent subtree', () => {
   it('attach defaults to view mode', async () => {
     const { program, attach } = harness();
     await program.parseAsync(['local', 'agent', 'attach', 'lead'], { from: 'user' });
+    expect(attach).toHaveBeenCalledWith('lead', 'view', expect.anything());
+  });
+
+  it.each([
+    ['RELAY_BROKER_URL', 'http://127.0.0.1:7777'],
+    ['RELAY_BROKER_API_KEY', 'local-broker-key'],
+  ])('attach honors the local broker selected by %s before persisted Fleet routing', async (name, value) => {
+    const resolveFleetAttachTarget = vi.fn(async () => ({
+      target: {
+        node: 'persisted-remote-node',
+        baseUrl: 'https://isolated.example.test',
+        agent: 'lead',
+      },
+    }));
+    const { program, attach, attachNode } = harness({
+      env: { [name]: value },
+      resolveFleetAttachTarget,
+    });
+
+    await program.parseAsync(['local', 'agent', 'attach', 'lead'], { from: 'user' });
+
+    expect(resolveFleetAttachTarget).not.toHaveBeenCalled();
+    expect(attachNode).not.toHaveBeenCalled();
+    expect(attach).toHaveBeenCalledWith('lead', 'view', expect.anything());
+  });
+
+  // A project with real Relaycast workspace credentials persisted (needed for
+  // ordinary local messaging, not just fleet routing) and a real local broker
+  // both true at once is the common case, not the exception — a flag-free
+  // `attach` here must never hard-error just because no fleet node happens to
+  // advertise the agent. Previously `hasLocalBrokerSelection` checked only
+  // explicit flags/env, so this exact case fell through to
+  // `resolveFleetAttachTarget`, which treated "persisted Relaycast session
+  // exists" as reason to error instead of falling back to the local broker
+  // that was sitting right there — surfacing as "Agent 'X' has no live Fleet
+  // placement on the persisted remote session" for every plain local PTY
+  // worker.
+  it('attach honors a local broker discovered via connection.json before persisted Fleet routing', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-local-attach-conn-'));
+    fs.mkdirSync(path.join(root, '.git'));
+    const stateDir = path.join(root, '.agentworkforce/relay');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'connection.json'),
+      JSON.stringify({ url: 'http://127.0.0.1:9999' })
+    );
+    const resolveFleetAttachTarget = vi.fn(async () => ({
+      target: { node: 'persisted-remote-node', baseUrl: 'https://isolated.example.test', agent: 'lead' },
+    }));
+    const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+    const { program, attach, attachNode } = harness({ resolveFleetAttachTarget, fetch: fetchMock });
+    const originalCwd = process.cwd();
+    process.chdir(root);
+    try {
+      await program.parseAsync(['local', 'agent', 'attach', 'lead'], { from: 'user' });
+    } finally {
+      process.chdir(originalCwd);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+
+    expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:9999/health', expect.anything());
+    expect(resolveFleetAttachTarget).not.toHaveBeenCalled();
+    expect(attachNode).not.toHaveBeenCalled();
     expect(attach).toHaveBeenCalledWith('lead', 'view', expect.anything());
   });
 
@@ -874,7 +942,10 @@ describe('local agent subtree', () => {
 
     await program.parseAsync(['local', 'agent', 'list'], { from: 'user' });
 
-    expect(harnessConnectMock).toHaveBeenCalledWith({ cwd: '/tmp/project' });
+    expect(harnessConnectMock).toHaveBeenCalledWith({
+      cwd: '/tmp/project',
+      connectionPath: '/tmp/project/.agentworkforce/relay/connection.json',
+    });
     expect(client.listAgents).toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith('[]');
     expect(client.disconnect).toHaveBeenCalled();
@@ -890,6 +961,68 @@ describe('local agent subtree', () => {
       expect.objectContaining({ name: 'Worker', cli: 'claude', cwd: '/home/user/my-project' })
     );
   });
+
+  it('ignores stale state directories and connects to the enclosing checkout broker while spawning in a nested package', async () => {
+    vi.stubEnv('AGENT_RELAY_STATE_DIR', '/tmp/unrelated-checkout/relay');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-local-nested-'));
+    const nested = path.join(root, 'packages', 'web');
+    fs.mkdirSync(path.join(root, '.git'));
+    fs.mkdirSync(nested, { recursive: true });
+    const client = { spawnPty: vi.fn(async () => undefined), disconnect: vi.fn() };
+    harnessConnectMock.mockReturnValueOnce(client);
+    const program = new Command();
+    program.exitOverride();
+    registerLocalAgentCommands(program.command('local'), { cwd: () => nested, log: vi.fn() });
+    try {
+      await program.parseAsync(['local', 'agent', 'spawn', 'codex'], { from: 'user' });
+      expect(harnessConnectMock).toHaveBeenLastCalledWith({
+        cwd: root,
+        connectionPath: path.join(root, '.agentworkforce/relay/connection.json'),
+      });
+      expect(client.spawnPty).toHaveBeenCalledWith(expect.objectContaining({ cwd: nested }));
+      expect(client.disconnect).toHaveBeenCalledOnce();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['spawn', 'new'])(
+    '%s passes the caller directory rather than the broker startup directory',
+    async (command) => {
+      const { program, client } = harness({ cwd: () => '/tmp/project/packages/web' });
+      await program.parseAsync(['local', 'agent', command, 'codex', '--name', 'Nested'], { from: 'user' });
+      expect(client.spawnPty).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'Nested', cli: 'codex', cwd: '/tmp/project/packages/web' })
+      );
+    }
+  );
+
+  // relay#1930 review (cubic): auto-routing wraps the task in a Director
+  // prompt, so the routed task is what must fit the PTY body limit.
+  it('rejects an auto-routed task whose Director prompt exceeds the PTY body limit', async () => {
+    const { program, client, error, exit } = harness();
+    await program.parseAsync(
+      ['local', 'agent', 'spawn', 'claude', '--model', 'auto', '--task', 'x'.repeat(MAX_TASK_BODY_BYTES)],
+      { from: 'user' }
+    );
+    expect(error.mock.calls.flat().join(' ')).toContain('UTF-8 bytes');
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(client.spawnPty).not.toHaveBeenCalled();
+  });
+
+  it.each(['spawn', 'new'])(
+    '%s reports an unreadable --task-file through the CLI error path',
+    async (command) => {
+      const { program, client, error, exit } = harness();
+      await program.parseAsync(
+        ['local', 'agent', command, 'codex', '--task-file', '/nonexistent/relay-brief.md'],
+        { from: 'user' }
+      );
+      expect(error.mock.calls.flat().join(' ')).toContain('ENOENT');
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(client.spawnPty).not.toHaveBeenCalled();
+    }
+  );
 
   it('release calls client.release', async () => {
     const { program, client } = harness();
@@ -934,12 +1067,144 @@ describe('local agent subtree', () => {
     expect(log).toHaveBeenCalledWith(JSON.stringify({ name: 'claude', flushed: 2 }, null, 2));
   });
 
+  it.each([
+    ['RELAY_BROKER_URL', 'http://127.0.0.1:7777'],
+    ['RELAY_BROKER_API_KEY', 'local-broker-key'],
+  ])(
+    'message flush honors the local broker selected by %s before persisted Fleet routing',
+    async (name, value) => {
+      const client = { flushPending: vi.fn(async () => ({ flushed: 1 })) };
+      const connectLocal = vi.fn(async () => client as never);
+      const resolveFleetAttachTarget = vi.fn(async () => ({
+        target: {
+          node: 'persisted-remote-node',
+          baseUrl: 'https://isolated.example.test',
+          agent: 'claude',
+        },
+      }));
+      const { program } = harness({
+        env: { [name]: value },
+        connectLocal,
+        resolveFleetAttachTarget,
+      });
+
+      await program.parseAsync(['local', 'agent', 'message', 'flush', 'claude'], { from: 'user' });
+
+      expect(resolveFleetAttachTarget).not.toHaveBeenCalled();
+      expect(connectLocal).toHaveBeenCalled();
+      expect(client.flushPending).toHaveBeenCalledWith('claude');
+    }
+  );
+
+  it.each([
+    ['flush', (client: { flushPending: ReturnType<typeof vi.fn> }) => client.flushPending],
+    ['hold', (client: { setInboundDeliveryMode: ReturnType<typeof vi.fn> }) => client.setInboundDeliveryMode],
+    ['auto', (client: { setInboundDeliveryMode: ReturnType<typeof vi.fn> }) => client.setInboundDeliveryMode],
+  ] as const)(
+    'message %s honors a local broker discovered via connection.json before persisted Fleet routing',
+    async (mode, pickMethod) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-local-message-conn-'));
+      fs.mkdirSync(path.join(root, '.git'));
+      const stateDir = path.join(root, '.agentworkforce/relay');
+      fs.mkdirSync(stateDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(stateDir, 'connection.json'),
+        JSON.stringify({ url: 'http://127.0.0.1:9999' })
+      );
+      const client = {
+        flushPending: vi.fn(async () => ({ flushed: 1 })),
+        setInboundDeliveryMode: vi.fn(async (_name: string, m: string) => ({ mode: m, flushed: 0 })),
+      };
+      const connectLocal = vi.fn(async () => client as never);
+      const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+      const resolveFleetAttachTarget = vi.fn(async () => ({
+        target: { node: 'persisted-remote-node', agent: 'claude' },
+      }));
+      const { program } = harness({ connectLocal, resolveFleetAttachTarget, fetch: fetchMock });
+      const originalCwd = process.cwd();
+      process.chdir(root);
+      try {
+        await program.parseAsync(['local', 'agent', 'message', mode, 'claude'], { from: 'user' });
+      } finally {
+        process.chdir(originalCwd);
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+
+      expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:9999/health', expect.anything());
+      expect(resolveFleetAttachTarget).not.toHaveBeenCalled();
+      expect(connectLocal).toHaveBeenCalled();
+      expect(pickMethod(client)).toHaveBeenCalledWith(
+        'claude',
+        ...(mode === 'flush' ? [] : [expect.any(String)])
+      );
+    }
+  );
+
+  // The liveness probe exists so a broker crash that leaves a stale
+  // connection.json behind cannot mask a real Fleet placement — see Devin's
+  // review on the PR that added connection.json auto-discovery here.
+  it('attach falls through to Fleet routing when connection.json points at an unreachable broker', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-local-attach-stale-'));
+    fs.mkdirSync(path.join(root, '.git'));
+    const stateDir = path.join(root, '.agentworkforce/relay');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'connection.json'),
+      JSON.stringify({ url: 'http://127.0.0.1:9999' })
+    );
+    const fetchMock = vi.fn(async () => {
+      throw new Error('ECONNREFUSED');
+    });
+    const resolveFleetAttachTarget = vi.fn(async () => ({
+      target: { node: 'persisted-remote-node', baseUrl: 'https://isolated.example.test', agent: 'lead' },
+    }));
+    const { program, attach, attachNode } = harness({ resolveFleetAttachTarget, fetch: fetchMock });
+    const originalCwd = process.cwd();
+    process.chdir(root);
+    try {
+      await program.parseAsync(['local', 'agent', 'attach', 'lead'], { from: 'user' });
+    } finally {
+      process.chdir(originalCwd);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+
+    expect(resolveFleetAttachTarget).toHaveBeenCalled();
+    expect(attachNode).toHaveBeenCalledWith(
+      'lead',
+      'view',
+      'persisted-remote-node',
+      expect.objectContaining({ baseUrl: 'https://isolated.example.test' })
+    );
+    expect(attach).not.toHaveBeenCalled();
+  });
+
+  it.each(['flush', 'hold', 'auto'])(
+    'message %s rejects an explicit workspace key without a node',
+    async (mode) => {
+      const connectLocal = vi.fn();
+      const { program, error } = harness({ connectLocal });
+      await program.parseAsync(
+        ['local', 'agent', 'message', mode, 'worker', '--workspace-key', 'rk_live_other'],
+        { from: 'user' }
+      );
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'To target the local broker instead, use --broker-url / --api-key or read connection.json from --state-dir'
+        )
+      );
+      expect(connectLocal).not.toHaveBeenCalled();
+    }
+  );
+
   it('message hold and auto switch local broker delivery mode', async () => {
     const client = {
       setInboundDeliveryMode: vi.fn(async (_name: string, mode: string) => ({ mode, flushed: 0 })),
     };
     const connectLocal = vi.fn(async () => client as never);
-    const { program, log } = harness({ connectLocal });
+    // Keep this local-mode assertion independent of whichever Fleet workspace
+    // happens to be active on the developer machine running the suite.
+    const resolveFleetAttachTarget = vi.fn(async () => ({}));
+    const { program, log } = harness({ connectLocal, resolveFleetAttachTarget });
 
     await program.parseAsync(['local', 'agent', 'message', 'hold', 'claude'], { from: 'user' });
     await program.parseAsync(['local', 'agent', 'message', 'auto', 'claude'], { from: 'user' });
@@ -962,5 +1227,144 @@ describe('local agent subtree', () => {
     expect(log).toHaveBeenCalledWith(
       JSON.stringify({ name: 'claude', mode: 'auto_inject', flushed: 0 }, null, 2)
     );
+  });
+});
+
+describe('explicit broker selection on every node agent subcommand (relay#1446, relay#1822)', () => {
+  const stateDir = '/Users/op/.agentworkforce/relay/finn-mini-node/state';
+
+  function selectionHarness(env: NodeJS.ProcessEnv = {}) {
+    const connect = vi.fn(async () => {
+      throw new Error('project broker must not be used');
+    });
+    const local = {
+      listAgents: vi.fn(async () => [{ name: 'worker' }]),
+      spawnPty: vi.fn(async () => undefined),
+      release: vi.fn(async () => undefined),
+      setModel: vi.fn(async () => ({ name: 'worker', model: 'opus', success: true })),
+      disconnect: vi.fn(),
+    };
+    const connectLocal = vi.fn(async () => local as never);
+    const h = harness({ connect, connectLocal, env });
+    return { ...h, connect, connectLocal, local };
+  }
+
+  it.each([
+    [['list'], 'listAgents'],
+    [['spawn', 'codex', '--name', 'worker'], 'spawnPty'],
+    [['release', 'worker'], 'release'],
+    [['set-model', 'worker', 'opus'], 'setModel'],
+  ] as const)('%j --state-dir targets that broker, not the project default', async (args, method) => {
+    const { program, connect, connectLocal, local, exit } = selectionHarness();
+    await program.parseAsync(['local', 'agent', ...args, '--state-dir', stateDir], { from: 'user' });
+    expect(connect).not.toHaveBeenCalled();
+    expect(connectLocal).toHaveBeenCalledWith('/tmp/project', {
+      brokerUrl: undefined,
+      apiKey: undefined,
+      stateDir,
+    });
+    expect(local[method]).toHaveBeenCalled();
+    expect(local.disconnect).toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled();
+  });
+
+  it('release accepts --broker-url / --api-key outside any broker project', async () => {
+    const { program, connect, connectLocal, local, log } = selectionHarness();
+    await program.parseAsync(
+      ['local', 'agent', 'release', 'worker', '--broker-url', 'http://127.0.0.1:4100', '--api-key', 'k'],
+      { from: 'user' }
+    );
+    expect(connect).not.toHaveBeenCalled();
+    expect(connectLocal).toHaveBeenCalledWith('/tmp/project', {
+      brokerUrl: 'http://127.0.0.1:4100',
+      apiKey: 'k',
+      stateDir: undefined,
+    });
+    expect(local.release).toHaveBeenCalledWith('worker');
+    expect(log).toHaveBeenCalledWith('Released worker.');
+  });
+
+  it.each([
+    ['RELAY_BROKER_URL', 'http://127.0.0.1:4100'],
+    ['RELAY_BROKER_API_KEY', 'env-key'],
+  ])('%s selects the broker for flag-free release', async (name, value) => {
+    const { program, connect, connectLocal, local } = selectionHarness({ [name]: value });
+    await program.parseAsync(['local', 'agent', 'release', 'worker'], { from: 'user' });
+    expect(connect).not.toHaveBeenCalled();
+    expect(connectLocal).toHaveBeenCalled();
+    expect(local.release).toHaveBeenCalledWith('worker');
+  });
+
+  it('new spawns and attaches on the same explicitly selected broker', async () => {
+    const { program, connectLocal, local, attach } = selectionHarness();
+    await program.parseAsync(
+      ['local', 'agent', 'new', 'codex', '--name', 'worker', '--state-dir', stateDir],
+      {
+        from: 'user',
+      }
+    );
+    expect(connectLocal).toHaveBeenCalledWith('/tmp/project', {
+      brokerUrl: undefined,
+      apiKey: undefined,
+      stateDir,
+    });
+    expect(local.spawnPty).toHaveBeenCalled();
+    expect(attach).toHaveBeenCalledWith(
+      'worker',
+      'drive',
+      expect.objectContaining({ stateDir, brokerUrl: undefined, apiKey: undefined })
+    );
+  });
+
+  it('flag-free commands keep using the enclosing project broker', async () => {
+    const connectLocal = vi.fn();
+    const { program, client } = harness({ connectLocal, env: {} });
+    await program.parseAsync(['local', 'agent', 'release', 'lead'], { from: 'user' });
+    expect(connectLocal).not.toHaveBeenCalled();
+    expect(client.release).toHaveBeenCalledWith('lead');
+  });
+
+  it('a missing --state-dir connection names the searched path and ignores ambient env', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-state-dir-miss-'));
+    const { program, error, exit } = harness({
+      env: { RELAY_BROKER_URL: 'http://127.0.0.1:9', RELAY_BROKER_API_KEY: 'other-broker' },
+    });
+    try {
+      await program.parseAsync(['local', 'agent', 'list', '--state-dir', root], { from: 'user' });
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(error).toHaveBeenCalledWith(
+        `Error: no broker connection at ${path.join(root, 'connection.json')} or ${path.join(root, 'state', 'connection.json')} (from --state-dir). Pass the same --state-dir the broker was started with.`
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('flag-free "no broker" errors say the default path was searched and how to target a --state-dir broker', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-no-broker-'));
+    fs.mkdirSync(path.join(root, '.git'));
+    harnessConnectMock.mockImplementationOnce(() => {
+      throw new Error(
+        `No running broker found (${root}/.agentworkforce/relay/connection.json does not exist).`
+      );
+    });
+    const error = vi.fn();
+    const exit = vi.fn();
+    const program = new Command();
+    registerLocalAgentCommands(program.command('local'), {
+      cwd: () => root,
+      env: {},
+      error,
+      exit: exit as never,
+    });
+    try {
+      await program.parseAsync(['local', 'agent', 'list'], { from: 'user' });
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining('If the broker was started with --state-dir, pass the same --state-dir here')
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

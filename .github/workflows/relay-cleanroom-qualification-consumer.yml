@@ -424,7 +424,13 @@ jobs:
           FLEET_ATTEMPT_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
           export FLEET_ATTEMPT_STARTED_AT
           echo "FLEET_ATTEMPT_STARTED_AT=$FLEET_ATTEMPT_STARTED_AT" >> "$GITHUB_ENV"
-          npx relayflows run workflows/verify-fleet-daytona.ts
+          # The v2 flow is a generated spec: the nonce, candidate paths, and
+          # derived DAG deadline are computed here, then `flows check` validates
+          # the emitted data before anything runs.
+          FLEET_SPEC=".workflow-artifacts/flows/relay.verify.fleet-daytona.json"
+          node --experimental-strip-types flows/verify/fleet-daytona.spec.ts --out "$FLEET_SPEC"
+          npx flows check "$FLEET_SPEC"
+          npx flows run "$FLEET_SPEC"
 
       - name: Reconcile exact Fleet Daytona sandboxes after candidate stop
         if: always()
@@ -450,7 +456,7 @@ jobs:
           set -euo pipefail
           test ! -w package.json
           test ! -w node_modules
-          test ! -w workflows/verify-fleet-daytona.ts
+          test ! -w flows/verify/fleet-daytona.spec.ts
           test ! -w scripts/verify-features/fleet-daytona.mjs
           test ! -w packages/cli/dist/cli/index.js
           test -s "$RUNNER_TEMP/relay-candidate-install/candidate-install-attestation.json"

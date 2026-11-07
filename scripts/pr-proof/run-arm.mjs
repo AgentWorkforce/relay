@@ -20,6 +20,7 @@ import {
 import { uploadCloudEvidence, validateCloudEvidenceEnvironment } from './cloud-storage.mjs';
 import { runBoundedProcess } from './process-runner.mjs';
 import { loadBrokerArtifact } from './stage-broker-artifacts.mjs';
+import { downloadBrokerArtifact } from './broker-transfer.mjs';
 
 const MAX_OBSERVATION_FILE_BYTES = 64 * 1024;
 const LANDLOCK_PROBE_TIMEOUT_MS = 5_000;
@@ -481,7 +482,13 @@ export async function runLandlockedProcess(command, args, { writableRoots, ...op
   return runProcess(invocation.command, invocation.args, { ...options, env: caseEnvironment });
 }
 
-export async function openVerifiedBrokerExecutable({ input, arm, privateRoot, root = process.cwd() }) {
+export async function openVerifiedBrokerExecutable({
+  input,
+  arm,
+  privateRoot,
+  root = process.cwd(),
+  loadArtifact = loadBrokerArtifact,
+}) {
   const artifact = input.runtimeArtifacts?.broker?.[arm];
   if (!artifact) return null;
   if (process.platform !== 'linux') {
@@ -490,7 +497,7 @@ export async function openVerifiedBrokerExecutable({ input, arm, privateRoot, ro
   const artifactPath = path.resolve(root, artifact.path);
   const expectedRoot = path.join(root, '.relayflow', 'pr-proof-binaries') + path.sep;
   if (!artifactPath.startsWith(expectedRoot)) throw new Error('broker artifact escaped its staging root');
-  const loaded = await loadBrokerArtifact({
+  const loaded = await loadArtifact({
     arm,
     expectedSha: arm === 'base' ? input.baseSha : input.headSha,
     root,
@@ -633,6 +640,7 @@ export async function main() {
       input,
       arm,
       privateRoot: temporaryRoot,
+      loadArtifact: () => downloadBrokerArtifact(input, arm),
     });
     const brokerPath = brokerExecutable?.path ?? null;
 

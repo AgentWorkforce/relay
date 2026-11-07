@@ -15,10 +15,12 @@ describe('PTY parity against the AI SDK reference profile', () => {
       'claude',
       'codex',
       'cursor-agent',
+      'devin',
       'droid',
       'gemini',
       'goose',
       'grok',
+      'muse',
       'opencode',
     ]);
     for (const entry of aiSdkAdapterRegistry.list().filter((value) => value.ptyAvailable)) {

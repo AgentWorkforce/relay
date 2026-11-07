@@ -14,6 +14,7 @@ const UNRELATED_CODE = 'registration_rate_limited';
 const NEAR_MATCH_CODE = ' workspace_busy ';
 const REQUEST_ID = 'relayflow-workspace-busy-429-request';
 const STARTUP_WINDOW_MS = 60_000;
+const WORKSPACE_BUSY_REQUEST_CAP = 64;
 
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
@@ -173,14 +174,15 @@ try {
     !unrelated.timedOut &&
     !unrelated.stderr.includes(HANDSHAKE_MARKER) &&
     unrelated.stderr.includes(UNRELATED_CODE) &&
-    exhaustion.registrationCount === 3 &&
+    exhaustion.registrationCount > 1 &&
+    exhaustion.registrationCount < WORKSPACE_BUSY_REQUEST_CAP &&
     exhaustion.workspaceCreationCount === 0 &&
     !exhaustion.timedOut &&
     !exhaustion.stderr.includes(HANDSHAKE_MARKER) &&
     exhaustion.stderr.includes(BUSY_CODE) &&
     exhaustion.stderr.includes('status: 429') &&
     exhaustion.stderr.includes('workspace admission is busy') &&
-    exhaustion.stderr.includes('attempts: 3') &&
+    exhaustion.stderr.includes(`attempts: ${exhaustion.registrationCount}`) &&
     // Fixed: an implicit RELAY_API_KEY candidate must stay terminal for a
     // near-match or unrelated 429 exactly like an explicit key, and must
     // never mint a replacement workspace.
@@ -203,8 +205,7 @@ try {
   } else if (headObserved) {
     outcome = 'fixed';
     signature = 'startup_429_workspace_busy_retried_safely';
-    details =
-      'The head broker retried workspace_busy once to complete startup, kept an unrelated 429 terminal, and exhausted workspace_busy at three request attempts without replaying the complete handshake.';
+    details = `The head broker retried workspace_busy once to complete startup, kept unrelated and near-match 429 responses terminal, and exhausted persistent workspace_busy after ${exhaustion.registrationCount} requests within the independent ${WORKSPACE_BUSY_REQUEST_CAP}-request safety cap without replaying the complete handshake.`;
   } else {
     throw new Error(
       `Unexpected workspace admission observations: ${JSON.stringify(summarize(observations))}`

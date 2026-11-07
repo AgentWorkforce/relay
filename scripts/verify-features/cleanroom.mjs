@@ -266,6 +266,7 @@ export function validateMatrix(matrix, featureCategories) {
       validateCommandSpec(step, label, profileIds);
       validateLaneScopedSetup(step, label);
     });
+    const laneSetupIds = new Set(lane.setup.map(({ id }) => id));
     if (!Array.isArray(lane.scenarios) || lane.scenarios.length === 0) {
       throw new Error(`lane ${lane.id}.scenarios must be non-empty`);
     }
@@ -313,6 +314,40 @@ export function validateMatrix(matrix, featureCategories) {
           if (!category) throw new Error(`scenario ${scenario.id} covers unknown feature ${feature}`);
           if (!lane.featureCategories.includes(category)) {
             throw new Error(`scenario ${scenario.id} covers feature ${feature} outside its lane`);
+          }
+        }
+      }
+      if (scenario.targetedSetup !== undefined) {
+        const targetedSetup = assertStringArray(
+          scenario.targetedSetup,
+          `scenario ${scenario.id}.targetedSetup`,
+          { allowEmpty: false }
+        );
+        if (new Set(targetedSetup).size !== targetedSetup.length) {
+          throw new Error(`scenario ${scenario.id}.targetedSetup repeats a setup id`);
+        }
+        for (const setupId of targetedSetup) {
+          if (!laneSetupIds.has(setupId)) {
+            throw new Error(`scenario ${scenario.id}.targetedSetup references unknown setup ${setupId}`);
+          }
+        }
+      }
+      if (scenario.prSetup !== undefined) {
+        if (scenario.targetedSetup !== undefined) {
+          throw new Error(`scenario ${scenario.id} cannot declare both prSetup and targetedSetup`);
+        }
+        const prSetup =
+          scenario.prSetup === 'none'
+            ? []
+            : assertStringArray(scenario.prSetup, `scenario ${scenario.id}.prSetup`, {
+                allowEmpty: false,
+              });
+        if (new Set(prSetup).size !== prSetup.length) {
+          throw new Error(`scenario ${scenario.id}.prSetup repeats a setup id`);
+        }
+        for (const setupId of prSetup) {
+          if (!laneSetupIds.has(setupId)) {
+            throw new Error(`scenario ${scenario.id}.prSetup references unknown setup ${setupId}`);
           }
         }
       }
@@ -1110,8 +1145,12 @@ async function buildScope({ matrix, nonce }) {
   };
 }
 
-function enabledForProfile(spec, profile) {
-  return !spec.profiles || spec.profiles.includes(profile);
+/**
+ * A step with `whenChanged` belongs to pull-request selection, which knows what
+ * changed. A cleanroom run does not, so it uses the pinned release instead.
+ */
+export function enabledForProfile(spec, profile) {
+  return spec.whenChanged === undefined && (!spec.profiles || spec.profiles.includes(profile));
 }
 
 export function cleanEnvironment({

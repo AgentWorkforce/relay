@@ -101,6 +101,7 @@ describe('agent-relay observer', () => {
   it('mints through the persisted credential and origin as one transport pair', async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-observer-project-'));
     vi.stubEnv('AGENT_RELAY_PROJECT', projectRoot);
+    vi.stubEnv('AGENT_RELAY_HOME', path.join(projectRoot, 'credentials'));
     writeProjectWorkspaceKey(path.join(projectRoot, '.agentworkforce/relay'), WORKSPACE_KEY, {
       workspaceId: 'rw_abc',
       relaycastRoute: 'agent37-isolated',

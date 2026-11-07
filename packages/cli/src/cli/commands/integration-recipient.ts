@@ -3,7 +3,8 @@ import { resolve } from 'node:path';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
 import { getProjectPaths } from '@agent-relay/config';
 import { connectProjectBrokerClient } from '../lib/project-broker-client.js';
-import { resolveBaseUrl, resolveWorkspaceKey, type SdkClientOptions } from '../lib/sdk-client.js';
+import { UNBOUND_CREDENTIAL_ORIGIN } from '../lib/relaycast-origin-binding.js';
+import { resolveWorkspaceKey, resolveWorkspaceTransport, type SdkClientOptions } from '../lib/sdk-client.js';
 
 export interface RecipientLaunch {
   rollback(): Promise<void>;
@@ -23,13 +24,12 @@ export interface RecipientLaunchInput {
 }
 
 async function verifyRecipientIsolation(input: RecipientLaunchInput): Promise<void> {
+  // One resolution, so the key sent is exactly the one whose server was checked.
+  const transport = resolveWorkspaceTransport(input.options);
   const membership = await fetch(
-    new URL(
-      `/v1/agents/${encodeURIComponent(input.name)}`,
-      resolveBaseUrl(input.options) ?? 'https://cast.agentrelay.com'
-    ),
+    new URL(`/v1/agents/${encodeURIComponent(input.name)}`, transport.baseUrl ?? UNBOUND_CREDENTIAL_ORIGIN),
     {
-      headers: { authorization: `Bearer ${resolveWorkspaceKey(input.options)}` },
+      headers: { authorization: `Bearer ${transport.workspaceKey}` },
       signal: AbortSignal.timeout(15_000),
     }
   );
@@ -98,8 +98,19 @@ export async function launchSubscriptionRecipient(input: RecipientLaunchInput): 
     }
     const ready = await owned.waitForReady(90_000);
     if (ready.reason !== 'ready' || !ready.pid || ready.pid <= 0) {
+      // A PTY-close `agent_exit` can arrive before the reaper's code-bearing
+      // `agent_exited`; while the worker is still registered, hold a short
+      // bounded grace so the reported exit keeps the authoritative status.
+      let exit = ready.exit;
+      if (ready.reason === 'exited' && exit?.code === undefined) {
+        const deadline = Date.now() + 3_000;
+        while (exit?.code === undefined && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          exit = owned.exit ?? exit;
+        }
+      }
       throw new Error(
-        `Recipient ${input.name} failed startup: ${ready.reason}${ready.exit ? ` (${JSON.stringify(ready.exit)})` : ''}`
+        `Recipient ${input.name} failed startup: ${ready.reason}${exit ? ` (${JSON.stringify(exit)})` : ''}`
       );
     }
     process.kill(ready.pid, 0);
@@ -131,21 +142,22 @@ export async function resolveSubscriptionAgentChannel(
   name: string,
   options: SdkClientOptions
 ): Promise<string> {
+  // One resolution, so the key sent is exactly the one whose server was checked.
+  const transport = resolveWorkspaceTransport(options);
   const response = await fetch(
     new URL(
       `/v1/agents/${encodeURIComponent(name)}/subscription-channel`,
-      resolveBaseUrl(options) ?? 'https://cast.agentrelay.com'
+      transport.baseUrl ?? UNBOUND_CREDENTIAL_ORIGIN
     ),
     {
       method: 'POST',
       signal: AbortSignal.timeout(15_000),
-      headers: { authorization: `Bearer ${resolveWorkspaceKey(options)}` },
+      headers: { authorization: `Bearer ${transport.workspaceKey}` },
     }
   );
   if (!response.ok) {
     const detail = (await response.json().catch(() => undefined)) as
-      | { error?: { code?: unknown } }
-      | undefined;
+      { error?: { code?: unknown } } | undefined;
     const code =
       typeof detail?.error?.code === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(detail.error.code)
         ? ` ${detail.error.code}`

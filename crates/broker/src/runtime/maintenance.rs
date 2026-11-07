@@ -4,7 +4,28 @@ use crate::terminal_control::TerminalToCloud;
 
 impl BrokerRuntime {
     pub(super) async fn handle_maintenance_tick(&mut self) {
+        let expired_staging = self.attachment_staging.expire_stalled(
+            Instant::now(),
+            crate::attachments::ATTACHMENT_STAGING_MAX_HOLD,
+        );
+        for (deliver, block) in expired_staging {
+            tracing::warn!(
+                target = "relay_broker::attachments",
+                agent = %deliver.agent,
+                delivery_id = %deliver.delivery_id,
+                "attachment staging task did not complete; releasing delivery with fetch references"
+            );
+            self.handle_fleet_deliver(deliver, block.as_deref()).await;
+        }
+        self.maintain_tasks().await;
         self.reconcile_identity_cleanups().await;
+        // The awaited maintenance handoffs above give workers time to enqueue
+        // delivery confirmations. Apply those confirmations before taking the
+        // retry-deadline snapshot so an accepted delivery cannot be retried or
+        // dead-lettered merely because its event was already queued.
+        while let Ok(worker_event) = self.worker_event_rx.try_recv() {
+            self.handle_worker_event(worker_event).await;
+        }
         let paths = &self.paths;
         let state = &mut self.state;
         let sdk_out_tx = &self.sdk_out_tx;
@@ -209,7 +230,7 @@ impl BrokerRuntime {
             .map(|(name, pending)| (name.clone(), pending.invocation_id.clone()))
             .collect();
         for (name, invocation_id) in &expired_verified_spawns {
-            pending_verified_spawns.remove(name);
+            let pending = pending_verified_spawns.remove(name);
             let _ = super::relaycast_events::release_worker_locally(
                 name.clone(),
                 default_workspace,
@@ -233,8 +254,16 @@ impl BrokerRuntime {
             let owned = workers.owned_spawn_generations.get(name).cloned();
             let completion = super::fleet::verified_spawn_failed_result(
                 invocation_id.clone(),
-                "spawn_readiness_timeout",
+                pending.as_ref().and_then(|pending| pending.failure_reason.as_deref()).unwrap_or(
+                    "spawn_readiness_timeout: worker released after failing to reach harness readiness"),
             );
+            // This result goes out through identity cleanup or the fleet channel
+            // directly rather than `send_fleet_action_result`, so it would
+            // otherwise be the one spawn outcome missing the correlation log —
+            // and it is the outcome most likely to be investigated.
+            tracing::info!(invocation_id = %invocation_id, worker = %name, verify_ready = true,
+                deferred_to_identity_cleanup = owned.is_some(),
+                "sending fleet action result");
             if let Some((_, http)) = owned {
                 super::identity_cleanup::schedule_identity_cleanup(
                     workers,
@@ -657,6 +686,7 @@ impl BrokerRuntime {
                         worker_relay_key,
                         rst.payload.skip_relay_prompt,
                         None,
+                        rst.payload.initial_task.clone(),
                         rst.payload.agent_result.clone(),
                         None,
                     )
@@ -664,12 +694,21 @@ impl BrokerRuntime {
                 {
                     Ok(effective_spec) => {
                         fleet_load_changed = true;
+                        // A supervised tokenless worker owns the identity
+                        // across respawns, but each process is a new exact
+                        // generation. Refresh custody before any later
+                        // name-only release can infer the generation.
+                        if workers.owned_spawn_generations.contains_key(&name) {
+                            if let Some(worker) = workers.workers.get(&name) {
+                                workers.owned_spawn_generations.insert(
+                                    name.clone(),
+                                    (worker.generation, relaycast_http.clone()),
+                                );
+                            }
+                        }
                         workers.supervisor.on_restarted(&name);
                         workers.metrics.on_restart(&name);
                         let initial_task = rst.payload.initial_task.clone();
-                        if let Some(task) = initial_task.clone() {
-                            workers.initial_tasks.insert(name.clone(), task);
-                        }
                         let pid = workers.worker_pid(&name);
                         let restart_policy = state
                             .agents

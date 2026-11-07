@@ -2,7 +2,7 @@
   "version": 1,
   "id": "1656-long-running-agent37-sandbox",
   "kind": "feature",
-  "title": "Replay fleet sandbox identities with long-running semantics and preserve Agent37 attribution",
+  "title": "Replay and retain fleet sandbox identities with long-running semantics and Agent37 attribution",
   "runner": {
     "command": ["node", "tests/relayflows/cases/1656-long-running-agent37-sandbox/run.mjs"]
   },
@@ -14,7 +14,7 @@
     },
     "head": {
       "outcome": "fixed",
-      "signature": "long_running_profile_replay_identity_and_agent37_attribution_preserved"
+      "signature": "long_running_profile_replay_identity_retained_and_agent37_attribution_preserved"
     }
   }
 }

@@ -1,0 +1,8 @@
+{
+  "v": 1,
+  "id": "task_receipt_accept",
+  "type": "action.accept",
+  "invocation_id": "inv-task",
+  "execution_id": "inv-task/1",
+  "worker_generation": "worker-1"
+}

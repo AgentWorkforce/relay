@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "1779-attach-local-broker-fallback",
+  "kind": "bugfix",
+  "title": "Prefer a healthy discovered local broker before persisted Fleet routing",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1779-attach-local-broker-fallback/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "healthy_local_broker_skipped_for_fleet"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "healthy_local_broker_preferred_stale_broker_falls_through"
+    }
+  }
+}

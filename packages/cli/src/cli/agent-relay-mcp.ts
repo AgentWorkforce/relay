@@ -1,4 +1,13 @@
 #!/usr/bin/env node
+import { waitForAgentRemoval } from './lib/agent-removal.js';
+import {
+  FleetSpawnError,
+  classifySpawnFailure,
+  nameTakenSpawnError,
+  pendingSpawnError,
+  probeSpawnLiveness,
+  terminalSpawnOutcome,
+} from './lib/spawn-liveness.js';
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -8,6 +17,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
+  CallToolRequestSchema,
+  InitializeRequestSchema,
   ListToolsRequestSchema,
   SubscribeRequestSchema,
   UnsubscribeRequestSchema,
@@ -24,6 +35,14 @@ import {
 } from '@agent-relay/sdk';
 import { z } from 'zod';
 import { declaredWorkforceMetadata } from './lib/registration-metadata.js';
+import { isBundledBunEntrypointPath } from './lib/agent-relay-mcp-command.js';
+import {
+  boundOrigin,
+  guardCredentialOrigin,
+  UNBOUND_CREDENTIAL_ORIGIN,
+} from './lib/relaycast-origin-binding.js';
+import { isAgentAlreadyExists, takeOverAgent } from './lib/agent-takeover.js';
+import { pickAvailableName, sessionBaseName } from './lib/mcp-session-name.js';
 import {
   DEFAULT_AGENT_REGISTRATION_TIMEOUT_MS,
   withAgentRegistrationDeadline,
@@ -49,7 +68,13 @@ import {
 import { enableInboxPiggyback } from './mcp/telemetry.js';
 import { registerAgentRelayActionTools } from './mcp/action-tools.js';
 import { registerMessagingTools } from './mcp/messaging-tools.js';
+import { McpRequestReplay, replayScopeForCredentials, withReplayScope } from './mcp/request-replay.js';
 import { identityOverrideInputShape, messageResult } from './mcp/tool-shapes.js';
+import {
+  registerSharedSessionTools,
+  requireCompleteSharedSessionToolset,
+  SharedSessionsMcpClient,
+} from './mcp/shared-sessions-client.js';
 import {
   describeClearedEnrollment,
   persistWorkspaceSession,
@@ -60,12 +85,14 @@ import type {
   AgentClientLike,
   AgentRelayMcpServerOptions,
   AgentType,
+  AutoRegisterOptions,
   RegisteredAgent,
   RegistrationSession,
   RelayCastLike,
   SessionSetter,
   SessionState,
 } from './mcp/types.js';
+import { describeError } from './lib/describe-error.js';
 export type { AgentRelayMcpServerOptions } from './mcp/types.js';
 
 export const AGENT_RELAY_MCP_VERSION =
@@ -90,6 +117,7 @@ const VERIFIED_SPAWN_FAILURE_STATUSES = new Set(['failed', 'error', 'cancelled',
 
 class VerifiedSpawnError extends Error {
   readonly code: 'spawn_unconfirmed' | 'spawn_failed';
+  readonly actionName?: string;
   readonly invocationId?: string;
   readonly state: SpawnLifecycleState;
   readonly dispatchState: SpawnDispatchState;
@@ -100,6 +128,7 @@ class VerifiedSpawnError extends Error {
     message: string,
     context: {
       code?: 'spawn_unconfirmed' | 'spawn_failed';
+      actionName?: string;
       state: SpawnLifecycleState;
       dispatchState?: SpawnDispatchState;
       invocationId?: string;
@@ -109,6 +138,7 @@ class VerifiedSpawnError extends Error {
   ) {
     super(message);
     this.name = 'VerifiedSpawnError';
+    this.actionName = context.actionName;
     this.code = context.code ?? (context.state === 'failed' ? 'spawn_failed' : 'spawn_unconfirmed');
     this.state = context.state;
     this.dispatchState = context.dispatchState ?? 'unknown';
@@ -258,11 +288,12 @@ async function pollInvocation(
     } catch (error) {
       if (isInvocationAuthorizationError(error)) {
         throw new VerifiedSpawnError(
-          `Spawn confirmation could not be read after acceptance (${error instanceof Error ? error.message : String(error)}). The invocation may still be running; do not retry without checking it first. Invocation: ${current.invocationId}.`,
+          `Spawn confirmation could not be read after acceptance (${describeError(error)}). The invocation may still be running; do not retry without checking it first. Invocation: ${current.invocationId}.`,
           {
             code: 'spawn_unconfirmed',
             state: 'unconfirmed_may_be_running',
             invocationId: current.invocationId,
+            actionName: current.actionName,
             dispatchState: current.dispatchState,
             ...(current.node ? { node: current.node } : {}),
           }
@@ -274,6 +305,7 @@ async function pollInvocation(
           {
             state: 'unconfirmed_may_be_running',
             invocationId: current.invocationId,
+            actionName: current.actionName,
             dispatchState: current.dispatchState,
             ...(current.node ? { node: current.node } : {}),
             receipt: { status: 'unknown' },
@@ -328,6 +360,7 @@ async function waitForVerifiedSpawn(
             state: 'failed',
             dispatchState: dispatchStateForRecord(record, current.dispatchState),
             invocationId: current.invocationId,
+            actionName: current.actionName,
             receipt: record,
           });
         }
@@ -342,6 +375,7 @@ async function waitForVerifiedSpawn(
           state: 'failed',
           dispatchState: dispatchStateForRecord(record, current.dispatchState),
           invocationId: current.invocationId,
+          actionName: current.actionName,
           node:
             invocationText(record, 'handlerNodeId', 'handler_node_id') ??
             invocationText(record, 'dispatchedNodeId', 'dispatched_node_id') ??
@@ -357,6 +391,7 @@ async function waitForVerifiedSpawn(
         state: 'failed',
         dispatchState: dispatchStateForRecord(record, current.dispatchState),
         invocationId: current.invocationId,
+        actionName: current.actionName,
         node:
           invocationText(record, 'handlerNodeId', 'handler_node_id') ??
           invocationText(record, 'dispatchedNodeId', 'dispatched_node_id') ??
@@ -372,6 +407,7 @@ async function waitForVerifiedSpawn(
           state: 'unconfirmed_may_be_running',
           dispatchState: dispatchStateForRecord(record, current.dispatchState),
           invocationId: current.invocationId,
+          actionName: current.actionName,
           node:
             invocationText(record, 'handlerNodeId', 'handler_node_id') ??
             invocationText(record, 'dispatchedNodeId', 'dispatched_node_id') ??
@@ -395,7 +431,7 @@ export const AGENT_RELAY_MCP_INSTRUCTIONS = `You are an AI agent in a collaborat
 1. The current project workspace is resumed automatically when one was selected before
 2. Call "create_workspace" only when you explicitly want to start a new workspace session
 3. If someone shared an existing workspace key with you, call "set_workspace_key"
-4. When a workspace key is available at startup, this MCP server auto-registers the session as RELAY_AGENT_NAME (or "orchestrator" by default). Otherwise call "register_agent" with your agent name to join the workspace
+4. When a workspace key is available at startup, this MCP server registers the session automatically: as RELAY_AGENT_NAME when it is set, otherwise as your tool plus the project folder (for example "claude-myproject", with a short suffix when another live session holds that name). Call "register_agent" to choose a different name, or to join when no workspace key was available
 5. Use "list_channels" to see available channels
 6. Use "join_channel" to join channels of interest
 7. Use "check_inbox" to see unread messages and mentions
@@ -419,6 +455,12 @@ export const AGENT_RELAY_MCP_INSTRUCTIONS = `You are an AI agent in a collaborat
 - Keep messages concise and actionable`;
 
 const DEFAULT_SYSTEM_PROMPT = AGENT_RELAY_MCP_INSTRUCTIONS;
+
+const SHARED_SESSIONS_MCP_INSTRUCTIONS =
+  'Search and read agent sessions shared with your Agent Relay Cloud workspace. ' +
+  'Run `agent-relay cloud login` before starting this MCP server; on headless hosts use `agent-relay cloud login --device`.';
+
+const OPTIONAL_SHARED_SESSIONS_DISCOVERY_TIMEOUT_MS = 2_000;
 
 type AgentResultCallbackConfig = {
   url: string;
@@ -484,6 +526,11 @@ export function normalizeBaseUrl(baseUrl?: string): string | undefined {
 function isEntrypoint(): boolean {
   const invocationPath = process.argv[1];
   if (!invocationPath) return false;
+  // `bun build --compile` folds this importable module into the CLI entrypoint,
+  // and both modules observe the same virtual import.meta.url. Treating this
+  // module as an entrypoint in that environment starts a second stdio server;
+  // the CLI's `mcp` command owns startup for the compiled executable.
+  if (isBundledBunEntrypointPath(invocationPath)) return false;
   try {
     return fs.realpathSync(invocationPath) === fs.realpathSync(fileURLToPath(import.meta.url));
   } catch {
@@ -858,15 +905,79 @@ async function invokeVerifiedSpawn(
   }
   const commands = new AgentRelay({ agentToken, baseUrl }).messaging.commands;
   const invocation = await commands.invoke('spawn', actionInput);
-  return waitForVerifiedSpawn(commands, invocation);
+  try {
+    return await waitForVerifiedSpawn(commands, invocation);
+  } catch (error) {
+    if (!(error instanceof VerifiedSpawnError)) throw error;
+    const name = String(actionInput.name);
+    if (error.code === 'spawn_failed' && classifySpawnFailure(error.message))
+      throw nameTakenSpawnError(name, error);
+    if (error.code !== 'spawn_unconfirmed') throw error;
+    const requestedNode = typeof actionInput.target_node === 'string' ? actionInput.target_node : undefined;
+    const targetNode = actionInput.persona ? (error.node ?? requestedNode) : (requestedNode ?? error.node);
+    const context = { ...error, node: targetNode };
+    const liveness = await probeSpawnLiveness({
+      name,
+      targetNode,
+      ...(error.invocationId
+        ? { getInvocation: () => commands.getInvocation(error.actionName ?? 'spawn', error.invocationId!) }
+        : {}),
+      createClient: () => {
+        requireWorkspaceKey(session);
+        const workspace = new AgentRelay({ workspaceKey: session.workspaceKey!, baseUrl });
+        return { nodes: workspace.nodes, agents: workspace.agents };
+      },
+    });
+    if (liveness.evidence === 'invocation_terminal') {
+      const nested = VERIFIED_SPAWN_SUCCESS_STATUSES.has(String(liveness.invocation!.status).toLowerCase())
+        ? nestedPersonaSpawnRef(liveness.invocation!)
+        : undefined;
+      if (nested) {
+        // A late persona result can be only an acknowledgement of its child.
+        // It is neither missing readiness proof nor a terminal worker failure.
+        throw pendingSpawnError(
+          name,
+          {
+            ...context,
+            invocationId: nested.invocationId,
+            node: nested.node ?? targetNode,
+            dispatchState: nested.dispatchState,
+          },
+          { evidence: 'unknown' },
+          `The persona handler's invocation ${context.invocationId ?? '(unknown)'}${context.node ? ` on ${context.node}` : ''} completed with a nested spawn invocation after the confirmation budget.`
+        );
+      }
+      try {
+        return terminalSpawnOutcome(liveness.invocation!, context, true);
+      } catch (terminalError) {
+        const message = terminalError instanceof Error ? terminalError.message : String(terminalError);
+        if (classifySpawnFailure(message))
+          throw nameTakenSpawnError(name, Object.assign(new Error(message), context));
+        throw new VerifiedSpawnError(message, {
+          ...error,
+          code: 'spawn_failed',
+          state: 'failed',
+          receipt: liveness.invocation,
+        });
+      }
+    }
+    throw pendingSpawnError(name, context, liveness, error.message);
+  }
 }
 
-function verifiedSpawnErrorResult(error: VerifiedSpawnError) {
+function verifiedSpawnErrorResult(error: VerifiedSpawnError | FleetSpawnError) {
   return {
     ...jsonContent({
       ok: false,
       error: {
         code: error.code,
+        ...(error instanceof FleetSpawnError
+          ? {
+              exitCode: error.exitCode,
+              liveness: error.liveness,
+              diagnostic: error.diagnostic ? safeRelayErrorMessage(new Error(error.diagnostic)) : undefined,
+            }
+          : {}),
         state: error.state,
         dispatchState: error.dispatchState,
         ...(error.invocationId ? { invocationId: error.invocationId } : {}),
@@ -910,7 +1021,7 @@ async function verifyMetadataLanded(
       timeoutMs
     );
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
+    const detail = describeError(error);
     return {
       verified: false,
       warning: `Registered "${name}", but could not read the record back to confirm metadata landed: ${detail}`,
@@ -918,8 +1029,7 @@ async function verifyMetadataLanded(
   }
 
   const record = agents.find((agent) => (agent as { name?: string } | null)?.name === name) as
-    | { metadata?: Record<string, unknown> }
-    | undefined;
+    { metadata?: Record<string, unknown> } | undefined;
 
   if (!record) {
     return {
@@ -954,8 +1064,15 @@ function registerAgentRelayTools(
   baseUrl: string | undefined,
   strictAgentName: boolean | undefined,
   preferredAgentName: string | undefined,
-  forcedAgentType: AgentType | undefined
+  forcedAgentType: AgentType | undefined,
+  requestReplay: McpRequestReplay
 ): void {
+  // A retained spawn key belongs to the workspace and the identity it acts as.
+  const spawnReplayScope = (as?: string): string => {
+    const session = getSession();
+    const agentToken = (as ? session.agents.get(as)?.agentToken : session.agentToken) ?? '';
+    return replayScopeForCredentials(session.workspaceKey ?? '', agentToken);
+  };
   server.registerTool(
     'create_workspace',
     {
@@ -998,7 +1115,7 @@ function registerAgentRelayTools(
           persistWorkspaceSession({ name: workspaceName, workspaceKey })
         );
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeError(error);
         persistenceWarning =
           `Workspace created, but its session could not be persisted locally: ${message}. ` +
           'Keep the returned workspace key and retry persistence before starting another session.';
@@ -1019,7 +1136,7 @@ function registerAgentRelayTools(
         'Join this MCP session to an existing Agent Relay workspace using a shared workspace key. ' +
         'Returns a confirmation message stating whether the key was persisted for this project, and whether "register_agent" must be called to claim an identity in the newly joined workspace. The message also reports when joining dropped this project\'s enrolled Cloud fleet node, which happens when the key names a workspace that node does not belong to.',
       inputSchema: {
-        workspace_key: z.string().optional().describe('Workspace key starting with "rk_live_"'),
+        workspace_key: z.string().optional().describe('Workspace key starting with "rk_live_" or "ar_ws_"'),
         api_key: z.string().optional().describe('Deprecated alias for workspace_key'),
       },
       outputSchema: messageResult,
@@ -1035,8 +1152,18 @@ function registerAgentRelayTools(
       if (!key || typeof key !== 'string') {
         throw new Error('Workspace key is required.');
       }
-      if (!key.startsWith('rk_live_')) {
-        throw new Error('Workspace key must start with "rk_live_"');
+      if (!key.startsWith('rk_live_') && !key.startsWith('ar_ws_')) {
+        throw new Error('Workspace key must start with "rk_live_" or "ar_ws_"');
+      }
+      // This server's clients keep the URL it started with, so a key that
+      // belongs elsewhere is refused rather than sent to the wrong server.
+      const keyOrigin = boundOrigin(key);
+      const sessionOrigin = new URL(baseUrl ?? UNBOUND_CREDENTIAL_ORIGIN).origin;
+      if (keyOrigin && new URL(keyOrigin).origin !== sessionOrigin) {
+        throw new Error(
+          `This workspace key belongs to ${new URL(keyOrigin).origin}, but this MCP server is connected to ` +
+            `${sessionOrigin}. Restart it with RELAY_BASE_URL=${new URL(keyOrigin).origin}.`
+        );
       }
 
       const session = getSession();
@@ -1061,7 +1188,7 @@ function registerAgentRelayTools(
         // node; surface that here instead of at the next `node up`.
         clearedEnrollmentWarning = describeClearedEnrollment(persistWorkspaceSession({ workspaceKey: key }));
       } catch (error) {
-        const persistenceError = error instanceof Error ? error.message : String(error);
+        const persistenceError = describeError(error);
         persistenceWarning =
           `The workspace is active for this process, but its session could not be persisted locally: ` +
           `${persistenceError}. Retry persistence before restarting this MCP server.`;
@@ -1252,10 +1379,15 @@ function registerAgentRelayTools(
     }
   );
 
-  registerMessagingTools(server, getAgentClient, async () => {
-    if (!getSession().workspaceKey) return undefined;
-    return getRelay().agents.list();
-  });
+  registerMessagingTools(
+    server,
+    getAgentClient,
+    async () => {
+      if (!getSession().workspaceKey) return undefined;
+      return getRelay().agents.list();
+    },
+    requestReplay
+  );
 
   server.registerTool(
     'add_agent',
@@ -1272,9 +1404,10 @@ function registerAgentRelayTools(
       inputSchema: {
         name: z.string().describe('Worker agent name'),
         cli: z
-          .enum(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'opencode'])
+          .enum(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'muse', 'opencode', 'devin'])
           .describe(
             'Which AI CLI runs the worker: "codex agent" → codex, "gemini agent" → gemini, ' +
+              '"muse agent" → muse, "devin agent" → devin, ' +
               '"claude/opus claude/sonnet claude agent" → claude (default).'
           ),
         task: z.string().describe('Task instructions'),
@@ -1296,32 +1429,55 @@ function registerAgentRelayTools(
           .boolean()
           .optional()
           .describe('Exit the worker after it completes the injected task.'),
+        idempotency_key: z
+          .string()
+          .min(1)
+          .max(255)
+          .optional()
+          .describe(
+            'Stable key for retrying this same request after a lost response; use a new key for a new spawn.'
+          ),
       },
       outputSchema: jsonResult,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
     },
-    async ({ name, cli, task, channel, persona, model, spawn_mode, exit_after_task }) => {
-      const invocation = await getRelay().agents.spawn({
-        name,
-        cli,
-        task:
-          exit_after_task ||
-          spawn_mode === 'task_exit' ||
-          spawn_mode === 'task-exit' ||
-          spawn_mode === 'single_shot' ||
-          spawn_mode === 'single-shot'
-            ? withExitAfterTaskInstruction(task)
-            : task,
-        channel,
-        persona,
-        // SpawnAgentRequest has no top-level model field; pass via metadata
-        // so the broker can extract it and forward --model to the launched CLI.
-        metadata: model ? { model } : undefined,
-      });
-      const failure = terminalSpawnFailureResult(invocation);
-      if (failure) return failure;
-      return jsonContent({ ...invocation, placement: spawnReceipt(invocation) });
-    }
+    async (
+      { name, cli, task, channel, persona, model, spawn_mode, exit_after_task, idempotency_key },
+      extra
+    ) =>
+      requestReplay.run(
+        'add_agent',
+        extra,
+        idempotency_key,
+        async () => {
+          const invocation = await getRelay().agents.spawn({
+            name,
+            cli,
+            task:
+              exit_after_task ||
+              spawn_mode === 'task_exit' ||
+              spawn_mode === 'task-exit' ||
+              spawn_mode === 'single_shot' ||
+              spawn_mode === 'single-shot'
+                ? withExitAfterTaskInstruction(task)
+                : task,
+            channel,
+            persona,
+            // SpawnAgentRequest has no top-level model field; pass via metadata
+            // so the broker can extract it and forward --model to the launched CLI.
+            metadata: model ? { model } : undefined,
+          });
+          const failure = terminalSpawnFailureResult(invocation);
+          if (failure) return failure;
+          return jsonContent({ ...invocation, placement: spawnReceipt(invocation) });
+        },
+        replayScopeForCredentials(getSession().workspaceKey ?? '')
+      )
   );
 
   server.registerTool(
@@ -1330,11 +1486,11 @@ function registerAgentRelayTools(
       title: 'Spawn Agent',
       description:
         'Invoke the fleet spawn action with either a raw `cli` or an AgentWorkforce `persona` name/path. ' +
-        'Persona requests route to a node exposing `spawn:persona` (for example, `defineWorkforcePersonaSpawnNode` from `@agentworkforce/local-surface`). Both forms return only after broker registration and harness readiness are verified.',
+        'Persona requests route to a node exposing `spawn:persona` (for example, `defineWorkforcePersonaSpawnNode` from `@agentworkforce/local-surface`). Both forms wait for broker registration and harness readiness. Unconfirmed outcomes return error code `spawn_unconfirmed` with `state: "pending"` and `liveness` evidence; a fresh worker heartbeat is evidence, not readiness proof, so do not retry a pending spawn.',
       inputSchema: {
         name: z.string().describe('Agent name'),
         cli: z
-          .enum(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'opencode'])
+          .enum(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'muse', 'opencode', 'devin'])
           .optional()
           .describe('AI CLI to launch; mutually exclusive with persona'),
         persona: z
@@ -1363,6 +1519,14 @@ function registerAgentRelayTools(
         objective: z.string().optional().describe('Declared objective; defaults to task when omitted'),
         session_ref: z.string().optional().describe('Session reference for resumable spawns'),
         target_node: z.string().optional().describe('Optional target fleet node name'),
+        idempotency_key: z
+          .string()
+          .min(1)
+          .max(255)
+          .optional()
+          .describe(
+            'Stable key for retrying this same request after a lost response; use a new key for a new spawn.'
+          ),
         ...identityOverrideInputShape,
       },
       outputSchema: jsonResult,
@@ -1373,34 +1537,15 @@ function registerAgentRelayTools(
         openWorldHint: true,
       },
     },
-    async ({
-      name,
-      cli,
-      persona,
-      task,
-      cwd,
-      persona_cwd,
-      worker_cwd,
-      channel,
-      channels,
-      model,
-      organization,
-      project,
-      workstream,
-      role,
-      objective,
-      session_ref,
-      target_node,
-      as,
-    }) => {
-      const request = {
+    async (
+      {
         name,
         cli,
         persona,
         task,
         cwd,
-        personaCwd: persona_cwd,
-        workerCwd: worker_cwd,
+        persona_cwd,
+        worker_cwd,
         channel,
         channels,
         model,
@@ -1409,22 +1554,56 @@ function registerAgentRelayTools(
         workstream,
         role,
         objective,
-        sessionRef: session_ref,
-        targetNode: target_node,
-      };
-      validateSpawnRequest(request);
-      const actionInput = buildSpawnActionInput(request);
-      try {
-        const invocation = await invokeVerifiedSpawn(getSession(), as, baseUrl, actionInput);
-        return jsonContent({
-          invocation,
-          placement: { state: 'ready', ...spawnReceipt(recordValue(invocation)) },
-        });
-      } catch (error) {
-        if (error instanceof VerifiedSpawnError) return verifiedSpawnErrorResult(error);
-        throw error;
-      }
-    }
+        session_ref,
+        target_node,
+        idempotency_key,
+        as,
+      },
+      extra
+    ) =>
+      requestReplay.run(
+        'spawn',
+        extra,
+        idempotency_key,
+        async () => {
+          const request = {
+            name,
+            cli,
+            persona,
+            task,
+            cwd,
+            personaCwd: persona_cwd,
+            workerCwd: worker_cwd,
+            channel,
+            channels,
+            model,
+            organization,
+            project,
+            workstream,
+            role,
+            objective,
+            sessionRef: session_ref,
+            targetNode: target_node,
+          };
+          validateSpawnRequest(request);
+          const actionInput = buildSpawnActionInput(request);
+          try {
+            const invocation = await invokeVerifiedSpawn(getSession(), as, baseUrl, actionInput);
+            return jsonContent({
+              invocation,
+              placement: recordValue(invocation).placement ?? {
+                state: 'ready',
+                ...spawnReceipt(recordValue(invocation)),
+              },
+            });
+          } catch (error) {
+            if (error instanceof VerifiedSpawnError || error instanceof FleetSpawnError)
+              return verifiedSpawnErrorResult(error);
+            throw error;
+          }
+        },
+        spawnReplayScope(as)
+      )
   );
 
   server.registerTool(
@@ -1433,7 +1612,7 @@ function registerAgentRelayTools(
       title: 'Remove Agent',
       description:
         'Release a worker agent from active duty, optionally deleting it outright. ' +
-        'Returns an `invocation` record acknowledging the request, which is processed asynchronously. Releasing keeps the agent registered and re-spawnable; passing `delete_agent` removes the identity permanently.',
+        'Returns an `invocation` record acknowledging the request, which is processed asynchronously. Releasing keeps the agent registered; passing `delete_agent` requests permanent deletion. Use `wait` with `delete_agent` to verify the name is reusable.',
       inputSchema: {
         name: z.string().describe('Agent name'),
         reason: z
@@ -1441,12 +1620,18 @@ function registerAgentRelayTools(
           .optional()
           .describe('Removal reason; defaults to an attributable Agent Relay MCP reason'),
         delete_agent: z.boolean().optional().describe('Permanently delete the agent'),
+        wait: z.boolean().optional().describe('With delete_agent, wait for registration clearance'),
+        wait_timeout_ms: z
+          .number()
+          .positive()
+          .optional()
+          .describe('Clearance timeout in milliseconds (default 30000)'),
         ...identityOverrideInputShape,
       },
       outputSchema: jsonResult,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     },
-    async ({ name, reason, delete_agent, as }) => {
+    async ({ name, reason, delete_agent, wait, wait_timeout_ms, as }) => {
       const session = getSession();
       const selected = as ? session.agents.get(as) : undefined;
       if (as && !selected) {
@@ -1476,30 +1661,78 @@ function registerAgentRelayTools(
           throw error;
         }
       }
+      if (delete_agent && wait) {
+        // Clearance reads need workspace authority. Without it every read
+        // would fail, so keep the accepted removal and say why at once.
+        let workspace: AgentRelay | undefined;
+        let unavailable: string | undefined;
+        try {
+          requireWorkspaceKey(session);
+          workspace = new AgentRelay({ workspaceKey: session.workspaceKey!, baseUrl });
+        } catch (error) {
+          unavailable = describeError(error);
+        }
+        const removal = workspace
+          ? await waitForAgentRemoval({
+              name,
+              getAgent: (name) => workspace.agents.get(name),
+              listAgents: () => workspace.agents.list(),
+              timeoutMs: wait_timeout_ms,
+            })
+          : { cleared: false, waitedMs: 0, observedPresent: false, readError: unavailable };
+        return {
+          ...jsonContent({
+            invocation,
+            removal,
+            ...(!removal.cleared
+              ? {
+                  message:
+                    'Removal was initiated asynchronously; verify registration clearance before respawning.',
+                }
+              : {}),
+          }),
+          ...(!removal.cleared && removal.observedPresent ? { isError: true as const } : {}),
+        };
+      }
       return jsonContent({ invocation });
     }
   );
 }
 
 export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): McpServer {
+  if (options.sessionsOnly) {
+    requireCompleteSharedSessionToolset(options.sharedSessionTools ?? []);
+  }
+
   const session = createInitialSession({
     workspaceKey: options.workspaceKey ?? options.apiKey ?? null,
     agentToken: options.agentToken ?? null,
     agentName: options.agentName ?? null,
   });
   const actionToolNames = new Set<string>();
+  const requestReplay = new McpRequestReplay();
 
   const mcpServer = new McpServer(
     { name: 'agent-relay', version: AGENT_RELAY_MCP_VERSION },
     {
-      capabilities: {
-        resources: { subscribe: true, listChanged: true },
-        tools: {},
-        prompts: {},
-      },
-      instructions: AGENT_RELAY_MCP_INSTRUCTIONS,
+      capabilities: options.sessionsOnly
+        ? { tools: {} }
+        : {
+            resources: { subscribe: true, listChanged: true },
+            tools: {},
+            prompts: {},
+          },
+      instructions: options.sessionsOnly ? SHARED_SESSIONS_MCP_INSTRUCTIONS : AGENT_RELAY_MCP_INSTRUCTIONS,
     }
   );
+  const sharedSessionsClient = options.sharedSessionsClient ?? new SharedSessionsMcpClient();
+
+  if (options.sessionsOnly) {
+    registerSharedSessionTools(mcpServer, sharedSessionsClient, options.sharedSessionTools ?? [], {
+      strict: true,
+    });
+    return mcpServer;
+  }
 
   const getSession = (): SessionState => session;
   const getRelay = (): RelayCastLike => {
@@ -1600,7 +1833,7 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
 
   const getAgentClient = (asIdentity?: string): AgentClientLike => {
     const agentToken = resolveAgentToken(asIdentity);
-    return createAgentClient({ agentToken, baseUrl: options.baseUrl });
+    return withReplayScope(createAgentClient({ agentToken, baseUrl: options.baseUrl }), agentToken);
   };
 
   enableInboxPiggyback(
@@ -1629,7 +1862,8 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     options.baseUrl,
     options.strictAgentName,
     options.agentName,
-    options.agentType
+    options.agentType,
+    requestReplay
   );
   registerAgentRelayActionTools(
     mcpServer,
@@ -1640,6 +1874,9 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     actionToolNames
   );
   registerAgentResultTool(mcpServer, readAgentResultCallbackConfig(options.agentName));
+  registerSharedSessionTools(mcpServer, sharedSessionsClient, options.sharedSessionTools ?? [], {
+    strict: false,
+  });
 
   mcpServer.registerPrompt(
     'system',
@@ -1685,20 +1922,217 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     });
   }
 
+  if (options.autoRegister) {
+    installSessionAutoRegistration(mcpServer, handlers, options.autoRegister, {
+      getSession,
+      setSession,
+      getRelay,
+      agentType: options.agentType,
+      baseUrl: options.baseUrl,
+    });
+  }
+
   return mcpServer;
 }
 
-/** Relaycast agent tokens are opaque `at_live_<hex>` literals. Anything else
+/** Under Relaycast's 60s presence TTL, with room for one missed beat. */
+const SESSION_HEARTBEAT_MS = 25_000;
+
+/** How an auto-registered session marks itself offline when it ends. */
+const sessionDisconnectors = new WeakMap<McpServer, () => Promise<void>>();
+
+/**
+ * Names of the sessions connected right now. The presence endpoint tracks
+ * live connections (a session that exits drops out within its heartbeat TTL,
+ * at once when it disconnects cleanly), where the roster's `online` filter
+ * keeps a registration for minutes after its process is gone.
+ */
+async function liveAgentNames(
+  relay: RelayCastLike,
+  workspaceKey: string,
+  baseUrl: string | undefined,
+  fetchImpl: typeof fetch
+): Promise<Set<string>> {
+  const live = new Set<string>();
+  try {
+    const response = await fetchImpl(new URL('/v1/agents/presence', baseUrl ?? UNBOUND_CREDENTIAL_ORIGIN), {
+      headers: { authorization: `Bearer ${workspaceKey}` },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (response.ok) {
+      const body = (await response.json()) as { data?: unknown };
+      if (Array.isArray(body.data)) {
+        for (const entry of body.data as Array<{ agent_name?: unknown; status?: unknown }>) {
+          if (entry?.status === 'online' && typeof entry.agent_name === 'string') live.add(entry.agent_name);
+        }
+        return live;
+      }
+    }
+  } catch {
+    // Fall back to the roster below.
+  }
+  try {
+    for (const agent of await relay.agents.list({ status: 'online' })) {
+      const name = (agent as { name?: unknown } | null)?.name;
+      if (typeof name === 'string') live.add(name);
+    }
+  } catch {
+    // Without either, the base name is still the best guess.
+  }
+  return live;
+}
+
+/**
+ * Register a session that has no configured name as soon as the MCP client
+ * says who it is. The name comes from `clientInfo.name` and the folder the
+ * tool started in (`claude-myproject`); a live session already holding it
+ * pushes this one to `claude-myproject-2`. Tool calls wait for the
+ * registration, so the first call never races it.
+ */
+function installSessionAutoRegistration(
+  mcpServer: McpServer,
+  handlers: Map<string, (req: unknown, extra: unknown) => Promise<unknown>>,
+  autoRegister: AutoRegisterOptions,
+  ctx: {
+    getSession: () => SessionState;
+    setSession: SessionSetter;
+    getRelay: () => RelayCastLike;
+    agentType?: AgentType;
+    baseUrl?: string;
+  }
+): void {
+  const fetchImpl = autoRegister.fetch ?? globalThis.fetch;
+  let pending: Promise<void> | null = null;
+
+  const register = async (clientName: string | undefined): Promise<void> => {
+    const base = sessionBaseName({ clientName, hint: autoRegister.clientHint, cwd: autoRegister.cwd });
+    const workspaceKey = ctx.getSession().workspaceKey!;
+    const live = await liveAgentNames(ctx.getRelay(), workspaceKey, ctx.baseUrl, fetchImpl);
+    const name = pickAvailableName(base, live);
+    let token: string | null;
+    let registeredName: string | null;
+    try {
+      const payload = await registerAgentWithRebind({
+        session: ctx.getSession(),
+        setSession: ctx.setSession,
+        getRelay: ctx.getRelay,
+        name,
+        type: ctx.agentType ?? 'agent',
+      });
+      token = typeof payload.token === 'string' ? payload.token : null;
+      registeredName = typeof payload.registered_name === 'string' ? payload.registered_name : null;
+    } catch (error) {
+      // The name belongs to an earlier session of this tool in this folder
+      // that is no longer connected (a restart): resume that identity.
+      if (!isAgentAlreadyExists(error)) throw error;
+      const grant = await takeOverAgent(
+        { workspaceKey, baseUrl: ctx.baseUrl, fetch: fetchImpl },
+        name,
+        'agent-relay mcp: resume the identity of an earlier session of this tool in this folder'
+      );
+      token = grant.token;
+      registeredName = grant.name;
+    }
+    if (token && registeredName) {
+      const agents = new Map(ctx.getSession().agents);
+      agents.set(registeredName, createRegisteredAgent(registeredName, token));
+      ctx.setSession({ agentToken: token, agentName: registeredName, agents });
+      startHeartbeat();
+    }
+  };
+
+  // Keep this session present while it runs, so the next session in the same
+  // folder sees the name is taken. Presence lapses about a minute after the
+  // last beat, which is how a crashed session frees its name.
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  const beat = (): void => {
+    const token = ctx.getSession().agentToken;
+    if (!token) return;
+    void fetchImpl(new URL('/v1/agents/heartbeat', ctx.baseUrl ?? UNBOUND_CREDENTIAL_ORIGIN), {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(5_000),
+    }).catch(() => undefined);
+  };
+  const startHeartbeat = (): void => {
+    if (heartbeat) return;
+    beat();
+    heartbeat = setInterval(beat, SESSION_HEARTBEAT_MS);
+    heartbeat.unref?.();
+  };
+
+  // Read clientInfo from the initialize request itself, and start right after
+  // answering it, so nothing depends on the order a client's messages land in.
+  const initialize = handlers.get('initialize');
+  if (initialize) {
+    mcpServer.server.setRequestHandler(InitializeRequestSchema, async (req, extra) => {
+      const result = await initialize(req, extra);
+      const session = ctx.getSession();
+      if (!pending && session.workspaceKey && !session.agentToken) {
+        pending = register(req.params.clientInfo?.name).catch((error: unknown) => {
+          process.stderr.write(
+            `[agent-relay] Could not register this session automatically (${safeRelayErrorMessage(error)}). ` +
+              'Call "register_agent" to join the workspace.\n'
+          );
+        });
+      }
+      return result as never;
+    });
+  }
+
+  const callTool = handlers.get('tools/call');
+  if (callTool) {
+    mcpServer.server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
+      if (pending) await pending;
+      return (await callTool(req, extra)) as never;
+    });
+  }
+
+  // Leave cleanly so the next session in this folder can take the name at once.
+  sessionDisconnectors.set(mcpServer, async () => {
+    if (heartbeat) clearInterval(heartbeat);
+    const token = ctx.getSession().agentToken;
+    if (!token) return;
+    ctx.getSession().wsBridge?.stop();
+    await fetchImpl(new URL('/v1/agents/disconnect', ctx.baseUrl ?? UNBOUND_CREDENTIAL_ORIGIN), {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: '{}',
+      signal: AbortSignal.timeout(2_000),
+    }).catch(() => undefined);
+  });
+}
+
+/**
+ * Mark an auto-registered session offline when its tool stops it: stdin
+ * closes (the MCP stdio shutdown) or the process is signalled.
+ */
+function disconnectSessionOnExit(mcpServer: McpServer): void {
+  const disconnect = sessionDisconnectors.get(mcpServer);
+  if (!disconnect) return;
+  let closing = false;
+  const shutdown = (): void => {
+    if (closing) return;
+    closing = true;
+    void Promise.race([disconnect(), new Promise((resolve) => setTimeout(resolve, 2_500))]).finally(() =>
+      process.exit(0)
+    );
+  };
+  process.stdin.once('end', shutdown);
+  for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.once(signal, shutdown);
+}
+
+/** Relaycast agent tokens are opaque `at_live_<hex>` or `ar_ag_…` literals. Anything else
  * (for example a RelayAuth JWT carried in RELAY_AGENT_TOKEN by `relay on start`)
  * is not a valid Relaycast credential and must be replaced. */
 function isRelaycastAgentToken(token: string | undefined): token is string {
-  return typeof token === 'string' && token.startsWith('at_live_');
+  return typeof token === 'string' && (token.startsWith('at_live_') || token.startsWith('ar_ag_'));
 }
 
 export async function resolveStdioBootstrapOptions(
   options: AgentRelayMcpServerOptions
 ): Promise<AgentRelayMcpServerOptions> {
-  if (isRelaycastAgentToken(options.agentToken) || options.skipBootstrap) {
+  if (options.sessionsOnly || isRelaycastAgentToken(options.agentToken) || options.skipBootstrap) {
     return options;
   }
 
@@ -1728,12 +2162,44 @@ export async function resolveStdioBootstrapOptions(
 export async function startAgentRelayMcpStdio(options: AgentRelayMcpServerOptions): Promise<void> {
   initMcpTelemetry();
   const bootstrappedOptions = await resolveStdioBootstrapOptions(options);
+  const sharedSessionsClient = bootstrappedOptions.sharedSessionsClient ?? new SharedSessionsMcpClient();
+  let sharedSessionTools = bootstrappedOptions.sharedSessionTools;
+  if (!sharedSessionTools) {
+    let discoveryTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const discovery = sharedSessionsClient.listTools();
+      sharedSessionTools = bootstrappedOptions.sessionsOnly
+        ? await discovery
+        : await Promise.race([
+            discovery,
+            new Promise<never>((_resolve, reject) => {
+              discoveryTimer = setTimeout(
+                () => reject(new Error('Optional Cloud discovery timed out.')),
+                OPTIONAL_SHARED_SESSIONS_DISCOVERY_TIMEOUT_MS
+              );
+            }),
+          ]);
+    } catch (error) {
+      if (bootstrappedOptions.sessionsOnly) throw error;
+      // Cancel abandoned network work without letting cleanup delay local stdio.
+      void sharedSessionsClient.close?.().catch(() => undefined);
+      // A Cloud login is optional for the normal Relaycast MCP surface. Keep
+      // messaging available even when auth, initialization, or listing stalls.
+      // A restarted process after recovery will discover the hosted tools.
+      sharedSessionTools = [];
+    } finally {
+      if (discoveryTimer !== undefined) clearTimeout(discoveryTimer);
+    }
+  }
   const mcpServer = createAgentRelayMcpServer({
     ...bootstrappedOptions,
+    sharedSessionsClient,
+    sharedSessionTools,
     telemetryTransport: 'stdio',
   });
   const transport = new StdioServerTransport();
   await mcpServer.connect(transport);
+  disconnectSessionOnExit(mcpServer);
 }
 
 export function optionsFromEnv(): AgentRelayMcpServerOptions {
@@ -1757,22 +2223,34 @@ export function optionsFromEnv(): AgentRelayMcpServerOptions {
       // session can still be selected explicitly with set_workspace_key.
     }
   }
-  const agentName =
-    resolveEnv('RELAY_AGENT_NAME') ??
-    resolveEnv('RELAY_CLAW_NAME') ??
-    (workspaceKey ? 'orchestrator' : undefined);
+  // With no configured name the session is named after the MCP client and the
+  // project folder once the client connects (see installSessionAutoRegistration),
+  // so two sessions never share one identity.
+  const agentName = resolveEnv('RELAY_AGENT_NAME') ?? resolveEnv('RELAY_CLAW_NAME');
+  // An agent token has no workspace identity encoded locally. Only reuse it
+  // when the workspace was selected alongside it through the environment;
+  // a persisted project/store fallback must register into that workspace
+  // instead of silently pairing it with a possibly stale ambient token.
+  const agentToken = resumedPersistedWorkspace ? undefined : resolveEnv('RELAY_AGENT_TOKEN');
+  // The same rule as the CLI: a credential bound to a self-hosted or local
+  // server (by `relay init`, `workspace join`, …) only ever goes back to it,
+  // so the MCP server never sends it to the hosted default.
+  const credential = workspaceKey ?? agentToken;
+  const baseUrl = credential
+    ? guardCredentialOrigin(credential, resolveEnv('RELAY_BASE_URL'))
+    : resolveEnv('RELAY_BASE_URL');
   return {
     workspaceKey,
-    baseUrl: resolveEnv('RELAY_BASE_URL'),
-    // An agent token has no workspace identity encoded locally. Only reuse it
-    // when the workspace was selected alongside it through the environment;
-    // a persisted project/store fallback must register into that workspace
-    // instead of silently pairing it with a possibly stale ambient token.
-    agentToken: resumedPersistedWorkspace ? undefined : resolveEnv('RELAY_AGENT_TOKEN'),
+    baseUrl,
+    agentToken,
     agentName,
     agentType: normalizeAgentType(resolveEnv('RELAY_AGENT_TYPE')),
     strictAgentName: envFlagEnabled(resolveEnv('RELAY_STRICT_AGENT_NAME')),
     skipBootstrap: envFlagEnabled(resolveEnv('RELAY_SKIP_BOOTSTRAP')),
+    autoRegister:
+      workspaceKey && !agentName && !agentToken
+        ? { cwd: process.cwd(), clientHint: resolveEnv('AGENT_RELAY_CLIENT') }
+        : undefined,
   };
 }
 

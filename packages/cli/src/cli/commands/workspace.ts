@@ -2,9 +2,19 @@ import type { Command } from 'commander';
 import { InvalidArgumentError } from 'commander';
 import { resolveActiveWorkspace } from '@agent-relay/cloud';
 
+import { shellWord } from '../lib/agent-registration.js';
 import { maskSecret } from '../lib/redact.js';
+import { desktopPresent } from '../lib/desktop-presence.js';
 import { printJson, runSdk, withSdkDefaults, type SdkCommandDeps } from '../lib/sdk-command.js';
 import { readWorkspaceStore, setWorkspaceKey } from '../lib/workspace-store.js';
+import {
+  assertOriginBindingsWritable,
+  configuredBaseUrl,
+  boundOrigin,
+  DEFAULT_HOSTED_ORIGIN,
+  guardCredentialOrigin,
+  UNBOUND_CREDENTIAL_ORIGIN,
+} from '../lib/relaycast-origin-binding.js';
 import {
   describeClearedEnrollment,
   persistWorkspaceSession,
@@ -13,7 +23,10 @@ import {
   type PersistWorkspaceSessionResult,
 } from '../lib/workspace-session.js';
 
-export type WorkspaceCommandDependencies = SdkCommandDeps;
+export interface WorkspaceCommandDependencies extends SdkCommandDeps {
+  /** Whether the desktop app, whose core serves cast only, is on this machine. */
+  desktopPresent?: () => Promise<boolean>;
+}
 
 /**
  * Say so when moving workspaces drops this project's enrolled fleet node.
@@ -27,6 +40,33 @@ function reportClearedEnrollment(
   if (message) {
     deps.log(message);
   }
+}
+
+/**
+ * Bind a key someone hands us to the server named by RELAY_BASE_URL, so later
+ * shells without the variable keep sending it there. Without the variable we
+ * do not know where the key belongs and leave it unbound.
+ */
+function bindKeyToConfiguredServer(key: string): void {
+  if (process.env.RELAY_BASE_URL !== undefined) {
+    guardCredentialOrigin(key, process.env.RELAY_BASE_URL);
+  }
+}
+
+/**
+ * The `--url` a joined key needs in `relay init`: the configured server,
+ * else the server the key is already bound to; none for an unbound key, which
+ * `--key` alone joins. A bound key is never pointed anywhere else.
+ */
+function joinServerFlag(key: string): string {
+  const configured = process.env.RELAY_BASE_URL?.trim() || boundOrigin(key);
+  if (!configured) return '';
+  try {
+    if (new URL(configured).origin === UNBOUND_CREDENTIAL_ORIGIN) return '';
+  } catch {
+    // Not a URL: shown as given, for the person to correct.
+  }
+  return `--url ${shellWord(configured)} `;
 }
 
 function parsePositiveInteger(value: string): number {
@@ -102,7 +142,27 @@ export function registerWorkspaceCommands(
     .action(async (name: string, o: Record<string, unknown>) => {
       await runSdk(deps, async () => {
         const workspaceName = validateWorkspaceSessionName(name);
-        const relay = await deps.createWorkspace(workspaceName, o.baseUrl as string | undefined);
+        const explicitBaseUrl = (o.baseUrl as string | undefined) ?? process.env.RELAY_BASE_URL?.trim();
+        const desktop = !explicitBaseUrl && (await (overrides.desktopPresent ?? desktopPresent)());
+        const requestedBaseUrl =
+          explicitBaseUrl || (desktop ? UNBOUND_CREDENTIAL_ORIGIN : DEFAULT_HOSTED_ORIGIN);
+        if (desktop) {
+          deps.error(
+            `Creating on ${new URL(requestedBaseUrl).hostname}, the only server the desktop app here works with.`
+          );
+        }
+        const baseUrl = configuredBaseUrl(
+          requestedBaseUrl,
+          'The Relaycast base URL (--base-url or RELAY_BASE_URL)'
+        );
+        // Check the binding file before the server mints a key: a key that
+        // cannot be bound afterwards would be lost or sent to the wrong server.
+        if (baseUrl) assertOriginBindingsWritable(baseUrl);
+        const relay = await deps.createWorkspace(workspaceName, requestedBaseUrl?.trim());
+        if (relay.workspaceKey && baseUrl) {
+          // The server that minted this key is the only one it may be sent to.
+          guardCredentialOrigin(relay.workspaceKey, baseUrl);
+        }
         const previousActive = readWorkspaceStore().active;
         const persisted = relay.workspaceKey
           ? persistWorkspaceSession({ name: workspaceName, workspaceKey: relay.workspaceKey })
@@ -170,6 +230,7 @@ export function registerWorkspaceCommands(
     .argument('<key>', 'Workspace key')
     .action(async (name: string, key: string) => {
       await runSdk(deps, async () => {
+        bindKeyToConfiguredServer(key);
         setWorkspaceKey(name, key);
         deps.log(`Stored key for workspace "${name}".`);
       });
@@ -182,8 +243,16 @@ export function registerWorkspaceCommands(
     .argument('<key>', 'Workspace key')
     .action(async (name: string, key: string) => {
       await runSdk(deps, async () => {
+        bindKeyToConfiguredServer(key);
+        // Read before anything changes, so a bindings file that cannot be
+        // read stops the join instead of interrupting it.
+        const serverFlag = joinServerFlag(key);
         const result = persistWorkspaceSession({ name, workspaceKey: key });
         deps.log(`Joined and switched to workspace "${name}".`);
+        deps.log(
+          'This only saves the workspace. To connect agent tools and have messages injected into their ' +
+            `sessions, run in the project: relay init ${serverFlag}--key <key> --name ${shellWord(name)}`
+        );
         reportClearedEnrollment(result, deps);
       });
     });

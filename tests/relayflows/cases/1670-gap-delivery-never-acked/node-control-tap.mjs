@@ -75,8 +75,23 @@ export async function startNodeControlTap(enginePort, ws, log = () => {}) {
   server.on('upgrade', (request, socket, head) => {
     const path = request.url ?? '/';
     wss.handleUpgrade(request, socket, head, (downstream) => {
-      const headers = {};
-      if (request.headers.authorization) headers.authorization = request.headers.authorization;
+      // `ws` owns the hop-by-hop WebSocket handshake headers, but the engine
+      // also validates Relaycast attribution/authentication headers added by
+      // the broker. Preserve every end-to-end header through the tap.
+      const headers = Object.fromEntries(
+        Object.entries(request.headers).filter(
+          ([name]) =>
+            ![
+              'connection',
+              'host',
+              'sec-websocket-extensions',
+              'sec-websocket-key',
+              'sec-websocket-protocol',
+              'sec-websocket-version',
+              'upgrade',
+            ].includes(name)
+        )
+      );
       const upstream = new WebSocket(`ws://127.0.0.1:${enginePort}${path}`, { headers });
       const isNodeControl = path.startsWith('/v1/node/ws');
       if (isNodeControl) brokerSocket = downstream;
@@ -161,6 +176,7 @@ export async function startNodeControlTap(enginePort, ws, log = () => {}) {
       brokerSocket.send(JSON.stringify(frame));
     },
     async stop() {
+      for (const client of wss.clients) client.terminate();
       wss.close();
       await new Promise((resolve) => server.close(resolve));
     },

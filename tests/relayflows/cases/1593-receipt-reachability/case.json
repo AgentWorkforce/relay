@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "id": "1593-receipt-reachability",
+  "kind": "bugfix",
+  "title": "Directory matching does not claim recipient delivery",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1593-receipt-reachability/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 180,
+  "expected": {
+    "base": { "outcome": "bug", "signature": "directory_match_claims_recipient_match" },
+    "head": { "outcome": "fixed", "signature": "directory_match_preserves_delivery_uncertainty" }
+  }
+}

@@ -1,0 +1,213 @@
+{
+  "id": "compact_zkza9jhkear2",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-19T20:04:08.214Z",
+  "sourceTrajectories": [
+    "traj_p8fadw72db5s"
+  ],
+  "dateRange": {
+    "start": "2026-09-18T16:42:23.367Z",
+    "end": "2026-09-18T22:48:03.390Z"
+  },
+  "summary": {
+    "totalDecisions": 13,
+    "totalEvents": 14,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "testing",
+      "decisions": [
+        {
+          "question": "One generic mounter driven by a declared command spec, not per-product glue",
+          "chosen": "One generic mounter driven by a declared command spec, not per-product glue",
+          "reasoning": "Each product SDK exports createRelayCliSurface() returning {id, version, contract, commands, run}. The CLI renders help from the declared spec and forwards argv verbatim to run(). Help is never forwarded because the product would print its own program name -- users would be told to run 'relayfile ...' from inside agent-relay. Products satisfy the contract structurally with @agent-relay/cli-surface as a devDependency only, so no product takes a runtime dependency on relay.",
+          "fromTrajectory": "traj_p8fadw72db5s"
+        },
+        {
+          "question": "Publish relayhistory plugins via OIDC by removing the empty NODE_AUTH_TOKEN",
+          "chosen": "Publish relayhistory plugins via OIDC by removing the empty NODE_AUTH_TOKEN",
+          "reasoning": "Fixing the file-spec bug uncovered a second one behind it: the step set NODE_AUTH_TOKEN from secrets.NPM_TOKEN, which does not exist in the repo (gh secret list is empty). setup-node writes _authToken=${NODE_AUTH_TOKEN} into .npmrc unconditionally, so the blank value became a blank credential and suppressed OIDC -> ENEEDAUTH. The core publish job has id-token: write, sets no NODE_AUTH_TOKEN, and uses npm trusted publishing bound to this repo plus this workflow filename; the plugins job already had identical permissions, so removing the env makes it match. Unverifiable from here: whether npm accepts a first-ever publish of these names under trusted publishing, since the core names already exist and these do not.",
+          "fromTrajectory": "traj_p8fadw72db5s"
+        },
+        {
+          "question": "Move the history plugins from @agent-relay to @relayhistory before their first publish",
+          "chosen": "Move the history plugins from @agent-relay to @relayhistory before their first publish",
+          "reasoning": "@agent-relay is the relay monorepo's scope (cli-surface, cloud, sdk, fleet, session at 12.x from AgentWorkforce/relay). relayhistory was publishing its plugins into it at 0.18.x, so @agent-relay/relayhistory@0.18.2 would sit beside @agent-relay/cloud@12.2.4 and read as a relay package. Renamed to @relayhistory/capture and @relayhistory/provider-sources. The window mattered: neither package had ever published, because both bugs in the publish step (#152 file-spec, #153 auth) kept every release from reaching the registry -- and #153's whole purpose is to make the first publish succeed, so merging it unchanged would have locked in the wrong names and turned a free rename into a deprecation cycle. ai-hist/-native/-mcp keep unscoped names: published and depended on (agent-relay sessions pins ai-hist). Scope centralised in history-package-contract.mjs as SCOPE + packageName(); the workflow derives the tarball basename generically instead of stripping a hardcoded scope, which would have silently stopped matching -- the same failure shape as the bare-path bug.",
+          "fromTrajectory": "traj_p8fadw72db5s"
+        }
+      ]
+    },
+    {
+      "category": "tooling",
+      "decisions": [
+        {
+          "question": "Widen RelayCliIo to accept string | Uint8Array",
+          "chosen": "Widen RelayCliIo to accept string | Uint8Array",
+          "reasoning": "relayfile export --format tar --output - streams binary. A string-only sink corrupts it. Found while wiring the relayfile surface, not by review.",
+          "fromTrajectory": "traj_p8fadw72db5s"
+        },
+        {
+          "question": "Rebuild the flows branch from origin rather than pushing the subagent's worktree",
+          "chosen": "Rebuild the flows branch from origin rather than pushing the subagent's worktree",
+          "reasoning": "The worktree had diverged: origin/feat/relay-cli-surface held the same six commits rebased onto a newer main under different SHAs. A naive push would have reverted ~10k lines of main. Reset to the remote, merged current main (one conflict in packages/sdk/src/cli.ts, resolved keeping both sides: main's --dry-run on sync and the branch's ParsedArgs export plus RunCliOptions), then cherry-picked the two integration commits. Fast-forward push, no force.",
+          "fromTrajectory": "traj_p8fadw72db5s"
+        },
+        {
+          "question": "Dot-namespaced v2 flow names (relay.<domain>.<name>) over slash paths",
+          "chosen": "Dot-namespaced v2 flow names (relay.<domain>.<name>) over slash paths",
+          "reasoning": "flows build seals bundles as <name>@sha256:<digest> and validates names against /^[A-Za-z0-9][A-Za-z0-9._-]*$/, so slashes cannot be built or deployed",
+          "fromTrajectory": "traj_p8fadw72db5s"
+        }
+      ]
+    },
+    {
+      "category": "other",
+      "decisions": [
+        {
+          "question": "Deprecate only cloud schedule and schedules, not the whole v1 group",
+          "chosen": "Deprecate only cloud schedule and schedules, not the whole v1 group",
+          "reasoning": "Read what actually rejects --relayflow-version v2: only schedule/schedules do. status, logs, sync and cancel take a run id and serve whichever engine produced it, and run accepts both. Deprecating those would tell v2 users their only run-management commands are going away, which is false. Both stay visible in help because v2 has no hosted scheduling yet, so hiding them would strand the people who depend on them.",
+          "fromTrajectory": "traj_p8fadw72db5s"
+        },
+        {
+          "question": "Release relayfile with custom_version 0.10.64 instead of a patch bump",
+          "chosen": "Release relayfile with custom_version 0.10.64 instead of a patch bump",
+          "reasoning": "scripts/release/resolve-release-baseline.mjs keeps its own RELEASE_PACKAGE_PATHS allowlist and trustedTag() rejects any release commit touching a path outside it, so it distrusted 0.10.57 through 0.10.63 and returned 0.10.56 as the baseline. A patch bump computed 0.10.57, which is already tagged, and the guard correctly refused. main's package.json is 0.10.56 across every package while the registry was at 0.10.63 -- those releases never wrote versions back. Jumping to 0.10.64 clears every tag and published version without touching the resolver.",
+          "fromTrajectory": "traj_p8fadw72db5s"
+        },
+        {
+          "question": "Drop --pid-file from the listen child rather than registering it",
+          "chosen": "Drop --pid-file from the listen child rather than registering it",
+          "reasoning": "relayfile listen --background never worked: the parent appended --pid-file to a child whose flagset does not register it, so the child died at flag parsing while the parent printed success. runListen parses with ContinueOnError and discards the flagset's output, so nothing surfaced on a terminal. Nothing ever read the listen pid file -- no listen stop, no listen status, and listenPIDFile had exactly one caller: the spawn site feeding the child. Registering the flag would have added an unconsumed artefact; dropping it fixes the bug and removes dead code.",
+          "fromTrajectory": "traj_p8fadw72db5s"
+        }
+      ]
+    },
+    {
+      "category": "api",
+      "decisions": [
+        {
+          "question": "Revert the cloud sync delegation to the flows SDK",
+          "chosen": "Revert the cloud sync delegation to the flows SDK",
+          "reasoning": "Delegating applyCloudPatch dropped CLOUD_SYNC_PATCH_EXCLUDES against every published flows SDK (2.0.16 returns void and excludes nothing), so .trajectories/** and friends would be written into users' trees. Caught by the release dry run, not by tests. Restored the exclusion list verbatim and left cloud sync on its own patch application.",
+          "fromTrajectory": "traj_p8fadw72db5s"
+        },
+        {
+          "question": "Reduce the listener event envelope to a PR number only",
+          "chosen": "Reduce the listener event envelope to a PR number only",
+          "reasoning": "Replaces the v1 pull_request_target boundary: prepare.mjs then resolves the authoritative PR from the API, so no listener-supplied SHA/title/body reaches the proof contract",
+          "fromTrajectory": "traj_p8fadw72db5s"
+        }
+      ]
+    },
+    {
+      "category": "naming",
+      "decisions": [
+        {
+          "question": "Disable the flows review swarm with gh workflow disable, not an admin merge",
+          "chosen": "Disable the flows review swarm with gh workflow disable, not an admin merge",
+          "reasoning": "PR #471 tried to park it by switching the trigger to workflow_dispatch. swarm-wrapper-guard.sh rejected it: it fails any PR touching .github/workflows/review-swarm.yml, reading both filename and previous_filename so a rename cannot slip past, with no bypass. That is the property it exists to hold -- a candidate must not alter the gate that judges it -- and a PR disabling the gate is the strongest form of what it guards against. Overriding it with admin to land a comment would spend the guard's credibility for convenience. The platform toggle achieves the same outcome with no file edit. Cost: the disabled state lives in repo settings, invisible to anyone reading the workflow, so flows#470 carries the reasoning and the re-enable.",
+          "fromTrajectory": "traj_p8fadw72db5s"
+        }
+      ]
+    },
+    {
+      "category": "architecture",
+      "decisions": [
+        {
+          "question": "Fix the relayhistory plugin publish as a file-spec problem, not a glob problem",
+          "chosen": "Fix the relayhistory plugin publish as a file-spec problem, not a glob problem",
+          "reasoning": "My first diagnosis (unmatched glob) was wrong -- the glob matched. npm-package-arg classifies a bare dir/file.tgz as GitHub owner/repo shorthand, so npm resolved the path as a git remote and every plugin publish failed. Verified directly: npa('artifacts/x.tgz') -> git, npa('./artifacts/x.tgz') -> file. Those two lines are the only npm publish calls in the workflow that pass a path. Consequence: @agent-relay/relayhistory and @agent-relay/history-provider-sources had never published at any version. Added nullglob and an empty-match guard anyway, because an unmatched pattern expands to itself and that literal is misread as a git spec too.",
+          "fromTrajectory": "traj_p8fadw72db5s"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    ".agents/skills/choosing-swarm-patterns/SKILL.md",
+    ".agents/skills/orchestrating-agent-relay/SKILL.md",
+    ".agents/skills/relay-80-100-workflow/SKILL.md",
+    ".agents/skills/setting-up-relayfile/SKILL.md",
+    ".agents/skills/using-agent-relay/SKILL.md",
+    ".agents/skills/writing-agent-relay-workflows/SKILL.md",
+    ".agents/skills/writing-relayflows/SKILL.md",
+    ".agentworkforce/trajectories/active/traj_p8fadw72db5s/trajectory.json",
+    ".claude/skills/choosing-swarm-patterns/SKILL.md",
+    ".claude/skills/orchestrating-agent-relay/SKILL.md",
+    ".claude/skills/relay-80-100-workflow/SKILL.md",
+    ".claude/skills/setting-up-relayfile/SKILL.md",
+    ".claude/skills/using-agent-relay/SKILL.md",
+    ".claude/skills/writing-agent-relay-workflows/SKILL.md",
+    ".github/workflows/relay-cleanroom-qualification-consumer.yml",
+    ".github/workflows/relayflow-pr-proof.yml",
+    ".gitignore",
+    ".openskills/writing-relayflows/SKILL.md",
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "README.md",
+    "flows.json",
+    "flows/README.md",
+    "flows/audit/feature-manifest.spec.ts",
+    "flows/audit/run-feature-manifest.mjs",
+    "flows/ci/pr-proof.flow.ts",
+    "flows/diagnose/orchestration.spec.ts",
+    "flows/spec-builder.ts",
+    "flows/tsconfig.json",
+    "flows/verify/cleanroom.spec.ts",
+    "flows/verify/features.spec.ts",
+    "flows/verify/fleet-daytona.spec.ts",
+    "flows/verify/fleet-timeout-budget.ts",
+    "flows/verify/run-features.ts",
+    "package-lock.json",
+    "package.json",
+    "packages/brand/package.json",
+    "packages/broker-darwin-arm64/package.json",
+    "packages/broker-darwin-x64/package.json",
+    "packages/broker-linux-arm64/package.json",
+    "packages/broker-linux-x64/package.json",
+    "packages/broker-win32-x64/package.json",
+    "packages/cli-surface/package.json",
+    "packages/cli/package.json",
+    "packages/cloud/package.json",
+    "packages/config/package.json",
+    "packages/evals/package.json",
+    "packages/fleet/package.json",
+    "packages/harness-driver/package.json",
+    "packages/harnesses/package.json",
+    "packages/integration-prompts/package.json",
+    "packages/policy/package.json",
+    "packages/sdk-py/pyproject.toml",
+    "packages/sdk/package.json",
+    "packages/session/package.json",
+    "packages/utils/package.json",
+    "prpm.lock",
+    "scripts/flows/opencode-agent-cli.mjs",
+    "scripts/pr-proof/event-from-input.mjs",
+    "tests/fixtures/diagnostic-source-drift.test.ts",
+    "tests/fixtures/pr-proof-contract.test.ts",
+    "tests/fixtures/relay-cleanroom-qualification-request.test.ts",
+    "tests/fixtures/verify-features-escalation.test.ts",
+    "tests/fixtures/verify-fleet-daytona.test.ts",
+    "tests/relayflows/cases/1642-verify-features-escalation/run.mjs",
+    "tests/relayflows/cases/README.md",
+    "tests/relayflows/cleanroom/README.md",
+    "workflows/diagnose-relay-orchestration-reliability.ts",
+    "workflows/pr-proof.ts",
+    "workflows/verify-fleet-daytona.ts"
+  ],
+  "commits": [
+    "000842f26",
+    "aa858af9d",
+    "da9eefad9",
+    "789913a4f",
+    "c97830275",
+    "d972167b6",
+    "dc91ddb88"
+  ]
+}
