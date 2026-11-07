@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/harness-driver",
-  "version": "11.0.0",
+  "version": "17.2.1",
   "engines": {
     "node": ">=22.0.0"
   },
@@ -34,6 +34,16 @@
       "import": "./dist/broker-path.js",
       "default": "./dist/broker-path.js"
     },
+    "./install-paths": {
+      "types": "./dist/install-paths.d.ts",
+      "import": "./dist/install-paths.js",
+      "default": "./dist/install-paths.js"
+    },
+    "./broker-install": {
+      "types": "./dist/broker-install.d.ts",
+      "import": "./dist/broker-install.js",
+      "default": "./dist/broker-install.js"
+    },
     "./harnesses": {
       "types": "./dist/harnesses.d.ts",
       "import": "./dist/harnesses.js",
@@ -56,16 +66,16 @@
     "check": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@agent-relay/sdk": "11.0.0",
+    "@agent-relay/sdk": "17.2.1",
     "ws": "^8.18.3",
-    "zod": "^3.23.8"
+    "zod": "^4.4.3"
   },
   "optionalDependencies": {
-    "@agent-relay/broker-darwin-arm64": "11.0.0",
-    "@agent-relay/broker-darwin-x64": "11.0.0",
-    "@agent-relay/broker-linux-arm64": "11.0.0",
-    "@agent-relay/broker-linux-x64": "11.0.0",
-    "@agent-relay/broker-win32-x64": "11.0.0"
+    "@agent-relay/broker-darwin-arm64": "17.2.1",
+    "@agent-relay/broker-darwin-x64": "17.2.1",
+    "@agent-relay/broker-linux-arm64": "17.2.1",
+    "@agent-relay/broker-linux-x64": "17.2.1",
+    "@agent-relay/broker-win32-x64": "17.2.1"
   },
   "publishConfig": {
     "access": "public"

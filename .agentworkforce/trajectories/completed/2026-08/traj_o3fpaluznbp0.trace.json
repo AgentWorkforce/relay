@@ -1,0 +1,108 @@
+{
+  "version": "1.0.0",
+  "id": "38d0b7b0-ecf2-459a-bd54-8bd77c7a933d",
+  "timestamp": "2026-08-18T10:03:44.543Z",
+  "trajectory": "traj_o3fpaluznbp0",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/active/traj_o3fpaluznbp0/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 69,
+              "revision": "09d73b0400815333df6a4bf5ff50a06276d67aa4"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/package-validation.yml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 235,
+              "end_line": 248,
+              "revision": "09d73b0400815333df6a4bf5ff50a06276d67aa4"
+            },
+            {
+              "start_line": 346,
+              "end_line": 350,
+              "revision": "09d73b0400815333df6a4bf5ff50a06276d67aa4"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/publish.yml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1480,
+              "end_line": 1487,
+              "revision": "09d73b0400815333df6a4bf5ff50a06276d67aa4"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/ci-standalone-smoke.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 132,
+              "revision": "09d73b0400815333df6a4bf5ff50a06276d67aa4"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci-standalone-smoke.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 6,
+              "end_line": 25,
+              "revision": "09d73b0400815333df6a4bf5ff50a06276d67aa4"
+            },
+            {
+              "start_line": 132,
+              "end_line": 138,
+              "revision": "09d73b0400815333df6a4bf5ff50a06276d67aa4"
+            },
+            {
+              "start_line": 188,
+              "end_line": 204,
+              "revision": "09d73b0400815333df6a4bf5ff50a06276d67aa4"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

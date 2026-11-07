@@ -1,9 +1,17 @@
 import type { Command } from 'commander';
 
-import { AgentRelay, type AgentRelayAgent } from '@agent-relay/sdk';
+import {
+  AgentRelay,
+  RelayPlacementError,
+  safeRelayErrorMessage,
+  type AgentRelayAgent,
+} from '@agent-relay/sdk';
 
+import { AgentRemovalPendingError } from './agent-removal.js';
+import { FleetSpawnError } from './spawn-liveness.js';
 import { defaultExit } from './exit.js';
 import { createAgentRelay, createWorkspaceRelay, type SdkClientOptions } from './sdk-client.js';
+import { sanitizedSpawnReceipt } from './spawn-lifecycle.js';
 
 type ExitFn = (code: number) => never;
 
@@ -39,6 +47,7 @@ export function addSdkOptions(command: Command): Command {
       )
       .option('--wk <key>', 'Alias for --workspace-key')
       .option('--token <token>', 'Agent token (defaults to RELAY_AGENT_TOKEN)')
+      .option('--as <name>', 'Act as an agent whose token `agent register` saved')
       .option('--base-url <url>', 'Override the API base URL (defaults to RELAY_BASE_URL)')
       // Fold the `--wk` alias into `workspaceKey` before the action runs, so every
       // downstream reader (`sdkOptionsFromOpts`, integration's `explicitWorkspaceKey`,
@@ -57,6 +66,7 @@ export function sdkOptionsFromOpts(opts: Record<string, unknown>): SdkClientOpti
   return {
     workspaceKey: opts.workspaceKey as string | undefined,
     token: opts.token as string | undefined,
+    asAgent: opts.as as string | undefined,
     baseUrl: opts.baseUrl as string | undefined,
   };
 }
@@ -70,7 +80,31 @@ export async function runSdk(deps: SdkCommandDeps, fn: () => Promise<void>): Pro
   try {
     await fn();
   } catch (err) {
-    deps.error(err instanceof Error ? err.message : String(err));
-    deps.exit(1);
+    const raw = safeRelayErrorMessage(err);
+    // A bare network failure most often means the server is not running.
+    const message = /fetch failed|ECONNREFUSED|Network request failed/i.test(raw)
+      ? `${raw}\nCould not reach the Relay server. For a server on this machine run \`relay init\`; otherwise check the URL and your network.`
+      : raw;
+    if (err instanceof RelayPlacementError || err instanceof FleetSpawnError) {
+      const structured = {
+        error: {
+          code: err.code,
+          state: err.state ?? 'unknown',
+          ...(err.invocationId ? { invocationId: err.invocationId } : {}),
+          ...(err.node ? { node: err.node } : {}),
+          ...(err.dispatchState ? { dispatchState: err.dispatchState } : {}),
+          ...(err.receipt ? { receipt: sanitizedSpawnReceipt(err.receipt) } : {}),
+          ...(err instanceof FleetSpawnError && err.liveness ? { liveness: err.liveness } : {}),
+          ...(err instanceof FleetSpawnError && err.diagnostic
+            ? { diagnostic: safeRelayErrorMessage(new Error(err.diagnostic)) }
+            : {}),
+          message,
+        },
+      };
+      deps.error(`${message}\n${JSON.stringify(structured)}`);
+    } else {
+      deps.error(message);
+    }
+    deps.exit(err instanceof FleetSpawnError || err instanceof AgentRemovalPendingError ? err.exitCode : 1);
   }
 }

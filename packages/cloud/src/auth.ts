@@ -10,6 +10,13 @@ import { buildApiUrl } from './api-client.js';
 import { CloudApiClient, type CloudApiClientOptions, type CloudApiClientSnapshot } from './api-client.js';
 import { appendAgentRelayTelemetryHeaders } from './telemetry-headers.js';
 import {
+  clearStoredIdentity,
+  readStoredIdentity,
+  writeStoredIdentity,
+  type CloudIdentity,
+} from './identity.js';
+import { isHeadlessEnvironment, runDeviceAuthorizationFlow, type DeviceFlowHooks } from './device-auth.js';
+import {
   AUTH_FILE_PATH,
   DEFAULT_REFRESH_TIMEOUT_MS,
   REFRESH_TOKEN_WINDOW_MS,
@@ -19,6 +26,7 @@ import {
   type CloudSession,
   type CloudSessionOptions,
   type StoredAuth,
+  type WhoAmIResponse,
 } from './types.js';
 
 const AUTH_DIR_PATH = path.dirname(AUTH_FILE_PATH);
@@ -154,6 +162,93 @@ export async function writeStoredAuth(auth: StoredAuth): Promise<void> {
 
 export async function clearStoredAuth(): Promise<void> {
   await fs.rm(AUTH_FILE_PATH, { force: true });
+  await clearStoredIdentity();
+}
+
+// ── Identity ────────────────────────────────────────────────────────────────
+
+/**
+ * Resolve who the stored credentials belong to and persist it alongside them.
+ *
+ * Called on login and by `agent-relay cloud whoami`; also called lazily by
+ * {@link ensureCloudSession} when no identity has been recorded yet for the
+ * session's host. Best-effort by construction — a failure here leaves telemetry
+ * anonymous but must never break the command that triggered it.
+ */
+export async function refreshStoredCloudIdentity(
+  auth: StoredAuth,
+  options: {
+    env?: NodeJS.ProcessEnv;
+    /** Apply the caller's credential transport policy to the whoami request. */
+    validateApiUrl?: (apiUrl: string) => void;
+  } = {}
+): Promise<CloudIdentity | null> {
+  const env = options.env ?? process.env;
+
+  try {
+    const { response } = await authorizedApiFetch(
+      auth,
+      '/api/v1/auth/whoami',
+      {
+        method: 'GET',
+        ...(options.validateApiUrl ? { redirect: 'error' as const } : {}),
+      },
+      {
+        interactive: false,
+        validateApiUrl: options.validateApiUrl,
+      }
+    );
+    if (!response.ok) return null;
+
+    const payload = (await response.json().catch(() => null)) as WhoAmIResponse | null;
+    if (!payload?.authenticated || !payload.user?.id) return null;
+
+    const identity = toCloudIdentity(payload, auth.apiUrl);
+    if (!identity) return null;
+
+    await writeStoredIdentity(identity, env);
+    return identity;
+  } catch {
+    return null;
+  }
+}
+
+export function toCloudIdentity(payload: WhoAmIResponse, apiUrl: string): CloudIdentity | null {
+  if (!payload.user?.id) return null;
+
+  return {
+    userId: payload.user.id,
+    ...(payload.user.email ? { email: payload.user.email } : {}),
+    ...(payload.user.name ? { name: payload.user.name } : {}),
+    ...(payload.currentOrganization
+      ? {
+          organizationId: payload.currentOrganization.id,
+          organizationSlug: payload.currentOrganization.slug,
+          organizationName: payload.currentOrganization.name,
+          organizationRole: payload.currentOrganization.role,
+        }
+      : {}),
+    ...(payload.currentWorkspace ? { workspaceId: payload.currentWorkspace.id } : {}),
+    apiUrl,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Whether the cached identity still matches the credentials in play.
+ *
+ * Deliberately *not* used to trigger a lazy whoami inside
+ * {@link ensureCloudSession}: identity is analytics, and analytics must not add
+ * an HTTP round trip to the auth path every command runs. Identity is captured
+ * at login and refreshed by `agent-relay cloud whoami`; callers who want it
+ * fresh call {@link refreshStoredCloudIdentity} explicitly.
+ */
+export async function hasCurrentStoredCloudIdentity(
+  auth: StoredAuth,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<boolean> {
+  const existing = await readStoredIdentity(env);
+  return Boolean(existing && existing.apiUrl === auth.apiUrl);
 }
 
 async function removeStaleStoredAuthLock(): Promise<boolean> {
@@ -478,10 +573,17 @@ async function beginBrowserLogin(apiUrl: string): Promise<StoredAuth> {
 
 export async function refreshStoredAuth(
   auth: StoredAuth,
-  options: { force?: boolean; refreshTimeoutMs?: number; signal?: AbortSignal } = {}
+  options: {
+    force?: boolean;
+    refreshTimeoutMs?: number;
+    signal?: AbortSignal;
+    validateApiUrl?: (apiUrl: string) => void;
+  } = {}
 ): Promise<StoredAuth> {
   if (isEnvBackedAuth(auth)) {
-    return markEnvBackedAuth(await requestStoredAuthRefresh(auth, options));
+    const nextAuth = await requestStoredAuthRefresh(auth, options);
+    options.validateApiUrl?.(nextAuth.apiUrl);
+    return markEnvBackedAuth(nextAuth);
   }
 
   return withStoredAuthLock(async () => {
@@ -493,6 +595,10 @@ export async function refreshStoredAuth(
     }
 
     const nextAuth = await requestStoredAuthRefresh(refreshSource, options);
+    // Some credentialed callers impose a stricter transport contract than the
+    // general Cloud client. Validate a refresh-selected host before persisting
+    // the rotated credentials or allowing a retry to send them there.
+    options.validateApiUrl?.(nextAuth.apiUrl);
     await writeStoredAuth(nextAuth);
     return nextAuth;
   }, options);
@@ -500,8 +606,13 @@ export async function refreshStoredAuth(
 
 async function requestStoredAuthRefresh(
   auth: StoredAuth,
-  options: { refreshTimeoutMs?: number; signal?: AbortSignal } = {}
+  options: {
+    refreshTimeoutMs?: number;
+    signal?: AbortSignal;
+    validateApiUrl?: (apiUrl: string) => void;
+  } = {}
 ): Promise<StoredAuth> {
+  options.validateApiUrl?.(auth.apiUrl);
   const response = await fetchWithRefreshTimeout(
     buildApiUrl(auth.apiUrl, '/api/v1/auth/token/refresh'),
     {
@@ -510,6 +621,9 @@ async function requestStoredAuthRefresh(
         'content-type': 'application/json',
       },
       body: JSON.stringify({ refreshToken: auth.refreshToken }),
+      // An opt-in host policy also refuses HTTP redirects so a 307 cannot
+      // replay the refresh token to an unvalidated destination.
+      ...(options.validateApiUrl ? { redirect: 'error' as const } : {}),
     },
     options
   );
@@ -542,33 +656,119 @@ async function requestStoredAuthRefresh(
   return nextAuth;
 }
 
-async function loginWithBrowser(apiUrl: string): Promise<StoredAuth> {
-  const auth = await beginBrowserLogin(apiUrl);
+/**
+ * Persist a freshly obtained session and announce who it belongs to. Shared by
+ * the browser and device flows so both write `cloud-auth.json` through the same
+ * path — that is what keeps `cloud session --json --reveal-token` working
+ * regardless of how the machine logged in.
+ */
+async function completeLogin(
+  auth: StoredAuth,
+  options: { validateApiUrl?: (apiUrl: string) => void } = {}
+): Promise<StoredAuth> {
+  // Validate the server-selected host before either persisting its credentials
+  // or sending its new bearer to whoami. This is the final common boundary for
+  // both browser callbacks and device-code grants.
+  options.validateApiUrl?.(auth.apiUrl);
   await writeStoredAuth(auth);
+  // Record who just logged in so subsequent CLI/broker runs can attribute
+  // telemetry to this user and org. Never blocks the login from succeeding.
+  const identity = await refreshStoredCloudIdentity(auth, {
+    validateApiUrl: options.validateApiUrl,
+  });
   console.log(`Logged in to ${auth.apiUrl}`);
+  if (identity?.email) {
+    const org = identity.organizationName ?? identity.organizationSlug;
+    console.log(`Signed in as ${identity.email}${org ? ` (${org})` : ''}`);
+  }
   return auth;
+}
+
+async function loginWithBrowser(
+  apiUrl: string,
+  options: { validateApiUrl?: (apiUrl: string) => void } = {}
+): Promise<StoredAuth> {
+  options.validateApiUrl?.(apiUrl);
+  return completeLogin(await beginBrowserLogin(apiUrl), options);
+}
+
+/**
+ * Device-code login for machines with no browser. Each run mints its own
+ * session row on the server, so this machine's refresh-token rotation is
+ * independent of every other machine's — which is the reason copying
+ * `cloud-auth.json` between hosts is not a valid substitute.
+ */
+export async function loginWithDevice(
+  apiUrl: string,
+  options: {
+    clientName?: string;
+    validateApiUrl?: (apiUrl: string) => void;
+  } & DeviceFlowHooks = {}
+): Promise<StoredAuth> {
+  const { validateApiUrl, ...deviceOptions } = options;
+  validateApiUrl?.(apiUrl);
+  const deviceFetch = deviceOptions.fetchImpl ?? fetch;
+  const policyDeviceOptions = validateApiUrl
+    ? {
+        ...deviceOptions,
+        fetchImpl: ((input, init) =>
+          deviceFetch(input, { ...init, redirect: 'error' })) satisfies typeof fetch,
+      }
+    : deviceOptions;
+  return completeLogin(await runDeviceAuthorizationFlow(apiUrl, policyDeviceOptions), {
+    validateApiUrl,
+  });
+}
+
+/**
+ * Pick a login style. `--device` is explicit; otherwise fall back to the device
+ * flow when nothing here could open a browser, since the browser flow's
+ * loopback callback is unreachable from another machine and would only hang
+ * until it timed out.
+ */
+async function loginInteractive(
+  apiUrl: string,
+  options: {
+    device?: boolean;
+    env?: NodeJS.ProcessEnv;
+    validateApiUrl?: (apiUrl: string) => void;
+  } = {}
+): Promise<StoredAuth> {
+  const env = options.env ?? process.env;
+  if (options.device === true || isHeadlessEnvironment(env)) {
+    return loginWithDevice(apiUrl, { validateApiUrl: options.validateApiUrl });
+  }
+  return loginWithBrowser(apiUrl, { validateApiUrl: options.validateApiUrl });
 }
 
 export async function ensureAuthenticated(
   apiUrl: string,
-  options?: { force?: boolean; interactive?: boolean; refreshTimeoutMs?: number }
+  options?: {
+    force?: boolean;
+    interactive?: boolean;
+    device?: boolean;
+    refreshTimeoutMs?: number;
+  }
 ): Promise<StoredAuth> {
   const session = await ensureCloudSession({
     apiUrl,
     force: options?.force,
     interactive: options?.interactive,
+    device: options?.device,
     refreshTimeoutMs: options?.refreshTimeoutMs,
   });
   return session.auth;
 }
 
 export async function ensureCloudSession(options: CloudSessionOptions = {}): Promise<CloudSession> {
+  options.signal?.throwIfAborted();
   const env = options.env ?? process.env;
-  const apiUrl = options.apiUrl || env.CLOUD_API_URL?.trim() || defaultApiUrl();
+  const apiUrl = options.apiUrl || defaultApiUrl(env);
   const force = options.force === true;
   const interactive = options.interactive !== false;
   const refreshTimeoutMs = options.refreshTimeoutMs;
   const stored = !force ? await readStoredAuth(env) : null;
+  options.signal?.throwIfAborted();
 
   // Stored auth is authoritative on its own host. A host mismatch between
   // `apiUrl` (typically defaultApiUrl()) and `stored.apiUrl` is NOT a reason
@@ -577,20 +777,48 @@ export async function ensureCloudSession(options: CloudSessionOptions = {}): Pro
   // Only `--force` re-links to a different host.
   if (!stored) {
     if (!interactive) {
-      throw browserRequired('Cloud login required. Run `agent-relay login`.');
+      // Point a headless host at the flow that can actually work there,
+      // rather than at a browser it has no way to open.
+      throw browserRequired(
+        isHeadlessEnvironment(env)
+          ? 'Cloud login required. Run `agent-relay cloud login --device`.'
+          : 'Cloud login required. Run `agent-relay login`.'
+      );
     }
-    const auth = await loginWithBrowser(apiUrl);
-    return createCloudSession(auth, { refreshTimeoutMs });
+    const auth = await loginInteractive(apiUrl, {
+      device: options.device,
+      env,
+      validateApiUrl: options.validateApiUrl,
+    });
+    return createCloudSession(auth, {
+      refreshTimeoutMs,
+      validateApiUrl: options.validateApiUrl,
+    });
   }
 
+  // A caller-supplied transport policy must run before an expired stored
+  // session can send its refresh token to the stored host.
+  options.validateApiUrl?.(stored.apiUrl);
+
   if (!shouldRefreshStoredAuth(stored)) {
-    return createCloudSession(stored, { refreshTimeoutMs });
+    return createCloudSession(stored, {
+      refreshTimeoutMs,
+      validateApiUrl: options.validateApiUrl,
+    });
   }
 
   try {
-    const auth = await refreshStoredAuth(stored, { refreshTimeoutMs });
-    return createCloudSession(auth, { refreshTimeoutMs });
+    const auth = await refreshStoredAuth(stored, {
+      signal: options.signal,
+      refreshTimeoutMs,
+      validateApiUrl: options.validateApiUrl,
+    });
+    return createCloudSession(auth, {
+      refreshTimeoutMs,
+      validateApiUrl: options.validateApiUrl,
+    });
   } catch (error) {
+    options.signal?.throwIfAborted();
     if (isEnvBackedAuth(stored)) {
       throw toEnvAuthRefreshError(error);
     }
@@ -599,15 +827,29 @@ export async function ensureCloudSession(options: CloudSessionOptions = {}): Pro
       throw error;
     }
 
-    const auth = await loginWithBrowser(stored.apiUrl);
-    return createCloudSession(auth, { refreshTimeoutMs });
+    const auth = await loginInteractive(stored.apiUrl, {
+      device: options.device,
+      env,
+      validateApiUrl: options.validateApiUrl,
+    });
+    return createCloudSession(auth, {
+      refreshTimeoutMs,
+      validateApiUrl: options.validateApiUrl,
+    });
   }
 }
 
-function createCloudSession(auth: StoredAuth, options: { refreshTimeoutMs?: number } = {}): CloudSession {
+function createCloudSession(
+  auth: StoredAuth,
+  options: {
+    refreshTimeoutMs?: number;
+    validateApiUrl?: (apiUrl: string) => void;
+  } = {}
+): CloudSession {
   const clientOptions: CloudApiClientOptions = {
     ...auth,
     refreshTimeoutMs: options.refreshTimeoutMs,
+    validateApiUrl: options.validateApiUrl,
   };
 
   if (!isEnvBackedAuth(auth)) {
@@ -617,6 +859,7 @@ function createCloudSession(auth: StoredAuth, options: { refreshTimeoutMs?: numb
           force: refreshOptions.force,
           refreshTimeoutMs: options.refreshTimeoutMs,
           signal: refreshOptions.signal,
+          validateApiUrl: options.validateApiUrl,
         })
       );
   }
@@ -663,23 +906,40 @@ export async function authorizedApiFetch(
   auth: StoredAuth,
   requestPath: string,
   init: RequestInit,
-  options: { interactive?: boolean; refreshTimeoutMs?: number } = {}
+  options: {
+    interactive?: boolean;
+    refreshTimeoutMs?: number;
+    /**
+     * Force the device flow for the re-login below. Callers here are mid-request
+     * rather than mid-`login`, so nobody passes an explicit `--device`; left
+     * unset, a headless host still picks the device flow automatically.
+     */
+    device?: boolean;
+    env?: NodeJS.ProcessEnv;
+    /** Validate every host before a bearer-authenticated request uses it. */
+    validateApiUrl?: (apiUrl: string) => void;
+  } = {}
 ): Promise<{ response: Response; auth: StoredAuth }> {
   let activeAuth = auth;
-  let response = await apiFetch(activeAuth.apiUrl, activeAuth.accessToken, requestPath, init);
+  const policyInit = options.validateApiUrl ? { ...init, redirect: 'error' as const } : init;
+  options.validateApiUrl?.(activeAuth.apiUrl);
+  let response = await apiFetch(activeAuth.apiUrl, activeAuth.accessToken, requestPath, policyInit);
 
   if (response.status !== 401) {
     return { response, auth: activeAuth };
   }
 
+  let refreshableAuth: StoredAuth = activeAuth;
   try {
-    activeAuth = await refreshStoredAuth(activeAuth, {
+    refreshableAuth = await refreshStoredAuth(refreshableAuth, {
       force: true,
       refreshTimeoutMs: options.refreshTimeoutMs,
       signal: init.signal ?? undefined,
+      validateApiUrl: options.validateApiUrl,
     });
+    activeAuth = refreshableAuth;
   } catch (error) {
-    if (isEnvBackedAuth(activeAuth)) {
+    if (isEnvBackedAuth(refreshableAuth)) {
       throw toEnvAuthRefreshError(error);
     }
 
@@ -687,9 +947,26 @@ export async function authorizedApiFetch(
       throw error;
     }
 
-    activeAuth = await loginWithBrowser(activeAuth.apiUrl);
+    // A caller that already aborted gets its cancellation back, not a login.
+    // The device flow blocks for the grant lifetime — minutes — so starting one
+    // here would leave a cancelled CLI or workflow waiting on authorization it
+    // never asked for. The browser flow masked this by resolving sooner.
+    if (init.signal?.aborted) {
+      throw init.signal.reason ?? new Error('Cloud request aborted before re-authentication');
+    }
+
+    // Must go through the same selector `ensureCloudSession` uses. Calling the
+    // browser flow directly here stranded exactly the machine this feature
+    // exists for: a headless host completes the device flow once, then its
+    // first re-auth sits on a loopback callback it can never reach.
+    activeAuth = await loginInteractive(activeAuth.apiUrl, {
+      device: options.device,
+      env: options.env,
+      validateApiUrl: options.validateApiUrl,
+    });
   }
 
-  response = await apiFetch(activeAuth.apiUrl, activeAuth.accessToken, requestPath, init);
+  options.validateApiUrl?.(activeAuth.apiUrl);
+  response = await apiFetch(activeAuth.apiUrl, activeAuth.accessToken, requestPath, policyInit);
   return { response, auth: activeAuth };
 }

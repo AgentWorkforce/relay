@@ -3,12 +3,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   AnsiBoundaryScanner,
   captureAndRenderSnapshot,
+  clampStatusLineText,
   createBackpressureAwareWriter,
+  DEFAULT_STATUS_LINE_COLS,
+  pickInitialTerminalCols,
+  fitStatusLineText,
   LOCAL_TERMINAL_RESET_SEQUENCE,
+  reserveStatusLineRow,
   resetLocalTerminalOnDetach,
   restoreInboundDeliveryModeOnDetach,
   StatusLineController,
+  StatusLineInvalidationScanner,
   StreamSyncBuffer,
+  TerminalScrollRegionTracker,
   type AttachSnapshotConnection,
   type AttachSnapshotDeps,
   type BackpressureWritable,
@@ -18,6 +25,66 @@ import type { BrokerConnection } from './broker-connection.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe('reserveStatusLineRow', () => {
+  it('gives a TUI one fewer row and column', () => {
+    expect(reserveStatusLineRow({ rows: 40, cols: 120 })).toEqual({ rows: 39, cols: 119 });
+  });
+
+  it('keeps degenerate terminals usable and leaves non-TTY output alone', () => {
+    expect(reserveStatusLineRow({ rows: 1, cols: 80 })).toEqual({ rows: 1, cols: 80 });
+    expect(reserveStatusLineRow({ rows: 2, cols: 80 })).toEqual({ rows: 2, cols: 80 });
+    expect(reserveStatusLineRow(null)).toBeNull();
+  });
+
+  it('relay#1597 MUST-FIRE: a zero-size TTY is treated as no size, not forwarded', () => {
+    // `script(1)` with no winsize, a minimized window, or a size not yet
+    // reported gives `{rows: 0, cols: 0}` while `stdout.isTTY` is still true.
+    // Returning it unchanged made every attach mode POST `{rows: 0, cols: 0}`
+    // and collect `rows and cols must be positive integers` from the broker.
+    // Callers already treat null as "skip the resize", which is the honest
+    // answer. Delete the `< 1` guard and these go red.
+    expect(reserveStatusLineRow({ rows: 0, cols: 0 })).toBeNull();
+    expect(reserveStatusLineRow({ rows: 0, cols: 80 })).toBeNull();
+    expect(reserveStatusLineRow({ rows: 40, cols: 0 })).toBeNull();
+    expect(reserveStatusLineRow({ rows: -1, cols: -1 })).toBeNull();
+  });
+
+  it('relay#1597 MUST-NOT-FIRE: a 1x1 terminal is still a real size', () => {
+    // The guard must reject only non-positive dimensions. A genuinely tiny
+    // terminal is still something the operator is looking at, and skipping its
+    // resize would leave the agent rendering at the wrong width.
+    expect(reserveStatusLineRow({ rows: 1, cols: 1 })).toEqual({ rows: 1, cols: 1 });
+  });
+});
+
+describe('fitStatusLineText', () => {
+  it('leaves the autowrap column unused and marks truncation', () => {
+    expect(fitStatusLineText('1234567890', 8)).toBe('123456~');
+  });
+
+  it('conservatively accounts for non-ASCII names', () => {
+    expect(fitStatusLineText('A🤖BC', 5)).toBe('A🤖~');
+    expect(fitStatusLineText('short', undefined)).toBe('short');
+  });
+});
+
+describe('StatusLineInvalidationScanner', () => {
+  it('ignores ordinary cursor-addressed TUI output', () => {
+    const scanner = new StatusLineInvalidationScanner();
+    expect(scanner.push('\x1b[4;10Hhello\x1b[32mworld')).toBe(false);
+  });
+
+  it('detects display erases, resets, and alternate-screen switches across chunks', () => {
+    const scanner = new StatusLineInvalidationScanner();
+    expect(scanner.push('\x1b[')).toBe(false);
+    expect(scanner.push('2J')).toBe(true);
+    expect(scanner.push('ordinary follow-up')).toBe(false);
+    expect(scanner.push('\x1b[?25;10')).toBe(false);
+    expect(scanner.push('49h')).toBe(true);
+    expect(scanner.push('\x1bc')).toBe(true);
+  });
 });
 
 function makeDeps(overrides: Partial<AttachSnapshotDeps> = {}): {
@@ -129,6 +196,63 @@ describe('captureAndRenderSnapshot', () => {
     expect(result.status).toBe('not_found');
     expect(result.message).toContain('Ghost');
     expect(writes).toEqual([]);
+  });
+
+  it('returns cross-node hint in not_found message when fleetHint resolves a placement', async () => {
+    const { deps, writes } = makeDeps({
+      fetch: vi.fn(async () => new Response('', { status: 404 })),
+      fleetHint: vi.fn(async () => "on node 'finn-mini'"),
+    });
+
+    const result = await captureAndRenderSnapshot(conn, 'remote-worker', deps);
+
+    expect(result.status).toBe('not_found');
+    expect(result.message).toContain('remote-worker');
+    expect(result.message).toContain('finn-mini');
+    expect(result.message).toContain('cross-node attach');
+    expect(writes).toEqual([]);
+  });
+
+  it('falls back to "no agent named" message when fleetHint returns null', async () => {
+    const { deps, writes } = makeDeps({
+      fetch: vi.fn(async () => new Response('', { status: 404 })),
+      fleetHint: vi.fn(async () => null),
+    });
+
+    const result = await captureAndRenderSnapshot(conn, 'Ghost', deps);
+
+    expect(result.status).toBe('not_found');
+    expect(result.message).toContain('Ghost');
+    expect(result.message).not.toContain('cross-node');
+    expect(writes).toEqual([]);
+  });
+
+  it('returns not_found when fleetHint rejects (never propagates)', async () => {
+    const { deps, writes } = makeDeps({
+      fetch: vi.fn(async () => new Response('', { status: 404 })),
+      fleetHint: vi.fn(async () => Promise.reject(new Error('network failure'))),
+    });
+
+    const result = await captureAndRenderSnapshot(conn, 'Ghost', deps);
+
+    expect(result.status).toBe('not_found');
+    expect(result.message).toContain('Ghost');
+    expect(result.message).not.toContain('cross-node');
+    expect(writes).toEqual([]);
+  });
+
+  it('shell-quotes agent names with spaces in the suggested command', async () => {
+    const { deps, writes } = makeDeps({
+      fetch: vi.fn(async () => new Response('', { status: 404 })),
+      fleetHint: vi.fn(async () => "on node 'finn-mini'"),
+    });
+
+    const result = await captureAndRenderSnapshot(conn, 'my agent name', deps);
+
+    expect(result.status).toBe('not_found');
+    // The suggested command must quote the name so it is not split by the shell.
+    expect(result.message).toContain("'my agent name'");
+    expect(result.message).not.toContain('attach my agent name ');
   });
 
   it('returns no_pty on HTTP 409', async () => {
@@ -300,6 +424,71 @@ describe('StreamSyncBuffer', () => {
   });
 });
 
+describe('TerminalScrollRegionTracker', () => {
+  it('tracks narrow DECSTBM margins split across chunks and resets them', () => {
+    const tracker = new TerminalScrollRegionTracker(9);
+    tracker.push('frame\x1b[3;');
+    expect(tracker.region).toEqual({ top: 1, bottom: 9 });
+    tracker.setRows(12);
+    tracker.push('8r');
+    expect(tracker.region).toEqual({ top: 3, bottom: 8 });
+    tracker.push('\x1b[r');
+    expect(tracker.region).toEqual({ top: 1, bottom: 12 });
+  });
+
+  it('resets margins for a resized child and alternate-screen switch', () => {
+    const tracker = new TerminalScrollRegionTracker(9);
+    tracker.push('\x1b[2;7r');
+    tracker.setRows(14);
+    expect(tracker.region).toEqual({ top: 1, bottom: 14 });
+    tracker.push('\x1b[2;8r\x1b[?25;10');
+    tracker.push('49h');
+    expect(tracker.region).toEqual({ top: 1, bottom: 14 });
+    tracker.push('\x1b[3;7r\x1b[?1049l');
+    expect(tracker.region).toEqual({ top: 2, bottom: 8 });
+    tracker.push('\x1b[?1049h');
+    expect(tracker.region).toEqual({ top: 1, bottom: 14 });
+    tracker.push('\x1b[?6h');
+    expect(tracker.isOriginMode).toBe(true);
+    tracker.push('\x1bc');
+    expect(tracker.isOriginMode).toBe(false);
+    tracker.push('\x1b[2;8r\x1b[?1049h');
+    expect(tracker.region).toEqual({ top: 1, bottom: 14 });
+  });
+
+  it('ignores CSI-looking bytes inside DCS payloads', () => {
+    const tracker = new TerminalScrollRegionTracker(12);
+    tracker.push('\x1bPtmux;\x1b[3;8r');
+    tracker.push('\x1b\\');
+    expect(tracker.region).toEqual({ top: 1, bottom: 12 });
+    tracker.push('\x1b[4;9r');
+    expect(tracker.region).toEqual({ top: 4, bottom: 9 });
+    tracker.setRows(9);
+    tracker.push('\x1b[10;20r');
+    expect(tracker.region).toEqual({ top: 1, bottom: 9 });
+    tracker.push('\x1b[3;7r\x1b[0;0r');
+    expect(tracker.region).toEqual({ top: 1, bottom: 9 });
+    tracker.push('\x1bPpayload\x9c\x1b[3;8r');
+    expect(tracker.region).toEqual({ top: 3, bottom: 8 });
+    tracker.push('\x1b[4;\x18' + '9r');
+    expect(tracker.region).toEqual({ top: 3, bottom: 8 });
+  });
+
+  it('resets alternate margins on every supported alternate-screen re-entry', () => {
+    for (const mode of ['47', '1047', '1049']) {
+      const tracker = new TerminalScrollRegionTracker(10);
+      tracker.push(`\x1b[?${mode}h\x1b[3;7r\x1b[?${mode}l\x1b[?${mode}h`);
+      expect(tracker.region).toEqual({ top: 1, bottom: 10 });
+    }
+  });
+
+  it('preserves margins for redundant alternate-screen set commands', () => {
+    const tracker = new TerminalScrollRegionTracker(10);
+    tracker.push('\x1b[?1049h\x1b[4;7r\x1b[?1049h');
+    expect(tracker.region).toEqual({ top: 4, bottom: 7 });
+  });
+});
+
 describe('AnsiBoundaryScanner', () => {
   it('reports a boundary for plain text', () => {
     const s = new AnsiBoundaryScanner();
@@ -338,6 +527,18 @@ describe('AnsiBoundaryScanner', () => {
     s.push('\x1bP1;2body');
     expect(s.atBoundary).toBe(false);
     s.push('\x1b\\');
+    expect(s.atBoundary).toBe(true);
+  });
+
+  it('handles split C1 CSI and C1 string controls', () => {
+    const s = new AnsiBoundaryScanner();
+    s.push('\x9b3;');
+    expect(s.atBoundary).toBe(false);
+    s.push('8r');
+    expect(s.atBoundary).toBe(true);
+    s.push('\x90payload');
+    expect(s.atBoundary).toBe(false);
+    s.push('\x9c');
     expect(s.atBoundary).toBe(true);
   });
 
@@ -426,24 +627,33 @@ describe('StatusLineController', () => {
     expect(writes).toEqual(['S']);
   });
 
-  it('force-paints after boundaryHoldMs if output stays mid-sequence', () => {
-    const writes: string[] = [];
+  it.each([
+    ['CSI', '\x1b[', '2J'],
+    ['OSC', '\x1b]0;title', '\x07'],
+    ['DCS', '\x1bP$qm', '\x1b\\'],
+  ])('never splices a status repaint into a delayed split %s sequence', (_name, start, end) => {
+    const output: string[] = [];
     const t = fakeTimers();
     const c = new StatusLineController({
-      render: () => 'S',
-      write: (s) => writes.push(s),
+      render: () => 'STATUS',
+      write: (s) => output.push(s),
       enabled: true,
       coalesceMs: 0,
-      boundaryHoldMs: 100,
       now: t.now,
       setTimer: t.setTimer,
       clearTimer: t.clearTimer,
     });
-    c.observeOutput('\x1b[');
+    output.push(start);
+    c.observeOutput(start);
     c.request();
-    expect(writes).toEqual([]);
-    t.advance(100);
-    expect(writes).toEqual(['S']); // bounded fallback
+    t.advance(10_000);
+    expect(output).toEqual([start]);
+    expect(t.pending()).toBe(0);
+
+    output.push(end);
+    c.observeOutput(end);
+    expect(output).toEqual([start, end, 'STATUS']);
+    expect(output.slice(0, 2).join('')).toBe(start + end);
   });
 
   it('coalesces rapid repaints into one per window (latest state wins)', () => {
@@ -471,7 +681,7 @@ describe('StatusLineController', () => {
     expect(writes).toEqual(['S1', 'S3']);
   });
 
-  it('re-arms a plain coalescing timer when a boundary-hold timer is pending and output returns to a boundary', () => {
+  it('starts the remaining coalescing delay only after output returns to a boundary', () => {
     const writes: string[] = [];
     const t = fakeTimers();
     const c = new StatusLineController({
@@ -479,7 +689,6 @@ describe('StatusLineController', () => {
       write: (s) => writes.push(s),
       enabled: true,
       coalesceMs: 50,
-      boundaryHoldMs: 100,
       now: t.now,
       setTimer: t.setTimer,
       clearTimer: t.clearTimer,
@@ -488,22 +697,40 @@ describe('StatusLineController', () => {
     // inside the coalescing window.
     c.request();
     expect(writes).toEqual(['S']);
-    // Output ends mid-CSI, then a repaint is requested → a force (boundary-hold)
-    // timer is armed for boundaryHoldMs (deadline now+100).
+    // Output ends mid-CSI, then a repaint is requested. No timer may force a
+    // write into the incomplete sequence.
     c.observeOutput('\x1b[');
     c.request();
-    expect(t.pending()).toBe(1);
-    // A little later, output returns to a boundary. The stale force timer must
-    // be cleared and a plain coalescing timer armed for the *remainder* of the
-    // 50ms window (≈40ms from here), not left to fire at the 100ms deadline.
+    expect(t.pending()).toBe(0);
+    // A little later, output returns to a boundary. A coalescing timer is
+    // armed for the remainder of the 50ms window (≈40ms from here).
     t.advance(10);
     c.observeOutput('0m'); // completes the CSI → boundary
     expect(writes).toEqual(['S']); // still deferred within the coalescing window
-    // The coalescing remainder elapses at +40ms; a boundary-hold timer would
-    // not have fired until +90ms, so this paint proves the re-arm.
+    expect(t.pending()).toBe(1);
     t.advance(40);
     expect(writes).toEqual(['S', 'S']);
     expect(t.pending()).toBe(0);
+  });
+
+  it('does not let a held repaint fire after dynamic status disablement', () => {
+    const writes: string[] = [];
+    const t = fakeTimers();
+    let enabled = true;
+    const c = new StatusLineController({
+      render: () => 'S',
+      write: (s) => writes.push(s),
+      enabled: () => enabled,
+      coalesceMs: 0,
+      now: t.now,
+      setTimer: t.setTimer,
+      clearTimer: t.clearTimer,
+    });
+    c.observeOutput('\x1b[');
+    c.request();
+    enabled = false;
+    c.observeOutput('0m');
+    expect(writes).toEqual([]);
   });
 
   it('stops painting after dispose', () => {
@@ -677,6 +904,23 @@ describe('resetLocalTerminalOnDetach', () => {
 });
 
 describe('guarded delivery-mode compatibility', () => {
+  it('propagates a connection-specific request timeout to the SDK transport', async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const fetch = (async () =>
+      new Response(JSON.stringify({ mode: 'auto_inject' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })) as unknown as typeof globalThis.fetch;
+    const client = createBrokerClient({ url: 'http://localhost:3889', requestTimeoutMs: 162_500 }, fetch);
+
+    try {
+      await client.getInboundDeliveryMode('A');
+      expect(timeout).toHaveBeenCalledWith(162_500);
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
   it('treats an omitted matched field as a failed guard', async () => {
     const fetch = (async () =>
       new Response(JSON.stringify({ mode: 'auto_inject', flushed: 0 }), {
@@ -753,6 +997,33 @@ describe('createBackpressureAwareWriter', () => {
     expect(written).toEqual(['a', 'bb', 'c']);
   });
 
+  it('flushes buffered records in order before disposal', () => {
+    const written: string[] = [];
+    const accept = false;
+    let drain: (() => void) | null = null;
+    const stdout: BackpressureWritable = {
+      write: (chunk) => {
+        written.push(chunk);
+        return accept;
+      },
+      once: (_event, listener) => {
+        drain = listener;
+        return undefined;
+      },
+      off: (_event, listener) => {
+        if (listener === drain) drain = null;
+        return undefined;
+      },
+    };
+    const w = createBackpressureAwareWriter(stdout);
+    w.write('first');
+    w.write('second');
+    w.write('third');
+    w.flush();
+    w.dispose();
+    expect(written).toEqual(['first', 'second', 'third']);
+  });
+
   it('drops the pending queue and unhooks drain on dispose', () => {
     const written: string[] = [];
     let accept = true;
@@ -785,5 +1056,108 @@ describe('createBackpressureAwareWriter', () => {
     drain?.();
     w.write('c');
     expect(written).toEqual(['a']);
+  });
+});
+
+describe('pickInitialTerminalCols', () => {
+  it('prefers the local terminal width over the agent PTY width', () => {
+    expect(pickInitialTerminalCols({ rows: 24, cols: 66 }, 200)).toBe(66);
+  });
+
+  it('falls back to the snapshot width, then to undefined', () => {
+    expect(pickInitialTerminalCols(null, 200)).toBe(200);
+    expect(pickInitialTerminalCols(null, 0)).toBeUndefined();
+    expect(pickInitialTerminalCols(null, undefined)).toBeUndefined();
+  });
+});
+
+/**
+ * Mirror of the renderer's column accounting, for assertions only.
+ *
+ * Deliberately a separate implementation rather than importing the production
+ * one — a width assertion that reuses the code under test proves nothing.
+ */
+const ZERO_WIDTH: ReadonlyArray<readonly [number, number]> = [
+  [0x0300, 0x036f],
+  [0x200d, 0x200d],
+  [0xfe00, 0xfe0f],
+];
+const DOUBLE_WIDTH: ReadonlyArray<readonly [number, number]> = [
+  [0x1100, 0x115f],
+  [0x2e80, 0xa4cf],
+  [0xac00, 0xd7a3],
+  [0xf900, 0xfaff],
+  [0xfe30, 0xfe6f],
+  [0xff00, 0xff60],
+  [0xffe0, 0xffe6],
+  [0x1f300, 0x1faff],
+  [0x20000, 0x3fffd],
+];
+
+function columnsOf(text: string): number {
+  const hit = (code: number, ranges: ReadonlyArray<readonly [number, number]>) =>
+    ranges.some(([lo, hi]) => code >= lo && code <= hi);
+  let total = 0;
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0;
+    if (hit(code, ZERO_WIDTH)) continue;
+    total += hit(code, DOUBLE_WIDTH) ? 2 : 1;
+  }
+  return total;
+}
+
+describe('clampStatusLineText', () => {
+  const label = '[drive Gamemaster | delivery=manual_flush | pending=0 | Ctrl+] deliver | Ctrl+C detach]';
+
+  it('passes a label that already fits through untouched', () => {
+    expect(clampStatusLineText(label, 120)).toBe(label);
+    expect(clampStatusLineText(label, label.length)).toBe(label);
+  });
+
+  it('never returns more characters than the terminal is wide', () => {
+    for (const cols of [2, 10, 40, 66, 80, 86]) {
+      expect(clampStatusLineText(label, cols).length).toBeLessThanOrEqual(cols);
+    }
+  });
+
+  it('keeps the head and the tail so the verb and the key hints both survive', () => {
+    const out = clampStatusLineText(label, 66);
+    expect(out.startsWith('[drive Gamemaster')).toBe(true);
+    expect(out.endsWith('Ctrl+C detach]')).toBe(true);
+    expect(out).toContain('\u2026');
+  });
+
+  it('assumes 80 columns when the width is unknown', () => {
+    expect(clampStatusLineText(label, undefined).length).toBeLessThanOrEqual(DEFAULT_STATUS_LINE_COLS);
+    expect(clampStatusLineText(label, 0).length).toBeLessThanOrEqual(DEFAULT_STATUS_LINE_COLS);
+  });
+
+  // A code-unit count would pass these while the row still overflows, which
+  // re-arms the wrap/scroll cascade the clamp exists to prevent.
+  it('measures wide glyphs as two columns', () => {
+    const wide = '[drive 名前ですよろしく | delivery=manual_flush | Ctrl+C detach]';
+    for (const cols of [20, 40, 66]) {
+      const out = clampStatusLineText(wide, cols);
+      expect(columnsOf(out), `overflowed at ${cols}: ${JSON.stringify(out)}`).toBeLessThanOrEqual(cols);
+    }
+  });
+
+  it('never splits a surrogate pair', () => {
+    const emoji = `[drive ${'\u{1F680}'.repeat(20)} | Ctrl+C detach]`;
+    for (const cols of [10, 25, 50]) {
+      const out = clampStatusLineText(emoji, cols);
+      expect(out).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+      expect(out).not.toMatch(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+      expect(columnsOf(out)).toBeLessThanOrEqual(cols);
+    }
+  });
+
+  it('can reserve the final terminal column to avoid wrap-pending state', () => {
+    expect(clampStatusLineText('1234567890', 10, true)).toBe('1234…7890');
+  });
+
+  it('degrades to a bare head rather than wrapping on a pathological width', () => {
+    expect(clampStatusLineText(label, 1)).toBe('[');
+    expect(clampStatusLineText(label, 0).length).toBeLessThanOrEqual(DEFAULT_STATUS_LINE_COLS);
   });
 });

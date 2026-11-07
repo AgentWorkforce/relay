@@ -43,6 +43,13 @@ class FakeWebSocket {
     this.sends.push({ data, cb });
   }
 
+  /** Application-level keepalive pings (see INPUT_KEEPALIVE_INTERVAL_MS). */
+  pings = 0;
+
+  ping(): void {
+    this.pings += 1;
+  }
+
   close(): void {
     this.closed = true;
   }
@@ -174,6 +181,50 @@ describe('PtyInputStream pipelining', () => {
     expect(stream.closed).toBe(true);
   });
 
+  it('relay#1544 MUST-FIRE: a worker_timeout on one write must not close the stream', async () => {
+    // The broker keeps the socket open for `worker_timeout` (the write may
+    // simply be a busy worker, not a dead one — see
+    // `pty_input_error_is_connection_fatal` on the broker side). Only that
+    // one write should reject; the stream itself must stay usable so the
+    // next keystroke doesn't have to go through a full reconnect. Before the
+    // fix, `handleMessage` closed on every `pty_input_error` unconditionally
+    // and this assertion on `stream.closed` failed.
+    const stream = new PtyInputStream({ url: 'ws://x/api/input/agent/stream' });
+    const socket = lastSocket();
+    socket.open();
+    await stream.waitUntilOpen();
+
+    const p1 = stream.send('x');
+    await Promise.resolve();
+    socket.errorFrame('worker_timeout', 'worker_timeout: worker did not respond in time');
+
+    await expect(p1).rejects.toMatchObject({ code: 'worker_timeout' });
+    expect(stream.closed).toBe(false);
+
+    // The stream is still usable for the next keystroke.
+    const p2 = stream.send('y');
+    await Promise.resolve();
+    socket.ack(1);
+    await expect(p2).resolves.toMatchObject({ bytes_written: 1 });
+  });
+
+  it('relay#1544 MUST-NOT-FIRE: a confirmed-dead worker still closes the stream', async () => {
+    // `worker_disappeared` means the worker was reaped independently — a
+    // genuine outage, not a slow ack. This must still close the stream so
+    // the CLI's existing reconnect-on-close recovery still runs.
+    const stream = new PtyInputStream({ url: 'ws://x/api/input/agent/stream' });
+    const socket = lastSocket();
+    socket.open();
+    await stream.waitUntilOpen();
+
+    const p = stream.send('x');
+    await Promise.resolve();
+    socket.errorFrame('worker_disappeared', "worker 'agent' exited before responding");
+
+    await expect(p).rejects.toMatchObject({ code: 'worker_disappeared' });
+    expect(stream.closed).toBe(true);
+  });
+
   it('fails all in-flight and queued frames on close', async () => {
     const stream = new PtyInputStream({ url: 'ws://x/api/input/agent/stream' });
     const socket = lastSocket();
@@ -187,5 +238,124 @@ describe('PtyInputStream pipelining', () => {
 
     await expect(p1).rejects.toMatchObject({ code: 'input_stream_closed' });
     await expect(p2).rejects.toMatchObject({ code: 'input_stream_closed' });
+  });
+});
+
+describe('PtyInputStream after its socket closes', () => {
+  /**
+   * The CLI's recovery logic (attach-input-recovery.ts) is built on the
+   * assumption that this stream never heals itself, so that assumption is
+   * pinned here. If PtyInputStream ever grows its own reconnect, this test
+   * fails and the CLI-side recovery must be revisited rather than silently
+   * doubling up.
+   */
+  it('latches closed and rejects every later send with the same message', async () => {
+    const stream = new PtyInputStream({ url: 'ws://x/api/input/agent/stream' });
+    const socket = lastSocket();
+    socket.open();
+    await stream.waitUntilOpen();
+
+    // An idle-timeout reap or a PTY worker restart: abnormal close, no warning.
+    socket.emit('close', 1006, Buffer.from(''));
+    expect(stream.closed).toBe(true);
+
+    const messages: string[] = [];
+    for (let i = 0; i < 50; i++) {
+      await stream.send('x').catch((err: Error) => messages.push(err.message));
+    }
+
+    // Every send rejects — no retry, no backoff, no self-heal. This exact
+    // string is what used to reach the terminal once per keystroke (#1419).
+    expect(messages).toHaveLength(50);
+    expect([...new Set(messages)]).toEqual(['PTY input stream is closed']);
+    // Nothing was put back on the wire, and no replacement socket was opened.
+    expect(socket.sends).toHaveLength(0);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+});
+
+describe('PtyInputStream refused writes (relay#1597)', () => {
+  it('relay#1597 MUST-FIRE: a full PTY write queue rejects one write and keeps the stream', async () => {
+    // `pty_write_queue_full` means the worker refused THIS write because its
+    // bounded drainer queue is full — it answered, so it is alive, and the
+    // broker deliberately keeps the socket open for this code. Closing here
+    // (as the old `every code except worker_timeout is fatal` rule did) forced
+    // the CLI into a reconnect per keystroke against any busy agent. Remove
+    // `pty_write_queue_full` from the non-fatal list in `handleMessage` and the
+    // `stream.closed` assertion goes red.
+    const stream = new PtyInputStream({ url: 'ws://x/api/input/agent/stream' });
+    const socket = lastSocket();
+    socket.open();
+    await stream.waitUntilOpen();
+
+    const p1 = stream.send('x');
+    await Promise.resolve();
+    socket.errorFrame(
+      'pty_write_queue_full',
+      'pty write queue full (128 writes pending; drainer wedged behind child not reading stdin)'
+    );
+
+    await expect(p1).rejects.toMatchObject({ code: 'pty_write_queue_full' });
+    expect(stream.closed).toBe(false);
+
+    // Still usable for the next keystroke once the child drains.
+    const p2 = stream.send('y');
+    await Promise.resolve();
+    socket.ack(1);
+    await expect(p2).resolves.toMatchObject({ bytes_written: 1 });
+  });
+
+  it('relay#1597 MUST-NOT-FIRE: a non-queue write failure still closes the stream', async () => {
+    // `pty_write_failed` is the other worker write error: a confirmed I/O
+    // failure or an exited drainer. It must stay fatal, so the exemption
+    // cannot be widened to "any pty_write_* code" without going red here.
+    const stream = new PtyInputStream({ url: 'ws://x/api/input/agent/stream' });
+    const socket = lastSocket();
+    socket.open();
+    await stream.waitUntilOpen();
+
+    const p = stream.send('x');
+    await Promise.resolve();
+    socket.errorFrame('pty_write_failed', 'pty write queue is closed (drainer exited)');
+
+    await expect(p).rejects.toMatchObject({ code: 'pty_write_failed' });
+    expect(stream.closed).toBe(true);
+  });
+});
+
+describe('PtyInputStream keepalive (relay#1597)', () => {
+  it('relay#1597 MUST-FIRE: pings an idle input socket so it cannot die silently', async () => {
+    // The broker pings the events WS every 30s but never the input WS, so an
+    // input socket carrying no keystrokes was invisible to every idle timeout
+    // between client and broker — the screen stayed live while input was dead.
+    // Remove `startKeepalive()` and this goes red.
+    vi.useFakeTimers();
+    const stream = new PtyInputStream({ url: 'ws://x/api/input/agent/stream' });
+    const socket = lastSocket();
+    socket.open();
+    await stream.waitUntilOpen();
+
+    expect(socket.pings).toBe(0);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(socket.pings).toBe(1);
+    await vi.advanceTimersByTimeAsync(40_000);
+    expect(socket.pings).toBe(3);
+  });
+
+  it('relay#1597 MUST-NOT-FIRE: stops pinging once the stream is closed', async () => {
+    // A keepalive that outlives its socket would keep a torn-down session
+    // referenced (and, unref aside, keep firing forever).
+    vi.useFakeTimers();
+    const stream = new PtyInputStream({ url: 'ws://x/api/input/agent/stream' });
+    const socket = lastSocket();
+    socket.open();
+    await stream.waitUntilOpen();
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(socket.pings).toBe(1);
+
+    stream.close();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(socket.pings).toBe(1);
   });
 });

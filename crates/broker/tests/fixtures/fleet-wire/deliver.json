@@ -1,9 +1,9 @@
 {
   "v": 1,
   "type": "deliver",
-  "agent": "codex-builder-1",
+  "delivery_id": "del_01J7FLEET000000000000301",
   "agent_id": "agt_01J7FLEET000000000000101",
-  "delivery_id": "dlv_01J7FLEET000000000000301",
+  "agent": "codex-builder-1",
   "msg_id": "msg_01J7FLEET000000000000201",
   "seq": 43,
   "mode": "wait",
@@ -11,11 +11,20 @@
     "type": "message.created",
     "data": {
       "id": "msg_01J7FLEET000000000000201",
+      "channel_id": "chn_01J7FLEET000000000000401",
       "agent_id": "agt_01J7FLEET000000000000999",
       "agent_name": "orchestrator",
-      "channel_name": "general",
       "text": "Please run the fleet fixture tests.",
-      "thread_id": null
+      "blocks": null,
+      "metadata": {},
+      "has_attachments": false,
+      "thread_id": null,
+      "created_at": "2026-02-14T17:32:11.000Z",
+      "mentions": [],
+      "attachments": [],
+      "injection_mode": "wait",
+      "channel_name": "general",
+      "from_name": "orchestrator"
     }
   }
 }

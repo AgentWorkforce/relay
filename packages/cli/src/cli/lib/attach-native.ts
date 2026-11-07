@@ -12,10 +12,12 @@ import {
 import {
   defaultStateDir,
   readConnectionFileFromDisk,
+  describeMissingBrokerConnection,
   resolveBrokerConnection,
   type BrokerConnection,
 } from './broker-connection.js';
 import { createBrokerClient } from './attach-broker.js';
+import { describeError } from './describe-error.js';
 
 export type NativeAttachMode = 'view' | 'drive' | 'passthrough';
 
@@ -133,7 +135,7 @@ export async function attachNative(
   });
   if (!connection) {
     (overrides.output?.stderr ?? ((text: string) => process.stderr.write(text)))(
-      'Error: could not locate broker connection.\n'
+      `${describeMissingBrokerConnection(options, { getDefaultStateDir: defaultStateDir })}\n`
     );
     return 1;
   }
@@ -146,7 +148,7 @@ export async function attachNative(
   try {
     brokerCursor = await client.currentEventSeq();
   } catch (error) {
-    deps.output.stderr(`Error: ${error instanceof Error ? error.message : String(error)}\n`);
+    deps.output.stderr(`Error: ${describeError(error)}\n`);
     client.disconnect();
     return 1;
   }
@@ -255,7 +257,7 @@ export async function attachNative(
             }
           })
           .catch((error: unknown) => {
-            deps.output.stderr(`Input failed: ${error instanceof Error ? error.message : String(error)}\n`);
+            deps.output.stderr(`Input failed: ${describeError(error)}\n`);
           })
           .then(() => undefined);
         commandChain = pendingCommand.catch(() => undefined);
@@ -279,7 +281,7 @@ export async function attachNative(
     await Promise.allSettled(pendingCommands);
     return 0;
   } catch (error) {
-    deps.output.stderr(`Error: ${error instanceof Error ? error.message : String(error)}\n`);
+    deps.output.stderr(`Error: ${describeError(error)}\n`);
     return 1;
   } finally {
     stopped = true;

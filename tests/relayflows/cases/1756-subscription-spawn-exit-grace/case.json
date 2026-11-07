@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1756-subscription-spawn-exit-grace",
+  "kind": "bugfix",
+  "title": "Subscription recipient launch retains the reaped exit status through a PTY-close race",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1756-subscription-spawn-exit-grace/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "pty_close_exit_drops_reaped_status"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "reaped_exit_status_survives_pty_close"
+    }
+  }
+}

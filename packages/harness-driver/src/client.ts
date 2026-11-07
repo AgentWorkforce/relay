@@ -44,7 +44,9 @@ import type {
   SpawnHeadlessInput,
   SpawnPtyInput,
   SendMessageInput,
+  SendMessageResult,
   ListAgent,
+  FleetInventoryAgent,
 } from './types.js';
 import { EventBus } from './event-bus.js';
 import { SpawnedAgentHandle } from './agent-handle.js';
@@ -72,6 +74,7 @@ import {
   formatBrokerStartupError,
   isProcessRunning,
   pushBufferedLine,
+  terminateFailedBrokerSpawn,
   waitForApiUrl,
   waitForExit,
   type BrokerExitInfo,
@@ -102,22 +105,23 @@ export interface HarnessDriverClientOptions {
 const optionalString = z.preprocess((value) => (value === null ? undefined : value), z.string().optional());
 const optionalNumber = z.preprocess((value) => (value === null ? undefined : value), z.number().optional());
 
-export const SpawnAgentResultSchema = z
-  .object({
-    success: z.boolean().optional(),
-    name: z.string(),
-    runtime: z.enum(['pty', 'headless']),
-    model: z.string().nullable().optional(),
-    pid: optionalNumber,
-    pre_registered: z.boolean().optional(),
-    warning: z.string().nullable().optional(),
-    sessionId: optionalString,
-  })
-  .passthrough();
+export const SpawnAgentResultSchema = z.looseObject({
+  success: z.boolean().optional(),
+  name: z.string(),
+  runtime: z.enum(['pty', 'headless']),
+  model: z.string().nullable().optional(),
+  pid: optionalNumber,
+  pre_registered: z.boolean().optional(),
+  warning: z.string().nullable().optional(),
+  sessionId: optionalString,
+  generation: optionalString,
+  channels: z.array(z.string()).optional(),
+});
 
 export interface SessionInfo {
   broker_version: string;
   protocol_version: number;
+  spawn_capabilities?: { explicit_empty_channels?: boolean; create_only_identity?: boolean };
   workspace_key?: string;
   relay_base_url?: string;
   default_workspace_id?: string;
@@ -134,6 +138,7 @@ export interface SessionInfo {
 export interface SetInboundDeliveryModeResult {
   mode: InboundDeliveryMode;
   flushed: number;
+  deadLettered?: number;
   /**
    * `true` when the set was applied. `false` when an expected mode or revision
    * did not match, in which case `mode` reports the current unchanged mode.
@@ -142,6 +147,13 @@ export interface SetInboundDeliveryModeResult {
   matched: boolean;
   /** Monotonic broker generation after the set, or `null` on a legacy broker. */
   revision: string | null;
+  blockedReason?: string;
+  blockedReasonCode?: string;
+  headSequence?: number;
+  ackedUpToSequence?: number;
+  receivedUpToSequence?: number;
+  nextAckableSequence?: number;
+  reconciliationAction?: string;
 }
 
 /** Options for {@link HarnessDriverClient.setInboundDeliveryMode}. */
@@ -198,6 +210,20 @@ function normalizeMaxQueueSize(value: number | undefined): number {
   return Number.isFinite(value) && value >= 1 ? Math.floor(value) : DEFAULT_WORKER_STREAM_MAX_QUEUE_SIZE;
 }
 
+/**
+ * Mask a workspace key for progress output: known prefix and last four
+ * characters stay visible, the rest collapses to `…`. Startup steps are
+ * surfaced verbatim by CLI `--verbose`, so they must never carry a usable key.
+ */
+function maskWorkspaceKey(key: string | null | undefined): string {
+  if (!key) {
+    return 'unknown';
+  }
+  const prefix = key.match(/^(rk_live_|at_live_|nt_live_|ot_live_|ar_ws_|ar_ag_|br_)/)?.[1] ?? '';
+  const body = key.slice(prefix.length);
+  return body.length <= 8 ? `${prefix}…` : `${prefix}…${body.slice(-4)}`;
+}
+
 type BrokerExitListener = (info: BrokerExitInfo) => void;
 
 // ── Client ─────────────────────────────────────────────────────────────
@@ -213,6 +239,8 @@ export class HarnessDriverClient {
   private brokerExitListeners = new Set<BrokerExitListener>();
 
   workspaceKey?: string;
+  /** Relay workspace id the broker joined, as reported on `/api/session`. */
+  workspaceId?: string;
   /** Resolved broker URL — captured so call-site lifecycle contexts can surface it. */
   readonly baseUrl: string;
   /** Shared multi-listener registry. Created bare when no `eventBus` is passed in. */
@@ -376,108 +404,125 @@ export class HarnessDriverClient {
     const child = spawn(binaryPath, args, {
       cwd,
       env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      // Inherited descriptors land on fd 3 upward, after the three stdio slots.
+      stdio: ['ignore', 'pipe', 'pipe', ...(options?.inheritFds ?? [])],
     });
 
-    if (child.stderr) {
-      const { createInterface } = await import('node:readline');
-      const rl = createInterface({ input: child.stderr });
-      rl.on('line', (line) => {
-        pushBufferedLine(stderrLines, line);
-        options?.onStderr?.(line);
-      });
-    }
-
-    // Parse the API URL from stdout (the broker prints it after binding)
-    const baseUrl = await waitForApiUrl(child, timeoutMs, {
-      binaryPath,
-      args,
-      cwd,
-      stdoutLines,
-      stderrLines,
-    });
-    onStep?.(`Broker API listening at ${baseUrl}`);
-    drainBrokerStdioAfterStartup(child);
-
-    const client = new HarnessDriverClient({
-      baseUrl,
-      apiKey,
-      requestTimeoutMs: options?.requestTimeoutMs,
-      ...(options?.eventBus ? { eventBus: options.eventBus } : {}),
-    });
-    client.child = child;
-    client.installManagedBrokerExitHandler(child, stderrLines);
-
-    // The broker prints "API listening on …" the moment its TCP listener is
-    // bound, but it still needs to complete a Relaycast handshake before
-    // `getSession()` will return. Two failure modes to handle:
-    //
-    //   1. Broker is alive and warming up — the startup-only API responds
-    //      503 until the handshake completes. Poll until it succeeds.
-    //   2. Broker died during the handshake (e.g. Relaycast unreachable) —
-    //      the in-flight fetch sees the socket drop as `TypeError: fetch
-    //      failed`, which is uninformative on its own.
-    //
-    // We race each `getSession()` against `brokerExited` so case (2) reports
-    // as the actual broker exit (with its stderr tail and exit code), not as
-    // a mystery network error. No backoff for the death case — we know it
-    // immediately. 503 polling stays simple at 1s intervals.
-    const brokerExited = new Promise<never>((_, reject) => {
-      child.once('exit', (code) => {
-        reject(
-          new Error(
-            formatBrokerStartupError(
-              `Broker process exited with code ${code} during initial handshake`,
-              child,
-              { binaryPath, args, cwd, stdoutLines, stderrLines }
-            )
-          )
-        );
-      });
-    });
-    // Suppress unhandledRejection if the race is won by getSession before
-    // the broker exits later (e.g. on normal shutdown).
-    brokerExited.catch(() => {});
-
-    onStep?.('Waiting for broker session handshake...');
-    let session: SessionInfo | undefined;
-    // The Relaycast handshake can take many seconds on a cold or slow network,
-    // during which the startup-only API answers 503. Poll for the full startup
-    // budget (`timeoutMs`) rather than a fixed attempt count so a slow-but-
-    // healthy handshake isn't misreported as a spawn failure. The `brokerExited`
-    // race still surfaces a dead broker immediately, so this only extends how
-    // long we wait on a broker that is alive and warming up.
-    const handshakeDeadline = Date.now() + timeoutMs;
-    for (let attempt = 0; ; attempt++) {
-      try {
-        session = await Promise.race([client.getSession(), brokerExited]);
-        break;
-      } catch (err) {
-        // The broker's startup-only API returns a structured 503
-        // (`http_503`) while it warms up. Prefer the typed fields over the
-        // formatted message, which the broker is free to customize.
-        const is503 =
-          err instanceof HarnessDriverProtocolError
-            ? err.status === 503 || err.code === 'http_503'
-            : /503|Service Unavailable/.test(err instanceof Error ? err.message : String(err));
-        if (!is503 || Date.now() >= handshakeDeadline) throw err;
-        onStep?.(`Broker still starting (handshake attempt ${attempt + 1}), retrying in 1s...`);
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+    // Every failure below leaves a broker child already running, and none of
+    // them return a client the caller could shut down: reap it here, with its
+    // exit verified, so a failed spawn cannot leave an untracked broker holding
+    // the descriptors (and the node claim) it inherited.
+    try {
+      // First statement in the turn `spawn()` returned: the caller's fence is
+      // only as good as its knowledge of which process holds it, and a launcher
+      // can `exec` into a different executable the moment this yields. Inside
+      // the try so a caller that refuses to proceed gets the child reaped.
+      if (child.pid !== undefined) {
+        options?.onSpawn?.(child.pid);
       }
+      if (child.stderr) {
+        const { createInterface } = await import('node:readline');
+        const rl = createInterface({ input: child.stderr });
+        rl.on('line', (line) => {
+          pushBufferedLine(stderrLines, line);
+          options?.onStderr?.(line);
+        });
+      }
+
+      // Parse the API URL from stdout (the broker prints it after binding)
+      const baseUrl = await waitForApiUrl(child, timeoutMs, {
+        binaryPath,
+        args,
+        cwd,
+        stdoutLines,
+        stderrLines,
+      });
+      onStep?.(`Broker API listening at ${baseUrl}`);
+      drainBrokerStdioAfterStartup(child);
+
+      const client = new HarnessDriverClient({
+        baseUrl,
+        apiKey,
+        requestTimeoutMs: options?.requestTimeoutMs,
+        ...(options?.eventBus ? { eventBus: options.eventBus } : {}),
+      });
+      client.child = child;
+      client.installManagedBrokerExitHandler(child, stderrLines);
+
+      // The broker prints "API listening on …" the moment its TCP listener is
+      // bound, but it still needs to complete a Relaycast handshake before
+      // `getSession()` will return. Two failure modes to handle:
+      //
+      //   1. Broker is alive and warming up — the startup-only API responds
+      //      503 until the handshake completes. Poll until it succeeds.
+      //   2. Broker died during the handshake (e.g. Relaycast unreachable) —
+      //      the in-flight fetch sees the socket drop as `TypeError: fetch
+      //      failed`, which is uninformative on its own.
+      //
+      // We race each `getSession()` against `brokerExited` so case (2) reports
+      // as the actual broker exit (with its stderr tail and exit code), not as
+      // a mystery network error. No backoff for the death case — we know it
+      // immediately. 503 polling stays simple at 1s intervals.
+      const brokerExited = new Promise<never>((_, reject) => {
+        child.once('exit', (code) => {
+          reject(
+            new Error(
+              formatBrokerStartupError(
+                `Broker process exited with code ${code} during initial handshake`,
+                child,
+                { binaryPath, args, cwd, stdoutLines, stderrLines }
+              )
+            )
+          );
+        });
+      });
+      // Suppress unhandledRejection if the race is won by getSession before
+      // the broker exits later (e.g. on normal shutdown).
+      brokerExited.catch(() => {});
+
+      onStep?.('Waiting for broker session handshake...');
+      let session: SessionInfo | undefined;
+      // The Relaycast handshake can take many seconds on a cold or slow network,
+      // during which the startup-only API answers 503. Poll for the full startup
+      // budget (`timeoutMs`) rather than a fixed attempt count so a slow-but-
+      // healthy handshake isn't misreported as a spawn failure. The `brokerExited`
+      // race still surfaces a dead broker immediately, so this only extends how
+      // long we wait on a broker that is alive and warming up.
+      const handshakeDeadline = Date.now() + timeoutMs;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          session = await Promise.race([client.getSession(), brokerExited]);
+          break;
+        } catch (err) {
+          // The broker's startup-only API returns a structured 503
+          // (`http_503`) while it warms up. Prefer the typed fields over the
+          // formatted message, which the broker is free to customize.
+          const is503 =
+            err instanceof HarnessDriverProtocolError
+              ? err.status === 503 || err.code === 'http_503'
+              : /503|Service Unavailable/.test(err instanceof Error ? err.message : String(err));
+          if (!is503 || Date.now() >= handshakeDeadline) throw err;
+          onStep?.(`Broker still starting (handshake attempt ${attempt + 1}), retrying in 1s...`);
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+      }
+      onStep?.(`Broker handshake complete (workspace: ${maskWorkspaceKey(session?.workspace_key)})`);
+
+      if (!client.brokerExitInfo) {
+        client.connectEvents();
+        onStep?.('Event stream connected.');
+
+        // Renew the owner lease so the broker doesn't auto-shutdown
+        client.leaseTimer = setInterval(() => {
+          client.renewLease().catch(() => {});
+        }, 60_000);
+      }
+
+      return client;
+    } catch (err) {
+      await terminateFailedBrokerSpawn(child);
+      throw err;
     }
-    onStep?.(`Broker handshake complete (workspace: ${session?.workspace_key ?? 'unknown'})`);
-
-    if (!client.brokerExitInfo) {
-      client.connectEvents();
-      onStep?.('Event stream connected.');
-
-      // Renew the owner lease so the broker doesn't auto-shutdown
-      client.leaseTimer = setInterval(() => {
-        client.renewLease().catch(() => {});
-      }, 60_000);
-    }
-
-    return client;
   }
 
   /** PID of the managed broker process, if spawned locally. */
@@ -490,6 +535,7 @@ export class HarnessDriverClient {
   async getSession(): Promise<SessionInfo> {
     const session = await this.transport.request<SessionInfo>('/api/session');
     this.workspaceKey = session.workspace_key;
+    this.workspaceId = session.default_workspace_id;
     return session;
   }
 
@@ -563,13 +609,14 @@ export class HarnessDriverClient {
     const t0 = Date.now();
     const resolvedInput = await this.runBeforeSpawn(beforeCtx);
     try {
+      const eventSeqBeforeSpawn = await this.currentEventSeq().catch(() => 0);
       const rawResult = await this.transport.request<unknown>('/api/spawn', {
         method: 'POST',
         body: JSON.stringify(buildSpawnPtyBody(resolvedInput)),
       });
       const result = SpawnAgentResultSchema.parse(rawResult);
       await this.emitAfterSpawn(beforeCtx, resolvedInput, t0, result, undefined);
-      return new SpawnedAgentHandle(result, this);
+      return new SpawnedAgentHandle(result, this, eventSeqBeforeSpawn);
     } catch (err) {
       await this.emitAfterSpawn(beforeCtx, resolvedInput, t0, undefined, err);
       throw err;
@@ -605,13 +652,14 @@ export class HarnessDriverClient {
     }
 
     try {
+      const eventSeqBeforeSpawn = await this.currentEventSeq().catch(() => 0);
       const rawResult = await this.transport.request<unknown>('/api/spawn', {
         method: 'POST',
         body: JSON.stringify(buildSpawnCliBody(resolvedInput, transport)),
       });
       const result = SpawnAgentResultSchema.parse(rawResult);
       await this.emitAfterSpawn(beforeCtx, resolvedInput, t0, result, undefined);
-      return new SpawnedAgentHandle(result, this);
+      return new SpawnedAgentHandle(result, this, eventSeqBeforeSpawn);
     } catch (err) {
       await this.emitAfterSpawn(beforeCtx, resolvedInput, t0, undefined, err);
       throw err;
@@ -638,18 +686,34 @@ export class HarnessDriverClient {
     return this.spawnCli({ ...input, cli: 'opencode' });
   }
 
-  async release(name: string, reason?: string): Promise<{ name: string }> {
+  async release(
+    name: string,
+    reason?: string,
+    expectedGeneration?: string,
+    deleteIdentity = false
+  ): Promise<{ name: string; process?: string; identity?: string }> {
+    if (deleteIdentity && !expectedGeneration)
+      throw new Error('Owned identity deletion requires a worker generation');
     const beforeCtx: BeforeAgentReleaseContext = { name, reason, baseUrl: this.baseUrl };
     const t0 = Date.now();
     await this.eventBus.emit('beforeAgentRelease', beforeCtx);
     try {
-      const result = await this.transport.request<{ name: string }>(
-        `/api/spawned/${encodeURIComponent(name)}`,
-        {
-          method: 'DELETE',
-          ...(reason ? { body: JSON.stringify({ reason }) } : {}),
-        }
-      );
+      const result = await this.transport.request<{
+        name: string;
+        process?: string;
+        identity?: string;
+      }>(`/api/spawned/${encodeURIComponent(name)}`, {
+        method: 'DELETE',
+        ...(reason || expectedGeneration
+          ? {
+              body: JSON.stringify({
+                reason,
+                expected_generation: expectedGeneration,
+                ...(deleteIdentity ? { delete_identity: true } : {}),
+              }),
+            }
+          : {}),
+      });
       const afterCtx: AfterAgentReleaseContext = {
         ...beforeCtx,
         durationMs: Date.now() - t0,
@@ -689,6 +753,39 @@ export class HarnessDriverClient {
     return result.agents;
   }
 
+  /**
+   * Snapshot of the broker's in-process `fleet_inventory` map — the same set
+   * the broker publishes to the engine via `inventory.sync`. Joined against
+   * `listAgents()` to detect the workers-vs-inventory divergence (#1539) —
+   * an agent live in the PTY map that was never (or is no longer) present in
+   * what the engine sees.
+   *
+   * The broker envelope carries `success` alongside `agents`. When the broker
+   * cannot answer (runtime channel closed, reply dropped) it responds
+   * `{ "success": false, "agents": [] }` at HTTP 200. Returning that empty
+   * array to the caller would silently conflate "broker down" with "0 agents"
+   * — the same class of defect relay#1553 exists to prevent — so a
+   * `success: false` envelope is surfaced as an error instead. Callers that
+   * want to distinguish it from a transport-layer failure can match on
+   * `code === 'fleet_inventory_unavailable'`.
+   */
+  async listFleetInventory(): Promise<{ nodeName: string | undefined; agents: FleetInventoryAgent[] }> {
+    const result = await this.transport.request<{
+      success?: boolean;
+      node_name?: string;
+      agents?: FleetInventoryAgent[];
+    }>('/api/fleet-inventory');
+    if (result.success === false) {
+      throw new HarnessDriverProtocolError({
+        code: 'fleet_inventory_unavailable',
+        message:
+          'broker returned success:false for /api/fleet-inventory — the runtime channel is unavailable, so agent presence is unknown (not zero).',
+        retryable: true,
+      });
+    }
+    return { nodeName: result.node_name, agents: result.agents ?? [] };
+  }
+
   // ── PTY control ────────────────────────────────────────────────────
 
   async sendInput(name: string, data: string): Promise<{ name: string; bytes_written: number }> {
@@ -713,14 +810,29 @@ export class HarnessDriverClient {
    *
    * `rows`/`cols` are optional so a pure ownership release (`release: true`)
    * can omit them entirely rather than sending placeholder dimensions — the
-   * broker defaults them and skips the resize on a release.
+   * broker defaults them to zero and skips the resize on such a release.
+   *
+   * A release MAY still carry dimensions, in which case the broker applies
+   * them and *then* drops ownership. Attach clients that reserved a status row
+   * use this to hand the row back atomically: a separate resize would need to
+   * land strictly before the release or it re-claims the lease (#1247).
+   * `resized` reports whether the broker *dispatched* the restore resize to the
+   * worker — unlike `write_pty` it parks no pending request, so this is not a
+   * worker-side acknowledgement.
    */
   async resizePty(
     name: string,
     rows?: number,
     cols?: number,
     options?: { sessionId?: string; release?: boolean }
-  ): Promise<{ name: string; rows?: number; cols?: number; applied?: boolean; released?: boolean }> {
+  ): Promise<{
+    name: string;
+    rows?: number;
+    cols?: number;
+    applied?: boolean;
+    released?: boolean;
+    resized?: boolean;
+  }> {
     return this.transport.request(`/api/resize/${encodeURIComponent(name)}`, {
       method: 'POST',
       body: JSON.stringify({
@@ -764,8 +876,16 @@ export class HarnessDriverClient {
     const result = await this.transport.request<{
       mode?: unknown;
       flushed?: unknown;
+      dead_lettered?: unknown;
       matched?: unknown;
       revision?: unknown;
+      blocked_reason?: unknown;
+      blocked_reason_code?: unknown;
+      head_sequence?: unknown;
+      acked_up_to_sequence?: unknown;
+      received_up_to_sequence?: unknown;
+      next_ackable_sequence?: unknown;
+      reconciliation_action?: unknown;
     }>(`/api/spawned/${encodeURIComponent(name)}/delivery-mode`, {
       method: 'PUT',
       body: JSON.stringify(body),
@@ -779,12 +899,30 @@ export class HarnessDriverClient {
     return {
       mode: result.mode,
       flushed: typeof result.flushed === 'number' ? result.flushed : 0,
+      ...(typeof result.dead_lettered === 'number' ? { deadLettered: result.dead_lettered } : {}),
       // A guarded call must fail closed when a legacy broker omits `matched`.
       matched:
         typeof result.matched === 'boolean'
           ? result.matched
           : options?.expectedMode === undefined && options?.expectedRevision === undefined,
       revision: typeof result.revision === 'string' && /^\d+$/.test(result.revision) ? result.revision : null,
+      ...(typeof result.blocked_reason === 'string' ? { blockedReason: result.blocked_reason } : {}),
+      ...(typeof result.blocked_reason_code === 'string'
+        ? { blockedReasonCode: result.blocked_reason_code }
+        : {}),
+      ...(typeof result.head_sequence === 'number' ? { headSequence: result.head_sequence } : {}),
+      ...(typeof result.acked_up_to_sequence === 'number'
+        ? { ackedUpToSequence: result.acked_up_to_sequence }
+        : {}),
+      ...(typeof result.received_up_to_sequence === 'number'
+        ? { receivedUpToSequence: result.received_up_to_sequence }
+        : {}),
+      ...(typeof result.next_ackable_sequence === 'number'
+        ? { nextAckableSequence: result.next_ackable_sequence }
+        : {}),
+      ...(typeof result.reconciliation_action === 'string'
+        ? { reconciliationAction: result.reconciliation_action }
+        : {}),
     };
   }
 
@@ -795,12 +933,60 @@ export class HarnessDriverClient {
     return Array.isArray(result.pending) ? (result.pending as PendingRelayMessage[]) : [];
   }
 
-  async flushPending(name: string): Promise<{ flushed: number }> {
-    const result = await this.transport.request<{ flushed?: unknown }>(
-      `/api/spawned/${encodeURIComponent(name)}/flush`,
-      { method: 'POST' }
-    );
-    return { flushed: typeof result.flushed === 'number' ? result.flushed : 0 };
+  /**
+   * Flush a held agent's parked queue.
+   *
+   * `flushed` on its own is ambiguous: 0 reads the same for an empty queue and
+   * for a queue the broker could not drain. `deadLettered`, `held` and
+   * `blockedReason` carry that distinction (see relay#1593). Older brokers omit
+   * all three.
+   */
+  async flushPending(name: string): Promise<{
+    flushed: number;
+    deadLettered?: number;
+    held?: number;
+    blockedReason?: string;
+    blockedReasonCode?: string;
+    headSequence?: number;
+    ackedUpToSequence?: number;
+    receivedUpToSequence?: number;
+    nextAckableSequence?: number;
+    reconciliationAction?: string;
+  }> {
+    const result = await this.transport.request<{
+      flushed?: unknown;
+      dead_lettered?: unknown;
+      held?: unknown;
+      blocked_reason?: unknown;
+      blocked_reason_code?: unknown;
+      head_sequence?: unknown;
+      acked_up_to_sequence?: unknown;
+      received_up_to_sequence?: unknown;
+      next_ackable_sequence?: unknown;
+      reconciliation_action?: unknown;
+    }>(`/api/spawned/${encodeURIComponent(name)}/flush`, { method: 'POST' });
+    return {
+      flushed: typeof result.flushed === 'number' ? result.flushed : 0,
+      ...(typeof result.dead_lettered === 'number' ? { deadLettered: result.dead_lettered } : {}),
+      ...(typeof result.held === 'number' ? { held: result.held } : {}),
+      ...(typeof result.blocked_reason === 'string' ? { blockedReason: result.blocked_reason } : {}),
+      ...(typeof result.blocked_reason_code === 'string'
+        ? { blockedReasonCode: result.blocked_reason_code }
+        : {}),
+      ...(typeof result.head_sequence === 'number' ? { headSequence: result.head_sequence } : {}),
+      ...(typeof result.acked_up_to_sequence === 'number'
+        ? { ackedUpToSequence: result.acked_up_to_sequence }
+        : {}),
+      ...(typeof result.received_up_to_sequence === 'number'
+        ? { receivedUpToSequence: result.received_up_to_sequence }
+        : {}),
+      ...(typeof result.next_ackable_sequence === 'number'
+        ? { nextAckableSequence: result.next_ackable_sequence }
+        : {}),
+      ...(typeof result.reconciliation_action === 'string'
+        ? { reconciliationAction: result.reconciliation_action }
+        : {}),
+    };
   }
 
   async snapshot(name: string, format: SnapshotFormat = 'plain'): Promise<PtySnapshot> {
@@ -1054,9 +1240,9 @@ export class HarnessDriverClient {
 
   // ── Messaging ──────────────────────────────────────────────────────
 
-  async sendMessage(input: SendMessageInput): Promise<{ event_id: string; targets: string[] }> {
+  async sendMessage(input: SendMessageInput): Promise<SendMessageResult> {
     try {
-      return await this.transport.request('/api/send', {
+      const result = await this.transport.request<SendMessageResult>('/api/send', {
         method: 'POST',
         body: JSON.stringify({
           to: input.to,
@@ -1070,6 +1256,7 @@ export class HarnessDriverClient {
           mode: input.mode,
         }),
       });
+      return { ...result, targets: result.targets ?? [] };
     } catch (error) {
       if (error instanceof HarnessDriverProtocolError && error.code === 'unsupported_operation') {
         return { event_id: 'unsupported_operation', targets: [] };
@@ -1181,8 +1368,12 @@ export class HarnessDriverClient {
     this.transport.disconnect();
 
     if (this.child) {
-      await waitForExit(this.child, 5000);
-      this.child = null;
+      // Keep the handle when the exit was not observed: the process may still
+      // be holding its sockets, and a later shutdown() should retry rather than
+      // let the caller treat an unproven exit as a clean one.
+      if (await waitForExit(this.child, 5000)) {
+        this.child = null;
+      }
     }
   }
 

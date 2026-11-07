@@ -9,9 +9,10 @@ import type {
   RelayMessageAttachmentInput,
   RelayMessageBlock,
   RelayMessageMode,
+  RelayReleaseAgentInput,
+  RelayAgentReleaseResult,
   RelaySendChannelMessageInput,
   RelayWorkspaceInfo,
-  RelayWorkspaceFleetNodesConfig,
 } from './messaging/index.js';
 import {
   actionSchemaToJsonSchema,
@@ -111,6 +112,7 @@ export interface RelaySendMessageInput {
   attachments?: RelayMessageAttachmentInput[];
   blocks?: RelayMessageBlock[];
   idempotencyKey?: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface RelayReplyInput {
@@ -120,6 +122,7 @@ export interface RelayReplyInput {
   text: string;
   blocks?: RelayMessageBlock[];
   idempotencyKey?: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface RelayReactInput {
@@ -136,6 +139,7 @@ export interface RelayDirectInput {
   attachments?: RelayMessageAttachmentInput[];
   mode?: RelayMessageMode;
   idempotencyKey?: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 /** Messaging surface plus the high-level overloads documented in the README. */
@@ -165,6 +169,7 @@ export interface RelayAgentClient extends RelayAgentHandle {
   readonly messages: EnrichedMessages;
   readonly threads: RelayMessaging['threads'];
   readonly inbox: RelayMessaging['inbox'];
+  readonly files: RelayMessaging['files'];
   sendMessage(input: RelaySendMessageInput): Promise<RelayMessage>;
   reply(input: RelayReplyInput): Promise<RelayMessage>;
   react(input: RelayClientReactInput): Promise<RelayMessageReaction>;
@@ -178,30 +183,34 @@ export interface WorkspaceFacadeDeps {
 
 export interface RelayRegisterOptions {
   /**
-   * Throw a `name_conflict` error when an agent with the same name already
-   * exists, instead of adopting the existing identity with a rotated token.
+   * Call the backend's plain `register` instead of its `registerOrRotate`
+   * compatibility path. Relaycast registration is create-only either way: an
+   * existing name is rejected with `name_conflict` and its token is unchanged.
    */
   strict?: boolean;
 }
 
 export interface RelayWorkspace {
   /**
-   * Register one or more agents. Idempotent by default: when an agent with
-   * the same name already exists, the existing identity is adopted and its
-   * token rotated. Pass `{ strict: true }` to fail on name conflicts instead.
-   * Token rotation invalidates any previously-issued token for that agent.
+   * Register one or more new agents. Registration is create-only: if an
+   * agent with the same name already exists, this rejects with
+   * `name_conflict` (HTTP 409), with or without `{ strict: true }`, and the
+   * existing identity and its token are left unchanged.
+   *
+   * To resume an existing agent, persist the token it was issued and call
+   * `reconnect({ apiToken })`. To get a new token for an existing name (for
+   * example after losing it), run `relay agent rotate <name>` (or
+   * `relay agent register <name>` again), which uses the Relaycast owner
+   * takeover and retires the previous token.
    */
   register<T extends AgentLike | AgentLike[]>(
     agents: T,
     options?: RelayRegisterOptions
   ): Promise<T extends AgentLike[] ? RelayAgentClient[] : RelayAgentClient>;
+  /** Release an agent, optionally freeing its name for re-registration. */
+  release(input: RelayReleaseAgentInput): Promise<RelayAgentReleaseResult>;
   reconnect(input: { apiToken: string }): Promise<RelayAgentClient>;
   info(): Promise<RelayWorkspaceInfo>;
-  fleetNodes: {
-    get(): Promise<RelayWorkspaceFleetNodesConfig>;
-    set(enabled: boolean): Promise<RelayWorkspaceFleetNodesConfig>;
-    inherit(): Promise<RelayWorkspaceFleetNodesConfig>;
-  };
 }
 
 export interface NotifyOptions {
@@ -259,6 +268,7 @@ export function createEnrichedMessages(
         attachments: sendInput.attachments,
         mode: sendInput.mode,
         idempotencyKey: sendInput.idempotencyKey,
+        metadata: sendInput.metadata,
       });
     }
     if (isChannelTarget(sendInput.to)) {
@@ -269,6 +279,7 @@ export function createEnrichedMessages(
         attachments: sendInput.attachments,
         mode: sendInput.mode,
         idempotencyKey: sendInput.idempotencyKey,
+        metadata: sendInput.metadata,
       });
     }
     return messages.direct({
@@ -277,6 +288,7 @@ export function createEnrichedMessages(
       attachments: sendInput.attachments,
       mode: sendInput.mode,
       idempotencyKey: sendInput.idempotencyKey,
+      metadata: sendInput.metadata,
     });
   };
 
@@ -287,6 +299,7 @@ export function createEnrichedMessages(
       text: input.text,
       blocks: input.blocks,
       idempotencyKey: input.idempotencyKey,
+      metadata: input.metadata,
     });
   };
 
@@ -307,6 +320,7 @@ export function createEnrichedMessages(
       attachments: input.attachments,
       mode: input.mode,
       idempotencyKey: input.idempotencyKey,
+      metadata: input.metadata,
     });
   };
 
@@ -343,8 +357,10 @@ export function createWorkspaceFacade(messaging: RelayMessaging, deps?: Workspac
       seen.add(name);
     }
 
-    // Idempotent by default: adopt an existing agent (rotating its token)
-    // when the backend supports it. `strict` restores fail-on-conflict.
+    // Default calls go through `registerOrRotate` when the backend exposes it;
+    // `strict` uses plain `register`. Current Relaycast SDKs implement
+    // `registerOrRotate` as a create-only alias, so an existing name is
+    // rejected with `name_conflict` in both modes.
     const registerOne =
       !options?.strict && messaging.agents.registerOrRotate
         ? messaging.agents.registerOrRotate.bind(messaging.agents)
@@ -359,8 +375,17 @@ export function createWorkspaceFacade(messaging: RelayMessaging, deps?: Workspac
 
   return {
     info: () => messaging.workspace.info(),
-    fleetNodes: messaging.workspace.fleetNodes,
     register: register as RelayWorkspace['register'],
+    release: async (input) => {
+      // async so an unavailable-on-this-client error is always a rejected
+      // Promise, matching register()/reconnect() below — a plain (non-async)
+      // arrow function would throw synchronously instead, breaking every
+      // caller that assumes `.catch(...)`/`.rejects` semantics.
+      if (!deps) {
+        throw new Error('release() is only available on the workspace client.');
+      }
+      return messaging.agents.release(input);
+    },
     reconnect: async ({ apiToken }) => {
       if (!deps) {
         throw new Error('reconnect() is only available on the workspace client.');

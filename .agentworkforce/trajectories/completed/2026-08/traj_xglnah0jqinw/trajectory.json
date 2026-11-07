@@ -1,0 +1,73 @@
+{
+  "id": "traj_xglnah0jqinw",
+  "version": 1,
+  "task": {
+    "title": "Fix main publish blocker in CI standalone smoke test"
+  },
+  "status": "completed",
+  "startedAt": "2026-08-18T21:15:09.931Z",
+  "completedAt": "2026-08-18T21:37:42.399Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-18T21:23:26.414Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_ujtisf5q4ylt",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-18T21:23:26.414Z",
+      "endedAt": "2026-08-18T21:37:42.399Z",
+      "events": [
+        {
+          "ts": 1787088206415,
+          "type": "decision",
+          "content": "Treat the fourth node-down call as erroneous EXIT cleanup re-entry: Treat the fourth node-down call as erroneous EXIT cleanup re-entry",
+          "raw": {
+            "question": "Treat the fourth node-down call as erroneous EXIT cleanup re-entry",
+            "chosen": "Treat the fourth node-down call as erroneous EXIT cleanup re-entry",
+            "alternatives": [],
+            "reasoning": "The invocation order [1,4,6,7] shows the configured preflight down, deadline teardown, and then two adjacent cleanup downs. Commits #1568 and #1572 do not touch the smoke script; #1567 introduced the cleanup trap. Disarming EXIT before its cleanup subshell preserves the required three-step lifecycle without weakening the assertion."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787089047824,
+          "type": "reflection",
+          "content": "The merge-interaction hypothesis was disproved: main ends at #1567, while #1568 is Rust-only and #1572 changes fleet attach code. The failure is #1567 cleanup re-entry exposed by CI scheduling. The fix preserves the exact three-shutdown contract and passes the full publish-equivalent Node 22/Linux suite.",
+          "raw": {
+            "focalPoints": [
+              "root-cause",
+              "validation",
+              "publish-gate"
+            ],
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:root-cause",
+            "focal:validation",
+            "focal:publish-gate",
+            "confidence:0.9"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Prevented recursive EXIT cleanup in the standalone CI smoke lifecycle, retained the exact three-shutdown assertion with mechanism documentation, and verified all 2,100 tests in the publish-equivalent Node 22/Linux environment.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "59106aa93d6dcd94355f74751a75a0c0d035ed7d",
+    "endRef": "59106aa93d6dcd94355f74751a75a0c0d035ed7d"
+  }
+}

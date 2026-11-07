@@ -5,10 +5,13 @@ pub(crate) mod wire;
 pub(crate) mod workspace;
 pub(crate) mod ws;
 
-pub(crate) use crate::snippets::{
-    configure_agent_relay_mcp_with_result, configure_agent_relay_mcp_with_token,
+#[cfg(test)]
+pub(crate) use crate::snippets::configure_agent_relay_mcp_with_token;
+pub(crate) use crate::snippets::{configure_agent_relay_mcp_launch, McpLaunch};
+pub(crate) use auth::{
+    agent_identity_key, identity_key_fingerprint, reclaim_legacy_identity,
+    stable_node_identity_key, AuthClient,
 };
-pub(crate) use auth::AuthClient;
 // `is_agent_token_invalid`, `is_agent_token_invalid_anyhow`,
 // `is_agent_token_invalid_code`, and `AGENT_TOKEN_INVALID_CODE` are declared
 // `pub` on `auth` so future callers (bridge, ws, listen_api) can reach them
@@ -22,6 +25,8 @@ pub(crate) use workspace::{
     MultiWorkspaceSession, WorkspaceInboundMessage, WorkspaceMembershipSummary,
 };
 pub(crate) use ws::{
-    format_worker_preregistration_error, registration_retry_after_secs, retry_agent_registration,
-    RegRetryOutcome, RelaycastHttpClient, RelaycastRegistrationError, WsControl,
+    format_worker_preregistration_error, register_new_spawn_identity,
+    registration_retry_after_secs, retry_agent_registration, retry_agent_registration_create_only,
+    spawned_worker_metadata, RegRetryOutcome, RelaycastHttpClient, RelaycastRegistrationError,
+    WsControl, MAX_AGENT_REGISTRATION_ELAPSED, MAX_AGENT_REGISTRATION_OUTER_TIMEOUT,
 };

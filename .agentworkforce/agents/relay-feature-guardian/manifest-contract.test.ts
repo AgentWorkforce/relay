@@ -19,7 +19,7 @@ const features = Object.values(manifest.categories).flatMap((category) => catego
 
 describe('feature manifest contract', () => {
   it('maps every category to a detailed verification procedure', () => {
-    expect(manifest.version).toBe('1.1');
+    expect(manifest.version).toBe('2.0');
     expect(manifest.verification.document).toBe('.agentworkforce/features/verify/procedures.md');
 
     for (const category of Object.keys(manifest.categories)) {
@@ -41,6 +41,7 @@ describe('feature manifest contract', () => {
   it('covers every public Commander leaf command', () => {
     const commands = features.flatMap((feature) => (feature.cli ? [feature.cli] : []));
     const expected = [
+      'relay init',
       'relay node up',
       'relay node down',
       'relay node status',
@@ -84,9 +85,6 @@ describe('feature manifest contract', () => {
       'relay cloud worker start',
       'relay cloud worker status',
       'relay cloud worker logs',
-      'relay reflex on',
-      'relay reflex off',
-      'relay reflex status',
       'relay workspace active',
       'relay workspace create',
       'relay workspace list',
@@ -137,11 +135,14 @@ describe('feature manifest contract', () => {
       'relay skills add',
       'relay mcp',
       'relay fleet nodes',
-      'relay fleet config',
-      'relay fleet enable',
-      'relay fleet disable',
-      'relay fleet inherit',
+      'relay fleet spawn',
+      'relay fleet release',
       'relay fleet status',
+      // Mounted product surfaces. Each product's real tree lives in its own SDK
+      // spec, so the manifest documents the group and the surface owns the rest.
+      'relay file',
+      'relay flows',
+      'relay sessions',
     ];
 
     for (const command of expected) {
@@ -153,6 +154,14 @@ describe('feature manifest contract', () => {
     expect(commands).not.toContain('relay metrics');
     expect(commands).not.toContain('relay deadletters');
     expect(commands).not.toContain('relay redeliver [id]');
+  });
+
+  it('leads with relay init and the core', () => {
+    expect(Object.keys(manifest.categories).slice(0, 3)).toEqual(['init', 'core', 'core-delivery']);
+    const ids = new Set(features.map((feature) => feature.id));
+    for (const tool of ['claude', 'codex', 'opencode', 'grok', 'pi', 'devin', 'cursor']) {
+      expect(ids, `${tool} needs an init feature`).toContain(`init-tool-${tool}`);
+    }
   });
 
   it('covers every static MCP tool registered by the server', () => {
@@ -189,6 +198,9 @@ describe('feature manifest contract', () => {
       'list_actions',
       'invoke_action',
       'submit_result',
+      'upload_file',
+      'download_file',
+      'get_observer_url',
     ];
     expect([...tools].sort()).toEqual(expected.sort());
   });

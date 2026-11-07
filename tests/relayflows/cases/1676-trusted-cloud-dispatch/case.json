@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1676-trusted-cloud-dispatch",
+  "kind": "bugfix",
+  "title": "Deliver qualification pointers without exposing Cloud credentials to candidate refs",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1676-trusted-cloud-dispatch/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 120,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "trusted_cloud_dispatcher_missing"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "trusted_dispatch_rejects_attacker_refs"
+    }
+  }
+}

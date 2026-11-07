@@ -1,0 +1,47 @@
+{
+  "id": "compact_c49rpdvseq80",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-02T06:39:52.061Z",
+  "sourceTrajectories": [
+    "traj_4kogy88ufk68"
+  ],
+  "dateRange": {
+    "start": "2026-09-02T06:31:28.835Z",
+    "end": "2026-09-02T06:39:51.444Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 2,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "testing",
+      "decisions": [
+        {
+          "question": "Bound the live proof as one transaction and expose every stage",
+          "chosen": "Bound the live proof as one transaction and expose every stage",
+          "reasoning": "Run 33598618463 job 100147193118 passed both offline steps, then the live step stayed active beyond ten minutes. The exact-head test had a bare ack.await and a per-rx 10-second timeout renewed by every ConPTY control chunk. The bare acknowledgement is the most likely hang because cmd.exe should not emit indefinitely, but both paths were unbounded. The fix adds a 30-second overall proof timeout, a bounded ack wait, a non-renewing rx loop governed by the outer deadline, flushed --nocapture stage diagnostics, and 2-minute step/10-minute job caps. Existing shutdown has a bounded two-second post-kill wait; the CI cap guards unpreemptible platform calls.",
+          "fromTrajectory": "traj_4kogy88ufk68"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    ".github/workflows/rust-ci.yml",
+    "crates/relay-pty/src/pty.rs"
+  ],
+  "commits": [
+    "61ab3b57b"
+  ],
+  "narrative": "A single short (~8 min) session on branch `fix/claude-injection-submit-0902` hardened the live Windows ConPTY synchronization proof for PR #1634. The trigger was a concrete CI failure: Windows run 33598618463, job 100147193118, where both offline steps passed but the live step ran past ten minutes with no output and no failure signal. Diagnosis pinned two unbounded waits in the exact-head test in `crates/relay-pty/src/pty.rs`: a bare `ack.await` on the write acknowledgement, and a per-receive 10-second timeout that was renewed on every ConPTY control chunk, so a chatty-but-never-terminating `cmd.exe` could keep the loop alive indefinitely. The bare ack was judged the likelier culprit (cmd.exe should not emit forever), but since neither path was bounded, both were fixed rather than just the suspected one. The fix converts the live proof into a single bounded transaction with visible stages: a 30-second overall proof watchdog, a bounded wait on the write acknowledgement, an output-collection loop whose per-receive timeout no longer renews and is instead governed by the outer deadline, and stage diagnostics flushed so they appear under `cargo test -- --nocapture`. Defense-in-depth was added at the CI layer in `.github/workflows/rust-ci.yml`: a 2-minute step timeout and a 10-minute job timeout, on the reasoning that in-test watchdogs cannot preempt a blocked native Windows platform call, so the runner must be able to kill it. Existing shutdown already had a bounded two-second post-kill wait, which was left as-is. Verification was broad and green: the focused proof, the full relay-pty suite (229/229), 1037 active broker tests, the Windows tests cross-check, native and Windows clippy, fmt, actionlint, and the diff gate. The work landed as commit `61ab3b57b` (`test(pty): bound live ConPTY proof`), continuing a run of ConPTY-proof commits on this branch (`d6eab4d68`, `3a3232439`). All diagnostics were confirmed to reach shutdown locally; the session's stated confidence was high, though the actual fix is only proven once the same Windows job re-runs green in CI.",
+  "decisions": [],
+  "conventions": [],
+  "lessons": [],
+  "openQuestions": []
+}

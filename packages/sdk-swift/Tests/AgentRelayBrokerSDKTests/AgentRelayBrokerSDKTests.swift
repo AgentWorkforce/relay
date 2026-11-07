@@ -614,7 +614,7 @@ final class AgentRelayBrokerSDKTests: XCTestCase {
         // (crates/broker/src/runtime/api.rs); decoding must not throw.
         let http = MockRelayHTTP()
         await http.setResponse(
-            #"{ "success": true, "event_id": "http_abc", "relaycast_published": true, "local": false, "workspace_id": "ws_1", "workspace_alias": "default" }"#,
+            #"{ "success": true, "event_id": "http_abc", "relaycast_published": true, "delivery_status": "published_unconfirmed", "recipient_live": false, "recipient_status": "offline", "local": false, "workspace_id": "ws_1", "workspace_alias": "default" }"#,
             for: "/api/send"
         )
         let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: http)
@@ -623,6 +623,14 @@ final class AgentRelayBrokerSDKTests: XCTestCase {
 
         XCTAssertEqual(result.eventId, "http_abc")
         XCTAssertTrue(result.targets.isEmpty)
+        XCTAssertEqual(result.success, true)
+        XCTAssertEqual(result.relaycastPublished, true)
+        XCTAssertEqual(result.deliveryStatus, "published_unconfirmed")
+        XCTAssertEqual(result.recipientLive, false)
+        XCTAssertEqual(result.recipientStatus, "offline")
+        XCTAssertEqual(result.local, false)
+        XCTAssertEqual(result.workspaceId, "ws_1")
+        XCTAssertEqual(result.workspaceAlias, "default")
     }
 
     func testSendMessageSwallowsUnsupportedOperation() async throws {

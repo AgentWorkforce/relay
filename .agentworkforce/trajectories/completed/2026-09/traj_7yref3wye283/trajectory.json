@@ -1,0 +1,245 @@
+{
+  "id": "traj_7yref3wye283",
+  "version": 1,
+  "task": {
+    "title": "Add real-agent RelayFlow conformance for API send reachability",
+    "source": {
+      "system": "plain",
+      "id": "relay#1615"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-02T10:25:41.382Z",
+  "completedAt": "2026-09-02T12:08:45.907Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-02T10:25:50.537Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_4v7khwpjog52",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-02T10:25:50.537Z",
+      "endedAt": "2026-09-02T12:08:45.907Z",
+      "events": [
+        {
+          "ts": 1788344750542,
+          "type": "decision",
+          "content": "Treat Relaycast publication and recipient reachability as separate observations: Treat Relaycast publication and recipient reachability as separate observations",
+          "raw": {
+            "question": "Treat Relaycast publication and recipient reachability as separate observations",
+            "chosen": "Treat Relaycast publication and recipient reachability as separate observations",
+            "alternatives": [],
+            "reasoning": "An accepted durable message is not confirmed PTY delivery; the API must preserve publication success while reporting live, offline, or unknown without a delivered boolean."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788344751161,
+          "type": "decision",
+          "content": "Keep the reachability probe outside the publication timeout: Keep the reachability probe outside the publication timeout",
+          "raw": {
+            "question": "Keep the reachability probe outside the publication timeout",
+            "chosen": "Keep the reachability probe outside the publication timeout",
+            "alternatives": [],
+            "reasoning": "A slow best-effort read must not turn an already-accepted DM into an HTTP send failure; the probe has its own five-second bound and the RelayFlow makes it slower than the configured publish deadline."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788345248904,
+          "type": "reflection",
+          "content": "The first real conformance case now discriminates exact base/head effects and also guards timeout independence; full broker validation is green while independent review is in progress.",
+          "raw": {
+            "focalPoints": [
+              "effect-oracle",
+              "timeout-separation",
+              "review-gate"
+            ],
+            "adjustments": "Changed the negative arm from missing to existing-offline and made the agent read slower than the publication deadline.",
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:effect-oracle",
+            "focal:timeout-separation",
+            "focal:review-gate",
+            "confidence:0.9"
+          ]
+        },
+        {
+          "ts": 1788347081977,
+          "type": "decision",
+          "content": "Keep the synchronous reachability snapshot bounded at five seconds: Keep the synchronous reachability snapshot bounded at five seconds",
+          "raw": {
+            "question": "Keep the synchronous reachability snapshot bounded at five seconds",
+            "chosen": "Keep the synchronous reachability snapshot bounded at five seconds",
+            "alternatives": [],
+            "reasoning": "Issue 1615 explicitly requires the send response to carry the server-observed recipient state. Waiting for the independently bounded GET is the cost of that contract; it cannot alter publication success and remains below the outer 30-second API reply bound."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788347082582,
+          "type": "reflection",
+          "content": "Claude review found stale downstream TypeScript annotations; updated all four consumers to SendMessageResult. Its claimed Rust build blocker was disproved by relaycast 7.0.0 source and the compiled 1040-test suite.",
+          "raw": {
+            "focalPoints": [
+              "review-findings",
+              "type-compatibility",
+              "evidence"
+            ],
+            "adjustments": "Added SendMessageResult imports and return types across eval and integration harness consumers.",
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:review-findings",
+            "focal:type-compatibility",
+            "focal:evidence",
+            "confidence:0.9"
+          ]
+        },
+        {
+          "ts": 1788348354877,
+          "type": "decision",
+          "content": "Applied independent review findings without weakening the effect oracle: Applied independent review findings without weakening the effect oracle",
+          "raw": {
+            "question": "Applied independent review findings without weakening the effect oracle",
+            "chosen": "Applied independent review findings without weakening the effect oracle",
+            "alternatives": [],
+            "reasoning": "Preserved required TypeScript targets via runtime normalization, exposed the response in Swift, classified all live Relaycast activity states, made the timeout control exceed the real 500ms clamp, and added unavailable/non-recipient controls."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788348355482,
+          "type": "reflection",
+          "content": "Claude and Codex fresh-eyes reviews are complete; all valid P1/P2 findings are implemented, with exact base/head reruns still required after rebase.",
+          "raw": {
+            "focalPoints": [
+              "review-contract",
+              "effect-controls",
+              "sdk-compatibility"
+            ],
+            "adjustments": "Rebase current main, then rebuild exact base/head artifacts and run full validation.",
+            "confidence": 0.86
+          },
+          "significance": "high",
+          "tags": [
+            "focal:review-contract",
+            "focal:effect-controls",
+            "focal:sdk-compatibility",
+            "confidence:0.86"
+          ]
+        },
+        {
+          "ts": 1788349547425,
+          "type": "decision",
+          "content": "Resolve Relaycast @self before reachability probing: Resolve Relaycast @self before reachability probing",
+          "raw": {
+            "question": "Resolve Relaycast @self before reachability probing",
+            "chosen": "Resolve Relaycast @self before reachability probing",
+            "alternatives": [],
+            "reasoning": "@self names the authenticated sender, not an agent record. Probing publish_from preserves the successful self-DM semantics and reports the actual recipient; the RelayFlow now proves one self-injection."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788349885385,
+          "type": "decision",
+          "content": "Treat legacy away as reachable: Treat legacy away as reachable",
+          "raw": {
+            "question": "Treat legacy away as reachable",
+            "chosen": "Treat legacy away as reachable",
+            "alternatives": [],
+            "reasoning": "Relaycast SDK compatibility still exposes pre-active-status away records; a best-effort reachability snapshot must not downgrade those live-compatible records to unknown."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788350313539,
+          "type": "decision",
+          "content": "Cancel reachability observation when publication fails: Cancel reachability observation when publication fails",
+          "raw": {
+            "question": "Cancel reachability observation when publication fails",
+            "chosen": "Cancel reachability observation when publication fails",
+            "alternatives": [],
+            "reasoning": "The observation is only part of a successful publication response. Awaiting it after an immediate publish failure delays the error and blocks the broker runtime actor for no usable evidence; the RelayFlow now measures this negative path."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788350925404,
+          "type": "reflection",
+          "content": "Final fresh Codex review found no actionable defects; exact-sha base/head effects discriminate and the final serialized broker suite is fully green.",
+          "raw": {
+            "focalPoints": [
+              "review-signoff",
+              "effect-proof",
+              "full-validation"
+            ],
+            "adjustments": "No further code changes required after the publication-failure probe cancellation control.",
+            "confidence": 0.95
+          },
+          "significance": "high",
+          "tags": [
+            "focal:review-signoff",
+            "focal:effect-proof",
+            "focal:full-validation",
+            "confidence:0.95"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added RelayFlow case 1615 with real broker and child-agent effects, and made /api/send report recipient reachability separately from durable Relaycast publication across Rust, TypeScript, and Swift clients.",
+    "approach": "Standard approach",
+    "confidence": 0.93
+  },
+  "commits": [
+    "e85f4ca23",
+    "bf66a2e86",
+    "13971aa8f",
+    "1191af9bd",
+    "cefc1ab4d",
+    "2559e668a"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/compacted/compact_q6xtouz4s10m_2026-09-02.json",
+    ".agentworkforce/trajectories/compacted/compact_q6xtouz4s10m_2026-09-02.md",
+    "CHANGELOG.md",
+    "crates/broker/src/relaycast/ws.rs",
+    "crates/broker/src/runtime/api.rs",
+    "packages/cli/src/cli/lib/attach-drive.test.ts",
+    "packages/cli/src/cli/lib/attach-drive.ts",
+    "packages/cli/src/cli/lib/attach-input-recovery.test.ts",
+    "packages/cli/src/cli/lib/attach-input-recovery.ts",
+    "packages/cli/src/cli/lib/attach-passthrough.ts",
+    "packages/evals/src/harness.ts",
+    "packages/harness-driver/src/client.ts",
+    "packages/harness-driver/src/send-message.test.ts",
+    "packages/harness-driver/src/types.ts",
+    "packages/sdk-swift/Sources/AgentRelayBrokerSDK/BrokerTypes.swift",
+    "packages/sdk-swift/Tests/AgentRelayBrokerSDKTests/AgentRelayBrokerSDKTests.swift",
+    "tests/integration/broker/channel-management.test.ts",
+    "tests/integration/broker/messaging.test.ts",
+    "tests/integration/broker/utils/broker-harness.ts",
+    "tests/relayflows/cases/1615-api-send-recipient-reachability/fake-relaycast.mjs",
+    "tests/relayflows/cases/1615-api-send-recipient-reachability/run.mjs",
+    "tests/relayflows/cases/1638-attach-input-replay/case.json",
+    "tests/relayflows/cases/1638-attach-input-replay/run.mjs"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "8a96b3917651769844a9020da0dbc5a0a555550d",
+    "endRef": "e85f4ca2338c8ef5f788b231748a847b15b94aa4",
+    "traceId": "edfe4a42-faba-49b6-b9c0-5408d6f11ba1"
+  }
+}

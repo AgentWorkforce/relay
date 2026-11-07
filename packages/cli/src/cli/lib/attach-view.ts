@@ -31,6 +31,8 @@ import {
   type AttachSnapshotConnection,
   type AttachSnapshotDeps,
 } from '../lib/attach.js';
+import { describeMissingBrokerConnection, resolveBrokerConnection } from '../lib/broker-connection.js';
+import { resolveFleetHint } from '../lib/fleet-hint.js';
 import { defaultExit, runSignalHandler } from '../lib/exit.js';
 
 type ExitFn = (code: number) => never;
@@ -47,6 +49,7 @@ export interface ViewableWorkerStreamEvent {
 export interface ViewBrokerConnection {
   url: string;
   apiKey?: string;
+  requestTimeoutMs?: number;
 }
 
 export interface ViewWebSocket {
@@ -55,12 +58,31 @@ export interface ViewWebSocket {
   on(event: 'close', listener: (code: number, reason: Buffer) => void): unknown;
   on(event: 'error', listener: (err: Error) => void): unknown;
   close(code?: number, reason?: string): void;
+  /** Immediately tear down the underlying connection when a local detach must not wait for a close handshake. */
+  terminate?(): void;
 }
 
 export type ViewWebSocketFactory = (url: string, headers: Record<string, string>) => ViewWebSocket;
 
 export interface ViewSignalRegistrar {
   (signal: NodeJS.Signals, handler: () => void | Promise<void>): void | (() => void);
+}
+
+/**
+ * Stdin surface used by view. Unlike drive and passthrough, view deliberately
+ * consumes and discards input: it is read-only, but taking stdin out of cooked
+ * echo mode prevents a terminal's mouse/focus reports from being painted as
+ * literal escape characters when a TUI has enabled them.
+ */
+export interface ViewStdin {
+  setRawMode?: (mode: boolean) => unknown;
+  isTTY?: boolean;
+  isRaw?: boolean;
+  resume(): unknown;
+  pause(): unknown;
+  on(event: 'data', listener: (chunk: Buffer) => void): unknown;
+  off?(event: 'data', listener: (chunk: Buffer) => void): unknown;
+  removeListener?(event: 'data', listener: (chunk: Buffer) => void): unknown;
 }
 
 export interface ViewDependencies {
@@ -70,6 +92,8 @@ export interface ViewDependencies {
   getDefaultStateDir: () => string;
   /** Environment variables (so tests can inject). */
   env: NodeJS.ProcessEnv;
+  /** Local input, held in raw mode and discarded for the read-only session. */
+  stdin: ViewStdin;
   /** Factory for the WebSocket — overridden in tests with a mock. */
   createWebSocket: ViewWebSocketFactory;
   /** Where the PTY chunks get written. Defaults to `process.stdout.write`. */
@@ -94,6 +118,12 @@ export interface ViewDependencies {
     agentName: string,
     deps: AttachSnapshotDeps
   ) => ReturnType<typeof captureAndRenderSnapshot>;
+  /**
+   * Best-effort workspace lookup for improving cross-node 404 messages.
+   * Defaults to `resolveFleetHint` from `fleet-hint.ts`. Tests inject a stub
+   * to avoid network calls.
+   */
+  fleetHint?: (name: string) => Promise<string | null>;
   /**
    * True when stdout is an interactive terminal. Gates the on-detach terminal
    * reset so a piped/redirected `view` never writes reset controls into the
@@ -125,6 +155,7 @@ function withDefaults(overrides: Partial<ViewDependencies> = {}): ViewDependenci
     readConnectionFile: readConnectionFileFromDisk,
     getDefaultStateDir: defaultStateDir,
     env: process.env,
+    stdin: process.stdin,
     createWebSocket: (url, headers) => new WebSocket(url, { headers }) as ViewWebSocket,
     writeChunk: writer.write,
     disposeWriter: writer.dispose,
@@ -138,6 +169,7 @@ function withDefaults(overrides: Partial<ViewDependencies> = {}): ViewDependenci
     exit: defaultExit,
     fetch: (input, init) => fetch(input, init),
     captureAndRenderSnapshot,
+    fleetHint: resolveFleetHint,
     stdoutIsTty: Boolean(process.stdout.isTTY),
     ...overrides,
   };
@@ -147,54 +179,16 @@ function isStringObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function readString(obj: unknown, key: string): string | undefined {
-  if (!isStringObject(obj)) return undefined;
-  const value = obj[key];
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  return trimmed === '' ? undefined : trimmed;
-}
-
 /**
- * Resolve the broker connection to use for `view`, in priority order:
- *
- *  1. `--broker-url` / `--api-key` CLI flags
- *  2. `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY` environment variables
- *  3. `<state-dir>/connection.json` (default `.agentworkforce/relay/connection.json`)
- *
- * Matches the resolution order used by `agent-relay-broker dump-pty` so users
- * don't have to learn two patterns.
+ * Resolve the broker connection to use for `view`. Delegates to the shared
+ * {@link resolveBrokerConnection} so `view` honours `--state-dir` exactly like
+ * every other local broker verb.
  */
 export function resolveViewBrokerConnection(
-  options: { brokerUrl?: string; apiKey?: string; stateDir?: string },
+  options: { brokerUrl?: string; apiKey?: string; stateDir?: string; requestTimeoutMs?: number },
   deps: ViewDependencies
 ): ViewBrokerConnection | null {
-  const explicitUrl = trimOrUndefined(options.brokerUrl);
-  const envUrl = trimOrUndefined(deps.env.RELAY_BROKER_URL);
-  const stateDir = options.stateDir ? path.resolve(options.stateDir) : deps.getDefaultStateDir();
-  const connectionFile = deps.readConnectionFile(stateDir);
-  const fileUrl = readString(connectionFile, 'url');
-
-  const resolveApiKey = (): string | undefined => {
-    const explicit = trimOrUndefined(options.apiKey);
-    if (explicit) return explicit;
-    const fromEnv = trimOrUndefined(deps.env.RELAY_BROKER_API_KEY);
-    if (fromEnv) return fromEnv;
-    return readString(connectionFile, 'api_key');
-  };
-
-  const url = explicitUrl ?? envUrl ?? fileUrl;
-  if (!url) return null;
-
-  return {
-    url: url.replace(/\/+$/, ''),
-    apiKey: resolveApiKey(),
-  };
-}
-
-function trimOrUndefined(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : undefined;
+  return resolveBrokerConnection(options, deps);
 }
 
 /** Convert an `http(s)://host:port` base URL to the matching `ws(s)://…/ws`. */
@@ -381,10 +375,7 @@ export async function runViewSession(
 
   const connection = resolveViewBrokerConnection(options, deps);
   if (!connection) {
-    deps.error(
-      'Error: could not locate broker connection. Pass --broker-url, set RELAY_BROKER_URL, ' +
-        'or run from a directory containing .agentworkforce/relay/connection.json.'
-    );
+    deps.error(describeMissingBrokerConnection(options, deps));
     return 1;
   }
 
@@ -396,6 +387,7 @@ export async function runViewSession(
 
   return new Promise<number>((resolve) => {
     let settled = false;
+    let rawModeWasSet = false;
     const cleanupSignals: Array<() => void> = [];
     // Subscribe-first: buffer live `worker_stream` chunks until the snapshot
     // is painted and reconciled, so no output around attach time is lost and
@@ -409,6 +401,36 @@ export async function runViewSession(
     const writeAgentOutput = (chunk: string): void => {
       const filtered = inputModeFilter.push(chunk);
       if (filtered.length > 0) deps.writeChunk(filtered);
+    };
+    // `view` never forwards stdin. Still consume it in raw mode so mouse,
+    // focus, and alternate-scroll reports cannot be cooked-mode echoed into
+    // the viewer as visible `^[[0A` / `^[[0B` garbage. Ctrl+C must be handled
+    // here because raw mode disables the terminal driver's SIGINT handling.
+    const stdinDataHandler = (chunk: Buffer): void => {
+      if (chunk.includes(0x03)) finish(0);
+    };
+    const teardownStdin = (): void => {
+      try {
+        if (deps.stdin.off) {
+          deps.stdin.off('data', stdinDataHandler);
+        } else if (deps.stdin.removeListener) {
+          deps.stdin.removeListener('data', stdinDataHandler);
+        }
+      } catch {
+        // best effort
+      }
+      try {
+        if (rawModeWasSet && typeof deps.stdin.setRawMode === 'function') {
+          deps.stdin.setRawMode(false);
+        }
+      } catch {
+        // best effort
+      }
+      try {
+        deps.stdin.pause();
+      } catch {
+        // best effort
+      }
     };
     const finish = (code: number) => {
       if (settled) return;
@@ -426,6 +448,15 @@ export async function runViewSession(
         // best effort — already closed
       }
       try {
+        // A graceful WebSocket close can leave its underlying socket alive
+        // while waiting for the broker's close acknowledgement. A local
+        // detach has no state to flush, so terminate it immediately rather
+        // than requiring another Ctrl-C to make Node leave the event loop.
+        socket.terminate?.();
+      } catch {
+        // best effort — already closed
+      }
+      try {
         // Heal the local terminal: a replayed snapshot re-emits terminal modes
         // (alt-screen, mouse reporting, bracketed paste, ...) that would
         // otherwise linger after the viewer detaches. TTY stdout only.
@@ -434,6 +465,7 @@ export async function runViewSession(
       } catch {
         // best effort
       }
+      teardownStdin();
       // Drop the writer's pending queue and unhook its drain listener so no
       // buffered chunk flushes to stdout after detach.
       deps.disposeWriter?.();
@@ -454,11 +486,11 @@ export async function runViewSession(
       if (!settled) writeAgentOutput(chunk);
     };
     const paintSnapshotAndReconcile = async (): Promise<void> => {
-      const snapshot = await deps.captureAndRenderSnapshot(
-        { url: connection.url, apiKey: connection.apiKey },
-        name,
-        { fetch: deps.fetch, writeChunk: guardedWrite }
-      );
+      const snapshot = await deps.captureAndRenderSnapshot(connection, name, {
+        fetch: deps.fetch,
+        writeChunk: guardedWrite,
+        fleetHint: deps.fleetHint,
+      });
       if (settled) return;
       switch (snapshot.status) {
         case 'ok':
@@ -485,6 +517,20 @@ export async function runViewSession(
     };
 
     const socket = deps.createWebSocket(wsUrl, headers);
+
+    // Do this before rendering the snapshot: a source TUI may have enabled
+    // mouse or alternate-scroll already, and raw input is the final safeguard
+    // even if an unusual escape sequence evades the output filter.
+    try {
+      if (typeof deps.stdin.setRawMode === 'function' && deps.stdin.isTTY !== false && !deps.stdin.isRaw) {
+        deps.stdin.setRawMode(true);
+        rawModeWasSet = true;
+      }
+      deps.stdin.resume();
+      deps.stdin.on('data', stdinDataHandler);
+    } catch {
+      // Read-only viewing still works on non-TTY or unusual stdin surfaces.
+    }
 
     for (const signal of ['SIGINT', 'SIGTERM'] as const) {
       const cleanup = deps.onSignal(signal, () => finish(0));
@@ -528,7 +574,7 @@ export async function runViewSession(
 /** Run a view session with default dependencies. Used by `runtime agent attach --mode view`. */
 export function attachView(
   name: string,
-  options: { brokerUrl?: string; apiKey?: string; stateDir?: string },
+  options: { brokerUrl?: string; apiKey?: string; stateDir?: string; requestTimeoutMs?: number },
   overrides: Partial<ViewDependencies> = {}
 ): Promise<number> {
   return runViewSession(name, options, withDefaults(overrides));

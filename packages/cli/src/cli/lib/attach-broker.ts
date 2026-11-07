@@ -1,6 +1,7 @@
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
 
 import type { BrokerConnection } from './broker-connection.js';
+import { describeError } from './describe-error.js';
 
 export type {
   InboundDeliveryMode,
@@ -24,7 +25,12 @@ export function createBrokerClient(
   connection: BrokerConnection,
   fetchFn?: typeof globalThis.fetch
 ): HarnessDriverClient {
-  return new HarnessDriverClient({ baseUrl: connection.url, apiKey: connection.apiKey, fetch: fetchFn });
+  return new HarnessDriverClient({
+    baseUrl: connection.url,
+    apiKey: connection.apiKey,
+    fetch: fetchFn,
+    requestTimeoutMs: connection.requestTimeoutMs,
+  });
 }
 
 export interface BrokerSdkFailure {
@@ -40,5 +46,5 @@ export function mapBrokerSdkFailure(error: unknown): BrokerSdkFailure {
     typeof (error as { status: unknown }).status === 'number'
       ? (error as { status: number }).status
       : 0;
-  return { status, message: error instanceof Error ? error.message : String(error) };
+  return { status, message: describeError(error) };
 }

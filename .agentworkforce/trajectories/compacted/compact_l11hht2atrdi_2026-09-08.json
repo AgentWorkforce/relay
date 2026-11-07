@@ -1,0 +1,37 @@
+{
+  "id": "compact_l11hht2atrdi",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-08T10:43:34.185Z",
+  "sourceTrajectories": [
+    "traj_cff6ejizvff8"
+  ],
+  "dateRange": {
+    "start": "2026-09-08T10:36:45.941Z",
+    "end": "2026-09-08T10:43:12.124Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "tooling",
+      "decisions": [
+        {
+          "question": "Keep all nine requirements separate; channel delivery is established, full agent readiness is not",
+          "chosen": "Keep all nine requirements separate; channel delivery is established, full agent readiness is not",
+          "reasoning": "Current channel receipts corroborate item 1; source still exposes routing, mention, and spawn gaps. Merged PR1670 explicitly excludes the unresolved outage; a successful Deploy workflow may deploy only observer assets.",
+          "fromTrajectory": "traj_cff6ejizvff8"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}

@@ -1,0 +1,118 @@
+{
+  "id": "traj_9835z9cvpl9q",
+  "version": 1,
+  "task": {
+    "title": "Implement escape-aware paced injection (issue #801)",
+    "source": {
+      "system": "plain",
+      "id": "801"
+    }
+  },
+  "status": "abandoned",
+  "startedAt": "2026-07-15T19:48:09.268Z",
+  "completedAt": "2026-08-12T21:48:57.141Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-15T19:56:40.369Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_optxox9qt5ue",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-15T19:56:40.369Z",
+      "endedAt": "2026-08-12T21:48:57.141Z",
+      "events": [
+        {
+          "ts": 1784145400371,
+          "type": "decision",
+          "content": "Paced injection in drainer thread: Paced injection in drainer thread",
+          "raw": {
+            "question": "Paced injection in drainer thread",
+            "chosen": "Paced injection in drainer thread",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1784738577913,
+          "type": "decision",
+          "content": "Diagnosed view detach behavior: Diagnosed view detach behavior",
+          "raw": {
+            "question": "Diagnosed view detach behavior",
+            "chosen": "Diagnosed view detach behavior",
+            "alternatives": [],
+            "reasoning": "PTY-backed view consumes Ctrl-C as raw stdin and resolves its session, but closes the WebSocket gracefully; if that close handshake leaves a live handle, the process stays alive until a second Ctrl-C is handled by Node's default signal behavior."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1784739241579,
+          "type": "decision",
+          "content": "Use forced WebSocket teardown for local view detach: Use forced WebSocket teardown for local view detach",
+          "raw": {
+            "question": "Use forced WebSocket teardown for local view detach",
+            "chosen": "Use forced WebSocket teardown for local view detach",
+            "alternatives": [],
+            "reasoning": "A view session has no outbound state to preserve. Calling ws.terminate after requesting a normal close releases the live socket handle immediately, ensuring the first Ctrl-C exits the viewer without terminating the agent."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1784746167470,
+          "type": "decision",
+          "content": "Preserve the post-SIGKILL reaping wait in the node provider integration test: Preserve the post-SIGKILL reaping wait in the node provider integration test",
+          "raw": {
+            "question": "Preserve the post-SIGKILL reaping wait in the node provider integration test",
+            "chosen": "Preserve the post-SIGKILL reaping wait in the node provider integration test",
+            "alternatives": [],
+            "reasoning": "The test's 50ms sleep shim shortened both the graceful shutdown timeout and the post-kill wait. Restricting it to the 5s graceful timeout prevents stop() from resolving before the OS reaps the real child."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1784749065795,
+          "type": "decision",
+          "content": "Replace fixed standalone smoke delay with bounded readiness polling: Replace fixed standalone smoke delay with bounded readiness polling",
+          "raw": {
+            "question": "Replace fixed standalone smoke delay with bounded readiness polling",
+            "chosen": "Replace fixed standalone smoke delay with bounded readiness polling",
+            "alternatives": [],
+            "reasoning": "The scripts/ci-standalone-smoke.sh test was tearing down `agent-relay node up` after eight seconds even when a retried Relaycast handshake was still in progress. Polling for its `Broker started.` readiness line for up to thirty seconds prevents cleanup from creating a false startup failure while retaining deterministic timeout diagnostics."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1786432752227,
+          "type": "decision",
+          "content": "Add session_ref: Option<String> to CommitAttestation; extract from top-level action JSON in broker_payload_from_action; inject RELAY_ATTEST_SESSION_ID env; stamp Session-Id trailer in hook: Add session_ref: Option<String> to CommitAttestation; extract from top-level action JSON in broker_payload_from_action; inject RELAY_ATTEST_SESSION_ID env; stamp Session-Id trailer in hook",
+          "raw": {
+            "question": "Add session_ref: Option<String> to CommitAttestation; extract from top-level action JSON in broker_payload_from_action; inject RELAY_ATTEST_SESSION_ID env; stamp Session-Id trailer in hook",
+            "chosen": "Add session_ref: Option<String> to CommitAttestation; extract from top-level action JSON in broker_payload_from_action; inject RELAY_ATTEST_SESSION_ID env; stamp Session-Id trailer in hook",
+            "alternatives": [],
+            "reasoning": "Fleet dispatch puts session_id at JSON top level; SpawnParams.metadata.attestation.session_ref needs explicit bridging; session_ref is optional so hook fires without it (backward-compatible)"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1786571337142,
+          "type": "note",
+          "content": "Abandoned: Stale trajectory from 28 days ago, unrelated to current work",
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "765e42535063b9d61262a537b1fd364d3e965000",
+    "endRef": "765e42535063b9d61262a537b1fd364d3e965000"
+  }
+}

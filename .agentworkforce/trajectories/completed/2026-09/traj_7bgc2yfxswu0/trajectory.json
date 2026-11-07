@@ -1,0 +1,91 @@
+{
+  "id": "traj_7bgc2yfxswu0",
+  "version": 1,
+  "task": {
+    "title": "Allow PTY allocation in Landlocked PR proofs",
+    "source": {
+      "system": "plain",
+      "id": "Unblock AgentWorkforce/relay#1634"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-02T01:54:54.283Z",
+  "completedAt": "2026-09-02T02:05:42.908Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-02T01:55:18.929Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_yflcn3f1quc6",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-02T01:55:18.929Z",
+      "endedAt": "2026-09-02T02:05:42.908Z",
+      "events": [
+        {
+          "ts": 1788314118929,
+          "type": "decision",
+          "content": "Grant only WRITE_FILE beneath /dev/pts: Grant only WRITE_FILE beneath /dev/pts",
+          "raw": {
+            "question": "Grant only WRITE_FILE beneath /dev/pts",
+            "chosen": "Grant only WRITE_FILE beneath /dev/pts",
+            "alternatives": [],
+            "reasoning": "Linux openpty opens /dev/ptmx and then the allocated slave /dev/pts/<n>; allowing only WRITE_FILE on the existing devpts directory enables the open without granting MAKE, REMOVE, REFER, TRUNCATE, or any other mutation right."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788314742694,
+          "type": "decision",
+          "content": "Fail closed when devpts already has a numeric slave: Fail closed when devpts already has a numeric slave",
+          "raw": {
+            "question": "Fail closed when devpts already has a numeric slave",
+            "chosen": "Fail closed when devpts already has a numeric slave",
+            "alternatives": [],
+            "reasoning": "A directory WRITE_FILE rule would otherwise let PR-authored code write an existing agent or control PTY. The trusted launcher scans before restriction and refuses occupied namespaces; a real Daytona diagnostic confirmed the per-step executor begins empty."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788314742801,
+          "type": "reflection",
+          "content": "The narrow device rule is compatible with Daytona and preserves the broker protection boundary: the empty namespace precondition passed in Cloud, and positive openpty, negative occupied-devpts, and immutability tests all passed together on Linux.",
+          "raw": {
+            "focalPoints": [
+              "Landlock",
+              "devpts",
+              "Cloud proof",
+              "immutability"
+            ],
+            "confidence": 0.97
+          },
+          "significance": "high",
+          "tags": [
+            "focal:Landlock",
+            "focal:devpts",
+            "focal:Cloud proof",
+            "focal:immutability",
+            "confidence:0.97"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Allowed PTY allocation under Landlock only from an initially empty devpts namespace, with positive, fail-closed, and broker-immutability Linux regressions plus updated security documentation.",
+    "approach": "Standard approach",
+    "confidence": 0.97
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "6d5199ff103cb5f4ff6adf0a3fa32a788646a9bc",
+    "endRef": "6d5199ff103cb5f4ff6adf0a3fa32a788646a9bc"
+  }
+}

@@ -6,13 +6,18 @@
 
 use std::{
     collections::HashMap,
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use crate::{
+    fleet_wire::AgentRegistrationMetadata,
     ids::{
         ChannelName, DeliveryId, MessageTarget, ThreadId, WorkerName, WorkspaceAlias, WorkspaceId,
+    },
+    native_delivery::{
+        NativeDeliveryError, NativeExistingSessionDelivery, NativeExistingSessionReconcile,
     },
     protocol::{MessageInjectionMode, ResolvedHarnessConfig},
     relaycast::WorkspaceMembershipSummary,
@@ -45,7 +50,8 @@ pub enum ListenApiRequest {
         model: Option<String>,
         args: Vec<String>,
         task: Option<String>,
-        channels: Vec<ChannelName>,
+        registration_metadata: AgentRegistrationMetadata,
+        channels: Option<Vec<ChannelName>>,
         cwd: Option<String>,
         team: Option<String>,
         shadow_of: Option<WorkerName>,
@@ -73,9 +79,27 @@ pub enum ListenApiRequest {
     Release {
         name: WorkerName,
         reason: Option<String>,
+        expected_generation: Option<String>,
+        delete_identity: bool,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     List {
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    DeliverNativeExistingSession {
+        delivery: NativeExistingSessionDelivery,
+        reply: tokio::sync::oneshot::Sender<Result<Value, NativeDeliveryError>>,
+    },
+    ReconcileNativeExistingSession {
+        delivery: NativeExistingSessionReconcile,
+        reply: tokio::sync::oneshot::Sender<Result<Value, NativeDeliveryError>>,
+    },
+    /// `GET /api/fleet-inventory` — snapshot of the in-process `fleet_inventory`
+    /// map (what the broker last published to the engine via `inventory.sync`).
+    /// Callers use this alongside `List` to detect the workers-vs-inventory
+    /// divergence documented in #1539 — an agent live in the PTY map that was
+    /// never (or is no longer) present in what the engine sees.
+    FleetInventory {
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     Threads {
@@ -215,7 +239,7 @@ pub enum ListenApiRequest {
     /// fire-and-forget inject path. Does *not* change the mode.
     FlushPending {
         name: WorkerName,
-        reply: tokio::sync::oneshot::Sender<Result<usize, DeliveryRouteError>>,
+        reply: tokio::sync::oneshot::Sender<Result<FlushPendingOk, DeliveryRouteError>>,
     },
     /// `POST /api/agent-result` — accepts structured result payloads from the
     /// per-agent MCP tool using a callback token minted at spawn time.
@@ -247,6 +271,7 @@ pub enum ListenApiRequest {
 /// so they don't need a variant here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeliveryRouteError {
+    CapabilityDisabled,
     /// No worker with that name is currently registered with the broker.
     WorkerNotFound(WorkerName),
 }
@@ -254,6 +279,7 @@ pub enum DeliveryRouteError {
 impl std::fmt::Display for DeliveryRouteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            DeliveryRouteError::CapabilityDisabled => write!(f, "DEGRADED: manual flush is unavailable in local-only mode; local deliveries use the durable automatic queue"),
             DeliveryRouteError::WorkerNotFound(name) => {
                 write!(f, "agent_not_found: no worker named '{name}'")
             }
@@ -266,12 +292,16 @@ impl std::error::Error for DeliveryRouteError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentResultRouteError {
     InvalidToken,
+    Retryable,
+    Conflict,
 }
 
 impl std::fmt::Display for AgentResultRouteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AgentResultRouteError::InvalidToken => write!(f, "invalid_result_token"),
+            AgentResultRouteError::Retryable => write!(f, "task_receipt_pending"),
+            AgentResultRouteError::Conflict => write!(f, "task_result_conflict"),
         }
     }
 }
@@ -289,8 +319,52 @@ impl std::error::Error for AgentResultRouteError {}
 pub struct SetInboundDeliveryModeOk {
     pub mode: InboundDeliveryMode,
     pub flushed: usize,
+    /// Parked messages dead-lettered rather than injected during a
+    /// `manual_flush → auto_inject` drain. Reported alongside `flushed` so the
+    /// caller is not told `flushed: 0` about a queue that did in fact change.
+    pub dead_lettered: usize,
     pub matched: bool,
     pub revision: u64,
+    pub blocked_reason: Option<String>,
+    pub blocked_reason_code: Option<&'static str>,
+    pub head_sequence: Option<u64>,
+    pub acked_up_to_sequence: Option<u64>,
+    pub received_up_to_sequence: Option<u64>,
+    pub next_ackable_sequence: Option<u64>,
+    /// Recovery step started by the broker, if any.
+    pub reconciliation_action: Option<&'static str>,
+}
+
+/// Outcome of `POST /api/spawned/{name}/flush`.
+///
+/// `flushed` alone cannot distinguish "the queue was empty" from "the queue is
+/// jammed and I injected nothing", and that ambiguity is what made relay#1593
+/// expensive to diagnose — a bare `{"flushed": 0}` was read as a null result
+/// when it was a swallowed failure. The other three fields say which.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FlushPendingOk {
+    /// Messages injected into the worker by this call.
+    pub flushed: usize,
+    /// Messages removed from the queue and dead-lettered instead of injected,
+    /// because their Relaycast identity no longer holds the worker's name.
+    /// Inspect them with `agent-relay node deadletters`.
+    pub dead_lettered: usize,
+    /// Messages still parked in the queue when the flush stopped.
+    pub held: usize,
+    /// Why the flush stopped short, when it did.
+    pub blocked_reason: Option<String>,
+    /// Stable machine-readable classification for `blocked_reason`.
+    pub blocked_reason_code: Option<&'static str>,
+    /// Sequence at the head of the parked queue.
+    pub head_sequence: Option<u64>,
+    /// Last sequence cumulatively acknowledged to Relaycast.
+    pub acked_up_to_sequence: Option<u64>,
+    /// Highest contiguous sequence received into broker custody.
+    pub received_up_to_sequence: Option<u64>,
+    /// Predecessor that must reconcile before the head can be acknowledged.
+    pub next_ackable_sequence: Option<u64>,
+    /// Recovery step started by the broker, if any.
+    pub reconciliation_action: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -327,6 +401,7 @@ impl SnapshotFormat {
 
 #[derive(Clone)]
 struct ListenApiState {
+    local_only: bool,
     tx: mpsc::Sender<ListenApiRequest>,
     events_tx: broadcast::Sender<String>,
     broker_api_key: Option<String>,
@@ -352,6 +427,14 @@ struct ListenApiState {
     node_token: std::sync::Arc<std::sync::RwLock<Option<String>>>,
     /// Whether the broker is in persist mode
     persist: bool,
+    /// Direct receipt lookup used only when the runtime reply channel drops,
+    /// so the HTTP contract can distinguish pre-reservation failure from an
+    /// already committed or in-doubt delivery.
+    native_delivery_receipts: PathBuf,
+    /// Node-control inbound introspection. Held directly (rather than reached
+    /// through `tx`) so `GET /api/node-delivery` answers even when the runtime
+    /// event loop is wedged — the case the endpoint exists to diagnose.
+    node_delivery_probe: std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>,
     /// When the broker started
     started_at: std::time::Instant,
     input_serializers: PtyInputSerializers,
@@ -376,6 +459,7 @@ impl ListenReplayQuery {
 // ---------------------------------------------------------------------------
 
 pub struct ListenApiConfig {
+    pub local_only: bool,
     pub tx: mpsc::Sender<ListenApiRequest>,
     pub events_tx: broadcast::Sender<String>,
     pub replay_buffer: ReplayBuffer,
@@ -387,6 +471,10 @@ pub struct ListenApiConfig {
     pub node_name: String,
     pub node_token: std::sync::Arc<std::sync::RwLock<Option<String>>>,
     pub persist: bool,
+    pub native_delivery_receipts: PathBuf,
+    /// Node-control inbound introspection, read directly by
+    /// `GET /api/node-delivery`. See [`crate::node_delivery_probe`].
+    pub node_delivery_probe: std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>,
 }
 
 pub fn listen_api_router(config: ListenApiConfig) -> axum::Router {
@@ -400,13 +488,14 @@ fn configured_broker_api_key() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn listen_api_router_with_auth(
+pub(crate) fn listen_api_router_with_auth(
     config: ListenApiConfig,
     broker_api_key: Option<String>,
 ) -> axum::Router {
     use axum::{middleware, routing, Router};
 
     let state = ListenApiState {
+        local_only: config.local_only,
         tx: config.tx,
         events_tx: config.events_tx,
         broker_api_key: broker_api_key
@@ -428,6 +517,8 @@ fn listen_api_router_with_auth(
         node_name: config.node_name,
         node_token: config.node_token,
         persist: config.persist,
+        native_delivery_receipts: config.native_delivery_receipts,
+        node_delivery_probe: config.node_delivery_probe,
         started_at: std::time::Instant::now(),
         input_serializers: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
     };
@@ -442,7 +533,19 @@ fn listen_api_router_with_auth(
         .route("/api/session", routing::get(listen_api_session))
         .route("/api/session/renew", routing::post(listen_api_renew_lease))
         .route("/api/spawn", routing::post(listen_api_spawn))
+        .route(
+            "/api/native-delivery/existing-session",
+            routing::post(listen_api_deliver_native_existing_session),
+        )
+        .route(
+            "/api/native-delivery/existing-session/reconcile",
+            routing::post(listen_api_reconcile_native_existing_session),
+        )
         .route("/api/spawned", routing::get(listen_api_list))
+        .route(
+            "/api/fleet-inventory",
+            routing::get(listen_api_fleet_inventory),
+        )
         .route(
             "/api/spawned/{name}/model",
             routing::post(listen_api_set_model),
@@ -496,6 +599,7 @@ fn listen_api_router_with_auth(
             "/api/crash-insights",
             routing::get(listen_api_crash_insights),
         )
+        .route("/api/node-delivery", routing::get(listen_api_node_delivery))
         .route("/api/dead-letters", routing::get(listen_api_dead_letters))
         .route(
             "/api/dead-letters/redeliver",
@@ -571,7 +675,13 @@ pub(crate) fn listen_api_health_payload(
 async fn listen_api_health(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
 ) -> axum::Json<Value> {
+    let local_only = state.local_only;
     let mut payload = listen_api_health_payload(state.default_workspace_id, state.memberships);
+    if local_only {
+        payload["status"] = json!("degraded");
+        payload["mode"] = json!("local_only");
+        payload["relaycastConnected"] = json!(false);
+    }
     if let Some(status) = fetch_status_for_health(&state.tx).await {
         merge_status_into_health_payload(&mut payload, &status);
     }
@@ -593,6 +703,12 @@ fn merge_status_into_health_payload(payload: &mut Value, status: &Value) {
     let Some(object) = payload.as_object_mut() else {
         return;
     };
+    if status.get("mode").and_then(Value::as_str) == Some("local_only") {
+        object.insert("status".into(), json!("degraded"));
+        object.insert("mode".into(), json!("local_only"));
+        object.insert("relaycastConnected".into(), json!(false));
+        object.insert("degraded".into(), status["degraded"].clone());
+    }
     if let Some(agent_count) = status.get("agent_count").and_then(Value::as_u64) {
         object.insert("agentCount".to_string(), json!(agent_count));
     }
@@ -639,13 +755,17 @@ async fn listen_api_session(
 ) -> axum::Json<Value> {
     axum::Json(json!({
         "broker_version": state.broker_version,
+        "spawn_capabilities": {"explicit_empty_channels": true, "create_only_identity": true},
         "protocol_version": 2,
+        "operation_mode": if state.local_only { "local_only" } else { "normal" },
+        "degraded": state.local_only,
         "workspace_key": state.workspace_key,
         "relay_base_url": state.relay_base_url,
         "default_workspace_id": state.default_workspace_id,
         "node_id": state.node_id,
         "node_name": state.node_name,
         "node_token": state.node_token.read().ok().and_then(|token| token.clone()),
+        "node_control_health": state.node_delivery_probe.node_control_health(),
         "mode": if state.persist { "persist" } else { "ephemeral" },
         "uptime_secs": state.started_at.elapsed().as_secs(),
     }))
@@ -1000,16 +1120,22 @@ async fn listen_api_spawn(
         })
         .unwrap_or_default();
     let task = body.get("task").and_then(Value::as_str).map(String::from);
-    let channels: Vec<String> = body
-        .get("channels")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(Value::as_str)
-                .map(String::from)
-                .collect()
-        })
-        .unwrap_or_default();
+    let registration_metadata = AgentRegistrationMetadata::from_spawn_input(&body, task.as_deref());
+    let channels: Option<Vec<ChannelName>> = match body.get("channels") {
+        None => None,
+        Some(Value::Array(values)) if values.iter().all(Value::is_string) => Some(
+            values
+                .iter()
+                .map(|value| ChannelName::from(value.as_str().unwrap()))
+                .collect(),
+        ),
+        Some(_) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(json!({"error": "channels must be an array of strings"})),
+            )
+        }
+    };
     let cwd = body.get("cwd").and_then(Value::as_str).map(String::from);
     let team = body.get("team").and_then(Value::as_str).map(String::from);
     let shadow_of = body
@@ -1112,7 +1238,8 @@ async fn listen_api_spawn(
             model,
             args,
             task,
-            channels: channels.into_iter().map(ChannelName::from).collect(),
+            registration_metadata,
+            channels,
             cwd,
             team,
             shadow_of: shadow_of.map(WorkerName::from),
@@ -1157,6 +1284,130 @@ async fn listen_api_list(
     if state
         .tx
         .send(ListenApiRequest::List { reply: reply_tx })
+        .await
+        .is_err()
+    {
+        return axum::Json(json!({ "success": false, "agents": [] }));
+    }
+    match reply_rx.await {
+        Ok(Ok(val)) => axum::Json(val),
+        _ => axum::Json(json!({ "success": false, "agents": [] })),
+    }
+}
+
+async fn listen_api_deliver_native_existing_session(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::Json(delivery): axum::Json<NativeExistingSessionDelivery>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    let dropped_reply_delivery = delivery.clone();
+    if state
+        .tx
+        .send(ListenApiRequest::DeliverNativeExistingSession {
+            delivery,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(value)) => (axum::http::StatusCode::OK, axum::Json(value)),
+        Ok(Err(error)) => native_delivery_error_to_response(&error),
+        Err(_) if !state.persist => native_delivery_error_to_response(
+            &NativeDeliveryError::ReceiptUnavailable(
+                "runtime reply dropped before a durable receipt could be confirmed; retry the same deliveryId"
+                    .to_string(),
+            ),
+        ),
+        Err(_) => match tokio::task::spawn_blocking({
+            let receipt_root = state.native_delivery_receipts.clone();
+            move || crate::native_delivery::existing_outcome(&receipt_root, &dropped_reply_delivery)
+        })
+        .await
+        {
+            Err(error) => native_delivery_error_to_response(&NativeDeliveryError::InDoubt(
+                format!("runtime reply dropped and receipt lookup task failed: {error}"),
+            )),
+            Ok(Ok(Some(outcome))) => (
+                axum::http::StatusCode::OK,
+                axum::Json(json!({
+                    "receiptId": outcome.receipt_id,
+                    "status": "duplicate",
+                    "state": outcome.state.as_str(),
+                })),
+            ),
+            Ok(Ok(None)) => native_delivery_error_to_response(
+                &NativeDeliveryError::ReceiptUnavailable(
+                    "runtime reply dropped before durable reservation; retry the same deliveryId"
+                        .to_string(),
+                ),
+            ),
+            Ok(Err(NativeDeliveryError::ReceiptUnavailable(error))) => {
+                native_delivery_error_to_response(&NativeDeliveryError::InDoubt(format!(
+                    "runtime reply dropped and receipt lookup is unavailable: {error}"
+                )))
+            }
+            Ok(Err(error)) => native_delivery_error_to_response(&error),
+        },
+    }
+}
+
+async fn listen_api_reconcile_native_existing_session(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::Json(delivery): axum::Json<NativeExistingSessionReconcile>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::ReconcileNativeExistingSession {
+            delivery,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(value)) => (axum::http::StatusCode::OK, axum::Json(value)),
+        Ok(Err(error)) => native_delivery_error_to_response(&error),
+        Err(_) => internal_error(),
+    }
+}
+
+fn native_delivery_error_to_response(
+    error: &NativeDeliveryError,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    use axum::http::StatusCode;
+    let status = match error {
+        NativeDeliveryError::Invalid(_) => StatusCode::BAD_REQUEST,
+        NativeDeliveryError::Conflict | NativeDeliveryError::Unauthorized(_) => {
+            StatusCode::CONFLICT
+        }
+        NativeDeliveryError::ReceiptUnavailable(_) | NativeDeliveryError::InDoubt(_) => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+    };
+    (
+        status,
+        axum::Json(json!({
+            "success": false,
+            "code": error.code(),
+            "error": error.to_string(),
+            "committed": error.committed(),
+        })),
+    )
+}
+
+async fn listen_api_fleet_inventory(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+) -> axum::Json<Value> {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::FleetInventory { reply: reply_tx })
         .await
         .is_err()
     {
@@ -1302,6 +1553,16 @@ async fn listen_api_agent_result(
 
     match reply_rx.await {
         Ok(Ok(value)) => (axum::http::StatusCode::OK, axum::Json(value)),
+        Ok(Err(AgentResultRouteError::Retryable)) => (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(
+                json!({ "success": false, "error": "task_receipt_pending", "retryable": true }),
+            ),
+        ),
+        Ok(Err(AgentResultRouteError::Conflict)) => (
+            axum::http::StatusCode::CONFLICT,
+            axum::Json(json!({ "success": false, "error": "task_result_conflict" })),
+        ),
         Ok(Err(AgentResultRouteError::InvalidToken)) => (
             axum::http::StatusCode::UNAUTHORIZED,
             axum::Json(json!({ "success": false, "error": "invalid_result_token" })),
@@ -1318,13 +1579,47 @@ async fn listen_api_release(
     axum::extract::Path(name): axum::extract::Path<String>,
     body: Option<axum::Json<Value>>,
 ) -> (axum::http::StatusCode, axum::Json<Value>) {
-    let reason = body.and_then(|b| b.get("reason").and_then(|v| v.as_str()).map(String::from));
+    let reason = body
+        .as_ref()
+        .and_then(|b| b.get("reason").and_then(|v| v.as_str()).map(String::from));
+    let expected_generation = match body.as_ref().and_then(|b| b.get("expected_generation")) {
+        None => None,
+        Some(Value::String(value)) if !value.is_empty() => Some(value.clone()),
+        Some(_) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(
+                    json!({ "success": false, "error": "expected_generation must be a nonempty string" }),
+                ),
+            )
+        }
+    };
+    let delete_identity = match body.as_ref().and_then(|b| b.get("delete_identity")) {
+        None => false,
+        Some(Value::Bool(value)) => *value,
+        Some(_) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(json!({"success": false, "error": "delete_identity must be a boolean"})),
+            )
+        }
+    };
+    if delete_identity && expected_generation.is_none() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(
+                json!({"success": false, "error": "delete_identity requires expected_generation"}),
+            ),
+        );
+    }
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     if state
         .tx
         .send(ListenApiRequest::Release {
             name: WorkerName::new(name.clone()),
             reason,
+            expected_generation,
+            delete_identity,
             reply: reply_tx,
         })
         .await
@@ -1719,9 +2014,25 @@ fn classify_error(err: &str) -> (axum::http::StatusCode, &'static str) {
         // is with the resource's current capabilities.
         (axum::http::StatusCode::CONFLICT, "unsupported_runtime")
     } else if err.starts_with("worker_timeout") {
-        // Worker died or stalled between accepting the frame and
-        // replying. This is a server-side fault, not a bad request.
+        // The worker didn't ack before the deadline. This does NOT mean the
+        // worker died — a confirmed-dead worker is reaped independently
+        // (`fail_for_worker`) and surfaces as `worker_disappeared`, not this.
+        // `worker_timeout` also fires for a worker that is simply busy and
+        // hasn't drained its stdin yet (relay#1544); see
+        // `pty_input_error_is_connection_fatal`, which callers on the PTY
+        // input path use to avoid treating this code as transport death.
         (axum::http::StatusCode::GATEWAY_TIMEOUT, "worker_timeout")
+    } else if err.starts_with("pty_write_queue_full") {
+        // The worker refused ONE write because its bounded drainer queue is
+        // full — the child is alive but momentarily not draining its stdin
+        // (a TUI harness mid-tool-call, whose terminal-query replies and
+        // injected messages share the same queue). Flow control, not
+        // transport death: 503 with a distinct code so the PTY input path can
+        // keep the connection open (`pty_input_error_is_connection_fatal`).
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "pty_write_queue_full",
+        )
     } else if err.starts_with("internal_error") {
         (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -1732,6 +2043,32 @@ fn classify_error(err: &str) -> (axum::http::StatusCode, &'static str) {
     } else {
         (axum::http::StatusCode::BAD_REQUEST, "request_failed")
     }
+}
+
+/// Whether a `write_pty` failure (as classified by [`classify_error`]) should
+/// tear down the whole PTY input connection.
+///
+/// `worker_timeout` means one write's ack didn't arrive before
+/// `PTY_INPUT_ACK_TIMEOUT` — the worker may simply be busy (not draining its
+/// stdin promptly while rendering/thinking), not dead. A confirmed-dead
+/// worker is reaped independently and reaches [`handle_pty_input_ws`] as
+/// `worker_disappeared` (or the target never existed at all:
+/// `agent_not_found` / `unsupported_runtime`), which are genuinely
+/// connection-fatal. Closing the connection on a mere timeout manufactures a
+/// transport failure out of a healthy-but-slow worker, which is exactly what
+/// forced the client-side reconnect loop in relay#1544.
+///
+/// `pty_write_queue_full` is exempt for the same reason and is strictly
+/// stronger evidence of liveness: the worker answered, and its answer was "I
+/// refused this one write because my drainer queue is full". Nothing about the
+/// socket is broken. Tearing it down produced the `input stream lost … /
+/// reconnected after 1 attempt(s)` flap operators hit when driving a busy
+/// agent, and reconnecting cannot help — the queue drains when the child
+/// resumes reading, not when a new socket opens. Note the queue is shared with
+/// terminal-query replies, injected messages and auto-responder writes, so the
+/// human whose keystroke is refused is usually not the one who filled it.
+fn pty_input_error_is_connection_fatal(code: &str) -> bool {
+    !matches!(code, "worker_timeout" | "pty_write_queue_full")
 }
 
 fn internal_error() -> (axum::http::StatusCode, axum::Json<Value>) {
@@ -1838,8 +2175,15 @@ async fn handle_pty_input_ws(
                         let (status, code) = classify_error(&err);
                         let _ =
                             send_pty_input_ws_error(&mut socket, code, err, status.as_u16()).await;
-                        let _ = socket.send(axum::extract::ws::Message::Close(None)).await;
-                        break;
+                        if pty_input_error_is_connection_fatal(code) {
+                            let _ = socket.send(axum::extract::ws::Message::Close(None)).await;
+                            break;
+                        }
+                        // `worker_timeout`: this one write didn't get an ack in
+                        // time, but the worker hasn't been confirmed dead. Keep
+                        // the connection open so the next keystroke gets a fresh
+                        // chance instead of forcing the client into a reconnect
+                        // it doesn't need (relay#1544).
                     }
                 }
             }
@@ -2080,13 +2424,18 @@ async fn send_pty_input_ws_error(
     message: impl Into<String>,
     status_code: u16,
 ) -> bool {
+    // `retryable` tells the client whether this connection is still usable:
+    // `worker_timeout` is the one code the WS loop doesn't close the socket
+    // for (see `pty_input_error_is_connection_fatal`), so it's the one code
+    // that's actually retryable on THIS stream rather than requiring reopen.
+    let retryable = !pty_input_error_is_connection_fatal(code);
     send_pty_input_ws_payload(
         socket,
         json!({
             "type": "pty_input_error",
             "code": code,
             "message": message.into(),
-            "retryable": false,
+            "retryable": retryable,
             "statusCode": status_code,
         }),
     )
@@ -2095,9 +2444,11 @@ async fn send_pty_input_ws_error(
 
 #[derive(Deserialize)]
 struct ResizePtyBody {
-    /// Target dimensions. Defaulted so a pure ownership release (`release:
-    /// true`) doesn't have to carry dummy dimensions — the handler skips the
-    /// resize entirely on release.
+    /// Target dimensions. Defaulted to zero so a pure ownership release
+    /// (`release: true`) doesn't have to carry dummy dimensions — the handler
+    /// skips the resize when a release carries no real size. A release that
+    /// *does* carry dimensions applies them before dropping ownership, so an
+    /// attach client can hand back a reserved status row in one request.
     #[serde(default)]
     rows: u16,
     #[serde(default)]
@@ -2321,8 +2672,16 @@ async fn listen_api_set_inbound_delivery_mode(
             axum::Json(json!({
                 "mode": ok.mode.as_wire_str(),
                 "flushed": ok.flushed,
+                "dead_lettered": ok.dead_lettered,
                 "matched": ok.matched,
                 "revision": ok.revision.to_string(),
+                "blocked_reason": ok.blocked_reason,
+                "blocked_reason_code": ok.blocked_reason_code,
+                "head_sequence": ok.head_sequence,
+                "acked_up_to_sequence": ok.acked_up_to_sequence,
+                "received_up_to_sequence": ok.received_up_to_sequence,
+                "next_ackable_sequence": ok.next_ackable_sequence,
+                "reconciliation_action": ok.reconciliation_action,
             })),
         ),
         Ok(Err(err)) => delivery_route_error_to_response(&err),
@@ -2402,8 +2761,14 @@ async fn listen_api_get_pending(
 
 /// `POST /api/spawned/{name}/flush` → `{ "flushed": N }`.
 ///
+/// Responds `{ "flushed", "dead_lettered", "held", "blocked_reason" }`.
+///
 /// Injects queued messages into the worker in FIFO order and stops at the first
-/// failure, retaining that message and its suffix for a later attempt. The
+/// failure, retaining that message and its suffix for a later attempt. A
+/// message whose Relaycast identity no longer holds this worker's name is
+/// dead-lettered rather than injected and counts in `dead_lettered`, never
+/// `flushed`. `held` is what remained parked and `blocked_reason` says why the
+/// flush stopped, so a jammed queue is distinguishable from an empty one. The
 /// inbound delivery mode is *not* changed — a caller still in `manual_flush`
 /// delivery mode will continue to queue newly-arriving messages. When a drive
 /// session's interactive hold is active, the broker follows the handoff with a
@@ -2426,9 +2791,20 @@ async fn listen_api_flush_pending(
         return internal_error();
     }
     match reply_rx.await {
-        Ok(Ok(flushed)) => (
+        Ok(Ok(result)) => (
             axum::http::StatusCode::OK,
-            axum::Json(json!({ "flushed": flushed })),
+            axum::Json(json!({
+                "flushed": result.flushed,
+                "dead_lettered": result.dead_lettered,
+                "held": result.held,
+                "blocked_reason": result.blocked_reason,
+                "blocked_reason_code": result.blocked_reason_code,
+                "head_sequence": result.head_sequence,
+                "acked_up_to_sequence": result.acked_up_to_sequence,
+                "received_up_to_sequence": result.received_up_to_sequence,
+                "next_ackable_sequence": result.next_ackable_sequence,
+                "reconciliation_action": result.reconciliation_action,
+            })),
         ),
         Ok(Err(err)) => delivery_route_error_to_response(&err),
         Err(_) => internal_error(),
@@ -2442,6 +2818,11 @@ fn delivery_route_error_to_response(
     err: &DeliveryRouteError,
 ) -> (axum::http::StatusCode, axum::Json<Value>) {
     match err {
+        DeliveryRouteError::CapabilityDisabled => api_error(
+            axum::http::StatusCode::CONFLICT,
+            "capability_disabled",
+            err.to_string(),
+        ),
         DeliveryRouteError::WorkerNotFound(_) => api_error(
             axum::http::StatusCode::NOT_FOUND,
             "agent_not_found",
@@ -2561,6 +2942,30 @@ async fn listen_api_crash_insights(
         Err(_) => internal_error(),
         Ok(Err(err)) => api_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "error", err),
     }
+}
+
+/// `GET /api/node-delivery` — introspection for the node-control inbound path.
+///
+/// Deliberately answered straight from the shared probe rather than by posting
+/// a [`ListenApiRequest`] to the runtime. Every other route here round-trips
+/// through the event loop, but a wedged event loop is one of the conditions
+/// that makes an agent go silent, and a diagnostic that hangs in exactly the
+/// case it was built for is worthless. When the loop is stuck, the frame
+/// counters keep climbing while `cursors_published_at_ms` stops advancing.
+async fn listen_api_node_delivery(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let token_present = state
+        .node_token
+        .read()
+        .map(|token| token.is_some())
+        .unwrap_or(false);
+    // `connected` is reported by the probe's own connect/disconnect counters
+    // rather than the runtime's flag, for the same no-round-trip reason.
+    (
+        axum::http::StatusCode::OK,
+        axum::Json(state.node_delivery_probe.snapshot_with_token(token_present)),
+    )
 }
 
 async fn listen_api_dead_letters(
@@ -3697,8 +4102,8 @@ mod auth_tests {
     use tower::ServiceExt;
 
     use super::{
-        listen_api_router_with_auth, DeliveryRouteError, ListenApiConfig, ListenApiRequest,
-        PtyInputFrame, SetInboundDeliveryModeOk,
+        listen_api_router_with_auth, AgentRegistrationMetadata, DeliveryRouteError,
+        ListenApiConfig, ListenApiRequest, PtyInputFrame, SetInboundDeliveryModeOk,
     };
     use crate::ids::{EventId, MessageTarget, ThreadId, WorkspaceAlias, WorkspaceId};
     use crate::protocol::MessageInjectionMode;
@@ -3708,12 +4113,44 @@ mod auth_tests {
     fn test_router(
         broker_api_key: Option<&str>,
     ) -> (axum::Router, mpsc::Receiver<ListenApiRequest>) {
+        test_router_with_mode(broker_api_key, false)
+    }
+
+    fn test_router_with_mode(
+        broker_api_key: Option<&str>,
+        local_only: bool,
+    ) -> (axum::Router, mpsc::Receiver<ListenApiRequest>) {
+        let (router, rx, _) = test_router_with_probe_mode(broker_api_key, local_only);
+        (router, rx)
+    }
+
+    fn test_router_with_probe(
+        broker_api_key: Option<&str>,
+    ) -> (
+        axum::Router,
+        mpsc::Receiver<ListenApiRequest>,
+        std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>,
+    ) {
+        test_router_with_probe_mode(broker_api_key, false)
+    }
+
+    fn test_router_with_probe_mode(
+        broker_api_key: Option<&str>,
+        local_only: bool,
+    ) -> (
+        axum::Router,
+        mpsc::Receiver<ListenApiRequest>,
+        std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>,
+    ) {
         let (tx, rx) = mpsc::channel(8);
         let (events_tx, _events_rx) = broadcast::channel(8);
         let replay_buffer = ReplayBuffer::new(DEFAULT_REPLAY_CAPACITY);
+        let node_delivery_probe =
+            std::sync::Arc::new(crate::node_delivery_probe::NodeDeliveryProbe::new());
         (
             listen_api_router_with_auth(
                 ListenApiConfig {
+                    local_only,
                     tx,
                     events_tx,
                     replay_buffer,
@@ -3725,11 +4162,98 @@ mod auth_tests {
                     node_name: "test-node".to_string(),
                     node_token: std::sync::Arc::new(std::sync::RwLock::new(None)),
                     persist: false,
+                    native_delivery_receipts: std::env::temp_dir().join(format!(
+                        "agent-relay-listen-api-test-receipts-{}",
+                        uuid::Uuid::new_v4()
+                    )),
+                    node_delivery_probe: node_delivery_probe.clone(),
                 },
                 broker_api_key.map(ToString::to_string),
             ),
             rx,
+            node_delivery_probe,
         )
+    }
+
+    /// The report names every agent on the broker and their delivery cursors.
+    /// That is operational detail, not public data, so the route must sit
+    /// behind the same API-key gate as the rest of `/api/*` — only `/health`
+    /// and `/api/agent-result` are unauthenticated.
+    #[tokio::test]
+    async fn node_delivery_route_requires_the_api_key_when_auth_is_enabled() {
+        let (router, _rx, _probe) = test_router_with_probe(Some("secret"));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/node-delivery")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should answer");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// The endpoint must report what the probe recorded, and — critically —
+    /// must do so WITHOUT posting a request to the runtime. A wedged runtime
+    /// event loop is one of the conditions that makes an agent go deaf, so a
+    /// diagnostic that round-trips through it would hang in exactly the case
+    /// it exists to diagnose. `rx` is left undrained here on purpose: it
+    /// stands in for a runtime that is not answering.
+    #[tokio::test]
+    async fn node_delivery_route_answers_without_the_runtime() {
+        use crate::node_delivery_probe::DeliverDisposition;
+
+        let (router, mut rx, probe) = test_router_with_probe(None);
+        probe.record_connected();
+        probe.record_text_frame();
+        let deliver = crate::fleet_wire::Deliver {
+            v: crate::fleet_wire::FleetWireVersion,
+            agent: "worker-a".to_string(),
+            agent_id: "ag_1".to_string(),
+            delivery_id: "del_1".to_string(),
+            msg_id: "msg_1".to_string(),
+            seq: 7,
+            mode: crate::fleet_wire::DeliveryMode::Wait,
+            payload: json!({ "type": "dm.received" }),
+        };
+        probe.record_frame(&crate::fleet_wire::RelaycastToBroker::Deliver(
+            deliver.clone(),
+        ));
+        probe.record_decision(
+            &deliver,
+            &crate::node_control::DeliveryDecision::Deliver { up_to_seq: 7 },
+        );
+        probe.record_disposition(&deliver, DeliverDisposition::QueuedForInjection);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/node-delivery")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should answer");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+
+        assert_eq!(body["connected"], true);
+        assert_eq!(body["frames"]["deliver"], 1);
+        assert_eq!(body["socket"]["text_frames"], 1);
+        assert_eq!(body["recent_delivers"][0]["agent"], "worker-a");
+        assert_eq!(body["recent_delivers"][0]["seq"], 7);
+        assert_eq!(body["recent_delivers"][0]["decision"], "deliver");
+        assert_eq!(
+            body["recent_delivers"][0]["disposition"],
+            "queued_for_injection"
+        );
+
+        // Nothing was asked of the runtime.
+        assert!(
+            rx.try_recv().is_err(),
+            "the introspection route must not depend on the runtime event loop"
+        );
     }
 
     async fn response_json(response: axum::response::Response) -> Value {
@@ -3737,6 +4261,26 @@ mod auth_tests {
             .await
             .expect("response body should be readable");
         serde_json::from_slice(&body).expect("response body should be json")
+    }
+
+    #[tokio::test]
+    async fn local_only_health_stays_degraded_without_a_runtime_status_reply() {
+        let (router, rx) = test_router_with_mode(Some("test"), true);
+        drop(rx);
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["status"], "degraded");
+        assert_eq!(body["mode"], "local_only");
+        assert_eq!(body["relaycastConnected"], false);
     }
 
     #[tokio::test]
@@ -3829,6 +4373,237 @@ mod auth_tests {
     }
 
     #[tokio::test]
+    async fn native_existing_session_delivery_requires_the_api_key() {
+        let (router, _rx) = test_router(Some("secret"));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/native-delivery/existing-session")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "relayAgentName": "worker-a",
+                            "sessionId": "native-session-1",
+                            "deliveryId": "delivery-1",
+                            "lineageId": "lineage-1",
+                            "headSha": "a".repeat(40),
+                            "message": "continue"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn native_existing_session_delivery_dispatches_typed_request_and_receipt() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            let Some(ListenApiRequest::DeliverNativeExistingSession { delivery, reply }) =
+                rx.recv().await
+            else {
+                panic!("expected native existing-session delivery");
+            };
+            assert_eq!(delivery.relay_agent_name, "worker-a");
+            assert_eq!(delivery.session_id, "native-session-1");
+            assert_eq!(delivery.delivery_id, "delivery-1");
+            let _ = reply.send(Ok(json!({
+                "receiptId": "ndr_receipt",
+                "status": "queued"
+            })));
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/native-delivery/existing-session")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("x-api-key", "secret")
+                    .body(Body::from(
+                        json!({
+                            "relayAgentName": "worker-a",
+                            "sessionId": "native-session-1",
+                            "deliveryId": "delivery-1",
+                            "lineageId": "lineage-1",
+                            "headSha": "a".repeat(40),
+                            "message": "continue"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["receiptId"], "ndr_receipt");
+        replier.await.expect("delivery replier should complete");
+    }
+
+    #[tokio::test]
+    async fn dropped_native_delivery_reply_without_a_receipt_is_not_reported_committed() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            let Some(ListenApiRequest::DeliverNativeExistingSession { reply, .. }) =
+                rx.recv().await
+            else {
+                panic!("expected native existing-session delivery");
+            };
+            drop(reply);
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/native-delivery/existing-session")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("x-api-key", "secret")
+                    .body(Body::from(
+                        json!({
+                            "relayAgentName": "worker-a",
+                            "sessionId": "native-session-1",
+                            "deliveryId": "delivery-dropped-before-reservation",
+                            "lineageId": "lineage-1",
+                            "headSha": "a".repeat(40),
+                            "message": "continue"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response_json(response).await;
+        assert_eq!(body["committed"], false);
+        assert_eq!(body["code"], "native_delivery_receipt_unavailable");
+        replier.await.expect("delivery replier should complete");
+    }
+
+    #[tokio::test]
+    async fn dropped_native_delivery_reply_reconciles_an_in_doubt_receipt() {
+        let receipt_dir = tempfile::tempdir().expect("receipt root");
+        let receipt_path = receipt_dir.path().join("native-delivery-receipts");
+        let (tx, mut rx) = mpsc::channel(8);
+        let (events_tx, _events_rx) = broadcast::channel(8);
+        let router = listen_api_router_with_auth(
+            ListenApiConfig {
+                local_only: false,
+                tx,
+                events_tx,
+                replay_buffer: ReplayBuffer::new(DEFAULT_REPLAY_CAPACITY),
+                workspace_key: None,
+                relay_base_url: Some("https://relay.test".to_string()),
+                memberships: vec![],
+                default_workspace_id: None,
+                node_id: "node_test".to_string(),
+                node_name: "test-node".to_string(),
+                node_token: std::sync::Arc::new(std::sync::RwLock::new(None)),
+                persist: true,
+                native_delivery_receipts: receipt_path.clone(),
+                node_delivery_probe: std::sync::Arc::new(
+                    crate::node_delivery_probe::NodeDeliveryProbe::new(),
+                ),
+            },
+            Some("secret".to_string()),
+        );
+        let replier = tokio::spawn(async move {
+            let Some(ListenApiRequest::DeliverNativeExistingSession { delivery, reply }) =
+                rx.recv().await
+            else {
+                panic!("expected native existing-session delivery");
+            };
+            let result =
+                crate::native_delivery::reserve_and_deliver(&receipt_path, &delivery, |_| async {
+                    anyhow::bail!("fixture write failed")
+                })
+                .await;
+            assert!(matches!(
+                result,
+                Err(crate::native_delivery::NativeDeliveryError::InDoubt(_))
+            ));
+            drop(reply);
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/native-delivery/existing-session")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("x-api-key", "secret")
+                    .body(Body::from(
+                        json!({
+                            "relayAgentName": "worker-a",
+                            "sessionId": "native-session-1",
+                            "deliveryId": "delivery-dropped-after-reservation",
+                            "lineageId": "lineage-1",
+                            "headSha": "a".repeat(40),
+                            "message": "continue"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response_json(response).await;
+        assert_eq!(body["committed"], true);
+        assert_eq!(body["code"], "native_delivery_in_doubt");
+        replier.await.expect("delivery replier should complete");
+    }
+
+    #[tokio::test]
+    async fn native_existing_session_reconcile_dispatches_without_a_message() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            let Some(ListenApiRequest::ReconcileNativeExistingSession { delivery, reply }) =
+                rx.recv().await
+            else {
+                panic!("expected native existing-session reconciliation");
+            };
+            assert_eq!(delivery.delivery_id, "delivery-1");
+            let _ = reply.send(Ok(json!({ "receiptId": null })));
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/native-delivery/existing-session/reconcile")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("x-api-key", "secret")
+                    .body(Body::from(
+                        json!({
+                            "relayAgentName": "worker-a",
+                            "sessionId": "native-session-1",
+                            "deliveryId": "delivery-1",
+                            "lineageId": "lineage-1",
+                            "headSha": "a".repeat(40)
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response_json(response).await["receiptId"].is_null());
+        replier.await.expect("reconcile replier should complete");
+    }
+
+    #[tokio::test]
     async fn api_route_accepts_lowercase_bearer_scheme() {
         let (router, mut rx) = test_router(Some("secret"));
         let list_replier = tokio::spawn(async move {
@@ -3855,6 +4630,111 @@ mod auth_tests {
     }
 
     #[tokio::test]
+    async fn fleet_inventory_route_forwards_and_returns_agents() {
+        // Must-fire: when the runtime reply carries an agents array, the HTTP
+        // response mirrors it verbatim. This is the diagnostic surface for
+        // #1553 / #1539 — an agent present in this map but absent from
+        // `/api/spawned` is exactly the divergence the CLI must flag.
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            if let Some(ListenApiRequest::FleetInventory { reply }) = rx.recv().await {
+                let _ = reply.send(Ok(json!({
+                    "node_name": "test-node",
+                    "agents": [
+                        {
+                            "agent_id": "ag_1",
+                            "name": "worker-a",
+                            "invocation_id": "inv_1"
+                        }
+                    ]
+                })));
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/fleet-inventory")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["node_name"], "test-node");
+        assert_eq!(body["agents"][0]["name"], "worker-a");
+        assert_eq!(body["agents"][0]["agent_id"], "ag_1");
+
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn fleet_inventory_route_returns_empty_agents_on_channel_close() {
+        // Must-not-fire: an unreachable runtime cannot invent phantom agents.
+        // Empty must not be conflated with "unknown" — the CLI relies on
+        // `success:false` + empty agents to distinguish this from a genuinely
+        // empty inventory.
+        let (router, rx) = test_router(Some("secret"));
+        drop(rx);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/fleet-inventory")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["success"], false);
+        assert_eq!(body["agents"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn spawn_channels_preserve_omitted_and_explicit_empty() {
+        for (body, expected) in [
+            (json!({"name":"worker"}), None),
+            (json!({"name":"worker","channels":[]}), Some(vec![])),
+        ] {
+            let (router, mut rx) = test_router(Some("secret"));
+            let reply_task = tokio::spawn(async move {
+                match rx.recv().await {
+                    Some(ListenApiRequest::Spawn {
+                        channels, reply, ..
+                    }) => {
+                        assert_eq!(channels, expected);
+                        let _ = reply.send(Ok(json!({"success":true})));
+                    }
+                    _ => panic!("spawn expected"),
+                }
+            });
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/spawn")
+                        .method("POST")
+                        .header("x-api-key", "secret")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            reply_task.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn spawn_route_forwards_extended_fields() {
         let (router, mut rx) = test_router(Some("secret"));
         let spawn_replier = tokio::spawn(async move {
@@ -3866,6 +4746,7 @@ mod auth_tests {
                     model,
                     args,
                     task,
+                    registration_metadata,
                     channels,
                     cwd,
                     team,
@@ -3889,9 +4770,16 @@ mod auth_tests {
                     assert_eq!(args, vec!["--fast".to_string()]);
                     assert_eq!(task.as_deref(), Some("Ship it"));
                     assert_eq!(
-                        channels,
-                        vec!["general".to_string(), "engineering".to_string()]
+                        registration_metadata,
+                        AgentRegistrationMetadata {
+                            organization: Some("Agent Workforce".to_string()),
+                            project: Some("Relay".to_string()),
+                            workstream: Some("fleet-metadata".to_string()),
+                            role: Some("implementation".to_string()),
+                            objective: Some("Publish registration metadata".to_string()),
+                        }
                     );
+                    assert_eq!(channels, Some(vec!["general".into(), "engineering".into()]));
                     assert_eq!(cwd.as_deref(), Some("/tmp/project"));
                     assert_eq!(team.as_deref(), Some("core"));
                     assert_eq!(shadow_of.as_deref(), Some("Lead"));
@@ -3927,6 +4815,13 @@ mod auth_tests {
                             "model": "o3",
                             "args": ["--fast"],
                             "task": "Ship it",
+                            "metadata": {
+                                "organization": "Agent Workforce",
+                                "project": "Relay",
+                                "workstream": "fleet-metadata",
+                                "role": "implementation",
+                                "objective": "Publish registration metadata"
+                            },
                             "channels": ["general", "engineering"],
                             "cwd": "/tmp/project",
                             "team": "core",
@@ -4502,6 +5397,54 @@ mod auth_tests {
         assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
+    #[tokio::test]
+    async fn release_rejects_invalid_generation_without_dispatch() {
+        for generation in [json!(null), json!(""), json!(123)] {
+            let (router, mut rx) = test_router(Some("secret"));
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/spawned/owned-worker")
+                        .method("DELETE")
+                        .header("x-api-key", "secret")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            json!({"expected_generation": generation}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert!(rx.try_recv().is_err());
+        }
+    }
+
+    // ----- New endpoint tests (session, lease, status, metrics, crash-insights, preflight, shutdown, input, resize) -----
+
+    #[tokio::test]
+    async fn release_rejects_non_boolean_identity_deletion_without_dispatch() {
+        for deletion in [json!(null), json!("true"), json!(123)] {
+            let (router, mut rx) = test_router(Some("secret"));
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/spawned/owned-worker")
+                        .method("DELETE")
+                        .header("x-api-key", "secret")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            json!({"expected_generation": "owned-generation", "delete_identity": deletion}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert!(rx.try_recv().is_err());
+        }
+    }
+
     // ----- New endpoint tests (session, lease, status, metrics, crash-insights, preflight, shutdown, input, resize) -----
 
     #[tokio::test]
@@ -4525,6 +5468,33 @@ mod auth_tests {
         assert_eq!(body["protocol_version"], 2);
         assert_eq!(body["relay_base_url"], "https://relay.test");
         assert_eq!(body["mode"], "ephemeral");
+        assert_eq!(body["node_control_health"]["state"], "connecting");
+    }
+
+    #[tokio::test]
+    async fn session_route_surfaces_terminal_node_token_proof_conflict() {
+        let (router, _rx, probe) = test_router_with_probe(Some("secret"));
+        probe.record_node_token_proof_conflict_terminal();
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/session")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["node_control_health"]["state"], "terminal");
+        assert_eq!(
+            body["node_control_health"]["reason"],
+            "node_token_proof_required"
+        );
     }
 
     #[tokio::test]
@@ -4799,6 +5769,54 @@ mod auth_tests {
             .expect("request should succeed");
 
         assert_eq!(response.status(), StatusCode::OK);
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn resize_pty_route_release_forwards_restore_dimensions() {
+        // An attach that reserved a status row hands it back on the release
+        // itself, so the route must forward rows/cols alongside `release: true`
+        // rather than dropping them as it would for a pure release.
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::ResizePty {
+                    rows,
+                    cols,
+                    session_id,
+                    release,
+                    reply,
+                    ..
+                }) => {
+                    assert_eq!(rows, 30);
+                    assert_eq!(cols, 100);
+                    assert_eq!(session_id.as_deref(), Some("sess-1"));
+                    assert!(release);
+                    let _ = reply.send(Ok(json!({ "released": true, "resized": true })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/resize/worker-a")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "rows": 30, "cols": 100, "session_id": "sess-1", "release": true })
+                            .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["resized"], json!(true));
         replier.await.expect("replier should complete");
     }
 
@@ -5191,6 +6209,89 @@ mod auth_tests {
     }
 
     // -----------------------------------------------------------------
+    // relay#1544: a busy-but-alive worker must not tear down the PTY input
+    // WebSocket just because one write's ack was slow. `worker_timeout` is
+    // the one `write_pty` failure code that does NOT mean the worker is
+    // confirmed dead (that's `worker_disappeared`, reaped independently),
+    // so `handle_pty_input_ws` must keep the connection open for it and
+    // close for everything else. See `pty_input_error_is_connection_fatal`.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn worker_timeout_does_not_close_the_pty_input_connection() {
+        // MUST-FIRE: this is the exact code a busy worker's slow write_pty
+        // ack produces (classify_error, api.rs PTY_INPUT_ACK_TIMEOUT). If
+        // this ever flips to `true`, `handle_pty_input_ws` starts closing
+        // the socket on every busy-but-healthy worker again — relay#1544's
+        // flap. Reverting the fix (`code != "worker_timeout"`, i.e. always
+        // fatal) makes this assertion fail.
+        assert!(!super::pty_input_error_is_connection_fatal(
+            "worker_timeout"
+        ));
+    }
+
+    #[test]
+    fn queue_full_does_not_close_the_pty_input_connection() {
+        // relay#1597 MUST-FIRE: a worker that answers "my drainer queue is
+        // full" has proved it is alive, and the write it refused is the only
+        // casualty. Closing the socket here produced one
+        // `input stream lost … / reconnected after 1 attempt(s)` flap per
+        // keystroke against any busy agent, and reconnecting cannot help — the
+        // queue drains when the child resumes reading, not when a new socket
+        // opens. Revert to `code != "worker_timeout"` and this fails.
+        assert!(!super::pty_input_error_is_connection_fatal(
+            "pty_write_queue_full"
+        ));
+        // The client is told the stream is still usable.
+        assert!(!super::pty_input_error_is_connection_fatal(
+            "worker_timeout"
+        ));
+    }
+
+    #[test]
+    fn queue_full_is_classified_as_its_own_retryable_code() {
+        // The code must survive classification intact: `classify_error` used to
+        // collapse it into the catch-all `request_failed`, which is fatal, so
+        // the exemption above could never be reached from a real worker error.
+        let (status, code) = super::classify_error(
+            "pty_write_queue_full: pty write queue full (128 writes pending; drainer wedged behind child not reading stdin)",
+        );
+        assert_eq!(code, "pty_write_queue_full");
+        assert_eq!(status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn a_broken_pty_write_is_still_fatal() {
+        // relay#1597 MUST-NOT-FIRE: only the queue-full code is exempt.
+        // `pty_write_failed` covers a confirmed I/O error or an exited drainer
+        // — real loss, which must still close the socket so the client's
+        // reconnect-and-verify recovery runs.
+        assert!(super::pty_input_error_is_connection_fatal(
+            "pty_write_failed"
+        ));
+        let (status, code) = super::classify_error("pty_write_failed: broken pipe");
+        assert_eq!(code, "request_failed");
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn confirmed_dead_or_missing_worker_still_closes_the_pty_input_connection() {
+        // MUST-NOT-FIRE: a genuinely dead/missing/unusable target must still
+        // be treated as connection-fatal so the client's existing
+        // reconnect-on-close recovery still runs for a real outage.
+        for code in [
+            "worker_disappeared",
+            "agent_not_found",
+            "unsupported_runtime",
+        ] {
+            assert!(
+                super::pty_input_error_is_connection_fatal(code),
+                "{code} must still close the PTY input connection"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------
     // Inbound delivery mode: four routes that back the `agent-relay drive`
     // client. The HTTP layer only forwards typed requests over the
     // broker channel — these tests cover the request shaping and
@@ -5275,8 +6376,16 @@ mod auth_tests {
                     let _ = reply.send(Ok(SetInboundDeliveryModeOk {
                         mode: InboundDeliveryMode::AutoInject,
                         flushed: 3,
+                        dead_lettered: 0,
                         matched: true,
                         revision: 1,
+                        blocked_reason: None,
+                        blocked_reason_code: None,
+                        head_sequence: None,
+                        acked_up_to_sequence: None,
+                        received_up_to_sequence: None,
+                        next_ackable_sequence: None,
+                        reconciliation_action: None,
                     }));
                 }
                 other => panic!("unexpected request: {:?}", other.map(|_| "other")),
@@ -5300,7 +6409,20 @@ mod auth_tests {
         let body = response_json(response).await;
         assert_eq!(
             body,
-            json!({ "mode": "auto_inject", "flushed": 3, "matched": true, "revision": "1" })
+            json!({
+                "mode": "auto_inject",
+                "flushed": 3,
+                "dead_lettered": 0,
+                "matched": true,
+                "revision": "1",
+                "blocked_reason": null,
+                "blocked_reason_code": null,
+                "head_sequence": null,
+                "acked_up_to_sequence": null,
+                "received_up_to_sequence": null,
+                "next_ackable_sequence": null,
+                "reconciliation_action": null,
+            })
         );
         replier.await.expect("replier should complete");
     }
@@ -5327,8 +6449,16 @@ mod auth_tests {
                     let _ = reply.send(Ok(SetInboundDeliveryModeOk {
                         mode: InboundDeliveryMode::AutoInject,
                         flushed: 0,
+                        dead_lettered: 0,
                         matched: false,
                         revision: 8,
+                        blocked_reason: None,
+                        blocked_reason_code: None,
+                        head_sequence: None,
+                        acked_up_to_sequence: None,
+                        received_up_to_sequence: None,
+                        next_ackable_sequence: None,
+                        reconciliation_action: None,
                     }));
                 }
                 other => panic!("unexpected request: {:?}", other.map(|_| "other")),
@@ -5359,7 +6489,20 @@ mod auth_tests {
         let body = response_json(response).await;
         assert_eq!(
             body,
-            json!({ "mode": "auto_inject", "flushed": 0, "matched": false, "revision": "8" })
+            json!({
+                "mode": "auto_inject",
+                "flushed": 0,
+                "dead_lettered": 0,
+                "matched": false,
+                "revision": "8",
+                "blocked_reason": null,
+                "blocked_reason_code": null,
+                "head_sequence": null,
+                "acked_up_to_sequence": null,
+                "received_up_to_sequence": null,
+                "next_ackable_sequence": null,
+                "reconciliation_action": null,
+            })
         );
         replier.await.expect("replier should complete");
     }
@@ -5613,7 +6756,13 @@ mod auth_tests {
             match rx.recv().await {
                 Some(ListenApiRequest::FlushPending { name, reply }) => {
                     assert_eq!(name, "worker-a");
-                    let _ = reply.send(Ok(5));
+                    let _ = reply.send(Ok(crate::listen_api::FlushPendingOk {
+                        flushed: 5,
+                        dead_lettered: 0,
+                        held: 0,
+                        blocked_reason: None,
+                        ..Default::default()
+                    }));
                 }
                 other => panic!("unexpected request: {:?}", other.map(|_| "other")),
             }
@@ -5633,7 +6782,85 @@ mod auth_tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
-        assert_eq!(body, json!({ "flushed": 5 }));
+        assert_eq!(
+            body,
+            json!({
+                "flushed": 5,
+                "dead_lettered": 0,
+                "held": 0,
+                "blocked_reason": null,
+                "blocked_reason_code": null,
+                "head_sequence": null,
+                "acked_up_to_sequence": null,
+                "received_up_to_sequence": null,
+                "next_ackable_sequence": null,
+                "reconciliation_action": null,
+            })
+        );
+        replier.await.expect("replier should complete");
+    }
+
+    /// The observability contract's load-bearing case: a flush that injected
+    /// nothing because the queue is jammed must be distinguishable from a
+    /// flush that injected nothing because the queue was empty.
+    #[tokio::test]
+    async fn flush_route_reports_a_blocked_queue_distinctly_from_an_empty_one() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::FlushPending { name, reply }) => {
+                    assert_eq!(name, "worker-a");
+                    let _ = reply.send(Ok(crate::listen_api::FlushPendingOk {
+                        flushed: 0,
+                        dead_lettered: 1,
+                        held: 3,
+                        blocked_reason: Some(
+                            "delivery sequence 7 for 'worker-a' is not the next ACKable receipt"
+                                .to_string(),
+                        ),
+                        blocked_reason_code: Some("missing_predecessor_ack"),
+                        head_sequence: Some(7),
+                        acked_up_to_sequence: Some(5),
+                        received_up_to_sequence: Some(9),
+                        next_ackable_sequence: Some(6),
+                        reconciliation_action: Some("predecessor_replayed"),
+                    }));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/flush")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(
+            body,
+            json!({
+                "flushed": 0,
+                "dead_lettered": 1,
+                "held": 3,
+                "blocked_reason":
+                    "delivery sequence 7 for 'worker-a' is not the next ACKable receipt",
+                "blocked_reason_code": "missing_predecessor_ack",
+                "head_sequence": 7,
+                "acked_up_to_sequence": 5,
+                "received_up_to_sequence": 9,
+                "next_ackable_sequence": 6,
+                "reconciliation_action": "predecessor_replayed",
+            }),
+            "a jammed queue must not render identically to an empty one"
+        );
         replier.await.expect("replier should complete");
     }
 

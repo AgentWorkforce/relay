@@ -31,6 +31,10 @@ describe('formatting helpers', () => {
     expect(formatRelativeTime('2025-12-30T00:00:00.000Z')).toBe('2d ago');
   });
 
+  it('clamps future timestamps caused by clock skew to a nonnegative age', () => {
+    expect(formatRelativeTime('2026-01-01T00:00:10.000Z')).toBe('0s ago');
+  });
+
   it('parses --since duration shorthand', () => {
     const now = Date.now();
 
@@ -82,6 +86,11 @@ describe('sanitizeForTerminal', () => {
     expect(sanitizeForTerminal('a\x1bMb')).toBe('ab');
     expect(sanitizeForTerminal('x\x9bDy')).toBe('xy');
     expect(sanitizeForTerminal('p\x1b]0;t\x1b\\q')).toBe('pq');
+  });
+
+  it('removes bidirectional overrides that let text reorder itself on the line', () => {
+    expect(sanitizeForTerminal('safe\u202ename\u202c')).toBe('safename');
+    expect(sanitizeForTerminal('a\u2066b\u2069c')).toBe('abc');
   });
 });
 

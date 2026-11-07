@@ -24,7 +24,7 @@ import {
   parseNodeDescriptor,
   startNodeJsNodeProvider,
 } from './node-provider-child.js';
-import { nodeCapacityHarnesses } from './fleet-sidecar.js';
+import { nodeCapacityHarnesses, resolveNodeMaxAgents } from './fleet-sidecar.js';
 import type { CoreDependencies, SpawnedProcess } from '../commands/core.js';
 
 const MARKER = '__AGENT_RELAY_NODE_DESCRIPTOR__';
@@ -53,6 +53,63 @@ describe('parseNodeDescriptor', () => {
     expect(parseNodeDescriptor(stdout)).toEqual({ name: 'n', capabilities: ['spawn:claude'] });
   });
 
+  it('carries node-private repo paths across the local describe IPC', () => {
+    const repoPath = path.resolve('private-checkouts', 'relay');
+    const stdout = `${MARKER}${JSON.stringify({
+      name: 'n',
+      capabilities: ['spawn:codex'],
+      repoPaths: { 'AgentWorkforce/relay': repoPath },
+    })}\n`;
+
+    expect(parseNodeDescriptor(stdout)).toEqual({
+      name: 'n',
+      capabilities: ['spawn:codex'],
+      repoPaths: { 'AgentWorkforce/relay': repoPath },
+    });
+  });
+
+  it.each(['./repo', '../repo'])('rejects relative repo path %s from local describe IPC', (repoPath) => {
+    const stdout = `${MARKER}${JSON.stringify({
+      name: 'n',
+      capabilities: [],
+      repoPaths: { 'AgentWorkforce/relay': repoPath },
+    })}\n`;
+
+    expect(() => parseNodeDescriptor(stdout)).toThrow(/absolute path/);
+  });
+
+  it.each(['./repo', '../repo'])('rejects path-shaped repo key %s from local describe IPC', (repoKey) => {
+    const stdout = `${MARKER}${JSON.stringify({
+      name: 'n',
+      capabilities: [],
+      repoPaths: { [repoKey]: path.resolve('private-checkouts', 'relay') },
+    })}\n`;
+
+    expect(() => parseNodeDescriptor(stdout)).toThrow(/owner\/repo format/);
+  });
+
+  it('uses the fleet validator for trimmed and duplicate repo keys', () => {
+    const repoPath = path.resolve('private-checkouts', 'relay');
+    const normalized = `${MARKER}${JSON.stringify({
+      name: 'n',
+      capabilities: [],
+      repoPaths: { ' AgentWorkforce/relay ': repoPath },
+    })}\n`;
+    expect(parseNodeDescriptor(normalized)?.repoPaths).toEqual({
+      'AgentWorkforce/relay': repoPath,
+    });
+
+    const duplicate = `${MARKER}${JSON.stringify({
+      name: 'n',
+      capabilities: [],
+      repoPaths: {
+        'AgentWorkforce/relay': repoPath,
+        ' AgentWorkforce/relay ': path.resolve('private-checkouts', 'other'),
+      },
+    })}\n`;
+    expect(() => parseNodeDescriptor(duplicate)).toThrow(/duplicate key/);
+  });
+
   it('ignores output the config printed on import', () => {
     const stdout = [
       'booting my node...',
@@ -64,6 +121,17 @@ describe('parseNodeDescriptor', () => {
 
   it('returns undefined when the child produced no descriptor', () => {
     expect(parseNodeDescriptor('some unrelated output\n')).toBeUndefined();
+  });
+
+  it('rejects descriptor maxAgents outside the broker-parseable range', () => {
+    const line = (maxAgents: unknown) =>
+      `${MARKER}${JSON.stringify({ name: 'n', capabilities: [], maxAgents })}\n`;
+    // The u32 boundary is accepted; anything the broker would silently
+    // normalize to unlimited fails fast instead.
+    expect(parseNodeDescriptor(line(4294967295))).toMatchObject({ maxAgents: 4294967295 });
+    for (const maxAgents of [0, -2, 1.5, '15', 4294967296]) {
+      expect(() => parseNodeDescriptor(line(maxAgents))).toThrow(/maxAgents must be a positive integer/);
+    }
   });
 });
 
@@ -78,6 +146,24 @@ describe('descriptorCapacitySource', () => {
     // spawn:<harness> capacity, exactly as an in-process definition does.
     expect(nodeCapacityHarnesses(null, source)).toContain('my-harness');
   });
+
+  it('preserves the descriptor maxAgents so the broker reports the configured cap', () => {
+    const source = descriptorCapacitySource({
+      name: 'sf-frame',
+      capabilities: ['spawn:grok'],
+      maxAgents: 15,
+    });
+
+    expect(source.maxAgents).toBe(15);
+    expect(resolveNodeMaxAgents(undefined, source)).toBe('15');
+  });
+
+  it('omits maxAgents when the descriptor declares no cap (broker stays unlimited)', () => {
+    const source = descriptorCapacitySource({ name: 'factory', capabilities: ['spawn:claude'] });
+
+    expect(source).not.toHaveProperty('maxAgents');
+    expect(resolveNodeMaxAgents(undefined, source)).toBeUndefined();
+  });
 });
 
 describe('isJsNodeDefinition', () => {
@@ -88,8 +174,8 @@ describe('isJsNodeDefinition', () => {
     }
   );
 
-  it('leaves agent-relay.py to the python provider', () => {
-    expect(isJsNodeDefinition('agent-relay.py')).toBe(false);
+  it('rejects a non-JS definition', () => {
+    expect(isJsNodeDefinition('agent-relay.txt')).toBe(false);
   });
 });
 
@@ -372,7 +458,10 @@ describe('startNodeJsNodeProvider', () => {
             FIXTURE_READY_FILE: readyFile,
             RELAY_WORKSPACE_KEY: '',
           },
-          sleep: (ms) => delay(Math.min(ms, 50)),
+          // Shorten only the graceful-shutdown budget. The post-SIGKILL wait
+          // must remain long enough for the operating system to reap the real
+          // child process before this integration test checks its PID.
+          sleep: (ms) => delay(ms === 5_000 ? 50 : ms),
         })
       );
       expect(child).toBeDefined();

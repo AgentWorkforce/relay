@@ -490,7 +490,7 @@ describe('AgentRelay observer mode', () => {
     // A partial messaging fake: observer mode never uses the workspace
     // client's event stream and register/reconnect throw at the facade.
     const messaging = {
-      workspace: { info: vi.fn(async () => ({})), fleetNodes: {} },
+      workspace: { info: vi.fn(async () => ({})) },
       agents: {},
       events: undefined,
     } as unknown as RelayMessaging;
@@ -509,6 +509,16 @@ describe('AgentRelay observer mode', () => {
     await expect(relay.workspace.reconnect({ apiToken: 'rat_test' })).rejects.toThrow(
       /observer tokens are read-only; use a workspace key to register agents/
     );
+  });
+
+  it('workspace.release() throws a read-only error instead of reaching the messaging client', async () => {
+    // Regression guard: the observer-mode facade overrides register/reconnect
+    // but historically forwarded release() through the `...facade` spread
+    // unguarded, letting a read-only observer token release/delete agents.
+    const relay = createObserverRelay();
+    await expect(
+      relay.workspace.release({ name: 'chief', reason: 'test', deleteAgent: true })
+    ).rejects.toThrow(/observer tokens are read-only; use a workspace key to register agents/);
   });
 
   it('keeps the token out of the URL on Node and reports abnormal closes', async () => {

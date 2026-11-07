@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   AgentStream,
@@ -8,6 +10,7 @@ import {
   delay,
   enrollNode,
   FleetNode,
+  getAgent,
   getFreePort,
   getInvocation,
   getNodes,
@@ -79,7 +82,6 @@ describe.skipIf(!pre.ok)('Cloud-enrolled node startup', () => {
       engineBaseUrl: engine.baseUrl,
       brokerBinary: pre.brokerBinary!,
       tmpRoot,
-      brokerPort: await getFreePort(),
       capacityHarnesses: 'claude',
       usePersistedEnrollment: true,
     });
@@ -102,9 +104,17 @@ describe.skipIf(!pre.ok)('Cloud-enrolled node startup', () => {
       async () => {
         const nodes = await getNodes(engine, workspaceKey, { name: 'cloud-enrolled' });
         const match = nodes.find((node) => node.id === 'node_cloud_enrolled');
-        return match?.live && match.handlers_live ? match : null;
+        // The broker provider is independently ready for spawn/release before
+        // the config-backed action provider finishes registering.
+        return match?.live &&
+          match.handlers_live &&
+          match.capabilities.some((capability) => capability.name === 'cloud:ping') &&
+          match.tags?.includes('cloud-enrolled') &&
+          match.tags.includes('e2e')
+          ? match
+          : null;
       },
-      { timeoutMs: 30_000, label: 'Cloud-enrolled node online with live handlers' }
+      { timeoutMs: 30_000, label: 'Cloud-enrolled node online with broker and action handlers' }
     );
 
     expect(enrolled.name).toBe('cloud-enrolled');
@@ -176,7 +186,6 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       engineBaseUrl: engine.baseUrl,
       brokerBinary: pre.brokerBinary!,
       tmpRoot,
-      brokerPort: await getFreePort(),
       // Pin capacity so the node advertises a distinct harness (`claude`) plus the
       // shared `pool`. A `spawn:<harness>` shadow delegates to the broker's native
       // capacity for that harness, so every shadow the node defines (spawn:claude,
@@ -193,7 +202,6 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       engineBaseUrl: engine.baseUrl,
       brokerBinary: pre.brokerBinary!,
       tmpRoot,
-      brokerPort: await getFreePort(),
       // Distinct `codex` plus the shared `pool` (see node-a's note).
       capacityHarnesses: 'codex,pool',
     });
@@ -207,9 +215,22 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
         const nodes = await getNodes(engine, workspaceKey);
         const a = node(nodes, 'node-a');
         const b = node(nodes, 'node-b');
-        return a?.live && a.handlers_live && b?.live && b.handlers_live ? nodes : null;
+        const aCapabilities = new Set(a?.capabilities.map((capability) => capability.name));
+        const bCapabilities = new Set(b?.capabilities.map((capability) => capability.name));
+        // handlers_live covers the broker provider too, so wait for the
+        // separately connected action providers before asserting their union.
+        return a?.live &&
+          a.handlers_live &&
+          aCapabilities.has('echo') &&
+          aCapabilities.has('work') &&
+          b?.live &&
+          b.handlers_live &&
+          bCapabilities.has('ping') &&
+          bCapabilities.has('work')
+          ? nodes
+          : null;
       },
-      { timeoutMs: 45_000, label: 'both nodes online+handlers_live' }
+      { timeoutMs: 45_000, label: 'both nodes online with broker and action handlers' }
     );
   }, 60_000);
 
@@ -230,11 +251,14 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     expect(b.handlers_live).toBe(true);
     // The aggregate is the union of the broker provider's capacity (its pinned
     // spawn:<harness> + release, plus the relay:delivery-cursor-v1 marker it
-    // advertises for restart-safe mailbox resume) and the fleet provider's
-    // action capabilities.
+    // advertises for restart-safe mailbox resume and the relay:live-agents:v1
+    // heartbeat snapshot) and the fleet provider's action capabilities.
     expect(a.capabilities.map((c) => c.name).sort()).toEqual([
       'echo',
       'relay:delivery-cursor-v1',
+      'relay:live-agents:v1',
+      'relay:native-existing-session-reconcile:v1',
+      'relay:native-existing-session:v1',
       'release',
       'spawn:claude',
       'spawn:pool',
@@ -243,11 +267,20 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     expect(b.capabilities.map((c) => c.name).sort()).toEqual([
       'ping',
       'relay:delivery-cursor-v1',
+      'relay:live-agents:v1',
+      'relay:native-existing-session-reconcile:v1',
+      'relay:native-existing-session:v1',
       'release',
       'spawn:codex',
       'spawn:pool',
       'work',
     ]);
+    expect(a.capabilities.find((c) => c.name === 'relay:live-agents:v1')?.metadata).toEqual({
+      names: [],
+    });
+    expect(b.capabilities.find((c) => c.name === 'relay:live-agents:v1')?.metadata).toEqual({
+      names: [],
+    });
   });
 
   it('negative auth: a node whose broker presents a bogus token never comes online', async () => {
@@ -269,7 +302,6 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       engineBaseUrl: engine.baseUrl,
       brokerBinary: pre.brokerBinary!,
       tmpRoot,
-      brokerPort: await getFreePort(),
     });
     badNode.start();
     try {
@@ -356,36 +388,89 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     expect(settled).toBe(before + 1);
   }, 30_000);
 
-  it('spawn completes end-to-end: targeted spawn mints+injects the token, binds the agent via-node, node reports it', async () => {
-    // Regression guard for the token-authority handshake (engine agent.register
-    // reply frame ↔ broker). Before the fix this hung to a 30s timeout.
-    const before = node(await getNodes(engine, workspaceKey), 'node-a')!.active_agents;
-    const spawn = await invokeAction(engine, driverToken, 'spawn', {
-      cli: 'claude',
-      name: 'worker-a',
-      target_node: 'node-a',
-    });
-    expect(spawn.status).toBe(201);
-    expect(spawn.body.data.handler_node_id).toBe('node_a');
-
-    const done = await waitFor(
-      async () => {
-        const inv = await getInvocation(engine, driverToken, 'spawn', spawn.invocationId!);
-        return inv.status === 'completed' || inv.status === 'failed' ? inv : null;
-      },
-      { label: 'spawn settled', timeoutMs: 20_000 }
+  it('spawn completes end-to-end: targeted spawn delivers its brief after harness readiness and the agent acts', async () => {
+    // Five consecutive spawns across both nodes prove this is not a lucky
+    // one-off. Node A's stub delays readiness past the historical 25s fallback
+    // and discards pre-ready input; node B provides the fast-ready control.
+    const cases = [
+      { agent: 'worker-a', cli: 'claude', nodeName: 'node-a', nodeId: 'node_a', host: nodeA },
+      { agent: 'worker-b1', cli: 'codex', nodeName: 'node-b', nodeId: 'node_b', host: nodeB },
+      { agent: 'worker-a2', cli: 'claude', nodeName: 'node-a', nodeId: 'node_a', host: nodeA },
+      { agent: 'worker-b2', cli: 'codex', nodeName: 'node-b', nodeId: 'node_b', host: nodeB },
+      { agent: 'worker-a3', cli: 'claude', nodeName: 'node-a', nodeId: 'node_a', host: nodeA },
+    ] as const;
+    const before = new Map(
+      (await getNodes(engine, workspaceKey)).map((entry) => [entry.name, entry.active_agents])
     );
-    expect(done.status).toBe('completed'); // the agent registered + token minted, not a timeout
 
-    // The broker bound the agent via-node and heartbeated the count up.
+    for (const [index, testCase] of cases.entries()) {
+      const nonce = `spawn-brief-${index + 1}-${Date.now().toString(36)}`;
+      const observationPath = path.join(
+        testCase.host.projectDir,
+        '.agentworkforce',
+        'relay',
+        'e2e-brief-actions',
+        `${nonce}.json`
+      );
+      const spawn = await invokeAction(engine, driverToken, 'spawn', {
+        cli: testCase.cli,
+        name: testCase.agent,
+        target_node: testCase.nodeName,
+        task: `First, act on this brief by recording RELAY_E2E_BRIEF_NONCE=${nonce}`,
+      });
+      expect(spawn.status).toBe(201);
+      expect(spawn.body.data.handler_node_id).toBe(testCase.nodeId);
+
+      const done = await waitFor(
+        async () => {
+          const invocation = await getInvocation(engine, driverToken, 'spawn', spawn.invocationId!);
+          return invocation.status === 'completed' || invocation.status === 'failed' ? invocation : null;
+        },
+        { label: `${testCase.agent} spawn settled`, timeoutMs: 35_000 }
+      );
+      expect(done.status).toBe('completed');
+
+      // Registration and heartbeat only prove that a process exists. The nonce
+      // file is written by the PTY child from the injected task, so it proves
+      // the brief crossed the harness readiness boundary and caused action.
+      const observation = await waitFor(
+        async () => {
+          try {
+            return JSON.parse(readFileSync(observationPath, 'utf8')) as {
+              nonce: string;
+              agent: string;
+              node: string;
+              observedAt: string;
+            };
+          } catch {
+            return null;
+          }
+        },
+        { label: `${testCase.agent} acted on nonce-bearing brief`, timeoutMs: 40_000 }
+      );
+      expect(observation).toMatchObject({
+        nonce,
+        agent: testCase.agent,
+        node: testCase.nodeName,
+      });
+      expect(Number.isNaN(Date.parse(observation.observedAt))).toBe(false);
+    }
+
     await waitFor(
       async () => {
-        const a = node(await getNodes(engine, workspaceKey), 'node-a');
-        return a && a.active_agents > before ? a : null;
+        const nodes = await getNodes(engine, workspaceKey);
+        const a = node(nodes, 'node-a');
+        const b = node(nodes, 'node-b');
+        return a &&
+          b &&
+          a.active_agents >= (before.get('node-a') ?? 0) + 3 &&
+          b.active_agents >= (before.get('node-b') ?? 0) + 2
+          ? { a, b }
+          : null;
       },
-      { label: 'node-a active_agents incremented', timeoutMs: 20_000 }
+      { label: 'both nodes heartbeat all five spawned agents', timeoutMs: 20_000 }
     );
-  }, 45_000);
+  }, 150_000);
 
   it('capability-routed spawn: with no target, placement picks the only node advertising the capability', async () => {
     const spawn = await invokeAction(engine, driverToken, 'spawn', { cli: 'codex', name: 'worker-codex' });
@@ -452,15 +537,17 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     { retry: 2 },
     async () => {
       const sessionRef = 'sess-resume-1';
-      await releaseAgent(engine, workspaceKey, 'resumable-1'); // idempotent cleanup for retries
+      const name = `resumable-${Date.now()}`;
+      const firstNonce = `resume-first-${Date.now()}`;
       // First spawn is UNTARGETED → the engine picks the origin node by placement.
       // We capture wherever it actually landed so the resume target is derived from
       // the agent's real origin, not hard-coded (resume = targeted-origin spawn;
       // the engine records origin_node_id but does not auto-route from session_ref).
       const first = await invokeAction(engine, driverToken, 'spawn', {
         cli: 'pool',
-        name: 'resumable-1',
+        name,
         session_ref: sessionRef,
+        task: `RELAY_E2E_BRIEF_NONCE=${firstNonce}\n`,
       });
       const originId = first.body.data.handler_node_id as string; // engine-chosen origin
       const originName = originId === 'node_a' ? 'node-a' : 'node-b';
@@ -469,24 +556,109 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
           const inv = await getInvocation(engine, driverToken, 'spawn', first.invocationId!);
           return inv.status === 'completed' || inv.status === 'failed' ? inv : null;
         },
-        { label: 'resumable spawn settled', timeoutMs: 30_000, intervalMs: 300 }
+        // A verified spawn carrying a task now completes only once that task's
+        // receipt is verified after readiness, so allow for readiness plus
+        // delivery verification rather than readiness alone.
+        { label: 'resumable spawn settled', timeoutMs: 60_000, intervalMs: 300 }
       );
       expect(firstDone.status).toBe('completed'); // resumable spawn carried session_ref through token authority
+      expect(firstDone.output).toMatchObject({ spawned: true, ready: true, name });
+      const origin = originId === 'node_a' ? nodeA : nodeB;
+      const observe = async (nonce: string) =>
+        waitFor(
+          async () => {
+            try {
+              return JSON.parse(
+                readFileSync(
+                  path.join(
+                    origin.projectDir,
+                    '.agentworkforce',
+                    'relay',
+                    'e2e-brief-actions',
+                    `${nonce}.json`
+                  ),
+                  'utf8'
+                )
+              );
+            } catch {
+              return null;
+            }
+          },
+          { label: 'resumed native worker consumed its brief', timeoutMs: 15_000 }
+        );
+      expect(await observe(firstNonce)).toMatchObject({
+        agent: name,
+        node: originName,
+        args: expect.arrayContaining(['resume', sessionRef]),
+      });
 
       // Release, then resume the SAME session targeted at the recorded origin.
-      expect(await releaseAgent(engine, workspaceKey, 'resumable-1')).toBeLessThan(300);
+      // Deleting the engine identity alone would orphan the still-running PTY.
+      const release = await invokeAction(engine, driverToken, 'release', { name });
+      expect(release.status).toBe(201);
+      const released = await waitFor(
+        async () => {
+          const inv = await getInvocation(engine, driverToken, 'release', release.invocationId!);
+          return ['completed', 'failed'].includes(inv.status) ? inv : null;
+        },
+        { label: 'origin worker release confirmed', timeoutMs: 30_000 }
+      );
+      expect(released.status, JSON.stringify(released)).toBe('completed');
+      // The legacy broker release action stops the PTY and detaches its binding;
+      // the fixture owner separately removes its retained engine identity.
+      expect(await releaseAgent(engine, workspaceKey, name)).toBeLessThan(300);
+      const resumedNonce = `resume-second-${Date.now()}`;
       const resume = await invokeAction(engine, driverToken, 'spawn', {
         cli: 'pool',
-        name: 'resumable-1',
+        name,
         target_node: originName,
         session_ref: sessionRef,
+        task: `RELAY_E2E_BRIEF_NONCE=${resumedNonce}\n`,
       });
       expect(resume.status).toBe(201);
       expect(resume.body.data.handler_node_id).toBe(originId); // resumed on the agent's origin node
       expect(resume.body.data.dispatched_node_id).toBe(originId);
+      const resumed = await waitFor(
+        async () => {
+          const inv = await getInvocation(engine, driverToken, 'spawn', resume.invocationId!);
+          return ['completed', 'failed'].includes(inv.status) ? inv : null;
+        },
+        { label: 'resumed worker confirmed ready', timeoutMs: 60_000 }
+      );
+      expect(resumed.status).toBe('completed');
+      expect(resumed.output).toMatchObject({ spawned: true, ready: true, name });
+      expect(await observe(resumedNonce)).toMatchObject({
+        agent: name,
+        node: originName,
+        args: expect.arrayContaining(['resume', sessionRef]),
+      });
     },
-    60_000
+    // Two 60 s spawn settles, two 15 s brief observations and a 30 s release
+    // wait alone reach 180 s, so leave room for the actions between them.
+    240_000
   );
+
+  it('propagates unsupported generic session resume as a terminal failure with no retained identity', async () => {
+    const name = `invalid-resume-${Date.now()}`;
+    // node-b's distinct codex capacity deliberately runs the generic node stub.
+    const spawn = await invokeAction(engine, driverToken, 'spawn', {
+      cli: 'codex',
+      target_node: 'node-b',
+      name,
+      session_ref: 'unsupported-generic-session',
+    });
+    expect(spawn.status).toBe(201);
+    const done = await waitFor(
+      async () => {
+        const inv = await getInvocation(engine, driverToken, 'spawn', spawn.invocationId!);
+        return ['completed', 'failed'].includes(inv.status) ? inv : null;
+      },
+      { label: 'unsupported resume terminal failure', timeoutMs: 30_000 }
+    );
+    expect(done.status).toBe('failed');
+    expect(done.error).toContain('session_ref resume is supported only');
+    expect(await getAgent(engine, workspaceKey, name)).toBeNull();
+  }, 45_000);
 
   it('placement failure: spawning a capability no targeted node advertises fails with capability_mismatch', async () => {
     const res = await invokeAction(engine, driverToken, 'spawn', {
@@ -597,6 +769,106 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
 
     await rx.disconnect();
   }, 30_000);
+
+  // The feature this PR exists for, asserted against a live engine rather than
+  // a mock. It is deliberately an e2e: the declared fields do NOT ride the
+  // `agent.register` frame (the engine parses that one with a strict schema that
+  // rejects unknown keys), they are published over the HTTP agent API on a
+  // separate task once registration succeeds. Only a real engine proves that the
+  // chosen transport is one the engine actually accepts.
+  it('declared workforce metadata reaches the engine as agent metadata', async () => {
+    const agent = 'worker-declared-metadata';
+    const spawn = await invokeAction(engine, driverToken, 'spawn', {
+      cli: 'codex',
+      name: agent,
+      target_node: 'node-b',
+      task: 'ack and wait',
+      organization: 'Agent Workforce',
+      project: 'Relay',
+      workstream: 'fleet-metadata',
+      role: 'implementer',
+    });
+    expect(spawn.status).toBe(201);
+    const settled = await waitFor(
+      async () => {
+        const inv = await getInvocation(engine, driverToken, 'spawn', spawn.invocationId!);
+        return inv.status === 'completed' || inv.status === 'failed' ? inv : null;
+      },
+      { label: 'declared-metadata spawn settled', timeoutMs: 35_000 }
+    );
+    expect(settled.status).toBe('completed');
+
+    // Snapshot whatever the engine already owns on this record, so the merge
+    // assertion below is against real engine-owned keys rather than a guess at
+    // which ones exist.
+    const before = (await getAgent(engine, workspaceKey, agent))?.metadata ?? {};
+
+    // Poll rather than read once: the publish is intentionally detached from the
+    // spawn so it cannot extend the broker's inline registration await.
+    const metadata = await waitFor(
+      async () => {
+        const record = await getAgent(engine, workspaceKey, agent);
+        return record?.metadata?.organization ? record.metadata : null;
+      },
+      { label: 'declared metadata published to the engine', timeoutMs: 20_000 }
+    );
+
+    // The publish sends ONLY the declared keys and relies on the engine to merge
+    // them over what it already holds. Assert that reliance against the real
+    // engine: nothing it owned before the publish may be lost.
+    for (const [key, value] of Object.entries(before)) {
+      expect(metadata).toHaveProperty(key);
+      expect(metadata![key]).toEqual(value);
+    }
+
+    expect(metadata).toMatchObject({
+      organization: 'Agent Workforce',
+      project: 'Relay',
+      workstream: 'fleet-metadata',
+      role: 'implementer',
+      // No explicit objective was declared, so it falls back to the task.
+      objective: 'ack and wait',
+    });
+  }, 70_000);
+
+  // Control for the test above: a spawn that declares nothing must not acquire
+  // declared fields from anywhere — no name-derived hierarchy, no leakage from
+  // the previous spawn's publish.
+  it('a spawn that declares nothing gets no declared metadata', async () => {
+    const agent = 'worker-undeclared-metadata';
+    const spawn = await invokeAction(engine, driverToken, 'spawn', {
+      cli: 'codex',
+      name: agent,
+      target_node: 'node-b',
+    });
+    expect(spawn.status).toBe(201);
+    const settled = await waitFor(
+      async () => {
+        const inv = await getInvocation(engine, driverToken, 'spawn', spawn.invocationId!);
+        return inv.status === 'completed' || inv.status === 'failed' ? inv : null;
+      },
+      { label: 'undeclared spawn settled', timeoutMs: 35_000 }
+    );
+    // A control arm that accepts a FAILED spawn proves nothing: no agent was
+    // stamped because none was started.
+    expect(settled.status).toBe('completed');
+
+    const initial = await waitFor(async () => await getAgent(engine, workspaceKey, agent), {
+      label: 'undeclared agent visible',
+      timeoutMs: 20_000,
+    });
+    // Give any (incorrect) publish the same window the positive test relies on.
+    await delay(3_000);
+    const final = await getAgent(engine, workspaceKey, agent);
+    // Assert against the FINAL read, and require it to exist — falling back to
+    // the earlier snapshot would let a broken final read pass this test on
+    // stale data.
+    expect(final).not.toBeNull();
+    for (const key of ['organization', 'project', 'workstream', 'role', 'objective']) {
+      expect(initial.metadata ?? {}).not.toHaveProperty(key);
+      expect(final!.metadata ?? {}).not.toHaveProperty(key);
+    }
+  }, 70_000);
 });
 
 /**
@@ -638,15 +910,15 @@ describe.skipIf(!pre.ok)('bounded durable mailbox', () => {
     const dm = await sendDm(engine, sender, 'ttl-recipient', 'will expire');
     expect(dm.status).toBeLessThan(300);
 
-    // Reading with ?status=dead_lettered triggers the TTL sweep (the route sweeps
-    // on every read), which dead-letters the row AND fans delivery.failed to the
-    // sender. Poll past the TTL.
+    // Expiry is scheduled maintenance rather than read-coupled work. The Node
+    // adapter sweeps every 15s, dead-lettering the row and fanning
+    // delivery.failed to the sender. Poll beyond one full maintenance interval.
     const dead = await waitFor(
       async () => {
         const all = await listDeliveries(engine, recipient, 'dead_lettered');
         return all.find((d) => d.status === 'dead_lettered') ?? null;
       },
-      { label: 'message dead-lettered', timeoutMs: 15_000, intervalMs: 400 }
+      { label: 'message dead-lettered', timeoutMs: 25_000, intervalMs: 400 }
     );
     expect(dead.status).toBe('dead_lettered');
 
@@ -657,7 +929,7 @@ describe.skipIf(!pre.ok)('bounded durable mailbox', () => {
     });
     expect(failed).toMatchObject({ target_agent_name: 'ttl-recipient' });
     senderWs.close();
-  }, 25_000);
+  }, 35_000);
 
   // Overflow reject-new is enforced by `belowDepthCapSql` (counts queued+delivered
   // per agent) at delivery-write time, and the sender is notified via the realtime

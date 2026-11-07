@@ -85,6 +85,41 @@ export interface CommonProperties {
   node_version?: string;
   /** CPU architecture (e.g., arm64, x64) */
   arch: string;
+  /**
+   * Hashed machine identifier, on **every** event regardless of whether anyone
+   * is signed in.
+   *
+   * This is deliberately separate from the PostHog distinct id. Once a user logs
+   * in, the distinct id becomes their cloud user id — so without a standalone
+   * property the machine dimension would vanish exactly when it gets
+   * interesting. Keeping both lets us ask:
+   *   - how many machines does one account run on (`machine_id` per `user_id`)
+   *   - how many accounts share one machine (`user_id` per `machine_id`)
+   *   - how many machines share one workspace (see relaycast's
+   *     `actor_machine_id` alongside `workspace_id`)
+   *
+   * Derived as a SHA-256 prefix of the local machine id, so it carries no
+   * hostname and is stable across the CLI, broker, and MCP processes.
+   */
+  machine_id?: string;
+  /**
+   * Cloud user id of the signed-in operator, when `agent-relay cloud login` has
+   * run on this machine. Absent for anonymous (not-logged-in) usage, where the
+   * hashed machine id remains the only identity.
+   *
+   * Never put the user's email in event properties — it is set once as a PostHog
+   * *person* property by `$identify` (see `client.ts`), which is where PII
+   * belongs and where PostHog surfaces it in the UI.
+   */
+  user_id?: string;
+  /** Agent Relay Cloud workspace id the operator is currently active in. */
+  cloud_workspace_id?: string;
+  /** Cloud organization id of the signed-in operator, when known. */
+  organization_id?: string;
+  /** Human-readable org slug, for breakdowns that shouldn't show opaque ids. */
+  organization_slug?: string;
+  /** Whether this event came from a signed-in cloud user. */
+  is_authenticated?: boolean;
 }
 
 // =============================================================================
@@ -238,16 +273,14 @@ export interface CliUpdateEvent {
   to_version: string;
   /** True when the update install command completed successfully. */
   success: boolean;
+  /** How the running CLI was installed ('standalone', 'npm' or 'unknown'). */
+  install_method?: 'standalone' | 'npm' | 'unknown';
   /** Error constructor/category when success=false. */
   error_class?: string;
 }
 
 export type AgentRelayToolCallType =
-  | 'agent.create'
-  | 'agent.release'
-  | 'agent.attach'
-  | 'agent.status'
-  | (string & {});
+  'agent.create' | 'agent.release' | 'agent.attach' | 'agent.status' | (string & {});
 
 export type AgentRelayToolCallCategory =
   | 'spawn'
@@ -287,7 +320,7 @@ export interface AgentRelayToolCallEvent {
 // Tier 3: Domain Events (high-signal product flows)
 // =============================================================================
 
-export type WorkflowFileType = 'yaml' | 'ts' | 'py' | 'unknown';
+export type WorkflowFileType = 'yaml' | 'ts' | 'unknown';
 
 /**
  * workflow_run - Emitted when `agent-relay run <file>` finishes (success or failure).
@@ -302,7 +335,7 @@ export interface WorkflowRunEvent {
   is_resume: boolean;
   /** True if --start-from was passed */
   is_start_from: boolean;
-  /** True for .ts/.tsx/.py scripts (as opposed to YAML) */
+  /** True for .ts/.tsx scripts (as opposed to YAML) */
   is_script: boolean;
   /** True if the command completed successfully */
   success: boolean;
@@ -313,18 +346,21 @@ export interface WorkflowRunEvent {
 }
 
 /**
- * cloud_auth - Emitted for cloud account auth flows (login/logout/whoami/connect).
+ * cloud_auth - Emitted for cloud account auth flows
+ * (login/logout/whoami/workspaces/connect).
  * `action` distinguishes the flow; `provider` is only present for `connect`.
  */
 export interface CloudAuthEvent {
   /** Which cloud-auth flow ran */
-  action: 'login' | 'logout' | 'whoami' | 'connect';
+  action: 'login' | 'logout' | 'whoami' | 'workspaces' | 'connect';
   /** True if the flow completed without throwing */
   success: boolean;
   /** Wall-clock duration in milliseconds */
   duration_ms: number;
   /** Provider id for `connect` flows (e.g., 'anthropic', 'openai') */
   provider?: string;
+  /** Which login style ran; only present for `login` */
+  method?: 'browser' | 'device';
   /** Error constructor name on failure */
   error_class?: string;
 }

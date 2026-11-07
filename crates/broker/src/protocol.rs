@@ -220,6 +220,14 @@ impl ResolvedHarnessConfig {
             Self::Native(config) => Some(config.session_id.as_str()),
         }
     }
+
+    pub(crate) fn metadata(&self) -> Option<&HashMap<String, Value>> {
+        match self {
+            Self::Pty(config) => config.metadata.as_ref(),
+            Self::Headless(config) => config.metadata.as_ref(),
+            Self::Native(config) => config.metadata.as_ref(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -279,6 +287,9 @@ pub struct NodeManifest {
     pub max_agents: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
+    /// Placement-safe repository keys. Absolute checkout paths remain node-local.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_keys: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
 }
@@ -400,16 +411,37 @@ pub enum BrokerEvent {
         count: usize,
         reason: String,
     },
+    DeliveryUnconfirmed {
+        name: WorkerName,
+        delivery_id: DeliveryId,
+        event_id: EventId,
+        reason: String,
+        attempts: u32,
+        max_attempts: u32,
+    },
+    DeliveryResubmitted {
+        name: WorkerName,
+        delivery_id: DeliveryId,
+        event_id: EventId,
+        attempt: u32,
+        strategy: String,
+    },
     DeliveryVerified {
         name: WorkerName,
         delivery_id: DeliveryId,
         event_id: EventId,
-        /// "echo" when confirmed in PTY output, "timeout_fallback" when the
-        /// delivery was acked without echo verification.
+        /// "harness_acceptance" when activity or a cleared composer proves
+        /// that the PTY harness accepted the turn, and "completed_replay" when
+        /// an already-completed delivery is replayed. Older workers may report
+        /// legacy values such as "echo" or "timeout_fallback".
         #[serde(default, skip_serializing_if = "Option::is_none")]
         verification: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        evidence: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempts: Option<u32>,
     },
     DeliveryFailed {
         name: WorkerName,
@@ -582,7 +614,17 @@ pub enum BrokerToWorker {
     /// asked for the backlog gets it injected immediately instead of it
     /// sitting frozen until the drive session detaches. Deliveries that
     /// arrive after the flush stay parked under the hold as usual.
-    FlushInjections {},
+    ///
+    /// With `event_id` set the flush is narrowed to that single delivery
+    /// instead of the whole backlog: it is popped through the hold even if
+    /// other injections sit in front of it, and they stay parked. The broker
+    /// sends it that way to start a (re)spawn's initial task under a hold
+    /// replayed onto a restarted worker, where relay messages retried into the
+    /// same queue must not ride along.
+    FlushInjections {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        event_id: Option<EventId>,
+    },
     /// Versioned control sent to a native harness sidecar. The
     /// envelope request id correlates the sidecar's command response.
     NativeHarnessCommand {
@@ -612,10 +654,37 @@ pub enum WorkerToBroker {
     DeliveryVerified {
         delivery_id: DeliveryId,
         event_id: EventId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        verification: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        evidence: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempts: Option<u32>,
+    },
+    DeliveryUnconfirmed {
+        delivery_id: DeliveryId,
+        event_id: EventId,
+        reason: String,
+        attempts: u32,
+        max_attempts: u32,
+    },
+    DeliveryResubmitted {
+        delivery_id: DeliveryId,
+        event_id: EventId,
+        attempt: u32,
+        strategy: String,
     },
     DeliveryFailed {
         delivery_id: DeliveryId,
         event_id: EventId,
+        /// Terminal and never replayed. PTY injection adds
+        /// "prompt_unproven" (no composer was recognized in time),
+        /// "body remained parked after bounded submit-key recovery",
+        /// "harness acceptance could not be proven" (neither parked nor
+        /// accepted, so not evidence of loss) and "injection_too_large: …"
+        /// (rejected before any byte was written).
         reason: String,
     },
     WorkerStream {
@@ -796,10 +865,43 @@ mod tests {
         let msg = WorkerToBroker::DeliveryVerified {
             delivery_id: "del_v1".into(),
             event_id: "evt_v1".into(),
+            verification: Some("harness_acceptance".into()),
+            reason: Some("accepted by live harness".into()),
+            evidence: Some("activity:Working".into()),
+            attempts: Some(2),
         };
         let encoded = serde_json::to_string(&msg).unwrap();
         let decoded: WorkerToBroker = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn delivery_recovery_observability_round_trips() {
+        let unconfirmed = WorkerToBroker::DeliveryUnconfirmed {
+            delivery_id: "del_u1".into(),
+            event_id: "evt_u1".into(),
+            reason: "body remains parked".into(),
+            attempts: 1,
+            max_attempts: 3,
+        };
+        let encoded = serde_json::to_string(&unconfirmed).unwrap();
+        assert_eq!(
+            serde_json::from_str::<WorkerToBroker>(&encoded).unwrap(),
+            unconfirmed
+        );
+
+        let resubmitted = BrokerEvent::DeliveryResubmitted {
+            name: "Worker1".into(),
+            delivery_id: "del_u1".into(),
+            event_id: "evt_u1".into(),
+            attempt: 2,
+            strategy: "submit_key_only".into(),
+        };
+        let encoded = serde_json::to_string(&resubmitted).unwrap();
+        assert_eq!(
+            serde_json::from_str::<BrokerEvent>(&encoded).unwrap(),
+            resubmitted
+        );
     }
 
     #[test]
@@ -822,6 +924,8 @@ mod tests {
             event_id: "evt_v2".into(),
             verification: None,
             reason: None,
+            evidence: None,
+            attempts: None,
         };
         let encoded = serde_json::to_string(&event).unwrap();
         assert!(
@@ -840,6 +944,8 @@ mod tests {
             event_id: "evt_v3".into(),
             verification: Some("timeout_fallback".into()),
             reason: Some("echo not detected within 5s window".into()),
+            evidence: None,
+            attempts: None,
         };
         let encoded = serde_json::to_string(&event).unwrap();
         let decoded: BrokerEvent = serde_json::from_str(&encoded).unwrap();
@@ -1159,12 +1265,28 @@ mod tests {
 
     #[test]
     fn broker_to_worker_flush_injections_round_trip() {
-        let msg = BrokerToWorker::FlushInjections {};
+        let msg = BrokerToWorker::FlushInjections { event_id: None };
         let encoded = serde_json::to_string(&msg).unwrap();
         let raw: Value = serde_json::from_str(&encoded).unwrap();
         // Wire tag must be snake_case and match the worker-side string match arm
         // in `pty_worker.rs` and `packages/harness-driver/src/protocol.ts`.
         assert_eq!(raw["type"], "flush_injections");
+        // A blanket flush carries no `event_id`, so older workers keep seeing
+        // the exact payload they always did.
+        assert!(raw["payload"].get("event_id").is_none());
+        let decoded: BrokerToWorker = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn broker_to_worker_targeted_flush_injections_round_trip() {
+        let msg = BrokerToWorker::FlushInjections {
+            event_id: Some("init_abc123".into()),
+        };
+        let encoded = serde_json::to_string(&msg).unwrap();
+        let raw: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(raw["type"], "flush_injections");
+        assert_eq!(raw["payload"]["event_id"], "init_abc123");
         let decoded: BrokerToWorker = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, msg);
     }

@@ -14,6 +14,7 @@
 import type { InboundDeliveryMode } from '@agent-relay/harness-driver';
 
 import {
+  describeMissingBrokerConnection,
   resolveBrokerConnection,
   type BrokerConnection,
   type BrokerConnectionDeps,
@@ -27,6 +28,8 @@ export interface AttachSnapshotConnection {
   url: string;
   /** Optional API key — added as an `X-API-Key` header if present. */
   apiKey?: string;
+  /** Optional HTTP deadline propagated to the broker SDK transport. */
+  requestTimeoutMs?: number;
 }
 
 /** Dependencies for `captureAndRenderSnapshot` — injected so tests don't hit
@@ -36,6 +39,14 @@ export interface AttachSnapshotDeps {
   fetch: typeof globalThis.fetch;
   /** Where the ANSI bytes get written. Typically `process.stdout.write`. */
   writeChunk: (chunk: string) => void;
+  /**
+   * Optional best-effort workspace lookup. When the local broker returns 404
+   * for an agent, `fleetHint` is called with the agent name and may return a
+   * placement description like `"on node 'finn-mini'"` to produce a more
+   * actionable error message. If it returns `null` or is not provided, the
+   * original "no agent named 'X'" message is used.
+   */
+  fleetHint?: (name: string) => Promise<string | null>;
 }
 
 /** Outcome of a snapshot capture. Callers decide whether to bail or continue
@@ -91,7 +102,20 @@ export async function captureAndRenderSnapshot(
   } catch (err: unknown) {
     const failure = mapBrokerSdkFailure(err);
     if (failure.status === 404) {
-      return { status: 'not_found', message: `no agent named '${agentName}'` };
+      let hint: string | null = null;
+      if (deps.fleetHint) {
+        try {
+          hint = await deps.fleetHint(agentName);
+        } catch {
+          // Best-effort lookup — preserve the existing not-found message.
+        }
+      }
+      const safeArg = `'${agentName.replace(/'/g, "'\\''")}'`;
+      const message = hint
+        ? `agent '${agentName}' is ${hint}; cross-node attach is not yet supported` +
+          ` — run \`agent-relay node agent attach ${safeArg}\` on that machine`
+        : `no agent named '${agentName}'`;
+      return { status: 'not_found', message };
     }
     if (failure.status === 409) {
       return {
@@ -335,10 +359,7 @@ export function prepareAttachTarget(
   }
   const connection = resolveBrokerConnection(options, deps);
   if (!connection) {
-    deps.error(
-      'Error: could not locate broker connection. Pass --broker-url, set RELAY_BROKER_URL, ' +
-        'or run from a directory containing .agentworkforce/relay/connection.json.'
-    );
+    deps.error(describeMissingBrokerConnection(options, deps));
     return null;
   }
   return { name, connection };
@@ -360,6 +381,218 @@ export function pickInitialTerminalRows(
 }
 
 /**
+ * Pick the status-line width. Same precedence as
+ * {@link pickInitialTerminalRows} — the LOCAL terminal wins, because the
+ * status line has to fit the pane the human is looking at, not the agent's
+ * PTY.
+ */
+export function pickInitialTerminalCols(
+  localSize: { rows: number; cols: number } | null,
+  snapshotCols: number | undefined
+): number | undefined {
+  if (localSize) return localSize.cols;
+  if (typeof snapshotCols === 'number' && snapshotCols > 0) return snapshotCols;
+  return undefined;
+}
+
+/** Width assumed when the local terminal never reported one. */
+export const DEFAULT_STATUS_LINE_COLS = 80;
+
+/**
+ * Clamp a status-line label to the terminal width.
+ *
+ * The interactive verbs paint their status line at the bottom row inside an
+ * `ESC 7` / `ESC 8` (DECSC/DECRC) pair. That is only safe while the text
+ * *fits*: a label wider than the pane wraps past the last row, which scrolls
+ * the screen. Because the label is painted on the bottom row, every repaint
+ * then scrolls again — promoting the previous status line into the scrollback
+ * as content and eating one row of the agent's output each time. A narrow
+ * pane therefore turns a single status line into a growing stack of them with
+ * the agent's TUI shredded behind it. The `drive` label is 87 columns, so this
+ * fired on a standard 80-column terminal too; at 66 columns six repaints cost
+ * six rows of agent output.
+ *
+ * Truncation keeps the paint inside one row, so the wrap — and the scroll
+ * cascade it triggers — can never happen. Callers painting a terminal row can
+ * reserve the final column as well, avoiding the emulator's wrap-pending state.
+ * The tail is the part that carries the key hints, so an over-long label is
+ * trimmed from the *middle*: the verb and agent name stay readable and the
+ * `Ctrl+…` hints survive.
+ *
+ * Measured in display columns, not UTF-16 code units: an agent name carrying
+ * CJK or emoji is double-width, so a code-unit count would pass a label that
+ * still wraps — re-arming the exact cascade this prevents. Slicing is done on
+ * whole code points so a surrogate pair is never split in half.
+ */
+export function clampStatusLineText(
+  text: string,
+  cols: number | undefined,
+  reserveFinalColumn = false
+): string {
+  const terminalWidth = typeof cols === 'number' && cols > 0 ? Math.floor(cols) : DEFAULT_STATUS_LINE_COLS;
+  const width = reserveFinalColumn ? Math.max(terminalWidth - 1, 0) : terminalWidth;
+  if (displayWidth(text) <= width) return text;
+  // Too narrow to say anything useful — a bare head is still better than a
+  // wrap, and `…` alone would be meaningless.
+  if (width <= 1) return width === 1 ? takeColumns(text, 1).text : '';
+  const keep = width - 1; // the ellipsis occupies one column
+  const tailBudget = Math.floor(keep / 2);
+  const headBudget = keep - tailBudget;
+  const head = takeColumns(text, headBudget);
+  const tail = tailBudget > 0 ? takeColumns(text, tailBudget, 'end') : { text: '' };
+  return `${head.text}…${tail.text}`;
+}
+
+/**
+ * Column width of a string, counting East Asian Wide/Fullwidth characters and
+ * emoji as two columns and zero-width joiners/combining marks as none. This is
+ * the pragmatic subset a status line needs — it is not a full `wcwidth`.
+ */
+function displayWidth(text: string): number {
+  let total = 0;
+  for (const char of text) total += charWidth(char);
+  return total;
+}
+
+/** Codepoints that occupy no column: combining marks, ZWJ, variation selectors. */
+const ZERO_WIDTH_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0x0300, 0x036f],
+  [0x200d, 0x200d],
+  [0xfe00, 0xfe0f],
+];
+
+/** East Asian Wide / Fullwidth blocks, plus the emoji planes. */
+const DOUBLE_WIDTH_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0x1100, 0x115f],
+  [0x2e80, 0xa4cf],
+  [0xac00, 0xd7a3],
+  [0xf900, 0xfaff],
+  [0xfe30, 0xfe6f],
+  [0xff00, 0xff60],
+  [0xffe0, 0xffe6],
+  [0x1f300, 0x1faff],
+  [0x20000, 0x3fffd],
+];
+
+function inRanges(code: number, ranges: ReadonlyArray<readonly [number, number]>): boolean {
+  return ranges.some(([lo, hi]) => code >= lo && code <= hi);
+}
+
+function charWidth(char: string): number {
+  const code = char.codePointAt(0) ?? 0;
+  if (inRanges(code, ZERO_WIDTH_RANGES)) return 0;
+  return inRanges(code, DOUBLE_WIDTH_RANGES) ? 2 : 1;
+}
+
+/**
+ * Take whole code points from `text` until `budget` columns are used, from the
+ * start or the `end`. Never splits a surrogate pair, and never overshoots the
+ * budget — a double-width character that would exceed it is dropped.
+ */
+function takeColumns(text: string, budget: number, from: 'start' | 'end' = 'start'): { text: string } {
+  const chars = Array.from(text);
+  const ordered = from === 'end' ? chars.slice().reverse() : chars;
+  const taken: string[] = [];
+  let used = 0;
+  for (const char of ordered) {
+    const w = charWidth(char);
+    if (used + w > budget) break;
+    used += w;
+    taken.push(char);
+  }
+  return { text: (from === 'end' ? taken.reverse() : taken).join('') };
+}
+
+/**
+ * Reserve the local terminal's final row for an attach status line.
+ *
+ * Full-screen CLIs treat every PTY row as application-owned. If the remote PTY
+ * is resized to the local terminal's full height and Relay then paints a status
+ * line over its final row, both renderers continually overwrite each other.
+ * The result is the duplicated status text and torn TUI frames seen in drive
+ * and passthrough sessions. Give the child one fewer row and column: the row
+ * prevents cursor-addressed overlap, while the spare column prevents terminal
+ * autowrap from stepping past the child scroll margin into Relay's row.
+ */
+export function reserveStatusLineRow(
+  localSize: { rows: number; cols: number } | null
+): { rows: number; cols: number } | null {
+  if (!localSize) return null;
+  // A terminal can report a degenerate size: `script(1)` with no winsize, a
+  // minimized window, a size not yet reported after attach, or a teardown race
+  // all surface as 0 (or worse) rows/cols while `stdout.isTTY` is still true.
+  // Forwarding that verbatim made every attach mode POST `{rows: 0, cols: 0}`
+  // and collect `rows and cols must be positive integers` from the broker —
+  // harmless but alarming noise that has sent more than one investigation down
+  // the wrong path (relay#1597). Treat it the same as "no local size": skip the
+  // resize entirely rather than inventing dimensions the operator never had.
+  if (localSize.rows < 1 || localSize.cols < 1) return null;
+  if (localSize.rows < 3 || localSize.cols < 2) return localSize;
+  return {
+    rows: localSize.rows - 1,
+    cols: localSize.cols - 1,
+  };
+}
+
+/** Whether a terminal is large enough to dedicate a non-wrapping status row. */
+export function canReserveStatusLine(
+  localSize: { rows: number; cols: number } | null
+): localSize is { rows: number; cols: number } {
+  return localSize !== null && localSize.rows >= 3 && localSize.cols >= 2;
+}
+
+/**
+ * Constrain local scrolling to the child PTY's rows while preserving the
+ * current cursor. DECSTBM otherwise defaults to the physical terminal height,
+ * which includes Relay's status row.
+ */
+export function renderChildScrollRegion(rows: number): string {
+  // CSI s/u save only the cursor. DEC ESC 7/8 also preserve terminal state in
+  // common emulators and would therefore undo the newly installed margins.
+  return `\x1b[s\x1b[1;${Math.max(1, Math.floor(rows))}r\x1b[u`;
+}
+
+/**
+ * Keep a status label strictly inside one terminal row.
+ *
+ * Writing the final column with autowrap enabled advances to the next row and,
+ * on the terminal's bottom row, scrolls the entire TUI. Leave one cell unused
+ * and conservatively count non-ASCII code points as two cells so even unusual
+ * agent names cannot trigger a wrap.
+ */
+function conservativeTerminalCellWidth(character: string): number {
+  const codePoint = character.codePointAt(0) ?? 0;
+  return codePoint >= 0x20 && codePoint <= 0x7e ? 1 : 2;
+}
+
+export function fitStatusLineText(text: string, columns: number | undefined): string {
+  if (columns === undefined || !Number.isFinite(columns)) return text;
+  const available = Math.max(0, Math.floor(columns) - 1);
+  if (available === 0) return '';
+
+  let width = 0;
+  let result = '';
+  let truncated = false;
+  for (const character of text) {
+    const characterWidth = conservativeTerminalCellWidth(character);
+    if (width + characterWidth > available) {
+      truncated = true;
+      break;
+    }
+    result += character;
+    width += characterWidth;
+  }
+  if (!truncated) return result;
+  while (width + 1 > available && result.length > 0) {
+    const characters = Array.from(result);
+    const removed = characters.pop() ?? '';
+    width -= conservativeTerminalCellWidth(removed);
+    result = characters.join('');
+  }
+  return `${result}~`;
+}
+
+/**
  * Sync the agent's PTY to the driver's local terminal size. tmux /
  * screen / ssh all do this — without it a TUI in the agent renders into
  * the size the PTY was spawned with, ignoring the human's viewport.
@@ -373,15 +606,26 @@ export async function syncInitialPtySize(
   verb: string,
   deps: { fetch: typeof globalThis.fetch; log: (...args: unknown[]) => void },
   options?: { sessionId?: string }
-): Promise<void> {
-  if (!localSize) return;
+): Promise<boolean> {
+  if (!localSize) return false;
   try {
-    await createBrokerClient(connection, deps.fetch).resizePty(name, localSize.rows, localSize.cols, options);
+    const result = await createBrokerClient(connection, deps.fetch).resizePty(
+      name,
+      localSize.rows,
+      localSize.cols,
+      options
+    );
+    if (result.applied === false) {
+      deps.log(`[${verb}] broker did not apply the reserved PTY size; using status repaint fallback`);
+      return false;
+    }
+    return true;
   } catch (err: unknown) {
     const failure = mapBrokerSdkFailure(err);
     deps.log(
       `[${verb}] could not sync agent PTY size to local terminal (${failure.message ?? 'unknown'}); continuing`
     );
+    return false;
   }
 }
 
@@ -389,7 +633,8 @@ export async function syncInitialPtySize(
  * Read the worker's prior inbound delivery mode and flip it to
  * `targetMode`. Returns the previous mode on success so the caller can
  * restore it on detach; returns `null` (and writes an error) when the
- * flip fails so the caller bails before touching the terminal.
+ * request fails or the broker reports that the requested transition did not
+ * complete, so the caller bails before touching the terminal.
  *
  * Non-404 errors are surfaced as `Error: could not ${actionPhrase}:
  * ${message}` so callers pass verb-appropriate wording (e.g. "switch to
@@ -401,7 +646,12 @@ export async function switchInboundDeliveryModeOrAbort(
   name: string,
   targetMode: InboundDeliveryMode,
   actionPhrase: string,
-  deps: { fetch: typeof globalThis.fetch; error: (...args: unknown[]) => void }
+  deps: {
+    fetch: typeof globalThis.fetch;
+    error: (...args: unknown[]) => void;
+    /** Optional best-effort fleet placement lookup, same contract as {@link AttachSnapshotDeps.fleetHint}. */
+    fleetHint?: (name: string) => Promise<string | null>;
+  }
 ): Promise<{ previousMode: InboundDeliveryMode | null; sessionRevision: string | null } | null> {
   let previousMode: InboundDeliveryMode | null = null;
   try {
@@ -412,11 +662,38 @@ export async function switchInboundDeliveryModeOrAbort(
   }
   try {
     const result = await createBrokerClient(connection, deps.fetch).setInboundDeliveryMode(name, targetMode);
+    // A manual_flush → auto_inject transition can fail partway through when
+    // draining a parked message into the harness fails. The broker deliberately
+    // keeps and reports manual_flush in that case even though the PUT itself
+    // succeeded. Starting an attach session as if the target mode landed would
+    // render false state and make its first guarded toggle a no-op.
+    if (result.mode !== targetMode) {
+      deps.error(
+        `Error: could not ${actionPhrase}: broker remained in ${result.mode} mode while draining queued messages`
+      );
+      return null;
+    }
     return { previousMode, sessionRevision: result.revision };
   } catch (err: unknown) {
     const failure = mapBrokerSdkFailure(err);
     if (failure.status === 404) {
-      deps.error(`Error: no agent named '${name}'`);
+      let hint: string | null = null;
+      if (deps.fleetHint) {
+        try {
+          hint = await deps.fleetHint(name);
+        } catch {
+          // Best-effort lookup — preserve the existing not-found message.
+        }
+      }
+      if (hint) {
+        const safeArg = `'${name.replace(/'/g, "'\\''")}'`;
+        deps.error(
+          `Error: agent '${name}' is ${hint}; cross-node attach is not yet supported` +
+            ` — run \`agent-relay node agent attach ${safeArg}\` on that machine`
+        );
+      } else {
+        deps.error(`Error: no agent named '${name}'`);
+      }
     } else {
       deps.error(`Error: could not ${actionPhrase}: ${failure.message ?? 'unknown error'}`);
     }
@@ -536,6 +813,9 @@ export class AnsiBoundaryScanner {
     switch (this.state) {
       case 'ground':
         if (c === 0x1b) this.state = 'esc';
+        else if (c === 0x9b) this.state = 'csi';
+        else if (c === 0x9d) this.state = 'osc';
+        else if (c === 0x90 || c === 0x98 || c === 0x9e || c === 0x9f) this.state = 'str';
         return;
       case 'esc':
         if (c === 0x5b)
@@ -547,25 +827,266 @@ export class AnsiBoundaryScanner {
         else this.state = 'ground'; // 2-byte escape (ESC 7, ESC 8, ESC c, …)
         return;
       case 'csi':
-        if (c === 0x1b)
+        if (c === 0x18 || c === 0x1a)
+          this.state = 'ground'; // CAN / SUB cancel the sequence
+        else if (c === 0x1b)
           this.state = 'esc'; // stray ESC restarts
         else if (c >= 0x40 && c <= 0x7e) this.state = 'ground'; // final byte ends the CSI
         return;
       case 'osc':
-        if (c === 0x07)
+        if (c === 0x07 || c === 0x9c || c === 0x18 || c === 0x1a)
           this.state = 'ground'; // BEL terminator
         else if (c === 0x1b) this.state = 'osc_esc'; // possible ST (ESC \)
         return;
       case 'osc_esc':
-        this.state = c === 0x5c ? 'ground' : 'osc';
+        this.state =
+          c === 0x5c || c === 0x9c || c === 0x18 || c === 0x1a ? 'ground' : c === 0x1b ? 'osc_esc' : 'osc';
         return;
       case 'str':
-        if (c === 0x1b) this.state = 'str_esc';
+        if (c === 0x9c || c === 0x18 || c === 0x1a) this.state = 'ground';
+        else if (c === 0x1b) this.state = 'str_esc';
         return;
       case 'str_esc':
-        this.state = c === 0x5c ? 'ground' : 'str';
+        this.state =
+          c === 0x5c || c === 0x9c || c === 0x18 || c === 0x1a ? 'ground' : c === 0x1b ? 'str_esc' : 'str';
         return;
     }
+  }
+}
+
+/**
+ * Detect terminal controls that can erase or replace Relay's reserved status
+ * row even though the child PTY itself is one row shorter.
+ *
+ * Cursor-addressed TUI drawing stays inside the child grid, but erase-display,
+ * terminal reset, and alternate-screen switches act on the local terminal as a
+ * whole. Attach clients reinstall their child scroll region after those
+ * operations; the status controller separately repaints at a safe ANSI
+ * boundary. A short carry handles controls split across WS frames.
+ */
+export class StatusLineInvalidationScanner {
+  private carry = '';
+
+  push(chunk: string): boolean {
+    const input = this.carry + chunk;
+    const esc = String.fromCharCode(0x1b);
+    const privateModes = new RegExp(`${esc}\\[\\?([0-9;]+)[hl]`, 'g');
+    let invalidatesDisplay = false;
+    let privateMatch: RegExpExecArray | null;
+    while ((privateMatch = privateModes.exec(input)) !== null) {
+      if (privateMatch[1].split(';').some((mode) => ['47', '1047', '1049'].includes(mode))) {
+        invalidatesDisplay = true;
+      }
+    }
+    // Retain only an incomplete candidate control. Keeping arbitrary completed
+    // output would rediscover the same erase on later chunks and recreate the
+    // repaint storm this scanner exists to prevent.
+    const lastEscape = input.lastIndexOf(esc);
+    const suffix = lastEscape >= 0 ? input.slice(lastEscape) : '';
+    const incompleteCsi = suffix.startsWith(`${esc}[`) && /^[?0-9;]*$/.test(suffix.slice(2));
+    this.carry = suffix === esc || incompleteCsi ? suffix : '';
+
+    return (
+      // ED 0/default clears from the cursor through the reserved final row;
+      // ED 2 clears the full display.
+      input.includes(`${esc}[J`) ||
+      input.includes(`${esc}[0J`) ||
+      input.includes(`${esc}[2J`) ||
+      // Alternate-screen changes replace the entire visible buffer.
+      invalidatesDisplay ||
+      // RIS resets the terminal and clears the active display.
+      input.includes(`${esc}c`)
+    );
+  }
+}
+
+/** Track the child application's active DECSTBM margins across streamed ANSI. */
+export class TerminalScrollRegionTracker {
+  private parserState: 'ground' | 'escape' | 'csi' | 'string' | 'string_escape' = 'ground';
+  private csiParams = '';
+  private csiSupported = true;
+  private stringAllowsBel = false;
+  private rows: number;
+  private top = 1;
+  private bottom: number;
+  private originMode = false;
+  private alternateActive = false;
+  private primaryRegion: { top: number; bottom: number };
+  private alternateRegion: { top: number; bottom: number };
+
+  constructor(rows: number) {
+    this.rows = Math.max(1, Math.floor(rows));
+    this.bottom = this.rows;
+    this.primaryRegion = { top: 1, bottom: this.rows };
+    this.alternateRegion = { top: 1, bottom: this.rows };
+  }
+
+  setRows(rows: number): void {
+    this.rows = Math.max(1, Math.floor(rows));
+    this.top = 1;
+    this.bottom = this.rows;
+    this.primaryRegion = { top: 1, bottom: this.rows };
+    this.alternateRegion = { top: 1, bottom: this.rows };
+  }
+
+  push(chunk: string): void {
+    for (const character of chunk) this.consumeCharacter(character);
+  }
+
+  get region(): { top: number; bottom: number } {
+    return { top: this.top, bottom: this.bottom };
+  }
+
+  get isOriginMode(): boolean {
+    return this.originMode;
+  }
+
+  private consumeCharacter(character: string): void {
+    switch (this.parserState) {
+      case 'ground':
+        this.consumeGround(character);
+        break;
+      case 'escape':
+        this.consumeEscape(character);
+        break;
+      case 'csi':
+        this.consumeCsi(character);
+        break;
+      case 'string':
+        this.consumeString(character);
+        break;
+      case 'string_escape':
+        this.consumeStringEscape(character);
+        break;
+    }
+  }
+
+  private consumeString(character: string): void {
+    if (character === '\x1b') {
+      this.parserState = 'string_escape';
+      return;
+    }
+    if (
+      character === '\x9c' ||
+      character === '\x18' ||
+      character === '\x1a' ||
+      (this.stringAllowsBel && character === '\x07')
+    ) {
+      this.parserState = 'ground';
+    }
+  }
+
+  private consumeStringEscape(character: string): void {
+    if (character === '\\' || character === '\x9c' || character === '\x18' || character === '\x1a') {
+      this.parserState = 'ground';
+    } else {
+      this.parserState = character === '\x1b' ? 'string_escape' : 'string';
+    }
+  }
+
+  private consumeGround(character: string): void {
+    if (character === '\x1b') this.parserState = 'escape';
+    else if (character === '\x9b') this.beginCsi();
+    else if (['\x90', '\x98', '\x9d', '\x9e', '\x9f'].includes(character)) {
+      this.beginString(character === '\x9d');
+    }
+  }
+
+  private consumeEscape(character: string): void {
+    if (character === '[') this.beginCsi();
+    else if (['P', 'X', ']', '^', '_'].includes(character)) this.beginString(character === ']');
+    else {
+      if (character === 'c') this.resetTrackedState();
+      this.parserState = character === '\x1b' ? 'escape' : 'ground';
+    }
+  }
+
+  private beginCsi(): void {
+    this.parserState = 'csi';
+    this.csiParams = '';
+    this.csiSupported = true;
+  }
+
+  private beginString(allowsBel: boolean): void {
+    this.parserState = 'string';
+    this.stringAllowsBel = allowsBel;
+  }
+
+  private consumeCsi(character: string): void {
+    if (character === '\x18' || character === '\x1a') {
+      this.parserState = 'ground';
+      return;
+    }
+    if (character === '\x1b') {
+      this.parserState = 'escape';
+      return;
+    }
+    const code = character.codePointAt(0) ?? 0;
+    if (code >= 0x30 && code <= 0x3f) {
+      this.csiParams += character;
+      return;
+    }
+    if (code >= 0x20 && code <= 0x2f) {
+      this.csiSupported = false;
+      return;
+    }
+    if (code >= 0x40 && code <= 0x7e) {
+      if (this.csiSupported) this.applyCsi(this.csiParams, character);
+      this.parserState = 'ground';
+    }
+  }
+
+  private applyCsi(params: string, final: string): void {
+    if ((final === 'h' || final === 'l') && params.startsWith('?')) {
+      this.applyPrivateModes(params.slice(1).split(';'), final === 'h');
+      return;
+    }
+    if (final !== 'r' || params.startsWith('?')) return;
+    const [topRaw = '', bottomRaw = ''] = params.split(';');
+    const parsedTop = topRaw === '' ? 0 : Number.parseInt(topRaw, 10);
+    const parsedBottom = bottomRaw === '' ? 0 : Number.parseInt(bottomRaw, 10);
+    const top = parsedTop === 0 ? 1 : parsedTop;
+    const bottom = parsedBottom === 0 ? this.rows : parsedBottom;
+    if (Number.isFinite(top) && Number.isFinite(bottom) && top >= 1 && bottom > top) {
+      const clampedTop = Math.min(top, this.rows);
+      const clampedBottom = Math.min(bottom, this.rows);
+      if (clampedBottom > clampedTop) {
+        this.top = clampedTop;
+        this.bottom = clampedBottom;
+      }
+    }
+  }
+
+  private applyPrivateModes(modes: string[], enabled: boolean): void {
+    if (modes.includes('6')) this.originMode = enabled;
+    if (modes.some((mode) => ['47', '1047', '1049'].includes(mode))) {
+      this.switchScreenBuffer(enabled, enabled);
+    }
+  }
+
+  private resetTrackedState(): void {
+    this.top = 1;
+    this.bottom = this.rows;
+    this.originMode = false;
+    this.alternateActive = false;
+    this.primaryRegion = { top: 1, bottom: this.rows };
+    this.alternateRegion = { top: 1, bottom: this.rows };
+  }
+
+  private switchScreenBuffer(enterAlternate: boolean, resetAlternate: boolean): void {
+    if (enterAlternate === this.alternateActive) return;
+    if (resetAlternate) {
+      this.alternateRegion = { top: 1, bottom: this.rows };
+    }
+    if (this.alternateActive) {
+      this.alternateRegion = { top: this.top, bottom: this.bottom };
+    } else {
+      this.primaryRegion = { top: this.top, bottom: this.bottom };
+    }
+    this.alternateActive = enterAlternate;
+    const region = enterAlternate ? this.alternateRegion : this.primaryRegion;
+    this.top = region.top;
+    this.bottom = region.bottom;
   }
 }
 
@@ -576,18 +1097,13 @@ export interface StatusLineControllerOptions {
   /** Write to stdout. */
   write: (chunk: string) => void;
   /** When false (stdout is not a TTY) the status line is never painted. */
-  enabled: boolean;
+  enabled: boolean | (() => boolean);
   /**
    * Minimum ms between repaints. `0` paints on every request (no coalescing);
    * a positive value coalesces bursts of per-chunk repaints into at most one
    * paint per window, shrinking the splice/DECSC-clobber window.
    */
   coalesceMs: number;
-  /**
-   * Max ms to hold a repaint while output keeps ending mid escape-sequence
-   * before painting anyway (bounded residual splice risk). Default 100.
-   */
-  boundaryHoldMs?: number;
   setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
   clearTimer?: (t: ReturnType<typeof setTimeout>) => void;
   now?: () => number;
@@ -600,8 +1116,8 @@ export interface StatusLineControllerOptions {
  *  - **Non-TTY skip** — when `enabled` is false, nothing is ever written.
  *  - **Boundary-hold** — a repaint is deferred while the observed output ends
  *    mid ANSI escape sequence, so the status line never splices into a
- *    half-transmitted CSI. It paints as soon as the next chunk lands at a
- *    boundary (or after `boundaryHoldMs` as a bounded fallback).
+ *    half-transmitted CSI. It paints only after a later chunk returns the
+ *    stream to a real boundary.
  *  - **Coalescing** — repaints are rate-limited to at most one per
  *    `coalesceMs`, shrinking the window in which our save/restore-cursor wrap
  *    can clobber the agent's own pending DECSC.
@@ -615,24 +1131,32 @@ export interface StatusLineControllerOptions {
 export class StatusLineController {
   private readonly scanner = new AnsiBoundaryScanner();
   private timer: ReturnType<typeof setTimeout> | null = null;
-  private timerForce = false;
   private wantPaint = false;
   private lastPaintAt = Number.NEGATIVE_INFINITY;
   private disposed = false;
 
   constructor(private readonly opts: StatusLineControllerOptions) {}
 
+  private isEnabled(): boolean {
+    return typeof this.opts.enabled === 'function' ? this.opts.enabled() : this.opts.enabled;
+  }
+
   /** Record server output for boundary tracking; flush a held repaint if the
    *  stream is now back at a sequence boundary. */
   observeOutput(chunk: string): void {
     if (this.disposed) return;
     this.scanner.push(chunk);
+    if (!this.isEnabled()) {
+      this.wantPaint = false;
+      this.clearTimer();
+      return;
+    }
     if (this.wantPaint) this.flush();
   }
 
   /** Request a repaint (coalesced + boundary-held). */
   request(): void {
-    if (this.disposed || !this.opts.enabled) return;
+    if (this.disposed || !this.isEnabled()) return;
     this.wantPaint = true;
     this.flush();
   }
@@ -649,37 +1173,31 @@ export class StatusLineController {
   }
 
   private flush(): void {
-    if (this.disposed || !this.wantPaint) return;
+    if (this.disposed || !this.wantPaint || !this.isEnabled()) return;
     if (!this.scanner.atBoundary) {
-      this.arm(this.opts.boundaryHoldMs ?? 100, true);
       return;
     }
-    // Back at a boundary: any pending *force* (boundary-hold) timer carries the
-    // wrong deadline now — it was armed to paint mid-sequence after
-    // `boundaryHoldMs`, which would either paint later than the coalescing
-    // window needs or bypass the window entirely. Clear it so the normal
-    // coalescing logic below re-arms a plain timer for the correct remainder.
-    // A non-force (coalescing) timer already has the right deadline, so leave
-    // it in place.
-    if (this.timer && this.timerForce) this.clearTimer();
     const elapsed = this.now() - this.lastPaintAt;
     if (elapsed >= this.opts.coalesceMs) {
       this.paintNow();
     } else {
-      this.arm(this.opts.coalesceMs - elapsed, false);
+      this.arm(this.opts.coalesceMs - elapsed);
     }
   }
 
   private paintNow(): void {
     this.clearTimer();
+    if (!this.isEnabled()) {
+      this.wantPaint = false;
+      return;
+    }
     this.wantPaint = false;
     this.lastPaintAt = this.now();
     this.opts.write(this.opts.render());
   }
 
-  private arm(ms: number, force: boolean): void {
+  private arm(ms: number): void {
     if (this.timer) return;
-    this.timerForce = force;
     const set =
       this.opts.setTimer ??
       ((fn, delay) => {
@@ -689,9 +1207,11 @@ export class StatusLineController {
       });
     this.timer = set(() => {
       this.timer = null;
-      if (this.disposed || !this.wantPaint) return;
-      if (this.timerForce) this.paintNow();
-      else this.flush();
+      if (this.disposed || !this.wantPaint || !this.isEnabled()) {
+        this.wantPaint = false;
+        return;
+      }
+      this.flush();
     }, ms);
   }
 
@@ -712,14 +1232,19 @@ export interface BackpressureWritable {
 }
 
 /**
- * A backpressure-aware writer plus a teardown hook. Call the writer with each
- * chunk; call {@link BackpressureAwareWriter.dispose} on detach to drop any
- * still-queued chunks and unhook the pending `'drain'` listener so nothing
- * flushes to stdout after the session tears down.
+ * A backpressure-aware writer plus teardown hooks. Call the writer with each
+ * chunk. Interactive attaches call {@link BackpressureAwareWriter.dispose} on
+ * detach to drop any still-queued terminal bytes; machine-readable callers can
+ * call {@link BackpressureAwareWriter.flush} first to preserve their records.
  */
 export interface BackpressureAwareWriter {
   /** Write a chunk, respecting backpressure. No-op after {@link dispose}. */
   write: (chunk: string) => void;
+  /**
+   * Queue every locally buffered chunk to the underlying stream in FIFO order.
+   * The stream's own buffered writes are drained by the shared CLI exit path.
+   */
+  flush: () => void;
   /** Drop the pending queue and unhook the `'drain'` listener. Idempotent. */
   dispose: () => void;
 }
@@ -798,7 +1323,22 @@ export function createBackpressureAwareWriter(
     off?.call(stdout, 'drain', flushQueue);
   };
 
-  return { write, dispose };
+  const flush = (): void => {
+    if (disposed || queue.length === 0) return;
+    const pending = queue;
+    queue = [];
+    queuedBytes = 0;
+    paused = false;
+    const off = stdout.off ?? stdout.removeListener;
+    off?.call(stdout, 'drain', flushQueue);
+    // `stdout.write` queues asynchronously on pipes. Preserving JSON records
+    // is more important than applying another local backpressure pause here;
+    // exitAfterFlush writes a final sentinel and waits (bounded) for that
+    // stream queue after command completion.
+    for (const chunk of pending) stdout.write(chunk);
+  };
+
+  return { write, flush, dispose };
 }
 
 /** Dependencies for `captureInitialSnapshot`. `captureAndRenderSnapshot`
@@ -830,9 +1370,10 @@ export async function captureInitialSnapshot(
   deps: CaptureInitialSnapshotDeps
 ): Promise<{ snapshotRows?: number } | null> {
   const render = deps.captureAndRenderSnapshot ?? captureAndRenderSnapshot;
-  const snapshot = await render({ url: connection.url, apiKey: connection.apiKey }, name, {
+  const snapshot = await render(connection, name, {
     fetch: deps.fetch,
     writeChunk: deps.writeChunk,
+    fleetHint: deps.fleetHint,
   });
   switch (snapshot.status) {
     case 'ok':

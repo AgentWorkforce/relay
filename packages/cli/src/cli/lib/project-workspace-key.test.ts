@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   projectWorkspaceKeyPath,
   readProjectWorkspaceKey,
+  readProjectWorkspaceSession,
   writeProjectWorkspaceKey,
 } from './project-workspace-key.js';
 
@@ -27,6 +28,14 @@ describe('project workspace key store', () => {
     // Owner-only permissions, matching connection.json.
     const mode = fs.statSync(projectWorkspaceKeyPath(dataDir)).mode & 0o777;
     expect(mode).toBe(0o600);
+  });
+
+  it('round-trips the enrolled node association without exposing another credential', () => {
+    writeProjectWorkspaceKey(dataDir, 'rk_project', { enrolledNodeId: ' node_1 ' });
+    expect(readProjectWorkspaceSession(dataDir)).toEqual({
+      workspaceKey: 'rk_project',
+      enrolledNodeId: 'node_1',
+    });
   });
 
   it('reads undefined for a missing, malformed, or blank-key file', () => {

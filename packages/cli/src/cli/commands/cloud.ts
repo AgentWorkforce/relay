@@ -7,6 +7,7 @@ import {
   ensureAuthenticated,
   ensureCloudSession,
   authorizedApiFetch,
+  isHeadlessEnvironment,
   readStoredAuth,
   clearStoredAuth,
   defaultApiUrl,
@@ -24,14 +25,25 @@ import {
   normalizeProvider,
   enrollFleetNode,
   upsertFleetNodeEnrollment,
+  redactCredentialValues,
+  toCloudIdentity,
+  writeStoredIdentity,
+  IDENTITY_FILE_PATH,
   type WhoAmIResponse,
   type WorkflowFileType,
+  type RelayflowVersion,
   type WorkflowSchedule,
 } from '@agent-relay/cloud';
 
+import { linkEnrolledNodeToProjectPin, type EnrolledNodePinResult } from '../lib/enrollment-pin.js';
+import { describeError } from '../lib/describe-error.js';
 import { defaultExit } from '../lib/exit.js';
+import { sanitizeForTerminalLine } from '../lib/formatting.js';
+import { maskSecret } from '../lib/redact.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
 import { track } from '../telemetry/index.js';
+import { registerCloudRoomCommands } from './cloud-room.js';
+import { registerCloudIntegrationCommands } from './cloud-integration.js';
 import { registerCloudWorkerCommands } from './cloud-worker.js';
 
 const CLOUD_SYNC_PATCH_EXCLUDES = [
@@ -53,6 +65,7 @@ type ExitFn = (code: number) => never;
 
 export interface CloudDependencies {
   log: (...args: unknown[]) => void;
+  warn: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
   ensureCloudSession: typeof ensureCloudSession;
@@ -65,6 +78,8 @@ export interface CloudDependencies {
    * "recovery write also failed" last resort.
    */
   writeEnrollmentRecoveryFile: (record: unknown) => string;
+  /** Reconcile a freshly enrolled node against this project's workspace pin. */
+  linkEnrolledNodeToProjectPin: typeof linkEnrolledNodeToProjectPin;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -72,6 +87,7 @@ export interface CloudDependencies {
 function withDefaults(overrides: Partial<CloudDependencies> = {}): CloudDependencies {
   return {
     log: (...args: unknown[]) => console.log(...args),
+    warn: (...args: unknown[]) => console.warn(...args),
     error: (...args: unknown[]) => console.error(...args),
     exit: defaultExit,
     ensureCloudSession,
@@ -89,6 +105,7 @@ function withDefaults(overrides: Partial<CloudDependencies> = {}): CloudDependen
       fs.chmodSync(file, 0o600);
       return file;
     },
+    linkEnrolledNodeToProjectPin,
     ...overrides,
   };
 }
@@ -110,10 +127,27 @@ function parseNonNegativeInteger(value: string): number {
 }
 
 function parseWorkflowFileType(value: string): WorkflowFileType {
-  if (value === 'yaml' || value === 'ts' || value === 'py') {
+  if (value === 'yaml' || value === 'ts') {
     return value;
   }
-  throw new InvalidArgumentError('Expected workflow type to be one of: yaml, ts, py');
+  throw new InvalidArgumentError('Expected workflow type to be one of: yaml, ts');
+}
+
+function parseRelayflowVersion(value: string): RelayflowVersion {
+  if (value === 'v1' || value === 'v2') {
+    return value;
+  }
+  throw new InvalidArgumentError('Expected Relayflow version to be one of: v1, v2');
+}
+
+function parseScheduleRelayflowVersion(value: string): 'v1' {
+  const relayflowVersion = parseRelayflowVersion(value);
+  if (relayflowVersion === 'v2') {
+    throw new InvalidArgumentError(
+      'Relayflow v2 schedules are not supported; omit --relayflow-version or use v1.'
+    );
+  }
+  return relayflowVersion;
 }
 
 function parseEnvAssignment(value: string, previous: Record<string, string> = {}): Record<string, string> {
@@ -149,8 +183,27 @@ type ResolvedCloudWorkspace = {
   auth: CloudAuth;
 };
 
+/** One entry of `GET /api/v1/workspaces` — the workspaces this login can use. */
+type CloudWorkspaceSummary = {
+  id: string;
+  slug: string;
+  name: string;
+};
+
 const CLOUD_WORKSPACE_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const UNIFIED_WORKSPACE_ID_PATTERN = /^rw_[a-z0-9]{8}$/;
+
+const WORKSPACE_SELECTOR_HELP =
+  "Run 'agent-relay cloud workspaces' to list the workspaces this login can use.";
+
+/**
+ * True when the value carries a live credential prefix. A pasted secret must
+ * never be treated as a workspace name: name resolution matches locally
+ * against the listing, but reporting "no workspace named X" would echo it.
+ */
+function looksLikeCredential(value: string): boolean {
+  return redactCredentialValues(value) !== value;
+}
 
 function isCloudLoginError(error: unknown): boolean {
   if (!isObject(error) || typeof error.code !== 'string') {
@@ -242,18 +295,132 @@ async function resolveCloudWorkspace(
   return { cloudWorkspaceId, auth: activeAuth };
 }
 
+function workspaceListError(response: Response): Error {
+  if (response.status === 401) {
+    return new Error('Cloud login required. Run `agent-relay cloud login` and retry.');
+  }
+  if (response.status === 403) {
+    return new Error('This login is not allowed to list Cloud workspaces.');
+  }
+  if (response.status === 429) {
+    const retryAfter = response.headers.get('retry-after')?.trim();
+    return new Error(
+      `Cloud workspace list rate limit exceeded.${
+        retryAfter ? ` Retry-After: ${retryAfter} seconds.` : ' Wait and retry.'
+      }`
+    );
+  }
+
+  const detail = `${response.status} ${response.statusText}`.trim();
+  return new Error(`Failed to list Cloud workspaces: ${detail}`);
+}
+
+function toWorkspaceSummary(entry: unknown): CloudWorkspaceSummary | null {
+  if (!isObject(entry) || typeof entry.id !== 'string' || !entry.id.trim()) {
+    return null;
+  }
+  const id = entry.id.trim();
+  const slug = typeof entry.slug === 'string' && entry.slug.trim() ? entry.slug.trim() : id;
+  const name = typeof entry.name === 'string' && entry.name.trim() ? entry.name.trim() : slug;
+  return { id, slug, name };
+}
+
+/**
+ * List the Cloud workspaces reachable from the stored login. This is the only
+ * discovery path the CLI has for workspace IDs, so both `cloud workspaces` and
+ * name-based `--workspace` resolution go through it.
+ */
+async function listCloudWorkspaces(
+  auth: CloudAuth,
+  deps: Pick<CloudDependencies, 'authorizedApiFetch'>
+): Promise<{ workspaces: CloudWorkspaceSummary[]; auth: CloudAuth }> {
+  const { response, auth: activeAuth } = await deps.authorizedApiFetch(
+    auth,
+    '/api/v1/workspaces',
+    { method: 'GET' },
+    { interactive: false }
+  );
+  const payload = (await response.json().catch(() => null)) as unknown;
+
+  if (!response.ok) {
+    throw workspaceListError(response);
+  }
+  if (!isObject(payload) || !Array.isArray(payload.workspaces)) {
+    throw new Error('Cloud workspace list returned an invalid response.');
+  }
+
+  const workspaces = payload.workspaces
+    .map(toWorkspaceSummary)
+    .filter((entry): entry is CloudWorkspaceSummary => entry !== null);
+
+  return { workspaces, auth: activeAuth };
+}
+
+/**
+ * Match a user-supplied selector against the listing. ID beats slug beats
+ * name so an exact identifier is never shadowed by someone else's display
+ * name, and each tier is matched case-insensitively.
+ */
+function matchWorkspaceSelector(
+  selector: string,
+  workspaces: CloudWorkspaceSummary[]
+): CloudWorkspaceSummary[] {
+  const needle = selector.trim().toLowerCase();
+  for (const field of ['id', 'slug', 'name'] as const) {
+    const matches = workspaces.filter((workspace) => workspace[field].toLowerCase() === needle);
+    if (matches.length > 0) {
+      return matches;
+    }
+  }
+  return [];
+}
+
+/**
+ * Turn `--workspace` into an identifier the resolver accepts. UUIDs and
+ * unified `rw_` IDs pass straight through; anything else is looked up by name
+ * or slug against the login's workspace listing.
+ */
+async function resolveWorkspaceSelector(
+  selector: string,
+  auth: CloudAuth,
+  deps: Pick<CloudDependencies, 'authorizedApiFetch'>
+): Promise<{ workspaceId: string; auth: CloudAuth }> {
+  if (CLOUD_WORKSPACE_UUID_PATTERN.test(selector) || UNIFIED_WORKSPACE_ID_PATTERN.test(selector)) {
+    return { workspaceId: selector, auth };
+  }
+
+  const listed = await listCloudWorkspaces(auth, deps);
+  const matches = matchWorkspaceSelector(selector, listed.workspaces);
+
+  if (matches.length === 1) {
+    return { workspaceId: matches[0].id, auth: listed.auth };
+  }
+  if (matches.length > 1) {
+    throw new Error(
+      `That name matches ${matches.length} Cloud workspaces (${matches
+        .map((workspace) => workspace.id)
+        .join(', ')}). Pass the workspace ID instead.`
+    );
+  }
+
+  // Nothing matched. The credential check only picks the error message — it
+  // must not gate the lookup, because the redactor's prefixes are deliberately
+  // broad and a real workspace may legitimately be named `br_team`. Neither
+  // message echoes the selector: an unmatched value may be a pasted secret.
+  throw new Error(
+    looksLikeCredential(selector)
+      ? `That value looks like a credential, not a workspace. Pass a workspace name, Cloud workspace UUID, or unified rw_ workspace ID. ${WORKSPACE_SELECTOR_HELP}`
+      : `No Cloud workspace matched that name. ${WORKSPACE_SELECTOR_HELP}`
+  );
+}
+
 async function mintFleetNodeEnrollment(
   options: { workspaceId: string; name?: string; maxAgents?: number },
   deps: Pick<CloudDependencies, 'ensureCloudSession' | 'authorizedApiFetch'>
 ): Promise<MintedFleetNodeEnrollment> {
   const workspaceId = options.workspaceId.trim();
   if (!workspaceId) {
-    throw new Error('A workspace ID is required for session-based enrollment.');
-  }
-  if (!CLOUD_WORKSPACE_UUID_PATTERN.test(workspaceId) && !UNIFIED_WORKSPACE_ID_PATTERN.test(workspaceId)) {
-    throw new Error(
-      'Unsupported Cloud workspace identifier. Use a Cloud workspace UUID or unified rw_ workspace ID.'
-    );
+    throw new Error('A workspace name or ID is required for session-based enrollment.');
   }
 
   try {
@@ -261,7 +428,8 @@ async function mintFleetNodeEnrollment(
       apiUrl: defaultApiUrl(),
       interactive: false,
     });
-    const resolved = await resolveCloudWorkspace(workspaceId, session.auth, deps);
+    const selected = await resolveWorkspaceSelector(workspaceId, session.auth, deps);
+    const resolved = await resolveCloudWorkspace(selected.workspaceId, selected.auth, deps);
     const { response } = await deps.authorizedApiFetch(
       resolved.auth,
       '/api/v1/fleet/enrollment-tokens',
@@ -278,7 +446,9 @@ async function mintFleetNodeEnrollment(
     const payload = (await response.json().catch(() => null)) as unknown;
 
     if (!response.ok) {
-      throw enrollmentTokenMintError(response, payload, workspaceId);
+      // Report the resolved identifier, never the raw selector: by this point
+      // the selector has matched a real workspace, so the ID is safe to echo.
+      throw enrollmentTokenMintError(response, payload, selected.workspaceId);
     }
     if (
       !isObject(payload) ||
@@ -299,6 +469,35 @@ async function mintFleetNodeEnrollment(
       throw new Error('Cloud login required. Run `agent-relay cloud login` and retry.');
     }
     throw error;
+  }
+}
+
+/**
+ * Link a redeemed enrollment to this project's workspace pin and report anything
+ * the operator must act on. Runs after the one-time token is already consumed,
+ * so every failure here is reported and swallowed — never fatal.
+ */
+function reconcileEnrollmentPin(
+  nodeId: string,
+  deps: Pick<CloudDependencies, 'warn' | 'linkEnrolledNodeToProjectPin'>
+): EnrolledNodePinResult | undefined {
+  try {
+    const result = deps.linkEnrolledNodeToProjectPin({ nodeId });
+    if (result.status === 'conflict') {
+      deps.warn(
+        `This project's workspace pin (${result.pinPath}) is already linked to node ${result.pinnedNodeId}, ` +
+          `so it was left unchanged. 'relay node up' here will keep serving ${result.pinnedNodeId}, not the node ` +
+          `just enrolled (${result.nodeId}). Update or remove the pin to serve the new node.`
+      );
+    }
+    return result;
+  } catch (err) {
+    deps.warn(
+      `Enrollment succeeded but this project's workspace pin could not be updated: ${describeError(
+        err
+      )}. 'relay node up' in this project may ignore the new enrollment.`
+    );
+    return undefined;
   }
 }
 
@@ -334,6 +533,39 @@ async function resolveFleetNodeEnrollmentInput(
     enrollmentToken: minted.token,
     enrollmentUrl: minted.enrollmentUrl,
   };
+}
+
+/**
+ * Render `name (id)` for whoami, or `(none)` when the login has no selection.
+ * The ID is Cloud-provided text like the name, so it is sanitized too.
+ */
+function formatWorkspaceLabel(entry: { id: string; name?: string | null } | null | undefined): string {
+  if (!entry) {
+    return '(none)';
+  }
+  const name = entry.name?.trim() ? sanitizeForTerminalLine(entry.name.trim()) : '(no name)';
+  return `${name} (${sanitizeForTerminalLine(entry.id)})`;
+}
+
+function renderWorkspaceList(workspaces: CloudWorkspaceSummary[], log: (...args: unknown[]) => void): void {
+  if (workspaces.length === 0) {
+    log('No Cloud workspaces are available to this login.');
+    return;
+  }
+
+  // Sanitize before measuring: padding computed from raw text would be wrong
+  // for any row whose displayed form is shorter than its stored form.
+  const rows = workspaces.map((workspace) => ({
+    id: sanitizeForTerminalLine(workspace.id),
+    slug: sanitizeForTerminalLine(workspace.slug),
+    name: sanitizeForTerminalLine(workspace.name),
+  }));
+  const idWidth = Math.max(...rows.map((row) => row.id.length));
+  const slugWidth = Math.max(...rows.map((row) => row.slug.length));
+  for (const row of rows) {
+    log(`${row.id.padEnd(idWidth)}  ${row.slug.padEnd(slugWidth)}  ${row.name}`);
+  }
+  log("\nPass an ID or a name to 'agent-relay cloud enroll --workspace'.");
 }
 
 function renderPatchPushResults(patches: unknown, log: (...args: unknown[]) => void): void {
@@ -406,6 +638,8 @@ function renderScheduleList(schedules: WorkflowSchedule[], log: (...args: unknow
   }
 }
 
+import { applyV1FlowsDeprecations } from './cloud-v1-deprecations.js';
+
 // ── Command registration ─────────────────────────────────────────────────────
 
 export function registerCloudCommands(program: Command, overrides: Partial<CloudDependencies> = {}): void {
@@ -416,18 +650,30 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .description('Cloud account, provider auth, and workflow commands');
 
   registerCloudWorkerCommands(cloudCommand, deps);
+  registerCloudRoomCommands(cloudCommand, deps);
+  registerCloudIntegrationCommands(cloudCommand, deps);
 
   // ── login ──────────────────────────────────────────────────────────────────
 
   cloudCommand
     .command('login')
-    .description('Authenticate with Agent Relay Cloud via browser (alias of `relay login`)')
+    .description('Authenticate with Agent Relay Cloud (alias of `relay login`)')
     .option('--api-url <url>', 'Cloud API base URL')
     .option('--force', 'Force re-authentication even if already logged in')
-    .action(async (options: { apiUrl?: string; force?: boolean }) => {
+    .option(
+      '--device',
+      'Authorize from a browser on another machine (for headless/ssh hosts). Chosen automatically when no browser is available.'
+    )
+    .action(async (options: { apiUrl?: string; force?: boolean; device?: boolean }) => {
       const started = Date.now();
       let success = false;
       let errorClass: string | undefined;
+      // Recorded so headless adoption is visible in telemetry; the auto
+      // fallback means `--device` alone would undercount it. Left undefined
+      // until a login actually runs — a no-op invocation that short-circuits
+      // on a live session performed no flow, and attributing one to it would
+      // overcount whichever method the host happens to prefer.
+      let method: 'browser' | 'device' | undefined;
       try {
         const apiUrl = options.apiUrl || defaultApiUrl();
 
@@ -443,7 +689,8 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
           }
         }
 
-        await ensureAuthenticated(apiUrl, { force: options.force });
+        method = options.device === true || isHeadlessEnvironment() ? 'device' : 'browser';
+        await ensureAuthenticated(apiUrl, { force: options.force, device: options.device });
         success = true;
       } catch (err) {
         errorClass = errorClassName(err);
@@ -451,6 +698,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       } finally {
         track('cloud_auth', {
           action: 'login',
+          ...(method ? { method } : {}),
           success,
           duration_ms: Date.now() - started,
           ...(errorClass ? { error_class: errorClass } : {}),
@@ -511,45 +759,55 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .command('session')
     .description('Show the canonical Agent Relay Cloud session')
     .option('--api-url <url>', 'Cloud API base URL')
-    .option('--json', 'Output the session as JSON')
+    .option('--json', 'Output the session as JSON (access token masked unless --reveal-token)')
+    .option('--reveal-token', 'Include the raw access token in --json output')
     .option(
       '--refresh-timeout <milliseconds>',
       'Timeout for refreshing the cloud session',
       parsePositiveInteger
     )
-    .action(async (options: { apiUrl?: string; json?: boolean; refreshTimeout?: number }) => {
-      const apiUrl = options.apiUrl || defaultApiUrl();
-      const session = await ensureCloudSession({
-        apiUrl,
-        interactive: false,
-        refreshTimeoutMs: options.refreshTimeout,
-      });
+    .action(
+      async (options: {
+        apiUrl?: string;
+        json?: boolean;
+        revealToken?: boolean;
+        refreshTimeout?: number;
+      }) => {
+        const apiUrl = options.apiUrl || defaultApiUrl();
+        const session = await ensureCloudSession({
+          apiUrl,
+          interactive: false,
+          refreshTimeoutMs: options.refreshTimeout,
+        });
 
-      if (options.json) {
-        deps.log(
-          JSON.stringify(
-            {
-              apiUrl: session.auth.apiUrl,
-              accessToken: session.auth.accessToken,
-              accessTokenExpiresAt: session.auth.accessTokenExpiresAt,
-              ...(session.auth.refreshTokenExpiresAt
-                ? { refreshTokenExpiresAt: session.auth.refreshTokenExpiresAt }
-                : {}),
-            },
-            null,
-            2
-          )
-        );
-        return;
-      }
+        if (options.json) {
+          deps.log(
+            JSON.stringify(
+              {
+                apiUrl: session.auth.apiUrl,
+                accessToken: options.revealToken
+                  ? session.auth.accessToken
+                  : maskSecret(session.auth.accessToken),
+                accessTokenExpiresAt: session.auth.accessTokenExpiresAt,
+                ...(session.auth.refreshTokenExpiresAt
+                  ? { refreshTokenExpiresAt: session.auth.refreshTokenExpiresAt }
+                  : {}),
+              },
+              null,
+              2
+            )
+          );
+          return;
+        }
 
-      deps.log(`API URL: ${session.auth.apiUrl}`);
-      deps.log(`Access token expires: ${session.auth.accessTokenExpiresAt}`);
-      if (session.auth.refreshTokenExpiresAt) {
-        deps.log(`Refresh token expires: ${session.auth.refreshTokenExpiresAt}`);
+        deps.log(`API URL: ${session.auth.apiUrl}`);
+        deps.log(`Access token expires: ${session.auth.accessTokenExpiresAt}`);
+        if (session.auth.refreshTokenExpiresAt) {
+          deps.log(`Refresh token expires: ${session.auth.refreshTokenExpiresAt}`);
+        }
+        deps.log(`Token file: ${AUTH_FILE_PATH}`);
       }
-      deps.log(`Token file: ${AUTH_FILE_PATH}`);
-    });
+    );
 
   cloudCommand
     .command('whoami')
@@ -567,8 +825,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         });
 
         const payload = (await response.json().catch(() => null)) as
-          | (WhoAmIResponse & { error?: string })
-          | null;
+          (WhoAmIResponse & { error?: string }) | null;
 
         if (!response.ok || !payload?.authenticated) {
           throw new Error(payload?.error || 'Failed to resolve auth status');
@@ -580,10 +837,21 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         deps.log(
           `User: ${payload.user.name || '(no name)'}${payload.user.email ? ` <${payload.user.email}>` : ''}`
         );
-        deps.log(`Organization: ${payload.currentOrganization.name}`);
-        deps.log(`Workspace: ${payload.currentWorkspace.name}`);
+        // Print IDs, not just names: the workspace ID is what `cloud enroll`
+        // and the other workspace-scoped commands take, and whoami is where
+        // people look for it first.
+        deps.log(`Organization: ${formatWorkspaceLabel(payload.currentOrganization)}`);
+        deps.log(`Workspace: ${formatWorkspaceLabel(payload.currentWorkspace)}`);
         deps.log(`Scopes: ${payload.scopes.length > 0 ? payload.scopes.join(', ') : '(none)'}`);
         deps.log(`Token file: ${AUTH_FILE_PATH}`);
+
+        // whoami is the canonical "who am I" call, so make it the refresh point
+        // for the locally cached identity that tags telemetry.
+        const identity = toCloudIdentity(payload, auth.apiUrl);
+        if (identity) {
+          await writeStoredIdentity(identity);
+          deps.log(`Identity file: ${IDENTITY_FILE_PATH}`);
+        }
         success = true;
       } catch (err) {
         errorClass = errorClassName(err);
@@ -591,6 +859,48 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       } finally {
         track('cloud_auth', {
           action: 'whoami',
+          success,
+          duration_ms: Date.now() - started,
+          ...(errorClass ? { error_class: errorClass } : {}),
+        });
+      }
+    });
+
+  // ── workspaces ─────────────────────────────────────────────────────────────
+
+  cloudCommand
+    .command('workspaces')
+    .description('List the Cloud workspaces this login can use, with their IDs')
+    .option('--api-url <url>', 'Cloud API base URL')
+    .option('--json', 'Print raw JSON response', false)
+    .action(async (options: { apiUrl?: string; json?: boolean }) => {
+      const started = Date.now();
+      let success = false;
+      let errorClass: string | undefined;
+      try {
+        const session = await deps.ensureCloudSession({
+          apiUrl: options.apiUrl || defaultApiUrl(),
+          interactive: false,
+        });
+        const { workspaces } = await listCloudWorkspaces(session.auth, deps);
+
+        if (options.json) {
+          deps.log(JSON.stringify({ workspaces }, null, 2));
+        } else {
+          renderWorkspaceList(workspaces, deps.log);
+        }
+        success = true;
+      } catch (err) {
+        errorClass = errorClassName(err);
+        deps.error(
+          isCloudLoginError(err)
+            ? 'Cloud login required. Run `agent-relay cloud login` and retry.'
+            : describeError(err)
+        );
+        deps.exit(1);
+      } finally {
+        track('cloud_auth', {
+          action: 'workspaces',
           success,
           duration_ms: Date.now() - started,
           ...(errorClass ? { error_class: errorClass } : {}),
@@ -647,8 +957,8 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     )
     .addOption(
       new Option(
-        '--workspace <workspaceId>',
-        'Resolve a Cloud workspace UUID or unified rw_ ID and mint using the stored login'
+        '--workspace <workspace>',
+        'Workspace name, Cloud workspace UUID, or unified rw_ ID to mint into using the stored login'
       ).conflicts('token')
     )
     .option('--enrollment-url <url>', 'Cloud enrollment endpoint that redeems the token')
@@ -682,9 +992,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
             deps.upsertFleetNodeEnrollment(record);
           } catch (persistErr) {
             deps.error(
-              `Enrollment succeeded but persisting credentials failed: ${
-                persistErr instanceof Error ? persistErr.message : String(persistErr)
-              }`
+              `Enrollment succeeded but persisting credentials failed: ${describeError(persistErr)}`
             );
             // The one-time token is already consumed, so the credentials must
             // survive somewhere. Prefer a 0600 recovery file (never print the
@@ -711,6 +1019,11 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
             return;
           }
 
+          // A repo pinned to a workspace ignores the enrollment store entirely
+          // on `node up`, so link the two now while we know the node id. Never
+          // let this fail the command: the one-time token is already redeemed.
+          const pin = reconcileEnrollmentPin(record.nodeId, deps);
+
           if (options.json) {
             // Never print the node token, even in JSON mode.
             const { nodeToken: _nodeToken, ...safe } = record;
@@ -724,8 +1037,16 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
             `Enrolled node "${record.nodeName}"${nodeIdSuffix} in workspace ${record.relayWorkspaceId}. ` +
               "Run 'relay node up' to serve it."
           );
+          if (pin?.status === 'linked') {
+            deps.log(
+              `Linked this project's workspace pin (${pin.pinPath}) to node ${pin.nodeId}, so ` +
+                `'relay node up' here serves this enrollment in workspace ${record.relayWorkspaceId}. ` +
+                'The pinned workspace key was not verified against that workspace — if they differ, ' +
+                'agent commands in this project keep using the pinned one.'
+            );
+          }
         } catch (err) {
-          deps.error(err instanceof Error ? err.message : String(err));
+          deps.error(describeError(err));
           deps.exit(1);
         }
       }
@@ -738,7 +1059,8 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .description('Submit a workflow run')
     .argument('<workflow>', 'Workflow file path or inline workflow content')
     .option('--api-url <url>', 'Cloud API base URL')
-    .option('--file-type <type>', 'Workflow type: yaml, ts, or py', parseWorkflowFileType)
+    .option('--file-type <type>', 'Workflow type: yaml or ts', parseWorkflowFileType)
+    .option('--relayflow-version <version>', 'Relayflow engine generation: v1 or v2', parseRelayflowVersion)
     .option('--sync-code', 'Upload the current working directory before running')
     .option('--no-sync-code', 'Skip uploading the current working directory')
     .option('--resume <runId>', 'Resume a previously failed cloud workflow run from where it left off')
@@ -754,6 +1076,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         options: {
           apiUrl?: string;
           fileType?: WorkflowFileType;
+          relayflowVersion?: RelayflowVersion;
           syncCode?: boolean;
           resume?: string;
           startFrom?: string;
@@ -802,7 +1125,12 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .description('Schedule a repeatable workflow run')
     .argument('<workflow>', 'Workflow file path or inline workflow content')
     .option('--api-url <url>', 'Cloud API base URL')
-    .option('--file-type <type>', 'Workflow type: yaml, ts, or py', parseWorkflowFileType)
+    .option('--file-type <type>', 'Workflow type: yaml or ts', parseWorkflowFileType)
+    .option(
+      '--relayflow-version <version>',
+      'Relayflow engine generation for scheduled runs: v1 (v2 is not supported)',
+      parseScheduleRelayflowVersion
+    )
     .option('--cron <expression>', 'Cron expression, for example "0 * * * *"')
     .option('--at <isoTimestamp>', 'One-time ISO timestamp, for example 2026-05-10T09:00:00Z')
     .option('--timezone <timezone>', 'IANA timezone for cron schedules', 'UTC')
@@ -821,6 +1149,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         options: {
           apiUrl?: string;
           fileType?: WorkflowFileType;
+          relayflowVersion?: 'v1';
           cron?: string;
           at?: string;
           timezone?: string;
@@ -1036,7 +1365,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         });
         deps.log('Patch applied successfully.');
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = describeError(err);
         deps.error(`Failed to apply patch: ${message}`);
         deps.error(`Patch saved to: ${tmpPatch}`);
         deps.exit(1);
@@ -1061,4 +1390,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       deps.log(`Run: ${result.runId ?? runId}`);
       deps.log(`Status: ${result.status ?? 'unknown'}`);
     });
+
+  // Applied last so every command it targets is registered.
+  applyV1FlowsDeprecations(cloudCommand);
 }

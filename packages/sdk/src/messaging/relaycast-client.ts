@@ -13,6 +13,7 @@ import type { AgentClientOptions, RelayCastOptions } from '@relaycast/sdk';
 import type { DeliveryStatus } from '@relaycast/types';
 
 import { relaycastTelemetryOptions, type RelaycastTelemetryOptions } from '../relaycast-telemetry.js';
+import type { RelayFilesApiLike } from './files.js';
 import { definedOptions } from './relaycast-translate.js';
 import type {
   RelayCreateChannelInput,
@@ -27,10 +28,11 @@ export type RelaycastWorkspaceLike = {
     list(query?: Record<string, unknown>): Promise<unknown[]>;
     get(name: string): Promise<unknown>;
     register(input: unknown): Promise<unknown>;
-    /** Register an agent, rotating its token when the name already exists. */
+    /** Create-only registration alias; an existing name is rejected with `name_conflict`. */
     registerOrRotate?: (data: unknown) => Promise<unknown>;
     update(name: string, input: unknown): Promise<unknown>;
     delete(name: string): Promise<void>;
+    release(input: unknown): Promise<unknown>;
     presence(): Promise<unknown[]>;
     events?: {
       emit(name: string, data: { type: string; payload?: Record<string, unknown> }): Promise<unknown>;
@@ -83,11 +85,6 @@ export type RelaycastWorkspaceLike = {
   };
   workspace?: {
     info(): Promise<unknown>;
-    fleetNodes?: {
-      get(): Promise<unknown>;
-      set(enabled: boolean): Promise<unknown>;
-      inherit(): Promise<unknown>;
-    };
   };
   as?: (agentToken: string, options?: AgentClientOptions) => RelaycastAgentLike;
   // Workspace-scoped realtime stream (relaycast 2.5+): lets a workspace-key
@@ -116,6 +113,7 @@ export type RelaycastAgentLike = {
     options?: {
       attachments?: string[];
       blocks?: RelayMessageBlock[];
+      data?: Record<string, unknown> | null;
       mode?: 'wait' | 'steer';
       idempotencyKey?: string;
     }
@@ -125,7 +123,11 @@ export type RelaycastAgentLike = {
   reply(
     id: string,
     text: string,
-    options?: { blocks?: RelayMessageBlock[]; idempotencyKey?: string }
+    options?: {
+      blocks?: RelayMessageBlock[];
+      data?: Record<string, unknown> | null;
+      idempotencyKey?: string;
+    }
   ): Promise<unknown>;
   thread(id: string, options?: RelayMessageListOptions): Promise<unknown>;
   dm(
@@ -134,6 +136,7 @@ export type RelaycastAgentLike = {
     options?: {
       mode?: 'wait' | 'steer';
       attachments?: string[];
+      data?: Record<string, unknown> | null;
       idempotencyKey?: string;
     }
   ): Promise<unknown>;
@@ -149,6 +152,7 @@ export type RelaycastAgentLike = {
       text: string,
       options?: {
         attachments?: string[];
+        data?: Record<string, unknown> | null;
         mode?: 'wait' | 'steer';
         idempotencyKey?: string;
       }
@@ -174,6 +178,7 @@ export type RelaycastAgentLike = {
   ackDelivery?(deliveryId: string): Promise<unknown>;
   failDelivery?(deliveryId: string, options?: { error?: string; retryable?: boolean }): Promise<unknown>;
   deferDelivery?(deliveryId: string, options: { availableAt: string; reason?: string }): Promise<unknown>;
+  files?: RelayFilesApiLike;
   markRead(messageId: string): Promise<unknown>;
   readers(messageId: string): Promise<unknown[]>;
   readStatus(channel: string): Promise<unknown[]>;
@@ -206,10 +211,17 @@ export interface RelaycastMessagingOptions extends RelaycastTelemetryOptions {
   agentToken?: string;
   agentClient?: RelaycastAgentLike;
   agentClientOptions?: AgentClientOptions;
+  /** Stable replay key stamped onto message metadata. Defaults to RELAY_ATTEST_SESSION_ID. */
+  sessionRef?: string;
   /** Local node name used to resolve placement requests with `node: "self"`. */
   selfNodeName?: string;
   /** Default bounded placement queue TTL. RFC placeholder default is one hour. */
   placementTtlMs?: number;
+  /**
+   * Restrict automatic and targeted placement to Cloud-provisioned sandbox
+   * nodes. Defaults to `false`; sandboxed workloads must opt in explicitly.
+   */
+  placementSandboxOnly?: boolean;
   /** Max in-process placement requests allowed to wait for an eligible node. */
   maxQueuedPlacements?: number;
   /** Receives placement queue/reject/fail log lines. */
@@ -218,14 +230,16 @@ export interface RelaycastMessagingOptions extends RelaycastTelemetryOptions {
 
 export function createRelaycastClient(options: RelaycastMessagingOptions): RelaycastWorkspaceLike {
   if (options.relaycast) return options.relaycast;
-  const workspaceKey = options.workspaceKey ?? options.apiKey;
-  if (!workspaceKey) {
-    throw new Error('RelaycastMessagingClient requires workspaceKey when relaycast is not provided.');
+  const credential = options.workspaceKey ?? options.apiKey ?? options.agentToken;
+  if (!credential) {
+    throw new Error(
+      'RelaycastMessagingClient requires workspaceKey or agentToken when relaycast is not provided.'
+    );
   }
 
   return new RelayCast(
     definedOptions({
-      apiKey: workspaceKey,
+      apiKey: credential,
       baseUrl: options.baseUrl,
       retryPolicy: options.retryPolicy,
       ...relaycastTelemetryOptions({

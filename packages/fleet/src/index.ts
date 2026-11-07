@@ -1,5 +1,7 @@
+import { isAbsolute } from 'node:path';
+
 import { z } from 'zod';
-import { claude, codex, definePtyHarness, gemini, type PtyHarness } from '@agent-relay/harnesses';
+import { claude, codex, definePtyHarness, gemini, muse, type PtyHarness } from '@agent-relay/harnesses';
 import { resolveStaticHarnessConfig, type StaticPtyHarnessDefinition } from '@agent-relay/harness-driver';
 import type {
   AgentSpec,
@@ -8,13 +10,21 @@ import type {
   JsonValue,
 } from '@agent-relay/harness-driver/protocol';
 
+/** Runtime compatibility marker for dynamic `spawn:*` action delegation. */
+export const FLEET_DYNAMIC_SPAWN_DELEGATION = true;
+
 export type MaybePromise<T> = T | Promise<T>;
 
 export interface FleetNodeInfo {
   name: string;
   maxAgents?: number;
   capabilities: string[];
+  /** Placement-safe repository keys; local checkout paths are never exposed. */
+  repoKeys?: string[];
 }
+
+/** Node-local checkout map. Values never leave the node registration runtime. */
+export type FleetRepoPaths = Readonly<Record<string, string>>;
 
 export interface FleetRelaySendMessageInput {
   to: string;
@@ -28,9 +38,28 @@ export interface FleetScopedRelayClient {
   sendMessage(input: FleetRelaySendMessageInput): Promise<unknown>;
 }
 
+/**
+ * Declared organizational identity for a spawned worker.
+ *
+ * These are intentionally explicit rather than derived from the agent name:
+ * names are an implementation label, whereas this data is the caller's
+ * statement of where the work belongs. `objective` is normally supplied by a
+ * spawn's initial task when callers do not provide a narrower declaration.
+ */
+export interface FleetAgentRegistrationMetadata {
+  organization?: string;
+  project?: string;
+  workstream?: string;
+  role?: string;
+  objective?: string;
+}
+
 export interface FleetSpawnAgentInput {
   agent: AgentSpec;
+  /** Defaults to true. False returns explicit unverified placement, never readiness. */
+  verifyReady?: boolean;
   initialTask?: string;
+  registrationMetadata?: FleetAgentRegistrationMetadata;
   skipRelayPrompt?: boolean;
   invocationId?: string;
 }
@@ -71,6 +100,11 @@ export interface FleetNodeDefinitionInput {
   capabilities: Record<string, FleetCapabilityValue>;
   triggers?: FleetTriggerDescriptor[];
   tags?: string[];
+  /**
+   * Node-local absolute checkout paths keyed by `owner/repo`.
+   * Registration advertises only the keys; path values remain node-private.
+   */
+  repoPaths?: FleetRepoPaths;
   version?: string;
 }
 
@@ -81,6 +115,8 @@ export interface FleetNodeDefinition {
   readonly capabilities: Record<string, FleetCapability>;
   readonly triggers: FleetTriggerDescriptor[];
   readonly tags?: string[];
+  /** Node-private checkout map; only its keys may be serialized for placement. */
+  readonly repoPaths?: FleetRepoPaths;
   readonly version?: string;
 }
 
@@ -119,19 +155,24 @@ export type ZodLikeSchema<T = unknown> = Pick<z.ZodType<T>, 'safeParse'> & {
 };
 
 const spawnInputSchema = z
-  .object({
+  .looseObject({
     name: z.string().min(1).optional(),
     agent: z.string().min(1).optional(),
     model: z.string().min(1).optional(),
     session_ref: z.string().min(1).optional(),
     task: z.string().optional(),
     channels: z.array(z.string().min(1)).optional(),
+    worker_cwd: z.string().min(1).optional(),
     cwd: z.string().min(1).optional(),
     args: z.array(z.string()).optional(),
     team: z.string().min(1).optional(),
+    organization: z.string().min(1).optional(),
+    project: z.string().min(1).optional(),
+    workstream: z.string().min(1).optional(),
+    role: z.string().min(1).optional(),
+    objective: z.string().min(1).optional(),
     skip_relay_prompt: z.boolean().optional(),
   })
-  .passthrough()
   .refine((input) => Boolean(input.name ?? input.agent), {
     message: 'spawn input requires name or agent',
     path: ['name'],
@@ -140,6 +181,8 @@ const spawnInputSchema = z
 export type SpawnInput = z.infer<typeof spawnInputSchema>;
 
 export interface SpawnHandlerOptions {
+  /** Defaults to true; legacy engines may opt out only for placement-only handlers. */
+  verifyReady?: boolean;
   model?: string;
   args?: string[];
   channels?: string[];
@@ -150,14 +193,26 @@ export interface SpawnHandlerOptions {
   metadata?: Record<string, JsonValue>;
 }
 
+/**
+ * Largest `maxAgents` a node definition may declare. This is the single shared
+ * range for the cap: the Rust broker parses `AGENT_RELAY_NODE_MAX_AGENTS` as a
+ * `u32`, so a larger value would fail broker parsing and silently report
+ * unlimited capacity while the sidecar still advertised the configured number.
+ */
+export const MAX_FLEET_NODE_AGENTS = 4294967295;
+
 export function defineNode(input: FleetNodeDefinitionInput): FleetNodeDefinition {
   const name = nonEmpty(input.name, 'node name');
+  const repoPaths = normalizeFleetRepoPaths(input.repoPaths);
   const capabilityEntries = Object.entries(input.capabilities ?? {});
   if (capabilityEntries.length === 0) {
     throw new Error('defineNode requires at least one capability');
   }
-  if (input.maxAgents !== undefined && (!Number.isInteger(input.maxAgents) || input.maxAgents <= 0)) {
-    throw new Error('maxAgents must be a positive integer');
+  if (
+    input.maxAgents !== undefined &&
+    (!Number.isInteger(input.maxAgents) || input.maxAgents <= 0 || input.maxAgents > MAX_FLEET_NODE_AGENTS)
+  ) {
+    throw new Error(`maxAgents must be a positive integer no larger than ${MAX_FLEET_NODE_AGENTS}`);
   }
 
   const capabilities: Record<string, FleetCapability> = {};
@@ -192,6 +247,7 @@ export function defineNode(input: FleetNodeDefinitionInput): FleetNodeDefinition
     capabilities,
     triggers: [...triggers],
     ...(input.tags ? { tags: [...input.tags] } : {}),
+    ...(repoPaths !== undefined ? { repoPaths } : {}),
     ...(input.version ? { version: input.version } : {}),
   };
 }
@@ -232,9 +288,13 @@ export function spawn(
     }
     const model = input.model ?? options.model;
     const rawArgs = [...(options.args ?? []), ...(input.args ?? [])];
-    const cwd = input.cwd ?? options.cwd ?? definition.cwd;
+    // `worker_cwd` is the unambiguous Fleet action field. Keep `cwd` as the
+    // Fleet DSL's legacy working-directory input, but do not make callers
+    // guess whether it is the MCP persona-registry cwd.
+    const cwd = input.worker_cwd ?? input.cwd ?? options.cwd ?? definition.cwd;
     const channels = input.channels ?? options.channels;
     const task = input.task;
+    const metadata = registrationMetadata(input, task);
     const harnessConfig = resolveStaticHarnessConfig({
       name,
       cli: definition.command,
@@ -264,7 +324,9 @@ export function spawn(
 
     return ctx.spawnAgent({
       agent,
+      ...(options.verifyReady !== undefined ? { verifyReady: options.verifyReady } : {}),
       ...(task !== undefined ? { initialTask: task } : {}),
+      ...(metadata ? { registrationMetadata: metadata } : {}),
       skipRelayPrompt: input.skip_relay_prompt ?? options.skipRelayPrompt ?? false,
       invocationId: ctx.invocationId,
     });
@@ -285,6 +347,30 @@ export function spawn(
   };
 }
 
+function registrationMetadata(
+  input: Pick<SpawnInput, 'organization' | 'project' | 'workstream' | 'role' | 'objective'>,
+  task: string | undefined
+): FleetAgentRegistrationMetadata | undefined {
+  // Trim and omit blanks, matching the CLI's `declaredWorkforceMetadata` and
+  // the broker's `declared_metadata_map`. A whitespace-only value is a declared
+  // nothing, and the broker merges these over metadata the engine already
+  // holds, so emitting one would overwrite an engine-owned field with an empty
+  // string.
+  const declared: Array<[keyof FleetAgentRegistrationMetadata, string | undefined]> = [
+    ['organization', input.organization],
+    ['project', input.project],
+    ['workstream', input.workstream],
+    ['role', input.role],
+    ['objective', input.objective ?? task],
+  ];
+  const metadata: FleetAgentRegistrationMetadata = {};
+  for (const [key, value] of declared) {
+    const trimmed = value?.trim();
+    if (trimmed) metadata[key] = trimmed;
+  }
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
 export function onMessage(input: OnMessageTriggerInput, actionName: string): FleetTriggerDescriptor {
   return {
     type: 'message',
@@ -296,11 +382,39 @@ export function onMessage(input: OnMessageTriggerInput, actionName: string): Fle
 }
 
 export function nodeInfo(definition: FleetNodeDefinition): FleetNodeInfo {
+  const repoKeys = nodeRepoKeys(definition);
   return {
     name: definition.name,
     ...(definition.maxAgents !== undefined ? { maxAgents: definition.maxAgents } : {}),
     capabilities: Object.keys(definition.capabilities),
+    ...(repoKeys.length > 0 ? { repoKeys } : {}),
   };
+}
+
+/** Return deterministic, placement-safe repository keys without exposing paths. */
+export function nodeRepoKeys(definition: Pick<FleetNodeDefinition, 'repoPaths'>): string[] {
+  return Object.keys(definition.repoPaths ?? {}).sort();
+}
+
+/**
+ * Build the public registration tags for a node definition.
+ *
+ * When `repoPaths` is present it is authoritative: legacy manually supplied
+ * `repo:*` tags are replaced by tags derived from the map's keys. Definitions
+ * without `repoPaths` retain their tags unchanged for backward compatibility.
+ */
+export function nodeRegistrationTags(
+  definition: Pick<FleetNodeDefinition, 'repoPaths' | 'tags'>
+): string[] | undefined {
+  if (definition.repoPaths === undefined) {
+    return definition.tags ? [...definition.tags] : undefined;
+  }
+  const tags = (definition.tags ?? []).filter((tag) => !tag.startsWith('repo:'));
+  const seen = new Set(tags);
+  for (const key of nodeRepoKeys(definition)) {
+    seen.add(`repo:${key}`);
+  }
+  return [...seen];
 }
 
 export async function invokeNodeHandler(
@@ -333,11 +447,13 @@ export function defineDefaultLocalNode(input: {
   name: string;
   maxAgents?: number;
   teams?: { agents?: Array<{ cli?: string }> } | null;
+  repoPaths?: FleetRepoPaths;
 }): FleetNodeDefinition {
   const harnesses = new Map<string, StaticPtyHarnessDefinition>([
     ['claude', claude],
     ['codex', codex],
     ['gemini', gemini],
+    ['muse', muse],
   ]);
   for (const agent of input.teams?.agents ?? []) {
     const cli = agent.cli?.trim();
@@ -354,6 +470,7 @@ export function defineDefaultLocalNode(input: {
     name: input.name,
     ...(input.maxAgents !== undefined ? { maxAgents: input.maxAgents } : {}),
     capabilities,
+    ...(input.repoPaths !== undefined ? { repoPaths: input.repoPaths } : {}),
   });
 }
 
@@ -406,6 +523,43 @@ function nonEmpty(value: string | undefined, label: string): string {
   return trimmed;
 }
 
+/**
+ * Validate and normalize the node-private repository map used by both direct
+ * definitions and the compiled child descriptor bridge.
+ */
+export function normalizeFleetRepoPaths(repoPaths: unknown): FleetRepoPaths | undefined {
+  if (repoPaths === undefined) {
+    return undefined;
+  }
+  if (!repoPaths || typeof repoPaths !== 'object' || Array.isArray(repoPaths)) {
+    throw new Error('repoPaths must be an object keyed by owner/repo');
+  }
+
+  const normalized: Record<string, string> = {};
+  for (const [rawKey, rawPath] of Object.entries(repoPaths)) {
+    const key = rawKey.trim();
+    if (!isPlacementRepoKey(key)) {
+      throw new Error(`repoPaths key "${rawKey}" must use owner/repo format`);
+    }
+    if (Object.prototype.hasOwnProperty.call(normalized, key)) {
+      throw new Error(`repoPaths contains duplicate key "${key}" after trimming`);
+    }
+    if (typeof rawPath !== 'string' || !isAbsolute(rawPath)) {
+      throw new Error(`repoPaths["${key}"] must be an absolute path`);
+    }
+    normalized[key] = rawPath;
+  }
+  return Object.freeze(normalized);
+}
+
+function isPlacementRepoKey(key: string): boolean {
+  const segments = key.split('/');
+  return (
+    segments.length === 2 &&
+    segments.every((segment) => segment !== '.' && segment !== '..' && /^[A-Za-z0-9._-]+$/.test(segment))
+  );
+}
+
 function parseWithSchema<T>(schema: ZodLikeSchema<T>, input: unknown): T {
   const parsed = schema.safeParse(input);
   if (parsed.success) {
@@ -415,4 +569,12 @@ function parseWithSchema<T>(schema: ZodLikeSchema<T>, input: unknown): T {
   throw new Error(message);
 }
 
-export * from './serve-node.js';
+export { serveNode, startServeNode } from './serve-node.js';
+export type {
+  NodeEngineConnection,
+  FleetTriggerSyncTrigger,
+  FleetTriggerSyncClient,
+  FleetLogger,
+  ServeNodeOptions,
+  RunningNode,
+} from './serve-node.js';

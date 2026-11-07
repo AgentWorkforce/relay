@@ -2,10 +2,10 @@
 # Tests agent-relay npm package across Node.js versions
 #
 # Build args:
-#   NODE_VERSION: Node.js version to test (18, 20, 22)
+#   NODE_VERSION: Node.js version to test (22, 24)
 #   PACKAGE_VERSION: agent-relay version to test (default: latest)
 
-ARG NODE_VERSION=20
+ARG NODE_VERSION=22
 
 FROM node:${NODE_VERSION}-slim
 

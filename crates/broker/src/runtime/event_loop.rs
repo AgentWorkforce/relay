@@ -1,4 +1,5 @@
 use super::*;
+use futures_util::future::{join, join_all};
 
 /// Current PTY resize owner for a worker under the single-resizer policy.
 ///
@@ -21,6 +22,16 @@ pub(crate) struct ResizeOwner {
 /// sending an explicit release on detach — a well-behaved client releases
 /// immediately, so this window never fires in the normal path.
 pub(crate) const RESIZE_OWNER_STALE: Duration = Duration::from_secs(300);
+
+/// Bound on the *entire* best-effort Relaycast presence-update phase during
+/// shutdown (every worker's `mark_agent_offline` plus the broker's own
+/// `mark_offline`, all run concurrently under this one deadline). Kept well
+/// under callers' external shutdown deadlines (the CLI's `node down`
+/// graceful-shutdown window defaults to 5s) so an unresponsive backend can
+/// delay shutdown by at most this much, regardless of how many identities
+/// are involved — a per-call timeout applied to each of N calls in sequence
+/// would instead cost up to N times this much.
+const SHUTDOWN_RELAYCAST_PHASE_TIMEOUT: Duration = Duration::from_millis(2500);
 
 pub(crate) struct HostedAgentEvent {
     pub(super) name: String,
@@ -178,6 +189,7 @@ pub(crate) fn commit_resize_ownership(
 }
 
 pub(crate) struct BrokerRuntime {
+    pub(super) degraded: Option<super::degraded::DegradedState>,
     pub(super) persist: bool,
     pub(super) broker_start: Instant,
     pub(super) agent_spawn_count: u32,
@@ -197,16 +209,48 @@ pub(crate) struct BrokerRuntime {
     pub(super) ws_inbound_rx: mpsc::Receiver<WorkspaceInboundMessage>,
     pub(super) relaycast_open: bool,
     pub(super) fleet_control_tx: mpsc::Sender<FleetControlCommand>,
+    /// Retained cleanup completions bypass the bounded control queue so queue
+    /// pressure cannot discard the caller's terminal Fleet result at shutdown.
+    pub(super) fleet_completion_tx:
+        mpsc::UnboundedSender<crate::node_control::RetainedFleetCompletion>,
+    pub(super) fleet_completion_acks: Vec<tokio::sync::oneshot::Receiver<()>>,
     /// This broker's relaycast node name, used to bind agents to the node over
     /// HTTP when the node-control `agent.register` path is unavailable.
     pub(super) fleet_node_name: String,
     pub(super) node_delivery_token_present: bool,
     pub(super) node_delivery_connected: bool,
+    /// `RUST_LOG`-independent introspection for the node-control inbound path,
+    /// shared with the node-control client task and the HTTP API. See
+    /// [`crate::node_delivery_probe`].
+    pub(super) node_delivery_probe: std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>,
     pub(super) fleet_event_rx: mpsc::Receiver<FleetControlEvent>,
     pub(super) fleet_control_open: bool,
+    /// Independent outbound terminal lane. It never shares the node-control
+    /// socket, keeping high-volume PTY bytes away from heartbeats/actions.
+    pub(super) terminal_control_tx: mpsc::Sender<TerminalControlCommand>,
+    /// Coalescing wake-up path from the live node-control lane into the single
+    /// terminal dial loop. A watch channel cannot fill behind PTY output and
+    /// never creates a second competing reconnect task.
+    pub(super) terminal_reconnect_tx: watch::Sender<Option<u64>>,
+    pub(super) terminal_event_rx: mpsc::Receiver<TerminalControlEvent>,
+    pub(super) terminal_control_open: bool,
+    pub(super) terminal_sessions: HashMap<String, TerminalSession>,
+    /// Worker snapshot RPCs parked for terminal opens. These are kept outside
+    /// the HTTP request map because their reply belongs on the terminal lane.
+    pub(super) terminal_snapshot_requests: HashMap<String, TerminalSnapshotRequest>,
+    /// PTY writes are acknowledged only after the worker drainer confirms
+    /// them; this map correlates that response back to its terminal session.
+    pub(super) terminal_input_requests: HashMap<String, TerminalInputRequest>,
     pub(super) fleet_delivery_book: FleetDeliveryBook,
+    /// Node deliveries held while their file attachments download.
+    pub(super) attachment_staging:
+        crate::attachments::AttachmentStaging<crate::fleet_wire::Deliver>,
     pub(super) fleet_max_agents: u32,
     pub(super) fleet_inventory: HashMap<WorkerName, InventoryAgent>,
+    /// Per-worker retry deadlines for failed Relaycast identity lookups while
+    /// rebuilding the reconnect inventory.
+    pub(super) fleet_inventory_reconcile_retry_after:
+        HashMap<WorkerName, super::fleet::FleetInventoryRetry>,
     pub(super) sdk_out_tx: mpsc::Sender<ProtocolEnvelope<Value>>,
     pub(super) worker_event_rx: mpsc::Receiver<WorkerEvent>,
     pub(super) worker_events_open: bool,
@@ -222,6 +266,9 @@ pub(crate) struct BrokerRuntime {
     pub(super) dead_letters: DeadLetterStore,
     pub(super) terminal_failed_deliveries: HashSet<DeliveryId>,
     pub(super) pending_requests: HashMap<String, worker_request::PendingRequest>,
+    /// Persona/capability spawns whose action result is held until the harness
+    /// proves readiness with worker_ready. Keyed by the node-local worker name.
+    pub(super) pending_verified_spawns: HashMap<WorkerName, super::fleet::PendingVerifiedSpawn>,
     /// Per-worker PTY resize ownership (single-resizer policy, see #1247).
     ///
     /// A shared PTY has exactly one size, so letting every attached client
@@ -235,6 +282,7 @@ pub(crate) struct BrokerRuntime {
     pub(super) resize_owners: HashMap<WorkerName, ResizeOwner>,
     pub(super) delivery_states: HashMap<WorkerName, InboundDeliveryState>,
     pub(super) agent_result_tokens: HashMap<String, WorkerName>,
+    pub(super) task_provider: super::tasks::TaskProvider,
     pub(super) recent_thread_messages: VecDeque<Value>,
     pub(super) shutdown: bool,
     pub(super) lease_duration: Option<Duration>,
@@ -245,6 +293,7 @@ pub(crate) struct BrokerRuntime {
     #[cfg(windows)]
     pub(super) sigterm: tokio::signal::windows::CtrlShutdown,
     pub(super) telemetry: TelemetryClient,
+    pub(super) obligation_store: crate::obligation::ObligationStore,
 }
 
 enum RuntimeEvent {
@@ -256,8 +305,36 @@ enum RuntimeEvent {
     Stdin(std::io::Result<Option<String>>),
     Relaycast(Option<WorkspaceInboundMessage>),
     Fleet(Option<FleetControlEvent>),
+    AttachmentsStaged(Option<crate::attachments::StagedAttachments>),
+    Terminal(Option<TerminalControlEvent>),
     Worker(Option<WorkerEvent>),
     MaintenanceTick,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct TerminalSession {
+    pub(super) agent: WorkerName,
+    pub(super) mode: TerminalMode,
+    /// PTY output is withheld until the initial ANSI grid has been delivered,
+    /// so a client always receives `terminal.ready` before stream chunks.
+    pub(super) ready: bool,
+    /// Output observed while the snapshot RPC is in flight. It is forwarded
+    /// after `terminal.ready`; per-stream offsets let the client discard bytes
+    /// already represented by the snapshot without losing later bytes.
+    pub(super) pending_output: Vec<(String, Option<u64>)>,
+    pub(super) pending_output_bytes: usize,
+}
+
+pub(super) struct TerminalSnapshotRequest {
+    pub(super) session_id: String,
+    /// Present for an explicit refresh; `None` means initial session readiness.
+    pub(super) client_request_id: Option<String>,
+    pub(super) deadline: Instant,
+}
+
+pub(super) struct TerminalInputRequest {
+    pub(super) session_id: String,
+    pub(super) deadline: Instant,
 }
 
 impl BrokerRuntime {
@@ -274,6 +351,8 @@ impl BrokerRuntime {
                 result = self.sdk_lines.next_line(), if self.stdin_open => RuntimeEvent::Stdin(result),
                 message = self.ws_inbound_rx.recv(), if self.relaycast_open => RuntimeEvent::Relaycast(message),
                 event = self.fleet_event_rx.recv(), if self.fleet_control_open => RuntimeEvent::Fleet(event),
+                staged = self.attachment_staging.recv() => RuntimeEvent::AttachmentsStaged(staged),
+                event = self.terminal_event_rx.recv(), if self.terminal_control_open => RuntimeEvent::Terminal(event),
                 event = self.worker_event_rx.recv(), if self.worker_events_open => RuntimeEvent::Worker(event),
                 _ = self.reap_tick.tick() => RuntimeEvent::MaintenanceTick,
             };
@@ -312,6 +391,17 @@ impl BrokerRuntime {
                 RuntimeEvent::Fleet(None) => {
                     self.fleet_control_open = false;
                 }
+                RuntimeEvent::AttachmentsStaged(Some(staged)) => {
+                    self.handle_staged_attachments(staged).await;
+                }
+                // Unreachable: the staging area holds its own sender.
+                RuntimeEvent::AttachmentsStaged(None) => {}
+                RuntimeEvent::Terminal(Some(event)) => {
+                    self.handle_terminal_control_event(event).await;
+                }
+                RuntimeEvent::Terminal(None) => {
+                    self.terminal_control_open = false;
+                }
                 RuntimeEvent::Worker(Some(event)) => {
                     self.handle_worker_event(event).await;
                 }
@@ -323,7 +413,9 @@ impl BrokerRuntime {
                 }
             }
 
+            self.reap_fleet_completion_acks();
             self.flush_persisted_stores();
+            self.publish_fleet_delivery_cursors_if_dirty();
         }
 
         self.shutdown_runtime().await
@@ -395,7 +487,8 @@ impl BrokerRuntime {
         }
     }
 
-    async fn shutdown_runtime(mut self) -> Result<()> {
+    pub(super) async fn shutdown_runtime(mut self) -> Result<()> {
+        self.drain_identity_cleanups_on_shutdown().await;
         // Save crash insights before shutdown (only in persist mode)
         if self.paths.persist {
             if let Err(error) = self.crash_insights.save(&self.crash_insights_path) {
@@ -409,20 +502,43 @@ impl BrokerRuntime {
         });
         self.telemetry.shutdown();
 
+        // Bounded: these are best-effort presence updates to an external
+        // service. A slow or unresponsive Relaycast backend must never block
+        // process shutdown — a caller waiting on `node down` has its own,
+        // shorter deadline (5s by default), and a broker that outlives it
+        // becomes a stuck "still running" process the caller then has to
+        // force-kill. Every worker's update and the broker's own run
+        // *concurrently* under one shared deadline, so N stalled identities
+        // cost the same wall-clock time as one, not N times as much.
         let active_workers: Vec<WorkerName> = self.workers.workers.keys().cloned().collect();
-        for worker_name in active_workers {
-            if let Err(error) = self.relaycast_http.mark_agent_offline(&worker_name).await {
+        let worker_count = active_workers.len();
+        let relaycast_http = &self.relaycast_http;
+        let workers_phase = join_all(active_workers.iter().map(|worker_name| async move {
+            if let Err(error) = relaycast_http.mark_agent_offline(worker_name).await {
                 tracing::warn!(
                     worker = %worker_name,
                     error = %error,
                     "failed to mark worker offline during shutdown"
                 );
             }
-        }
-
-        // Mark broker agent offline in Relaycast before shutting down WS
-        if let Err(error) = self.relaycast_http.mark_offline().await {
-            tracing::warn!(error = %error, "failed to mark broker offline during shutdown");
+        }));
+        let broker_phase = async {
+            if let Err(error) = relaycast_http.mark_offline().await {
+                tracing::warn!(error = %error, "failed to mark broker offline during shutdown");
+            }
+        };
+        if timeout(
+            SHUTDOWN_RELAYCAST_PHASE_TIMEOUT,
+            join(workers_phase, broker_phase),
+        )
+        .await
+        .is_err()
+        {
+            tracing::warn!(
+                worker_count,
+                timeout_ms = SHUTDOWN_RELAYCAST_PHASE_TIMEOUT.as_millis(),
+                "timed out marking agents offline during shutdown; proceeding"
+            );
         }
 
         if let Err(error) = self.ws_control_tx.send(WsControl::Shutdown).await {
@@ -430,10 +546,20 @@ impl BrokerRuntime {
         }
         if let Err(error) = self
             .fleet_control_tx
-            .send(FleetControlCommand::Shutdown)
-            .await
+            .try_send(FleetControlCommand::Shutdown)
         {
             tracing::debug!(error = %error, "failed to send fleet control shutdown signal");
+        }
+        // A terminal client can be awaiting a full event queue while its own
+        // bounded command queue is full. Shutdown must never await that cycle:
+        // process teardown closes the task/socket if this best-effort enqueue
+        // cannot fit immediately.
+        if self
+            .terminal_control_tx
+            .try_send(TerminalControlCommand::Shutdown)
+            .is_err()
+        {
+            tracing::debug!("terminal control shutdown signal could not be queued immediately");
         }
         // Persist any still-pending deliveries so the next start can
         // redeliver them; only remove the file when nothing is pending.

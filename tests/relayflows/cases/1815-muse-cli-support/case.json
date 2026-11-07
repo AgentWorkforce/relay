@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1815-muse-cli-support",
+  "kind": "feature",
+  "title": "Spawn Muse with reliable prompt submission and isolated Relay MCP configuration",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1815-muse-cli-support/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "absent",
+      "signature": "muse_spawn_support_absent"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "muse_spawn_injection_and_relay_mcp_ready"
+    }
+  }
+}

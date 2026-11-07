@@ -1,0 +1,96 @@
+{
+  "version": "1.0.0",
+  "id": "a5f71efa-2b38-448d-93e3-d981adad6c0d",
+  "timestamp": "2026-09-03T01:16:01.934Z",
+  "trajectory": "traj_uqpwa8z1gxnb",
+  "files": [
+    {
+      "path": "scripts/verify-features/escalate-infra.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 48,
+              "end_line": 66,
+              "revision": "752719ccf78eadebe9862ef8b12ff2af087bd50c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/verify-features/run-worktree.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 122,
+              "end_line": 145,
+              "revision": "752719ccf78eadebe9862ef8b12ff2af087bd50c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/verify-features/slack-alert.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 36,
+              "end_line": 42,
+              "revision": "752719ccf78eadebe9862ef8b12ff2af087bd50c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/fixtures/verify-features-escalation.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 253,
+              "end_line": 287,
+              "revision": "752719ccf78eadebe9862ef8b12ff2af087bd50c"
+            },
+            {
+              "start_line": 325,
+              "end_line": 331,
+              "revision": "752719ccf78eadebe9862ef8b12ff2af087bd50c"
+            },
+            {
+              "start_line": 339,
+              "end_line": 345,
+              "revision": "752719ccf78eadebe9862ef8b12ff2af087bd50c"
+            },
+            {
+              "start_line": 359,
+              "end_line": 380,
+              "revision": "752719ccf78eadebe9862ef8b12ff2af087bd50c"
+            },
+            {
+              "start_line": 830,
+              "end_line": 863,
+              "revision": "752719ccf78eadebe9862ef8b12ff2af087bd50c"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

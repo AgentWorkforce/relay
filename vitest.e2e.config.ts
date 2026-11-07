@@ -21,7 +21,6 @@ const workspacePackages = [
   'harnesses',
   'hooks',
   'memory',
-  'policy',
   'runtime',
   'sdk',
   'slack-primitive',

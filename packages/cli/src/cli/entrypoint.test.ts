@@ -124,4 +124,12 @@ describe('CLI entrypoints', () => {
 
     expect(packageJson.bin?.['agent-relay']).toBe('dist/cli/index.js');
   });
+
+  it('pins relayflows so an Agent Relay release has a reproducible workflow dependency tree', () => {
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8')) as {
+      dependencies?: Record<string, string>;
+    };
+
+    expect(packageJson.dependencies?.['@relayflows/cli']).toMatch(/^\d+\.\d+\.\d+$/);
+  });
 });

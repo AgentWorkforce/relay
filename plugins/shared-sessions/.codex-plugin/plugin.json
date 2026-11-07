@@ -1,0 +1,24 @@
+{
+  "name": "shared-sessions",
+  "version": "0.1.0",
+  "description": "Search your team's shared coding-agent sessions and retrieve the context behind prior work.",
+  "author": {
+    "name": "Agent Relay",
+    "url": "https://agentrelay.com"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Agent Relay Shared Sessions",
+    "shortDescription": "Find prior work across your team's shared sessions.",
+    "longDescription": "Search shared coding-agent conversations, read relevant context, and cite previous work using your Agent Relay Cloud workspace access.",
+    "developerName": "Agent Relay",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": [
+      "Find shared sessions about the issue I am working on.",
+      "What did our agents decide about authentication?",
+      "Find the context behind this pull request."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

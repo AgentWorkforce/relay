@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { redactSecrets } from './redact.js';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+
+import { maskSecret, redactSecrets } from './redact.js';
 
 describe('redactSecrets', () => {
   it('redacts credential-named fields and preserves the rest', () => {
@@ -66,5 +69,43 @@ describe('redactSecrets', () => {
     // Redaction is a deep copy: the caller's original object is untouched.
     expect(creds.apiKey).toBe('rk_live_shared');
     expect(input.a).toBe(creds);
+  });
+});
+
+describe('maskSecret', () => {
+  it('keeps the prefix of an armadillo credential and hides its body', () => {
+    expect(maskSecret('ar_ws_0123456789abcdef')).toBe('ar_ws_…cdef');
+    expect(maskSecret('ar_ag_0123456789abcdef')).toBe('ar_ag_…cdef');
+  });
+
+  it('redacts the shell redact() in scripts/try-relay-init.sh for armadillo credentials', () => {
+    const script = fs.readFileSync(
+      new URL('../../../../../scripts/try-relay-init.sh', import.meta.url),
+      'utf8'
+    );
+    const redact = script.split('\n').find((line) => line.startsWith('redact() '));
+    const output = execFileSync(
+      'bash',
+      ['-c', `${redact}\nprintf 'key ar_ws_abc123 token ar_ag_def456' | redact`],
+      { encoding: 'utf8' }
+    );
+    expect(output).toBe('key ar_<redacted> token ar_<redacted>');
+  });
+
+  it('keeps a known prefix and the last four characters', () => {
+    expect(maskSecret('rk_live_0123456789abcdef')).toBe('rk_live_…cdef');
+    expect(maskSecret('rjt_live_0123456789abcdef')).toBe('rjt_live_…cdef');
+    expect(maskSecret('at_live_0123456789abcdef')).toBe('at_live_…cdef');
+    expect(maskSecret('nt_live_0123456789abcdef')).toBe('nt_live_…cdef');
+    expect(maskSecret('cld_at_0123456789abcdef')).toBe('cld_at_…cdef');
+  });
+
+  it('masks the entire body when it is too short to show a suffix', () => {
+    expect(maskSecret('rk_live_short')).toBe('rk_live_…');
+    expect(maskSecret('tiny')).toBe('…');
+  });
+
+  it('masks unknown-shaped tokens to an ellipsis and the last four characters', () => {
+    expect(maskSecret('some-opaque-access-token')).toBe('…oken');
   });
 });

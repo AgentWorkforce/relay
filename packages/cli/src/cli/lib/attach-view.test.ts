@@ -23,6 +23,7 @@ class FakeWebSocket implements ViewWebSocket {
   readonly headers: Record<string, string>;
   readonly listeners = new Map<string, WsListener[]>();
   closed = false;
+  terminated = false;
   closeCode?: number;
   closeReason?: string;
 
@@ -49,6 +50,10 @@ class FakeWebSocket implements ViewWebSocket {
     this.closeCode = code;
     this.closeReason = reason;
   }
+
+  terminate(): void {
+    this.terminated = true;
+  }
 }
 
 interface HarnessOverrides {
@@ -64,6 +69,36 @@ interface HarnessOverrides {
   stdoutIsTty?: boolean;
 }
 
+class FakeStdin {
+  isTTY = true;
+  isRaw = false;
+  readonly listeners = new Map<string, Array<(chunk: Buffer) => void>>();
+  readonly setRawMode = vi.fn((mode: boolean) => {
+    this.isRaw = mode;
+  });
+  readonly resume = vi.fn();
+  readonly pause = vi.fn();
+
+  on(event: 'data', listener: (chunk: Buffer) => void): this {
+    const listeners = this.listeners.get(event) ?? [];
+    listeners.push(listener);
+    this.listeners.set(event, listeners);
+    return this;
+  }
+
+  off(event: 'data', listener: (chunk: Buffer) => void): this {
+    this.listeners.set(
+      event,
+      (this.listeners.get(event) ?? []).filter((candidate) => candidate !== listener)
+    );
+    return this;
+  }
+
+  emitData(chunk: Buffer): void {
+    for (const listener of this.listeners.get('data') ?? []) listener(chunk);
+  }
+}
+
 function createHarness(overrides: HarnessOverrides = {}): {
   deps: ViewDependencies;
   writes: string[];
@@ -71,17 +106,20 @@ function createHarness(overrides: HarnessOverrides = {}): {
   logs: unknown[][];
   signals: Map<NodeJS.Signals, () => void | Promise<void>>;
   sockets: FakeWebSocket[];
+  stdin: FakeStdin;
 } {
   const writes: string[] = [];
   const errors: unknown[][] = [];
   const logs: unknown[][] = [];
   const signals = new Map<NodeJS.Signals, () => void | Promise<void>>();
   const sockets: FakeWebSocket[] = [];
+  const stdin = new FakeStdin();
 
   const deps: ViewDependencies = {
     readConnectionFile: vi.fn(() => overrides.connectionFile ?? null),
     getDefaultStateDir: vi.fn(() => overrides.defaultStateDir ?? '/tmp/fake/.agentworkforce/relay'),
     env: overrides.env ?? {},
+    stdin,
     createWebSocket: vi.fn((url: string, headers: Record<string, string>) => {
       const socket = new FakeWebSocket(url, headers);
       sockets.push(socket);
@@ -115,7 +153,7 @@ function createHarness(overrides: HarnessOverrides = {}): {
     stdoutIsTty: overrides.stdoutIsTty ?? false,
   };
 
-  return { deps, writes, errors, logs, signals, sockets };
+  return { deps, writes, errors, logs, signals, sockets, stdin };
 }
 
 afterEach(() => {
@@ -275,6 +313,16 @@ describe('toWsUrl', () => {
 });
 
 describe('resolveViewBrokerConnection', () => {
+  it('preserves an internal per-request timeout override', () => {
+    const { deps } = createHarness();
+    const conn = resolveViewBrokerConnection(
+      { brokerUrl: 'http://loopback:3889', requestTimeoutMs: 162_500 },
+      deps
+    );
+
+    expect(conn).toEqual({ url: 'http://loopback:3889', apiKey: undefined, requestTimeoutMs: 162_500 });
+  });
+
   it('prefers --broker-url over env and connection.json', () => {
     const { deps } = createHarness({
       env: { RELAY_BROKER_URL: 'http://env-host:1234' },
@@ -477,6 +525,29 @@ describe('runViewSession', () => {
     expect(writes).toEqual(['\x1b[?1049hSCREEN', 'out', 'more']);
   });
 
+  it('consumes local input in raw mode so alternate-scroll reports are not echoed', async () => {
+    const { deps, sockets, stdin } = createHarness({
+      connectionFile: { url: 'http://localhost:3889' },
+    });
+
+    const sessionPromise = runViewSession('Alice', {}, deps);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(stdin.setRawMode).toHaveBeenCalledWith(true);
+    expect(stdin.resume).toHaveBeenCalledOnce();
+
+    // These are the bytes a terminal produces for mouse-wheel movement when
+    // alternate-scroll is enabled. View must consume them rather than let
+    // cooked stdin echo them as `^[[0A` and `^[[0B`.
+    stdin.emitData(Buffer.from('\x1b[0A\x1b[0B'));
+    expect(sockets[0].closed).toBe(false);
+
+    stdin.emitData(Buffer.from([0x03]));
+    await expect(sessionPromise).resolves.toBe(0);
+    expect(sockets[0].terminated).toBe(true);
+    expect(stdin.setRawMode).toHaveBeenLastCalledWith(false);
+    expect(stdin.pause).toHaveBeenCalledOnce();
+  });
+
   it('exits cleanly on SIGINT without surfacing an error', async () => {
     const { deps, sockets, signals } = createHarness({
       connectionFile: { url: 'http://localhost:3889' },
@@ -494,6 +565,7 @@ describe('runViewSession', () => {
     const code = await sessionPromise;
     expect(code).toBe(0);
     expect(socket.closed).toBe(true);
+    expect(socket.terminated).toBe(true);
   });
 
   it('emits a terminal reset on detach when stdout is a TTY', async () => {
@@ -564,7 +636,7 @@ describe('runViewSession', () => {
     const { deps, errors } = createHarness({ env: {}, connectionFile: null });
     const code = await runViewSession('Alice', {}, deps);
     expect(code).toBe(1);
-    expect(errors[0]?.[0]).toMatch(/could not locate broker connection/);
+    expect(errors[0]?.[0]).toMatch(/no broker connection at .*connection\.json \(project default\)/);
   });
 
   it('omits the X-API-Key header when no api key is available', async () => {

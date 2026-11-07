@@ -105,7 +105,56 @@ Do not substitute a public request-bin or a shared endpoint: webhook payloads
 and signatures are test data that must remain isolated. Each run gets its own
 receiver path and destroys it after the webhook/subscription cleanup below.
 
+## relay-init
+
+**Automated:** `node tests/relayflows/core/init-parity.mjs`, on every pull request that reaches the core lane.
+
+**Prerequisites:** the built CLI (`npm run build:core`) and network access to GitHub releases for the local server and the pinned core. Set `RELAY_CORE_BIN` to test a core you built.
+
+**Setup:** a fresh sandboxed `HOME`, `AGENT_RELAY_CORE_SOCKET` inside it, and each tool marked installed the way the core detects it: its folder, or `~/.cursor/cli-config.json`. Never run this against your own home.
+
+**Assertions, for each tool:**
+
+1. `relay init --tools <tool>` reports injection for that tool.
+2. The tool's own file has what the tool reads, and any setting the person kept there is still there.
+3. `settings.get` reports that tool's settings on and every other tool's off, and no other tool's file was written.
+4. The core's workspace is on loopback, and its log names no hosted service.
+5. `relay init --uninstall` turns the settings off and removes what init added, keeping the person's own settings.
+
+**Cleanup:** `relay init --stop`, then remove the sandbox.
+
+**Limitation:** `--hosted` and `--interactive` are not automated. Hosted setup needs a disposable account, and guided setup needs a terminal.
+
+## core-daemon
+
+**Automated:** the scenarios of `relay-init` and `core-delivery` start and drive the real core, and `cargo test` in `crates/relay-node` covers it against fake services.
+
+**Prerequisites:** a sandbox as in `relay-init`. The core answers on `AGENT_RELAY_CORE_SOCKET`; `status.get` and `settings.get` are the read-only checks.
+
+**Assertions:** `relay init` starts one core, a second run attaches to it, the core reports the saved workspace, and `relay init --stop` leaves nothing answering. A running desktop core is attached to and never stopped.
+
+**Limitation:** attaching to a real desktop core needs a machine with the desktop app, so verify `init-desktop-aware` by hand.
+
+## core-delivery
+
+**Automated:** `node tests/relayflows/core/delivery.mjs` and `node tests/relayflows/core/grok-join.mjs`, on every pull request that reaches the core lane.
+
+**Prerequisites:** as in `relay-init`. A copy of the running Node stands in for each tool; a Node built against a shared `libnode`, such as Homebrew's, gets that library copied beside it, and a copy that still cannot run fails the scenario at once.
+
+**How a session is made:** the scenario meets the contract the core discovers, and no more. A Cursor CLI session is a process named `cursor-agent` holding its conversation's `store.db` open, which runs the hook from `~/.cursor/hooks.json` as its child. A Grok session is a `grok` process with its record in `active_sessions.json`, beside a leader on `leader.sock`. No trust check is relaxed: the core proves the leader from the kernel as it does in production.
+
+**Assertions:**
+
+1. The session joins Relay on its own.
+2. A direct message from another agent arrives through the tool's route: Cursor's `followup_message`, or Grok's `session/prompt`, naming the sender.
+3. A Grok session with no leader stays off Relay.
+4. Everything stayed local.
+
+**Limitation:** the core requires a signature or install location these scenarios cannot meet for the Cursor editor, Codex on macOS and Claude Code's inbox, so waking an idle Cursor editor window and delivery to Claude Code, Codex, OpenCode, Pi and Devin are covered by `cargo test` in `crates/relay-node` and by live checks with the real tools.
+
 ## broker-lifecycle
+
+**Legacy:** this and the other `status: legacy` categories run on the broker and PTY path that the core replaces. They are verified by hand on demand, never on a pull request.
 
 **Features:** `broker-up`, `broker-down`, `broker-status`, `broker-metrics`, `broker-deadletters`, `broker-redeliver`.
 
@@ -329,18 +378,17 @@ The CLI persists the daemon PID and log path in its isolated local worker state,
 
 ## fleet-management
 
-**Features:** `fleet-nodes`, `fleet-config`, `fleet-enable`, `fleet-disable`, `fleet-inherit`, `fleet-status`.
+**Features:** `fleet-nodes`, `fleet-nodes-pretty`, `fleet-status`.
 
-**Prerequisites:** disposable workspace; `fleet-status` additionally benefits from a local broker.
+**Prerequisites:** workspace credentials; `fleet-status` additionally benefits from a local broker.
 
 ```bash
 relay fleet nodes | jq -e '.nodes'
-BEFORE="$(relay fleet config)"
-relay fleet enable; relay fleet config | jq -e 'type == "object"'
-relay fleet disable; relay fleet inherit; relay fleet status | jq -e '.broker'
+relay fleet nodes list --pretty | grep -Eiq 'NODE|No fleet nodes found'
+relay fleet status | jq -e '.broker'
 ```
 
-Snapshot and restore configuration or discard the workspace. For full two-node dispatch/enrollment coverage, run `npm run test:e2e` with `tests/e2e/fleet/README.md` prerequisites.
+For full two-node dispatch/enrollment coverage, run `npm run test:e2e` with `tests/e2e/fleet/README.md` prerequisites.
 
 ## workspace-management
 
@@ -382,7 +430,10 @@ Assert the downloaded skill and delete only this disposable project. Do not run 
 ```bash
 : "${CAPTURE_URL:?See Externally provisioned fixtures}"
 : "${CAPTURE_FETCH_URL:?GET endpoint returning the current run captured requests}"
-HOOK="$(RELAY_AGENT_TOKEN="$TOKEN_A" relay integration webhook create "$CAPTURE_URL" --event message.created)"; HOOK_ID="$(jq -er '.id // .webhookId' <<<"$HOOK")"
+# `webhook create` is INBOUND: it takes the channel to deliver into and returns
+# the URL external services POST to. It does not take a destination URL.
+HOOK="$(RELAY_AGENT_TOKEN="$TOKEN_A" relay integration webhook create "$CHANNEL")"; HOOK_ID="$(jq -er '.webhookId // .id' <<<"$HOOK")"
+HOOK_URL="$(jq -er '.url' <<<"$HOOK")"; HOOK_TOKEN="$(jq -er '.token' <<<"$HOOK")"
 RELAY_AGENT_TOKEN="$TOKEN_A" relay integration webhook trigger "$HOOK_ID" --payload '{"audit":true}'
 DELIVERED=false
 for _ in $(seq 1 15); do
@@ -407,20 +458,63 @@ RELAY_AGENT_TOKEN="$TOKEN_A" relay integration webhook list | jq -e --arg id "$H
 RELAY_AGENT_TOKEN="$TOKEN_A" relay integration webhook delete "$HOOK_ID"
 ```
 
-The capture assertion requires the exact parsed payload `{"audit":true}` and a nonempty header whose lowercased name contains `signature`; it runs before deletion. For inbound, create channel/hook, POST the returned URL with token and documented payload, assert message, delete hook. Create/list/get/delete a unique subscription. For Relayfile, `subscribe --no-input`, assert `subscribe --list`, cause provider event and Relay reply, `unsubscribe` with same provider/resource, assert absent. Localhost cannot receive hosted webhooks.
+`webhook create` and `create-inbound` are aliases over the same `POST /v1/webhooks`, whose request is `{ channel, name? }` — there is no outbound registration surface, so a capture receiver is only reachable through `webhook trigger`, not by registering `CAPTURE_URL` as a destination. The capture assertion requires the exact parsed payload `{"audit":true}` and a nonempty header whose lowercased name contains `signature`; it runs before deletion. For the inbound path proper, create the channel and hook, POST `$HOOK_URL` with `$HOOK_TOKEN` and the documented payload, assert the message lands in the channel, then delete the hook. Create/list/get/delete a unique subscription. For Relayfile, `subscribe --no-input`, assert `subscribe --list`, cause provider event and Relay reply, `unsubscribe` with same provider/resource, assert absent. Localhost cannot receive hosted webhooks.
 
-## reflex-history
+## product-cli-surfaces
 
-**Features:** `reflex-on`, `reflex-off`, `reflex-status`.
+**Features:** `product-surface-file`, `product-surface-flows`,
+`product-surface-sessions`, `product-surface-session-alias`.
 
-**Prerequisites:** isolated home; `on` is interactive and can use Cloud login.
+**Prerequisites:** the product SDKs must be installed and expose their
+`relay-cli` subpath. Until those releases ship, link local builds with
+`scripts/link-product-surfaces.sh`; without them each group correctly reports
+which package to upgrade, and that message is the expected result rather than a
+failure.
+
+The shared fixture runs under `set -Eeuo pipefail`, so every expected-nonzero
+command below is run inside an `if`. Written as a bare command, the first
+expected exit 2 would abort the procedure before its assertion ran, and the
+check would look like a pass.
 
 ```bash
-echo y | relay reflex on; relay reflex status | grep -Eiq 'on'
-relay reflex off; relay reflex status | grep -Eiq 'off'
+# Each group renders its product's real tree, named for agent-relay.
+for g in file flows sessions; do
+  relay "$g" --help | grep -q "^Usage: agent-relay $g" || exit 1
+  relay "$g" --help | grep -q '^Commands:' || exit 1
+done
+
+# Help must not leak the product's own program name.
+if relay file --help | grep -Eq '^Usage: (relayfile|flows|ai-hist)\b'; then exit 1; fi
+
+# An unknown command is exit 2 and lists real commands.
+if relay sessions definitely-not-a-command >/dev/null 2>&1; then
+  exit 1
+else
+  [ "$?" -eq 2 ] || exit 1
+fi
+
+# The hidden alias still routes; a malformed id is a usage error, not a crash.
+if relay session replay not-a-uuid >/dev/null 2>&1; then
+  exit 1
+else
+  [ "$?" -eq 2 ] || exit 1
+fi
+
+# Before the product releases land, each group must name the package to
+# upgrade rather than failing opaquely.
+for g in file flows sessions; do
+  if out=$(relay "$g" --help 2>&1); then
+    continue  # the SDK is installed; the tree assertions above already ran
+  else
+    printf '%s' "$out" | grep -Eq 'is too old|is not installed' || exit 1
+  fi
+done
 ```
 
-Run only against a disposable home/configuration and assert cleanup leaves Reflex off.
+Assert a real command executes through the mount, not just help — e.g.
+`relay sessions stats` against a populated local history store. Automation
+limitation: `relay file` needs the relayfile Go binary present, so a machine
+without it can verify help and routing but not execution.
 
 ## mcp-stdio
 
@@ -449,16 +543,6 @@ node tests/integration/sdk/v8-api-smoke.mjs
 ```
 
 Assert bootstrap/reconnect, participants, channel/thread/reaction/DM/group-DM/listener/action/DeliveryRunner/webhook/node behavior. Release all identities and clean up remote workspace through its control plane; the smoke script does not delete it.
-
-## python-sdk
-
-**Features:** all `python-sdk-*` entries.
-
-```bash
-cd packages/sdk-py && python -m pytest
-```
-
-For true E2E, create a disposable Relay, send/receive unique message, then release agents and shut down. Adapter/workflow tests require their provider CLI and must clean up spawned work.
 
 ## swift-sdk
 

@@ -333,28 +333,32 @@ export function upsertFleetNodeEnrollment(
 }
 
 /**
- * Resolve a stored enrollment, optionally narrowed by base URL and/or workspace.
+ * Resolve a stored enrollment, optionally narrowed by base URL, workspace,
+ * and/or node identity.
  *
  * @param input - Optional `baseUrl`/`workspaceId` selectors and env override.
  * @returns The matching record, or `undefined` when none match.
  * @throws When multiple records match and the selectors do not disambiguate.
  */
 export function resolveActiveFleetNodeEnrollment(
-  input: { baseUrl?: string; workspaceId?: string; env?: NodeJS.ProcessEnv } = {}
+  input: { baseUrl?: string; workspaceId?: string; nodeId?: string; env?: NodeJS.ProcessEnv } = {}
 ): FleetNodeEnrollmentRecord | undefined {
   const store = readFleetNodeEnrollmentStore(input.env);
   const baseUrl = input.baseUrl ? normalizeStoreBaseUrl(input.baseUrl) : undefined;
   const workspaceId = input.workspaceId?.trim() || undefined;
+  const nodeId = input.nodeId?.trim() || undefined;
 
   if (baseUrl && workspaceId) {
-    return store.nodes[fleetNodeEnrollmentKey(baseUrl, workspaceId)];
+    const record = store.nodes[fleetNodeEnrollmentKey(baseUrl, workspaceId)];
+    return record && (nodeId === undefined || record.nodeId.trim() === nodeId) ? record : undefined;
   }
 
   const records = Object.values(store.nodes);
   const matches = records.filter(
     (record) =>
       (baseUrl === undefined || normalizeStoreBaseUrl(record.relaycastUrl) === baseUrl) &&
-      (workspaceId === undefined || record.relayWorkspaceId.trim() === workspaceId)
+      (workspaceId === undefined || record.relayWorkspaceId.trim() === workspaceId) &&
+      (nodeId === undefined || record.nodeId.trim() === nodeId)
   );
   if (matches.length === 0) {
     return undefined;
@@ -368,7 +372,7 @@ export function resolveActiveFleetNodeEnrollment(
   if (baseUrl) {
     const activeKey = store.active[fleetNodeActiveBaseKey(baseUrl)];
     const active = activeKey ? store.nodes[activeKey] : undefined;
-    if (active) {
+    if (active && matches.includes(active)) {
       return active;
     }
   }

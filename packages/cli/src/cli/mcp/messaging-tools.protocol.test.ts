@@ -1,0 +1,419 @@
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { McpRequestReplay } from './request-replay.js';
+import { registerMessagingTools } from './messaging-tools.js';
+
+describe('messaging delivery receipts over MCP', () => {
+  beforeEach(() => {
+    vi.stubEnv('RELAY_ATTEST_SESSION_ID', '');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('reuses keyed receipts across two replay boundaries while unkeyed identical sends stay distinct', async () => {
+    const rows: { id: string; conversationId: string }[] = [];
+    const keyed = new Map<string, (typeof rows)[number]>();
+    const dm = vi.fn(async (_to: string, _text: string, options: { idempotencyKey?: string }) => {
+      const key = options.idempotencyKey;
+      if (key && keyed.has(key)) return keyed.get(key)!;
+      const row = { id: `msg_${rows.length + 1}`, conversationId: 'dm_chief' };
+      rows.push(row);
+      if (key) keyed.set(key, row);
+      return row;
+    });
+    async function send(idempotencyKey?: string) {
+      const server = new McpServer({ name: 'boundary-test', version: '1.0.0' });
+      registerMessagingTools(
+        server,
+        () => ({ dm }) as never,
+        async () => [{ name: 'chief' }],
+        new McpRequestReplay()
+      );
+      const client = new Client({ name: 'boundary-client', version: '1.0.0' });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      try {
+        await server.connect(serverTransport);
+        await client.connect(clientTransport);
+        const result = await client.callTool({
+          name: 'send_dm',
+          arguments: {
+            to: 'chief',
+            text: 'same text',
+            ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
+          },
+        });
+        expect(result.isError).not.toBe(true);
+        return result.structuredContent;
+      } finally {
+        await client.close();
+        await server.close();
+      }
+    }
+    const first = await send('logical-send');
+    const retry = await send('logical-send');
+    expect(rows).toHaveLength(1);
+    expect(first).toMatchObject({ id: 'msg_1', conversationId: 'dm_chief' });
+    expect(retry).toEqual(first);
+    expect(dm).toHaveBeenCalledTimes(2);
+    const unkeyedFirst = await send();
+    const unkeyedSecond = await send();
+    expect(rows).toHaveLength(3);
+    expect(unkeyedFirst?.id).not.toBe(unkeyedSecond?.id);
+  });
+
+  it('rejects a whitespace-only idempotency key before sending and forwards it trimmed', async () => {
+    const dm = vi.fn(async () => ({ id: 'msg_1', conversationId: 'dm_chief' }));
+    const server = new McpServer({ name: 'idempotency-key-test', version: '1.0.0' });
+    registerMessagingTools(
+      server,
+      () => ({ dm }) as never,
+      async () => [{ name: 'chief' }],
+      new McpRequestReplay()
+    );
+    const client = new Client({ name: 'idempotency-key-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      const rejected = await client.callTool({
+        name: 'send_dm',
+        arguments: { to: 'chief', text: 'same text', idempotency_key: '   ' },
+      });
+      expect(rejected.isError).toBe(true);
+      expect(JSON.stringify(rejected.content)).toContain('idempotency_key');
+      expect(dm).not.toHaveBeenCalled();
+      const result = await client.callTool({
+        name: 'send_dm',
+        arguments: { to: 'chief', text: 'same text', idempotency_key: '  logical-send  ' },
+      });
+      expect(result.isError).not.toBe(true);
+      expect(dm).toHaveBeenCalledWith(
+        'chief',
+        'same text',
+        expect.objectContaining({ idempotencyKey: 'logical-send' })
+      );
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('exposes enqueue state on send and an explicit signal for an empty reader list', async () => {
+    const dm = vi.fn(async () => ({ id: 'msg_1', text: 'hello' }));
+    const readers = vi.fn(async () => []);
+    const server = new McpServer({ name: 'messaging-test', version: '1.0.0' });
+    registerMessagingTools(
+      server,
+      () => ({ dm, readers }) as never,
+      async () => [{ name: 'chief' }, { name: 'chief-khaliq', status: 'offline' }]
+    );
+
+    const client = new Client({ name: 'messaging-client-test', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+
+      const sent = await client.callTool({
+        name: 'send_dm',
+        arguments: { to: 'chief-khaliq', text: 'hello' },
+      });
+      expect(sent.structuredContent).toMatchObject({
+        id: 'msg_1',
+        target: { kind: 'agent', agentName: 'chief-khaliq' },
+        delivery: {
+          status: 'queued_unconfirmed',
+          mode: 'wait',
+          requestedRecipient: 'chief-khaliq',
+          resolvedRecipient: 'chief-khaliq',
+          directoryMatched: true,
+          recipientMatched: null,
+          deliveryConfirmed: false,
+          readConfirmed: false,
+        },
+      });
+      expect(sent.isError).not.toBe(true);
+      expect(dm).toHaveBeenCalledTimes(1);
+
+      const unresolved = await client.callTool({
+        name: 'send_dm',
+        arguments: { to: 'missing-agent', text: 'still enqueue this' },
+      });
+      expect(unresolved.isError).toBe(true);
+      expect(unresolved.structuredContent).toMatchObject({
+        id: 'msg_1',
+        delivery: {
+          status: 'recipient_unresolved',
+          requestedRecipient: 'missing-agent',
+          resolvedRecipient: null,
+          recipientMatched: null,
+          directoryMatched: null,
+          deliveryConfirmed: false,
+          readConfirmed: false,
+        },
+      });
+      expect(unresolved.structuredContent).not.toHaveProperty('target');
+      expect(dm).toHaveBeenLastCalledWith('missing-agent', 'still enqueue this', {
+        mode: undefined,
+        attachments: undefined,
+        data: undefined,
+      });
+
+      const unread = await client.callTool({
+        name: 'get_message_readers',
+        arguments: { message_id: 'msg_1' },
+      });
+      expect(unread.structuredContent).toMatchObject({
+        readers: [],
+        delivery: { status: 'queued_or_unread', readConfirmed: false },
+      });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('does not echo the sent body back across the MCP boundary', async () => {
+    const body = 'CANARY-BODY-'.repeat(400);
+    const dm = vi.fn(async () => ({
+      // The upstream create-message response carries the body twice.
+      conversationId: 'dm_1',
+      id: 'msg_1',
+      text: body,
+      message: { id: 'msg_1', text: body },
+    }));
+    const server = new McpServer({ name: 'messaging-echo-test', version: '1.0.0' });
+    registerMessagingTools(
+      server,
+      () => ({ dm }) as never,
+      async () => [{ name: 'chief' }]
+    );
+
+    const client = new Client({ name: 'messaging-echo-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+
+      const sent = await client.callTool({
+        name: 'send_dm',
+        arguments: { to: 'chief', text: body },
+      });
+
+      // Neither the rendered content block nor the structured payload may
+      // carry the body the caller already holds in its tool_use parameter.
+      expect(JSON.stringify(sent.content)).not.toContain('CANARY-BODY');
+      expect(JSON.stringify(sent.structuredContent)).not.toContain('CANARY-BODY');
+
+      // The receipt stays small no matter how large the message was.
+      expect(JSON.stringify(sent.structuredContent).length).toBeLessThan(600);
+
+      // ...and still says everything the caller needs to act on it.
+      expect(sent.structuredContent).toMatchObject({
+        id: 'msg_1',
+        conversationId: 'dm_1',
+        delivery: { status: 'queued_unconfirmed', resolvedRecipient: 'chief' },
+      });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('preserves a rejected send as an error even when the directory matched', async () => {
+    const dm = vi.fn(async () => {
+      throw new Error('agent_not_found: recipient no longer exists');
+    });
+    const server = new McpServer({ name: 'messaging-rejected-test', version: '1.0.0' });
+    registerMessagingTools(
+      server,
+      () => ({ dm }) as never,
+      async () => [{ name: 'released-agent' }]
+    );
+    const client = new Client({ name: 'messaging-rejected-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      const result = await client.callTool({
+        name: 'send_dm',
+        arguments: { to: 'released-agent', text: 'hello' },
+      });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result.content)).toContain('agent_not_found');
+      expect(result.structuredContent).toBeUndefined();
+      expect(dm).toHaveBeenCalledTimes(1);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('stamps the current replay session on channel, thread, direct, and group messages', async () => {
+    vi.stubEnv('RELAY_ATTEST_SESSION_ID', '11111111-1111-4111-8111-111111111111');
+    const send = vi.fn(async () => ({ id: 'msg_channel', text: 'channel' }));
+    const reply = vi.fn(async () => ({ id: 'msg_reply', text: 'reply' }));
+    const dm = vi.fn(async () => ({ id: 'msg_dm', text: 'dm' }));
+    const createGroup = vi.fn(async () => ({ id: 'conversation_group' }));
+    const sendMessage = vi.fn(async () => ({ id: 'msg_group', text: 'group' }));
+    const server = new McpServer({ name: 'messaging-replay-test', version: '1.0.0' });
+    registerMessagingTools(
+      server,
+      () => ({ send, reply, dm, dms: { createGroup, sendMessage } }) as never,
+      async () => [{ name: 'chief' }]
+    );
+    const client = new Client({ name: 'messaging-replay-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const replayData = { session_ref: '11111111-1111-4111-8111-111111111111' };
+
+    try {
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      await client.callTool({
+        name: 'post_message',
+        arguments: { channel: 'general', text: 'channel' },
+      });
+      await client.callTool({
+        name: 'reply_to_thread',
+        arguments: { message_id: 'msg_parent', text: 'reply' },
+      });
+      await client.callTool({
+        name: 'send_dm',
+        arguments: { to: 'chief', text: 'dm' },
+      });
+      await client.callTool({
+        name: 'send_group_dm',
+        arguments: { participants: ['chief'], text: 'group' },
+      });
+
+      expect(send).toHaveBeenCalledWith('general', 'channel', {
+        attachments: undefined,
+        data: replayData,
+        mode: undefined,
+      });
+      expect(reply).toHaveBeenCalledWith('msg_parent', 'reply', { data: replayData });
+      expect(dm).toHaveBeenCalledWith('chief', 'dm', {
+        mode: undefined,
+        attachments: undefined,
+        data: replayData,
+      });
+      expect(sendMessage).toHaveBeenCalledWith('conversation_group', 'group', {
+        data: replayData,
+      });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+});
+
+describe('channel and thread writes over MCP', () => {
+  function gatedWrite() {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let n = 0;
+    const write = vi.fn(async () => {
+      await gate;
+      n += 1;
+      return { id: `message-${n}` };
+    });
+    return { write, release };
+  }
+
+  async function connect(getAgentClient: Parameters<typeof registerMessagingTools>[1]) {
+    const server = new McpServer({ name: 'write-test', version: '1' });
+    registerMessagingTools(server, getAgentClient);
+    const client = new Client({ name: 'write-client', version: '1' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    return {
+      client,
+      close: async () => {
+        await client.close();
+        await server.close();
+      },
+    };
+  }
+
+  it.each([
+    ['post_message', 'send', { channel: 'events', text: 'ACK' }],
+    ['reply_to_thread', 'reply', { message_id: 'provider-parent', text: 'ACK' }],
+  ] as const)(
+    'keeps independent parallel %s calls with identical text separate',
+    async (tool, method, args) => {
+      const { write, release } = gatedWrite();
+      const { client, close } = await connect(() => ({ [method]: write }) as never);
+      try {
+        const first = client.callTool({ name: tool, arguments: args });
+        const second = client.callTool({ name: tool, arguments: args });
+        await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+        release();
+        const results = await Promise.all([first, second]);
+        expect(results.map((result) => result.isError)).toEqual([undefined, undefined]);
+        expect(results[0].structuredContent).not.toEqual(results[1].structuredContent);
+      } finally {
+        release();
+        await close();
+      }
+    }
+  );
+
+  it.each([
+    ['post_message', 'send', { channel: 'events', text: 'ACK' }],
+    ['reply_to_thread', 'reply', { message_id: 'provider-parent', text: 'ACK' }],
+  ] as const)('joins %s calls that share an idempotency key and forwards it', async (tool, method, args) => {
+    const { write, release } = gatedWrite();
+    const { client, close } = await connect(() => ({ [method]: write }) as never);
+    try {
+      const keyed = { ...args, idempotency_key: ' retry-1 ' };
+      const first = client.callTool({ name: tool, arguments: keyed });
+      const retry = client.callTool({ name: tool, arguments: keyed });
+      await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+      release();
+      const results = await Promise.all([first, retry]);
+      expect(results[0].structuredContent).toEqual(results[1].structuredContent);
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(write.mock.calls[0]).toContainEqual(expect.objectContaining({ idempotencyKey: 'retry-1' }));
+    } finally {
+      release();
+      await close();
+    }
+  });
+
+  it('keeps an in-flight write on the identity that was active when it was called', async () => {
+    const alice = gatedWrite();
+    const bob = gatedWrite();
+    let current = 'alice';
+    const { client, close } = await connect(
+      () => ({ reply: current === 'alice' ? alice.write : bob.write }) as never
+    );
+    try {
+      const pending = client.callTool({
+        name: 'reply_to_thread',
+        arguments: { message_id: 'parent', text: 'ACK' },
+      });
+      await vi.waitFor(() => expect(alice.write).toHaveBeenCalledTimes(1));
+      current = 'bob';
+      alice.release();
+      bob.release();
+      await pending;
+      await client.callTool({ name: 'reply_to_thread', arguments: { message_id: 'parent', text: 'ACK' } });
+      expect(alice.write).toHaveBeenCalledTimes(1);
+      expect(bob.write).toHaveBeenCalledTimes(1);
+    } finally {
+      alice.release();
+      bob.release();
+      await close();
+    }
+  });
+});

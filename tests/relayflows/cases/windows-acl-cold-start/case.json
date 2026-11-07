@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "windows-acl-cold-start",
+  "kind": "bugfix",
+  "title": "Allow bounded cold startup before native Windows credential ACL validation",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/windows-acl-cold-start/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 90,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "private_acl_cold_start_times_out"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "private_acl_cold_start_validated"
+    }
+  }
+}
