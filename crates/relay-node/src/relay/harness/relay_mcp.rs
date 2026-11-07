@@ -13,11 +13,13 @@ pub(crate) const TOOL: &str = "send_relay_message";
 #[derive(Clone, Copy)]
 pub(crate) enum Harness {
     Devin,
+    Droid,
     Muse,
 }
 pub(crate) fn definition(helper: &Path, alias: &str, development: bool, harness: Harness) -> Value {
     let command = match harness {
         Harness::Devin => "devin-spawn-mcp",
+        Harness::Droid => "droid-spawn-mcp",
         Harness::Muse => "muse-spawn-mcp",
     };
     let mut arguments = vec![command];

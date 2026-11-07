@@ -278,6 +278,10 @@ impl LocalSessions {
         partition: SessionPartition,
     ) -> Option<Vec<DiscoveredSession>> {
         let found = match partition {
+            SessionPartition::Droid => crate::relay::droid::discover(
+                &crate::relay::droid::DroidConfig::from_local(&self.config),
+                &*self.scans,
+            ),
             SessionPartition::All => self.all(),
             SessionPartition::Codex => self.codex_sessions()?,
             SessionPartition::Claude => {

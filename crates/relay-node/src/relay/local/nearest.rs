@@ -61,6 +61,7 @@ impl LocalSessions {
                     || crate::relay::existing_session::grok::is_leader(&table.arguments(current))
                     || (self.config.muse_open
                         && crate::relay::muse::is_muse_process(table, current))
+                    || crate::relay::droid::is_droid_process(table, current)
                     || devin::is_devin_process(table, current)
                     || crate::relay::cursor_cli::is_cursor_process(table, current)
                     || crate::relay::cursor_cli::editor::is_editor_host(table, current)
@@ -92,7 +93,8 @@ impl LocalSessions {
                 return false;
             };
             if process.uid == self.config.uid {
-                if devin::is_devin_process(table, current)
+                if crate::relay::droid::is_droid_process(table, current)
+                    || devin::is_devin_process(table, current)
                     || crate::relay::cursor_cli::is_cursor_process(table, current)
                     || crate::relay::cursor_cli::editor::is_editor_host(table, current)
                     || crate::relay::hook_agents::is_copilot_process(table, current)

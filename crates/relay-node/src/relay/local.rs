@@ -1165,7 +1165,7 @@ impl LocalInjector {
                     )
                     .is_ok()
             }
-            SessionKind::Devin | SessionKind::CursorCli => {
+            SessionKind::Droid | SessionKind::Devin | SessionKind::CursorCli => {
                 lock_held::can_reply(&self.config, &*self.table, target)
             }
             // OpenClaw's tools never run under this core's socket: its
@@ -1642,7 +1642,7 @@ impl Injector for LocalInjector {
             SessionKind::Copilot => InjectOutcome::Refused(
                 "A Copilot chat takes messages only through its registered Relay identity.".into(),
             ),
-            SessionKind::Devin | SessionKind::CursorCli => {
+            SessionKind::Droid | SessionKind::Devin | SessionKind::CursorCli => {
                 lock_held::inject(&self.config, &*self.table, target, message_id, text)
             }
             // Each sender has a session of its own (`inject_routed`).

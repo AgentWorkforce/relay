@@ -78,6 +78,24 @@ pub enum RelayCommands {
         #[arg(long)]
         dev: bool,
     },
+    /// Private Factory Droid runtime host.
+    #[command(hide = true)]
+    DroidSpawnHost {
+        #[arg(long)]
+        executable: PathBuf,
+        #[arg(long)]
+        directory: PathBuf,
+        #[arg(long)]
+        runtime: PathBuf,
+        #[arg(long)]
+        launch_id: String,
+    },
+    /// Make a session-scoped request to the local relay socket.
+    #[command(hide = true)]
+    DroidSpawnMcp {
+        #[arg(long)]
+        dev: bool,
+    },
     /// Print the relayed message whose pointer names this `REF`.
     Read {
         #[arg(value_name = "REF")]
@@ -403,6 +421,13 @@ pub fn run(command: RelayCommands) -> Result<()> {
             full_access,
         ),
         RelayCommands::DevinSpawnMcp { dev } => relay::harness::devin::mcp::run(dev),
+        RelayCommands::DroidSpawnHost {
+            executable,
+            directory,
+            runtime,
+            launch_id,
+        } => relay::harness::droid::host::run(&executable, &directory, &runtime, &launch_id),
+        RelayCommands::DroidSpawnMcp { dev } => relay::harness::relay_mcp::run(dev),
         RelayCommands::MuseSpawnMcp { dev } => relay::harness::relay_mcp::run(dev),
         RelayCommands::SocketRequest {
             socket,

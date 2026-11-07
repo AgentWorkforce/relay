@@ -58,7 +58,16 @@ pub(super) fn caller(
                 .ok_or(CallerMiss::NotASession),
         );
     }
-    let (kind, session) = if devin::is_devin_process(table, current) {
+    let (kind, session) = if crate::relay::droid::is_droid_process(table, current) {
+        (
+            SessionKind::Droid,
+            crate::relay::droid::session(
+                &crate::relay::droid::DroidConfig::from_local(config),
+                table,
+                current,
+            ),
+        )
+    } else if devin::is_devin_process(table, current) {
         (
             SessionKind::Devin,
             devin::held_session(&config.devin, table, current),
@@ -86,6 +95,12 @@ pub(super) fn caller(
 /// live holding process.
 pub(super) fn can_reply(config: &LocalConfig, table: &dyn ProcessTable, target: &Target) -> bool {
     match target.kind {
+        SessionKind::Droid => crate::relay::droid::records(
+            &crate::relay::droid::DroidConfig::from_local(config),
+            table,
+        )
+        .iter()
+        .any(|r| r.session_id == target.id),
         SessionKind::Devin => devin::held(&config.devin, table, config.uid, &target.id).is_some(),
         SessionKind::CursorCli => {
             cursor_cli::running(&config.cursor, table, config.uid, &target.id)
@@ -104,6 +119,16 @@ pub(super) fn inject(
     text: &str,
 ) -> InjectOutcome {
     match target.kind {
+        SessionKind::Droid => crate::relay::harness::droid::deliver(
+            &crate::relay::droid::DroidConfig::from_local(config),
+            table,
+            &target.id,
+            message_id,
+            text,
+        )
+        .unwrap_or_else(|| {
+            InjectOutcome::Waiting("The Relay-owned Droid runtime is not running.".into())
+        }),
         SessionKind::Devin => {
             match devin::send(
                 &config.devin,

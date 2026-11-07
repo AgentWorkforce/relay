@@ -70,6 +70,7 @@ pub enum CallerMiss {
 /// its own rows; an unavailable domain keeps its previous rows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SessionPartition {
+    Droid,
     All,
     Codex,
     Claude,
@@ -87,6 +88,7 @@ pub enum SessionPartition {
 impl SessionPartition {
     pub fn for_target(target: &Target) -> Self {
         match target.kind {
+            SessionKind::Droid => Self::Droid,
             SessionKind::Codex => Self::Codex,
             SessionKind::ClaudeTerminal | SessionKind::ClaudeCloud => Self::Claude,
             SessionKind::Grok | SessionKind::GrokOpen => Self::Grok,

@@ -190,6 +190,7 @@ mod tests {
                 "grok": {"full_access": true, "billing": "unspecified"},
                 "muse": {"full_access": false, "billing": "unspecified"},
                 "devin": {"full_access": false, "billing": "unspecified"},
+                "droid": {"billing": "unspecified"},
             })
         );
     }

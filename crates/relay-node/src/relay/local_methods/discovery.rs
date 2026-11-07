@@ -187,6 +187,7 @@ fn same_presentation(left: &DiscoveredSession, right: &DiscoveredSession) -> boo
 
 fn partition_order(partition: SessionPartition) -> u8 {
     match partition {
+        SessionPartition::Droid => 12,
         SessionPartition::All => 0,
         SessionPartition::Codex => 1,
         SessionPartition::Claude => 2,

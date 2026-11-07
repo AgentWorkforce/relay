@@ -148,3 +148,35 @@ crates/relay-node/scripts/generate-contract.sh --out /tmp/CoreContract.swift
 
 One core runs per machine: whichever installed it (the relay CLI or a desktop
 app), the apps attach to the running daemon's socket.
+
+### Factory Droid workers
+
+The `droid` harness starts the installed Factory CLI as a persistent
+`droid exec --input-format stream-jsonrpc --output-format stream-jsonrpc`
+process. Relay keeps the native session ID returned by Droid and serializes
+later messages into that same conversation. An idle worker remains available
+without launching another computer or sandbox. The detached host survives a
+desktop-core restart; it never adopts an unrelated Factory terminal session.
+
+Factory authentication remains in Droid's own setup or the launch environment
+(`FACTORY_API_KEY`). Relay does not copy it into arguments or runtime records.
+The model stays at Droid's configured default, autonomy starts at normal, and
+permission requests are refused except the exact launch-pinned
+`send_relay_message` MCP capability. That private server is installed for the
+worker automatically, and sends are attributed using its verified process
+ancestry, host/child start times and native session ID. It cannot name another
+agent identity. A delivery ID is retained for the host's lifetime: replaying
+identical text returns its prior state, a changed payload is refused, and an
+uncertain submission is never blindly sent again.
+
+The initial managed-worker route is available on macOS and Linux. Arbitrary
+already-open terminal sessions and Windows messaging are not offered by this
+route. Factory history acquisition and parsing belong to RelayHistory's
+`droid` source rather than this host. Use the same native ID when linking
+`droid:<session UUID>` to uploaded history.
+
+Verification used the official, checksum- and signature-verified Droid 1.6.0
+runtime. A saved session created by 0.148.1 resumed on 1.6.0 with its original
+model and completed a read-only turn. The older CLI accepted initialization
+but rejected API-key inference in that test, so use a current Factory CLI if
+that occurs. Relay does not upgrade Droid or change its global settings.
