@@ -19,6 +19,7 @@ export async function startFakeRelaycast({
     directMessages: [],
     channelMessages: [],
     agentReads: [],
+    exactReleaseRequests: [],
     nodeFrames: [],
     nodeSocket: undefined,
   };
@@ -165,8 +166,30 @@ export async function startFakeRelaycast({
       return;
     }
 
+    if (request.method === 'POST' && pathname === '/v1/agents/release-exact') {
+      state.exactReleaseRequests.push(body);
+      const expectedTokenHash = createHash('sha256').update('at_relayflow_recipient').digest('hex');
+      if (body?.expected_agent_id !== state.agentId || body?.expected_token_hash !== expectedTokenHash) {
+        sendJson(response, 409, {
+          ok: false,
+          error: {
+            code: 'agent_identity_mismatch',
+            message: 'The requested agent generation does not match.',
+          },
+        });
+        return;
+      }
+      sendJson(response, 200, releaseResponse(body?.name ?? recipientName));
+      return;
+    }
+
     if (request.method === 'POST' && pathname === '/v1/agents/release') {
-      sendJson(response, 200, {
+      sendJson(response, 200, releaseResponse(body?.name ?? recipientName));
+      return;
+    }
+
+    function releaseResponse(name) {
+      return {
         ok: true,
         data: {
           invocation_id: 'invocation_release_relayflow_1615',
@@ -174,12 +197,11 @@ export async function startFakeRelaycast({
           handler_agent_id: null,
           handler_node_id: null,
           dispatched_node_id: null,
-          input: { name: body?.name ?? recipientName },
+          input: { name },
           status: 'completed',
           created_at: '2026-09-02T00:00:00.000Z',
         },
-      });
-      return;
+      };
     }
 
     if (request.method === 'POST' && /^\/v1\/nodes\/[^/]+\/agents$/.test(pathname)) {

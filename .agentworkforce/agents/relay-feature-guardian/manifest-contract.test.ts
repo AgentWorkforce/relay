@@ -19,7 +19,7 @@ const features = Object.values(manifest.categories).flatMap((category) => catego
 
 describe('feature manifest contract', () => {
   it('maps every category to a detailed verification procedure', () => {
-    expect(manifest.version).toBe('1.1');
+    expect(manifest.version).toBe('2.0');
     expect(manifest.verification.document).toBe('.agentworkforce/features/verify/procedures.md');
 
     for (const category of Object.keys(manifest.categories)) {
@@ -41,6 +41,7 @@ describe('feature manifest contract', () => {
   it('covers every public Commander leaf command', () => {
     const commands = features.flatMap((feature) => (feature.cli ? [feature.cli] : []));
     const expected = [
+      'relay init',
       'relay node up',
       'relay node down',
       'relay node status',
@@ -155,6 +156,14 @@ describe('feature manifest contract', () => {
     expect(commands).not.toContain('relay redeliver [id]');
   });
 
+  it('leads with relay init and the core', () => {
+    expect(Object.keys(manifest.categories).slice(0, 3)).toEqual(['init', 'core', 'core-delivery']);
+    const ids = new Set(features.map((feature) => feature.id));
+    for (const tool of ['claude', 'codex', 'opencode', 'grok', 'pi', 'devin', 'cursor']) {
+      expect(ids, `${tool} needs an init feature`).toContain(`init-tool-${tool}`);
+    }
+  });
+
   it('covers every static MCP tool registered by the server', () => {
     const tools = new Set(features.flatMap((feature) => (feature.mcp ? [feature.mcp] : [])));
     const expected = [
@@ -189,6 +198,9 @@ describe('feature manifest contract', () => {
       'list_actions',
       'invoke_action',
       'submit_result',
+      'upload_file',
+      'download_file',
+      'get_observer_url',
     ];
     expect([...tools].sort()).toEqual(expected.sort());
   });

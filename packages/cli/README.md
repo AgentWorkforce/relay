@@ -301,6 +301,11 @@ agent-relay message dm send api-worker "Detailed task instructions"
 # injection and may interrupt active work. A send ID confirms enqueue only;
 # use `message inbox get_readers <id>` to confirm that the recipient consumed it.
 agent-relay message dm send api-worker "Please check Relay now." --mode steer
+# Attach files (repeatable --file) to a DM, a channel post, or a group DM.
+agent-relay message dm send api-worker "Repro screenshot" --file ./shot.png
+agent-relay message file upload ./shot.png --channel ops --text "Build is red"
+# Save an attachment you received (its file_id) and print the local path.
+agent-relay message file download <file_id>
 agent-relay message inbox check --limit 20
 agent-relay fleet release api-worker --reason "Work accepted"
 ```
@@ -311,6 +316,23 @@ set `RELAY_AGENT_TOKEN` to the token returned by
 `agent-relay agent register <lead-name>`. `fleet spawn --sandbox` needs a Cloud
 login (`agent-relay cloud login`) but does not need an agent token: when one is
 absent, it creates and removes a short-lived launcher identity automatically.
+
+A targeted spawn waits for the node to confirm the launch, for six minutes by
+default (`--confirm-timeout <ms>`, minimum 95000). Agents that take minutes to
+register are confirmed inside that window rather than reported as unconfirmed.
+If the window does expire, the error carries the invocation id: read that
+dispatch instead of spawning again, because a retry under the same name
+collides with a worker that may still be starting.
+
+```bash
+agent-relay fleet spawn-status inv_01J...
+```
+
+The reply's `placement.state` separates the outcomes: `ready` (launched and
+confirmed), `failed` (the node reported a terminal failure), `accepted`
+(launched, readiness unverified), and `unconfirmed_may_be_running` (the node
+still has not reported — not evidence that nothing started). Polling never
+dispatches another agent.
 
 Without placement options, `fleet spawn` connects to the local project's broker
 and passes the caller's exact directory, including a nested package, to the
@@ -324,19 +346,22 @@ sandbox is selected. Ambient credentials and persisted Cloud routing do not
 change the local default. Workforce reporting metadata requires remote placement.
 Automatic placement and release need only the workspace key.
 
-The sandbox path provisions a fresh hosted instance and makes the Relayfile
-mount mandatory by default. Inside a GitHub checkout, Relay infers the Git root,
-repository identity, exact `HEAD`, and caller-relative directory. Cloud uses the
-pinned workspace's connected GitHub credential to seed that revision into
-Relayfile, and the worker starts in the decoded source tree under
-`/workspace/github/repos/<owner>/<repo>/contents`. The long-running Relayfile
-daemon keeps the mounted source tree synchronized with the workspace while
-GitHub push events update the workspace's repository source. Use `--checkout`
-when a task needs a separate static Git clone; that mode keeps the live
-Relayfile mirror available separately. Use `--sandbox-provider daytona` or
-`--sandbox-provider e2b` to require an operator-enabled provider; omit the flag
-to let Cloud's sandbox router choose. Pass `--no-sandbox-relayfile` only when a
-deliberately bare sandbox is desired. If provisioning times out or the spawn
+The sandbox path provisions a fresh hosted instance. Inside a GitHub checkout,
+Relay infers the Git root, repository identity, exact pushed `HEAD`, and caller-relative
+directory. Cloud makes a depth-1 clone, fetches that exact SHA, verifies `HEAD`,
+and starts the worker under `/srv/agent-workforce/<repo>`. Repository tasks start
+without waiting for Relayfile context. `--checkout` explicitly selects the same
+static mode. Outside Git, the default still requires the workspace Relayfile mount.
+
+Use `--sandbox-relayfile` to require live context before dispatch. Without
+`--checkout`, this retains the live repository mirror under
+`/workspace/github/repos/<owner>/<repo>/contents`; with `--checkout`, it mounts
+context separately from the Git clone. An explicit `--sandbox-relayfile-path`
+also requires its selected context before startup. `--no-sandbox-relayfile`
+explicitly disables mounting (combine with `--checkout` to clone repository files).
+Use `--sandbox-provider daytona` or `--sandbox-provider e2b` to require an
+operator-enabled provider; omit the flag to let Cloud's sandbox router choose.
+If provisioning times out or the spawn
 fails, Relay asks Cloud to delete the newly created sandbox. Runs without a
 custom name use one `sbx_<UUID>` identity and the matching
 `fleet-sandbox-<UUID>` node name. Legacy custom `--sandbox-name` values remain supported when no
@@ -358,7 +383,7 @@ reachable from a configured GitHub remote. This prevents a remote worker from
 silently starting at a different revision. Commit and push local work before
 retrying when Relay reports dirty files or an unreachable commit.
 
-With `--checkout`, sandbox provisioning also clones the attested `HEAD` under
+In default repository mode or with `--checkout`, sandbox provisioning clones the attested `HEAD` under
 `/srv/agent-workforce/<repo>`. The checkout must have no tracked changes or
 untracked source files, and the exact commit must be reachable from an origin
 remote. Relay's generated `.agentworkforce/relay/workspace-key.json`,
@@ -381,7 +406,7 @@ release commands reuse the persisted project route; if that remote session is
 unavailable, the command reports the routing failure instead of selecting a
 same-named local worker.
 
-From a clean repository already pinned to a Relay workspace, the ordinary live
+From a clean repository already pinned to a Relay workspace, the checkout-first
 path is:
 
 ```bash
@@ -394,21 +419,33 @@ agent-relay fleet agent list
 agent-relay fleet release cloud-zero-config
 ```
 
-Invoking the live command from `packages/web` starts the worker at
-`/workspace/github/repos/<owner>/<repo>/contents/packages/web`. The repository
-source metadata is available beside `contents` under `.relayfile`, `.skills`
-is mounted from the same workspace, and no `.git` directory is written into the
-Relayfile mirror.
+Invoking the command from `packages/web` starts the worker at
+`/srv/agent-workforce/<repo>/packages/web`, with `.git` available and `HEAD`
+pinned to the requested revision.
 
-For a static Git checkout, opt in explicitly:
+Attach optional context later using `cloudWorkspaceId` and `sandboxId` from the
+spawn response (this uses Cloud sign-in):
 
 ```bash
-agent-relay fleet spawn codex \
-  --name cloud-checkout \
-  --task "Inspect this repository and report its current commit" \
-  --sandbox \
-  --checkout
+agent-relay fleet relayfile attach \
+  --cloud-workspace-id <Cloud-workspace-UUID> \
+  --sandbox-id <sbx_UUID> \
+  --path '/linear' '/.skills'
 ```
+
+Omit `--path` for the full workspace. For a dev sandbox, add
+`--cloud-api-url https://dev.agentrelay.com/cloud`. The command waits at most
+five minutes by default, reports the separate mount path, and does not restart
+the worker or retry a failed attachment. Pending detached preparation is polled
+against the same sandbox within that shared deadline. Tell an already running worker the
+returned path when its task needs that context. The mount uses its own directory;
+it never overlays the Git checkout. Attachment failure leaves the repository task
+running.
+
+For a live repository mirror that must be ready before the task starts, add
+`--sandbox-relayfile` to spawn. Its decoded tree contains no `.git`; its source
+metadata sits beside `contents` under `.relayfile`. Use
+`--checkout --sandbox-relayfile` for a Git checkout plus required live context.
 
 In checkout mode, invoking spawn from `packages/web` places the worker in that
 same relative directory in the remote clone. In both modes, private repositories
@@ -416,9 +453,10 @@ use the pinned workspace's connected GitHub access; a repository-access error
 means that connection must be granted access to the repository. No GitHub token
 or workspace key needs to be copied into the task, mount, or checkout.
 
-With `--checkout`, the Git checkout and Relayfile mirror are separate trees. In
+With `--checkout --sandbox-relayfile`, the Git checkout and Relayfile mirror are
+separate trees. Checkout-only mode has no Relayfile mirror or workspace skills. In
 the ordinary live mode, source files are decoded from Relayfile records without
-placing `.git` in the mirror. Workspace `.skills` are exposed through the agent
+placing `.git` in the mirror. When a live mount is requested at startup, workspace `.skills` are exposed through the agent
 CLIs' usual skill directories, and the worker's task context identifies the
 mirror and exact source revision.
 
@@ -451,9 +489,15 @@ through Cloud at spawn time. The key travels in an authenticated POST body,
 never a URL. Nested packages share the repository pin; an existing subproject
 pin or `AGENT_RELAY_PROJECT` remains an explicit workspace override.
 
-Large workspaces can add only the other live subtrees an agent needs. Pass one
-or more explicit directory roots after `--sandbox-relayfile-path`; the inferred
-repository, its source metadata, and `.skills` remain mounted automatically.
+Large workspaces can be scoped to only the live subtrees an agent needs. Pass
+one or more explicit directory roots after `--sandbox-relayfile-path`; the
+supplied list is the complete mount set — nothing else is added. To include the
+inferred repository, list its `contents/**` root explicitly (for example
+`/github/repos/Owner/repo/contents/**`); when the flag is omitted the inferred
+repository, its source metadata, and `.skills` are mounted automatically. When
+the list omits the repository root, the worker starts at the mount root
+(`/workspace`) rather than the repository tree, and a repo-relative `--cwd` is
+rejected.
 Cloud validates the `/path/**` form and materializes those roots before the
 agent starts:
 
@@ -491,6 +535,13 @@ agent-relay cloud workspaces
 agent-relay cloud enroll --workspace "Chief HQ"
 agent-relay node up
 ```
+
+If `/api/session` reports node control as `terminal` with reason
+`env_override_rejected`, the active `RELAY_NODE_TOKEN` is stale and shadows a
+different credential in the broker's scoped cache. Re-enroll the Cloud node and
+restart it, or unset a manually exported `RELAY_NODE_TOKEN`. Deleting only the
+Relaycast node row is not enough for a Cloud-enrolled node: its Fleet enrollment
+record restores the stored token on the next `agent-relay node up`.
 
 `agent-relay cloud whoami` also prints the current organization and workspace IDs.
 
@@ -562,9 +613,28 @@ RELAYFILE_LOCAL_DIR="$PWD/.integrations" relayfile status
 RELAYFILE_LOCAL_DIR="$PWD/.integrations" relayfile writeback status
 ```
 
+Fleet workers can subscribe to provider feedback using their broker-assigned
+identity, including workers that the desktop session socket rejects with
+`not_a_relay_session`:
+
+```bash
+agent-relay integration subscribe github \
+  --resource '/github/repos/AgentWorkforce/relay/pulls/123/**' \
+  --to self --no-input
+```
+
+`--to self` resolves `RELAY_AGENT_NAME` and uses the existing server-side agent
+subscription channel. It requires a connected provider, a compatible Relayfile
+daemon, and workspace-owner credentials, supplied to broker workers through their
+environment. An agent token alone cannot provision subscriptions. This route does
+not depend on desktop Claude/Codex session discovery. From outside the worker,
+use `--to @worker-name` with the same workspace credentials. Events reach the
+worker through Relay's normal broker delivery; wait for pushed feedback instead
+of polling `gh`. `--to self` cannot be combined with `--spawn`.
+
 `local` remains as a deprecated hidden alias of `node` (it prints a one-time warning).
 
-Node workflow runs use Relayflows for YAML, TypeScript, and Python workflow files.
+Node workflow runs use Relayflows for YAML and TypeScript workflow files.
 
 Hosted equivalents live under `agent-relay cloud …`.
 
@@ -573,3 +643,22 @@ Hosted equivalents live under `agent-relay cloud …`.
 - `@agent-relay/sdk`: messaging, delivery contracts, and actions.
 - `@agent-relay/harness-driver`: optional managed harness runtime.
 - `agent-relay`: CLI and MCP entry point.
+
+### Pending fleet spawns and name reuse
+
+An accepted spawn whose result is still unknown returns `spawn_unconfirmed` with
+`state: "pending"` (exit 8), plus its invocation ID and dispatch state when
+known and any available liveness evidence. Check
+`agent-relay fleet agent list --node <node>` before retrying. A heartbeat that
+lists a worker with the requested name is reported as evidence but keeps the
+spawn pending: heartbeats carry worker names, not invocation IDs, so that worker
+may have been running before this spawn. Heartbeat snapshots can change between
+listings; JSON output includes their timestamps and ages.
+
+If no worker is running and you intend to reclaim the name, run
+`agent-relay agent remove <name> --wait` before respawning. Waiting is opt-in;
+`--wait-timeout <ms>` defaults to 30000, followed by one bounded membership read.
+`fleet release <name> --delete-agent --wait` offers the same check and adds
+`removal` evidence to its JSON. A remaining registration exits 8; unavailable
+verification reads retain the asynchronous acknowledgement. A name collision
+can also mean cleanup from a previous unsuccessful spawn is still in flight.

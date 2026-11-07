@@ -27,6 +27,7 @@
 import { Buffer } from 'node:buffer';
 
 import type { CliPtyInputStream } from './attach-drive.js';
+import { describeError } from './describe-error.js';
 
 /** Default number of reopen attempts before a lost input stream ends the session. */
 export const INPUT_REOPEN_MAX_ATTEMPTS = 5;
@@ -175,8 +176,7 @@ export interface InputStreamRecoveryOptions {
 }
 
 function describeSendError(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
+  return describeError(error);
 }
 
 class InputRecoveryDeadlineError extends Error {
@@ -604,10 +604,7 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
         'worker identity check'
       ).catch((verifyError: unknown) => ({
         ok: false as const,
-        reason:
-          verifyError instanceof Error
-            ? `identity check failed: ${verifyError.message}`
-            : `identity check failed: ${String(verifyError)}`,
+        reason: `identity check failed: ${describeError(verifyError)}`,
       }));
       if (isSettled()) {
         closeQuietly(replacement, `${label} client exiting`);

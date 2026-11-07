@@ -480,3 +480,56 @@ describe('workspace precedence ladder diagnostics', () => {
     });
   });
 });
+
+describe('workspace key and git', () => {
+  it('keeps the project data directory holding the key out of git status', () => {
+    fs.mkdirSync(path.join(root, '.git'));
+    writeProjectWorkspaceKey(dataDir, 'rk_live_project');
+    expect(fs.readFileSync(path.join(root, '.git', 'info', 'exclude'), 'utf8')).toBe(
+      '/.agentworkforce/relay/\n'
+    );
+    writeProjectWorkspaceKeyPreservingSession(dataDir, 'rk_live_project');
+    expect(fs.readFileSync(path.join(root, '.git', 'info', 'exclude'), 'utf8')).toBe(
+      '/.agentworkforce/relay/\n'
+    );
+  });
+
+  it('leaves a caller-chosen data directory alone', () => {
+    fs.mkdirSync(path.join(root, '.git'));
+    writeProjectWorkspaceKey(path.join(root, 'state'), 'rk_live_project');
+    expect(fs.existsSync(path.join(root, '.git', 'info', 'exclude'))).toBe(false);
+  });
+});
+
+describe('project pins never go in the relay home', () => {
+  it('refuses every pin writer when the project folder is the relay home, writing nothing', () => {
+    const env = { AGENT_RELAY_HOME: dataDir };
+    expect(() => writeProjectWorkspaceKey(dataDir, 'rk_home', { env })).toThrow(/Relay home/);
+    expect(() => writeProjectWorkspaceKeyPreservingSession(dataDir, 'rk_home', { env })).toThrow(
+      /inside a project folder/
+    );
+    expect(fs.existsSync(dataDir)).toBe(false);
+    expect(
+      writeProjectWorkspaceTargetIfSelectionCurrent(
+        dataDir,
+        { key: 'rk_home', source: 'project', origin: 'test', credentialHome: dataDir },
+        {
+          workspaceId: 'ws_1',
+          relaycastRoute: 'canonical',
+          relaycastBaseUrl: 'https://api.relaycast.dev',
+          relaycastApiKey: 'rk_route',
+        }
+      )
+    ).toBe(false);
+    expect(fs.existsSync(dataDir)).toBe(false);
+  });
+
+  it('refuses a folder holding a workspace store, the relay home of another HOME', () => {
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(path.join(dataDir, 'workspaces.json'), '{}');
+    expect(() => writeProjectWorkspaceKey(dataDir, 'rk_home', { env: { AGENT_RELAY_HOME: home } })).toThrow(
+      /Relay home/
+    );
+    expect(fs.existsSync(projectWorkspaceKeyPath(dataDir))).toBe(false);
+  });
+});

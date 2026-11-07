@@ -7,6 +7,12 @@ on:
 
 # Reusable workflows cannot elevate the caller's token permissions.
 # detect-changes.yml reads pull-request file lists and commit comparisons.
+# A new push to a PR replaces its earlier runs; every other run (main pushes,
+# manual runs) gets its own group so it is never cancelled or dropped.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
   pull-requests: read
@@ -17,13 +23,16 @@ env:
 
 jobs:
   changes:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.github/workflows/detect-changes.yml
 
   rust-test:
     name: Rust Tests (${{ matrix.os }})
     needs: changes
-    if: needs.changes.outputs.rust_changed == 'true'
-    runs-on: ${{ matrix.os }}
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (needs.changes.outputs.rust_changed == 'true')
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && (vars.CI_LINUX_RUNNER || 'ubuntu-latest') || matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -42,7 +51,9 @@ jobs:
   relay-pty-windows-test:
     name: Relay PTY Synchronization Tests (windows-latest)
     needs: changes
-    if: needs.changes.outputs.rust_changed == 'true'
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (needs.changes.outputs.rust_changed == 'true')
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
@@ -62,8 +73,10 @@ jobs:
   rust-cross-compile:
     name: Cross-compile check (${{ matrix.target }})
     needs: changes
-    if: needs.changes.outputs.rust_changed == 'true'
-    runs-on: ${{ matrix.os }}
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (needs.changes.outputs.rust_changed == 'true')
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && (vars.CI_LINUX_RUNNER || 'ubuntu-latest') || matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -96,8 +109,10 @@ jobs:
   rust-clippy:
     name: Clippy (${{ matrix.os }})
     needs: changes
-    if: needs.changes.outputs.rust_changed == 'true'
-    runs-on: ${{ matrix.os }}
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (needs.changes.outputs.rust_changed == 'true')
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && (vars.CI_LINUX_RUNNER || 'ubuntu-latest') || matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -115,8 +130,10 @@ jobs:
   rust-fmt:
     name: Format
     needs: changes
-    if: needs.changes.outputs.rust_changed == 'true'
-    runs-on: ubuntu-latest
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (needs.changes.outputs.rust_changed == 'true')
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -127,7 +144,9 @@ jobs:
   sdk-check:
     name: SDK TypeScript Check
     needs: changes
-    if: needs.changes.outputs.node_changed == 'true'
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (needs.changes.outputs.node_changed == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

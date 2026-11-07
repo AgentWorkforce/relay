@@ -1,8 +1,8 @@
 import type { AttachMode } from './attach-mode.js';
 import { describeError } from './describe-error.js';
+import { UNBOUND_CREDENTIAL_ORIGIN } from './relaycast-origin-binding.js';
 import { resolveBaseUrl } from './sdk-client.js';
 
-const DEFAULT_RELAYCAST_BASE_URL = 'https://cast.agentrelay.com';
 const REDEEM_PATH = '/v1/workspace/join-tickets/redeem';
 const JOIN_TICKET_PATTERN = /^rjt_live_[0-9a-f]{64}$/;
 
@@ -109,7 +109,7 @@ function redemptionBaseUrl(options: RedeemJoinTicketOptions): string {
   return (
     cleanString(options.baseUrl) ??
     resolveBaseUrl({ env: options.env }) ??
-    DEFAULT_RELAYCAST_BASE_URL
+    UNBOUND_CREDENTIAL_ORIGIN
   ).replace(/\/+$/, '');
 }
 
@@ -135,7 +135,7 @@ function credentialFromPayload(
   const workspaceKey = cleanString(payload.data?.workspace_key);
   if (
     !workspaceId ||
-    !workspaceKey?.startsWith('rk_live_') ||
+    !(workspaceKey?.startsWith('rk_live_') || workspaceKey?.startsWith('ar_ws_')) ||
     !matchesAttachScope(payload.data?.scope, request)
   ) {
     throw new JoinTicketRedemptionError(

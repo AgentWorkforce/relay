@@ -1,3 +1,4 @@
+import { readTaskInput, validateTaskSize, type TaskTarget } from '../lib/task-input.js';
 import type { Command } from 'commander';
 
 import { AGENT37_RELAYCAST_ORIGIN } from '@agent-relay/cloud';
@@ -52,7 +53,8 @@ function resolveAutoSpawn(
   provider: string,
   name: string,
   task: string | undefined,
-  model: string | undefined
+  model: string | undefined,
+  runtime?: TaskTarget['runtime']
 ): { name: string; task: string | undefined; model: string | undefined } {
   if (model !== 'auto' || provider !== 'claude' || !task) {
     return { name, task, model };
@@ -60,6 +62,8 @@ function resolveAutoSpawn(
   const assessment = classifyTask(task);
   const team = composeTeam(assessment, task);
   const directorPrompt = buildDirectorPrompt(task, team);
+  // The Director prompt repeats the task, so it is what must fit.
+  validateTaskSize(directorPrompt, { cli: provider, runtime });
   return {
     name: name === provider ? 'Director' : name,
     task: directorPrompt,
@@ -257,8 +261,7 @@ function withDefaults(overrides: Partial<LocalAgentDependencies> = {}): LocalAge
 }
 
 type AttachCredentialSelection =
-  | { ok: true; workspaceKey?: string; joinTicket?: string }
-  | { ok: false; error: string };
+  { ok: true; workspaceKey?: string; joinTicket?: string } | { ok: false; error: string };
 
 function resolveAttachCredentialSelection(
   rawWorkspaceKey: string | undefined,
@@ -531,7 +534,7 @@ async function run(
       : await deps.connect(deps.cwd());
     await fn(client);
   } catch (err) {
-    deps.error(err instanceof Error ? err.message : String(err));
+    deps.error(describeError(err));
     deps.exit(1);
   } finally {
     client?.disconnect?.();
@@ -546,7 +549,7 @@ async function runLocalBroker(
   try {
     await fn(await deps.connectLocal(deps.cwd(), options));
   } catch (err) {
-    deps.error(err instanceof Error ? err.message : String(err));
+    deps.error(describeError(err));
     deps.exit(1);
   }
 }
@@ -651,7 +654,7 @@ function resolveRuntimeOption(
   try {
     return { requested, selected: resolvedSpawnRuntime({ cli: provider, runtime: requested }) };
   } catch (error) {
-    deps.error(error instanceof Error ? error.message : String(error));
+    deps.error(describeError(error));
     deps.exit(1);
     return undefined;
   }
@@ -849,6 +852,7 @@ export function registerLocalAgentCommands(
     .option('--name <name>', 'Agent name (defaults to the provider)')
     .option('--channels <channels...>', 'Channels to join', ['general'])
     .option('--task <task>', 'Initial task prompt')
+    .option('--task-file <path>', 'Read the initial task from a local UTF-8 file')
     .option('--model <model>', 'Model override')
     .option('--runtime <runtime>', 'Harness runtime: auto | native | pty', 'auto')
     .option('--cwd <path>', 'Working directory for the spawned agent')
@@ -873,8 +877,12 @@ export function registerLocalAgentCommands(
           const resolved = resolveAutoSpawn(
             provider,
             baseName,
-            opts.task as string | undefined,
-            opts.model as string | undefined
+            await readTaskInput(opts.task, opts.taskFile, false, {
+              cli: provider,
+              runtime: runtime.selected,
+            }),
+            opts.model as string | undefined,
+            runtime.selected
           );
           await spawnAgentWithClient(client, {
             name: resolved.name,
@@ -904,6 +912,7 @@ export function registerLocalAgentCommands(
     .option('--mode <mode>', 'Attach mode: drive | view | passthrough', 'drive')
     .option('--channels <channels...>', 'Channels to join', ['general'])
     .option('--task <task>', 'Initial task prompt')
+    .option('--task-file <path>', 'Read the initial task from a local UTF-8 file')
     .option('--model <model>', 'Model override')
     .option('--runtime <runtime>', 'Harness runtime: auto | native | pty', 'auto')
     .option('--cwd <path>', 'Working directory for the spawned agent')
@@ -930,12 +939,23 @@ export function registerLocalAgentCommands(
         return;
       const brokerOptions = brokerOptionsFromOpts(options);
       const baseName = (options.name as string | undefined) ?? provider;
-      const resolved = resolveAutoSpawn(
-        provider,
-        baseName,
-        options.task as string | undefined,
-        options.model as string | undefined
-      );
+      let resolved: ReturnType<typeof resolveAutoSpawn>;
+      try {
+        resolved = resolveAutoSpawn(
+          provider,
+          baseName,
+          await readTaskInput(options.task, options.taskFile, false, {
+            cli: provider,
+            runtime: runtime.selected,
+          }),
+          options.model as string | undefined,
+          runtime.selected
+        );
+      } catch (err) {
+        deps.error(describeError(err));
+        deps.exit(1);
+        return;
+      }
       await run(
         deps,
         async (client) => {

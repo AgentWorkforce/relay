@@ -21,6 +21,7 @@ import {
   relaycastWorkspaceTelemetryOptions,
   type RelaycastTelemetryOptions,
 } from '../relaycast-telemetry.js';
+import type { RelayFilesApiLike } from './files.js';
 import { currentReplaySessionRef, replayMessageMetadata, resolveReplaySessionRef } from './session-ref.js';
 import type {
   RelayCreateChannelInput,
@@ -39,7 +40,7 @@ export const RELAYCAST_SDK_VERSION: string = SDK_VERSION;
 
 /** Raw registration payload returned by `agents.registerOrRotate`. */
 export interface RelayRawAgentRegistration {
-  /** Agent token (`at_live_...`) minted or rotated for this identity. */
+  /** Agent token (`at_live_...`) minted for this identity. */
   token: string;
   /** Canonical agent name the workspace bound the registration to. */
   name?: string;
@@ -85,7 +86,7 @@ export interface RelayRawGroupConversation {
 export interface RelayWorkspaceThinClient {
   readonly agents: {
     list(options?: RelayListAgentsOptions): Promise<unknown[]>;
-    /** Register an agent, rotating its token when the name already exists. */
+    /** Create-only registration alias; an existing name is rejected with `name_conflict`. */
     registerOrRotate(input: RelayRegisterAgentInput): Promise<RelayRawAgentRegistration>;
     /** Ask the relay to spawn a provider-backed worker. */
     spawn(input: RelaySpawnAgentInput): Promise<Record<string, unknown>>;
@@ -103,6 +104,8 @@ export interface RelayAgentThinClient {
     channel: string,
     text: string,
     options?: {
+      /** Stable key for retries of one logical send, including across processes. */
+      idempotencyKey?: string;
       attachments?: string[];
       data?: Record<string, unknown> | null;
       mode?: RelayMessageMode;
@@ -112,7 +115,11 @@ export interface RelayAgentThinClient {
   reply(
     messageId: string,
     text: string,
-    options?: { data?: Record<string, unknown> | null }
+    options?: {
+      /** Stable key for retries of one logical reply, including across processes. */
+      idempotencyKey?: string;
+      data?: Record<string, unknown> | null;
+    }
   ): Promise<unknown>;
   thread(messageId: string, options?: { limit?: number }): Promise<unknown>;
   dm(
@@ -134,6 +141,8 @@ export interface RelayAgentThinClient {
       conversationId: string,
       text: string,
       options?: {
+        /** Stable key for retries of one logical send, including across processes. */
+        idempotencyKey?: string;
         attachments?: string[];
         data?: Record<string, unknown> | null;
         mode?: RelayMessageMode;
@@ -155,6 +164,8 @@ export interface RelayAgentThinClient {
   inbox(options?: { limit?: number }): Promise<unknown>;
   markRead(messageId: string): Promise<unknown>;
   readers(messageId: string): Promise<unknown[]>;
+  /** Stored file attachments; use with `uploadRelayFile` / `downloadRelayFile`. */
+  readonly files?: RelayFilesApiLike;
   /** Relay action surface; absent on backends without action support. */
   readonly actions?: {
     invoke(name: string, input?: Record<string, unknown>): Promise<unknown>;

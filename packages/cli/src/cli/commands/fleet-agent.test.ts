@@ -59,6 +59,7 @@ describe('readRemoteLiveAgents', () => {
 
     expect(result).toEqual({
       supported: true,
+      complete: true,
       agents: [{ name: 'å-worker' }, { name: 'worker-z' }],
     });
   });
@@ -66,6 +67,7 @@ describe('readRemoteLiveAgents', () => {
   it('treats an absent marker as an unsupported old broker', () => {
     expect(readRemoteLiveAgents(node({ name: 'sf-mini', capabilities: [] }))).toEqual({
       supported: false,
+      complete: false,
       agents: [],
     });
   });
@@ -84,7 +86,25 @@ describe('readRemoteLiveAgents', () => {
           ],
         })
       )
-    ).toMatchObject({ supported: true, agents: [], warning: expect.stringContaining('1 malformed') });
+    ).toMatchObject({
+      supported: true,
+      complete: false,
+      agents: [],
+      warning: expect.stringContaining('1 malformed'),
+    });
+  });
+
+  it('keeps a roster with only duplicate names complete', () => {
+    expect(
+      readRemoteLiveAgents(
+        node({
+          name: 'sf-mini',
+          capabilities: [
+            { name: LIVE_AGENT_CAPABILITY_NAME, kind: 'capacity', metadata: { names: ['w', 'w'] } },
+          ],
+        })
+      )
+    ).toMatchObject({ supported: true, complete: true, agents: [{ name: 'w' }] });
   });
 });
 
@@ -853,6 +873,22 @@ describe('collectWithRetry — a transient failure retries once', () => {
       expect(result.error).toContain('test: permanent');
       expect(result.retried).toBe(true);
     }
+  });
+
+  it('describes a non-Error rejection instead of printing [object Object]', async () => {
+    const result = await collectWithRetry(
+      'roster',
+      async () => {
+        throw { message: 'workspace key rejected', status: 401 };
+      },
+      { retries: 0, sleep: async () => undefined }
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'roster: workspace key rejected (status 401)',
+      retried: false,
+    });
   });
 
   it('does not retry a terminal failure rejected by shouldRetry', async () => {
