@@ -5,7 +5,19 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `relay init` finds the messaging skill it installs for Cursor, so it no longer warns that the install failed, and `relay init --uninstall` removes it.
+- Codex agents that `relay serve` spawns now run the installed Codex app-server build whenever there is one, instead of the `codex` command on `PATH`.
+- Follow-up messages to Codex agents that `relay serve` spawns reach them through that same Codex build.
+- A Claude Code session renamed on the relay is told its current name and address when it starts, not the name it first registered under.
+- Choosing to upload a session again no longer re-uploads its unchanged history after `relay serve` restarts.
+- Cursor CLI messaging hooks that setup installed before Cursor's first chat now show as installed and can be turned on or off.
+- Turning uploads Off for a session you connected yourself keeps it off after `relay serve` restarts.
+- A session whose upload was deleted from Cloud no longer rejoins the relay by itself.
+- Devin agents started on macOS with `relay fleet spawn devin` or an agent's spawn request now get every message; one that arrived a moment after its connection opened could be lost.
 
 ## [17.2.1] - 2026-11-07
 
@@ -140,14 +152,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `cloud integration connect` identifies unsupported providers and points to catalog lookup on the same Cloud endpoint.
 - `relay serve` delivers messages to agents more reliably and finds their sessions more consistently.
-- Codex agents that `relay serve` spawns now run the installed Codex app-server build whenever there is one, instead of the `codex` command on `PATH`.
-- Follow-up messages to Codex agents that `relay serve` spawns reach them through that same Codex build.
-- A Claude Code session renamed on the relay is told its current name and address when it starts, not the name it first registered under.
-- Choosing to upload a session again no longer re-uploads its unchanged history after `relay serve` restarts.
-- Cursor CLI messaging hooks that setup installed before Cursor's first chat now show as installed and can be turned on or off.
-- Turning uploads Off for a session you connected yourself keeps it off after `relay serve` restarts.
-- A session whose upload was deleted from Cloud no longer rejoins the relay by itself.
-- Devin agents started on macOS with `relay fleet spawn devin` or an agent's spawn request now get every message; one that arrived a moment after its connection opened could be lost.
 
 ## [15.0.2] - 2026-11-01
 
