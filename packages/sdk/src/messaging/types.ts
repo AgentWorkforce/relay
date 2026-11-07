@@ -627,10 +627,7 @@ export type RelayPlacementRejectReason =
   | 'unmapped_repo';
 
 export type RelayPlacementReconcileReason =
-  | 'no_eligible_node'
-  | 'target_offline'
-  | 'unmapped_repo'
-  | 'sandbox_policy_mismatch';
+  'no_eligible_node' | 'target_offline' | 'unmapped_repo' | 'sandbox_policy_mismatch';
 
 export interface RelayPlacementReconcileEvent {
   action: 'queued' | 'failed';
@@ -761,9 +758,7 @@ export interface RelayWorkspaceInfo {
  * status).
  */
 export type InboxItemState =
-  | Extract<wire.DeliveryStatus, 'queued' | 'delivered' | 'failed'>
-  | 'deferred'
-  | 'read';
+  Extract<wire.DeliveryStatus, 'queued' | 'delivered' | 'failed'> | 'deferred' | 'read';
 
 export interface InboxItem {
   id: string;
@@ -972,9 +967,10 @@ export interface RelayMessagingClient {
     get(name: string): Promise<RelayAgent>;
     register(input: RelayRegisterAgentInput): Promise<RelayAgentRegistration>;
     /**
-     * Register an agent, adopting the existing identity (with a rotated
-     * token) when the name is already taken. Optional: backends without
-     * rotation support fall back to plain `register`.
+     * Compatibility alias for `register`. Current Relaycast SDKs implement it
+     * as create-only registration: an existing name is rejected with
+     * `name_conflict` and its token is not rotated. Optional: when absent,
+     * callers fall back to plain `register`.
      */
     registerOrRotate?(input: RelayRegisterAgentInput): Promise<RelayAgentRegistration>;
     /** Resolve the identity of the agent the client is authenticated as. */

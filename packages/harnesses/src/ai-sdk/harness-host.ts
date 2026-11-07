@@ -19,15 +19,7 @@ import type {
 import type { Experimental_SandboxSession as SandboxSession } from '@ai-sdk/provider-utils';
 
 export type HarnessHostState =
-  | 'new'
-  | 'starting'
-  | 'ready'
-  | 'running'
-  | 'suspended'
-  | 'detached'
-  | 'stopped'
-  | 'destroyed'
-  | 'failed';
+  'new' | 'starting' | 'ready' | 'running' | 'suspended' | 'detached' | 'stopped' | 'destroyed' | 'failed';
 
 export interface HarnessEventObservability {
   source: 'ai-sdk';

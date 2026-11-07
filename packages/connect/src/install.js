@@ -239,6 +239,32 @@ export function linuxProbeSessionUpdateHint(probe, response, platform = process.
   return `Agent Relay ${probe.version} could not identify this session. If this is a live Claude Code or Codex session, update the running Agent Relay probe to ${MINIMUM_MAC_PROBE_VERSION} or newer; otherwise run this from a live session.`;
 }
 
+// A running probe answers every route with one of these when it cannot tie
+// the caller to a live Claude Code or Codex session. The probe is live; only
+// the caller is unidentified, so waiting longer or installing another probe
+// cannot help. Its version is not readable in that state.
+const SESSION_REJECTIONS = new Set(['not_a_relay_session', 'session_file_unreadable']);
+
+export function isSessionRejection(response) {
+  return response?.ok === false && SESSION_REJECTIONS.has(response?.error?.code);
+}
+
+/**
+ * `connect install` promises a probe that meets the platform minimum. A probe
+ * that rejected the caller reported no version, so that cannot be checked
+ * from here; only a call from inside the agent session can read it.
+ */
+export function requireVerifiedProbe(result) {
+  if (result?.sessionRejected) {
+    throw new InstallError(
+      "Agent Relay is running, but its version cannot be checked from outside a Claude Code or Codex session. Run `npx -y @agent-relay/connect install` from the agent's own shell (in Claude Code, type it at the prompt prefixed with `!`) to verify or update it.",
+      6
+    );
+  }
+  return result;
+}
+
+/** Any well-formed probe answer to /setup/status, or null when nothing answered. */
 async function liveStatus(socketPath, timeoutMs = 5_000) {
   if (!socketPath) return null;
   try {
@@ -248,7 +274,7 @@ async function liveStatus(socketPath, timeoutMs = 5_000) {
       path: '/setup/status',
       timeoutMs,
     });
-    return response?.ok === true ? response : null;
+    return response && typeof response === 'object' && typeof response.ok === 'boolean' ? response : null;
   } catch (error) {
     if (error instanceof InstallError) throw error;
     return null;
@@ -258,7 +284,10 @@ async function liveStatus(socketPath, timeoutMs = 5_000) {
 export async function findLiveSocket(home = os.homedir(), timeoutMs = 5_000) {
   const socketPath = await readPointer(home);
   const status = await liveStatus(socketPath, timeoutMs);
-  if (!status) return null;
+  if (isSessionRejection(status)) {
+    return { socketPath, status, version: undefined, supported: undefined, sessionRejected: true };
+  }
+  if (status?.ok !== true) return null;
   const version = status?.data?.version;
   return {
     socketPath,
@@ -281,15 +310,26 @@ export async function waitForLiveSocket({
   minimumVersion = MINIMUM_PROBE_VERSION,
 } = {}) {
   const deadline = now() + timeoutMs;
+  let lastAnswer = '';
   while (now() < deadline) {
     const socketPath = await pointer(home);
     const remaining = Math.max(1, deadline - now());
     const status = await check(socketPath, Math.min(perRequestTimeoutMs, remaining));
-    if (status && probeVersionSupported(status?.data?.version, minimumVersion)) return { socketPath, status };
+    // The probe is up but cannot identify the caller: return at once so the
+    // session route reports that, instead of timing out and rolling back.
+    if (isSessionRejection(status)) return { socketPath, status, sessionRejected: true };
+    if (status?.ok === true && probeVersionSupported(status?.data?.version, minimumVersion)) {
+      return { socketPath, status };
+    }
+    if (status?.ok === true) lastAnswer = `version ${status?.data?.version || 'unknown'}`;
+    else if (status) lastAnswer = String(status?.error?.code || 'an error');
     const sleepFor = Math.min(1_000, Math.max(0, deadline - now()));
     if (sleepFor > 0) await sleep(sleepFor);
   }
-  throw new InstallError(`Timed out waiting for the Agent Relay probe after ${timeoutMs} ms.`);
+  const detail = lastAnswer
+    ? `its last answer was ${lastAnswer.replace(/[^\w .-]/g, '')}`
+    : 'it never answered; see ~/.agentworkforce/desktop/headless.log';
+  throw new InstallError(`Timed out waiting for the Agent Relay probe after ${timeoutMs} ms (${detail}).`);
 }
 
 async function findProbe(directory) {

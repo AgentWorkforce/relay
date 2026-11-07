@@ -93,8 +93,9 @@ Publishing (npm, crates, GitHub releases) is gated on chief green-light.
   delete chief's orgchart env-unset workaround when fixed), #1383
   (non-Error rejections render as `[object Object]`).
 - Also pending: 64 dependabot alerts on main (1 critical); skills repo
-relay-team/relay-pipeline/relay-fanout SKILL.mds still instruct printing
-raw observer URLs — unsatisfiable once #1380 lands.
+  relay-team/relay-pipeline/relay-fanout SKILL.mds still instruct printing
+  raw observer URLs — unsatisfiable once #1380 lands.
+
 <!-- PRPM_MANIFEST_START -->
 
 <skills_system priority="1">

@@ -499,7 +499,22 @@ describe('registerAgentWithRebind', () => {
 });
 
 describe('optionsFromEnv', () => {
-  it('auto-selects an orchestrator identity when a workspace key is configured', () => {
+  it('sends a key bound by relay init to its own server, not the hosted default', () => {
+    vi.stubEnv('RELAY_WORKSPACE_KEY', 'rk_live_mcp_bound');
+    vi.stubEnv('RELAY_BASE_URL', 'http://127.0.0.1:8787');
+    try {
+      // The first resolution binds the key, as relay init or workspace join does.
+      expect(optionsFromEnv().baseUrl).toBe('http://127.0.0.1:8787');
+      vi.stubEnv('RELAY_BASE_URL', '');
+      expect(optionsFromEnv().baseUrl).toBe('http://127.0.0.1:8787');
+      vi.stubEnv('RELAY_BASE_URL', 'not a url');
+      expect(() => optionsFromEnv()).toThrow(/Relaycast base URL/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('names the session after its MCP client instead of a shared default when a workspace key is configured', () => {
     const previous = {
       workspaceKey: process.env.RELAY_WORKSPACE_KEY,
       apiKey: process.env.RELAY_API_KEY,
@@ -512,10 +527,14 @@ describe('optionsFromEnv', () => {
     delete process.env.RELAY_CLAW_NAME;
 
     try {
-      expect(optionsFromEnv()).toMatchObject({
+      const options = optionsFromEnv();
+      expect(options).toMatchObject({
         workspaceKey: 'rk_live_test',
-        agentName: 'orchestrator',
+        autoRegister: { cwd: process.cwd() },
       });
+      expect(options.agentName).toBeUndefined();
+      process.env.RELAY_AGENT_NAME = 'lead';
+      expect(optionsFromEnv()).toMatchObject({ agentName: 'lead', autoRegister: undefined });
     } finally {
       if (previous.workspaceKey === undefined) delete process.env.RELAY_WORKSPACE_KEY;
       else process.env.RELAY_WORKSPACE_KEY = previous.workspaceKey;

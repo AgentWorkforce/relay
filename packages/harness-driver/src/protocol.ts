@@ -103,12 +103,7 @@ export type JsonValue = null | boolean | number | string | JsonValue[] | { [key:
 
 export type NativeHarnessInputMode = 'auto' | 'active' | 'idle';
 export type NativeHarnessCommandKind =
-  | 'submit_user_message'
-  | 'interrupt'
-  | 'approve_tool'
-  | 'reject_tool'
-  | 'compact'
-  | 'release';
+  'submit_user_message' | 'interrupt' | 'approve_tool' | 'reject_tool' | 'compact' | 'release';
 
 /**
  * Portable normalized agent-event payload. The SDK owns the canonical event discriminants;

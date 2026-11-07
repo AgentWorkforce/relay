@@ -59,11 +59,13 @@ pub(crate) mod swarm_tui;
 #[allow(dead_code)]
 pub(crate) mod telemetry;
 pub(crate) mod terminal_control;
+pub(crate) mod transport;
 #[allow(dead_code)]
 pub(crate) mod types;
 pub(crate) mod util;
 pub(crate) mod worker;
 pub(crate) mod worker_request;
+pub mod worktree_guard;
 pub(crate) mod wrap;
 
 // The PTY layer — session management, terminal grid snapshots, and CLI

@@ -206,6 +206,7 @@ describe('fleet CLI lifecycle routing', () => {
         'spawn',
         'codex',
         '--sandbox',
+        '--sandbox-relayfile',
         '--sandbox-provider',
         'agent37',
         '--sandbox-id',

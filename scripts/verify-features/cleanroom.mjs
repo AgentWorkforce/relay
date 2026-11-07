@@ -1145,8 +1145,12 @@ async function buildScope({ matrix, nonce }) {
   };
 }
 
-function enabledForProfile(spec, profile) {
-  return !spec.profiles || spec.profiles.includes(profile);
+/**
+ * A step with `whenChanged` belongs to pull-request selection, which knows what
+ * changed. A cleanroom run does not, so it uses the pinned release instead.
+ */
+export function enabledForProfile(spec, profile) {
+  return spec.whenChanged === undefined && (!spec.profiles || spec.profiles.includes(profile));
 }
 
 export function cleanEnvironment({

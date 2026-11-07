@@ -1,16 +1,26 @@
-version: '1.1'
-updated: '2026-07-30'
+version: '2.0'
+updated: '2026-11-01'
 
 # Every user-facing feature in this repo, categorized and scored.
+#
+# Relay's centre is `relay init`: it installs the Agent Relay core
+# (crates/relay-node) and connects each agent tool, and the core injects messages
+# into running sessions. The categories below start there.
 #
 # criticality:
 #   critical - product cannot function without this; verify on every change
 #   hot      - commonly used path; verify for any related change
 #   standard - useful feature; verify periodically
 #
+# status (a category without one is current):
+#   legacy - still shipped and reachable, on the broker and PTY path that the
+#            core replaces. Verified by hand on demand, never on a pull request.
+#            Add nothing here that could live on the core instead.
+#
 # verify_tier (the primary environment needed to run verification):
 #   1 - isolated local CLI/filesystem
-#   2 - local broker running
+#   2 - local Relay: the core and server `relay init` runs, in a sandboxed home
+#       (legacy features: a local broker)
 #   3 - hosted workspace plus one registered agent token
 #   4 - hosted workspace plus two or more registered agent identities
 #   5 - authenticated, disposable hosted workspace or external test service
@@ -22,6 +32,9 @@ updated: '2026-07-30'
 verification:
   document: .agentworkforce/features/verify/procedures.md
   categories:
+    init: relay-init
+    core: core-daemon
+    core-delivery: core-delivery
     broker: broker-lifecycle
     agent-management: workspace-agents-and-capabilities
     messaging-channels: channel-messaging
@@ -43,7 +56,6 @@ verification:
     mcp: mcp-stdio
     harnesses: harnesses
     sdk: typescript-sdk
-    python-sdk: python-sdk
     swift-sdk: swift-sdk
     opencode-plugin: opencode-plugin
     codex-relay-skill: codex-relay-skill
@@ -53,10 +65,251 @@ verification:
     node: node-command-discovery
 
 categories:
+  init:
+    name: Relay Init
+    description: One command that sets up a workspace, the core, and every agent tool
+    criticality: critical
+    features:
+      - id: init-local
+        name: Local Setup
+        cli: relay init
+        description: Run a private Relaycast server on this machine and save its workspace
+        location: packages/cli/src/cli/commands/init.ts, packages/cli/src/cli/lib/relaycast-engine-install.ts
+        verify_tier: 2
+
+      - id: init-hosted
+        name: Hosted Setup
+        cli: relay init --hosted
+        description: Create or join a hosted workspace so agents on other machines can join
+        location: packages/cli/src/cli/commands/init.ts
+        verify_tier: 5
+
+      - id: init-own-server
+        name: Own Server Setup
+        cli: relay init --url <url> --key <key>
+        description: Connect to a Relaycast server the person runs, with its workspace key
+        location: packages/cli/src/cli/commands/init.ts
+        verify_tier: 3
+
+      - id: init-interactive
+        name: Guided Setup
+        cli: relay init --interactive
+        description: Ask where agents talk, which tools to connect, and where the MCP server goes
+        location: packages/cli/src/cli/commands/init.ts
+        verify_tier: 6
+
+      - id: init-delivery-mode
+        name: Delivery Mode
+        cli: relay init --delivery <delivery>
+        description: Choose core injection (default) or the Relay MCP server for the chosen tools
+        location: packages/cli/src/cli/commands/init.ts, packages/cli/src/cli/lib/agent-tools-mcp.ts
+        verify_tier: 2
+
+      - id: init-tool-claude
+        name: Connect Claude Code
+        cli: relay init --tools claude
+        description: Turn on the session inbox and SessionStart hook in the Claude settings file
+        location: packages/cli/src/cli/lib/relay-node.ts, packages/cli/src/cli/lib/init-leftovers.ts
+        verify_tier: 2
+
+      - id: init-tool-codex
+        name: Connect Codex
+        cli: relay init --tools codex
+        description: Install the PostToolUse, Stop and SessionStart hooks in the Codex hooks file
+        location: packages/cli/src/cli/lib/relay-node.ts
+        verify_tier: 2
+
+      - id: init-tool-opencode
+        name: Connect OpenCode
+        cli: relay init --tools opencode
+        description: Install the Agent Relay plugin and its automatic activation for OpenCode
+        location: packages/cli/src/cli/lib/relay-node.ts, packages/cli/src/cli/lib/init-leftovers.ts
+        verify_tier: 2
+
+      - id: init-tool-grok
+        name: Connect Grok CLI
+        cli: relay init --tools grok
+        description: Turn on Grok's leader mode so the core can reach its sessions
+        location: packages/cli/src/cli/lib/relay-node.ts
+        verify_tier: 2
+
+      - id: init-tool-pi
+        name: Connect Pi
+        cli: relay init --tools pi
+        description: Install the Agent Relay extension and its automatic activation for Pi
+        location: packages/cli/src/cli/lib/relay-node.ts, packages/cli/src/cli/lib/init-leftovers.ts
+        verify_tier: 2
+
+      - id: init-tool-devin
+        name: Connect Devin
+        cli: relay init --tools devin
+        description: Install lifecycle hooks in the local Devin configuration
+        location: packages/cli/src/cli/lib/relay-node.ts
+        verify_tier: 2
+
+      - id: init-tool-cursor
+        name: Connect Cursor
+        cli: relay init --tools cursor
+        description: Install the hooks Cursor CLI and the Cursor editor read
+        location: packages/cli/src/cli/lib/relay-node.ts, packages/cli/src/cli/lib/agent-tools-mcp.ts
+        verify_tier: 2
+
+      - id: init-mcp-fallback
+        name: MCP Fallback
+        cli: relay init --delivery mcp
+        description: Add the Relay MCP server for a tool the core cannot inject into, and never both
+        location: packages/cli/src/cli/lib/agent-tools-mcp.ts
+        verify_tier: 2
+
+      - id: init-skill
+        name: Messaging Skill
+        description: Install the Agent Relay messaging skill for the connected tools
+        location: packages/cli/src/cli/lib/relay-skill.ts
+        verify_tier: 2
+
+      - id: init-uninstall
+        name: Uninstall
+        cli: relay init --uninstall
+        description: Remove what relay init added and restore the settings it changed
+        location: packages/cli/src/cli/commands/init.ts, packages/cli/src/cli/lib/init-leftovers.ts
+        verify_tier: 2
+
+      - id: init-stop
+        name: Stop
+        cli: relay init --stop
+        description: Stop the local server and the core that relay init started
+        location: packages/cli/src/cli/commands/init.ts
+        verify_tier: 2
+
+      - id: init-desktop-aware
+        name: Desktop Awareness
+        description: Attach to a running desktop core and never stop or replace it
+        location: packages/cli/src/cli/lib/desktop-presence.ts
+        verify_tier: 6
+
+  core:
+    name: Agent Relay Core
+    description: The per-user daemon that finds sessions and carries their messages
+    criticality: critical
+    features:
+      - id: core-install
+        name: Pinned Install
+        description: Install the core release relay init pins, checked against its checksum
+        location: packages/cli/src/cli/lib/relay-node.ts
+        verify_tier: 2
+
+      - id: core-serve
+        name: Daemon
+        description: Run one headless core per user, attached to and never doubled
+        location: crates/relay-node/src/relay/daemon.rs, crates/relay-node/src/probe/
+        verify_tier: 2
+
+      - id: core-bridge
+        name: Bridge
+        description: JSON-RPC over a private socket, for the CLI and desktop apps
+        location: crates/relay-node/src/relay/server.rs, crates/relay-node/src/relay/protocol.rs, crates/relay-node/src/relay/contract/
+        verify_tier: 2
+
+      - id: core-workspace
+        name: Workspace Selection
+        description: Follow the workspace relay init saved, on a local or hosted server
+        location: crates/relay-node/src/relay/workspace.rs, crates/relay-node/src/relay/workspace/
+        verify_tier: 2
+
+      - id: core-settings
+        name: Settings
+        description: Read and change delivery settings for the tools installed on this machine
+        location: crates/relay-node/src/relay/settings_registry.rs, crates/relay-node/src/relay/store_settings.rs
+        verify_tier: 2
+
+      - id: core-discovery
+        name: Session Discovery
+        description: Find running sessions of each tool from kernel evidence alone
+        location: crates/relay-node/src/relay/sessions.rs, crates/relay-node/src/relay/local/, crates/relay-node/src/relay/process/
+        verify_tier: 2
+
+      - id: core-auto-activate
+        name: Automatic Joining
+        description: Put a discovered session on Relay on its own, outside temporary folders
+        location: crates/relay-node/src/relay/agents/
+        verify_tier: 2
+
+      - id: core-send-socket
+        name: Session Send Socket
+        description: Let a session send and list agents, identified by its process
+        location: crates/relay-node/src/relay/outbound/, crates/relay-node/src/relay/outbound.rs
+        verify_tier: 2
+
+      - id: core-catch-all
+        name: Core Runtime
+        description: Everything else in the core, so any path here selects the core lane
+        location: crates/relay-node/
+        verify_tier: 2
+
+  core-delivery:
+    name: Delivery Into Sessions
+    description: A message on Relay reaches the running session through that tool's own route
+    criticality: critical
+    features:
+      - id: delivery-cursor-cli
+        name: Cursor CLI
+        description: Hand a message over through Cursor's postToolUse and stop hooks
+        location: crates/relay-node/src/relay/cursor_cli/
+        verify_tier: 2
+
+      - id: delivery-cursor-editor
+        name: Cursor Editor
+        description: Wake an idle editor conversation through its waiting stop hook
+        location: crates/relay-node/src/relay/cursor_cli/editor.rs, crates/relay-node/src/relay/cursor_cli/wait.rs
+        verify_tier: 6
+
+      - id: delivery-grok
+        name: Grok
+        description: Join a Grok session through its proved leader and prompt it over ACP
+        location: crates/relay-node/src/relay/grok.rs, crates/relay-node/src/relay/grok/, crates/relay-node/src/relay/existing_session/, crates/relay-node/src/relay/agents/registration_routes.rs
+        verify_tier: 2
+
+      - id: delivery-claude
+        name: Claude Code
+        description: Put a message in the session's inbox
+        location: crates/relay-node/src/relay/claude/, crates/relay-node/src/relay/claude_settings.rs
+        verify_tier: 6
+
+      - id: delivery-codex
+        name: Codex
+        description: Queue a message through Codex's hooks and queue between turns
+        location: crates/relay-node/src/relay/codex/, crates/relay-node/src/relay/codex.rs
+        verify_tier: 6
+
+      - id: delivery-opencode
+        name: OpenCode
+        description: Deliver through the Agent Relay plugin
+        location: crates/relay-node/src/relay/opencode/, crates/relay-node/src/relay/opencode_existing/
+        verify_tier: 6
+
+      - id: delivery-pi
+        name: Pi
+        description: Deliver through the Agent Relay extension
+        location: crates/relay-node/src/relay/pi/, crates/relay-node/src/relay/pi.rs
+        verify_tier: 6
+
+      - id: delivery-devin
+        name: Devin
+        description: Deliver through the lifecycle hooks of a local session
+        location: crates/relay-node/src/relay/devin/, crates/relay-node/src/relay/devin.rs
+        verify_tier: 6
+
+      - id: delivery-settle
+        name: Settling
+        description: Acknowledge only what was injected, and retry what was not
+        location: crates/relay-node/src/relay/delivery/, crates/relay-node/src/relay/delivery.rs, crates/relay-node/src/relay/inject.rs
+        verify_tier: 2
+
   broker:
     name: Local Broker
     description: The Rust daemon that routes all agent messages locally
-    criticality: critical
+    criticality: standard
+    status: legacy
     features:
       - id: broker-up
         name: Start Broker
@@ -144,6 +397,13 @@ categories:
         name: Remove Agent
         cli: relay agent remove <name>
         description: Remove an agent from the workspace
+        location: packages/cli/src/cli/commands/agent.ts
+        verify_tier: 3
+
+      - id: agent-rotate
+        name: Rotate Agent Token
+        cli: relay agent rotate <name>
+        description: Rotate the token for an existing agent name
         location: packages/cli/src/cli/commands/agent.ts
         verify_tier: 3
 
@@ -288,6 +548,20 @@ categories:
         location: packages/cli/src/cli/commands/message.ts
         verify_tier: 3
 
+      - id: message-file-get
+        name: Show File Attachment
+        cli: relay message file get <fileId>
+        description: Show a stored file, including a short-lived download URL
+        location: packages/cli/src/cli/commands/message.ts
+        verify_tier: 3
+
+      - id: message-file-download
+        name: Download File Attachment
+        cli: relay message file download <fileId>
+        description: Download a stored file attachment
+        location: packages/cli/src/cli/commands/message.ts
+        verify_tier: 3
+
   messaging-dm:
     name: Direct Messages
     description: Private messaging between agents
@@ -377,7 +651,8 @@ categories:
   local-agents:
     name: Local Agent Orchestration
     description: Spawn and control AI agent processes on the local broker
-    criticality: critical
+    criticality: standard
+    status: legacy
     features:
       - id: local-agent-spawn
         name: Spawn Agent
@@ -453,11 +728,12 @@ categories:
     name: Local Workflow Execution
     description: Run multi-agent workflows on the local broker
     criticality: hot
+    status: legacy
     features:
       - id: local-workflow-run
         name: Run Local Workflow
         cli: relay node workflow run <workflow> [--file-type <type>] [--json]
-        description: Run a local YAML, TypeScript, JavaScript, Python, or shell workflow and record its result locally
+        description: Run a local YAML, TypeScript, JavaScript, or shell workflow and record its result locally
         location: packages/cli/src/cli/commands/local-workflow.ts
         verify_tier: 1
 
@@ -498,6 +774,13 @@ categories:
         name: Cloud Whoami
         cli: relay cloud whoami
         description: Show current cloud authentication status (readable if already logged in)
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 5
+
+      - id: cloud-workspaces
+        name: List Cloud Workspaces
+        cli: relay cloud workspaces
+        description: List the Cloud workspaces this login can use, with their IDs
         location: packages/cli/src/cli/commands/cloud.ts
         verify_tier: 5
 
@@ -745,6 +1028,20 @@ categories:
         location: packages/cli/src/cli/commands/fleet.ts
         verify_tier: 2
 
+      - id: fleet-agent-list
+        name: List Fleet Agents
+        cli: relay fleet agent list
+        description: List agents on every reachable fleet node, joined against the workspace roster
+        location: packages/cli/src/cli/commands/fleet.ts
+        verify_tier: 5
+
+      - id: fleet-relayfile-attach
+        name: Attach Relayfile Context
+        cli: relay fleet relayfile attach --sandbox-id <id>
+        description: Attach live Relayfile context to an existing sandbox using Cloud sign-in
+        location: packages/cli/src/cli/commands/fleet.ts
+        verify_tier: 5
+
   workspace:
     name: Workspace Management
     description: Create and switch between workspaces
@@ -791,6 +1088,41 @@ categories:
         description: Switch the active workspace to a stored one
         location: packages/cli/src/cli/commands/workspace.ts
         verify_tier: 1
+
+      - id: workspace-restore
+        name: Restore Workspace
+        cli: relay workspace restore
+        description: Switch back to the previously active workspace
+        location: packages/cli/src/cli/commands/workspace.ts
+        verify_tier: 1
+
+      - id: workspace-key
+        name: Show Workspace Key
+        cli: relay workspace key [name] [--reveal-secrets]
+        description: Print a stored workspace key, masked unless asked
+        location: packages/cli/src/cli/commands/workspace.ts
+        verify_tier: 1
+
+      - id: workspace-rebind
+        name: Rebind Project Workspace
+        cli: relay workspace rebind <name>
+        description: Pin this project's broker to a stored workspace
+        location: packages/cli/src/cli/commands/workspace.ts
+        verify_tier: 1
+
+      - id: observer-list
+        name: List Observer Tokens
+        cli: relay observer list
+        description: List observer tokens for this workspace, never their token material
+        location: packages/cli/src/cli/commands/observer.ts
+        verify_tier: 3
+
+      - id: observer-revoke
+        name: Revoke Observer Token
+        cli: relay observer revoke <id>
+        description: Revoke an observer token by id
+        location: packages/cli/src/cli/commands/observer.ts
+        verify_tier: 3
 
   skills:
     name: Skills Management
@@ -948,7 +1280,7 @@ categories:
   mcp:
     name: MCP Server Mode
     description: MCP tools exposed to AI harnesses (Claude Code, Cursor, etc.)
-    criticality: critical
+    criticality: hot
     features:
       - id: mcp-server-start
         name: Start MCP Server
@@ -956,6 +1288,27 @@ categories:
         description: Run agent-relay as an MCP server so harnesses can use relay tools
         location: packages/cli/src/cli/agent-relay-mcp.ts
         verify_tier: 1
+
+      - id: mcp-upload-file
+        name: Upload File Tool
+        mcp: upload_file
+        description: Upload a file so it can be attached to a message
+        location: packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 3
+
+      - id: mcp-download-file
+        name: Download File Tool
+        mcp: download_file
+        description: Download a message attachment to a local file
+        location: packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 3
+
+      - id: mcp-get-observer-url
+        name: Observer URL Tool
+        mcp: get_observer_url
+        description: Mint a read-only observer link so a person can follow this workspace live
+        location: packages/cli/src/cli/agent-relay-mcp.ts
+        verify_tier: 3
 
       - id: mcp-create-workspace
         name: MCP create_workspace
@@ -1299,35 +1652,6 @@ categories:
         location: packages/sdk/src/session/, packages/sdk/src/agent-relay.ts
         verify_tier: 3
 
-  python-sdk:
-    name: Python SDK
-    description: Python orchestration, Relay communication, adapters, and workflow building
-    criticality: hot
-    features:
-      - id: python-sdk-orchestration
-        name: Python AgentRelay Orchestration
-        description: Spawn, message, release, and wait for managed Python AgentRelay agents
-        location: packages/sdk-py/src/agent_relay/
-        verify_tier: 6
-
-      - id: python-sdk-communication
-        name: Python Relay Communication
-        description: Coordinate agents through the Relay communication interface
-        location: packages/sdk-py/src/agent_relay/
-        verify_tier: 3
-
-      - id: python-sdk-adapters
-        name: Python Relay Adapters
-        description: Attach Relay behavior to supported Python agent frameworks with on_relay adapters
-        location: packages/sdk-py/src/agent_relay/
-        verify_tier: 6
-
-      - id: python-sdk-workflows
-        name: Python Workflow Builder
-        description: Define Python workflow templates and multi-agent workflow steps
-        location: packages/sdk-py/src/agent_relay/
-        verify_tier: 6
-
   swift-sdk:
     name: Swift SDKs
     description: Swift clients for hosted Agent Relay and the local broker
@@ -1518,6 +1842,7 @@ categories:
     name: Node Management
     description: Manage this machine as a relay node
     criticality: standard
+    status: legacy
     features:
       - id: node-up
         name: Node Up

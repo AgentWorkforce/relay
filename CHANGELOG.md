@@ -5,14 +5,275 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `agent-relay-node` built for its own site (`AGENT_RELAY_SITE_URL`) no longer falls back to Agent Relay's public gateways: a sign-in whose site named no valid Relaycast URL, or a CLI workspace key with no recorded server or `RELAY_BASE_URL`, is refused with a reason naming the site, and `RELAYCAST_URL` is ignored in such a build.
+
+## [17.2.1] - 2026-11-07
+
+### Fixed
+
+- `agents.integrations.subscribe` and session socket subscriptions exclude leftover provider events after the last subscription is removed.
+- `agent-relay file` accepts private JSON integration metadata files on Unix.
+- `agent-relay flows` reports GitLab setup requirements and resumes human-approved repository runs with their original access.
+- `agent-relay` commands such as `cloud`, `fleet`, `agent`, `core`, `doctor`, `skills` and `update` print failures that are not `Error` objects as readable messages.
+- `agent-relay` command error output masks credentials, including tokens echoed in server error messages.
+
+## [17.2.0] - 2026-11-06
+
+### Fixed
+
+- Copilot hooks forward calls from the managed `agentrelay` MCP server to Desktop for chat identity verification, while retaining legacy server-name compatibility.
+
+## [17.1.0] - 2026-11-06
+
+### Added
+
+- `agents.integrations.subscribe` and session socket subscriptions accept an `event_types` filter for exact provider events, such as Jira `comment_created`; the core refuses servers that cannot enforce it.
+- `agent-relay-node` can deliver messages to registered VS Code Copilot chats on macOS and resume the same chat while it waits.
+- Copilot messages with uncertain delivery stay pending confirmation and are never blindly submitted again.
+
+### Changed
+
+- Codex SessionStart hooks skip the Relay preamble and early auto-activation for multi-chat app-server/IDE sessions and CLI roots holding live subagent locks.
+
+### Fixed
+
+- `agent-relay-node` refreshes the running shared daemon's already-approved Codex hooks at startup or when enabling hook delivery.
+- `relay init`'s Codex hooks keep a subagent from receiving its parent chat's pending messages or registration guidance.
+
+## [17.0.0] - 2026-11-05
+
+### Fixed
+
+- `agent-relay-node` keeps messages to registered Claude Code app chats, Anthropic Agent SDK sessions, `claude --print` and structured JSON runs on their ordinary inbox route when mobile continuation is enabled.
+- Updated Claude mobile plugins and cores explain recognized stopped-session and host-limit refusals; older counterparts retain generic failure notices. Refused and uncertain input is never replayed.
+- A rejected first Claude mobile submission no longer leaves provisional mobile control active.
+
+### Changed
+
+- The core is now `agent-relay-node`: `relay init` installs the version matching its CLI from the same `v<version>` release, and `AGENT_RELAY_NODE_PATH` points at a binary of your own.
+- The core's commands have no `relay` word (`agent-relay-node serve`, `agent-relay-node call status.get`). The hooks, Codex rules and Claude permission rules it installs use that form, and setup replaces the earlier `… relay …` entries.
+- The core is the messaging runtime: session discovery, delivery, spawning, harness setup and the bridge. Session history, uploads, Agent Relay Cloud sign-in and the Cloud provider methods are the desktop app's.
+
+### Removed
+
+- The account, uploader, tools, telemetry, chat, contractor, Cloud provider and `sessions.transcript` bridge methods: a core outside the desktop app answers them `method_not_found`.
+
+### Fixed
+
+- `agent-relay` installs beside `@agent-relay/sdk` and `@agent-relay/harness-driver` 17 without a dependency conflict.
+- `agent-relay cloud worker` no longer fails to start flows against a self-hosted Relay with `failed to initialize relaycast session`: flows no longer run on an old bundled broker.
+
+### Breaking Changes
+
+- `agent-relay-probe` is now `agent-relay-node`, without the `relay` subcommand: `agent-relay-probe relay call status.get` is `agent-relay-node call status.get`. `AGENT_RELAY_PROBE_PATH` is no longer read.
+- `@agent-relay/harness-driver` exports `RELAY_NODE_BINARY_NAME`, `RELAY_NODE_PATH_ENV` and `getCanonicalRelayNodePath` in place of the `PROBE` names.
+
+### Migration Guidance
+
+- Replace `AGENT_RELAY_PROBE_PATH` with `AGENT_RELAY_NODE_PATH`, and `agent-relay-probe relay <command>` with `agent-relay-node <command>` in scripts and launch entries.
+- Run `relay init` to install `agent-relay-node`. It leaves the old `agent-relay-probe` in the install directory's `bin`, and `relay init --uninstall` no longer removes a `~/.local/bin/agent-relay-probe` copy; delete them by hand when no desktop app uses them.
+
+## [16.0.0] - 2026-11-04
+
+### Added
+
+- `agent-relay cloud worker` can run Codex and Grok jobs with the workspace's subscription logins when the control plane provides them; the login files exist only while the run does.
+- `agent-relay cloud worker` saves refreshed Codex and Grok login tokens for later runs.
+- `agent-relay cloud worker` runs flows with `@relayflows/cli` 1.1.8, where a subscription login wins over an API key for its own CLI. Claude gets `CLAUDE_CODE_OAUTH_TOKEN` without `ANTHROPIC_API_KEY`, and Codex and Grok with a login file no longer see `OPENAI_API_KEY` or `XAI_API_KEY`.
+
+### Changed
+
+- `agent-relay-probe`: a successful spawn's launch result carries `worker_cwd`, the working folder the agent runs in: the one the caller named, or the machine default the spawn node applied when none was named, so a caller that left it out sees where its agent works.
+- The core (`agent-relay-probe`) talks to one Agent Relay site, fixed when it is built: `AGENT_RELAY_SITE_URL` at build time (`https://agentrelay.com` when unset; an https origin, or `http://localhost[:port]` / `http://127.0.0.1[:port]`), and a build for a site the core could not trust fails to build. Nothing changes the site at run time, in any build.
+- The core opens links of one scheme, fixed at build time from `AGENT_RELAY_URL_SCHEME` (`agentrelay` when unset; a web scheme such as `https` fails the build); the `agentrelay-dev://` rule for non-production sites is gone, and on Windows the link handler registers the build's scheme.
+- The site a build is made for is trusted beside `https://agentrelay.com` and loopback: it needs no `RELAYHISTORY_ALLOW_UNTRUSTED_CLOUD_BASE_URL`, which stays a development switch for any other origin.
+- `links.parse` opens links of the build's scheme only, and refuses a connect link for another site naming that site.
+- `agent-relay-probe cloud install`, `cloud rotate-key`, `status`, `stop` and the other install commands default `--site-url` to the build's site, as does `sharing status --account --workspace`; the Cloud API default, Relay Connect invite links and the Connect host sign-in are the build's site's.
+
+### Removed
+
+- `relay serve --site-url`: the core takes no site at start.
+- The `site_url` field of `account.sign_in` and of `links.parse` in the bridge contract (and the generated Swift contract).
+
+### Fixed
+
+- `agent-relay` installs beside `@agent-relay/sdk` and `@agent-relay/harness-driver` 16.0.0 without a dependency conflict.
+- `agent-relay-probe`: beside a site other than production, a 404 from the desktop-identities route means the site has none: the sync is reported once, at Info, and no longer every minute as a failure that counts against the sign-in.
+- The desktop spawn node asks Agent Relay for the same node id on every attempt of a first enrollment and keeps the alternate name it took, so a name another node holds is not asked for again; a node enrolled whose answer was lost, or an id another node has, is left behind for a fresh one under the same name.
+- A node token Agent Relay refuses three times in a row stops the spawn node with a status saying so, instead of retrying forever; turning Accept spawns from Agent Relay off and on, or signing in again, enrolls a new node.
+- `agent-relay-probe`: beside a self-hosted site the uploader accepts the https RelayHistory origin that site's control plane names (production still accepts only `history.agentrelay.com`), so a Desktop built for that site uploads sessions to it.
+- `agent-relay-probe`: a message link may name its site (`agentrelay://message?to=…&site=…`), as the dashboard's do; it opens when that is the build's site and says which site it is for otherwise.
+- `agent-relay-probe`: every build accepts an `ar_ws_…` workspace key from Cloud's workspace resolve, not only the `relay-cli` build, so a Desktop signs in to a self-hosted Relaycast on durable actors.
+
+### Breaking Changes
+
+- A core built for another site than `https://agentrelay.com` must be built with `AGENT_RELAY_SITE_URL`. `relay serve --site-url` is refused; a `site_url` in an `account.sign_in` or `links.parse` request is ignored, as any unknown field is, and the build's site applies.
+
+### Migration Guidance
+
+- Set `AGENT_RELAY_SITE_URL` (and `AGENT_RELAY_URL_SCHEME`, for a build registering its own links) in the environment of `cargo build`; a changed value rebuilds the crate. Leave both unset for production.
+- Drop `--site-url` from `relay serve` command lines and launch entries, and `site_url` from `account.sign_in` and `links.parse` requests: the build's site applies.
+
+## [15.1.1] - 2026-11-03
+
+### Fixed
+
+- GitLab event listeners work in both npm and standalone Relay 15.1 installs.
+- `f.gitlab` helpers read and write projects in nested GitLab groups.
+
+## [15.1.0] - 2026-11-03
+
+### Added
+
+- `relay init` sets up Cursor, so messages reach agents in the Cursor editor and Cursor CLI and wake an idle agent.
+- `relay init --uninstall` removes the Cursor setup it added.
+- `relay serve` now runs the same core as the desktop app: Oh My Pi sessions join the relay, and Relay Connect and mobile handoff work from the CLI.
+
+### Changed
+
+- On macOS and Linux, `relay init` starts the Agent Relay desktop app's own core when the app is installed and no core is running on the default socket, and starts the public core only if that one does not come up, with a warning saying how to switch to the desktop app's core.
+- The core has no account sign-in of its own: methods that need an account answer `method_not_found`, and spawn approvals are off, unless the core is built with an account. `agent-relay cloud login` keeps device sign-in for Relay Connect hosts.
+
+### Removed
+
+- `@agent-relay/policy` and `@agent-relay/brand` are no longer published; existing versions stay installable on npm.
+
+### Fixed
+
+- `cloud integration connect` identifies unsupported providers and points to catalog lookup on the same Cloud endpoint.
+- `relay serve` delivers messages to agents more reliably and finds their sessions more consistently.
+- Codex agents that `relay serve` spawns now run the installed Codex app-server build whenever there is one, instead of the `codex` command on `PATH`.
+- Follow-up messages to Codex agents that `relay serve` spawns reach them through that same Codex build.
+- A Claude Code session renamed on the relay is told its current name and address when it starts, not the name it first registered under.
+- Choosing to upload a session again no longer re-uploads its unchanged history after `relay serve` restarts.
+- Cursor CLI messaging hooks that setup installed before Cursor's first chat now show as installed and can be turned on or off.
+- Turning uploads Off for a session you connected yourself keeps it off after `relay serve` restarts.
+- A session whose upload was deleted from Cloud no longer rejoins the relay by itself.
+- Devin agents started on macOS with `relay fleet spawn devin` or an agent's spawn request now get every message; one that arrived a moment after its connection opened could be lost.
+
+## [15.0.2] - 2026-11-01
+
+### Fixed
+
+- T3 Code chats running Claude now join Relay by themselves on macOS and Linux (the `.deb` install and the AppImage). The core took them for automation, so they never appeared in `relay agent list`.
+
+## [15.0.1] - 2026-10-31
+
+### Fixed
+
+- With the desktop app on the machine, `relay init --hosted` and `relay workspace create` use `https://cast.agentrelay.com`, the only server its core serves, and `relay init --key` refuses an armadillo key instead of saving a workspace agents could not join.
+- `relay init` run through `npx` prints follow-up commands that also use `npx`, so they work without a global `relay` install.
+
+## [15.0.0] - 2026-10-31
+
+### Added
+
+- The broker now lives in `~/.agentworkforce/relay/bin` (or `$AGENT_RELAY_INSTALL_DIR/bin`, else `$AGENT_RELAY_HOME/bin`), however the CLI is installed; `install.sh` also puts the standalone CLI there. An npm-installed CLI stays in npm's global bin directory and copies only its broker there on first run. The copy is atomic and checksum-verified, and it never replaces a newer broker from `install.sh` or the desktop app. Set `AGENT_RELAY_SKIP_BROKER_INSTALL=1` to opt out.
+- `install.sh` installs the local Relaycast server (`relaycast-engine`) into the same directory when the pinned release publishes it for your platform. If it is not published, the step is skipped. Set `AGENT_RELAY_SKIP_RELAYCAST_ENGINE=1` to skip it.
+- `relay init` lets two agents communicate without an account: it starts a private Relaycast server on this machine and creates a workspace. `relay init --hosted` creates a hosted workspace and prints the one command other machines run to join, and `relay init --url <url> --key <key>` connects to your own server on any HTTPS port. See `docs/quickstart.md`.
+- `relay agent register` saves each agent's token, and `--as <name>` uses it on any messaging command, so agents no longer need `RELAY_AGENT_TOKEN` exported in every shell.
+- `relay init` is now a guided setup in a terminal: it asks where agents talk (this machine, hosted, or your own server), which agent tools to connect (Claude Code, Codex, OpenCode, Grok CLI, Pi and Devin, with the installed ones pre-checked), and whether to configure this project or every project, then adds the Relay MCP server to each tool through its own `mcp add` command or config file. `--tools`, `--scope` and `--yes` run it without prompts (the default when stdin is not a terminal), and `relay init --uninstall` removes only the entries it added.
+- `relay init` installs the `messaging-agents-on-the-relay` agent skill globally for every tool it injects into (Claude Code, Codex, OpenCode, Pi, Grok, Devin), so a new session can list who is on Agent Relay and message them with no setup. It is pinned to a commit of AgentWorkforce/skills and installed with `npx skills` without prompting. A copy already there is left alone, and a failed install only prints a warning. `relay init --uninstall` removes only the copies init installed, unless they were changed since.
+
+### Changed
+
+- `relay init --hosted` and `relay workspace create` now create workspaces on `https://armadillo.agentrelay.com`. Existing hosted workspaces stay on `cast.agentrelay.com`.
+- Armadillo workspace keys (`ar_ws_…`) and agent tokens (`ar_ag_…`) are accepted, masked in output, and sent only to armadillo.
+- Armadillo workspaces need the matching Agent Relay core and broker: older ones refuse the saved server file instead of guessing a server.
+- `relay init` now delivers messages by injecting them into running agent sessions instead of having agents poll an MCP inbox. It installs the Agent Relay core (`agent-relay-probe`, SHA-256-verified from a `probe-v<version>` GitHub release) into the install directory's `bin`, runs it in the background or attaches to the one the desktop app already runs, and turns on its delivery for each chosen tool: Claude Code's session inbox and SessionStart hook, Codex hooks, the OpenCode plugin, the Pi extension (installed only when Pi is chosen), Devin hooks and Grok's leader socket. These are per-user settings for every project. Re-running removes an MCP entry an earlier `relay init` added, so each session has one identity. `--delivery mcp` uses the MCP server instead and turns off the injection `relay init` had turned on for those tools; the MCP server is also the fallback for a tool the core cannot deliver to, so no tool is on both routes.
+- `relay init` replaces an older core it started earlier, and the line `relay init --hosted` prints for teammates no longer needs `--url` for an armadillo workspace key.
+- `relay init --hosted` and `relay init --key` after a solo `relay init` now switch this machine from the `local` workspace to the team one: the core serves it right away and running sessions move onto its roster. Any other saved workspace stays active, and a core run by the desktop app or a service is left alone; `relay init` warns with the command to run.
+- `relay init --stop` also stops the core `relay init` started (never the desktop app's), and `relay init --uninstall` turns off exactly the injection settings it turned on.
+- `install.sh` and `relay init` use Relaycast engine 11.1.0, which ships as a standalone binary: `install.sh` now installs `relaycast-engine` into `~/.agentworkforce/relay/bin`, so the local server no longer needs Node.js or a native addon.
+- The CLI and `@agent-relay/harness-driver` now resolve the broker in this order: `BROKER_BINARY_PATH` / `AGENT_RELAY_BIN`, then `~/.agentworkforce/relay/bin`, then the npm platform package, then `PATH`. A broker in the install directory now wins over one found on `PATH`.
+- `install.sh` honours `AGENT_RELAY_HOME` as the install root when `AGENT_RELAY_INSTALL_DIR` is not set. A relocated install exports its root from the `agent-relay` launcher.
+- `relay mcp` without `RELAY_AGENT_NAME` now registers each session as `<tool>-<project folder>` (for example `claude-myproject`, from the MCP client's name), adding a short suffix when another live session holds that name and taking the name back after a restart, instead of registering every session as `orchestrator`.
+- The probe daemon now picks its workspace the way the CLI does: a workspace-key environment variable, then the project's pinned key (`AGENT_RELAY_PROJECT`), then the active workspace in `workspaces.json`, each sent only to the server `relaycast-origins.json` binds it to. Your Cloud sign-in is used only when the CLI selects none, so local and self-hosted `relay init` workspaces work without signing in. If the CLI's workspace files are malformed, the probe reports why and uses no workspace instead of falling back to the Cloud one.
+
+### Removed
+
+- Python workflows, the `agent-relay.py` node provider, and the `agent-relay-sdk` package. Local workflows are YAML, TypeScript, JavaScript, or shell. Cloud and worker workflows are YAML or TypeScript. Node definitions are TypeScript or JavaScript. SDKs are TypeScript and Swift.
+
+### Fixed
+
+- Grok CLI sessions now join Relay after `relay init`. The core refused every open Grok session with "A signed-in owner is required for managed sessions." because release builds never attach a Cloud install; a Grok session now belongs to the signed-in account, or to this computer's OS user when nobody is signed in.
+- Broker: `spawn:<harness>` capabilities now declare `metadata.configured.node_kind: "broker"`, so Cloud keeps placing spawns on unclaimed CLI brokers instead of refusing them until `agent-relay node claim`. An already-declared kind (e.g. `desktop`) is preserved.
+- `relay init` downloads the standalone Relaycast server (`relaycast-engine`) for your platform into the install directory's `bin` when it is missing, verifying its SHA-256, so the local server now starts from an npm install on any Node.js version and with npm install scripts disabled. It falls back to the `@relaycast/engine` npm package only if the download fails.
+- After `relay init` sets up Pi or OpenCode, new Pi and OpenCode sessions now join Relay on their own and receive injected messages, like Codex and Claude Code. New core settings `pi_auto_activate` and `opencode_auto_activate` (off by default; `relay init` turns on the one for each tool you choose and `--uninstall` turns it off again) gate this, so turning on `auto_activate` alone still leaves Pi and OpenCode sessions joining only when added.
+- Codex 0.16x workers no longer dead-letter their initial task with `initial_injection_incomplete` when the composer scrolls long input. The broker now checks that the end of each typed chunk is visible and ignores Codex's `↑`/`↓` scroll markers.
+- `relay agent rotate <name>`, and `agent register` for a name that already exists, now issue a new token through the audited owner takeover instead of failing with "already exists", so a lost token can always be replaced.
+- `@agent-relay/sdk` docs for `workspace.register()` now say registration is create-only: an existing name fails with `name_conflict` (with or without `{ strict: true }`) and keeps its token. Resume an agent with `workspace.reconnect({ apiToken })`, and get a new token with `relay agent rotate <name>`.
+- `install.sh`'s source-build fallback no longer deletes the install root (and with it saved workspaces and Relaycast credentials); the checkout now lives in its `source/` subdirectory.
+- `agent-relay update` now updates the install that ran it: standalone installs through the release's verified `install.sh` (no npm needed, CLI and broker replaced together), npm installs with `npm install -g`. It verifies the new version and exits non-zero on failure instead of claiming success. It tracks the `latest` release.
+- `install.sh` no longer reports an unwritable `TMPDIR` as a failed verification or falls back to npm when it cannot create a temp file.
+- `install.sh` now also installs the short `relay` command next to `agent-relay` (same CLI), so `relay init` works right after a curl install. An existing `relay` from another tool is left alone with a warning, and `agent-relay uninstall` removes `relay` only when the installer wrote it.
+- `relay init` no longer switches the machine-wide active workspace away from one already in use: it saves the new workspace for the current project, keeps the existing active one, and prints `relay workspace switch <name>` to make it the default.
+- `relay init` asks nothing by default, in a terminal too: this machine (or `--hosted`, or `--url`/`--key`), every installed agent tool, global scope, then a summary of what it chose and the flag that changes each. `relay init --interactive` (`-i`) asks each step as before; `--yes` is still accepted and changes nothing.
+- `relay init --key <key>` joins the hosted workspace that key belongs to, under the name the server gives it (`--url` still selects your own server; a key bound to another server is refused). `relay init --hosted` names a new workspace after you and the folder unless you pass `--name`, and prints `npx -y agent-relay@next init --key '<key>'` for teammates (`agent-relay@<version>` from a stable release), which joins and sets up message injection in one step (the `relay workspace join` it printed only saved the workspace). Joining reports the hosted workspace instead of "your server", and `relay workspace join` now points at `relay init`.
+- `relay init` no longer writes npx's temporary cache path into agent tool configs. Project configs (`.mcp.json` and the like) run `agent-relay mcp` by name, or `npx -y agent-relay@<version> mcp` when Relay is not installed, so they work on teammates' machines. Re-running `relay init` updates entries it wrote earlier.
+- `relay init --scope project` now tells the truth about Codex: Codex loads `.codex/config.toml` only when that exact project is trusted in `~/.codex/config.toml` (a trusted parent folder does not count, and `codex exec` never asks). In a terminal, `relay init` offers to record that trust; with `--yes` it prints the lines to add.
+- The project workspace key file (`.agentworkforce/relay/workspace-key.json`) is no longer picked up by `git add -A`: any command that saves it adds `.agentworkforce/relay/` to `.git/info/exclude` (worktrees included), never to `.gitignore`.
+- `relay node up` now reports the actual workspace-key source when startup fails, including the repository's `.agentworkforce/relay/workspace-key.json` pin instead of mislabeling every key as `AGENT_RELAY_WORKSPACE_KEY`.
+- Codex sessions set up by `relay init` now read and answer relayed messages inside Codex's default sandbox with no approval prompt: the Codex hooks add `~/.codex/rules/agent-relay.rules`, which lets only the Agent Relay core's own socket client reach its session socket (no network access is granted), and reply commands are a single `agent-relay-probe relay send … --body` call.
+- Injected reply instructions now tell agents to answer only through this computer's Agent Relay route and never through another Agent Relay connector or app (such as Agent Relay in ChatGPT), which sends as a different identity.
+- A Claude Code session already on Agent Relay no longer hits an approval prompt before its first message: the SessionStart text now lists peers and sends with the Agent Relay core's own commands, which Claude's permission rules allow, instead of curl.
+- Claude Code sessions set up by `relay init` now read and answer relayed messages in Claude's default permission mode with no approval prompt: the SessionStart hook adds `permissions.allow` rules to `~/.claude/settings.json` that allow only the Agent Relay core's own read, reply, attachment-fetch and peer-list commands on its session socket, and Claude's reply hints are that single command instead of curl. The rules go when the hook is turned off; your own rules stay.
+- Codex sessions no longer ask to approve every relayed read and reply when the Agent Relay core's path contains spaces (always the case for the macOS desktop app). Codex rules only match an unquoted program, so while the Codex or Claude Code hook is on, the core keeps a private, space-free link at `~/.agentworkforce/desktop/bin/agent-relay-probe` and names it in the Codex and Claude rules and every reply hint. Turning the hooks off or `relay init --uninstall` removes it.
+- `relay init --uninstall` now removes a `~/.claude/settings.json` it created (or restores yours byte for byte) and the OpenCode plugin's `agent-relay.js.off` marker when init installed the plugin.
+- `relay init --uninstall` now removes the core's `~/.agentworkforce/desktop/pi-extension.off` marker and an empty `~/.pi/agent/extensions` folder when init installed the Pi extension, so the desktop app installs the extension and Pi sessions work again afterwards. A marker that was there before init is kept.
+- `relay init --uninstall` now leaves `~/.codex` as it found it: it removes a `hooks.json` it created (or restores yours byte for byte), its `.relay-desktop-backup`, the Codex hook-trust entries it added to `config.toml`, and its sandbox rules file. Your own hooks, trust entries and rules are kept.
+- `relay init` run in your home folder (or in a folder whose project resolves to `~`) no longer writes a project workspace pin into the Relay home (`~/.agentworkforce/relay`, where `workspaces.json` and your sign-in live) or project MCP files such as `~/opencode.json`: it stops and asks you to run it inside a project folder. Every project-pin writer refuses the Relay home (symlinks resolved), and the Relay home no longer makes `~` the project root of plain folders under it. `relay workspace switch`/`join` from `~` still change the machine-wide workspace, without a pin.
+- `relay init --uninstall` outside a project no longer reads global configs such as `~/.grok/config.toml` as project-scope files.
+- The Pi extension's banner now says the session joins Agent Relay automatically when `relay init` turned that on, instead of asking you to enable it.
+- A core started by `relay init` no longer copies itself to `~/.local/bin/agent-relay-probe`, and `relay init --uninstall` removes a copy an earlier core left there (only a byte-for-byte copy of its own core).
+- The Agent Relay core no longer creates empty OpenCode folders (`~/.config/opencode` and the rest) while checking OpenCode's version on machines where OpenCode was not set up.
+- New Codex sessions set up by `relay init` are told their Agent Relay name and the exact local commands to list agents and send a DM as they start (a SessionStart entry in Agent Relay's Codex hook), so a fresh session no longer reaches for the Agent Relay in ChatGPT connector before its first relayed message. Turning the hook off or `relay init --uninstall` removes it with the others.
+
+### Security
+
+- A relayed message can no longer get a Codex session to change Agent Relay settings or registration without asking: the core's Codex rules (and Claude Code permission rules) now allow only reply, read, peer-list, attachment and channel-subscription commands, and an upgrade replaces the older rules.
+- `agent-relay` no longer sends a self-hosted workspace key or agent token to the hosted service when `RELAY_BASE_URL` is unset in a later shell. A credential used with a self-hosted server is remembered (as a one-way fingerprint in `~/.agentworkforce/relay/relaycast-origins.json`, path prefix included) and sent back only to that server, and a persisted project route can no longer redirect it; `workspace create` now honours `RELAY_BASE_URL`; and a malformed `RELAY_BASE_URL` or `--base-url` is an error instead of a silent fallback to `https://cast.agentrelay.com`.
+- The Rust broker now enforces the same saved self-hosted credential route before making authenticated HTTPS or WebSocket connections, passes that resolved route to spawned agents, and trusts operating-system roots plus `SSL_CERT_FILE` for private certificate authorities.
+- Spawned Cursor, OpenCode, Gemini, and Grok agents no longer get the workspace key, agent token, or `RELAY_WORKSPACES_JSON` written into their config files (`.cursor/mcp.json`, `opencode.json`, `.gemini/settings.json`, `~/.grok/config.toml`). The files name each credential by environment variable, and the broker sets the values on the agent process. A later commit of the project can no longer publish live Relay credentials. The broker refuses to write a credential-shaped value into a project file, and it adds each project file it writes to `.git/info/exclude`. Rotate any key or token that an earlier version may have written into a repository.
+- Muse workers' Relay MCP settings move from `<project>/.agent-relay/` to `~/.agentworkforce/relay/sessions/` (or `$AGENT_RELAY_HOME/sessions/`), and the broker removes them when the worker is released. A Muse worker that uses `RELAY_MUSE_ISOLATED_AUTH` has to log in again once.
+- `agent-relay-broker mcp-args` output adds `requiredEnv`, which lists the credential variables (names only) that the caller must set on the agent process.
+
+## [14.0.0] - 2026-10-13
+
+### Changed
+
+- `fleet spawn --sandbox` inside a repository starts from an exact shallow Git checkout without waiting for Relayfile. `--checkout` also omits Relayfile unless context is explicitly requested.
+
+### Added
+
+- `fleet relayfile attach` adds optional live context to an existing sandbox without restarting its worker.
+
+### Migration Guidance
+
+- Add `--sandbox-relayfile` to retain the previous required live repository mirror. Combine it with `--checkout` when both a Git checkout and live context must be ready before dispatch.
+
+### Fixed
+
+- `fleet spawn` and SDK placement no longer report `dispatchState: "dispatched"` for a spawn that was placed but never sent. Only `dispatched_node_id`, or a status the node moved, counts as dispatch evidence, so `fleet spawn` and `fleet spawn-status` agree.
+- When a broker worker fails to spawn, the log now includes the underlying OS error, such as a missing binary, instead of only `failed to spawn worker`.
+
+## [13.4.1] - 2026-10-12
+
+### Fixed
+
+- Owned worker-name cleanup no longer gives up after five tries and blocks the name until manual recovery. The broker keeps reconciling the release on a jittered backoff (up to five minutes between attempts), confirms persistent by-name absence through the captured agent token, and preserves a replacement generation's cached credential. Cleanup without captured ownership proof fails closed and keeps the name reserved instead of claiming an unverified deletion.
+- `npx @agent-relay/connect join` no longer waits 60 seconds and rolls back when the local probe is running but cannot match the command to a live Claude Code or Codex session (for example, when it was run from a separate terminal). It stops within about a second and says to run the command from the agent's own shell. A timeout that does happen now names the probe's last answer. `connect install` no longer reports such a probe as ready when its version cannot be checked.
 
 ## [13.4.0] - 2026-10-11
 
 ### Added
 
 - `agent-relay integration subscribe --to self` routes provider events to the broker worker's registered identity, allowing fleet workers to subscribe without desktop session detection.
-- Broker events report PTY submit recovery: `delivery_unconfirmed` (no acceptance evidence for a write, with `attempts` / `max_attempts`; `terminal: true` when the delivery ends unconfirmed) and `delivery_resubmitted` (a submit-only retry, with `attempt` and `strategy`); `delivery_verified` adds `evidence` and `attempts`. `@agent-relay/harness-driver` and the Python and Swift SDK protocol types include both new events.
+- Broker events report PTY submit recovery: `delivery_unconfirmed` (no acceptance evidence for a write, with `attempts` / `max_attempts`; `terminal: true` when the delivery ends unconfirmed) and `delivery_resubmitted` (a submit-only retry, with `attempt` and `strategy`); `delivery_verified` adds `evidence` and `attempts`. `@agent-relay/harness-driver` and the Swift SDK protocol types include both new events.
 
 ### Changed
 
@@ -1185,11 +1446,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Node providers** — a node's actions are hosted by providers that connect directly to the engine and are invoked node-addressed (`POST /v1/nodes/:node/actions/:name/invoke`). The broker attaches to its node as the `broker` provider over `/v1/node/ws` — PTY runtime, agent delivery, `spawn:<harness>`/`release` capacity, real-load heartbeats — as one provider among several, self-advertising its capacity (default harness set plus `AGENT_RELAY_NODE_HARNESSES`) and exposing its resolved `node_id`/`node_name` on `/api/session`. Author TypeScript actions with `@agent-relay/fleet` (`defineNode`/`serveNode`); an action named `spawn:<harness>` wraps the broker's spawn so any language can adjust the command, env, or cwd before it runs.
-- Python `agent_relay.node.NodeProvider.from_enrollment()` serves node actions from Python, reading the node credentials from the enrollment. Install with the `node` extra.
 
 ### Changed
 
-- Relaycast SDKs upgraded to the node-provider release: `@relaycast/sdk` 6.0.0 (adds the node-provider client) and `relaycast-sdk` (Python) 1.0.0 (adds `relay_sdk.node.NodeProvider`).
+- Relaycast SDKs upgraded to the node-provider release: `@relaycast/sdk` 6.0.0 adds the node-provider client.
 - `agent-relay fleet status` reads this node's provider attachment and per-provider liveness from the engine nodes API instead of a local status file.
 
 ### Removed
@@ -1223,7 +1483,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `agent-relay cloud enroll --token <ocl_node_enr_…>` redeems a one-time Cloud enrollment token and persists node credentials to `~/.agentworkforce/relay/fleet-enrollments.json` (0600); a later plain `agent-relay node up` then runs as the Cloud-managed node. The token is never printed.
-- `agent-relay node up|down|status|metrics|tail`, `node agent …`, and `node workflow run|logs|sync` unify `local up` and `fleet serve` under one command group. `node up [--config <file>]` brings the current context's node online: the broker runs agents, and a project `agent-relay.{ts,…}` or `agent-relay.py` is served as a capability provider. A plain agent host needs no definition file.
+- `agent-relay node up|down|status|metrics|tail`, `node agent …`, and `node workflow run|logs|sync` unify `local up` and `fleet serve` under one command group. `node up [--config <file>]` brings the current context's node online: the broker runs agents, and a project `agent-relay.{ts,…}` is served as a capability provider. A plain agent host needs no definition file.
 - Reflex history sync runs in-process via the ai-hist SDK, syncing to relayhistory-cloud.
 - Swift SDK (`AgentRelaySDK`, `packages/sdk-swift`): `AgentClient` gains `invokeAction(_:input:timeout:pollInterval:)` — invoke a relay action and await its output — plus `channelHistory(_:limit:before:)` and `dmHistory(with:limit:before:)` for reading channel and 1:1 DM message history as oldest-first `RelayChannelEvent`s.
 
@@ -1327,7 +1587,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Relaycast SDKs upgraded to v5: `@relaycast/sdk` `^5.0.5` (v4→v5 major), the `relaycast` broker crate `5.0.2`, `relaycast-sdk` (Python) `0.3.0`, and Swift Relaycast `5.0.5`. The v5 `agents.release` returns an action invocation (like `agents.spawn`); the `remove_agent` MCP tool surfaces that invocation.
+- Relaycast SDKs upgraded to v5: `@relaycast/sdk` `^5.0.5` (v4→v5 major), the `relaycast` broker crate `5.0.2`, and Swift Relaycast `5.0.5`. The v5 `agents.release` returns an action invocation (like `agents.spawn`); the `remove_agent` MCP tool surfaces that invocation.
 
 ## [9.1.3] - 2026-06-26
 
@@ -1338,7 +1598,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The relaycast engine and `relaycast-sdk` are wrapped in a hosted communicate transport.
+- The relaycast engine is wrapped in a hosted communicate transport.
 
 ### Fixed
 
@@ -1362,7 +1622,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
-- relay's Swift `AgentRelay` client and Python `communicate` client no longer default the base URL — callers must pass `baseURL`/`base_url` or set `RELAY_BASE_URL`.
+- relay's Swift `AgentRelay` client no longer defaults the base URL — callers must pass `baseURL` or set `RELAY_BASE_URL`.
 
 ## [9.1.1] - 2026-06-24
 
@@ -1654,7 +1914,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `agent-relay local run` delegates YAML, TypeScript, and Python workflow execution to `@relayflows/cli` instead of bundling TypeScript workflow execution inside the Relay CLI.
+- `agent-relay local run` delegates YAML and TypeScript workflow execution to `@relayflows/cli` instead of bundling TypeScript workflow execution inside the Relay CLI.
 
 ## [8.2.0] - 2026-06-04
 
@@ -1800,7 +2060,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - `agent-relay` upgrades Vitest to 4.x to resolve the critical npm audit advisory.
-- `agent-relay-sdk` refreshes `packages/sdk-py/uv.lock` to clear transitive CVEs across urllib3, gitpython, pillow, python-multipart, cryptography, authlib, idna, python-dotenv, pytest, and uv.
 - `gemini-relay-extension` refreshes its lockfile to clear fast-uri, path-to-regexp, hono, qs, ip-address, express-rate-limit, and `@hono/node-server` advisories.
 
 ## [7.1.1] - 2026-05-25
@@ -2141,10 +2400,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Expose runScriptWorkflow() in @agent-relay/sdk/workflows
 - Bundle @agent-relay/github-primitive at /github subpath
 
-### Fixed
-
-- Update codegen-models workflow to use new Python output path
-
 ## [6.0.2] - 2026-04-25
 
 ### Fixed
@@ -2164,7 +2419,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Fix stale broker checks and PyPI retry
+- Fix stale broker checks
 
 ### Fixed
 
@@ -2201,15 +2456,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [5.0.0] - 2026-04-22
 
-### Changed
-
-- Include publish-sdk-py in summary job
-
 ### Fixed
 
 - Repair pre-existing test failures on main
 - Address Copilot review on broker resolution
-- Ship per-platform wheels with embedded broker (drop runtime download)
 
 ## [4.0.40] - 2026-04-22
 
@@ -2530,7 +2780,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add integration step type for external services
 - Add dynamic channel subscribe/unsubscribe to broker
 - Cloud endpoints, API executor, and Communicate SDK v2 protocol
-- Communicate Mode SDK (on_relay) for Python and TypeScript
+- Communicate Mode SDK (on_relay) for TypeScript
 - Add wait/steer message injection modes
 
 ### Changed
@@ -2636,15 +2886,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - StartFrom + deterministic/worktree step parity
-- A2A protocol transport layer — Python (89 tests ✅) + TypeScript
+- A2A protocol transport layer for TypeScript
 - Add OpenClaw orchestrator skill for headless multi-agent sessions
 - Add TS adapters for OpenAI Agents, LangGraph, Google ADK, CrewAI + review fixes
-- Add Pi RPC adapter for Python SDK + verify TS Pi adapter exports
-- Add Communicate Mode SDK (on_relay) for Python and TypeScript
+- Verify TypeScript Pi adapter exports
+- Add Communicate Mode SDK (on_relay) for TypeScript
 
 ### Changed
 
-- Add 13 e2e tests for all TS + Python adapters against live Relaycast
+- Add 13 e2e tests for TypeScript adapters against live Relaycast
 - Hide communicate pages from public docs until tested
 - Sync package-lock.json after config version bump
 
@@ -2661,7 +2911,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Address Will + Devin review feedback on Communicate SDK
 - Address PR review — remove onRelay auto-detect, fix ReDoS regex
 - RegisterOrRotate for 409, ws.close timeout, add @sinclair/typebox dep for Pi adapter
-- Align Python SDK transport with real Relaycast API surface
 - Address Devin review findings
 - Exclude vitest test files from SDK build config
 - Add @sinclair/typebox to root dependencies for global install
@@ -2775,7 +3024,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reset exit info per retry + preserve exit code on spawn failure
 - Avoid wiping workspace alias/id when add-workspace updates without flags
 - Use timeoutMs directly in nudge loop timeout guard
-- Forward skip_relay_prompt in Python SDK and skip pre-registration in broker
+- Skip pre-registration in the broker
 - Workspace default handling in add-workspace
 - Harden multi-workspace add-workspace default and logging behavior
 - Distinguish force-released (nudge exhaustion) from released (idle-complete)

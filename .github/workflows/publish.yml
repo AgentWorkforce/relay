@@ -12,8 +12,6 @@ on:
           - main
           - cli-prerelease
           - sdk
-          - sdk-py
-          - brand
         default: 'all'
       version:
         description: 'Version bump type'
@@ -43,6 +41,11 @@ on:
         default: 'beta'
       dry_run:
         description: 'Dry run (do not actually publish)'
+        required: false
+        type: boolean
+        default: false
+      hotfix:
+        description: 'Hotfix: keep one Linux and one macOS check, skip the other smoke and verify jobs'
         required: false
         type: boolean
         default: false
@@ -81,13 +84,17 @@ jobs:
     # crates/broker/src/util/version.rs — released binaries report this
     # version through health/session/telemetry payloads.
     needs: build
+    # This job can run on a third-party runner (CI_*_RUNNER), so it gets no OIDC
+    # token, which npm provenance needs, and read-only repo access.
+    permissions:
+      contents: read
     runs-on: ${{ matrix.os }}
-    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease' || github.event.inputs.package == 'sdk' || github.event.inputs.package == 'sdk-py'
+    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease' || github.event.inputs.package == 'sdk'
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          - os: ${{ vars.CI_MACOS_RUNNER || 'macos-latest' }}
             target: aarch64-apple-darwin
             broker_pkg: broker-darwin-arm64
             binary_name: agent-relay-broker-darwin-arm64
@@ -97,12 +104,12 @@ jobs:
             broker_pkg: broker-darwin-x64
             binary_name: agent-relay-broker-darwin-x64
             binary_file: agent-relay-broker
-          - os: ubuntu-latest
+          - os: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
             target: x86_64-unknown-linux-musl
             broker_pkg: broker-linux-x64
             binary_name: agent-relay-broker-linux-x64
             binary_file: agent-relay-broker
-          - os: ubuntu-latest
+          - os: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
             target: aarch64-unknown-linux-musl
             broker_pkg: broker-linux-arm64
             binary_name: agent-relay-broker-linux-arm64
@@ -116,6 +123,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -187,8 +196,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path release-binaries | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary_file }}" "release-binaries/${{ matrix.binary_name }}"
 
-      # Ad-hoc sign macOS binaries at build time so the Python SDK wheel
-      # doesn't have to invoke codesign at install time.
+      # Ad-hoc sign macOS binaries at build time.
       - name: Ad-hoc sign macOS broker
         if: runner.os == 'macOS'
         run: codesign --force --sign - release-binaries/${{ matrix.binary_name }}
@@ -200,32 +208,137 @@ jobs:
           path: release-binaries/${{ matrix.binary_name }}
           retention-days: 1
 
+  build-node:
+    name: Build node (${{ matrix.suffix }})
+    permissions:
+      contents: read
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu 22.04 keeps the glibc floor at 2.35.
+          - suffix: linux-x64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            ext: ''
+            smoke: true
+          - suffix: linux-arm64
+            os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            ext: ''
+            smoke: true
+          # GitHub's macOS pool queued this build for 16 minutes on 2026-10-31.
+          # The Linux builds stay on 22.04 for the glibc floor.
+          - suffix: darwin-arm64
+            os: ${{ vars.CI_MACOS_RUNNER || 'macos-latest' }}
+            target: aarch64-apple-darwin
+            ext: ''
+            smoke: true
+          # Cross-compiled on Apple silicon; --version is not runtime-tested
+          # for this target here. The other four targets run the version smoke.
+          - suffix: darwin-x64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            ext: ''
+            smoke: false
+          - suffix: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: .exe
+            smoke: true
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.build.outputs.new_version }}
+      SUFFIX: ${{ matrix.suffix }}
+      EXT: ${{ matrix.ext }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - name: Allow long paths
+        if: runner.os == 'Windows'
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.longpaths true
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: crates/relay-node
+          key: release-${{ matrix.target }}
+          cache-bin: false
+      - name: Build
+        working-directory: crates/relay-node
+        run: |
+          AGENT_RELAY_PROBE_VERSION="$VERSION" cargo build --locked --release --target "$TARGET" \
+            --bin agent-relay-node
+      - name: Package with a .sha256 sidecar
+        run: |
+          set -euo pipefail
+          ASSET="agent-relay-node-${VERSION}-${SUFFIX}${EXT}"
+          mkdir -p dist
+          cp "crates/relay-node/target/${TARGET}/release/agent-relay-node${EXT}" "dist/${ASSET}"
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$ASSET" > "${ASSET}.sha256"
+          else
+            shasum -a 256 "$ASSET" > "${ASSET}.sha256"
+          fi
+          cat "${ASSET}.sha256"
+          echo "ASSET=${ASSET}" >> "$GITHUB_ENV"
+      - name: Smoke test (--version reports the release version)
+        if: matrix.smoke
+        run: |
+          set -euo pipefail
+          reported="$("dist/${ASSET}" --version)"
+          echo "$reported"
+          [ "$reported" = "agent-relay-node ${VERSION}" ] || { echo "::error::expected agent-relay-node ${VERSION}"; exit 1; }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agent-relay-node-${{ matrix.suffix }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
   # Build standalone binaries using bun compile (cross-platform, no Node.js required)
   build-standalone:
     name: Build standalone (${{ matrix.target }})
     needs: build # Wait for version bump
+    # This job can run on a third-party runner (CI_*_RUNNER), so it gets no OIDC
+    # token, which npm provenance needs, and read-only repo access.
+    permissions:
+      contents: read
     runs-on: ${{ matrix.os }}
     if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main'
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          - os: ${{ vars.CI_MACOS_RUNNER || 'macos-latest' }}
             target: bun-darwin-arm64
             binary_name: agent-relay-darwin-arm64
           - os: macos-latest
             target: bun-darwin-x64
             binary_name: agent-relay-darwin-x64
-          - os: ubuntu-latest
+          - os: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
             target: bun-linux-x64
             binary_name: agent-relay-linux-x64
-          - os: ubuntu-latest
+          - os: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
             target: bun-linux-arm64
             binary_name: agent-relay-linux-arm64
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -334,12 +447,43 @@ jobs:
   # Build all packages once, version them, and upload
   build:
     name: Build & Version
+    # This job can run on a third-party runner (CI_LINUX_RUNNER), so it gets no
+    # OIDC token, which npm provenance needs, and read-only repo access.
+    permissions:
+      contents: read
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     outputs:
       new_version: ${{ steps.bump.outputs.new_version }}
       is_prerelease: ${{ steps.bump.outputs.is_prerelease }}
+      smoke_matrix: ${{ steps.plan.outputs.smoke_matrix }}
+      standalone_macos_matrix: ${{ steps.plan.outputs.standalone_macos_matrix }}
 
     steps:
+      - name: Plan release checks
+        id: plan
+        env:
+          HOTFIX: ${{ github.event.inputs.hotfix }}
+        run: |
+          set -euo pipefail
+          smoke='[
+            {"platform":"darwin-arm64","os":"macos-15","broker_pkg":"broker-darwin-arm64","binary_name":"agent-relay-broker-darwin-arm64","binary_file":"agent-relay-broker","pkg_os":"darwin","pkg_cpu":"arm64"},
+            {"platform":"linux-x64","os":"ubuntu-latest","broker_pkg":"broker-linux-x64","binary_name":"agent-relay-broker-linux-x64","binary_file":"agent-relay-broker","pkg_os":"linux","pkg_cpu":"x64"},
+            {"platform":"linux-arm64","os":"ubuntu-24.04-arm","broker_pkg":"broker-linux-arm64","binary_name":"agent-relay-broker-linux-arm64","binary_file":"agent-relay-broker","pkg_os":"linux","pkg_cpu":"arm64"},
+            {"platform":"win32-x64","os":"windows-latest","broker_pkg":"broker-win32-x64","binary_name":"agent-relay-broker-win32-x64.exe","binary_file":"agent-relay-broker.exe","pkg_os":"win32","pkg_cpu":"x64"}
+          ]'
+          standalone='[
+            {"binary_name":"agent-relay-darwin-arm64","broker_name":"agent-relay-broker-darwin-arm64","expected_arch":"arm64"},
+            {"binary_name":"agent-relay-darwin-x64","broker_name":"agent-relay-broker-darwin-x64","expected_arch":"x86_64"}
+          ]'
+          if [ "$HOTFIX" = "true" ]; then
+            smoke=$(jq '[.[] | select(.platform == "darwin-arm64" or .platform == "linux-x64")]' <<<"$smoke")
+            standalone=$(jq '[.[] | select(.expected_arch == "arm64")]' <<<"$standalone")
+          fi
+          {
+            echo "smoke_matrix=$(jq -c . <<<"$smoke")"
+            echo "standalone_macos_matrix=$(jq -c . <<<"$standalone")"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:
@@ -383,18 +527,15 @@ jobs:
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "New version: $NEW_VERSION"
 
-          # Detect if this is a prerelease version (contains hyphen, e.g. 2.2.0-beta.1)
-          if [[ "$NEW_VERSION" == *"-"* ]]; then
+          # Detect if this is a prerelease version (hyphen before any `+build`
+          # metadata, e.g. 2.2.0-beta.1; 2.2.0+build-1 is stable)
+          if [[ "${NEW_VERSION%%+*}" == *"-"* ]]; then
             echo "is_prerelease=true" >> $GITHUB_OUTPUT
             echo "This is a PRERELEASE version"
           else
             echo "is_prerelease=false" >> $GITHUB_OUTPUT
             echo "This is a STABLE version"
           fi
-
-          # Sync Python SDK version in pyproject.toml
-          sed -i "s/^version = .*/version = \"$NEW_VERSION\"/" packages/sdk-py/pyproject.toml
-          echo "Python SDK version set to $NEW_VERSION"
 
           # Sync all package versions and internal dependencies using node script
           # (avoids npm version which validates dependencies against registry)
@@ -461,6 +602,24 @@ jobs:
             }
           "
 
+      # Every publish job needs `build`, so failing here blocks all npm
+      # publishes. A prerelease (prepatch/preminor/premajor/prerelease, or a
+      # custom_version containing '-') published under the default `latest`
+      # dist-tag would become what every plain `npm install` resolves.
+      - name: Guard npm dist-tag against prerelease versions
+        env:
+          NEW_VERSION: ${{ steps.bump.outputs.new_version }}
+          IS_PRERELEASE: ${{ steps.bump.outputs.is_prerelease }}
+        run: |
+          if [ "$IS_PRERELEASE" = "true" ] && [ "$NPM_TAG" = "latest" ]; then
+            echo "::error::Refusing to publish prerelease $NEW_VERSION under the 'latest' dist-tag. Re-run with tag set to next, beta, or alpha."
+            exit 1
+          fi
+          if [ "$IS_PRERELEASE" != "true" ] && [ "$NPM_TAG" != "latest" ]; then
+            echo "::warning::Publishing stable $NEW_VERSION under the '$NPM_TAG' dist-tag; 'latest' will not move."
+          fi
+          echo "Publishing $NEW_VERSION under dist-tag '$NPM_TAG'"
+
       - name: Upgrade npm before fresh resolution
         # npm <=10.9.x's arborist crashes ("Cannot read properties of null
         # (reading 'edgesOut')", npm/cli#8261) walking the peer set of
@@ -518,7 +677,6 @@ jobs:
             package.json
             package-lock.json
             packages/*/package.json
-            packages/sdk-py/pyproject.toml
             packages/*/dist/
             dist/
           retention-days: 1
@@ -543,40 +701,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      # From build.outputs.smoke_matrix: a hotfix keeps darwin-arm64 and linux-x64.
+      # darwin-x64 smoke is intentionally omitted: GitHub's macos-13 (Intel)
+      # runner pool is capacity-constrained and routinely queues for hours. The
+      # x86_64-apple-darwin broker binary is still cross-compiled and published;
+      # we just don't exercise it in CI.
       matrix:
-        include:
-          - platform: darwin-arm64
-            os: macos-14
-            broker_pkg: broker-darwin-arm64
-            binary_name: agent-relay-broker-darwin-arm64
-            binary_file: agent-relay-broker
-            pkg_os: darwin
-            pkg_cpu: arm64
-          # darwin-x64 smoke is intentionally omitted: GitHub's macos-13
-          # (Intel) runner pool is capacity-constrained and routinely queues
-          # for hours. The x86_64-apple-darwin broker binary is still
-          # cross-compiled and published; we just don't exercise it in CI.
-          - platform: linux-x64
-            os: ubuntu-latest
-            broker_pkg: broker-linux-x64
-            binary_name: agent-relay-broker-linux-x64
-            binary_file: agent-relay-broker
-            pkg_os: linux
-            pkg_cpu: x64
-          - platform: linux-arm64
-            os: ubuntu-24.04-arm
-            broker_pkg: broker-linux-arm64
-            binary_name: agent-relay-broker-linux-arm64
-            binary_file: agent-relay-broker
-            pkg_os: linux
-            pkg_cpu: arm64
-          - platform: win32-x64
-            os: windows-latest
-            broker_pkg: broker-win32-x64
-            binary_name: agent-relay-broker-win32-x64.exe
-            binary_file: agent-relay-broker.exe
-            pkg_os: win32
-            pkg_cpu: x64
+        include: ${{ fromJSON(needs.build.outputs.smoke_matrix) }}
 
     steps:
       - name: Checkout code
@@ -739,7 +870,7 @@ jobs:
   # package=main and package=cli-prerelease also need this chain.
   publish-sdk-internal-deps:
     name: Publish SDK internal dep ${{ matrix.package }}
-    needs: [build, smoke-broker-packages]
+    needs: [build, smoke-broker-packages, create-release]
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease' || github.event.inputs.package == 'sdk'
     strategy:
@@ -794,7 +925,7 @@ jobs:
   # package at the same version.
   publish-broker-packages:
     name: Publish ${{ matrix.broker_pkg }}
-    needs: [build, build-broker, smoke-broker-packages]
+    needs: [build, build-broker, smoke-broker-packages, create-release]
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease' || github.event.inputs.package == 'sdk'
     strategy:
@@ -856,6 +987,9 @@ jobs:
           mkdir -p packages/${{ matrix.broker_pkg }}/bin
           cp "/tmp/broker/${{ matrix.binary_name }}" "packages/${{ matrix.broker_pkg }}/bin/${{ matrix.binary_file }}"
           chmod +x "packages/${{ matrix.broker_pkg }}/bin/${{ matrix.binary_file }}"
+          # SHA-256 sidecar: the CLI verifies it before copying this broker
+          # into ~/.agentworkforce/relay/bin on first run.
+          (cd "packages/${{ matrix.broker_pkg }}/bin" && sha256sum "${{ matrix.binary_file }}" > "${{ matrix.binary_file }}.sha256")
           ls -lh packages/${{ matrix.broker_pkg }}/bin/
 
       # os/cpu constraints are injected at publish time. Keeping them out of
@@ -952,7 +1086,7 @@ jobs:
   # can publish @agent-relay/sdk.
   publish-packages:
     name: Publish ${{ matrix.package }}
-    needs: [build, build-broker, publish-broker-packages, publish-sdk-internal-deps]
+    needs: [build, build-broker, publish-broker-packages, publish-sdk-internal-deps, create-release]
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'all'
     strategy:
@@ -969,10 +1103,8 @@ jobs:
           # an exact version, so it must land before publish-main.
           - cli-surface
           - connect
-          - policy
           - utils
           - sdk
-          - brand
           - harness-driver
           - integration-prompts
           - session
@@ -1019,11 +1151,7 @@ jobs:
         if: github.event.inputs.dry_run == 'true'
         working-directory: packages/${{ matrix.package }}
         run: |
-          if [ "${{ matrix.package }}" = "brand" ]; then
-            echo "Dry run - would publish @agent-relay/brand"
-          else
-            echo "Dry run - would publish @agent-relay/${{ matrix.package }}"
-          fi
+          echo "Dry run - would publish @agent-relay/${{ matrix.package }}"
           npm publish --dry-run --access public --tag "$NPM_TAG" --ignore-scripts
 
       - name: Publish to NPM
@@ -1048,7 +1176,7 @@ jobs:
   # ordering above is built to avoid.
   publish-harnesses:
     name: Publish ${{ matrix.package }}
-    needs: [build, publish-packages]
+    needs: [build, publish-packages, create-release]
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'all'
     env:
@@ -1107,7 +1235,7 @@ jobs:
   # publish-main (wired via publish-main's needs).
   publish-fleet:
     name: Publish fleet
-    needs: [build, publish-harnesses]
+    needs: [build, publish-harnesses, create-release]
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'all'
     env:
@@ -1155,7 +1283,7 @@ jobs:
   # cannot point npm at versions that do not exist.
   publish-main-runtime-deps:
     name: Publish main runtime dep ${{ matrix.package }}
-    needs: [build, build-broker, publish-broker-packages, publish-sdk-internal-deps]
+    needs: [build, build-broker, publish-broker-packages, publish-sdk-internal-deps, create-release]
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease'
     strategy:
@@ -1228,7 +1356,7 @@ jobs:
   # cannot publish a root CLI whose harness dependency was never released.
   publish-main-harnesses:
     name: Publish main runtime dep harnesses
-    needs: [build, publish-main-runtime-deps]
+    needs: [build, publish-main-runtime-deps, create-release]
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease'
     env:
@@ -1240,55 +1368,17 @@ jobs:
   # ordered chain before the root CLI can be published.
   publish-main-fleet:
     name: Publish main runtime dep fleet
-    needs: [build, publish-main-harnesses]
+    needs: [build, publish-main-harnesses, create-release]
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease'
     env:
       PUBLISH_PACKAGE: fleet
     steps: *publish-fleet-steps
 
-  # Publish brand package only (when selected)
-  publish-brand-only:
-    name: Publish Brand to NPM
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.event.inputs.package == 'brand'
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: build-output
-          path: .
-
-      - name: Update npm for OIDC support
-        run: npm install -g npm@latest
-
-      - name: Dry run check
-        if: github.event.inputs.dry_run == 'true'
-        working-directory: packages/brand
-        run: |
-          echo "Dry run - would publish @agent-relay/brand"
-          npm publish --dry-run --access public --tag "$NPM_TAG" --ignore-scripts
-
-      - name: Publish Brand to NPM
-        if: github.event.inputs.dry_run != 'true'
-        working-directory: packages/brand
-        run: npm publish --access public --provenance --tag "$NPM_TAG" --ignore-scripts
-
   # Publish SDK only (when selected)
   publish-sdk-only:
     name: Publish SDK to NPM
-    needs: [build, build-broker, publish-broker-packages, publish-sdk-internal-deps]
+    needs: [build, build-broker, publish-broker-packages, publish-sdk-internal-deps, create-release]
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'sdk'
 
@@ -1337,129 +1427,6 @@ jobs:
         if: github.event.inputs.dry_run != 'true'
         working-directory: packages/sdk
         run: npm publish --access public --provenance --tag "$NPM_TAG" --ignore-scripts
-
-  # Publish Python SDK to PyPI as per-platform wheels with the broker binary
-  # embedded. One wheel per (broker_artifact, plat_tag) — see issue #769.
-  publish-sdk-py:
-    name: Publish Python SDK wheel (${{ matrix.plat_tag }})
-    needs: [build, build-broker]
-    runs-on: ubuntu-latest
-    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'sdk-py'
-    environment:
-      name: pypi
-      url: https://pypi.org/project/agent-relay-sdk/
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - binary_name: agent-relay-broker-darwin-arm64
-            plat_tag: macosx_11_0_arm64
-          - binary_name: agent-relay-broker-darwin-x64
-            plat_tag: macosx_10_12_x86_64
-          - binary_name: agent-relay-broker-linux-x64
-            plat_tag: manylinux_2_17_x86_64.manylinux2014_x86_64
-          - binary_name: agent-relay-broker-linux-arm64
-            plat_tag: manylinux_2_17_aarch64.manylinux2014_aarch64
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: build-output
-          path: .
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install build tools
-        run: pip install hatchling build wheel
-
-      - name: Download broker binary
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ matrix.binary_name }}
-          path: /tmp/broker
-
-      - name: Stage broker binary into wheel tree
-        run: |
-          mkdir -p packages/sdk-py/src/agent_relay/bin
-          cp /tmp/broker/${{ matrix.binary_name }} packages/sdk-py/src/agent_relay/bin/agent-relay-broker
-          chmod +x packages/sdk-py/src/agent_relay/bin/agent-relay-broker
-
-      - name: Build wheel
-        working-directory: packages/sdk-py
-        run: python -m build --wheel
-
-      # `python -m build` produces a `py3-none-any` wheel. Retag it with the
-      # actual platform we just embedded a binary for; --remove drops the old
-      # any-platform wheel atomically.
-      - name: Retag wheel to ${{ matrix.plat_tag }}
-        working-directory: packages/sdk-py
-        run: |
-          python -m wheel tags --platform-tag=${{ matrix.plat_tag }} --remove dist/*.whl
-          ls -lh dist/
-
-      - name: Dry run summary
-        if: github.event.inputs.dry_run == 'true'
-        working-directory: packages/sdk-py
-        run: |
-          echo "Dry run - would publish agent-relay-sdk==${{ needs.build.outputs.new_version }} (${{ matrix.plat_tag }}) to PyPI"
-          ls -lh dist/
-
-      - name: Publish to PyPI (attempt 1)
-        id: pypi_publish_1
-        if: github.event.inputs.dry_run != 'true'
-        continue-on-error: true
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: packages/sdk-py/dist/
-          skip-existing: true
-
-      - name: Clean up stale attestations before retry
-        if: github.event.inputs.dry_run != 'true' && steps.pypi_publish_1.outcome == 'failure'
-        run: |
-          # pypa/gh-action-pypi-publish writes <wheel>.publish.attestation
-          # next to each wheel on first attempt. If upload then fails, the
-          # attestation file is left behind and the next attempt aborts with
-          # "already have publish attestations". Clear them so we can retry.
-          rm -f packages/sdk-py/dist/*.publish.attestation
-          sleep 60
-
-      - name: Publish to PyPI (attempt 2)
-        id: pypi_publish_2
-        if: github.event.inputs.dry_run != 'true' && steps.pypi_publish_1.outcome == 'failure'
-        continue-on-error: true
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: packages/sdk-py/dist/
-          skip-existing: true
-
-      - name: Clean up stale attestations before final retry
-        if: github.event.inputs.dry_run != 'true' && steps.pypi_publish_2.outcome == 'failure'
-        run: |
-          rm -f packages/sdk-py/dist/*.publish.attestation
-          sleep 120
-
-      - name: Publish to PyPI (attempt 3)
-        id: pypi_publish_3
-        if: github.event.inputs.dry_run != 'true' && steps.pypi_publish_2.outcome == 'failure'
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: packages/sdk-py/dist/
-          skip-existing: true
-
-      - name: Fail if all PyPI publish attempts failed
-        if: >-
-          github.event.inputs.dry_run != 'true' &&
-          steps.pypi_publish_1.outcome == 'failure' &&
-          steps.pypi_publish_2.outcome == 'failure' &&
-          steps.pypi_publish_3.outcome == 'failure'
-        run: exit 1
 
   # Verify standalone binaries on Linux
   verify-standalone-linux:
@@ -1515,19 +1482,14 @@ jobs:
   # Verify standalone binaries on macOS
   verify-standalone-macos:
     name: Verify Standalone (macOS)
-    needs: [build-standalone, build-broker]
+    needs: [build, build-standalone, build-broker]
     runs-on: macos-15
     if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main'
     strategy:
       fail-fast: false
+      # From build.outputs.standalone_macos_matrix: a hotfix keeps arm64.
       matrix:
-        include:
-          - binary_name: agent-relay-darwin-arm64
-            broker_name: agent-relay-broker-darwin-arm64
-            expected_arch: arm64
-          - binary_name: agent-relay-darwin-x64
-            broker_name: agent-relay-broker-darwin-x64
-            expected_arch: x86_64
+        include: ${{ fromJSON(needs.build.outputs.standalone_macos_matrix) }}
 
     steps:
       - name: Checkout code
@@ -1600,6 +1562,7 @@ jobs:
       [
         build,
         verify-binaries,
+        create-release,
         publish-packages,
         publish-fleet,
         publish-main-runtime-deps,
@@ -1613,6 +1576,7 @@ jobs:
       always() &&
       (github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease') &&
       needs.build.result == 'success' &&
+      needs.create-release.result == 'success' &&
       (needs.verify-binaries.result == 'success' || (needs.verify-binaries.result == 'skipped' && github.event.inputs.package == 'cli-prerelease')) &&
       (needs.publish-packages.result == 'success' || ((github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease') && needs.publish-packages.result == 'skipped')) &&
       (needs.publish-fleet.result == 'success' || ((github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease') && needs.publish-fleet.result == 'skipped')) &&
@@ -1752,25 +1716,25 @@ jobs:
           npm publish "$NPM_TARBALL" --access public --provenance --tag "$NPM_TAG"
           echo "published=true" >> "$GITHUB_OUTPUT"
 
-  # Create git tag and release
+  # Publish release assets before any npm package can become installable.
   create-release:
     name: Create Release
-    needs: [build, build-broker, build-standalone, verify-binaries, publish-main, publish-harnesses]
+    needs: [build, build-node, build-broker, build-standalone, verify-binaries, smoke-broker-packages]
     runs-on: ubuntu-latest
-    # publish-harnesses only runs for package=all; for a package=main release it
-    # is skipped, which must not block the tag. Gate on "not failed" rather than
-    # "succeeded" so a real harness publish failure stops the release but a
-    # skipped one does not.
+    # Standalone checks are absent for sdk and cli-prerelease. The node and
+    # broker binaries are always built, including during dry runs.
     if: |
       always() &&
-      github.event.inputs.package != 'cli-prerelease' &&
-      github.event.inputs.dry_run != 'true' &&
-      needs.publish-main.result == 'success' &&
-      (needs.publish-harnesses.result == 'success' || needs.publish-harnesses.result == 'skipped') &&
-      needs.publish-main.outputs.published == 'true'
+      needs.build.result == 'success' &&
+      needs.build-node.result == 'success' &&
+      needs.smoke-broker-packages.result == 'success' &&
+      needs.build-broker.result == 'success' &&
+      (needs.build-standalone.result == 'success' || (needs.build-standalone.result == 'skipped' && (github.event.inputs.package == 'sdk' || github.event.inputs.package == 'cli-prerelease'))) &&
+      (needs.verify-binaries.result == 'success' || (needs.verify-binaries.result == 'skipped' && (github.event.inputs.package == 'sdk' || github.event.inputs.package == 'cli-prerelease')))
 
     steps:
       - name: Setup Github App
+        if: github.event.inputs.dry_run != 'true'
         uses: actions/create-github-app-token@v2
         id: create_github_app_token
         with:
@@ -1781,7 +1745,33 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ steps.create_github_app_token.outputs.token }}
+          token: ${{ steps.create_github_app_token.outputs.token || github.token }}
+
+      - name: Check existing release tag
+        id: release_tag
+        env:
+          GH_TOKEN: ${{ steps.create_github_app_token.outputs.token || github.token }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          VERSION: ${{ needs.build.outputs.new_version }}
+          PACKAGE_MODE: ${{ github.event.inputs.package }}
+        run: |
+          set -euo pipefail
+          if git rev-parse "refs/tags/v${VERSION}" >/dev/null 2>&1; then
+            annotation=$(git for-each-ref --format='%(contents)' "refs/tags/v${VERSION}")
+            if ! grep -Fxq "Source: ${GITHUB_SHA}" <<<"$annotation" || ! grep -Fxq "Mode: ${PACKAGE_MODE}" <<<"$annotation"; then
+              echo "::error::v${VERSION} already exists for a different source or release mode; choose a new version."
+              exit 1
+            fi
+            echo 'exists=true' >> "$GITHUB_OUTPUT"
+            if [ "$DRY_RUN" != "true" ]; then
+              if response=$(gh api --include "repos/${GITHUB_REPOSITORY}/releases/tags/v${VERSION}"); then
+                echo 'release_exists=true' >> "$GITHUB_OUTPUT"
+              elif ! grep -Eq '^HTTP/[0-9.]+ 404' <<<"$response"; then
+                echo '::error::Could not check the existing release safely.'
+                exit 1
+              fi
+            fi
+          fi
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -1803,6 +1793,19 @@ jobs:
           path: release-binaries/
           merge-multiple: true
 
+      - name: Verify node assets and checksums
+        env:
+          VERSION: ${{ needs.build.outputs.new_version }}
+        run: |
+          set -euo pipefail
+          cd release-binaries
+          for suffix in linux-x64 linux-arm64 darwin-arm64 darwin-x64 windows-x64.exe; do
+            asset="agent-relay-node-${VERSION}-${suffix}"
+            test -f "$asset"
+            test -f "${asset}.sha256"
+            sha256sum -c "${asset}.sha256"
+          done
+
       - name: Make binaries executable
         run: |
           # Make uncompressed binaries executable (skip .gz files)
@@ -1813,6 +1816,7 @@ jobs:
           done
 
       - name: Verify all binaries present
+        if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main'
         run: |
           echo "=== Verifying release binaries ==="
           ls -la release-binaries/
@@ -1853,6 +1857,7 @@ jobs:
           node-version: '22.14.0'
 
       - name: Generate changelog entry
+        if: github.event.inputs.dry_run != 'true' && steps.release_tag.outputs.exists != 'true' && (github.event.inputs.package == 'all' || github.event.inputs.package == 'main')
         run: |
           NEW_VERSION="${{ needs.build.outputs.new_version }}"
           IS_PRERELEASE="${{ needs.build.outputs.is_prerelease }}"
@@ -2059,7 +2064,9 @@ jobs:
           node /tmp/gen-changelog.mjs "$LAST_TAG" "$NEW_VERSION" "$TODAY"
 
       - name: Compact trajectories
+        if: github.event.inputs.dry_run != 'true' && steps.release_tag.outputs.exists != 'true' && (github.event.inputs.package == 'all' || github.event.inputs.package == 'main')
         run: |
+          cp package-lock.json /tmp/release-package-lock.json
           if command -v npx &>/dev/null && [ -d ".trajectories" ]; then
             LAST_TAG=$(
               git tag -l --sort=-v:refname |
@@ -2083,13 +2090,14 @@ jobs:
           if ! git diff --staged --quiet; then
             git commit -m "chore: compact trajectories for v${{ needs.build.outputs.new_version }}"
           fi
-          # Discard package-lock.json changes from npx side-effects
-          # (version-bumped files and CHANGELOG must be preserved for the release commit)
-          git checkout -- package-lock.json 2>/dev/null || true
+          # Restore the versioned lockfile after any npx side effects.
+          cp /tmp/release-package-lock.json package-lock.json
 
       - name: Commit and tag
+        if: github.event.inputs.dry_run != 'true' && steps.release_tag.outputs.exists != 'true'
         env:
           GITHUB_TOKEN: ${{ steps.create_github_app_token.outputs.token }}
+          PACKAGE_MODE: ${{ github.event.inputs.package }}
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
@@ -2099,123 +2107,130 @@ jobs:
 
           # Stage version-bumped files (must be separate from optional paths
           # because git add fails entirely if any path doesn't exist)
-          git add package.json package-lock.json packages/*/package.json packages/sdk-py/pyproject.toml CHANGELOG.md
+          git add package.json package-lock.json packages/*/package.json CHANGELOG.md
           # Stage optional paths that may not exist (trajectories already committed in prior step)
           git add .trajectories/ 2>/dev/null || true
-          TAG_TARGET=""
+          # Keep generated version/compaction commits on the immutable tag.
+          # Release branches advance only after npm publication and verification.
           if ! git diff --staged --quiet; then
             if [ "$IS_PRERELEASE" = "true" ]; then
               git commit -m "chore(prerelease): v${NEW_VERSION}"
-              # Prerelease: push to staging branch, not main
-              git push origin HEAD:staging
             else
               git commit -m "chore(release): v${NEW_VERSION}"
-              # Tag the commit whose tree is exactly what this run built and
-              # published. If main advanced during the pipeline, the rebased
-              # copy pushed below also carries those newer commits, which the
-              # published artifacts do not contain.
-              TAG_TARGET=$(git rev-parse HEAD)
-              # Rebase on latest main in case it advanced during the pipeline
-              git pull --rebase origin main
-              git push origin HEAD:main
             fi
           fi
 
-          TAG_TARGET="${TAG_TARGET:-$(git rev-parse HEAD)}"
-          git tag -a "v${NEW_VERSION}" -m "Release v${NEW_VERSION}" "$TAG_TARGET"
+          TAG_TARGET=$(git rev-parse HEAD)
+          git tag -a "v${NEW_VERSION}" -m "Release v${NEW_VERSION}" -m "Source: ${GITHUB_SHA}" -m "Mode: ${PACKAGE_MODE}" "$TAG_TARGET"
           git push origin "v${NEW_VERSION}"
 
+      - name: Write mode-specific release notes
+        env:
+          VERSION: ${{ needs.build.outputs.new_version }}
+          PACKAGE_MODE: ${{ github.event.inputs.package }}
+          IS_PRERELEASE: ${{ needs.build.outputs.is_prerelease }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Agent Relay v${VERSION}"
+            echo
+            echo "Release mode: ${PACKAGE_MODE}; npm dist-tag: ${NPM_TAG}."
+            echo "npm packages are published after the release assets are verified."
+            echo
+            if [ "$PACKAGE_MODE" = "sdk" ]; then
+              echo "Install the SDK: npm install @agent-relay/sdk@${VERSION}"
+            else
+              echo "Install the CLI: npm install -g agent-relay@${VERSION}"
+              echo "Install the SDK: npm install @agent-relay/sdk@${VERSION}"
+            fi
+            echo
+            echo "### agent-relay-node binaries"
+            echo "The CLI downloads agent-relay-node-${VERSION}-{linux,darwin}-{x64,arm64}"
+            echo "or agent-relay-node-${VERSION}-windows-x64.exe from this release"
+            echo 'and verifies the matching .sha256 sidecar.'
+            echo
+            echo "### Broker binaries"
+            echo 'agent-relay-broker-{linux,darwin}-{x64,arm64} and agent-relay-broker-win32-x64.exe.'
+            if [ "$PACKAGE_MODE" = "all" ] || [ "$PACKAGE_MODE" = "main" ]; then
+              echo
+              echo "### Standalone CLI binaries"
+              echo 'agent-relay-{linux,darwin}-{x64,arm64}, also available compressed as .gz.'
+              if [ "$IS_PRERELEASE" != "true" ]; then
+                echo
+                echo 'Install the latest stable release: curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash'
+              fi
+            fi
+          } > /tmp/release-notes.md
+
       - name: Create GitHub Release (stable)
-        if: needs.build.outputs.is_prerelease != 'true'
+        if: github.event.inputs.dry_run != 'true' && steps.release_tag.outputs.release_exists != 'true' && needs.build.outputs.is_prerelease != 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.build.outputs.new_version }}
           name: v${{ needs.build.outputs.new_version }}
-          body: |
-            ## agent-relay v${{ needs.build.outputs.new_version }}
-
-            ### Quick Install (no Node.js required!)
-            ```bash
-            curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
-            ```
-
-            ### npm install
-            ```bash
-            npm install -g agent-relay@${{ needs.build.outputs.new_version }}
-            npm install @agent-relay/sdk@${{ needs.build.outputs.new_version }}
-            npm install @agent-relay/brand@${{ needs.build.outputs.new_version }}
-            ```
-
-            ### Standalone binaries
-            Self-contained executables (no runtime dependencies).
-            **Use `.gz` versions for faster downloads (~60-70% smaller).**
-
-            | Platform | Compressed (recommended) | Uncompressed |
-            |----------|--------------------------|--------------|
-            | Linux x64 | `agent-relay-linux-x64.gz` | `agent-relay-linux-x64` |
-            | Linux ARM64 | `agent-relay-linux-arm64.gz` | `agent-relay-linux-arm64` |
-            | macOS Intel | `agent-relay-darwin-x64.gz` | `agent-relay-darwin-x64` |
-            | macOS Apple Silicon | `agent-relay-darwin-arm64.gz` | `agent-relay-darwin-arm64` |
-
-            ### agent-relay-broker binaries
-            Broker binary for spawning and managing agents:
-            - `agent-relay-broker-linux-x64` - Linux x86_64
-            - `agent-relay-broker-linux-arm64` - Linux ARM64
-            - `agent-relay-broker-darwin-x64` - macOS Intel
-            - `agent-relay-broker-darwin-arm64` - macOS Apple Silicon
-            - `agent-relay-broker-win32-x64.exe` - Windows x86_64
-
+          make_latest: false
+          body_path: /tmp/release-notes.md
           files: |
             release-binaries/*
+          overwrite_files: false
+          fail_on_unmatched_files: true
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ steps.create_github_app_token.outputs.token }}
 
       - name: Create GitHub Release (prerelease)
-        if: needs.build.outputs.is_prerelease == 'true'
+        if: github.event.inputs.dry_run != 'true' && steps.release_tag.outputs.release_exists != 'true' && needs.build.outputs.is_prerelease == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.build.outputs.new_version }}
           name: v${{ needs.build.outputs.new_version }} (prerelease)
           prerelease: true
-          body: |
-            ## agent-relay v${{ needs.build.outputs.new_version }} (prerelease)
-
-            > This is a **prerelease** version published under the `${{ github.event.inputs.tag }}` npm dist-tag.
-            > It is not installed by default. Use `npm install agent-relay@${{ github.event.inputs.tag }}` to test.
-
-            ### Install this prerelease
-            ```bash
-            npm install -g agent-relay@${{ needs.build.outputs.new_version }}
-            npm install @agent-relay/sdk@${{ needs.build.outputs.new_version }}
-            npm install @agent-relay/brand@${{ needs.build.outputs.new_version }}
-            ```
-
-            Or by dist-tag:
-            ```bash
-            npm install -g agent-relay@${{ github.event.inputs.tag }}
-            ```
-
-            ### Standalone binaries
-            | Platform | Compressed | Uncompressed |
-            |----------|------------|--------------|
-            | Linux x64 | `agent-relay-linux-x64.gz` | `agent-relay-linux-x64` |
-            | Linux ARM64 | `agent-relay-linux-arm64.gz` | `agent-relay-linux-arm64` |
-            | macOS Intel | `agent-relay-darwin-x64.gz` | `agent-relay-darwin-x64` |
-            | macOS Apple Silicon | `agent-relay-darwin-arm64.gz` | `agent-relay-darwin-arm64` |
-
-            ### agent-relay-broker binaries
-            - `agent-relay-broker-{linux,darwin}-{x64,arm64}`
-
-            ### Next Steps
-            1. Deploy to staging: Run **Deploy Staging** workflow in relay-cloud with `relay_version=${{ needs.build.outputs.new_version }}`
-            2. Test on staging environment
-            3. If validated, run this workflow again with `tag=latest` for the stable release
+          make_latest: false
+          body_path: /tmp/release-notes.md
           files: |
             release-binaries/*
+          overwrite_files: false
+          fail_on_unmatched_files: true
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ steps.create_github_app_token.outputs.token }}
+
+      - name: Upload only missing assets on release retries
+        if: github.event.inputs.dry_run != 'true' && steps.release_tag.outputs.release_exists == 'true'
+        env:
+          GH_TOKEN: ${{ steps.create_github_app_token.outputs.token }}
+          VERSION: ${{ needs.build.outputs.new_version }}
+        run: |
+          set -euo pipefail
+          # Leave existing release metadata (including latest) and assets intact.
+          gh release view "v${VERSION}" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name' > /tmp/existing-release-assets
+          for asset in release-binaries/*; do
+            if ! grep -Fxq "${asset##*/}" /tmp/existing-release-assets; then
+              gh release upload "v${VERSION}" "$asset" --repo "$GITHUB_REPOSITORY"
+            fi
+          done
+
+      - name: Verify published node assets
+        if: github.event.inputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ steps.create_github_app_token.outputs.token }}
+          VERSION: ${{ needs.build.outputs.new_version }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/published-node-assets
+          # Existing assets remain immutable on retries, even if rebuilding the
+          # same source produces different bytes. The tag's Source annotation
+          # pins their source; verify the actual published binary/sidecar pairs.
+          gh release download "v${VERSION}" --repo "$GITHUB_REPOSITORY" \
+            --pattern "agent-relay-node-${VERSION}-*" --dir /tmp/published-node-assets
+          cd /tmp/published-node-assets
+          for suffix in linux-x64 linux-arm64 darwin-arm64 darwin-x64 windows-x64.exe; do
+            asset="agent-relay-node-${VERSION}-${suffix}"
+            test -f "$asset"
+            test -f "${asset}.sha256"
+            sha256sum -c "${asset}.sha256"
+          done
 
   # Trigger post-publish verification
   verify-publish:
@@ -2228,6 +2243,7 @@ jobs:
     uses: ./.github/workflows/verify-publish.yml
     with:
       version: ${{ needs.build.outputs.new_version }}
+      hotfix: ${{ github.event.inputs.hotfix == 'true' }}
 
   # Post-publish cross-platform verification of @agent-relay/harness-driver and
   # its per-platform broker optional deps. Installs from the registry on every
@@ -2240,6 +2256,7 @@ jobs:
     if: |
       always() &&
       github.event.inputs.dry_run != 'true' &&
+      github.event.inputs.hotfix != 'true' &&
       github.event.inputs.package == 'all' &&
       needs.publish-broker-packages.result == 'success' &&
       needs.publish-packages.result == 'success'
@@ -2247,12 +2264,123 @@ jobs:
     with:
       version: ${{ needs.build.outputs.new_version }}
 
+  # A public asset release is deliberately not latest until every required npm
+  # publisher and registry verification succeeds. Partial modes remain tag-only.
+  finalize-release:
+    name: Finalize verified release
+    needs:
+      [
+        build,
+        create-release,
+        publish-sdk-internal-deps,
+        publish-broker-packages,
+        publish-packages,
+        publish-harnesses,
+        publish-fleet,
+        publish-main-runtime-deps,
+        publish-main-harnesses,
+        publish-main-fleet,
+        publish-main,
+        verify-publish,
+        verify-publish-sdk,
+      ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    if: |
+      always() &&
+      github.event.inputs.dry_run != 'true' &&
+      (github.event.inputs.package == 'all' || github.event.inputs.package == 'main') &&
+      needs.build.result == 'success' &&
+      needs.create-release.result == 'success' &&
+      needs.publish-sdk-internal-deps.result == 'success' &&
+      needs.publish-broker-packages.result == 'success' &&
+      needs.publish-main.result == 'success' &&
+      needs.verify-publish.result == 'success' &&
+      ((github.event.inputs.package == 'all' &&
+        needs.publish-packages.result == 'success' &&
+        needs.publish-harnesses.result == 'success' &&
+        needs.publish-fleet.result == 'success' &&
+        (needs.verify-publish-sdk.result == 'success' ||
+         (github.event.inputs.hotfix == 'true' && needs.verify-publish-sdk.result == 'skipped'))) ||
+       (github.event.inputs.package == 'main' &&
+        needs.publish-main-runtime-deps.result == 'success' &&
+        needs.publish-main-harnesses.result == 'success' &&
+        needs.publish-main-fleet.result == 'success' &&
+        needs.verify-publish-sdk.result == 'skipped'))
+    steps:
+      - name: Setup Github App
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        id: create_github_app_token
+        with:
+          app-id: ${{ secrets.GH_APP_PUSHER_ID }}
+          private-key: ${{ secrets.GH_APP_PUSHER_PRIVATE_KEY }}
+
+      - name: Checkout source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          token: ${{ steps.create_github_app_token.outputs.token }}
+
+      - name: Advance release branch without rewriting history
+        env:
+          VERSION: ${{ needs.build.outputs.new_version }}
+          PACKAGE_MODE: ${{ github.event.inputs.package }}
+          IS_PRERELEASE: ${{ needs.build.outputs.is_prerelease }}
+        run: |
+          set -euo pipefail
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          TAG="v${VERSION}"
+          annotation=$(git for-each-ref --format='%(contents)' "refs/tags/${TAG}")
+          grep -Fxq "Source: ${GITHUB_SHA}" <<<"$annotation"
+          grep -Fxq "Mode: ${PACKAGE_MODE}" <<<"$annotation"
+          git merge-base --is-ancestor "$GITHUB_SHA" "$TAG"
+          BRANCH=main
+          if [ "$IS_PRERELEASE" = "true" ]; then BRANCH=staging; fi
+          BASE="$GITHUB_SHA"
+          if git ls-remote --exit-code --heads origin "refs/heads/${BRANCH}" >/dev/null; then
+            git fetch origin "refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
+            BASE="origin/${BRANCH}"
+          else
+            status=$?
+            # A first prerelease can create staging. Network/authentication
+            # errors must fail instead of being treated as an absent branch.
+            if [ "$status" -ne 2 ] || [ "$BRANCH" != "staging" ]; then exit "$status"; fi
+          fi
+          # Staging can still point at an earlier prerelease's source. Include
+          # this release's source before replaying generated metadata. Merge
+          # conflicts fail safely rather than losing either branch's changes.
+          git checkout --detach "$BASE"
+          git merge --no-edit "$GITHUB_SHA"
+          BASE=$(git rev-parse HEAD)
+          # Replay only generated release commits, including optional trajectory
+          # compaction, onto the current branch. Already applied patches are
+          # skipped on retries. The immutable tag continues to identify what
+          # was built; newer source commits on the branch are preserved.
+          git rebase --onto "$BASE" "$GITHUB_SHA" "$TAG"
+          test "$(node -p "require('./package.json').version")" = "$VERSION"
+          # A concurrent branch advance causes a safe non-fast-forward failure;
+          # retrying fetches the newer branch. Never force-push a release branch.
+          git push origin "HEAD:refs/heads/${BRANCH}"
+
+      - name: Promote verified stable release to latest
+        if: needs.build.outputs.is_prerelease != 'true'
+        env:
+          GH_TOKEN: ${{ steps.create_github_app_token.outputs.token }}
+          VERSION: ${{ needs.build.outputs.new_version }}
+        run: gh release edit "v${VERSION}" --repo "$GITHUB_REPOSITORY" --latest
+
   summary:
     name: Summary
     needs:
       [
         build,
         build-broker,
+        build-node,
+        create-release,
+        finalize-release,
         build-standalone,
         verify-binaries,
         verify-standalone-linux,
@@ -2262,8 +2390,6 @@ jobs:
         publish-broker-packages,
         publish-packages,
         publish-harnesses,
-        publish-brand-only,
-        publish-sdk-py,
         publish-main,
         verify-publish,
         verify-publish-sdk,
@@ -2286,6 +2412,7 @@ jobs:
           echo "**NPM Tag**: \`${{ github.event.inputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**Prerelease**: \`$IS_PRERELEASE\`" >> $GITHUB_STEP_SUMMARY
           echo "**Dry Run**: \`${{ github.event.inputs.dry_run }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Hotfix**: \`${{ github.event.inputs.hotfix }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ "$IS_PRERELEASE" = "true" ]; then
             echo "> Users running \`npm install agent-relay\` or \`install.sh\` are **NOT** affected by this prerelease." >> $GITHUB_STEP_SUMMARY
@@ -2295,6 +2422,9 @@ jobs:
           echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| Build | ${{ needs.build.result == 'success' && '✅' || '❌' }} ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build Node | ${{ needs.build-node.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Finalize Release | ${{ needs.finalize-release.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Release Assets | ${{ needs.create-release.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Build Broker (Rust) | ${{ needs.build-broker.result == 'success' && '✅' || (needs.build-broker.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.build-broker.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Build Standalone (Bun) | ${{ needs.build-standalone.result == 'success' && '✅' || (needs.build-standalone.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.build-standalone.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Verify Binaries | ${{ needs.verify-binaries.result == 'success' && '✅' || (needs.verify-binaries.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-binaries.result }} |" >> $GITHUB_STEP_SUMMARY
@@ -2305,8 +2435,6 @@ jobs:
           echo "| Publish Broker Packages | ${{ needs.publish-broker-packages.result == 'success' && '✅' || (needs.publish-broker-packages.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-broker-packages.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Packages | ${{ needs.publish-packages.result == 'success' && '✅' || (needs.publish-packages.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-packages.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Harnesses | ${{ needs.publish-harnesses.result == 'success' && '✅' || (needs.publish-harnesses.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-harnesses.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Publish Brand | ${{ needs.publish-brand-only.result == 'success' && '✅' || (needs.publish-brand-only.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-brand-only.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Publish Python SDK | ${{ needs.publish-sdk-py.result == 'success' && '✅' || (needs.publish-sdk-py.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-sdk-py.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Main | ${{ needs.publish-main.result == 'success' && '✅' || (needs.publish-main.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-main.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Post-Publish Verify | ${{ needs.verify-publish.result == 'success' && '✅' || (needs.verify-publish.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-publish.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Post-Publish Verify SDK (cross-platform) | ${{ needs.verify-publish-sdk.result == 'success' && '✅' || (needs.verify-publish-sdk.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-publish-sdk.result }} |" >> $GITHUB_STEP_SUMMARY

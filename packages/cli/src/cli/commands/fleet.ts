@@ -9,6 +9,7 @@ import {
   DEV_CLOUD_API_URL,
   DEV_RELAYCAST_ORIGIN,
   deleteCloudFleetSandbox,
+  attachCloudFleetSandboxRelayfile,
   ensureCloudFleetSandbox,
   materializeCloudRelayfileRepository,
   resolveWorkspaceByKey,
@@ -75,6 +76,7 @@ import {
   withSdkDefaults,
   type SdkCommandDeps,
 } from '../lib/sdk-command.js';
+import { describeError } from '../lib/describe-error.js';
 
 const FLEET_NODES_ALWAYS_ON_MESSAGE =
   'Fleet nodes need no per-workspace enablement; this command is a no-op.';
@@ -282,6 +284,7 @@ export interface FleetCommandDependencies {
   ensureCloudFleetSandbox: typeof ensureCloudFleetSandbox;
   materializeCloudRelayfileRepository: typeof materializeCloudRelayfileRepository;
   deleteCloudFleetSandbox: typeof deleteCloudFleetSandbox;
+  attachCloudFleetSandboxRelayfile: typeof attachCloudFleetSandboxRelayfile;
   log: (...args: unknown[]) => void;
   warn: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
@@ -309,6 +312,7 @@ function withFleetDefaults(overrides: Partial<FleetCommandDependencies> = {}): F
     ensureCloudFleetSandbox,
     materializeCloudRelayfileRepository,
     deleteCloudFleetSandbox,
+    attachCloudFleetSandboxRelayfile,
     log: (...args: unknown[]) => console.log(...args),
     warn: (...args: unknown[]) => console.warn(...args),
     error: (...args: unknown[]) => console.error(...args),
@@ -454,6 +458,37 @@ export function registerFleetCommands(
     }
   );
 
+  group
+    .command('relayfile')
+    .description('Attach optional sandbox context')
+    .command('attach')
+    .description('Attach live Relayfile context to an existing sandbox using Cloud sign-in')
+    .requiredOption('--cloud-workspace-id <id>', 'Cloud workspace UUID returned by sandbox provisioning')
+    .requiredOption('--sandbox-id <id>', 'Exact Cloud sandbox identity (sbx_<UUID>)')
+    .option('--path <path...>', 'Only these exact context roots (for example /linear)')
+    .option('--cloud-api-url <url>', 'Cloud API origin, including /cloud when required')
+    .option('--timeout <ms>', 'Attachment timeout in milliseconds', '300000')
+    .action(async (options: Record<string, unknown>) => {
+      await runSdk(deps.sdk, async () => {
+        const result = await deps.attachCloudFleetSandboxRelayfile(
+          {
+            cloudWorkspaceId: requiredText(options.cloudWorkspaceId, 'Cloud workspace ID'),
+            sandboxId: requiredText(options.sandboxId, 'Sandbox ID'),
+            ...(options.path === undefined
+              ? {}
+              : { paths: optionalTextList(options.path, 'Relayfile context path') }),
+          },
+          {
+            timeoutMs: Number(requiredText(options.timeout, 'Attachment timeout')),
+            ...(options.cloudApiUrl === undefined
+              ? {}
+              : { apiUrl: requiredText(options.cloudApiUrl, 'Cloud API URL') }),
+          }
+        );
+        printJson(deps.sdk, result);
+      });
+    });
+
   // `fleet agent list` — the fleet-wide answer to `node agent list --pretty`.
   // See relay#1553 for the gap this fills and packages/cli/src/cli/commands/
   // fleet-agent.ts for the join logic (three name spaces, per-node contributions).
@@ -541,10 +576,7 @@ export function registerFleetCommands(
       .option('--auto-place', 'Request automatic eligible-node placement in the Relay workspace')
       .option('--node <name>', 'Target a specific fleet node')
       .option('--target-node <name>', 'Alias for --node')
-      .option(
-        '--sandbox',
-        'Provision a fresh Cloud sandbox and spawn with a live Relayfile workspace/repository mount'
-      )
+      .option('--sandbox', 'Provision a fresh Cloud sandbox; Git repositories start from an exact checkout')
       .option(
         '--checkout',
         'Materialize the current Git checkout at its exact pushed HEAD (static; requires --sandbox)'
@@ -563,6 +595,7 @@ export function registerFleetCommands(
         '--sandbox-relayfile-path <path...>',
         'Mount only these Relayfile subtrees (each path must end in /**)'
       )
+      .option('--sandbox-relayfile', 'Require live Relayfile context before starting the task')
       .option('--no-sandbox-relayfile', 'Provision the sandbox without mounting Relayfile')
       .option('--channel <name>', 'Channel for the worker to join')
       .option('--persona <persona>', 'Worker persona (automatic placement)')
@@ -605,7 +638,7 @@ export function registerFleetCommands(
       if (useSandbox || targetNode || automaticPlacement) {
         warnIfInferredFromProjectSession(options, deps.warn);
       }
-      const checkoutRepository = options.checkout === true;
+      let checkoutRepository = options.checkout === true;
       const sandboxName = optionalText(options.sandboxName, 'Sandbox name');
       const sandboxIdOption = optionalText(options.sandboxId, 'Sandbox ID');
       // An explicit sandbox identity is a retained/replayable resource. Never
@@ -628,7 +661,7 @@ export function registerFleetCommands(
       if (sandboxProviderText !== undefined && sandboxProvider === undefined) {
         throw new Error('--sandbox-provider must be daytona, e2b, or agent37.');
       }
-      const mountSandboxRelayfile = options.sandboxRelayfile !== false;
+      let mountSandboxRelayfile = options.sandboxRelayfile !== false;
       const sandboxRelayfilePaths = optionalTextList(options.sandboxRelayfilePath, 'Sandbox Relayfile path');
       if (useSandbox && targetNode) {
         throw new Error('--sandbox cannot be combined with --node or --target-node.');
@@ -648,8 +681,8 @@ export function registerFleetCommands(
       if (!useSandbox && sandboxProvider) {
         throw new Error('--sandbox-provider requires --sandbox.');
       }
-      if (!useSandbox && options.sandboxRelayfile === false) {
-        throw new Error('--no-sandbox-relayfile requires --sandbox.');
+      if (!useSandbox && options.sandboxRelayfile !== undefined) {
+        throw new Error('--sandbox-relayfile and --no-sandbox-relayfile require --sandbox.');
       }
       if (!useSandbox && sandboxRelayfilePaths) {
         throw new Error('--sandbox-relayfile-path requires --sandbox.');
@@ -719,6 +752,23 @@ export function registerFleetCommands(
             undefined,
             repositoryIdentityOnly ? 'identity' : 'strict'
           );
+          // A repo-backed task can start from Git without waiting for the
+          // optional context mirror. Explicit mount intent keeps live mode.
+          if (
+            sandboxRepository &&
+            options.sandboxRelayfile === undefined &&
+            sandboxRelayfilePaths === undefined
+          ) {
+            checkoutRepository = true;
+            mountSandboxRelayfile = false;
+          }
+          if (
+            checkoutRepository &&
+            options.sandboxRelayfile !== true &&
+            sandboxRelayfilePaths === undefined
+          ) {
+            mountSandboxRelayfile = false;
+          }
           if (checkoutRepository && !sandboxRepository) {
             throw new Error('--checkout requires a GitHub checkout with a clean, pushed commit.');
           }
@@ -951,9 +1001,9 @@ export function registerFleetCommands(
               })
               .catch((cleanupError) => {
                 deps.warn(
-                  `Provisioning failed after Cloud confirmed sandbox '${error.sandboxId}', and automatic cleanup failed: ${
-                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
-                  }`
+                  `Provisioning failed after Cloud confirmed sandbox '${error.sandboxId}', and automatic cleanup failed: ${describeError(
+                    cleanupError
+                  )}`
                 );
               });
           } else if (error instanceof CloudFleetSandboxProvisionError && error.noSandboxCreated) {
@@ -980,9 +1030,9 @@ export function registerFleetCommands(
               })
               .catch((cleanupError) => {
                 deps.warn(
-                  `Provisioning failed after Cloud created sandbox '${error.sandboxId}', and automatic cleanup failed: ${
-                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
-                  }`
+                  `Provisioning failed after Cloud created sandbox '${error.sandboxId}', and automatic cleanup failed: ${describeError(
+                    cleanupError
+                  )}`
                 );
               });
           }
@@ -995,9 +1045,9 @@ export function registerFleetCommands(
               })
               .catch((cleanupError) => {
                 deps.warn(
-                  `Sandbox repository verification failed and cleanup also failed: ${
-                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
-                  }`
+                  `Sandbox repository verification failed and cleanup also failed: ${describeError(
+                    cleanupError
+                  )}`
                 );
               });
           }
@@ -1064,9 +1114,9 @@ export function registerFleetCommands(
                 })
                 .catch((cleanupError) => {
                   deps.warn(
-                    `Relaycast workspace verification failed and sandbox cleanup also failed: ${
-                      cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
-                    }`
+                    `Relaycast workspace verification failed and sandbox cleanup also failed: ${describeError(
+                      cleanupError
+                    )}`
                   );
                 });
             }
@@ -1089,9 +1139,7 @@ export function registerFleetCommands(
               })
               .catch((error) => {
                 deps.warn(
-                  `The timed-out sandbox could not be cleaned up automatically: ${
-                    error instanceof Error ? error.message : String(error)
-                  }`
+                  `The timed-out sandbox could not be cleaned up automatically: ${describeError(error)}`
                 );
               });
           }
@@ -1112,9 +1160,9 @@ export function registerFleetCommands(
               })
               .catch((error) => {
                 deps.warn(
-                  `The unmounted sandbox could not be cleaned up automatically and may still be running: ${
-                    error instanceof Error ? error.message : String(error)
-                  }`
+                  `The unmounted sandbox could not be cleaned up automatically and may still be running: ${describeError(
+                    error
+                  )}`
                 );
               });
           }
@@ -1306,9 +1354,9 @@ export function registerFleetCommands(
               })
               .catch((cleanupError) => {
                 deps.warn(
-                  `Spawn failed and the sandbox could not be cleaned up automatically: ${
-                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
-                  }`
+                  `Spawn failed and the sandbox could not be cleaned up automatically: ${describeError(
+                    cleanupError
+                  )}`
                 );
               });
           }
@@ -1322,11 +1370,7 @@ export function registerFleetCommands(
                 deleteAgent: true,
               })
               .catch((error) => {
-                deps.warn(
-                  `Temporary launcher cleanup failed: ${
-                    error instanceof Error ? error.message : String(error)
-                  }`
-                );
+                deps.warn(`Temporary launcher cleanup failed: ${describeError(error)}`);
               });
           }
         }
@@ -1437,7 +1481,7 @@ export function registerFleetCommands(
             error: deps.error,
           });
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message = describeError(error);
           if (deleteAgent) {
             throw new Error(
               `Refusing to delete @${workerName}: could not retire provider bindings (${message}). Identity kept so \`agent-relay integration unsubscribe <provider> --owned-by @${workerName}\` can retry.`
@@ -1500,7 +1544,7 @@ export function registerFleetCommands(
     try {
       await runFleetStatus(deps, options);
     } catch (error) {
-      deps.error(error instanceof Error ? error.message : String(error));
+      deps.error(describeError(error));
       deps.exit(1);
     }
   });
@@ -1665,7 +1709,7 @@ async function runFleetAgentList(
         }));
       } catch (error) {
         deps.warn(
-          `roster unavailable (${error instanceof Error ? error.message : String(error)}); ` +
+          `roster unavailable (${describeError(error)}); ` +
             'PRESENCE column will not report roster membership.'
         );
       }
@@ -1718,7 +1762,7 @@ async function runFleetAgentList(
           localRetried = result.retried;
         }
       } catch (error) {
-        localSessionError = `local broker: ${error instanceof Error ? error.message : String(error)}`;
+        localSessionError = `local broker: ${describeError(error)}`;
       } finally {
         client.disconnect();
       }
@@ -1858,7 +1902,7 @@ async function runFleetStatus(
         running: false,
         url: conn.url,
         pid: conn.pid,
-        error: error instanceof Error ? error.message : String(error),
+        error: describeError(error),
       };
     } finally {
       client.disconnect();
@@ -1874,7 +1918,7 @@ async function runFleetStatus(
       const nodes = await relay.nodes.list({ name: nodeName });
       node = nodes[0] ?? { available: false, reason: `no node named "${nodeName}" in the workspace` };
     } catch (error) {
-      node = { error: error instanceof Error ? error.message : String(error) };
+      node = { error: describeError(error) };
     }
   } else {
     // A running broker that never reported a node name means the engine lookup

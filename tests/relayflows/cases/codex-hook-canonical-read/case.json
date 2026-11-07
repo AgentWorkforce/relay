@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "id": "codex-hook-canonical-read",
+  "kind": "bugfix",
+  "title": "Read the verified canonical Codex rollout after an alias changes",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/codex-hook-canonical-read/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": { "outcome": "bug", "signature": "rollout_reader_follows_retargeted_alias" },
+    "head": { "outcome": "fixed", "signature": "rollout_reader_uses_verified_canonical_path" }
+  }
+}

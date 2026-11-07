@@ -40,6 +40,7 @@ function registerSandboxCommand(overrides: {
   materializeCloudRelayfileRepository?: ReturnType<typeof vi.fn>;
   ensureCloudFleetSandbox: ReturnType<typeof vi.fn>;
   placement?: ReturnType<typeof vi.fn>;
+  attachCloudFleetSandboxRelayfile?: ReturnType<typeof vi.fn>;
 }): Command {
   const placement = overrides.placement ?? vi.fn(async () => ({ invocationId: 'inv_test' }));
   const register = vi.fn(async () => ({ token: 'at_live_launcher' }));
@@ -70,6 +71,9 @@ function registerSandboxCommand(overrides: {
       ? { materializeCloudRelayfileRepository: overrides.materializeCloudRelayfileRepository as never }
       : {}),
     ensureCloudFleetSandbox: overrides.ensureCloudFleetSandbox as never,
+    ...(overrides.attachCloudFleetSandboxRelayfile
+      ? { attachCloudFleetSandboxRelayfile: overrides.attachCloudFleetSandboxRelayfile as never }
+      : {}),
     resolveWorkspaceSelection: () => ({
       key: 'rk_live_workspace',
       source: 'project',
@@ -109,6 +113,123 @@ function materialization(revision: string) {
 }
 
 describe('fleet sandbox command regressions', () => {
+  it.each([{ extra: [] }, { extra: ['--checkout'] }])(
+    'starts an exact repository checkout without waiting for Relayfile (%j)',
+    async ({ extra }) => {
+      const projectRoot = temporaryDirectory('relay-fleet-checkout-first-');
+      const selection = {
+        repository: 'AgentWorkforce/relay',
+        repositoryName: 'relay',
+        revision: REVISION,
+        projectRoot,
+        repositoryRelativeCwd: 'packages/cli',
+        workerCwd: '/srv/agent-workforce/relay/packages/cli',
+      };
+      // Any materialization call hangs forever: this task must dispatch without it.
+      const materialize = vi.fn(() => new Promise(() => {}));
+      const ensure = vi.fn(async () => ({
+        outcome: 'provisioned' as const,
+        providerId: 'agent37' as const,
+        cloudWorkspaceId: 'cloud-workspace',
+        nodeId: 'node-checkout',
+        nodeName: 'checkout-node',
+        sandboxId: 'sandbox-checkout',
+        providerSandboxId: 'provider-checkout',
+        relayWorkspaceId: TARGET.workspaceId,
+        relaycastTarget: TARGET,
+        relayfileMounted: false,
+        repoRevisions: { 'AgentWorkforce/relay': REVISION },
+      }));
+      const placement = vi.fn(async () => ({ invocationId: 'inv_checkout' }));
+      const program = registerSandboxCommand({
+        projectRoot,
+        resolveSandboxRepository: () => selection,
+        materializeCloudRelayfileRepository: materialize,
+        ensureCloudFleetSandbox: ensure,
+        placement,
+      });
+      await program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--sandbox',
+          '--sandbox-provider',
+          'agent37',
+          '--workspace-id',
+          TARGET.workspaceId,
+          '--name',
+          'checkout-worker',
+          '--task',
+          'Read the repository',
+          ...extra,
+        ],
+        { from: 'user' }
+      );
+      expect(materialize).not.toHaveBeenCalled();
+      expect(ensure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mountRelayfile: false,
+          repos: ['AgentWorkforce/relay'],
+          repoRevisions: { 'AgentWorkforce/relay': REVISION },
+        }),
+        expect.anything()
+      );
+      expect(placement).toHaveBeenCalledWith(
+        expect.objectContaining({
+          input: expect.objectContaining({
+            worker_cwd: selection.workerCwd,
+            task: 'Read the repository',
+          }),
+        })
+      );
+    }
+  );
+
+  it('attaches optional context without re-provisioning or dispatching the repository task', async () => {
+    const ensure = vi.fn();
+    const placement = vi.fn();
+    const attach = vi.fn(async () => ({
+      sandboxId: REPLAY_SANDBOX_ID,
+      relayfileMounted: true,
+      relayWorkspaceId: TARGET.workspaceId,
+      relayfileMountPath: '/home/node/workspace',
+    }));
+    const program = registerSandboxCommand({
+      projectRoot: temporaryDirectory('relay-fleet-late-context-'),
+      resolveSandboxRepository: vi.fn(),
+      ensureCloudFleetSandbox: ensure,
+      placement,
+      attachCloudFleetSandboxRelayfile: attach,
+    });
+    await program.parseAsync(
+      [
+        'fleet',
+        'relayfile',
+        'attach',
+        '--cloud-workspace-id',
+        '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+        '--sandbox-id',
+        REPLAY_SANDBOX_ID,
+        '--path',
+        '/linear',
+        '--cloud-api-url',
+        'https://dev.agentrelay.com/cloud',
+      ],
+      { from: 'user' }
+    );
+    expect(attach).toHaveBeenCalledExactlyOnceWith(
+      {
+        cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+        sandboxId: REPLAY_SANDBOX_ID,
+        paths: ['/linear'],
+      },
+      { timeoutMs: 300000, apiUrl: 'https://dev.agentrelay.com/cloud' }
+    );
+    expect(ensure).not.toHaveBeenCalled();
+    expect(placement).not.toHaveBeenCalled();
+  });
+
   it('documents local repo-relative cwd inference and absolute remote cwd overrides', () => {
     const program = registerSandboxCommand({
       projectRoot: temporaryDirectory('relay-fleet-help-'),
@@ -233,6 +354,7 @@ describe('fleet sandbox command regressions', () => {
         'spawn',
         'codex',
         '--sandbox',
+        '--sandbox-relayfile',
         '--sandbox-provider',
         'agent37',
         '--sandbox-id',

@@ -27,11 +27,7 @@ import {
   resolveNodeMaxAgents,
   type NodeCapacitySource,
 } from './fleet-sidecar.js';
-import {
-  discoverNodeConfigPath,
-  discoverPythonNodeConfigPath,
-  loadNodeDefinition,
-} from './node-definition-loader.js';
+import { discoverNodeConfigPath, loadNodeDefinition } from './node-definition-loader.js';
 import {
   describeNodeDefinitionViaNode,
   descriptorCapacitySource,
@@ -754,10 +750,9 @@ async function readBrokerNodeIdentity(
 /**
  * Serve the project's capability definitions as node providers connected
  * directly to the engine, alongside the broker provider: an `agent-relay.{ts,…}`
- * definition via {@link startServeNode}, and an `agent-relay.py` script spawned
- * as a supervised `python` child with the node token in its env. When no
- * definition exists, nothing is served — the broker's capacity already brings
- * the node online. Best-effort: a provider setup failure never aborts `up`.
+ * definition via {@link startServeNode}. When no definition exists, nothing is
+ * served — the broker's capacity already brings the node online. Best-effort:
+ * a provider setup failure never aborts `up`.
  */
 async function startNodeCapabilityProviders(
   paths: CoreProjectPaths,
@@ -766,10 +761,7 @@ async function startNodeCapabilityProviders(
   deps: CoreDependencies,
   nodePlan: NodeDefinitionPlan | undefined
 ): Promise<RunningNodeProviders | undefined> {
-  // Definition discovery is opt-in (`node up` only), matching the TS config scan.
-  const pythonConfig =
-    options.discoverConfig === true ? discoverPythonNodeConfigPath(paths.projectRoot) : undefined;
-  if (!nodePlan && !pythonConfig) {
+  if (!nodePlan) {
     return undefined;
   }
 
@@ -799,7 +791,6 @@ async function startNodeCapabilityProviders(
   }
 
   const served: RunningNode[] = [];
-  let pythonChild: SpawnedProcess | undefined;
   let nodeJsChild: RunningNodeProviderChild | undefined;
 
   if (nodePlan?.mode === 'in-process') {
@@ -849,22 +840,7 @@ async function startNodeCapabilityProviders(
     );
   }
 
-  if (pythonConfig) {
-    pythonChild = startPythonNodeProvider(
-      pythonConfig,
-      {
-        nodeToken,
-        baseUrl,
-        nodeId: identity.nodeId,
-        // Prefer the enrolled/override name so a Cloud-enrolled py provider
-        // registers under the same name as the TS provider, not the broker default.
-        nodeName: options.nodeName ?? identity.nodeName,
-      },
-      deps
-    );
-  }
-
-  if (served.length === 0 && !pythonChild && !nodeJsChild) {
+  if (served.length === 0 && !nodeJsChild) {
     return undefined;
   }
 
@@ -872,45 +848,8 @@ async function startNodeCapabilityProviders(
     ...(nodeJsChild ? { done: nodeJsChild.done } : {}),
     stop: async () => {
       await Promise.all([...served.map((node) => node.stop().catch(() => undefined)), nodeJsChild?.stop()]);
-      if (pythonChild?.pid) {
-        try {
-          deps.killProcess(pythonChild.pid, 'SIGTERM');
-        } catch {
-          // Already exited.
-        }
-      }
     },
   };
-}
-
-/**
- * Spawn `python agent-relay.py` as a supervised child with the node credentials
- * in its environment. The child connects to the engine on its own via the SDK's
- * `NodeProvider.from_enrollment()`.
- */
-function startPythonNodeProvider(
-  configPath: string,
-  credentials: { nodeToken: string; baseUrl?: string; nodeId: string; nodeName: string },
-  deps: CoreDependencies
-): SpawnedProcess | undefined {
-  const python = deps.env.AGENT_RELAY_PYTHON?.trim() || 'python3';
-  const env: NodeJS.ProcessEnv = {
-    ...deps.env,
-    RELAY_NODE_TOKEN: credentials.nodeToken,
-    RELAY_NODE_ID: credentials.nodeId,
-    RELAY_NODE_NAME: credentials.nodeName,
-    ...(credentials.baseUrl ? { RELAY_BASE_URL: credentials.baseUrl } : {}),
-  };
-  try {
-    const child = deps.spawnProcess(python, [configPath], { stdio: 'inherit', env });
-    deps.log(
-      `Serving Python node provider: ${python} ${path.basename(configPath)} (pid: ${child.pid ?? 'unknown'}).`
-    );
-    return child;
-  } catch (err) {
-    deps.warn(`Python node provider skipped: ${toErrorMessage(err)}`);
-    return undefined;
-  }
 }
 
 function isBrokerAlreadyRunningError(message: string): boolean {
@@ -1542,8 +1481,7 @@ async function resolveNodeDefinitionForUp(
  * whenever the package's entry lives in a subdirectory (`dist/`), i.e. every
  * TypeScript-built package, and the failure is transitive through the user's
  * whole dependency graph — so the CLI only learns its descriptor (via a
- * `--describe` child) and hands the file to a child `node` process to serve,
- * exactly as `agent-relay.py` is handed to `python3`.
+ * `--describe` child) and hands the file to a child `node` process to serve.
  */
 type NodeDefinitionPlan =
   | { mode: 'in-process'; definition: FleetNodeDefinition }

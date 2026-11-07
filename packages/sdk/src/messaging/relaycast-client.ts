@@ -28,7 +28,7 @@ export type RelaycastWorkspaceLike = {
     list(query?: Record<string, unknown>): Promise<unknown[]>;
     get(name: string): Promise<unknown>;
     register(input: unknown): Promise<unknown>;
-    /** Register an agent, rotating its token when the name already exists. */
+    /** Create-only registration alias; an existing name is rejected with `name_conflict`. */
     registerOrRotate?: (data: unknown) => Promise<unknown>;
     update(name: string, input: unknown): Promise<unknown>;
     delete(name: string): Promise<void>;

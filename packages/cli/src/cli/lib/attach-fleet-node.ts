@@ -15,10 +15,15 @@ import { randomBytes } from 'node:crypto';
 
 import WebSocket, { WebSocketServer } from 'ws';
 
-import { AGENT37_RELAYCAST_ORIGIN, CANONICAL_RELAYCAST_ORIGIN } from '@agent-relay/cloud';
+import {
+  AGENT37_RELAYCAST_ORIGIN,
+  ARMADILLO_RELAYCAST_ORIGIN,
+  CANONICAL_RELAYCAST_ORIGIN,
+} from '@agent-relay/cloud';
 import type { AttachMode } from './attach-mode.js';
 import { collectWithRetry } from './collect-with-retry.js';
 import { resolveWorkspaceTransport } from './sdk-client.js';
+import { describeError } from './describe-error.js';
 
 const MAX_BUFFERED_BYTES = 1024 * 1024;
 const MAX_WEBSOCKET_CLOSE_REASON_BYTES = 123;
@@ -162,7 +167,11 @@ export class FleetNodeAttachError extends Error {
   }
 }
 
-const TRUSTED_RELAYCAST_ORIGINS = new Set([CANONICAL_RELAYCAST_ORIGIN, AGENT37_RELAYCAST_ORIGIN]);
+const TRUSTED_RELAYCAST_ORIGINS = new Set([
+  CANONICAL_RELAYCAST_ORIGIN,
+  ARMADILLO_RELAYCAST_ORIGIN,
+  AGENT37_RELAYCAST_ORIGIN,
+]);
 
 export function validateFleetAttachBaseUrl(value: string): string {
   let parsed: URL;
@@ -477,7 +486,7 @@ export async function startFleetNodeAttachProxy(
             ? (parsedPayload as FleetSessionResponse)
             : {};
       } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
+        const detail = describeError(error);
         lastSessionError = new TerminalSessionAttemptError(
           timedOut ? 'request exceeded its deadline' : detail,
           timedOut ? 'control_plane_timeout' : 'control_plane_unavailable',
