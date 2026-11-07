@@ -6,6 +6,7 @@ import { childEnv } from './guards.mjs';
 /** Fail closed on query failure; a live-self canary distinguishes a broken ps from no match. */
 export function processIsRunning(pid, { command = 'ps', env = childEnv(), timeoutMs = 2_000 } = {}) {
   assert(Number.isInteger(pid) && pid > 0 && pid <= 2_147_483_647, 'Invalid proof process id.');
+  /** Return a validated process state or null only for a successful no-match query. */
   function stateOf(targetPid) {
     const result = spawnSync(command, ['-p', String(targetPid), '-o', 'stat='], {
       encoding: 'utf8',

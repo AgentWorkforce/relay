@@ -24,6 +24,7 @@ import { createReceipt } from './receipt.mjs';
 const caseDir = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(caseDir, '../../../..');
 const posix = process.platform !== 'win32';
+/** Run bounded fixture Git commands without user hooks, signing or monitor settings. */
 function git(cwd, ...args) {
   const result = spawnSync(
     'git',
@@ -45,10 +46,12 @@ function git(cwd, ...args) {
   assert.equal(result.status, 0, result.stderr);
   return result.stdout.trim();
 }
+/** Seed one fixture file, creating its parent directories as needed. */
 async function put(root, name, value) {
   await mkdir(path.dirname(path.join(root, name)), { recursive: true });
   await writeFile(path.join(root, name), value);
 }
+/** Create committed target and harness repositories with isolated cleanup ownership. */
 async function fixture() {
   const scratch = await realpath(await mkdtemp(path.join(os.tmpdir(), 'relay-2100-guards-')));
   const target = path.join(scratch, 'target'),
@@ -83,6 +86,7 @@ async function fixture() {
   };
   return { scratch, target, harness, inputs, dispose: () => rm(scratch, { recursive: true, force: true }) };
 }
+/** Treat only ENOENT as absence; permission and other read failures must propagate. */
 async function exists(name) {
   return readFile(name).then(
     () => true,
@@ -403,8 +407,7 @@ test('subprocess signal listeners are removed after success and failure', async 
   );
 });
 
-// These simulate ONLY compile/runtime completion to exercise refusal guards.
-// They must never produce accepted routing evidence; real base/head proof uses Cargo/Rust.
+/** Simulate compile/runtime completion only to test refusals, never to produce accepted routing evidence. */
 async function runGuardScenario(f, { cache, dirtyAfter, tmpdir, replaceParent, existingReceipt }) {
   const bin = path.join(f.scratch, 'bin');
   await mkdir(bin);

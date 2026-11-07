@@ -56,6 +56,7 @@ export async function run(command, args, options = {}) {
   }
 }
 
+/** Read checkout identity without consulting its configured file monitor. */
 export async function gitSha(directory) {
   return (
     await run('git', ['-c', 'core.fsmonitor=false', '-C', directory, 'rev-parse', 'HEAD'], {
@@ -64,6 +65,7 @@ export async function gitSha(directory) {
   ).trim();
 }
 
+/** Test path-component containment without confusing sibling names or volumes. */
 function inside(root, candidate) {
   const relative = path.relative(root, candidate);
   return (

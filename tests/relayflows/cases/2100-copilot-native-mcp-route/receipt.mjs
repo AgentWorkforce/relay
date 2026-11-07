@@ -17,6 +17,7 @@ export async function createReceipt(resultPath, roots) {
     0o600
   );
   let identity;
+  /** Refuse a moved parent or replaced file before accepting this handle's output. */
   async function requireBoundDestination() {
     assert.equal(
       await externalPath(resultPath, roots, 'Receipt'),
