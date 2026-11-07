@@ -13,6 +13,7 @@ function createHarness() {
   const workspaceRelay = {
     agents: {
       get: vi.fn(async (name: string) => ({ id: 'agent_existing', name, status: 'online' })),
+      list: vi.fn(async () => [{ name: 'worker' }]),
     },
     workspace: {
       register: vi.fn(async ({ name }: { name: string }) => ({
@@ -25,6 +26,11 @@ function createHarness() {
   };
   const createAgentRelay = vi.fn(() => agentRelay);
   const createWorkspaceRelay = vi.fn(() => workspaceRelay);
+  const takeOverAgent = vi.fn(async (_transport: unknown, name: string) => ({
+    id: 'agent_rotated',
+    name,
+    token: 'at_live_rotated',
+  }));
   const log = vi.fn();
   const error = vi.fn();
   const program = new Command();
@@ -32,6 +38,7 @@ function createHarness() {
   registerAgentCommands(program, {
     createAgentRelay: createAgentRelay as never,
     createWorkspaceRelay: createWorkspaceRelay as never,
+    takeOverAgent: takeOverAgent as never,
     log,
     error,
     exit: ((code: number) => {
@@ -44,6 +51,7 @@ function createHarness() {
     workspaceRelay,
     createAgentRelay,
     createWorkspaceRelay,
+    takeOverAgent,
     log,
     error,
   };
@@ -152,7 +160,7 @@ describe('agent identity lifecycle commands', () => {
   });
 
   it('exposes an explicit token rotation command for an existing name', async () => {
-    const { program, workspaceRelay } = createHarness();
+    const { program, workspaceRelay, takeOverAgent } = createHarness();
 
     await program.parseAsync([
       'node',
@@ -165,7 +173,85 @@ describe('agent identity lifecycle commands', () => {
     ]);
 
     expect(workspaceRelay.agents.get).toHaveBeenCalledWith('chief');
-    expect(workspaceRelay.workspace.register).toHaveBeenCalledWith({ name: 'chief' });
+    // Relaycast refuses to re-register a taken name; rotation is the owner takeover.
+    expect(workspaceRelay.workspace.register).not.toHaveBeenCalled();
+    expect(takeOverAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceKey: 'rk_live_test' }),
+      'chief',
+      'agent-relay agent rotate',
+      'agent_existing'
+    );
+  });
+
+  it('says when the old token could not be retired at once', async () => {
+    const { program, takeOverAgent, error } = createHarness();
+    takeOverAgent.mockResolvedValueOnce({
+      id: 'agent_rotated',
+      name: 'chief',
+      token: 'at_live_rotated',
+      oldTokenGraceRemains: true,
+    } as never);
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'agent',
+      'rotate',
+      'chief',
+      '--workspace-key',
+      'rk_live_test',
+    ]);
+
+    expect(error.mock.calls.flat().join('\n')).toContain('stops working within a minute');
+  });
+
+  it('register recovers an existing name with a new token instead of failing', async () => {
+    const { program, workspaceRelay, takeOverAgent, log } = createHarness();
+    workspaceRelay.workspace.register.mockRejectedValueOnce(
+      Object.assign(new Error('Agent "chief" already exists in this workspace'), {
+        code: 'agent_already_exists',
+      })
+    );
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'agent',
+      'register',
+      'chief',
+      '--workspace-key',
+      'rk_live_test',
+    ]);
+
+    expect(takeOverAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceKey: 'rk_live_test' }),
+      'chief',
+      expect.stringContaining('agent register')
+    );
+    expect(log.mock.calls.flat().join('\n')).toContain('at_live_rotated');
+  });
+
+  it('register --strict still fails on an existing name', async () => {
+    const { program, workspaceRelay, takeOverAgent } = createHarness();
+    workspaceRelay.workspace.register.mockRejectedValueOnce(
+      Object.assign(new Error('Agent "chief" already exists in this workspace'), {
+        code: 'agent_already_exists',
+      })
+    );
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'agent',
+        'register',
+        'chief',
+        '--strict',
+        '--workspace-key',
+        'rk_live_test',
+      ])
+    ).rejects.toThrow('exit:1');
+    expect(takeOverAgent).not.toHaveBeenCalled();
   });
 
   it('rejects rotation of a name that does not already exist instead of minting a new identity', async () => {
@@ -285,6 +371,53 @@ describe('agent identity lifecycle commands', () => {
     const rendered = log.mock.calls.flat().join('\n');
     expect(rendered).toContain('initiated');
     expect(rendered).not.toContain('Removed agent');
+  });
+
+  it('waits for not-found even when the release acknowledgement says completed', async () => {
+    const { program, workspaceRelay, log } = createHarness();
+    workspaceRelay.agents.get.mockRejectedValueOnce({ status: 404 });
+    await program.parseAsync(['agent', 'remove', 'worker', '--wait'], { from: 'user' });
+    expect(workspaceRelay.agents.get).toHaveBeenCalledWith('worker');
+    expect(log).toHaveBeenCalledWith('Removed agent worker.');
+  });
+
+  it('exits 8 while a released registration still owns the name', async () => {
+    const { program, workspaceRelay, log } = createHarness();
+    workspaceRelay.agents.get.mockResolvedValue({ id: 'old', name: 'worker', status: 'released' });
+    await expect(
+      program.parseAsync(['agent', 'remove', 'worker', '--wait', '--wait-timeout', '1'], { from: 'user' })
+    ).rejects.toThrow('exit:8');
+    expect(log.mock.calls.flat().join('')).not.toContain('Removed agent');
+  });
+
+  it('keeps the asynchronous acknowledgement when every verification read is unavailable', async () => {
+    const { program, workspaceRelay, log, error } = createHarness();
+    workspaceRelay.agents.get.mockRejectedValue(new Error('403 forbidden'));
+    workspaceRelay.agents.list.mockRejectedValue(new Error('403 roster forbidden'));
+    await program.parseAsync(['agent', 'remove', 'worker', '--wait', '--wait-timeout', '1'], {
+      from: 'user',
+    });
+    expect(workspaceRelay.agents.list).toHaveBeenCalled();
+    expect(log.mock.calls.flat().join('')).toContain('initiated');
+    // --wait already ran; suggesting it again would misdescribe the outcome.
+    expect(log.mock.calls.flat().join('')).not.toContain('Use --wait');
+    expect(error.mock.calls.flat().join('')).toContain('Could not verify removal: 403 roster forbidden');
+  });
+
+  it('rejects a non-numeric --wait-timeout before removing anything', async () => {
+    const { program, workspaceRelay, error } = createHarness();
+    await expect(
+      program.parseAsync(['agent', 'remove', 'worker', '--wait', '--wait-timeout', 'abc'], { from: 'user' })
+    ).rejects.toThrow('exit:1');
+    expect(error.mock.calls.flat().join('')).toContain('--wait-timeout');
+    expect(workspaceRelay.workspace.release).not.toHaveBeenCalled();
+  });
+
+  it('does not claim clearance or poll with --no-wait', async () => {
+    const { program, workspaceRelay, log } = createHarness();
+    await program.parseAsync(['agent', 'remove', 'worker', '--no-wait'], { from: 'user' });
+    expect(workspaceRelay.agents.get).not.toHaveBeenCalled();
+    expect(log.mock.calls.flat().join('')).toContain('initiated');
   });
 
   it('redacts SQL and bound parameters when removal fails', async () => {

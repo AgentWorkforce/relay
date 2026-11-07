@@ -139,6 +139,38 @@ export interface RelayStoredAttachment {
   sizeBytes?: wire.FileAttachment['size_bytes'];
 }
 
+/** A stored Relaycast file, as returned by `files.upload`/`files.get`. */
+export interface RelayFileInfo {
+  id: wire.FileInfo['id'];
+  filename: wire.FileInfo['filename'];
+  contentType: wire.FileInfo['content_type'];
+  sizeBytes: wire.FileInfo['size_bytes'];
+  status?: NonNullable<wire.FileInfo['status']>;
+  /** Short-lived URL to GET the bytes; present once the upload is complete. */
+  downloadUrl?: string;
+  uploadedBy?: NonNullable<wire.FileInfo['uploaded_by']>;
+  createdAt?: NonNullable<wire.FileInfo['created_at']>;
+}
+
+export interface RelayUploadFileInput {
+  filename: string;
+  /** Defaults to `application/octet-stream`. */
+  contentType?: string;
+  data: Uint8Array | ArrayBuffer;
+}
+
+/** Cancellation and timeout controls for the signed byte-transfer request. */
+export interface RelayFileTransferOptions {
+  signal?: AbortSignal;
+  /** Signed PUT/GET timeout in milliseconds. Defaults to 30 seconds. */
+  timeoutMs?: number;
+}
+
+export interface RelayDownloadedFile {
+  file: RelayFileInfo;
+  data: Uint8Array;
+}
+
 export interface RelayTextAttachment {
   type: 'text';
   text: string;
@@ -480,6 +512,7 @@ export interface RelayCreateWebhookInput {
 
 export interface RelayEventSubscription {
   id: string;
+  events?: string[];
   event?: string;
   createdAt?: string;
   [key: string]: unknown;
@@ -566,6 +599,8 @@ export interface RelayActionInvocation {
   actionName: string;
   callerId?: string | null;
   callerName?: string | null;
+  handlerNodeId?: string | null;
+  dispatchedNodeId?: string | null;
   input?: Record<string, unknown>;
   output?: Record<string, unknown> | null;
   status: string;
@@ -592,10 +627,7 @@ export type RelayPlacementRejectReason =
   | 'unmapped_repo';
 
 export type RelayPlacementReconcileReason =
-  | 'no_eligible_node'
-  | 'target_offline'
-  | 'unmapped_repo'
-  | 'sandbox_policy_mismatch';
+  'no_eligible_node' | 'target_offline' | 'unmapped_repo' | 'sandbox_policy_mismatch';
 
 export interface RelayPlacementReconcileEvent {
   action: 'queued' | 'failed';
@@ -674,7 +706,7 @@ export interface RelaySpawnPlacementInput {
    * How long to wait for that terminal result. Must exceed the node's own
    * readiness window (the broker's `verify_ready` mode holds the action open
    * for up to 90s, and starts that clock only once the launch completes).
-   * Defaults to 120000; `fleet spawn` enforces a 95000 floor for verified
+   * Defaults to 360000; `fleet spawn` enforces a 95000 floor for verified
    * targeted spawns so the two windows nest.
    */
   confirmTimeoutMs?: number;
@@ -726,9 +758,7 @@ export interface RelayWorkspaceInfo {
  * status).
  */
 export type InboxItemState =
-  | Extract<wire.DeliveryStatus, 'queued' | 'delivered' | 'failed'>
-  | 'deferred'
-  | 'read';
+  Extract<wire.DeliveryStatus, 'queued' | 'delivered' | 'failed'> | 'deferred' | 'read';
 
 export interface InboxItem {
   id: string;
@@ -937,9 +967,10 @@ export interface RelayMessagingClient {
     get(name: string): Promise<RelayAgent>;
     register(input: RelayRegisterAgentInput): Promise<RelayAgentRegistration>;
     /**
-     * Register an agent, adopting the existing identity (with a rotated
-     * token) when the name is already taken. Optional: backends without
-     * rotation support fall back to plain `register`.
+     * Compatibility alias for `register`. Current Relaycast SDKs implement it
+     * as create-only registration: an existing name is rejected with
+     * `name_conflict` and its token is not rotated. Optional: when absent,
+     * callers fall back to plain `register`.
      */
     registerOrRotate?(input: RelayRegisterAgentInput): Promise<RelayAgentRegistration>;
     /** Resolve the identity of the agent the client is authenticated as. */
@@ -1069,6 +1100,16 @@ export interface RelayMessagingClient {
   };
   readonly workspace: {
     info(): Promise<RelayWorkspaceInfo>;
+  };
+  /**
+   * Stored file attachments. `upload` runs the full upload (request, byte
+   * PUT, complete) and returns a file whose `id` can be passed in a message's
+   * `attachments`.
+   */
+  readonly files?: {
+    upload(input: RelayUploadFileInput, options?: RelayFileTransferOptions): Promise<RelayFileInfo>;
+    get(id: string): Promise<RelayFileInfo>;
+    download(id: string, options?: RelayFileTransferOptions): Promise<RelayDownloadedFile>;
   };
 }
 

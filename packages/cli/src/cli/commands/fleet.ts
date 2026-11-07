@@ -1,3 +1,4 @@
+import { readTaskInput, validateTaskSize } from '../lib/task-input.js';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
@@ -5,12 +6,16 @@ import { InvalidArgumentError, type Command } from 'commander';
 import { findProjectRoot } from '@agent-relay/config';
 import {
   CloudFleetSandboxProvisionError,
+  DEV_CLOUD_API_URL,
+  DEV_RELAYCAST_ORIGIN,
   deleteCloudFleetSandbox,
+  attachCloudFleetSandboxRelayfile,
   ensureCloudFleetSandbox,
   materializeCloudRelayfileRepository,
   resolveWorkspaceByKey,
   type CloudFleetSandboxProviderId,
   type CloudRelayfileRepositoryMaterialization,
+  type EnsureCloudFleetSandboxInput,
   type EnsureCloudFleetSandboxResult,
 } from '@agent-relay/cloud';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
@@ -35,13 +40,26 @@ import { readBrokerConnection } from '../lib/broker-lifecycle.js';
 import { spawnAgentWithClient } from '../lib/client-factory.js';
 import { formatRelativeTime, sanitizeForTerminalLine } from '../lib/formatting.js';
 import { connectProjectBrokerClient } from '../lib/project-broker-client.js';
-import { isAvailableFleetNode } from '../lib/fleet-live-agents.js';
+import {
+  AgentRemovalPendingError,
+  parseRemovalWaitTimeout,
+  waitForAgentRemoval,
+} from '../lib/agent-removal.js';
+import {
+  classifySpawnFailure,
+  mayStillBeRunning,
+  nameTakenSpawnError,
+  pendingSpawnError,
+  probeSpawnLiveness,
+  terminalSpawnOutcome,
+} from '../lib/spawn-liveness.js';
+import { heartbeatAgeMs, MAX_LIVE_HEARTBEAT_AGE_MS, isAvailableFleetNode } from '../lib/fleet-live-agents.js';
 import { declaredWorkforceMetadata } from '../lib/registration-metadata.js';
 import { redactSecrets } from '../lib/redact.js';
 import { attributableReleaseReason } from '../lib/release-reason.js';
 import { retireOwnedIntegrationBindings } from './integration.js';
 import { resolveSandboxRepository, type SandboxRepositorySelection } from '../lib/sandbox-repo.js';
-import { spawnPlacementReceipt } from '../lib/spawn-lifecycle.js';
+import { sanitizedSpawnReceipt, spawnPlacementReceipt } from '../lib/spawn-lifecycle.js';
 import {
   resolveAgentToken,
   resolveWorkspaceSelection,
@@ -58,6 +76,7 @@ import {
   withSdkDefaults,
   type SdkCommandDeps,
 } from '../lib/sdk-command.js';
+import { describeError } from '../lib/describe-error.js';
 
 const FLEET_NODES_ALWAYS_ON_MESSAGE =
   'Fleet nodes need no per-workspace enablement; this command is a no-op.';
@@ -131,31 +150,45 @@ function pathContains(parent: string, child: string): boolean {
   );
 }
 
-function liveRelayfileMountPaths(
-  materialization: CloudRelayfileRepositoryMaterialization,
-  requested: readonly string[] | undefined
+function liveRelayfileRepositoryRoots(repository: string): {
+  contentRoot: string;
+  sentinelRoot: string;
+} {
+  // Mirror of expectedRelayfileRepositoryPaths in @agent-relay/cloud; the
+  // materialization response is asserted against the same paths, so the
+  // predicted roots are authoritative even before materialization runs.
+  const [owner, repo] = repository.split('/');
+  const root = `/github/repos/${encodeURIComponent(owner!)}/${encodeURIComponent(repo!)}`;
+  return { contentRoot: `${root}/contents`, sentinelRoot: `${root}/.relayfile` };
+}
+
+function liveRelayfileMountPaths(roots: { contentRoot: string; sentinelRoot: string }): string[] {
+  return [`${roots.contentRoot}/**`, `${roots.sentinelRoot}/**`, '/.skills/**'];
+}
+
+function scopedSandboxRelayfilePaths(
+  requested: readonly string[],
+  inferredContentRoot: string | undefined
 ): string[] {
-  const contentRoot = materialization.contentRoot;
-  const sentinelRoot = path.posix.dirname(materialization.sentinelPath);
-  const requestedPaths = requested ?? [];
-  if (requestedPaths.length > 13) {
-    throw new Error(
-      '--sandbox-relayfile-path accepts at most 13 paths when a live repository, its source metadata, and workspace skills are mounted.'
-    );
+  // Cloud accepts at most 16 mount paths; an explicit list carries no implicit
+  // repository roots, so the full budget is available here.
+  if (requested.length > 16) {
+    throw new Error('--sandbox-relayfile-path accepts at most 16 paths.');
   }
-  const contentAncestor = requestedPaths.find((candidate) => {
-    const root = candidate
-      .trim()
-      .replace(/\/\*\*$/, '')
-      .replace(/\/$/, '');
-    return contentRoot === root || contentRoot.startsWith(`${root}/`);
-  });
-  if (contentAncestor && contentAncestor.trim() !== `${contentRoot}/**`) {
-    throw new Error(
-      `Relayfile path ${JSON.stringify(contentAncestor)} contains the repository source root; omit it so Relay can mount ${contentRoot}/** as a decoded working tree.`
-    );
+  if (inferredContentRoot !== undefined) {
+    const contentAncestor = requested.find((candidate) => {
+      const normalized = candidate.trim();
+      if (normalized === `${inferredContentRoot}/**`) return false;
+      const root = normalized.replace(/\/\*\*$/, '').replace(/\/$/, '');
+      return inferredContentRoot === root || inferredContentRoot.startsWith(`${root}/`);
+    });
+    if (contentAncestor) {
+      throw new Error(
+        `Relayfile path ${JSON.stringify(contentAncestor)} contains the repository source root; mount ${inferredContentRoot}/** explicitly to include the decoded working tree.`
+      );
+    }
   }
-  return [...new Set([`${contentRoot}/**`, `${sentinelRoot}/**`, '/.skills/**', ...requestedPaths])];
+  return [...new Set(requested)];
 }
 
 function liveRelayfileWorkerCwd(
@@ -193,13 +226,13 @@ function spawnInvocationWithMergedPlacement(invocation: Record<string, unknown>)
     ...invocation,
     placement: {
       ...(sdkPlacement ?? {}),
-      dispatchState: receipt.dispatchState,
+      dispatchState: sdkPlacement?.dispatchState ?? receipt.dispatchState,
       ...(invocationId ? { invocationId } : {}),
     },
   };
 }
 
-function throwForTerminalSpawnFailure(invocation: Record<string, unknown>): void {
+function throwForTerminalSpawnFailure(invocation: Record<string, unknown>, name: string): void {
   const placement = spawnPlacementReceipt(invocation);
   if (placement.state !== 'failed') return;
   const invocationId = typeof placement.invocationId === 'string' ? placement.invocationId : undefined;
@@ -207,13 +240,33 @@ function throwForTerminalSpawnFailure(invocation: Record<string, unknown>): void
     typeof invocation.error === 'string' && invocation.error.trim()
       ? invocation.error
       : 'Fleet spawn invocation reported a terminal failure.';
-  throw new RelayPlacementError('spawn_failed', message, {
+  const error = new RelayPlacementError('spawn_failed', message, {
     capability: typeof invocation.capability === 'string' ? invocation.capability : 'spawn',
     attempts: 1,
     ...(invocationId ? { invocationId } : {}),
     state: 'failed',
     dispatchState: placement.dispatchState as 'dispatched' | 'not_dispatched' | 'unknown',
     receipt: invocation,
+  });
+  throw classifySpawnFailure(message) ? nameTakenSpawnError(name, error) : error;
+}
+
+// Keep placement codes, receipts and cleanup behavior intact while explaining
+// why releasing a process alone does not make its Relaycast name reusable.
+async function runFleetSpawn(deps: SdkCommandDeps, fn: () => Promise<void>): Promise<void> {
+  await runSdk(deps, async () => {
+    try {
+      await fn();
+    } catch (error) {
+      if (error instanceof Error && /\bagent_already_exists\b/.test(error.message)) {
+        error.message +=
+          ' Fleet release keeps the Relaycast identity unless --delete-agent is passed.' +
+          ' To free a name you own, run `agent-relay fleet release <name> --delete-agent --wait`' +
+          ' in the same workspace, then retry spawning once it reports clearance. This permanently' +
+          ' deletes the identity and retires its provider bindings.';
+      }
+      throw error;
+    }
   });
 }
 
@@ -231,6 +284,7 @@ export interface FleetCommandDependencies {
   ensureCloudFleetSandbox: typeof ensureCloudFleetSandbox;
   materializeCloudRelayfileRepository: typeof materializeCloudRelayfileRepository;
   deleteCloudFleetSandbox: typeof deleteCloudFleetSandbox;
+  attachCloudFleetSandboxRelayfile: typeof attachCloudFleetSandboxRelayfile;
   log: (...args: unknown[]) => void;
   warn: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
@@ -258,6 +312,7 @@ function withFleetDefaults(overrides: Partial<FleetCommandDependencies> = {}): F
     ensureCloudFleetSandbox,
     materializeCloudRelayfileRepository,
     deleteCloudFleetSandbox,
+    attachCloudFleetSandboxRelayfile,
     log: (...args: unknown[]) => console.log(...args),
     warn: (...args: unknown[]) => console.warn(...args),
     error: (...args: unknown[]) => console.error(...args),
@@ -369,6 +424,7 @@ function mergeFleetNodeListOptions(
   return merged;
 }
 
+/** Register fleet lifecycle and sandbox commands on the root CLI program. */
 export function registerFleetCommands(
   program: Command,
   overrides: Partial<FleetCommandDependencies> = {}
@@ -402,6 +458,37 @@ export function registerFleetCommands(
     }
   );
 
+  group
+    .command('relayfile')
+    .description('Attach optional sandbox context')
+    .command('attach')
+    .description('Attach live Relayfile context to an existing sandbox using Cloud sign-in')
+    .requiredOption('--cloud-workspace-id <id>', 'Cloud workspace UUID returned by sandbox provisioning')
+    .requiredOption('--sandbox-id <id>', 'Exact Cloud sandbox identity (sbx_<UUID>)')
+    .option('--path <path...>', 'Only these exact context roots (for example /linear)')
+    .option('--cloud-api-url <url>', 'Cloud API origin, including /cloud when required')
+    .option('--timeout <ms>', 'Attachment timeout in milliseconds', '300000')
+    .action(async (options: Record<string, unknown>) => {
+      await runSdk(deps.sdk, async () => {
+        const result = await deps.attachCloudFleetSandboxRelayfile(
+          {
+            cloudWorkspaceId: requiredText(options.cloudWorkspaceId, 'Cloud workspace ID'),
+            sandboxId: requiredText(options.sandboxId, 'Sandbox ID'),
+            ...(options.path === undefined
+              ? {}
+              : { paths: optionalTextList(options.path, 'Relayfile context path') }),
+          },
+          {
+            timeoutMs: Number(requiredText(options.timeout, 'Attachment timeout')),
+            ...(options.cloudApiUrl === undefined
+              ? {}
+              : { apiUrl: requiredText(options.cloudApiUrl, 'Cloud API URL') }),
+          }
+        );
+        printJson(deps.sdk, result);
+      });
+    });
+
   // `fleet agent list` — the fleet-wide answer to `node agent list --pretty`.
   // See relay#1553 for the gap this fills and packages/cli/src/cli/commands/
   // fleet-agent.ts for the join logic (three name spaces, per-node contributions).
@@ -420,18 +507,76 @@ export function registerFleetCommands(
 
   addSdkOptions(
     group
+      .command('spawn-status')
+      .description('Read an existing spawn dispatch without launching another agent')
+      .argument('<invocation-id>', 'Invocation ID returned by fleet spawn')
+  ).action(async (invocationId: string, options: Record<string, unknown>) => {
+    await runSdk(deps.sdk, async () => {
+      const clientOptions = sdkOptionsFromOpts(options);
+      let token = resolveAgentToken(clientOptions);
+      let launcherName: string | undefined;
+      let workspace: ReturnType<FleetCommandDependencies['sdk']['createWorkspaceRelay']> | undefined;
+      try {
+        if (!token) {
+          workspace = deps.sdk.createWorkspaceRelay(clientOptions);
+          const name = `fleet-status-launcher-${randomUUID().slice(0, 8)}`;
+          const launcher = await workspace.workspace.register(
+            { name, metadata: { purpose: 'fleet-spawn-status' } },
+            { strict: true }
+          );
+          launcherName = name;
+          token = launcher.token;
+          if (!token) throw new Error('The temporary fleet status launcher did not receive an agent token.');
+        }
+        // A minted launcher token must read from the gateway that minted it, and
+        // never alongside the workspace key that minted it (createAgentRelay
+        // rejects that pair), matching the spawn path's minted-token client.
+        const relay = deps.sdk.createAgentRelay(
+          launcherName
+            ? { token, baseUrl: resolveWorkspaceTransport(clientOptions).baseUrl }
+            : { ...clientOptions, token }
+        );
+        const invocation = await relay.messaging.commands.getInvocation('spawn', invocationId);
+        // Keep this read-only surface on the existing safe receipt projection.
+        const receipt = sanitizedSpawnReceipt(invocation as unknown as Record<string, unknown>);
+        const result = spawnInvocationWithPlacement(receipt);
+        const output = receipt.output as Record<string, unknown> | undefined;
+        // --no-confirm dispatches may legitimately report launch without readiness.
+        // Preserve that evidence instead of claiming the launched worker failed.
+        if (
+          ['completed', 'success', 'succeeded'].includes(String(receipt.status).toLowerCase()) &&
+          output?.spawned === true &&
+          output.ready === false
+        ) {
+          result.placement = { ...spawnPlacementReceipt(receipt), state: 'accepted' };
+        }
+        printJson(deps.sdk, { invocation: result });
+      } finally {
+        if (launcherName && workspace) {
+          await workspace.workspace
+            .release({
+              name: launcherName,
+              reason: 'Temporary fleet spawn status launcher completed',
+              deleteAgent: true,
+            })
+            .catch((error) => deps.warn(redactSecrets(String(error))));
+        }
+      }
+    });
+  });
+
+  addSdkOptions(
+    group
       .command('spawn')
       .description('Spawn locally by default, or select a fleet node or Cloud sandbox explicitly')
       .argument('<cli>', 'AI CLI to launch', parseFleetCli)
       .requiredOption('--name <name>', 'Worker agent name')
-      .requiredOption('--task <text>', 'Initial task instructions')
+      .option('--task <text>', 'Initial task instructions')
+      .option('--task-file <path>', 'Read the initial task from a local UTF-8 file')
       .option('--auto-place', 'Request automatic eligible-node placement in the Relay workspace')
       .option('--node <name>', 'Target a specific fleet node')
       .option('--target-node <name>', 'Alias for --node')
-      .option(
-        '--sandbox',
-        'Provision a fresh Cloud sandbox and spawn with a live Relayfile workspace/repository mount'
-      )
+      .option('--sandbox', 'Provision a fresh Cloud sandbox; Git repositories start from an exact checkout')
       .option(
         '--checkout',
         'Materialize the current Git checkout at its exact pushed HEAD (static; requires --sandbox)'
@@ -440,13 +585,17 @@ export function registerFleetCommands(
         '--sandbox-name <name>',
         'Explicit sandbox node name (custom unless --sandbox-id requires matching fleet-sandbox-<UUID>)'
       )
-      .option('--sandbox-id <id>', 'Reuse a caller-declared sbx_<UUID> identity for an exact replay')
+      .option(
+        '--sandbox-id <id>',
+        'Reuse a caller-declared sbx_<UUID> identity for an exact replay; re-run an interrupted --sandbox spawn with the identity it printed to resume it'
+      )
       .option('--workspace-id <id>', 'Explicit Relay workspace identity required for sandbox provisioning')
       .option('--sandbox-provider <provider>', 'Sandbox provider: daytona, e2b, or agent37')
       .option(
         '--sandbox-relayfile-path <path...>',
         'Mount only these Relayfile subtrees (each path must end in /**)'
       )
+      .option('--sandbox-relayfile', 'Require live Relayfile context before starting the task')
       .option('--no-sandbox-relayfile', 'Provision the sandbox without mounting Relayfile')
       .option('--channel <name>', 'Channel for the worker to join')
       .option('--persona <persona>', 'Worker persona (automatic placement)')
@@ -468,13 +617,13 @@ export function registerFleetCommands(
       .option(
         '--confirm-timeout <ms>',
         `How long a targeted spawn waits for harness readiness (minimum ${MIN_VERIFIED_CONFIRM_TIMEOUT_MS}ms)`,
-        '120000'
+        '360000'
       )
   ).action(async (cli: string, options: Record<string, unknown>) => {
-    await runSdk(deps.sdk, async () => {
+    await runFleetSpawn(deps.sdk, async () => {
       const clientOptions = sdkOptionsFromOpts(options);
       const name = requiredText(options.name, 'Worker name');
-      const task = requiredText(options.task, 'Task');
+      const task = (await readTaskInput(options.task, options.taskFile, true, { cli }))!;
       let targetNode = optionalText(options.targetNode, 'Target node') ?? optionalText(options.node, 'Node');
       const useSandbox = options.sandbox === true;
       // Explicit hosted credentials/transport and personas retain their legacy
@@ -489,7 +638,7 @@ export function registerFleetCommands(
       if (useSandbox || targetNode || automaticPlacement) {
         warnIfInferredFromProjectSession(options, deps.warn);
       }
-      const checkoutRepository = options.checkout === true;
+      let checkoutRepository = options.checkout === true;
       const sandboxName = optionalText(options.sandboxName, 'Sandbox name');
       const sandboxIdOption = optionalText(options.sandboxId, 'Sandbox ID');
       // An explicit sandbox identity is a retained/replayable resource. Never
@@ -512,7 +661,7 @@ export function registerFleetCommands(
       if (sandboxProviderText !== undefined && sandboxProvider === undefined) {
         throw new Error('--sandbox-provider must be daytona, e2b, or agent37.');
       }
-      const mountSandboxRelayfile = options.sandboxRelayfile !== false;
+      let mountSandboxRelayfile = options.sandboxRelayfile !== false;
       const sandboxRelayfilePaths = optionalTextList(options.sandboxRelayfilePath, 'Sandbox Relayfile path');
       if (useSandbox && targetNode) {
         throw new Error('--sandbox cannot be combined with --node or --target-node.');
@@ -532,8 +681,8 @@ export function registerFleetCommands(
       if (!useSandbox && sandboxProvider) {
         throw new Error('--sandbox-provider requires --sandbox.');
       }
-      if (!useSandbox && options.sandboxRelayfile === false) {
-        throw new Error('--no-sandbox-relayfile requires --sandbox.');
+      if (!useSandbox && options.sandboxRelayfile !== undefined) {
+        throw new Error('--sandbox-relayfile and --no-sandbox-relayfile require --sandbox.');
       }
       if (!useSandbox && sandboxRelayfilePaths) {
         throw new Error('--sandbox-relayfile-path requires --sandbox.');
@@ -555,7 +704,7 @@ export function registerFleetCommands(
         { organization, project, workstream, role, objective },
         task
       );
-      const confirmTimeoutText = optionalText(options.confirmTimeout, 'Confirm timeout') ?? '120000';
+      const confirmTimeoutText = optionalText(options.confirmTimeout, 'Confirm timeout') ?? '360000';
       const confirmTimeoutMs = Number(confirmTimeoutText);
       if (!Number.isFinite(confirmTimeoutMs) || confirmTimeoutMs <= 0) {
         throw new Error('--confirm-timeout must be a positive number of milliseconds.');
@@ -576,6 +725,7 @@ export function registerFleetCommands(
       let sandbox: EnsureCloudFleetSandboxResult | undefined;
       let sandboxRepository: SandboxRepositorySelection | undefined;
       let liveRepository: CloudRelayfileRepositoryMaterialization | undefined;
+      let sandboxMountPaths: string[] | undefined;
       let attachProjectRoot: string | undefined;
       let workspaceRelay: ReturnType<FleetCommandDependencies['sdk']['createWorkspaceRelay']> | undefined;
       let relaycastClientOptions = clientOptions;
@@ -585,13 +735,40 @@ export function registerFleetCommands(
         const hasExplicitProjectOverride = Boolean(
           deps.core.env?.AGENT_RELAY_PROJECT?.trim() || process.env.AGENT_RELAY_PROJECT?.trim()
         );
+        // AGENT_RELAY_PROJECT selects the workspace namespace, while static
+        // checkout and live Relayfile source inference remain anchored to
+        // the actual Git tree. This also lets --cwd point at a sibling
+        // checkout when explicitly asked.
+        const repositoryRootHint = hasExplicitProjectOverride ? process.cwd() : coreProjectRoot;
+        // An explicit --sandbox-relayfile-path list only needs the repository
+        // identity for mount scoping and project inference — a clean, pushed
+        // HEAD is re-verified strictly below only when the repository is
+        // actually materialized or checked out.
+        const repositoryIdentityOnly = !checkoutRepository && sandboxRelayfilePaths !== undefined;
         if (checkoutRepository || mountSandboxRelayfile) {
-          // AGENT_RELAY_PROJECT selects the workspace namespace, while static
-          // checkout and live Relayfile source inference remain anchored to
-          // the actual Git tree. This also lets --cwd point at a sibling
-          // checkout when explicitly asked.
-          const repositoryRootHint = hasExplicitProjectOverride ? process.cwd() : coreProjectRoot;
-          sandboxRepository = deps.resolveSandboxRepository(repositoryRootHint, requestedCwd);
+          sandboxRepository = deps.resolveSandboxRepository(
+            repositoryRootHint,
+            requestedCwd,
+            undefined,
+            repositoryIdentityOnly ? 'identity' : 'strict'
+          );
+          // A repo-backed task can start from Git without waiting for the
+          // optional context mirror. Explicit mount intent keeps live mode.
+          if (
+            sandboxRepository &&
+            options.sandboxRelayfile === undefined &&
+            sandboxRelayfilePaths === undefined
+          ) {
+            checkoutRepository = true;
+            mountSandboxRelayfile = false;
+          }
+          if (
+            checkoutRepository &&
+            options.sandboxRelayfile !== true &&
+            sandboxRelayfilePaths === undefined
+          ) {
+            mountSandboxRelayfile = false;
+          }
           if (checkoutRepository && !sandboxRepository) {
             throw new Error('--checkout requires a GitHub checkout with a clean, pushed commit.');
           }
@@ -607,11 +784,11 @@ export function registerFleetCommands(
                 : undefined;
           }
         }
+        const localCwdIsHostPath =
+          requestedCwd !== undefined && !/^\/(?:srv\/agent-workforce|workspace)(?:\/|$)/.test(requestedCwd);
         const localRequestedCwd =
-          sandboxRepository &&
-          requestedCwd &&
-          !/^\/(?:srv\/agent-workforce|workspace)(?:\/|$)/.test(requestedCwd)
-            ? path.resolve(process.cwd(), requestedCwd)
+          sandboxRepository && localCwdIsHostPath
+            ? path.resolve(process.cwd(), requestedCwd as string)
             : undefined;
         // With --checkout, `--cwd` selects both the local checkout subdirectory
         // and its Relay project namespace. Resolve an intentional nested pin
@@ -684,7 +861,56 @@ export function registerFleetCommands(
         ) {
           throw new Error('--workspace-id does not match the captured workspace identity.');
         }
-        if (!checkoutRepository && mountSandboxRelayfile && sandboxRepository) {
+        const inferredRelayfileRoots =
+          !checkoutRepository && mountSandboxRelayfile && sandboxRepository
+            ? liveRelayfileRepositoryRoots(sandboxRepository.repository)
+            : undefined;
+        // --sandbox-relayfile-path is the complete subtree list: an explicit
+        // selection replaces the inferred repository/skills roots instead of
+        // unioning with them, so a scoped spawn from inside a large checkout
+        // is not forced to mount the whole repository.
+        sandboxMountPaths =
+          sandboxRelayfilePaths === undefined
+            ? inferredRelayfileRoots
+              ? liveRelayfileMountPaths(inferredRelayfileRoots)
+              : undefined
+            : scopedSandboxRelayfilePaths(sandboxRelayfilePaths, inferredRelayfileRoots?.contentRoot);
+        const mountsInferredRepository =
+          inferredRelayfileRoots !== undefined &&
+          (sandboxMountPaths?.includes(`${inferredRelayfileRoots.contentRoot}/**`) ?? false);
+        // A local --cwd is only meaningful when it maps into a mounted
+        // repository. With an explicit scoped list it must be rejected whether
+        // the repository was resolved-but-excluded or never resolved at all —
+        // otherwise the host path leaks through verbatim as worker_cwd.
+        if (
+          localCwdIsHostPath &&
+          sandboxRelayfilePaths !== undefined &&
+          !checkoutRepository &&
+          !mountsInferredRepository
+        ) {
+          throw new Error(
+            inferredRelayfileRoots !== undefined
+              ? `--cwd ${JSON.stringify(requestedCwd)} resolves inside the inferred repository, but --sandbox-relayfile-path does not mount it; include ${inferredRelayfileRoots.contentRoot}/** or omit --cwd.`
+              : `--cwd ${JSON.stringify(requestedCwd)} is a local path and no repository is mounted; use an absolute sandbox path or omit --cwd.`
+          );
+        }
+        if (sandboxRepository && mountsInferredRepository) {
+          if (repositoryIdentityOnly) {
+            // The scoped mount does include the inferred repository, so the
+            // exact pushed HEAD is required after all — re-resolve strictly.
+            const strictSelection = deps.resolveSandboxRepository(repositoryRootHint, requestedCwd);
+            if (!strictSelection) {
+              throw new Error(
+                'The inferred repository is no longer resolvable; run from its checkout or remove its contents/** path from --sandbox-relayfile-path.'
+              );
+            }
+            if (strictSelection.repository !== sandboxRepository.repository) {
+              throw new Error(
+                'The repository identity changed between mount planning and materialization; retry the spawn.'
+              );
+            }
+            sandboxRepository = strictSelection;
+          }
           const repository = sandboxRepository.repository;
           liveRepository = await deps.materializeCloudRelayfileRepository(
             {
@@ -731,17 +957,23 @@ export function registerFleetCommands(
           sandboxProvider === undefined || sandboxProvider === 'agent37'
             ? 'long-running-agent'
             : 'standard-long-running-agent';
+        const useAsyncPreparation =
+          sandboxId !== undefined && (sandboxProvider === undefined || sandboxProvider === 'agent37');
+        if (useAsyncPreparation && sandboxIdOption === undefined) {
+          // The generated identity is not persisted. Print it before Cloud work
+          // starts so an interrupted run can be resumed instead of duplicated.
+          deps.warn(
+            `Cloud sandbox identity: ${sandboxId}. If this command is interrupted, re-run it with --sandbox-id ${sandboxId} to resume the same sandbox instead of creating another.`
+          );
+        }
         try {
-          sandbox = await deps.ensureCloudFleetSandbox({
+          const ensureInput: EnsureCloudFleetSandboxInput = {
             workspaceId: relayWorkspaceId,
             requiredCapability: `spawn:${cli}`,
+            ...(useAsyncPreparation ? { preparationMode: 'async-v1' as const } : {}),
             maxAgents: 1,
             mountRelayfile: mountSandboxRelayfile,
-            ...(liveRepository
-              ? { relayfilePaths: liveRelayfileMountPaths(liveRepository, sandboxRelayfilePaths) }
-              : sandboxRelayfilePaths === undefined
-                ? {}
-                : { relayfilePaths: sandboxRelayfilePaths }),
+            ...(sandboxMountPaths === undefined ? {} : { relayfilePaths: sandboxMountPaths }),
             ...(sandboxId === undefined ? {} : { sandboxId }),
             forceProvision: true,
             ...(sandboxProvider === undefined ? {} : { providerId: sandboxProvider }),
@@ -752,10 +984,27 @@ export function registerFleetCommands(
             ...(checkoutRepository && sandboxRepository
               ? { repoRevisions: { [sandboxRepository.repository]: sandboxRepository.revision } }
               : {}),
-          });
+          };
+          sandbox = useAsyncPreparation
+            ? await deps.ensureCloudFleetSandbox(ensureInput, {
+                onPreparationProgress: (progress) => {
+                  deps.warn(
+                    `Cloud sandbox preparation: ${progress.phase} (${progress.state}, generation ${progress.generation}).`
+                  );
+                },
+              })
+            : await deps.ensureCloudFleetSandbox(ensureInput);
           assertSandboxRepositoryRevision(sandbox, checkoutRepository ? sandboxRepository : undefined);
         } catch (error) {
-          if (
+          if (error instanceof CloudFleetSandboxProvisionError && error.sandboxAbsent) {
+            // Cloud's terminal record for this exact identity already proves the
+            // provider sandbox is gone; a delete here would only race its reaper.
+            deps.warn(
+              `${error.message} Cloud confirmed sandbox '${
+                error.sandboxId ?? sandboxId ?? 'the requested sandbox'
+              }' is not running; no sandbox was left running.`
+            );
+          } else if (
             shouldCleanupSandbox &&
             error instanceof CloudFleetSandboxProvisionError &&
             error.confirmedProvisioned &&
@@ -770,11 +1019,13 @@ export function registerFleetCommands(
               })
               .catch((cleanupError) => {
                 deps.warn(
-                  `Provisioning failed after Cloud confirmed sandbox '${error.sandboxId}', and automatic cleanup failed: ${
-                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
-                  }`
+                  `Provisioning failed after Cloud confirmed sandbox '${error.sandboxId}', and automatic cleanup failed: ${describeError(
+                    cleanupError
+                  )}`
                 );
               });
+          } else if (error instanceof CloudFleetSandboxProvisionError && error.noSandboxCreated) {
+            deps.warn(error.message);
           } else if (error instanceof CloudFleetSandboxProvisionError && error.outcomeUnknown) {
             deps.warn(
               `Cloud did not return a complete provisioning response. The outcome is unknown; check Cloud Fleet for node '${
@@ -797,9 +1048,9 @@ export function registerFleetCommands(
               })
               .catch((cleanupError) => {
                 deps.warn(
-                  `Provisioning failed after Cloud created sandbox '${error.sandboxId}', and automatic cleanup failed: ${
-                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
-                  }`
+                  `Provisioning failed after Cloud created sandbox '${error.sandboxId}', and automatic cleanup failed: ${describeError(
+                    cleanupError
+                  )}`
                 );
               });
           }
@@ -812,9 +1063,9 @@ export function registerFleetCommands(
               })
               .catch((cleanupError) => {
                 deps.warn(
-                  `Sandbox repository verification failed and cleanup also failed: ${
-                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
-                  }`
+                  `Sandbox repository verification failed and cleanup also failed: ${describeError(
+                    cleanupError
+                  )}`
                 );
               });
           }
@@ -831,16 +1082,11 @@ export function registerFleetCommands(
             const returnedRelayWorkspaceId =
               'relayWorkspaceId' in sandbox ? sandbox.relayWorkspaceId?.trim() : undefined;
             if (
-              (sandboxProvider === 'agent37' && target.route !== 'agent37-isolated') ||
               (returnedRelayWorkspaceId !== undefined &&
                 target.workspaceId.trim() !== returnedRelayWorkspaceId) ||
               (sandbox.outcome === 'provisioned' && !returnedRelayWorkspaceId)
             ) {
-              throw new Error(
-                sandboxProvider === 'agent37' && target.route !== 'agent37-isolated'
-                  ? 'Explicit Agent37 provisioning requires the isolated Agent37 Relaycast target.'
-                  : 'Cloud returned a Relaycast target for a different workspace.'
-              );
+              throw new Error('Cloud returned a Relaycast target for a different workspace.');
             }
             relaycastClientOptions = {
               ...relaycastClientOptions,
@@ -859,7 +1105,19 @@ export function registerFleetCommands(
                 'Cloud returned a Relaycast workspace that could not be verified on the selected gateway.'
               );
             }
-            if (!deps.persistWorkspaceRelaycastTarget(workspaceSelection, target)) {
+            const persistedTarget = sandbox.relaycastCloudApiUrl
+              ? deps.persistWorkspaceRelaycastTarget(workspaceSelection, target, sandbox.relaycastCloudApiUrl)
+              : deps.persistWorkspaceRelaycastTarget(workspaceSelection, target);
+            if (!persistedTarget) {
+              if (
+                target.route === 'canonical' &&
+                target.baseUrl === DEV_RELAYCAST_ORIGIN &&
+                sandbox.relaycastCloudApiUrl !== DEV_CLOUD_API_URL
+              ) {
+                throw new Error(
+                  `Cloud returned the DEV canonical Relaycast target, but relaycastCloudApiUrl was not exactly ${DEV_CLOUD_API_URL}; refusing to persist an untrusted route.`
+                );
+              }
               throw new Error(
                 'Cloud returned a Relaycast target, but no durable project session is available for follow-up attach.'
               );
@@ -874,9 +1132,9 @@ export function registerFleetCommands(
                 })
                 .catch((cleanupError) => {
                   deps.warn(
-                    `Relaycast workspace verification failed and sandbox cleanup also failed: ${
-                      cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
-                    }`
+                    `Relaycast workspace verification failed and sandbox cleanup also failed: ${describeError(
+                      cleanupError
+                    )}`
                   );
                 });
             }
@@ -899,9 +1157,7 @@ export function registerFleetCommands(
               })
               .catch((error) => {
                 deps.warn(
-                  `The timed-out sandbox could not be cleaned up automatically: ${
-                    error instanceof Error ? error.message : String(error)
-                  }`
+                  `The timed-out sandbox could not be cleaned up automatically: ${describeError(error)}`
                 );
               });
           }
@@ -922,9 +1178,9 @@ export function registerFleetCommands(
               })
               .catch((error) => {
                 deps.warn(
-                  `The unmounted sandbox could not be cleaned up automatically and may still be running: ${
-                    error instanceof Error ? error.message : String(error)
-                  }`
+                  `The unmounted sandbox could not be cleaned up automatically and may still be running: ${describeError(
+                    error
+                  )}`
                 );
               });
           }
@@ -996,44 +1252,96 @@ export function registerFleetCommands(
           const confirm = options.confirm !== false;
           const liveSandboxContext =
             sandbox?.outcome === 'provisioned' && liveRepository && sandboxRepository
-              ? `Agent Relay sandbox context: ${liveRepository.repository} is mounted as a live Relayfile working tree at ${liveRelayfileWorkerCwd(
-                  sandbox.relayfileMountPath ?? '/workspace',
-                  liveRepository,
-                  ''
-                )}. Its exact source revision is ${liveRepository.revision}; the same attestation is recorded at ${mountedRelayfilePath(
-                  sandbox.relayfileMountPath ?? '/workspace',
-                  liveRepository.sentinelPath
-                )}. Workspace skills are under ${mountedRelayfilePath(
-                  sandbox.relayfileMountPath ?? '/workspace',
-                  '/.skills'
-                )}. The Relayfile daemon synchronizes this tree; it intentionally has no .git directory.`
+              ? [
+                  `Agent Relay sandbox context: ${liveRepository.repository} is mounted as a live Relayfile working tree at ${liveRelayfileWorkerCwd(
+                    sandbox.relayfileMountPath ?? '/workspace',
+                    liveRepository,
+                    ''
+                  )}. Its exact source revision is ${liveRepository.revision}.`,
+                  ...(sandboxMountPaths?.includes(`${path.posix.dirname(liveRepository.sentinelPath)}/**`)
+                    ? [
+                        `The same attestation is recorded at ${mountedRelayfilePath(
+                          sandbox.relayfileMountPath ?? '/workspace',
+                          liveRepository.sentinelPath
+                        )}.`,
+                      ]
+                    : []),
+                  ...(sandboxMountPaths?.includes('/.skills/**')
+                    ? [
+                        `Workspace skills are under ${mountedRelayfilePath(
+                          sandbox.relayfileMountPath ?? '/workspace',
+                          '/.skills'
+                        )}.`,
+                      ]
+                    : []),
+                  'The Relayfile daemon synchronizes this tree; it intentionally has no .git directory.',
+                ].join(' ')
               : undefined;
-          const invocation = await relay.messaging.placement.spawn({
-            capability: `spawn:${cli}`,
-            node: targetNode,
-            failFast: true,
-            confirm,
-            ...(confirm ? { confirmTimeoutMs: confirmTimeoutMs } : {}),
-            input: {
+          const spawnTask =
+            sandbox &&
+            checkoutRepository &&
+            sandboxRepository &&
+            mountSandboxRelayfile &&
+            sandbox.outcome === 'provisioned'
+              ? `${task}\n\nAgent Relay sandbox context: Relayfile records are available at ${sandbox.relayfileMountPath ?? '/workspace'}. The source checkout is separate; use ${workerCwd ?? 'the worker checkout'} for repository files and the mount for Relayfile records.`
+              : liveSandboxContext
+                ? `${task}\n\n${liveSandboxContext}`
+                : task;
+          // The sandbox context is appended after readTaskInput accepted the
+          // task, so the composed task is what the worker must receive.
+          validateTaskSize(spawnTask, { cli });
+          let invocation;
+          try {
+            invocation = await relay.messaging.placement.spawn({
+              capability: `spawn:${cli}`,
+              node: targetNode,
+              failFast: true,
+              confirm,
+              ...(confirm ? { confirmTimeoutMs: confirmTimeoutMs } : {}),
+              input: {
+                name,
+                cli,
+                task: spawnTask,
+                ...(channel ? { channels: [channel] } : {}),
+                ...(model ? { model } : {}),
+                ...(workerCwd ? { worker_cwd: workerCwd } : {}),
+                ...registrationMetadata,
+                ...(sessionRef ? { session_ref: sessionRef } : {}),
+              },
+            });
+          } catch (error) {
+            if (!(error instanceof RelayPlacementError)) throw error;
+            if (error.code === 'spawn_failed' && classifySpawnFailure(error.message))
+              throw nameTakenSpawnError(name, error);
+            if (error.code !== 'spawn_unconfirmed') throw error;
+            const liveness = await probeSpawnLiveness({
               name,
-              cli,
-              task:
-                sandbox &&
-                checkoutRepository &&
-                sandboxRepository &&
-                mountSandboxRelayfile &&
-                sandbox.outcome === 'provisioned'
-                  ? `${task}\n\nAgent Relay sandbox context: Relayfile records are available at ${sandbox.relayfileMountPath ?? '/workspace'}. The source checkout is separate; use ${workerCwd ?? 'the worker checkout'} for repository files and the mount for Relayfile records.`
-                  : liveSandboxContext
-                    ? `${task}\n\n${liveSandboxContext}`
-                    : task,
-              ...(channel ? { channels: [channel] } : {}),
-              ...(model ? { model } : {}),
-              ...(workerCwd ? { worker_cwd: workerCwd } : {}),
-              ...registrationMetadata,
-              ...(sessionRef ? { session_ref: sessionRef } : {}),
-            },
-          });
+              targetNode,
+              ...(error.invocationId
+                ? {
+                    getInvocation: () => relay.messaging.commands.getInvocation('spawn', error.invocationId!),
+                  }
+                : {}),
+              createClient: () => {
+                const workspace = deps.sdk.createWorkspaceRelay(relaycastClientOptions);
+                return { nodes: workspace.nodes, agents: workspace.agents };
+              },
+            });
+            if (liveness.evidence === 'invocation_terminal') {
+              try {
+                invocation = terminalSpawnOutcome(liveness.invocation!, error, confirm);
+              } catch (terminalError) {
+                if (
+                  terminalError instanceof RelayPlacementError &&
+                  classifySpawnFailure(terminalError.message)
+                )
+                  throw nameTakenSpawnError(name, terminalError);
+                throw terminalError;
+              }
+            } else {
+              throw pendingSpawnError(name, error, liveness, error.message);
+            }
+          }
           const printableSandbox =
             (sandbox?.outcome === 'provisioned' || sandbox?.outcome === 'reused') && sandbox.relaycastTarget
               ? {
@@ -1055,11 +1363,7 @@ export function registerFleetCommands(
             invocation: spawnInvocationWithMergedPlacement(invocation as unknown as Record<string, unknown>),
           });
         } catch (error) {
-          if (
-            shouldCleanupSandbox &&
-            sandbox?.outcome === 'provisioned' &&
-            !(error instanceof RelayPlacementError && error.state === 'unconfirmed_may_be_running')
-          ) {
+          if (shouldCleanupSandbox && sandbox?.outcome === 'provisioned' && !mayStillBeRunning(error)) {
             await deps
               .deleteCloudFleetSandbox({
                 cloudWorkspaceId: sandbox.cloudWorkspaceId,
@@ -1068,9 +1372,9 @@ export function registerFleetCommands(
               })
               .catch((cleanupError) => {
                 deps.warn(
-                  `Spawn failed and the sandbox could not be cleaned up automatically: ${
-                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
-                  }`
+                  `Spawn failed and the sandbox could not be cleaned up automatically: ${describeError(
+                    cleanupError
+                  )}`
                 );
               });
           }
@@ -1084,11 +1388,7 @@ export function registerFleetCommands(
                 deleteAgent: true,
               })
               .catch((error) => {
-                deps.warn(
-                  `Temporary launcher cleanup failed: ${
-                    error instanceof Error ? error.message : String(error)
-                  }`
-                );
+                deps.warn(`Temporary launcher cleanup failed: ${describeError(error)}`);
               });
           }
         }
@@ -1140,7 +1440,7 @@ export function registerFleetCommands(
             }
           : {}),
       });
-      throwForTerminalSpawnFailure(invocation);
+      throwForTerminalSpawnFailure(invocation, name);
       printJson(deps.sdk, { invocation: spawnInvocationWithPlacement(invocation) });
     });
   });
@@ -1151,7 +1451,10 @@ export function registerFleetCommands(
       .description('Release a spawned fleet agent')
       .argument('<name>', 'Worker agent name')
       .option('--reason <reason>', 'Release reason')
-      .option('--delete-agent', 'Permanently delete the agent after release')
+      .option('--delete-agent', 'Permanently delete the agent after release so its name can be reused')
+      .option('--wait', 'With --delete-agent, wait for registration clearance', false)
+      .option('--no-wait', 'Return after release is accepted')
+      .option('--wait-timeout <ms>', 'Registration clearance timeout', '30000')
       .option(
         '--unsubscribe-bindings',
         'Retire provider bindings owned by this identity (implied by --delete-agent)'
@@ -1161,6 +1464,8 @@ export function registerFleetCommands(
       warnIfInferredFromProjectSession(options, deps.warn);
       const workerName = requiredText(name, 'Worker name');
       const deleteAgent = options.deleteAgent === true;
+      const waitTimeoutMs =
+        deleteAgent && options.wait === true ? parseRemovalWaitTimeout(options.waitTimeout) : undefined;
       const sdkOpts = sdkOptionsFromOpts(options);
       // One transport for both cleanup and release. Cleanup otherwise
       // substitutes the local broker session whenever --workspace-key is
@@ -1194,7 +1499,7 @@ export function registerFleetCommands(
             error: deps.error,
           });
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message = describeError(error);
           if (deleteAgent) {
             throw new Error(
               `Refusing to delete @${workerName}: could not retire provider bindings (${message}). Identity kept so \`agent-relay integration unsubscribe <provider> --owned-by @${workerName}\` can retry.`
@@ -1209,6 +1514,22 @@ export function registerFleetCommands(
           reason,
           deleteAgent: true,
         });
+        if (waitTimeoutMs !== undefined) {
+          // Construct/read on the same selected transport; unavailable credentials are uncertainty.
+          const removal = await waitForAgentRemoval({
+            name: workerName,
+            getAgent: (name) => deps.sdk.createWorkspaceRelay(transport).agents.get(name),
+            listAgents: () => deps.sdk.createWorkspaceRelay(transport).agents.list(),
+            timeoutMs: waitTimeoutMs,
+          });
+          printJson(deps.sdk, { ...deleted, removal });
+          if (!removal.cleared && removal.observedPresent) throw new AgentRemovalPendingError(workerName);
+          if (!removal.cleared)
+            deps.warn(
+              `Removal was initiated asynchronously; could not verify clearance: ${removal.readError}`
+            );
+          return;
+        }
         printJson(deps.sdk, deleted);
         return;
       }
@@ -1241,7 +1562,7 @@ export function registerFleetCommands(
     try {
       await runFleetStatus(deps, options);
     } catch (error) {
-      deps.error(error instanceof Error ? error.message : String(error));
+      deps.error(describeError(error));
       deps.exit(1);
     }
   });
@@ -1406,7 +1727,7 @@ async function runFleetAgentList(
         }));
       } catch (error) {
         deps.warn(
-          `roster unavailable (${error instanceof Error ? error.message : String(error)}); ` +
+          `roster unavailable (${describeError(error)}); ` +
             'PRESENCE column will not report roster membership.'
         );
       }
@@ -1459,7 +1780,7 @@ async function runFleetAgentList(
           localRetried = result.retried;
         }
       } catch (error) {
-        localSessionError = `local broker: ${error instanceof Error ? error.message : String(error)}`;
+        localSessionError = `local broker: ${describeError(error)}`;
       } finally {
         client.disconnect();
       }
@@ -1541,12 +1862,27 @@ async function runFleetAgentList(
     const now = new Date();
     const output = buildRows({ contributions, roster }, now);
 
+    const heartbeatNodes = contributions.map(({ node }) => ({
+      name: node.name,
+      lastHeartbeatAt: node.lastHeartbeatAt ?? null,
+      heartbeatAgeMs: heartbeatAgeMs(node, now.getTime()),
+    }));
+    if (
+      heartbeatNodes.some(
+        (node) => node.heartbeatAgeMs !== null && node.heartbeatAgeMs > MAX_LIVE_HEARTBEAT_AGE_MS
+      )
+    ) {
+      deps.warn(
+        'Some node heartbeats are older than 36 seconds. Listings are heartbeat snapshots and can differ within one heartbeat window.'
+      );
+    }
     if (options.pretty === true) {
       deps.log(formatPretty(output));
       return;
     }
     printJson(deps.sdk, {
       generatedAt: now.toISOString(),
+      nodes: heartbeatNodes,
       localNode: localNodeName ?? null,
       perNode: output.perNode,
       unplacedRoster: output.unplacedRoster,
@@ -1584,7 +1920,7 @@ async function runFleetStatus(
         running: false,
         url: conn.url,
         pid: conn.pid,
-        error: error instanceof Error ? error.message : String(error),
+        error: describeError(error),
       };
     } finally {
       client.disconnect();
@@ -1600,7 +1936,7 @@ async function runFleetStatus(
       const nodes = await relay.nodes.list({ name: nodeName });
       node = nodes[0] ?? { available: false, reason: `no node named "${nodeName}" in the workspace` };
     } catch (error) {
-      node = { error: error instanceof Error ? error.message : String(error) };
+      node = { error: describeError(error) };
     }
   } else {
     // A running broker that never reported a node name means the engine lookup

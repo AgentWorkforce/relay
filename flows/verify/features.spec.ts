@@ -1140,7 +1140,6 @@ else
 fi
 
 skip_check "browser primitive"  "requires a provisioned browser session (tier 6 interactive)"
-skip_check "python sdk"         "verified in the python-sdk repo test suite"
 skip_check "swift sdk"          "verified in the swift-sdk repo test suite"
 
 finish_tier

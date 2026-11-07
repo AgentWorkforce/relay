@@ -1,4 +1,4 @@
-import { getProjectPaths } from '@agent-relay/config';
+import { getProjectPaths, isRelayHomeDir, RelayHomeProjectError } from '@agent-relay/config';
 import { resolveWorkspaceKeyWithSource } from '@agent-relay/cloud/workspace-key';
 
 import {
@@ -6,7 +6,13 @@ import {
   writeProjectWorkspaceKey,
   writeProjectWorkspaceKeyPreservingSession,
 } from './project-workspace-key.js';
-import { setWorkspaceKey, switchWorkspace, validateWorkspaceName } from './workspace-store.js';
+import {
+  readWorkspaceStore,
+  setWorkspaceKey,
+  switchWorkspace,
+  validateWorkspaceName,
+  writeWorkspaceStore,
+} from './workspace-store.js';
 
 export interface WorkspaceSessionOptions {
   env?: NodeJS.ProcessEnv;
@@ -24,6 +30,15 @@ export interface PersistWorkspaceSessionOptions extends WorkspaceSessionOptions 
   relaycastApiKey?: string;
   /** Named sessions are also stored and selected in the machine-global workspace store. */
   name?: string;
+  /**
+   * When a named session becomes the machine-global active workspace.
+   * `always` (the default) selects it, as `relay workspace switch/join/create` do.
+   * `if-none` selects it only when no other saved workspace is active, so a
+   * project-scoped setup such as `relay init` never moves the whole machine off
+   * a workspace something else already relies on. `never` leaves the active
+   * workspace as it is, even when none is set.
+   */
+  activate?: 'always' | 'if-none' | 'never';
 }
 
 export interface PinProjectWorkspaceSessionOptions extends WorkspaceSessionOptions {
@@ -49,6 +64,16 @@ export interface PersistWorkspaceSessionResult {
    * workspace. Present only when there was one to drop.
    */
   clearedEnrolledNodeId?: string;
+  /**
+   * The machine-global active workspace left in place because `activate` was
+   * `if-none` or `never` and a different saved workspace was already active.
+   */
+  keptActiveWorkspace?: string;
+  /**
+   * No project pin was written: the project folder resolved to the relay home
+   * (`~`), so only the machine-wide workspace store changed.
+   */
+  projectPinSkipped?: boolean;
 }
 
 /**
@@ -89,6 +114,17 @@ export function persistWorkspaceSession(
   const name = options.name === undefined ? undefined : validateWorkspaceSessionName(options.name);
 
   const projectDataDir = options.projectDataDir ?? getProjectPaths(options.projectRoot).dataDir;
+  // Outside any project (in `~`, whose `.agentworkforce/relay` is the relay
+  // home itself) there is no project to pin: a named selection still becomes
+  // the machine-wide workspace, as `relay workspace switch` from `~` means;
+  // a bare key, which only ever pins a project, is refused.
+  if (isRelayHomeDir(projectDataDir, options.env ?? process.env)) {
+    if (!name) throw new RelayHomeProjectError(projectDataDir);
+    const otherActive = keepsOtherActive(options) ? otherActiveWorkspace(name, options.env) : undefined;
+    saveNamedWorkspace(name, workspaceKey, options);
+    if (!otherActive && options.activate !== 'never') switchWorkspace(name, options.env);
+    return { projectPinSkipped: true, ...(otherActive ? { keptActiveWorkspace: otherActive } : {}) };
+  }
   const existing = readProjectWorkspaceSession(projectDataDir, undefined, options.env);
   // Re-selecting the same workspace must keep the enrolled node: dropping it
   // there manufactured the pin `node up` now warns about, where the next start
@@ -126,14 +162,48 @@ export function persistWorkspaceSession(
     });
   }
 
+  let keptActiveWorkspace: string | undefined;
   if (name) {
-    setWorkspaceKey(name, workspaceKey, options.env);
-    switchWorkspace(name, options.env);
+    const otherActive = keepsOtherActive(options) ? otherActiveWorkspace(name, options.env) : undefined;
+    saveNamedWorkspace(name, workspaceKey, options);
+    if (otherActive) {
+      keptActiveWorkspace = otherActive;
+    } else if (options.activate !== 'never') {
+      switchWorkspace(name, options.env);
+    }
   }
 
-  return existing?.enrolledNodeId && !enrolledNodeId
-    ? { clearedEnrolledNodeId: existing.enrolledNodeId }
-    : {};
+  return {
+    ...(existing?.enrolledNodeId && !enrolledNodeId
+      ? { clearedEnrolledNodeId: existing.enrolledNodeId }
+      : {}),
+    ...(keptActiveWorkspace ? { keptActiveWorkspace } : {}),
+  };
+}
+
+/** Save a named workspace; `setWorkspaceKey` also activates the first one, which `never` rules out. */
+function saveNamedWorkspace(name: string, key: string, options: PersistWorkspaceSessionOptions): void {
+  if (options.activate !== 'never') {
+    setWorkspaceKey(name, key, options.env);
+    return;
+  }
+  const store = readWorkspaceStore(options.env);
+  writeWorkspaceStore({ ...store, workspaces: { ...store.workspaces, [name]: { key } } }, options.env);
+}
+
+/** Whether another active workspace outranks this selection. */
+function keepsOtherActive(options: PersistWorkspaceSessionOptions): boolean {
+  return options.activate === 'if-none' || options.activate === 'never';
+}
+
+/**
+ * The saved workspace active machine-wide, when it is one other than `name`.
+ * An active name with no saved entry resolves to nothing, so it is not kept.
+ */
+function otherActiveWorkspace(name: string, env: NodeJS.ProcessEnv | undefined): string | undefined {
+  const store = readWorkspaceStore(env);
+  const active = store.active;
+  return active && active !== name && store.workspaces[active] ? active : undefined;
 }
 
 /**

@@ -152,7 +152,86 @@ pub(super) struct PendingVerifiedSpawn {
     pub(super) invocation_id: String,
     pub(super) deadline: Instant,
     pub(super) started: Instant,
+    pub(super) failure_reason: Option<String>,
     pub(super) generation: Uuid,
+    pub(super) readiness_proven: bool,
+    pub(super) task_event_id: Option<String>,
+    /// The initial task's verdict, recorded when it arrives before harness
+    /// readiness is proven (for example after a startup-fallback
+    /// `worker_ready`). The proven `worker_ready` that follows resolves the
+    /// action from it, so the order of the two frames cannot strand a spawn
+    /// whose task was already delivered.
+    pub(super) task_verification: Option<TaskVerification>,
+}
+
+/// What the worker reported for a verified spawn's initial task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct TaskVerification {
+    /// Whether the label is whole-payload evidence of receipt.
+    pub(super) confirmed: bool,
+    pub(super) label: Option<String>,
+}
+
+impl PendingVerifiedSpawn {
+    pub(super) fn matches_task(&self, generation: Uuid, event_id: &str) -> bool {
+        self.generation == generation && self.task_event_id.as_deref() == Some(event_id)
+    }
+    pub(super) fn can_report_ready(&self, generation: Uuid) -> bool {
+        self.generation == generation
+            && self.readiness_proven
+            && self.task_event_id.is_none()
+            && self.failure_reason.is_none()
+    }
+    /// Record the initial task's verdict; the task is no longer outstanding.
+    pub(super) fn record_task_verification(&mut self, confirmed: bool, label: Option<&str>) {
+        self.task_event_id = None;
+        self.task_verification = Some(TaskVerification {
+            confirmed,
+            label: label.map(str::to_string),
+        });
+    }
+    /// The initial task failed. Expire the entry with a specific reason so
+    /// maintenance releases the worker and cleans up its fleet identity before
+    /// reporting, exactly as for a readiness timeout. Replying here instead
+    /// would leave a registered, running worker holding the name.
+    pub(super) fn initial_task_failed(&mut self, generation: Uuid, reason: &str) {
+        if self.generation == generation && self.failure_reason.is_none() {
+            self.deadline = Instant::now();
+            self.failure_reason = Some(format!(
+                "spawn_task_failed: initial task was not delivered ({reason}); the worker was released"
+            ));
+        }
+    }
+    /// The action result once readiness is proven and the task is resolved.
+    pub(super) fn completion(self, name: &WorkerName) -> ActionResult {
+        match self.task_verification {
+            Some(TaskVerification {
+                confirmed: false,
+                label,
+            }) => {
+                verified_spawn_task_unconfirmed_result(self.invocation_id, name, label.as_deref())
+            }
+            _ => verified_spawn_ready_result(self.invocation_id, name),
+        }
+    }
+}
+
+impl PendingVerifiedSpawn {
+    pub(super) fn directory_trust_failed(&mut self, generation: Uuid) {
+        if self.generation == generation {
+            self.deadline = Instant::now();
+            // Fixed remediation only: never propagate private terminal output.
+            self.failure_reason = Some("spawn_directory_trust_required: Devin requires directory trust; run `devin` in the explicit spawn working directory on the selected node, trust that directory, then retry".into());
+        }
+    }
+
+    pub(super) fn provider_auth_failed(&mut self, generation: Uuid) {
+        if self.generation == generation {
+            self.deadline = Instant::now();
+            // Do not copy provider output: it may contain device codes or tokens.
+            self.failure_reason = Some("spawn_provider_auth_required: Muse requires authentication; run `muse` on the selected node and complete device login, then retry".into());
+        }
+    }
 }
 
 pub(super) fn verified_spawn_ready_result(
@@ -168,6 +247,87 @@ pub(super) fn verified_spawn_ready_result(
             output: json!({ "spawned": true, "ready": true, "name": name.as_str() }),
         }),
     }
+}
+
+/// A live, ready agent whose initial task was delivered but not confirmed.
+///
+/// Per the #1959 acceptance policy, only a real delivery failure fails a
+/// verified spawn. An unconfirmed task (written, not visibly parked, but no
+/// harness evidence either way, or bound to no verdict at all) is a success:
+/// the agent is registered, ready and holding the name, so a retry would
+/// duplicate it. The result carries `warning.code = "spawn_task_unconfirmed"`
+/// so callers can tell it apart from a task the harness was seen to accept.
+pub(super) fn verified_spawn_task_unconfirmed_result(
+    invocation_id: String,
+    name: &WorkerName,
+    verification: Option<&str>,
+) -> ActionResult {
+    ActionResult {
+        task: None,
+        v: FLEET_WIRE_VERSION,
+        id: None,
+        invocation_id,
+        result: ActionResultPayload::Output(ActionResultOutput {
+            output: json!({
+                "spawned": true,
+                "ready": true,
+                "name": name.as_str(),
+                "warning": {
+                    "code": "spawn_task_unconfirmed",
+                    "verification": verification.unwrap_or("none"),
+                    "message": format!(
+                        "agent '{name}' is live and ready and its initial task was delivered, but \
+                         the harness never confirmed accepting it. Do not retry this spawn; check \
+                         the agent's transcript."
+                    ),
+                },
+            }),
+        }),
+    }
+}
+
+/// Result for a verified spawn whose worker had already reported
+/// `worker_ready` before this action's pending entry existed.
+///
+/// The runtime loop is serial, so for a fresh worker that cannot happen; it is
+/// reached only when the launch resolved to a worker that was already up. Its
+/// initial PTY task, if any, was then queued without being bound to this
+/// action, so no task verdict can reach it: report the live agent as
+/// unconfirmed rather than claim `spawned:true, ready:true` (relay#1893 review).
+pub(super) fn already_ready_spawn_result(
+    invocation_id: String,
+    name: &WorkerName,
+    unbound_pty_task: bool,
+) -> ActionResult {
+    if unbound_pty_task {
+        verified_spawn_task_unconfirmed_result(invocation_id, name, Some("unbound"))
+    } else {
+        verified_spawn_ready_result(invocation_id, name)
+    }
+}
+
+/// Whether a fleet spawn's initial task will be injected through a PTY, the
+/// only path the envelope limit applies to. An explicit headless or native
+/// harness config hands the task over without a terminal; an absent or
+/// invalid config keeps the conservative PTY answer (the spawn path rejects an
+/// invalid config on its own).
+pub(super) fn spawn_task_is_pty_injected(input: &Value) -> bool {
+    super::relaycast_events::relaycast_harness_config(input)
+        .ok()
+        .flatten()
+        .is_none_or(|config| config.runtime() == AgentRuntime::Pty)
+}
+
+/// The spawn error for an initial task that cannot reach the worker: a PTY
+/// task must fit the injection envelope, while Muse takes its startup task as
+/// one argv entry and is bounded by its portable argv limit instead.
+pub(super) fn spawn_task_too_large(cli: &str, task: &str) -> Option<String> {
+    if crate::snippets::is_muse_executable(cli) {
+        return crate::worker::validate_muse_startup_prompt(cli, Some(task))
+            .err()
+            .map(|error| format!("spawn_task_too_large: {error}"));
+    }
+    crate::injection_wire::task_too_large_error(task)
 }
 
 pub(super) fn verified_spawn_failed_result(invocation_id: String, error: &str) -> ActionResult {
@@ -188,8 +348,8 @@ enum FleetDeliverySurfaceOutcome {
     /// or an unrecognized payload type), so there is nothing to verify.
     Acknowledge,
     /// A PTY injection was handed to the worker. The engine ack is withheld
-    /// until the worker confirms it landed (echo-verified, or the bounded
-    /// timeout fallback) — see relay#1310. The withheld ack was already
+    /// until the worker confirms harness acceptance — see relay#1310. The
+    /// withheld ack was already
     /// registered on the corresponding `PendingDelivery` at insertion time
     /// (see relay#1543), so there is nothing left to carry here.
     AcknowledgeAfterEcho,
@@ -898,7 +1058,7 @@ impl BrokerRuntime {
                 );
             }
             FleetControlEvent::Message(RelaycastToBroker::Deliver(deliver)) => {
-                self.handle_fleet_deliver(deliver).await;
+                self.stage_fleet_deliver(deliver).await;
             }
             FleetControlEvent::Message(RelaycastToBroker::ActionInvoke(invoke)) => {
                 self.handle_fleet_action_invoke(invoke).await;
@@ -923,13 +1083,154 @@ impl BrokerRuntime {
         }
     }
 
-    async fn handle_fleet_deliver(&mut self, deliver: Deliver) {
+    /// Admit a node `deliver` frame, first downloading any file attachments
+    /// it carries. Downloads run off the event loop; the frame (and every
+    /// later frame for the same agent) is held in
+    /// [`crate::attachments::AttachmentStaging`] until they finish, so the
+    /// per-agent delivery order the sequence book relies on is preserved.
+    /// Frames are neither observed by the book nor acknowledged while held:
+    /// a broker that exits mid-download leaves them for Relaycast to replay.
+    async fn stage_fleet_deliver(&mut self, deliver: Deliver) {
+        // Already-acked replays need only repeat the cumulative ACK, and a
+        // terminally failed replay must remain fenced without another body
+        // download. Sending either through attachment staging can redownload
+        // the same bytes and unnecessarily block later frames for this agent.
+        if self
+            .terminal_failed_deliveries
+            .contains(deliver.delivery_id.as_str())
+            || (deliver.seq > 0
+                && deliver.seq <= self.fleet_delivery_book.acked_up_to_seq(&deliver.agent_id))
+        {
+            self.handle_fleet_deliver(deliver, None).await;
+            return;
+        }
+        let key = deliver.agent.clone();
+        let attachments = fleet_delivery_attachments(&deliver.payload);
+        if attachments.is_empty() {
+            if self.attachment_staging.is_busy(&key) {
+                self.attachment_staging.push_ready(key, deliver);
+            } else {
+                self.handle_fleet_deliver(deliver, None).await;
+            }
+            return;
+        }
+
+        let base = self.attachment_base_dir(&deliver.agent);
+        let root = crate::attachments::attachments_root(&base);
+        let fallback_root = self
+            .attachment_staging
+            .fallback_base
+            .as_deref()
+            .map(crate::attachments::attachments_root)
+            .filter(|fallback| *fallback != root);
+        let downloader = crate::attachments::AttachmentDownloader::new(
+            self.attachment_staging.http.clone(),
+            self.relaycast_http
+                .base_url
+                .as_deref()
+                .unwrap_or(crate::relaycast::auth::DEFAULT_RELAYCAST_BASE_URL),
+            &self.relaycast_http.api_key,
+        );
+        tracing::info!(
+            target = "relay_broker::fleet",
+            agent = %deliver.agent,
+            msg_id = %deliver.msg_id,
+            attachments = attachments.len(),
+            "holding node delivery while its attachments download"
+        );
+        let fallback_block = crate::attachments::render_reference_block(&attachments);
+        let (token, done_tx, started_at) =
+            self.attachment_staging
+                .push_preparing(key.clone(), deliver, fallback_block);
+        let slots = self.attachment_staging.download_slots.clone();
+        let task_key = key.clone();
+        let task = tokio::spawn(async move {
+            // Held (unacknowledged) until a download slot frees up.
+            let Ok(_slot) = slots.acquire_owned().await else {
+                return;
+            };
+            if let Ok(mut started) = started_at.lock() {
+                *started = Some(Instant::now());
+            }
+            let resolved = downloader
+                .materialize(&attachments, &root, fallback_root.as_deref())
+                .await;
+            let block = crate::attachments::render_attachment_block(&resolved);
+            let _ = done_tx.send(crate::attachments::StagedAttachments {
+                key: task_key,
+                token,
+                block,
+            });
+        });
+        self.attachment_staging
+            .set_abort_handle(&key, token, task.abort_handle());
+    }
+
+    /// Release node deliveries whose attachment downloads finished, in
+    /// per-agent arrival order.
+    pub(super) async fn handle_staged_attachments(
+        &mut self,
+        staged: crate::attachments::StagedAttachments,
+    ) {
+        for (deliver, block) in self.attachment_staging.complete(staged) {
+            self.handle_fleet_deliver(deliver, block.as_deref()).await;
+        }
+    }
+
+    /// Where a worker can read its downloaded attachments: its working
+    /// directory (the harness sandbox root for Claude Code / Codex), else the
+    /// broker's own directory it inherited, else the home fallback.
+    fn attachment_base_dir(&self, agent: &str) -> PathBuf {
+        if let Some(handle) = self.workers.workers.get(&WorkerName::from(agent)) {
+            if let Some(cwd) = handle
+                .spec
+                .cwd
+                .as_deref()
+                .map(Path::new)
+                .filter(|cwd| cwd.is_absolute())
+            {
+                return cwd.to_path_buf();
+            }
+            if let Ok(cwd) = std::env::current_dir() {
+                return cwd;
+            }
+        }
+        self.attachment_staging
+            .fallback_base
+            .clone()
+            .unwrap_or_else(std::env::temp_dir)
+    }
+
+    /// `block` is the rendered `Attachments:` block appended to the injected
+    /// body, when the message carried attachments.
+    pub(super) async fn handle_fleet_deliver(&mut self, deliver: Deliver, block: Option<&str>) {
         let decision = self.fleet_delivery_book.observe(&deliver);
         // Record the book's verdict before acting on it, so a frame that is
         // about to be dropped without an ack is still visible over
         // `GET /api/node-delivery`. See `crate::node_delivery_probe`.
         self.node_delivery_probe
             .record_decision(&deliver, &decision);
+        // A terminal worker failure deliberately withholds the engine ACK,
+        // but Relaycast may replay that frame on reconnect. The body can still
+        // be parked in the harness composer, so never surface it again within
+        // this broker lifetime. Keep withholding the ACK for operator recovery
+        // while using the terminal-failure fence to prevent a duplicate paste.
+        if self
+            .terminal_failed_deliveries
+            .contains(deliver.delivery_id.as_str())
+        {
+            self.node_delivery_probe
+                .record_disposition(&deliver, DeliverDisposition::SurfaceFailed);
+            tracing::warn!(
+                target = "relay_broker::fleet",
+                agent = %deliver.agent,
+                delivery_id = %deliver.delivery_id,
+                msg_id = %deliver.msg_id,
+                seq = deliver.seq,
+                "withholding replay of terminally failed delivery; body may remain in the composer"
+            );
+            return;
+        }
         // `seen_msg_ids` proves this exact frame once reached broker custody;
         // it does not prove that custody still exists or that the worker
         // received it. If custody disappeared before cumulative ACK, treating
@@ -968,7 +1269,7 @@ impl BrokerRuntime {
             plan_fleet_delivery(decision)
         };
         let up_to_seq = match plan {
-            FleetDeliveryPlan::Surface => match self.surface_fleet_deliver(&deliver).await {
+            FleetDeliveryPlan::Surface => match self.surface_fleet_deliver(&deliver, block).await {
                 Ok(FleetDeliverySurfaceOutcome::Acknowledge) => {
                     self.node_delivery_probe
                         .record_disposition(&deliver, DeliverDisposition::SurfacedAndAcked);
@@ -1098,6 +1399,7 @@ impl BrokerRuntime {
     async fn surface_fleet_deliver(
         &mut self,
         deliver: &Deliver,
+        attachment_block: Option<&str>,
     ) -> Result<FleetDeliverySurfaceOutcome, anyhow::Error> {
         let payload_type = deliver
             .payload
@@ -1116,6 +1418,10 @@ impl BrokerRuntime {
                     .fleet_delivery_book
                     .next_ack_seq(deliver.agent_id.as_str());
                 let fields = fleet_delivery_fields(&deliver.payload, &deliver.agent);
+                // The dashboard mirror below keeps the sender's text; the
+                // worker additionally gets the downloaded-attachment block.
+                let injected_body =
+                    crate::attachments::append_attachment_block(&fields.body, attachment_block);
 
                 // Mirror the `relay_inbound` dashboard event that the HTTP
                 // `Send` handler (`ListenApiRequest::Send` in runtime/api.rs)
@@ -1158,7 +1464,7 @@ impl BrokerRuntime {
                     &deliver.agent,
                     InboundContext {
                         from: &fields.from,
-                        body: &fields.body,
+                        body: &injected_body,
                         target: &fields.target,
                         thread_id: fields.thread_id.as_deref(),
                         workspace_id: self.default_workspace_id.as_deref(),
@@ -1312,7 +1618,7 @@ impl BrokerRuntime {
                         // paths if the worker disappears before echoing. A
                         // one-shot `workers.deliver` outside `pending_deliveries`
                         // had no such guarantee — see relay#1543.
-                        let relay_delivery = self.fleet_relay_delivery(deliver);
+                        let relay_delivery = self.fleet_relay_delivery(deliver, attachment_block);
                         insert_and_attempt_delivery(
                             &mut self.workers,
                             &mut self.pending_deliveries,
@@ -1376,7 +1682,11 @@ impl BrokerRuntime {
         }
     }
 
-    fn fleet_relay_delivery(&self, deliver: &Deliver) -> RelayDelivery {
+    fn fleet_relay_delivery(
+        &self,
+        deliver: &Deliver,
+        attachment_block: Option<&str>,
+    ) -> RelayDelivery {
         let fields = fleet_delivery_fields(&deliver.payload, &deliver.agent);
         RelayDelivery {
             delivery_id: DeliveryId::new(deliver.delivery_id.clone()),
@@ -1385,7 +1695,7 @@ impl BrokerRuntime {
             workspace_alias: self.default_workspace.workspace_alias.clone(),
             from: fields.from,
             target: MessageTarget::new(fields.target),
-            body: fields.body,
+            body: crate::attachments::append_attachment_block(&fields.body, attachment_block),
             thread_id: fields.thread_id,
             priority: fields.priority,
             injection_mode: match deliver.mode {
@@ -1538,6 +1848,17 @@ impl BrokerRuntime {
             }
         };
         let task = action_invoke_string(&invoke.input, &["task", "initial_task", "prompt"]);
+        let carries_task = task.is_some();
+        // Reject before launching: an oversized task can only fail after the
+        // worker exists, costing a launch and a release for a known outcome.
+        if let Some(error) = task
+            .as_deref()
+            .filter(|_| spawn_task_is_pty_injected(&invoke.input))
+            .and_then(|task| spawn_task_too_large(&cli, task))
+        {
+            self.reply_action_error(&invoke.invocation_id, &error).await;
+            return;
+        }
         let channel = action_invoke_string(&invoke.input, &["channel"]);
         let model = action_invoke_string(&invoke.input, &["model"]);
 
@@ -1636,21 +1957,26 @@ impl BrokerRuntime {
                 // while maintenance fails it after an early exit/readiness timeout
                 // and performs cleanup.
                 if verify_ready {
-                    let (already_ready, generation) = {
+                    let (already_ready, generation, is_pty) = {
                         let worker = self
                             .workers
                             .workers
                             .get(&name)
                             .expect("verified spawn worker must still exist");
-                        (worker.ready_at.is_some(), worker.generation)
+                        (
+                            worker.ready_at.is_some(),
+                            worker.generation,
+                            worker.spec.runtime == AgentRuntime::Pty,
+                        )
                     };
                     if already_ready {
                         tracing::info!(invocation_id = %invoke.invocation_id, worker = %name,
                             verify_ready, elapsed_ms = started.elapsed().as_millis() as u64,
                             "sending verified fleet spawn result");
-                        self.send_fleet_action_result(verified_spawn_ready_result(
+                        self.send_fleet_action_result(already_ready_spawn_result(
                             invoke.invocation_id,
                             &name,
+                            is_pty && carries_task,
                         ))
                         .await;
                     } else {
@@ -1660,7 +1986,11 @@ impl BrokerRuntime {
                                 invocation_id: invoke.invocation_id,
                                 deadline: Instant::now() + VERIFIED_SPAWN_READY_TIMEOUT,
                                 started,
+                                failure_reason: None,
                                 generation,
+                                readiness_proven: false,
+                                task_event_id: None,
+                                task_verification: None,
                             },
                         );
                     }
@@ -1760,32 +2090,6 @@ impl BrokerRuntime {
 
         self.pty_observability.remove(&name);
 
-        let mut deregistration_failed = false;
-        if outcome == super::relaycast_events::ReleaseOutcome::Released {
-            match deregister_fleet_agent(&self.fleet_control_tx, &self.fleet_delivery_book, &name)
-                .await
-            {
-                Ok(_) => {
-                    prune_fleet_agent_state(
-                        &self.fleet_control_tx,
-                        &mut self.fleet_inventory,
-                        &mut self.fleet_delivery_book,
-                        &name,
-                    )
-                    .await;
-                }
-                Err(error) => {
-                    tracing::warn!(worker = %name, %error, "retaining fleet identity after release cleanup");
-                    deregistration_failed = true;
-                    prune_fleet_inventory_entry(
-                        &self.fleet_control_tx,
-                        &mut self.fleet_inventory,
-                        &name,
-                    )
-                    .await;
-                }
-            }
-        }
         if let Some(pending) = self.pending_verified_spawns.remove(&name) {
             self.send_fleet_action_result(verified_spawn_failed_result(
                 pending.invocation_id,
@@ -1793,16 +2097,23 @@ impl BrokerRuntime {
             ))
             .await;
         }
-        self.publish_fleet_load(true).await;
         match outcome {
-            super::relaycast_events::ReleaseOutcome::Released if deregistration_failed => {
-                self.reply_action_error(&invoke.invocation_id, "release_deregistration_failed")
-                    .await;
-            }
             super::relaycast_events::ReleaseOutcome::Released => {
+                // The built-in release action's result is the engine's atomic
+                // authorization point. Keep its binding active until this
+                // frame is first on the FIFO control channel; an earlier
+                // agent.deregister or inventory removal makes the completion
+                // fail closed with agent_release_generation_conflict.
                 self.reply_action_output(
                     &invoke.invocation_id,
                     json!({ "released": true, "name": name.as_str() }),
+                )
+                .await;
+                prune_fleet_agent_state(
+                    &self.fleet_control_tx,
+                    &mut self.fleet_inventory,
+                    &mut self.fleet_delivery_book,
+                    &name,
                 )
                 .await;
             }
@@ -1811,6 +2122,7 @@ impl BrokerRuntime {
                     .await;
             }
         }
+        self.publish_fleet_load(true).await;
     }
 
     async fn reply_action_output(&self, invocation_id: &str, output: Value) {
@@ -1928,9 +2240,10 @@ pub(super) async fn enqueue_delivery_ack(
 /// confirmation of a specific PTY injection (relay#1310: the ack must not
 /// fire before the worker confirms the write landed). Called with the
 /// `delivery_id`/`event_id` from the worker's own internal `delivery_ack`
-/// event (`worker_events.rs`), which pty_worker.rs sends only after echo
-/// verification succeeds or its bounded timeout fallback fires — never at
-/// write-enqueue time.
+/// event (`worker_events.rs`), which pty_worker.rs sends only after activity
+/// or a cleared composer proves harness acceptance (or, for a plain `cat`
+/// recipient with no harness, after its PTY echo proves transport receipt) —
+/// never at write-enqueue time.
 ///
 /// Returns the `(agent, up_to_seq)` to send to the engine once resolved, or
 /// `None` when there is nothing withheld for `delivery_id` (already
@@ -2372,18 +2685,46 @@ pub(super) async fn reconcile_blocked_flush_predecessor(
 /// either — a failure is logged at error level with the agent name and the
 /// underlying error, and it is not retried, because the honest signal is worth
 /// more than a hidden retry loop on a non-critical publish.
+///
+/// The same PATCH carries the worker's CLI, this machine's name and the
+/// broker's signed-in owner, so the roster can show whose agent it is, where
+/// it runs and which CLI's icon to draw.
 pub(super) fn spawn_declared_metadata_publish(
     relaycast_http: &RelaycastHttpClient,
     name: &str,
+    spec: &crate::protocol::AgentSpec,
     declared: AgentRegistrationMetadata,
 ) {
-    if declared.is_empty() {
-        return;
-    }
     let http = relaycast_http.clone();
     let agent = name.to_string();
+    let cli = launched_cli(spec).to_string();
     tokio::spawn(async move {
-        match http.publish_declared_metadata(&agent, &declared).await {
+        // The hostname call and the identity file read block; keep them off
+        // the runtime's async workers too.
+        // A failed lookup still publishes the declared fields, and says so.
+        let spawned = match tokio::task::spawn_blocking(move || {
+            crate::relaycast::spawned_worker_metadata(&cli)
+        })
+        .await
+        {
+            Ok(spawned) => spawned,
+            Err(error) => {
+                tracing::error!(
+                    worker = %agent,
+                    error = %error,
+                    "could not read the spawned worker's cli/host/owner; publishing its \
+                     declared workforce metadata without them"
+                );
+                serde_json::Map::new()
+            }
+        };
+        if declared.is_empty() && spawned.is_empty() {
+            return;
+        }
+        match http
+            .publish_declared_metadata(&agent, &declared, &spawned)
+            .await
+        {
             Ok(()) => tracing::debug!(
                 worker = %agent,
                 "published declared workforce metadata for spawned agent"
@@ -2392,11 +2733,55 @@ pub(super) fn spawn_declared_metadata_publish(
                 worker = %agent,
                 error = %error,
                 "failed to publish declared workforce metadata; the agent is registered and \
-                 running but its declared organization/project/workstream/role/objective are \
-                 not visible to the engine"
+                 running but its declared organization/project/workstream/role/objective and \
+                 its cli/host/owner are not visible to the engine"
             ),
         }
     });
+}
+
+/// The CLI a launched worker actually runs: a PTY harness's own command,
+/// which can differ from the requested `cli`, else the requested `cli`, else
+/// the CLI a provider-only headless spawn runs.
+fn launched_cli(spec: &crate::protocol::AgentSpec) -> &str {
+    match spec.harness_config.as_ref() {
+        Some(crate::protocol::ResolvedHarnessConfig::Pty(config)) => config.command.as_str(),
+        _ => spec
+            .cli
+            .as_deref()
+            .or_else(|| {
+                spec.provider
+                    .as_ref()
+                    .map(crate::runtime::headless::headless_provider_cli_name)
+            })
+            .unwrap_or_default(),
+    }
+}
+
+#[cfg(test)]
+mod launched_cli_tests {
+    use super::launched_cli;
+    use crate::protocol::AgentSpec;
+    use serde_json::json;
+
+    fn spec(value: serde_json::Value) -> AgentSpec {
+        serde_json::from_value(value).expect("a valid agent spec")
+    }
+
+    #[test]
+    fn the_roster_cli_is_what_the_worker_runs() {
+        let requested = spec(json!({"name": "w", "runtime": "pty", "cli": "codex"}));
+        assert_eq!(launched_cli(&requested), "codex");
+        let harness = spec(json!({
+            "name": "w", "runtime": "pty", "cli": "codex",
+            "harnessConfig": {"runtime": "pty", "command": "/usr/local/bin/claude"}
+        }));
+        assert_eq!(launched_cli(&harness), "/usr/local/bin/claude");
+        let headless = spec(json!({"name": "w", "runtime": "headless", "provider": "opencode"}));
+        assert_eq!(launched_cli(&headless), "opencode");
+        let unknown = spec(json!({"name": "w", "runtime": "pty"}));
+        assert_eq!(launched_cli(&unknown), "");
+    }
 }
 
 /// Bind an agent to this node by sending node-control `agent.register` and
@@ -3038,6 +3423,29 @@ struct FleetDeliveryFields {
     priority: Option<u8>,
 }
 
+/// Attachment arrays in node `deliver` payloads: the engine spreads the
+/// message record into `data`; older/flat shapes are accepted too.
+const FLEET_ATTACHMENT_POINTERS: &[&str] = &[
+    "/data/attachments",
+    "/attachments",
+    "/message/attachments",
+    "/data/message/attachments",
+    "/payload/message/attachments",
+    "/payload/attachments",
+];
+
+/// File attachments of a message-class node delivery (empty otherwise).
+fn fleet_delivery_attachments(payload: &Value) -> Vec<crate::attachments::InboundAttachment> {
+    let payload_type = payload.get("type").and_then(Value::as_str).unwrap_or("");
+    if !matches!(
+        classify_fleet_delivery(payload_type),
+        FleetDeliverySurfacing::Inject
+    ) {
+        return Vec::new();
+    }
+    crate::attachments::attachments_at(payload, FLEET_ATTACHMENT_POINTERS)
+}
+
 /// Extract message body/sender/target/thread/priority from a node `deliver`
 /// payload.
 ///
@@ -3051,6 +3459,7 @@ struct FleetDeliveryFields {
 /// name) is used only when no channel/target is present, i.e. for direct
 /// messages.
 fn fleet_delivery_fields(payload: &Value, fallback_target: &str) -> FleetDeliveryFields {
+    let has_attachments = !fleet_delivery_attachments(payload).is_empty();
     let body = first_string(
         payload,
         &[
@@ -3066,7 +3475,15 @@ fn fleet_delivery_fields(payload: &Value, fallback_target: &str) -> FleetDeliver
             "/data/error",
         ],
     )
-    .unwrap_or_else(|| payload.to_string());
+    // An attachment-only message has empty text; inject just the attachment
+    // block rather than the raw payload JSON.
+    .unwrap_or_else(|| {
+        if has_attachments {
+            String::new()
+        } else {
+            payload.to_string()
+        }
+    });
     let from = first_string(
         payload,
         &[
@@ -3268,8 +3685,43 @@ mod tests {
             );
         }
         // CLI/SDK default confirmation budget is 120s (fleet.ts / relaycast.ts).
-        assert!(crate::pty_worker::STARTUP_READY_TIMEOUT < VERIFIED_SPAWN_READY_TIMEOUT);
+        assert!(
+            crate::pty_worker::STARTUP_READY_TIMEOUT
+                + crate::injection_wire::INJECTION_PROMPT_WAIT
+                + Duration::from_millis(crate::injection_wire::MAX_TYPED_BYTES as u64 * 5 + 250)
+                + crate::broker::delivery_verification::VERIFICATION_WINDOW
+                < VERIFIED_SPAWN_READY_TIMEOUT
+        );
         assert!(VERIFIED_SPAWN_READY_TIMEOUT < Duration::from_secs(120));
+    }
+
+    #[test]
+    fn verified_task_spawn_waits_for_matching_delivery_and_proven_prompt() {
+        let generation = Uuid::new_v4();
+        let mut pending = PendingVerifiedSpawn {
+            invocation_id: "test".into(),
+            deadline: Instant::now(),
+            started: Instant::now(),
+            failure_reason: None,
+            generation,
+            readiness_proven: false,
+            task_event_id: Some("init_test".into()),
+            task_verification: None,
+        };
+        assert!(!pending.can_report_ready(generation));
+        pending.readiness_proven = true;
+        assert!(!pending.can_report_ready(generation));
+        assert!(!pending.matches_task(Uuid::new_v4(), "init_test"));
+        assert!(!pending.matches_task(generation, "another_message"));
+        assert!(pending.matches_task(generation, "init_test"));
+        // The matching task retires this entry whatever its verdict; whether
+        // that resolves the action as success or as `spawn_task_unconfirmed`
+        // is `worker_events`' receipt gate, covered by
+        // `a_spawn_task_acked_without_proof_of_receipt_never_reports_success`.
+        pending.task_event_id = None;
+        assert!(pending.can_report_ready(generation));
+        pending.readiness_proven = false;
+        assert!(!pending.can_report_ready(generation));
     }
 
     fn test_agent_spec(session_id: Option<&str>, harness_session_id: Option<&str>) -> AgentSpec {

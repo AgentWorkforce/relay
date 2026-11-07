@@ -699,6 +699,31 @@ describe('ensureAuthenticated', () => {
   });
 });
 
+it('cancels an expired session refresh using its caller deadline', async () => {
+  const controller = new AbortController();
+  let refreshSignal: AbortSignal | undefined;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (_input: string | URL, init?: RequestInit) => {
+      refreshSignal = init?.signal ?? undefined;
+      return new Promise<Response>((_resolve, reject) => {
+        refreshSignal?.addEventListener('abort', () => reject(refreshSignal?.reason), { once: true });
+      });
+    })
+  );
+  const failed = ensureCloudSession({
+    env: createEnvAuth(),
+    interactive: false,
+    signal: controller.signal,
+  }).catch((error: unknown) => error);
+  await vi.waitFor(() => expect(refreshSignal).toBeDefined());
+  const reason = new Error('Attachment canceled');
+  controller.abort(reason);
+  expect(await failed).toBe(reason);
+  expect(refreshSignal?.aborted).toBe(true);
+  expect(fsMocks.writeFile).not.toHaveBeenCalled();
+});
+
 describe('refreshStoredAuth', () => {
   it('refreshes env-backed auth in memory only without touching the auth file', async () => {
     const env = createEnvAuth();

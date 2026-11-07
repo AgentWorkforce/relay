@@ -947,6 +947,91 @@ describe('RelaycastMessagingClient placement', () => {
       expect((error as RelayPlacementError).dispatchState).toBe('not_dispatched');
     });
 
+    // The engine's 201 for a placed spawn snapshots the chosen node in
+    // handler_node_id before it sends. A send that fails leaves
+    // dispatched_node_id null, so the placed node alone is not a route.
+    it('reports dispatchState not_dispatched on timeout when the ack names only the placed handler node', async () => {
+      const { client, invoke } = createClient([LIVE_NODE_A], {
+        getInvocation: async (name, invocationId) => ({
+          invocation_id: invocationId,
+          action_name: name,
+          status: 'pending',
+          dispatched_node_id: null,
+        }),
+      });
+      invoke.mockResolvedValueOnce({
+        invocation_id: 'inv-placed-unsent',
+        action_name: 'spawn',
+        handler_node_id: 'node_a',
+        dispatched_node_id: null,
+        status: 'pending',
+      });
+
+      const error = await client.placement
+        .spawn({
+          capability: 'spawn:claude',
+          node: 'node-a',
+          repo: 'relay',
+          confirm: true,
+          confirmTimeoutMs: 60,
+          confirmPollIntervalMs: 10,
+          input: { name: 'worker-placed-unsent' },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(RelayPlacementError);
+      expect((error as RelayPlacementError).code).toBe('spawn_unconfirmed');
+      expect((error as RelayPlacementError).dispatchState).toBe('not_dispatched');
+    });
+
+    // The engine can dispatch a pending invocation after acknowledging it
+    // (a node that reconnects drains it). A read that shows the route is
+    // evidence the ack lacked.
+    it('reports dispatchState dispatched when a confirmation read shows a route the pending ack lacked', async () => {
+      let reads = 0;
+      const { client, invoke } = createClient([LIVE_NODE_A], {
+        getInvocation: async (name, invocationId) => {
+          reads += 1;
+          return reads === 1
+            ? {
+                invocation_id: invocationId,
+                action_name: name,
+                status: 'dispatched',
+                dispatched_node_id: 'node_a',
+              }
+            : {
+                invocation_id: invocationId,
+                action_name: name,
+                status: 'failed',
+                error: 'harness exited before readiness',
+              };
+        },
+      });
+      invoke.mockResolvedValueOnce({
+        invocation_id: 'inv-pending-then-dispatched',
+        action_name: 'spawn',
+        handler_node_id: 'node_a',
+        dispatched_node_id: null,
+        status: 'pending',
+      });
+
+      const error = await client.placement
+        .spawn({
+          capability: 'spawn:claude',
+          node: 'node-a',
+          repo: 'relay',
+          confirm: true,
+          confirmTimeoutMs: 1_000,
+          confirmPollIntervalMs: 10,
+          input: { name: 'worker-pending-then-dispatched' },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(RelayPlacementError);
+      expect((error as RelayPlacementError).code).toBe('spawn_failed');
+      expect((error as RelayPlacementError).dispatchState).toBe('dispatched');
+    });
+
     it('reports dispatchState not_dispatched on a terminal failure when the ack never routed to a node', async () => {
       const { client, invoke } = createClient([LIVE_NODE_A], {
         getInvocation: async (name, invocationId) => ({

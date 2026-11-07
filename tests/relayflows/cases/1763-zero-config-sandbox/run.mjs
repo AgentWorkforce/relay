@@ -25,7 +25,7 @@ const observationPath = path.join(targetDir, '.relayflow-1763-zero-config-sandbo
 const excludePath = path.join(path.dirname(resultPath), `${CASE_ID}-${arm}.exclude`);
 const revision = expectedSha;
 const configSource = `import path from 'node:path';
-const names = ['cloud','config','fleet','harness-driver','harnesses','policy','sdk','session','utils'];
+const names = ['cloud','config','fleet','harness-driver','harnesses','sdk','session','utils'];
 export default { resolve: { alias: names.flatMap((name) => { const root = path.resolve(process.cwd(), 'packages', name, 'src'); return [{ find: new RegExp('^@agent-relay/' + name + '/(.+)$'), replacement: root + '/$1' }, { find: '@agent-relay/' + name, replacement: path.join(root, 'index.ts') }]; }) }, test: { environment: 'node', include: ['packages/cloud/src/.relayflow-1763-zero-config-sandbox.test.ts'], setupFiles: [] } };
 `;
 const probeSource = String.raw`import { expect, test, vi } from 'vitest';
@@ -43,11 +43,21 @@ test('fleet sandbox CLI materializes exact source through a scoped live Relayfil
   if (!output) throw new Error('Missing observation path.');
   const requests = [];
   mocks.ensureCloudSession.mockResolvedValue({ auth, client: {} });
-  mocks.authorizedApiFetch.mockImplementation(async (_auth, _path, request) => {
+  mocks.authorizedApiFetch.mockImplementation(async (_auth, requestPath, request) => {
     const body = request?.body ? JSON.parse(request.body) : null;
     requests.push({ body });
     if (requests.length === 1) return { response: Response.json({ cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99' }), auth };
-    return { response: Response.json({ outcome: 'provisioned', cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99', nodeId: 'node-proof', nodeName: body?.name ?? 'sandbox-proof', sandboxId: body?.sandboxId ?? 'sbx_123e4567-e89b-42d3-a456-426614174000', relayWorkspaceId: 'rw-proof', relayfileMounted: true, providerId: 'agent37', relaycastTarget: { route: 'agent37-isolated', baseUrl: 'https://agent37-cast.agentrelay.com', workspaceId: 'rw-proof', relaycastApiKey: 'rk_live_probe' }, repoRevisions: body?.repoRevisions ?? undefined }, { status: 201 }), auth };
+    const ensureBody = requests[1]?.body ?? {};
+    const sandboxId = ensureBody.sandboxId ?? 'sbx_123e4567-e89b-42d3-a456-426614174000';
+    const result = { outcome: 'provisioned', cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99', nodeId: 'node-proof', nodeName: ensureBody.name ?? 'sandbox-proof', sandboxId, providerSandboxId: 'provider-proof', relayWorkspaceId: 'rw-proof', relayfileMounted: true, providerId: 'agent37', relaycastTarget: { route: 'agent37-isolated', baseUrl: 'https://agent37-cast.agentrelay.com', workspaceId: 'rw-proof', relaycastApiKey: 'rk_live_probe' }, repoRevisions: ensureBody.repoRevisions ?? undefined };
+    if (${JSON.stringify(arm)} === 'head') {
+      if (requestPath === '/api/v1/fleet/nodes/sandbox/ensure' && request?.method === 'POST') return { response: Response.json({ version: 1, mode: 'async-v1', sandboxId, state: 'pending', phase: 'provider_allocation', generation: 0 }, { status: 202 }), auth };
+      const preparationPath = '/api/v1/fleet/nodes/sandbox/' + encodeURIComponent(sandboxId) + '/preparation';
+      if (requestPath === preparationPath + '?workspaceId=50587328-441d-4acb-b8f3-dbe1b3c5de99' && request?.method === 'GET') return { response: Response.json({ version: 1, mode: 'async-v1', sandboxId, state: 'pending', phase: 'agent_relay_cli_bootstrap', generation: 1 }, { status: 202 }), auth };
+      if (requestPath === preparationPath && request?.method === 'POST') return { response: Response.json({ version: 1, mode: 'async-v1', sandboxId, state: 'ready', phase: 'broker_visible', generation: 2, result }), auth };
+      throw new Error('Unexpected async preparation request: ' + request?.method + ' ' + requestPath);
+    }
+    return { response: Response.json(result, { status: 201 }), auth };
   });
   const logs = [], warnings = [], deletes = [], releases = [], materializations = [], spawnInputs = [];
   const program = new Command(); program.exitOverride();
@@ -65,7 +75,7 @@ test('fleet sandbox CLI materializes exact source through a scoped live Relayfil
     persistWorkspaceRelaycastTarget: () => true,
     log: () => undefined, warn: (...args) => warnings.push(args.join(' ')), error: () => undefined,
   });
-  await expect(program.parseAsync(['fleet', 'spawn', 'codex', '--name', 'proof-worker', '--task', 'proof', '--sandbox', '--no-confirm'], { from: 'user' })).rejects.toThrow('CLI exit 1');
+  await expect(program.parseAsync(['fleet', 'spawn', 'codex', '--name', 'proof-worker', '--task', 'proof', '--sandbox', ...(${JSON.stringify(arm)} === 'head' ? ['--sandbox-relayfile'] : []), '--no-confirm'], { from: 'user' })).rejects.toThrow('CLI exit 1');
   const body = requests[1]?.body ?? {};
   await writeFile(output, JSON.stringify({ requestCount: requests.length, materializations, requestRepos: body.repos ?? null, requestRepoRevisions: body.repoRevisions ?? null, relayfilePaths: body.relayfilePaths ?? null, workloadProfile: body.workloadProfile ?? null, workerCwd: spawnInputs[0]?.input?.worker_cwd ?? null, task: spawnInputs[0]?.input?.task ?? null, cleanupProviderIds: deletes.map((x) => x.providerId ?? null), launcherReleases: releases.length, warnings }, null, 2));
   if (${JSON.stringify(arm)} === 'head') { expect(materializations).toEqual([{ workspaceId: 'rw-proof', repository: 'AgentWorkforce/relay', revision }]); expect(body.repos ?? null).toBe(null); expect(body.repoRevisions ?? null).toBe(null); expect(body.relayfilePaths).toEqual(['/github/repos/AgentWorkforce/relay/contents/**', '/github/repos/AgentWorkforce/relay/.relayfile/**', '/.skills/**']); expect(spawnInputs[0]?.input?.worker_cwd).toBe('/workspace/github/repos/AgentWorkforce/relay/contents/packages/cli'); expect(spawnInputs[0]?.input?.task).toContain(revision); expect(body.workloadProfile).toBe('long-running-agent'); expect(releases).toHaveLength(1); expect(deletes).toHaveLength(1); expect(deletes[0].providerId).toBe('agent37'); }
@@ -119,7 +129,7 @@ try {
   await mkdir(path.dirname(resultPath), { recursive: true });
   await writeFile(
     resultPath,
-    `${JSON.stringify({ version: 1, caseId: CASE_ID, arm, outcome, signature: outcome === 'fixed' ? 'live_relayfile_repository_contract_forwarded' : 'live_relayfile_repository_contract_absent', details: outcome === 'fixed' ? 'The real plain fleet spawn --sandbox command inferred the repository, materialized its exact revision through Relayfile, mounted source metadata and skills, mapped the caller-relative cwd, and sent no static clone request.' : 'The base plain fleet spawn command did not materialize or mount the inferred repository as a live decoded Relayfile working tree.' })}\n`
+    `${JSON.stringify({ version: 1, caseId: CASE_ID, arm, outcome, signature: outcome === 'fixed' ? 'live_relayfile_repository_contract_forwarded' : 'live_relayfile_repository_contract_absent', details: outcome === 'fixed' ? 'The real fleet spawn --sandbox --sandbox-relayfile command inferred the repository, materialized its exact revision through Relayfile, mounted source metadata and skills, mapped the caller-relative cwd, and sent no static clone request.' : 'The base plain fleet spawn command did not materialize or mount the inferred repository as a live decoded Relayfile working tree.' })}\n`
   );
 } finally {
   await rm(probePath, { force: true });

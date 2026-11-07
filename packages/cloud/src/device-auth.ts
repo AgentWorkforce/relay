@@ -53,12 +53,7 @@ export type DeviceFlowHooks = {
 };
 
 type DeviceTokenErrorCode =
-  | 'authorization_pending'
-  | 'slow_down'
-  | 'access_denied'
-  | 'expired_token'
-  | 'invalid_grant'
-  | (string & {});
+  'authorization_pending' | 'slow_down' | 'access_denied' | 'expired_token' | 'invalid_grant' | (string & {});
 
 function deviceError(message: string): CloudAuthError {
   return new CloudAuthError('AUTH_DEVICE_FLOW_FAILED', message);

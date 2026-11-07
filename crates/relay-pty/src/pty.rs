@@ -132,8 +132,21 @@ enum WriteMsg {
         /// Relay still must prevent a terminal reply or human keystroke from
         /// splicing into that boundary.
         followup: Option<FollowupWrite>,
+        /// Optional cancellation shared with the submitter. The drainer checks
+        /// it before the primary bytes and again after the follow-up delay, so
+        /// a later owner of the input (a human typing) can stop a queued submit
+        /// key from reaching the child. A cancelled write acks
+        /// [`io::ErrorKind::Interrupted`] and leaves the drainer running.
+        cancel: Option<Arc<AtomicBool>>,
         ack: oneshot::Sender<io::Result<()>>,
     },
+}
+
+fn write_cancelled() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Interrupted,
+        "queued PTY write cancelled before it reached the child",
+    )
 }
 
 struct FollowupWrite {
@@ -431,6 +444,7 @@ pub struct PtySession {
     /// buffered stream chunks the snapshot already reflects and apply only
     /// the ones that came after.
     consumed_offset: Arc<AtomicU64>,
+    paste_capable: Arc<AtomicBool>,
     /// Sequence assigned as soon as the reader obtains a PTY output chunk,
     /// before grid parsing or async queue admission. Consumers sample this
     /// producer watermark when submitting input so output that was already
@@ -656,10 +670,20 @@ fn drain_write_queue<W: Write>(
                 bytes,
                 pace,
                 followup,
+                cancel,
                 ack,
             } => {
                 if bytes.is_empty() && followup.as_ref().is_none_or(|part| part.bytes.is_empty()) {
                     let _ = ack.send(Ok(()));
+                    continue;
+                }
+                let is_cancelled = || {
+                    cancel
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(Ordering::Acquire))
+                };
+                if is_cancelled() {
+                    let _ = ack.send(Err(write_cancelled()));
                     continue;
                 }
                 if matches!(bytes.as_slice(), b"\x1b[B" | b"\x1b[A" | b"\r" | b"\n") {
@@ -682,6 +706,9 @@ fn drain_write_queue<W: Write>(
                         return Ok(());
                     }
                     thread::sleep(part.delay);
+                    if is_cancelled() {
+                        return Err(write_cancelled());
+                    }
                     writer.write_all(&part.bytes).and_then(|_| writer.flush())
                 });
                 match result {
@@ -691,6 +718,10 @@ fn drain_write_queue<W: Write>(
                         // silence counter.
                         no_pid_alive_checks.store(0, Ordering::Relaxed);
                         let _ = ack.send(Ok(()));
+                    }
+                    Err(err) if err.kind() == io::ErrorKind::Interrupted && is_cancelled() => {
+                        // Only the follow-up was withheld; the PTY is healthy.
+                        let _ = ack.send(Err(err));
                     }
                     Err(err) => {
                         let _ = ack.send(Err(err));
@@ -712,12 +743,14 @@ fn enqueue_user_write(
     bytes: Vec<u8>,
     pace: Duration,
     followup: Option<FollowupWrite>,
+    cancel: Option<Arc<AtomicBool>>,
 ) -> Result<oneshot::Receiver<io::Result<()>>> {
     let (ack_tx, ack_rx) = oneshot::channel::<io::Result<()>>();
     match write_tx.try_send(WriteMsg::UserInput {
         bytes,
         pace,
         followup,
+        cancel,
         ack: ack_tx,
     }) {
         Ok(()) => Ok(ack_rx),
@@ -927,12 +960,48 @@ fn read_was_cancelled(error: &io::Error) -> bool {
     error.raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32)
 }
 
+/// Finds the DECSET 2004 private-mode parameter (`?2004` or `;2004`) in PTY
+/// output, including one split across reads, by carrying the previous read's
+/// last four bytes. Plain text that merely contains `2004` does not match.
+#[derive(Default)]
+struct Decset2004Scan {
+    tail: [u8; 4],
+    tail_len: usize,
+}
+
+impl Decset2004Scan {
+    fn may_carry(&mut self, bytes: &[u8]) -> bool {
+        let is_parameter = |window: &[u8]| matches!(window, [b'?' | b';', b'2', b'0', b'0', b'4']);
+        let head = bytes.len().min(4);
+        let mut seam = [0u8; 8];
+        seam[..self.tail_len].copy_from_slice(&self.tail[..self.tail_len]);
+        seam[self.tail_len..self.tail_len + head].copy_from_slice(&bytes[..head]);
+        let joined = &seam[..self.tail_len + head];
+        let found = joined.windows(5).chain(bytes.windows(5)).any(is_parameter);
+        let carried = if bytes.len() >= 4 {
+            &bytes[bytes.len() - 4..]
+        } else {
+            &joined[joined.len().saturating_sub(4)..]
+        };
+        self.tail_len = carried.len();
+        self.tail[..self.tail_len].copy_from_slice(carried);
+        found
+    }
+}
+
+/// Whether the grid currently has bracketed-paste mode (DECSET 2004) set.
+fn paste_mode_enabled(term: &Term<RelayEventListener>) -> bool {
+    term.mode()
+        .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE)
+}
+
 impl PtySession {
     fn enqueue_write_with_output_boundary(
         &self,
         bytes: Vec<u8>,
         pace: Duration,
         followup: Option<FollowupWrite>,
+        cancel: Option<Arc<AtomicBool>>,
     ) -> Result<(oneshot::Receiver<io::Result<()>>, u64)> {
         #[cfg(unix)]
         let _order_guard = {
@@ -974,6 +1043,7 @@ impl PtySession {
             bytes,
             pace,
             followup,
+            cancel,
         )?;
         Ok((ack, boundary))
     }
@@ -1057,6 +1127,8 @@ impl PtySession {
         let (tx, rx) = mpsc::channel(256);
         let term_clone = term.clone();
         let processor_clone = processor.clone();
+        let paste_capable = Arc::new(AtomicBool::new(false));
+        let paste_capable_reader = paste_capable.clone();
         let consumed_offset = Arc::new(AtomicU64::new(0));
         let consumed_offset_reader = consumed_offset.clone();
         let output_sequence = Arc::new(AtomicU64::new(0));
@@ -1075,6 +1147,7 @@ impl PtySession {
         let write_admission_pending_reader = write_admission_pending.clone();
         let reader_thread = thread::spawn(move || {
             let mut buf = [0u8; 4096];
+            let mut decset_2004_scan = Decset2004Scan::default();
             loop {
                 #[cfg(unix)]
                 if wait_for_pty_readable(&poll_fd_reader).is_err() {
@@ -1130,7 +1203,32 @@ impl PtySession {
                     // writer lock taken by the drainer thread.
                     let mut processor_guard = processor_clone.lock();
                     let mut term_guard = term_clone.lock();
-                    processor_guard.advance(&mut *term_guard, bytes);
+                    // Observe every mode transition, including an enable and a
+                    // disable inside one read. Stepping the parser one byte at a
+                    // time is the only way to see a transition that does not
+                    // survive to the end of the chunk, but it costs the reader
+                    // thread a parser call per byte, so it is reserved for chunks
+                    // that can actually carry the DECSET 2004 parameter, counting
+                    // one split across the previous read. Every other chunk is
+                    // parsed in bulk and then checked once.
+                    if paste_capable_reader.load(Ordering::Acquire) {
+                        processor_guard.advance(&mut *term_guard, bytes);
+                    } else {
+                        if decset_2004_scan.may_carry(bytes) {
+                            for byte in bytes {
+                                processor_guard
+                                    .advance(&mut *term_guard, std::slice::from_ref(byte));
+                                if paste_mode_enabled(&term_guard) {
+                                    paste_capable_reader.store(true, Ordering::Release);
+                                }
+                            }
+                        } else {
+                            processor_guard.advance(&mut *term_guard, bytes);
+                        }
+                        if paste_mode_enabled(&term_guard) {
+                            paste_capable_reader.store(true, Ordering::Release);
+                        }
+                    }
                     // Publish the grid's consumed byte offset while
                     // still holding the term lock, so a concurrent
                     // snapshot reader (which also locks `term`) reads
@@ -1171,6 +1269,7 @@ impl PtySession {
                 term,
                 processor,
                 consumed_offset,
+                paste_capable,
                 output_sequence,
                 output_order,
                 #[cfg(unix)]
@@ -1221,6 +1320,7 @@ impl PtySession {
             bytes,
             Duration::ZERO,
             None,
+            None,
         )
     }
 
@@ -1247,7 +1347,14 @@ impl PtySession {
         bytes: Vec<u8>,
         pace: Duration,
     ) -> Result<oneshot::Receiver<io::Result<()>>> {
-        enqueue_user_write(&self.write_tx, &self.no_pid_alive_checks, bytes, pace, None)
+        enqueue_user_write(
+            &self.write_tx,
+            &self.no_pid_alive_checks,
+            bytes,
+            pace,
+            None,
+            None,
+        )
     }
 
     /// Queue a paced input atomically with the receive-time output watermark.
@@ -1261,7 +1368,7 @@ impl PtySession {
         bytes: Vec<u8>,
         pace: Duration,
     ) -> Result<(oneshot::Receiver<io::Result<()>>, u64)> {
-        self.enqueue_write_with_output_boundary(bytes, pace, None)
+        self.enqueue_write_with_output_boundary(bytes, pace, None, None)
     }
 
     /// Submit a paced primary payload followed by a delayed second write as
@@ -1288,6 +1395,7 @@ impl PtySession {
                 delay: followup_delay,
                 bytes: followup_bytes,
             }),
+            None,
         )
     }
 
@@ -1307,6 +1415,26 @@ impl PtySession {
                 delay: followup_delay,
                 bytes: followup_bytes,
             }),
+            None,
+        )
+    }
+
+    /// Queue a submit-key write, with an optional delayed follow-up, that the
+    /// caller can cancel until each part reaches the child. Setting `cancel`
+    /// before the drainer starts the entry skips it entirely; setting it during
+    /// the follow-up delay withholds the follow-up. Either way the ack resolves
+    /// to [`io::ErrorKind::Interrupted`].
+    pub fn submit_cancellable_write_with_output_boundary(
+        &self,
+        bytes: Vec<u8>,
+        followup: Option<(Duration, Vec<u8>)>,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<(oneshot::Receiver<io::Result<()>>, u64)> {
+        self.enqueue_write_with_output_boundary(
+            bytes,
+            Duration::ZERO,
+            followup.map(|(delay, bytes)| FollowupWrite { delay, bytes }),
+            Some(cancel),
         )
     }
 
@@ -1453,6 +1581,15 @@ impl PtySession {
     /// [`with_term_and_offset`]: PtySession::with_term_and_offset
     pub fn consumed_offset(&self) -> u64 {
         self.consumed_offset.load(Ordering::Acquire)
+    }
+
+    /// Whether the child has ever enabled bracketed-paste mode (DECSET 2004).
+    ///
+    /// Sticky: a TUI that turns the mode off while a dialog is open still
+    /// understands `ESC[200~` framing, so the capability is independent of
+    /// whether the composer is currently ready.
+    pub fn bracketed_paste_enabled(&self) -> bool {
+        self.paste_capable.load(Ordering::Acquire)
     }
 
     /// Check if the child process has exited without blocking.
@@ -1670,8 +1807,8 @@ mod tests {
         UnixOutputReservations,
     };
     use super::{
-        read_and_tag_output, GridSize, Mutex, PtyOutput, PtySession, PtyWriteSubmitError,
-        DEFAULT_NO_PID_EXIT_THRESHOLD,
+        read_and_tag_output, Decset2004Scan, GridSize, Mutex, PtyOutput, PtySession,
+        PtyWriteSubmitError, DEFAULT_NO_PID_EXIT_THRESHOLD,
     };
     use crate::snapshot::Snapshot;
     use alacritty_terminal::event::VoidListener;
@@ -1805,6 +1942,125 @@ mod tests {
             "grid should contain echoed text, got: {screen:?}"
         );
         let _ = pty.shutdown();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn paste_capability_latches_across_disable_in_same_read() {
+        let (pty, mut rx) = PtySession::spawn(
+            "sh",
+            &[
+                "-c".into(),
+                "printf '\\033[?2004h\\033[?2004lREADY'; sleep 2".into(),
+            ],
+            24,
+            80,
+        )
+        .unwrap();
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !pty.screen_text().contains("READY") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(pty.bracketed_paste_enabled());
+        assert!(!pty
+            .term
+            .lock()
+            .mode()
+            .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE));
+        pty.shutdown().unwrap();
+        drain.abort();
+    }
+
+    /// Only a chunk carrying the `2004` parameter is parsed byte-by-byte, so a
+    /// DECSET split across reads must still latch from the bulk-parse path.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn paste_capability_latches_when_decset_spans_two_reads() {
+        let (pty, mut rx) = PtySession::spawn(
+            "sh",
+            &[
+                "-c".into(),
+                "printf '\\033[?20'; sleep 0.3; printf '04hREADY'; sleep 2".into(),
+            ],
+            24,
+            80,
+        )
+        .unwrap();
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        // `READY` trails the DECSET, so the mode was parsed by the time it renders.
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !pty.screen_text().contains("READY") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(pty.bracketed_paste_enabled());
+        pty.shutdown().unwrap();
+        drain.abort();
+    }
+
+    /// A split `2004h` that a full reset (RIS, which never spells `2004`)
+    /// clears in the same second read never survives to the end of either
+    /// chunk, so the read boundary must still select the byte-by-byte path.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn paste_capability_latches_split_enable_reset_in_the_next_read() {
+        let (pty, mut rx) = PtySession::spawn(
+            "sh",
+            &[
+                "-c".into(),
+                "printf '\\033[?20'; sleep 0.3; printf '04h\\033cREADY'; sleep 2".into(),
+            ],
+            24,
+            80,
+        )
+        .unwrap();
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !pty.screen_text().contains("READY") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(pty.bracketed_paste_enabled());
+        pty.shutdown().unwrap();
+        drain.abort();
+    }
+
+    #[test]
+    fn decset_2004_scan_sees_the_parameter_across_every_split() {
+        for stream in [&b"ab\x1b[?2004hcd"[..], &b"ab\x1b[?1;2004hcd"[..]] {
+            for split in 0..=stream.len() {
+                let mut scan = Decset2004Scan::default();
+                let first = scan.may_carry(&stream[..split]);
+                let second = scan.may_carry(&stream[split..]);
+                assert!(first || second, "split at {split} hid the parameter");
+            }
+        }
+        let mut scan = Decset2004Scan::default();
+        assert!(!scan.may_carry(b"?200"));
+        assert!(
+            scan.may_carry(b"4"),
+            "a one-byte read completes the parameter"
+        );
+        assert!(!scan.may_carry(b"x"));
+        assert!(!scan.may_carry(b"?2"));
+        assert!(!scan.may_carry(b"00"));
+        assert!(scan.may_carry(b"4h"), "short reads carry the prefix");
+        assert!(!scan.may_carry(b"?2005"));
+        // relay#1930 review (cubic): ordinary text that merely contains 2004
+        // (a year, a port) is not a private-mode parameter, so it must keep
+        // the bulk parse instead of a per-byte parse on every such read.
+        let mut scan = Decset2004Scan::default();
+        assert!(!scan.may_carry(b"released in 2004, port 2004"));
+        assert!(!scan.may_carry(b" 200"));
+        assert!(!scan.may_carry(b"4"));
     }
 
     #[tokio::test]
@@ -2022,6 +2278,7 @@ mod tests {
                 &no_pid,
                 b"same-echo\n".to_vec(),
                 Duration::ZERO,
+                None,
                 None,
             )
             .unwrap();
@@ -2421,6 +2678,7 @@ mod tests {
             bytes: b"injection-body".to_vec(),
             pace: Duration::ZERO,
             followup: None,
+            cancel: None,
             ack: ack_tx_1,
         })
         .unwrap();
@@ -2430,6 +2688,7 @@ mod tests {
             bytes: b"\r".to_vec(),
             pace: Duration::ZERO,
             followup: None,
+            cancel: None,
             ack: ack_tx_2,
         })
         .unwrap();
@@ -2505,6 +2764,7 @@ mod tests {
             bytes: b"should-fail\n".to_vec(),
             pace: Duration::ZERO,
             followup: None,
+            cancel: None,
             ack: ack_tx,
         })
         .expect("queue accepts user input");
@@ -2544,6 +2804,7 @@ mod tests {
             bytes: b"flush-should-fail\n".to_vec(),
             pace: Duration::ZERO,
             followup: None,
+            cancel: None,
             ack: ack_tx,
         })
         .expect("queue accepts user input");
@@ -2779,6 +3040,7 @@ mod tests {
             b"queued\n".to_vec(),
             Duration::ZERO,
             None,
+            None,
         )
         .expect("submit path accepts the write");
         // Block until the drainer has dequeued the message and is wedged inside
@@ -2961,23 +3223,25 @@ mod tests {
             bytes: b"go\x1b[A\r".to_vec(),
             pace: StdDuration::from_millis(1),
             followup: None,
+            cancel: None,
             ack: ack_tx,
         })
         .expect("queue accepts paced user input");
+        tx.send(WriteMsg::Reply(b"terminal-reply".to_vec()))
+            .unwrap();
 
         let ack = tokio::time::timeout(Duration::from_secs(2), ack_rx)
             .await
             .expect("drainer acks paced write")
             .expect("ack sender not dropped");
         assert!(ack.is_ok(), "paced write must succeed");
-        assert_eq!(
-            out.lock().unwrap().as_slice(),
-            b"go\x1b[A\r",
-            "paced write must deliver every byte in order"
-        );
-
         drop(tx);
         drainer.join().expect("drainer thread joins cleanly");
+        assert_eq!(
+            out.lock().unwrap().as_slice(),
+            b"go\x1b[A\rterminal-reply",
+            "terminal replies queue behind the entire typed body"
+        );
     }
 
     /// A delayed follow-up must be a distinct PTY write while remaining inside
@@ -3017,6 +3281,7 @@ mod tests {
                 delay: StdDuration::from_millis(5),
                 bytes: b"\r".to_vec(),
             }),
+            cancel: None,
             ack: ack_tx,
         })
         .expect("queue accepts the compound write");
@@ -3083,6 +3348,7 @@ mod tests {
                 delay: StdDuration::ZERO,
                 bytes: b"\r".to_vec(),
             }),
+            cancel: None,
             ack: ack_tx,
         })
         .expect("queue accepts the compound write");
@@ -3098,6 +3364,95 @@ mod tests {
 
         drop(tx);
         drainer.join().expect("drainer thread joins cleanly");
+    }
+
+    /// A human taking over the composer during a delayed submit recovery must
+    /// stop the queued follow-up key, not merely relabel its ack afterwards.
+    #[tokio::test]
+    async fn cancelled_followup_is_withheld_and_drainer_keeps_running() {
+        use std::sync::Mutex as StdMutex;
+
+        struct RecordingWriter {
+            chunks: Arc<StdMutex<Vec<Vec<u8>>>>,
+        }
+        impl std::io::Write for RecordingWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.chunks.lock().unwrap().push(buf.to_vec());
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let chunks = Arc::new(StdMutex::new(Vec::new()));
+        let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
+        let writer = RecordingWriter {
+            chunks: chunks.clone(),
+        };
+        let drainer = std::thread::spawn(move || {
+            super::drain_write_queue(writer, rx, Arc::new(AtomicU32::new(0)))
+        });
+
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (ack_tx, ack_rx) = oneshot::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"\x1b[F".to_vec(),
+            pace: StdDuration::ZERO,
+            followup: Some(FollowupWrite {
+                delay: StdDuration::from_millis(200),
+                bytes: b"\r".to_vec(),
+            }),
+            cancel: Some(cancel.clone()),
+            ack: ack_tx,
+        })
+        .expect("queue accepts the recovery write");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cancel.store(true, Ordering::Release);
+
+        let ack = tokio::time::timeout(Duration::from_secs(1), ack_rx)
+            .await
+            .expect("drainer resolves the cancelled write")
+            .expect("ack sender not dropped");
+        assert_eq!(
+            ack.expect_err("cancelled follow-up must not ack success")
+                .kind(),
+            std::io::ErrorKind::Interrupted
+        );
+
+        let skipped = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let (skip_tx, skip_rx) = oneshot::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"\r".to_vec(),
+            pace: StdDuration::ZERO,
+            followup: None,
+            cancel: Some(skipped),
+            ack: skip_tx,
+        })
+        .expect("queue accepts a pre-cancelled write");
+        assert!(skip_rx.await.unwrap().is_err());
+
+        let (human_tx, human_rx) = oneshot::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"human".to_vec(),
+            pace: StdDuration::ZERO,
+            followup: None,
+            cancel: None,
+            ack: human_tx,
+        })
+        .expect("queue accepts the human write");
+        assert!(
+            human_rx.await.unwrap().is_ok(),
+            "drainer survives cancellation"
+        );
+
+        drop(tx);
+        drainer.join().expect("drainer thread joins cleanly");
+        assert_eq!(
+            chunks.lock().unwrap().as_slice(),
+            [b"\x1b[F".to_vec(), b"human".to_vec()],
+            "neither the cancelled follow-up CR nor the pre-cancelled CR reaches the child"
+        );
     }
 
     /// Regression: mise/asdf/rtx expose provider CLIs (codex, claude, gemini)

@@ -14,8 +14,8 @@ use crate::{
         HeadlessHarnessConfig, HeadlessHarnessDriver, ProtocolEnvelope, RelayDelivery,
         ResolvedHarnessConfig, PROTOCOL_VERSION,
     },
-    relaycast::configure_agent_relay_mcp_with_result,
-    snippets::{is_muse_executable, muse_clean_home_dir},
+    relaycast::{configure_agent_relay_mcp_launch, McpLaunch},
+    snippets::{is_muse_executable, muse_clean_home_dir, remove_muse_session_credentials},
     supervisor::Supervisor,
     types::{AgentResultMcpConfig, CommitAttestation},
 };
@@ -36,8 +36,8 @@ use crate::{
     spawner::{
         add_broker_hooks_path, attestation_env_present, is_valid_attestation_value,
         remove_inherited_relay_credentials, resolve_commit_hooks_dir, terminate_child,
-        with_commit_attestation_env, RELAY_ATTEST_AGENT_ID, RELAY_ATTEST_JTI,
-        RELAY_ATTEST_SESSION_ID, RELAY_ATTEST_SPONSOR_ID,
+        with_commit_attestation_env, NODE_IDENTITY_ENV_KEYS, RELAY_ATTEST_AGENT_ID,
+        RELAY_ATTEST_JTI, RELAY_ATTEST_SESSION_ID, RELAY_ATTEST_SPONSOR_ID,
     },
 };
 
@@ -646,16 +646,16 @@ impl WorkerRegistry {
         worker_relay_api_key: Option<&str>,
         skip_relay_prompt: bool,
         agent_result: Option<&AgentResultMcpConfig>,
-    ) -> Result<Vec<String>> {
+    ) -> Result<McpLaunch> {
         // `skip_relay_prompt` is an explicit opt-out: the caller does not want the
         // Agent Relay MCP server (messaging/channel/etc. tools) injected, e.g. to
         // save tokens. We honor that even when `agent_result` is configured —
         // `AGENT_RELAY_RESULT_*` env vars are still set on the worker process
         // below, so a separately-configured Agent Relay MCP can pick them up.
         if skip_relay_prompt || self.env_value("AGENT_RELAY_LOCAL_ONLY") == Some("1") {
-            return Ok(Vec::new());
+            return Ok(McpLaunch::default());
         }
-        configure_agent_relay_mcp_with_result(
+        configure_agent_relay_mcp_launch(
             cli_name,
             agent_name,
             self.env_value("RELAY_API_KEY"),
@@ -907,6 +907,7 @@ impl WorkerRegistry {
             anyhow::bail!("agent '{}' already exists", spec.name);
         }
         validate_muse_startup_prompt_for_spec(&spec, initial_task.as_deref())?;
+        validate_pty_initial_task_size(&spec, initial_task.as_deref())?;
 
         tracing::info!(
             target = "broker::spawn",
@@ -953,6 +954,9 @@ impl WorkerRegistry {
         let mut initial_harness_pid: Option<u32> = None;
         let mut direct_native_harness_sidecar = false;
         let mut initial_task_in_argv = false;
+        // Credentials the harness's MCP config references by name; set on
+        // the worker process below so they reach the harness environment.
+        let mut mcp_env: Vec<(String, String)> = Vec::new();
 
         match spec.harness_config.clone() {
             Some(ResolvedHarnessConfig::Pty(config)) => {
@@ -1104,7 +1108,10 @@ impl WorkerRegistry {
                     );
                 }
 
-                let mcp_args = self
+                let McpLaunch {
+                    args: mcp_args,
+                    env: launch_env,
+                } = self
                     .build_mcp_args(
                         &resolved_cli,
                         &spec.name,
@@ -1115,6 +1122,7 @@ impl WorkerRegistry {
                         agent_result.as_ref(),
                     )
                     .await?;
+                mcp_env = launch_env;
 
                 let model_flag = resolve_model_flag_for_cli(
                     &resolved_cli,
@@ -1364,7 +1372,10 @@ impl WorkerRegistry {
                         );
                     }
 
-                    let mcp_args = self
+                    let McpLaunch {
+                        args: mcp_args,
+                        env: launch_env,
+                    } = self
                         .build_mcp_args(
                             cli,
                             &spec.name,
@@ -1375,6 +1386,7 @@ impl WorkerRegistry {
                             agent_result.as_ref(),
                         )
                         .await?;
+                    mcp_env = launch_env;
 
                     let model_flag = resolve_model_flag_for_cli(
                         &resolved_cli,
@@ -1428,7 +1440,10 @@ impl WorkerRegistry {
                         spec.model = Some(model);
                     }
 
-                    let mcp_args = self
+                    let McpLaunch {
+                        args: mcp_args,
+                        env: launch_env,
+                    } = self
                         .build_mcp_args(
                             provider_cli,
                             &spec.name,
@@ -1439,6 +1454,7 @@ impl WorkerRegistry {
                             agent_result.as_ref(),
                         )
                         .await?;
+                    mcp_env = launch_env;
 
                     let model_arg = resolve_model_flag_for_cli(
                         provider_cli,
@@ -1616,6 +1632,15 @@ impl WorkerRegistry {
             for (key, value) in config.env_pairs() {
                 command.env(key, value);
             }
+        }
+        for (key, value) in &mcp_env {
+            command.env(key, value);
+        }
+        // Node identity belongs only to the broker and node-provider helpers.
+        // Neither the broker's worker env nor per-spawn harness/result env may
+        // add it back after the inherited credential scrub.
+        for key in NODE_IDENTITY_ENV_KEYS {
+            command.env_remove(key);
         }
         if should_inject_relay_participant_env(
             &spec.runtime,
@@ -1975,6 +2000,7 @@ impl WorkerRegistry {
         }
 
         let result = terminate_child(&mut handle.child, release_grace).await;
+        remove_session_credentials(&handle.spec);
         match &result {
             Ok(()) => tracing::info!(target = "broker::release", name = %name, "worker released"),
             Err(error) => {
@@ -2119,7 +2145,9 @@ impl WorkerRegistry {
                     generation,
                     "native worker exited before confirming delivery custody",
                 );
-                self.workers.remove(&name);
+                if let Some(handle) = self.workers.remove(&name) {
+                    remove_session_credentials(&handle.spec);
+                }
                 self.initial_tasks.remove(&name);
                 self.argv_initial_tasks.remove(&name);
                 exited.push((name, generation, None, None, reason));
@@ -2148,7 +2176,9 @@ impl WorkerRegistry {
                     generation,
                     "native worker exited before confirming delivery custody",
                 );
-                self.workers.remove(&name);
+                if let Some(handle) = self.workers.remove(&name) {
+                    remove_session_credentials(&handle.spec);
+                }
                 self.initial_tasks.remove(&name);
                 self.argv_initial_tasks.remove(&name);
                 exited.push((name, generation, code, signal, reason));
@@ -2167,7 +2197,9 @@ impl WorkerRegistry {
                     generation,
                     "native worker exited before confirming delivery custody",
                 );
-                self.workers.remove(&name);
+                if let Some(handle) = self.workers.remove(&name) {
+                    remove_session_credentials(&handle.spec);
+                }
                 self.initial_tasks.remove(&name);
                 self.argv_initial_tasks.remove(&name);
                 exited.push((name, generation, None, None, reason));
@@ -2481,11 +2513,9 @@ pub(crate) fn validate_muse_startup_prompt(cli: &str, task: Option<&str>) -> Res
 /// Resolve the command that a PTY spec will actually launch before validating
 /// its Muse prompt. Explicit PTY harness configs own the executable; ordinary
 /// PTY specs use `spec.cli`.
-pub(crate) fn validate_muse_startup_prompt_for_spec(
-    spec: &AgentSpec,
-    task: Option<&str>,
-) -> Result<()> {
-    let cli = match spec.harness_config.as_ref() {
+/// The PTY command a spec will launch, if it is a PTY spawn.
+fn pty_cli_for_spec(spec: &AgentSpec) -> Result<Option<String>> {
+    Ok(match spec.harness_config.as_ref() {
         Some(ResolvedHarnessConfig::Pty(config)) => Some(
             parse_cli_command(&config.command)
                 .with_context(|| format!("invalid harness command '{}'", config.command))?
@@ -2500,9 +2530,31 @@ pub(crate) fn validate_muse_startup_prompt_for_spec(
             None => None,
         },
         _ => None,
-    };
-    match cli {
+    })
+}
+
+pub(crate) fn validate_muse_startup_prompt_for_spec(
+    spec: &AgentSpec,
+    task: Option<&str>,
+) -> Result<()> {
+    match pty_cli_for_spec(spec)? {
         Some(cli) => validate_muse_startup_prompt(&cli, task),
+        None => Ok(()),
+    }
+}
+
+/// Reject, before launch, a PTY initial task whose final (decorated) body
+/// cannot fit the injection envelope. Muse takes its task in argv, so only
+/// injected tasks are measured (relay#1893 review).
+pub(crate) fn validate_pty_initial_task_size(spec: &AgentSpec, task: Option<&str>) -> Result<()> {
+    let (Some(cli), Some(task)) = (pty_cli_for_spec(spec)?, task) else {
+        return Ok(());
+    };
+    if muse_startup_prompt(&cli.to_ascii_lowercase(), Some(task)).is_some() {
+        return Ok(());
+    }
+    match crate::injection_wire::task_too_large_error(task) {
+        Some(error) => anyhow::bail!(error),
         None => Ok(()),
     }
 }
@@ -2530,6 +2582,27 @@ fn muse_config_home_for_worker(
         Path::new(cwd.unwrap_or(".")),
         agent_name,
     ))
+}
+
+/// Remove the per-session credential files a released or exited worker left
+/// outside its project: today the Relay MCP `settings.json` in a Muse
+/// worker's clean home. A restarted worker is re-provisioned at spawn.
+fn remove_session_credentials(spec: &AgentSpec) {
+    let command = match spec.harness_config.as_ref() {
+        Some(ResolvedHarnessConfig::Pty(config)) => Some(config.command.as_str()),
+        _ => spec.cli.as_deref(),
+    };
+    let Some(command) = command else {
+        return;
+    };
+    let Ok((resolved_cli, _)) = parse_cli_command(command) else {
+        return;
+    };
+    if is_muse_executable(&normalize_cli_name(&resolved_cli)) {
+        let clean_home =
+            muse_clean_home_dir(Path::new(spec.cwd.as_deref().unwrap_or(".")), &spec.name);
+        remove_muse_session_credentials(&clean_home, &spec.name);
+    }
 }
 
 fn ordered_pty_cli_args(
@@ -3403,7 +3476,10 @@ mod tests {
     async fn spawned_worker_holds_only_its_own_and_delegated_relay_credentials() {
         let dir = tempfile::tempdir().expect("worker cwd");
         // Record only the NAMES of relay credential variables the worker sees.
-        let keys = crate::spawner::INHERITED_RELAY_CREDENTIAL_ENV_KEYS.join(" ");
+        let keys = format!(
+            "{} RELAY_NODE_ID AGENT_RELAY_ENROLLED_NODE_ID",
+            crate::spawner::INHERITED_RELAY_CREDENTIAL_ENV_KEYS.join(" ")
+        );
         let script = format!(
             "for k in {keys}; do if printenv \"$k\" >/dev/null; then echo \"$k\"; fi; done > names.tmp && mv names.tmp names.txt; sleep 30"
         );
@@ -3412,16 +3488,26 @@ mod tests {
             command: "sh".to_string(),
             args: vec!["-c".to_string(), script],
             cwd: Some(dir.path().to_string_lossy().into_owned()),
-            env: None,
+            env: Some(std::collections::HashMap::from([
+                ("RELAY_NODE_ID".to_string(), "node_harness".to_string()),
+                (
+                    "AGENT_RELAY_ENROLLED_NODE_ID".to_string(),
+                    "node_harness".to_string(),
+                ),
+            ])),
             session_id: "session-credential-worker".to_string(),
             metadata: None,
         }));
         // The broker explicitly delegates a workspace key through its worker
         // environment; that delegation must survive the inherited scrub.
-        let mut registry = make_registry(vec![(
-            "RELAY_API_KEY".to_string(),
-            "rk_live_delegated".to_string(),
-        )]);
+        let mut registry = make_registry(vec![
+            ("RELAY_API_KEY".to_string(), "rk_live_delegated".to_string()),
+            ("RELAY_NODE_ID".to_string(), "node_broker".to_string()),
+            (
+                "AGENT_RELAY_ENROLLED_NODE_ID".to_string(),
+                "node_broker".to_string(),
+            ),
+        ]);
 
         registry
             .spawn(
@@ -4792,6 +4878,46 @@ sleep 30
             validate_muse_startup_prompt_for_spec(&spec, Some(&oversized)).is_err(),
             "inline Muse commands must not bypass argv prompt validation"
         );
+    }
+
+    #[test]
+    fn pty_initial_task_size_is_measured_only_for_injected_tasks() {
+        let spec = |cli: &str, runtime: AgentRuntime| AgentSpec {
+            name: WorkerName::from("size-check"),
+            runtime,
+            provider: None,
+            cli: Some(cli.to_string()),
+            session_id: None,
+            harness_config: None,
+            model: None,
+            cwd: None,
+            team: None,
+            shadow_of: None,
+            shadow_mode: None,
+            args: Vec::new(),
+            channels: Vec::new(),
+            restart_policy: None,
+        };
+        let fits = "x".repeat(crate::injection_wire::MAX_BODY_BYTES);
+        let over = "x".repeat(crate::injection_wire::MAX_BODY_BYTES + 1);
+        assert!(
+            validate_pty_initial_task_size(&spec("codex", AgentRuntime::Pty), Some(&fits)).is_ok()
+        );
+        let error =
+            validate_pty_initial_task_size(&spec("codex --yolo", AgentRuntime::Pty), Some(&over))
+                .expect_err("an injected task over the body cap is rejected")
+                .to_string();
+        assert!(error.starts_with("spawn_task_too_large: "), "{error}");
+        // Muse receives its task in argv, and native runtimes are not injected.
+        assert!(
+            validate_pty_initial_task_size(&spec("muse", AgentRuntime::Pty), Some(&over)).is_ok()
+        );
+        assert!(validate_pty_initial_task_size(
+            &spec("codex", AgentRuntime::Headless),
+            Some(&over)
+        )
+        .is_ok());
+        assert!(validate_pty_initial_task_size(&spec("codex", AgentRuntime::Pty), None).is_ok());
     }
 
     #[test]

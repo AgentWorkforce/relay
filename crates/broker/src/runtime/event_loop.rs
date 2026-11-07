@@ -1,5 +1,4 @@
 use super::*;
-
 use futures_util::future::{join, join_all};
 
 /// Current PTY resize owner for a worker under the single-resizer policy.
@@ -210,6 +209,11 @@ pub(crate) struct BrokerRuntime {
     pub(super) ws_inbound_rx: mpsc::Receiver<WorkspaceInboundMessage>,
     pub(super) relaycast_open: bool,
     pub(super) fleet_control_tx: mpsc::Sender<FleetControlCommand>,
+    /// Retained cleanup completions bypass the bounded control queue so queue
+    /// pressure cannot discard the caller's terminal Fleet result at shutdown.
+    pub(super) fleet_completion_tx:
+        mpsc::UnboundedSender<crate::node_control::RetainedFleetCompletion>,
+    pub(super) fleet_completion_acks: Vec<tokio::sync::oneshot::Receiver<()>>,
     /// This broker's relaycast node name, used to bind agents to the node over
     /// HTTP when the node-control `agent.register` path is unavailable.
     pub(super) fleet_node_name: String,
@@ -238,6 +242,9 @@ pub(crate) struct BrokerRuntime {
     /// them; this map correlates that response back to its terminal session.
     pub(super) terminal_input_requests: HashMap<String, TerminalInputRequest>,
     pub(super) fleet_delivery_book: FleetDeliveryBook,
+    /// Node deliveries held while their file attachments download.
+    pub(super) attachment_staging:
+        crate::attachments::AttachmentStaging<crate::fleet_wire::Deliver>,
     pub(super) fleet_max_agents: u32,
     pub(super) fleet_inventory: HashMap<WorkerName, InventoryAgent>,
     /// Per-worker retry deadlines for failed Relaycast identity lookups while
@@ -298,6 +305,7 @@ enum RuntimeEvent {
     Stdin(std::io::Result<Option<String>>),
     Relaycast(Option<WorkspaceInboundMessage>),
     Fleet(Option<FleetControlEvent>),
+    AttachmentsStaged(Option<crate::attachments::StagedAttachments>),
     Terminal(Option<TerminalControlEvent>),
     Worker(Option<WorkerEvent>),
     MaintenanceTick,
@@ -343,6 +351,7 @@ impl BrokerRuntime {
                 result = self.sdk_lines.next_line(), if self.stdin_open => RuntimeEvent::Stdin(result),
                 message = self.ws_inbound_rx.recv(), if self.relaycast_open => RuntimeEvent::Relaycast(message),
                 event = self.fleet_event_rx.recv(), if self.fleet_control_open => RuntimeEvent::Fleet(event),
+                staged = self.attachment_staging.recv() => RuntimeEvent::AttachmentsStaged(staged),
                 event = self.terminal_event_rx.recv(), if self.terminal_control_open => RuntimeEvent::Terminal(event),
                 event = self.worker_event_rx.recv(), if self.worker_events_open => RuntimeEvent::Worker(event),
                 _ = self.reap_tick.tick() => RuntimeEvent::MaintenanceTick,
@@ -382,6 +391,11 @@ impl BrokerRuntime {
                 RuntimeEvent::Fleet(None) => {
                     self.fleet_control_open = false;
                 }
+                RuntimeEvent::AttachmentsStaged(Some(staged)) => {
+                    self.handle_staged_attachments(staged).await;
+                }
+                // Unreachable: the staging area holds its own sender.
+                RuntimeEvent::AttachmentsStaged(None) => {}
                 RuntimeEvent::Terminal(Some(event)) => {
                     self.handle_terminal_control_event(event).await;
                 }
@@ -399,6 +413,7 @@ impl BrokerRuntime {
                 }
             }
 
+            self.reap_fleet_completion_acks();
             self.flush_persisted_stores();
             self.publish_fleet_delivery_cursors_if_dirty();
         }
@@ -472,7 +487,7 @@ impl BrokerRuntime {
         }
     }
 
-    async fn shutdown_runtime(mut self) -> Result<()> {
+    pub(super) async fn shutdown_runtime(mut self) -> Result<()> {
         self.drain_identity_cleanups_on_shutdown().await;
         // Save crash insights before shutdown (only in persist mode)
         if self.paths.persist {
@@ -531,8 +546,7 @@ impl BrokerRuntime {
         }
         if let Err(error) = self
             .fleet_control_tx
-            .send(FleetControlCommand::Shutdown)
-            .await
+            .try_send(FleetControlCommand::Shutdown)
         {
             tracing::debug!(error = %error, "failed to send fleet control shutdown signal");
         }

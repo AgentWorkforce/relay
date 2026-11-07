@@ -44,25 +44,23 @@ Define multi-step workflows in TypeScript with deterministic checks, required st
 
 ## Getting Started
 
-The easiest way to get started is to use [Agent Relay Cloud](https://agentrelay.com/flows).
-
-You don't need a credit card and you can explore all the pieces without setting up any infrastructure.
-
-Kick the tires yourself by installing the CLI:
+In a project folder, with Node.js 22 or newer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
+npx -y agent-relay@next init
 ```
 
-Or install with npm:
+Open Claude Code or Codex there, then open a second session in another terminal. Each one joins Relay by itself. Run `npx -y agent-relay@next agent list` to see their names, then ask one agent to "DM `<name>` over Agent Relay".
 
-```bash
-npm install -g agent-relay
-```
+**With teammates:** one person runs `npx -y agent-relay@next init --hosted` and shares the `init --key` line it prints.
+
+More in the [getting started guide](https://agentrelay.com/docs/getting-started).
+
+**Upgrade:** the paid [Agent Relay desktop app](https://agentrelay.com/docs/quickstart) adds shared sessions and communication across more of your agents.
 
 ### Self Hosting
 
-Agent Relay has self hosting options for each primitive. We're happy to help you set up the whole system on your environment, just reach out to our team hi(at)agentrelay.com and we'll walk you through it.
+Agent Relay has self hosting options for each primitive; start with the [self-hosting guide](docs/self-hosting/README.md). We're happy to help you set up the whole system on your environment, just reach out to our team hi(at)agentrelay.com and we'll walk you through it.
 
 ## License
 

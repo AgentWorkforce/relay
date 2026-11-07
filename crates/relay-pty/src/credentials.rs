@@ -6,11 +6,18 @@
 
 use tokio::process::Command;
 
+/// The broker/node registration identity. These values are never delegated to
+/// agent workers, even when a spawn request supplies an explicit environment.
+pub const NODE_IDENTITY_ENV_KEYS: &[&str] = &["RELAY_NODE_ID", "AGENT_RELAY_ENROLLED_NODE_ID"];
+
 pub const INHERITED_RELAY_CREDENTIAL_ENV_KEYS: &[&str] = &[
     // The broker's local HTTP API key (set on the broker process at startup).
     "RELAY_BROKER_API_KEY",
     // The node's control-plane credential.
     "RELAY_NODE_TOKEN",
+    // The node's control-plane identity. Workers use their own agent identity.
+    "RELAY_NODE_ID",
+    "AGENT_RELAY_ENROLLED_NODE_ID",
     // The broker's own registration identity proof.
     "RELAY_AGENT_IDENTITY_KEY",
     // Whoever launched the broker; each worker gets its own.
@@ -46,6 +53,16 @@ pub fn scrubbed_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inherited_scrub_includes_node_identity() {
+        for key in NODE_IDENTITY_ENV_KEYS {
+            assert!(
+                INHERITED_RELAY_CREDENTIAL_ENV_KEYS.contains(key),
+                "{key} must be removed from every worker and spawn-time helper"
+            );
+        }
+    }
 
     #[test]
     fn scrubbed_command_removes_every_relay_credential() {

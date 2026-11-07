@@ -1,0 +1,43 @@
+{
+  "id": "compact_o5qja51vtvlu",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-11-04T14:50:20.393Z",
+  "sourceTrajectories": [
+    "traj_jtqror3ioiwr"
+  ],
+  "dateRange": {
+    "start": "2026-11-04T14:47:44.507Z",
+    "end": "2026-11-04T14:49:58.275Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "other",
+      "decisions": [
+        {
+          "question": "Use one vVERSION release as the required pre-npm gate",
+          "chosen": "Use one vVERSION release as the required pre-npm gate",
+          "reasoning": "The bootstrap already supplies the package version; five native assets and their sidecars must exist before the CLI is installable. Desktop consumers pin the commit resolved by that same release tag.",
+          "fromTrajectory": "traj_jtqror3ioiwr"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    ".github/workflows/publish.yml",
+    "packages/cli/src/cli/publish-workflow.test.ts"
+  ],
+  "commits": [
+    "2c89cb849",
+    "8b3b7a5ef"
+  ]
+}

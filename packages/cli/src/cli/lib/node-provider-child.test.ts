@@ -174,8 +174,8 @@ describe('isJsNodeDefinition', () => {
     }
   );
 
-  it('leaves agent-relay.py to the python provider', () => {
-    expect(isJsNodeDefinition('agent-relay.py')).toBe(false);
+  it('rejects a non-JS definition', () => {
+    expect(isJsNodeDefinition('agent-relay.txt')).toBe(false);
   });
 });
 

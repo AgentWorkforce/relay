@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "id": "2087-exact-provider-events",
+  "kind": "feature",
+  "title": "Preserve exact provider event filters through bridge requests and stored subscriptions",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/2087-exact-provider-events/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": { "outcome": "absent", "signature": "provider_event_filters_silently_discarded" },
+    "head": { "outcome": "fixed", "signature": "provider_event_filters_preserved_and_enforced" }
+  }
+}

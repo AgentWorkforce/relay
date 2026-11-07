@@ -107,7 +107,8 @@ describe.skipIf(!['linux', 'darwin'].includes(process.platform))('native broker 
       }
       const filename = brokerIdentityPath(paths, deps, 'custom-node');
       expect(fs.existsSync(filename)).toBe(true);
-      expect(path.dirname(filename)).toBe(path.join(projectRoot, '.agentworkforce', 'relay'));
+      // Records live with the broker state so `down --state-dir` finds them from any cwd.
+      expect(path.dirname(filename)).toBe(fs.realpathSync(stateDir));
       const recorded = fs.readFileSync(filename, 'utf8');
       if (mode === 'reopened') {
         await new Promise((resolve) => setTimeout(resolve, 20));

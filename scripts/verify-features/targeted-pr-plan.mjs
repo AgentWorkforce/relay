@@ -226,6 +226,7 @@ export function buildTargetedPlan({
   matrixBytes,
   manifestBytes,
   corpusCases = [],
+  includeManual = false,
 }) {
   const files = unique(
     changedFiles
@@ -292,15 +293,24 @@ export function buildTargetedPlan({
   const targeted = selectedFeatures.size > 0 || selectedCategories.size > 0 || directScenarioIds.size > 0;
   let mode =
     selfCheckChanged || unmatchedRuntimeFiles.length > 0 ? 'full-smoke' : targeted ? 'targeted' : 'skip';
-  const smokeLanes = new Set(matrix.profiles?.smoke?.lanes ?? []);
+  const smokeProfile = includeManual ? 'manual-smoke' : 'smoke';
+  const smokeLanes = new Set(matrix.profiles?.[smokeProfile]?.lanes ?? []);
   if (mode === 'full-smoke' && smokeLanes.size === 0) throw new Error('matrix has no smoke profile lanes');
   let fallbackReason = null;
+
+  // A step naming `whenChanged` runs only for a change under those paths.
+  const stepApplies = (step) =>
+    step.whenChanged === undefined ||
+    step.whenChanged.some((prefix) => files.some((file) => file.startsWith(prefix)));
 
   const collectPlanSteps = (selectionMode) => {
     const setup = [];
     const scenarios = [];
     const coverageGaps = [];
-    for (const lane of matrix.lanes ?? []) {
+    for (const declared of matrix.lanes ?? []) {
+      // A manual lane stays out of pull requests; only a manual dispatch runs it.
+      if (declared.manualOnly === true && !includeManual) continue;
+      const lane = { ...declared, setup: (declared.setup ?? []).filter(stepApplies) };
       const laneScenarios = (lane.scenarios ?? []).filter((scenario) => {
         if (selectionMode === 'skip') return false;
         if (selectionMode === 'full-smoke')
@@ -577,7 +587,7 @@ export function changedFilesFromGit(base, head, { cwd = process.cwd() } = {}) {
   if (result.status !== 0) throw new Error(`git diff failed: ${(result.stderr ?? '').trim()}`);
   const fields = result.stdout.split('\0').filter(Boolean);
   const files = [];
-  for (let index = 0; index < fields.length; ) {
+  for (let index = 0; index < fields.length;) {
     const status = fields[index++];
     if (/^[RC]/.test(status)) {
       files.push(fields[index++], fields[index++]);
@@ -652,6 +662,7 @@ export async function main() {
     matrixBytes,
     manifestBytes,
     corpusCases,
+    includeManual: process.argv.includes('--include-manual'),
   });
   validateTargetedPlan(plan);
   await writeFile(output, `${JSON.stringify(plan, null, 2)}\n`, { flag: 'w' });

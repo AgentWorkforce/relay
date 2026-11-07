@@ -23,6 +23,19 @@ PTY auto-responders for Devin. Trust and tool approvals require an operator in
 an attached terminal. Authenticate and trust the intended worktree before
 unattended spawning. Trust is scoped to that directory.
 
+During broker-managed PTY startup, a recognised directory-trust prompt blocks
+readiness and task injection. If still present 30 seconds after first detection,
+the worker reports `directory_trust_required` with instructions to trust the
+explicit spawn working directory. Verified fleet spawns return
+`spawn_directory_trust_required` and release the worker through spawn cleanup.
+An unverified (`confirm: false`) spawn reports the worker error but does not reap
+the harness. Once reported, the worker never becomes ready, so trusting the
+directory in an attached terminal does not resume it or deliver its initial
+task: stop it, trust the directory, then spawn again. Already-trusted
+installations retain the existing startup path. Relay does not yet answer this
+menu automatically: that requires captured evidence of Devin's actual menu and
+trust scope.
+
 Readiness requires the live idle `❭ Ask Devin to build features, fix bugs, or
 work on your code` composer at the cursor. Trust choices, busy composers and
 output byte counts do not establish readiness. Messages remain queued while
@@ -30,8 +43,11 @@ an approval or other dialog occupies the composer.
 
 Both initial tasks and follow-up messages use bracketed paste, then a separate
 Enter after 250 ms. In the installed CLI, a paste and Enter in one terminal
-write left the prompt in the composer; a later Enter submitted it. Relay does
-not send repeated recovery Enters that might accidentally approve a tool.
+write left the prompt in the composer; a later Enter submitted it. Relay
+fleet PTY workers retry submit only while the compacted message tail remains
+visibly parked, and never while an approval dialog or human input owns the
+composer. Interactive `relay wrap` sessions fail an unconfirmed parked write
+instead of pressing a key when the Devin readiness gate is no longer idle.
 
 ## MCP configuration
 
