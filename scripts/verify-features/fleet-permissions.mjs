@@ -152,7 +152,6 @@ export function cleanroomLaneWritePaths(nonce, lane) {
     `${laneRoot}/packages/*/node_modules/**`,
     `${laneRoot}/plugins/*/dist/**`,
     `${laneRoot}/plugins/*/node_modules/**`,
-    `${laneRoot}/tests/integration/broker/dist/**`,
     cleanroomLaneMountAnchorPath(nonce, lane),
     evidencePath,
   ];

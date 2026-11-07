@@ -335,13 +335,9 @@ describe('Relay package qualification producer', () => {
         'agent-relay',
         '@agent-relay/cloud',
         '@agent-relay/config',
-        '@agent-relay/fleet',
-        '@agent-relay/harness-driver',
-        '@agent-relay/harnesses',
         '@agent-relay/sdk',
         '@agent-relay/session',
         '@agent-relay/utils',
-        '@agent-relay/broker-linux-x64',
       ].map((name, index) => {
         const tarballFile = `candidate-${index}.tgz`;
         const tarball = `packed:${name}`;
@@ -388,7 +384,7 @@ describe('Relay package qualification producer', () => {
         )}\n`
       );
       const candidateAttestation = {
-        version: 4,
+        version: 5,
         kind: 'relay-candidate-clean-install',
         sourceSha: producer.sourceGitSha,
         sourceDirty: false,
@@ -397,12 +393,8 @@ describe('Relay package qualification producer', () => {
         arch: 'x64',
         cliRelativePath: 'node_modules/agent-relay/dist/cli/index.js',
         cliSha256: '3'.repeat(64),
-        brokerRelativePath: 'node_modules/@agent-relay/broker-linux-x64/bin/agent-relay-broker',
-        brokerSha256: '4'.repeat(64),
-        brokerBytes: 100,
-        brokerMode: '755',
         npmVersion: '10.9.7',
-        installStrategy: 'omit-optional-with-direct-platform-broker',
+        installStrategy: 'omit-optional',
         lockfileFile: candidate.lockfileFile,
         lockfileSha256: sha256(lockfileBytes),
         lockfileBytes: lockfileBytes.length,

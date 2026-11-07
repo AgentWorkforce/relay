@@ -6,6 +6,7 @@
  * permissive test double cannot hide the SDK's dual-credential rejection.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync as legacyExists } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -42,7 +43,8 @@ const probePath = path.join(targetDir, 'packages/cli/src/.relayflow-1746-launche
 const observationPath = path.join(targetDir, '.relayflow-1746-launcher-token-observation.json');
 const configPath = path.join(targetDir, '.relayflow-1746-launcher-token.vitest.config.mjs');
 
-const probeConfigSource = `import path from 'node:path';
+const probeConfigSource = `import fs from 'node:fs';
+import path from 'node:path';
 
 const workspacePackages = [
   'cloud',
@@ -57,7 +59,9 @@ const workspacePackages = [
 
 export default {
   resolve: {
-    alias: workspacePackages.flatMap((name) => {
+    alias: workspacePackages
+      .filter((name) => fs.existsSync(path.resolve(process.cwd(), 'packages', name)))
+      .flatMap((name) => {
       const sourceRoot = path.resolve(process.cwd(), 'packages', name, 'src');
       return [
         { find: new RegExp('^@agent-relay/' + name + '/(.+)$'), replacement: sourceRoot + '/$1' },
@@ -73,12 +77,10 @@ export default {
 };
 `;
 
-const probeSource = String.raw`import { expect, test, vi } from 'vitest';
-import { writeFile } from 'node:fs/promises';
-import { Command } from 'commander';
-import { createHash } from 'node:crypto';
-
-vi.mock('./cli/lib/broker-lifecycle.js', () => ({
+// A pr-base checkout from before the broker was retired still imports the
+// broker client; mock it only where it exists so both arms load.
+const LEGACY_BROKER_MOCKS = legacyExists(path.join(targetDir, 'packages/cli/src/cli/lib/broker-lifecycle.ts'))
+  ? String.raw`vi.mock('./cli/lib/broker-lifecycle.js', () => ({
   readBrokerConnection: vi.fn(() => ({ url: 'http://127.0.0.1:1', api_key: 'k', pid: 1, port: 1 })),
 }));
 
@@ -106,7 +108,15 @@ vi.mock('@agent-relay/harness-driver', async (importOriginal) => ({
     disconnect() {}
   },
 }));
+`
+  : '';
 
+const probeSource = String.raw`import { expect, test, vi } from 'vitest';
+import { writeFile } from 'node:fs/promises';
+import { Command } from 'commander';
+import { createHash } from 'node:crypto';
+
+${LEGACY_BROKER_MOCKS}
 import { registerFleetCommands } from './cli/commands/fleet.js';
 import { createAgentRelay as createRealAgentRelay } from './cli/lib/sdk-client.js';
 

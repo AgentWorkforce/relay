@@ -10,7 +10,6 @@ Telemetry allows us to better identify bugs and gain visibility on usage pattern
 
 ## What telemetry data is Agent Relay collecting?
 
-- **Broker lifecycle events**: When the broker starts and stops, including uptime duration and total number of agents spawned during the session
 - **Agent spawn/release events**: Which CLI is being used (e.g., `claude`, `codex`, `gemini`), runtime type (e.g., `pty`), release reason, and agent lifetime in seconds
 - **Agent crash events**: CLI type, exit code, and lifetime (no error messages or stack traces)
 - **Message metadata**: Whether a message is a broadcast, whether it has a thread (no message content is collected)
@@ -18,8 +17,8 @@ Telemetry allows us to better identify bugs and gain visibility on usage pattern
 - **Version information**: The version of Agent Relay being used
 - **System information**: Operating system and CPU architecture
 - **Machine identifier**: An anonymous, hashed machine ID (`machine_id`) on every
-  event, so all processes from one installation (CLI, broker, MCP server,
-  spawned agents) correlate to the same machine. It is derived by hashing a
+  event, so all processes from one installation (CLI, MCP server, spawned
+  agents) correlate to the same machine. It is derived by hashing a
   locally generated id, so it contains no hostname. This is sent whether or not
   you are signed in — it is what lets us tell "one machine used ten times" apart
   from "ten machines used once."
@@ -75,13 +74,7 @@ Data is never shared with third parties.
 
 ## How can I view what is being collected?
 
-To see telemetry events being sent, set the `RUST_LOG` environment variable:
-
-```sh
-RUST_LOG=agent_relay::telemetry=debug agent-relay broker
-```
-
-The telemetry source code can be viewed at https://github.com/AgentWorkforce/relay/blob/main/src/telemetry.rs
+The CLI telemetry source code can be viewed at https://github.com/AgentWorkforce/relay/tree/main/packages/cli/src/cli/telemetry. Releases from before the broker was retired also sent its lifecycle events.
 
 All telemetry operations run in the background and will not delay command execution. If there's no internet connection, telemetry will fail silently.
 

@@ -106,7 +106,7 @@ import {
   getCanonicalRelayNodePath,
   getCanonicalRelaycastEnginePath,
   isUsableBinary,
-} from '@agent-relay/harness-driver/install-paths';
+} from '../lib/install-paths.js';
 
 /** The Relaycast server `relay init` runs locally. Pinned so every machine runs the same server. */
 export const LOCAL_ENGINE_VERSION = '11.1.0';

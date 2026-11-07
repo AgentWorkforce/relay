@@ -1,9 +1,5 @@
-import type { Command } from 'commander';
-import {
-  launchSubscriptionRecipient,
-  resolveSubscriptionAgentChannel,
-  type RecipientLaunch,
-} from './integration-recipient.js';
+import { Option, type Command } from 'commander';
+import { resolveSubscriptionAgentChannel } from './integration-recipient.js';
 import { createHash, pbkdf2Sync, randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
 import { getProjectPaths } from '@agent-relay/config';
@@ -29,7 +25,6 @@ import {
   withSdkDefaults,
   type SdkCommandDeps,
 } from '../lib/sdk-command.js';
-import { connectProjectBrokerClient } from '../lib/project-broker-client.js';
 import { UNBOUND_CREDENTIAL_ORIGIN } from '../lib/relaycast-origin-binding.js';
 import type { SdkClientOptions } from '../lib/sdk-client.js';
 import {
@@ -159,9 +154,18 @@ export interface RelayfileBridge {
 
 type RelayfileBindingInput = Parameters<RelayfileBridge['bind']>[0];
 
+const SPAWN_RECIPIENT_REMOVED_MESSAGE =
+  '--spawn (with --spawn-arg, --cwd, --task and --broker-connection) was removed together with the local broker. ' +
+  'Start the recipient agent first (for example with ' +
+  "the Agent Relay MCP spawn tools after 'relay init'), then subscribe it with --to @<name>.";
+
 export type IntegrationCommandDependencies = SdkCommandDeps & {
-  launchRecipient: typeof launchSubscriptionRecipient;
   resolveAgentChannel: typeof resolveSubscriptionAgentChannel;
+  /**
+   * A fallback workspace session to retry with when the selected key is
+   * rejected. The local broker used to supply its session here; nothing does
+   * by default now, so the configured selection is authoritative.
+   */
   resolveLocalRelayOptions: () => Promise<LocalRelayOptions | undefined>;
   relayfile: RelayfileBridge;
   cleanupJournal: CleanupJournal;
@@ -361,41 +365,13 @@ async function promptLine(question: string): Promise<string> {
   }
 }
 
-async function resolveLocalBrokerRelayOptions(): Promise<LocalRelayOptions | undefined> {
-  let client:
-    | {
-        getSession: () => Promise<{ workspace_key?: string; relay_base_url?: string }>;
-        disconnect?: () => void;
-      }
-    | undefined;
-  try {
-    const brokerClient = connectProjectBrokerClient(getProjectPaths().projectRoot);
-    client = brokerClient;
-    const session = await brokerClient.getSession();
-    const workspaceKey = session.workspace_key?.trim();
-    if (!workspaceKey) {
-      return undefined;
-    }
-    const baseUrl = session.relay_base_url?.trim();
-    return {
-      workspaceKey,
-      ...(baseUrl ? { baseUrl } : {}),
-    };
-  } catch {
-    return undefined;
-  } finally {
-    client?.disconnect?.();
-  }
-}
-
 function withIntegrationDefaults(
   overrides: Partial<IntegrationCommandDependencies> = {}
 ): IntegrationCommandDependencies {
   return {
     ...withSdkDefaults(overrides),
-    launchRecipient: launchSubscriptionRecipient,
     resolveAgentChannel: resolveSubscriptionAgentChannel,
-    resolveLocalRelayOptions: resolveLocalBrokerRelayOptions,
+    resolveLocalRelayOptions: async () => undefined,
     relayfile: defaultRelayfileBridge(),
     cleanupJournal: fileCleanupJournal(),
     isInteractive: () => Boolean(process.stdin.isTTY && process.stdout.isTTY),
@@ -785,7 +761,7 @@ async function promptSubscribeOptions(
   opts: Record<string, unknown>
 ): Promise<{ provider: string; resource: string; to: string }> {
   if (provider && typeof opts.resource === 'string' && typeof opts.to === 'string') {
-    return { provider, resource: opts.resource, to: resolveSelfRecipient(opts.to, opts) };
+    return { provider, resource: opts.resource, to: resolveSelfRecipient(opts.to) };
   }
   if (opts.input === false || !deps.isInteractive()) {
     throw new Error(
@@ -798,18 +774,18 @@ async function promptSubscribeOptions(
       ? opts.resource
       : await deps.prompt('Provider resource: ');
   const to = typeof opts.to === 'string' && opts.to.trim() ? opts.to : await deps.prompt('Relay recipient: ');
-  return { provider: resolvedProvider, resource, to: resolveSelfRecipient(to, opts) };
+  return { provider: resolvedProvider, resource, to: resolveSelfRecipient(to) };
 }
 
 /**
- * Fleet PTYs have a broker-assigned identity but need not be discoverable
- * through the desktop session socket. `self` (from the flag or the prompt,
- * surrounding whitespace ignored like other recipients) becomes that identity,
- * which the existing owner-authorized agent subscription route verifies.
+ * A relay worker knows its own identity from `RELAY_AGENT_NAME` even when it
+ * is not discoverable through the desktop session socket. `self` (from the
+ * flag or the prompt, surrounding whitespace ignored like other recipients)
+ * becomes that identity, which the existing owner-authorized agent subscription
+ * route verifies.
  */
-function resolveSelfRecipient(to: string, opts: Record<string, unknown>): string {
+function resolveSelfRecipient(to: string): string {
   if (to.trim() !== 'self') return to;
-  if (opts.spawn) throw new Error('--to self cannot be combined with --spawn.');
   const name = process.env.RELAY_AGENT_NAME?.trim();
   if (!name) {
     throw new Error('--to self requires RELAY_AGENT_NAME from a relay worker; otherwise use --to @agent.');
@@ -1574,21 +1550,16 @@ async function runSubscribe(
   providerArg: string | undefined,
   opts: Record<string, unknown>
 ): Promise<void> {
-  const recipient: { launch?: RecipientLaunch; committed?: boolean } = {};
-  try {
-    await runSubscribeSetup(deps, providerArg, opts, recipient);
-  } catch (error) {
-    if (recipient.launch && !recipient.committed) {
-      try {
-        await recipient.launch.rollback();
-      } catch (cleanupError) {
-        throw new AggregateError([error, cleanupError], 'Subscribe failed and recipient cleanup needs retry');
-      }
-    }
-    throw error;
-  } finally {
-    recipient.launch?.close();
+  if (
+    opts.spawn !== undefined ||
+    opts.spawnArg !== undefined ||
+    opts.cwd !== undefined ||
+    opts.brokerConnection !== undefined ||
+    opts.task !== undefined
+  ) {
+    throw new Error(SPAWN_RECIPIENT_REMOVED_MESSAGE);
   }
+  await runSubscribeSetup(deps, providerArg, opts);
 }
 
 /** Subscription provisioning and retirement are workspace-owner operations, like
@@ -1613,8 +1584,7 @@ function createSubscriptionRelay(
 async function runSubscribeSetup(
   deps: IntegrationCommandDependencies,
   providerArg: string | undefined,
-  opts: Record<string, unknown>,
-  recipient: { launch?: RecipientLaunch; committed?: boolean }
+  opts: Record<string, unknown>
 ): Promise<void> {
   validateSubscriptionCredentials(sdkOptionsFromOpts(opts));
   await deps.relayfile.ensureCompatible();
@@ -1666,21 +1636,10 @@ async function runSubscribeSetup(
     local && !explicitWorkspaceKey(opts) ? localRetryOptions(relayOptions, local) : relayOptions;
   const relay = createSubscriptionRelay(deps, effectiveRelayOptions);
   const recipientName = agentName(to);
-  if (opts.spawn && !recipientName) throw new Error('--spawn requires an explicit @agent recipient');
-  if (recipientName && typeof opts.spawn === 'string') {
-    recipient.launch = await deps.launchRecipient({
-      name: recipientName,
-      cli: opts.spawn,
-      provider,
-      resource: pathGlob,
-      options: effectiveRelayOptions,
-      ...(typeof opts.cwd === 'string' ? { cwd: opts.cwd } : {}),
-      ...(typeof opts.brokerConnection === 'string' ? { brokerConnectionPath: opts.brokerConnection } : {}),
-      ...(typeof opts.task === 'string' ? { task: opts.task } : {}),
-      ...(Array.isArray(opts.spawnArg) ? { args: opts.spawnArg as string[] } : {}),
-    });
-  } else if (recipientName && !(await relay.agents.list()).some((agent) => agent.name === recipientName)) {
-    throw new Error(`Recipient @${recipientName} does not exist; use --spawn <cli> to launch it.`);
+  if (recipientName && !(await relay.agents.list()).some((agent) => agent.name === recipientName)) {
+    throw new Error(
+      `Recipient @${recipientName} does not exist; start that agent first (for example with the Agent Relay MCP spawn tools after relay init), then subscribe it.`
+    );
   }
   const channel = recipientName
     ? await deps.resolveAgentChannel(recipientName, {
@@ -1861,7 +1820,6 @@ async function runSubscribeSetup(
         : {}),
     };
     await deps.relayfile.bind(bindingInput);
-    recipient.committed = true;
   } catch (err) {
     // The new binding never fully landed: roll back only what we just created,
     // leave any prior working binding untouched, and keep/record a durable
@@ -2184,20 +2142,17 @@ export function registerIntegrationCommands(
       .command('subscribe [provider]')
       .description('Subscribe a relay recipient to a relayfile integration')
       .option('--resource <value>', 'Provider-native resource (channel, project, label, etc.)')
-      .option('--to <target>', 'Relay recipient: @agent, #channel, or self (broker worker identity)')
-      .option('--spawn <cli>', 'Launch and confirm a live recipient before subscribing the explicit resource')
-      .option(
-        '--spawn-arg <value>',
-        'Literal harness argument, repeatable (use --spawn-arg=--flag for flags)',
-        (value: string, prior: string[]) => [...prior, value],
-        []
+      .option('--to <target>', 'Relay recipient: @agent, #channel, or self (this relay worker)')
+      // Removed with the local broker; kept hidden so old scripts get the replacement.
+      .addOption(new Option('--spawn <cli>').hideHelp())
+      .addOption(
+        new Option('--spawn-arg <value>')
+          .hideHelp()
+          .argParser((value: string, prior: string[] = []) => [...prior, value])
       )
-      .option('--cwd <path>', 'Working directory for the spawned recipient')
-      .option(
-        '--broker-connection <path>',
-        'Explicit broker connection.json for --spawn; workspace must match'
-      )
-      .option('--task <text>', 'Task for the spawned recipient; resource scope comes only from --resource')
+      .addOption(new Option('--cwd <path>').hideHelp())
+      .addOption(new Option('--broker-connection <path>').hideHelp())
+      .addOption(new Option('--task <text>').hideHelp())
       .option('--events <list>', 'Comma-separated relay event names', 'message.created,thread.reply')
       .option('--bridge-url <url>', 'Writeback bridge URL')
       .option('--bridge-secret <secret>', 'HMAC signing secret for the writeback bridge')

@@ -71,7 +71,10 @@ export interface CommonProperties {
   cli_version?: string;
   /** `@agent-relay/sdk` version, if resolvable. */
   sdk_version?: string;
-  /** `agent-relay-broker` Rust binary version, if known. */
+  /**
+   * `agent-relay-broker` Rust binary version, if known. Only events from
+   * releases that still shipped the (now retired) broker carry it.
+   */
   broker_version?: string;
   /** Operating system (e.g., darwin, linux, win32) */
   os: string;

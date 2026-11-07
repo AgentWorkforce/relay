@@ -37,7 +37,6 @@ import { redactCredentialValues } from '@agent-relay/cloud/redact';
 
 import { describeError } from './describe-error.js';
 import { isBundledBunEntrypointPath } from './agent-relay-mcp-command.js';
-import { isBunRuntime } from './node-definition-loader.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -192,6 +191,11 @@ export class SurfaceProvisionError extends Error {
 export function defaultSurfaceStoreRoot(): string {
   const dataDir = process.env['AGENT_RELAY_DATA_DIR'] || path.join(os.homedir(), '.agentworkforce/relay');
   return path.join(dataDir, 'surfaces');
+}
+
+/** Whether we are executing inside Bun (notably the `bun build --compile` binary). */
+function isBunRuntime(): boolean {
+  return typeof (process.versions as NodeJS.ProcessVersions & { bun?: string }).bun === 'string';
 }
 
 /**

@@ -6,10 +6,6 @@
 #
 # Usage:
 #   scripts/test-install-atomic.sh
-#   AGENT_RELAY_TEST_BROKER=/path/to/real/broker scripts/test-install-atomic.sh
-#       additionally runs the real-binary cases against a pristine published
-#       broker: smoke test pass/fail with and without telemetry opt-out, the
-#       macOS signature check and scenarios A-D (macOS arm64 only for the latter).
 #
 # Compatible with bash 3.2 (macOS) and newer.
 
@@ -21,7 +17,6 @@ export HOME="$WORK/home"
 mkdir -p "$HOME"
 unset GITHUB_TOKEN AGENT_RELAY_TELEMETRY_DISABLED DO_NOT_TRACK
 export AGENT_RELAY_INSTALL_SOURCE_ONLY=1
-export AGENT_RELAY_SMOKE_SECONDS=1
 
 # shellcheck source=../install.sh
 . "$ROOT/install.sh"
@@ -53,23 +48,15 @@ info() { echo "[info] $1" >> "$LOG"; }
 FIX="$WORK/fixtures"
 mkdir -p "$FIX"
 
-make_fake_broker() { # make_fake_broker <path> <mode: ok|crash|env> [label]
+make_fake_bin() { # make_fake_bin <path> <mode: ok|crash> [label]: crash fails its --version check
     local path="$1" mode="$2" label="${3:-new}"
     {
         echo '#!/bin/bash'
         echo "# $label"
-        cat <<'BODY'
-case "$1" in
-  --help|--version) echo "fake broker"; exit 0 ;;
-  init)
-BODY
         case "$mode" in
-            ok)    echo '    exec sleep 30 ;;' ;;
-            crash) echo '    kill -ILL $$ ;;' ;;
-            env)   echo '    if env | grep -q "secret"; then exit 3; fi; exec sleep 30 ;;' ;;
+            ok)    echo 'case "$1" in --help|--version) echo "fake tool"; exit 0 ;; esac; exit 0' ;;
+            crash) echo 'echo "boom: broken build"; exit 1' ;;
         esac
-        echo '  *) exit 2 ;;'
-        echo 'esac'
         # pad to 64 KiB so there is a "page" to damage
         i=0
         while [ "$i" -lt 1000 ]; do
@@ -126,6 +113,7 @@ curl() {
         case "$a" in http*) url="$a" ;; esac
         prev="$a"
     done
+    echo "$url" >> "$WORK/curl.log"
     case "$url" in
         https://api.github.com/*)
             [ -f "$FIX/release.json" ] || return 22
@@ -162,9 +150,9 @@ done
 check "sha256_of fails with no hasher" bash -c "PATH=/nonexistent; . '$ROOT/install.sh' >/dev/null 2>&1; ! sha256_of '$WORK/hello' >/dev/null 2>&1"
 
 reset_release
-make_release_json "$FIX/release.json" "agent-relay-broker-test-test" "ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+make_release_json "$FIX/release.json" "agent-relay-tool-test-test" "ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 check "expected digest parsed from release JSON (lowercased, right asset)" \
-    test "$(fetch_asset_expected_sha256 agent-relay-broker-test-test)" = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+    test "$(fetch_asset_expected_sha256 agent-relay-tool-test-test)" = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 check "null digest yields nothing" test -z "$(fetch_asset_expected_sha256 unlisted-asset)"
 check "unknown asset yields nothing" test -z "$(fetch_asset_expected_sha256 nope)"
 check "other asset digest not confused" \
@@ -214,12 +202,12 @@ done
 echo "== (a) good file installs; previous kept as .prev until verified =="
 
 reset_release
-D="$(newdir)"; DEST="$D/agent-relay-broker"
-make_fake_broker "$DEST" ok old
+D="$(newdir)"; DEST="$D/tool"
+make_fake_bin "$DEST" ok old
 OLD_HASH="$(sha256_of "$DEST")"
-make_fake_broker "$FIX/asset/agent-relay-broker-test-test" ok new
-GOOD="$(sha256_of "$FIX/asset/agent-relay-broker-test-test")"
-make_release_json "$FIX/release.json" "agent-relay-broker-test-test" "$GOOD"
+make_fake_bin "$FIX/asset/agent-relay-tool-test-test" ok new
+GOOD="$(sha256_of "$FIX/asset/agent-relay-tool-test-test")"
+make_release_json "$FIX/release.json" "agent-relay-tool-test-test" "$GOOD"
 
 eval "$(declare -f sha256_of | sed '1s/sha256_of/real_sha256_of/')"
 sha256_of() {
@@ -230,24 +218,23 @@ sha256_of() {
     real_sha256_of "$@"
 }
 rm -f "$WORK/prev-seen"
-fetch_release_asset agent-relay-broker-test-test "$D" raw; rc=$?
+fetch_release_asset agent-relay-tool-test-test "$D" raw; rc=$?
 check "fetch verified the digest" test "$rc" -eq 0
 check "fetch logged the verification" contains "$(cat "$LOG")" "Verified SHA-256"
-install_binary_atomic "$FETCHED_TMP" "$DEST" check_broker_binary; rc=$?
+install_binary_atomic "$FETCHED_TMP" "$DEST" check_cli_binary; rc=$?
 check "install succeeded" test "$rc" -eq 0
 check "destination is the new binary" test "$(real_sha256_of "$DEST")" = "$GOOD"
 check ".prev held the old binary at read-back time" test -f "$WORK/prev-seen"
 check ".prev removed once verified" test ! -e "$DEST.prev"
 check "no temp files left behind" test -z "$(leftovers "$D")"
-check "smoke test noted in output" contains "$(cat "$LOG")" "smoke test passed"
 sha256_of() { real_sha256_of "$@"; }
 
 echo "== read-back mismatch restores the previous binary =="
 reset_release
-D="$(newdir)"; DEST="$D/agent-relay-broker"
-make_fake_broker "$DEST" ok old
+D="$(newdir)"; DEST="$D/tool"
+make_fake_bin "$DEST" ok old
 OLD_HASH="$(real_sha256_of "$DEST")"
-make_fake_broker "$D/new" ok new
+make_fake_bin "$D/new" ok new
 sha256_of() { if [ "$1" = "$DEST" ]; then echo deadbeef; else real_sha256_of "$@"; fi; }
 install_binary_atomic "$D/new" "$DEST" true; rc=$?
 sha256_of() { real_sha256_of "$@"; }
@@ -260,64 +247,40 @@ check ".prev consumed by the restore" test ! -e "$DEST.prev"
 echo "== (b) zero-filled page injected after download =="
 
 reset_release
-D="$(newdir)"; DEST="$D/agent-relay-broker"
-make_fake_broker "$DEST" ok old
+D="$(newdir)"; DEST="$D/tool"
+make_fake_bin "$DEST" ok old
 OLD_HASH="$(sha256_of "$DEST")"
-make_fake_broker "$FIX/asset/pristine" ok pristine
+make_fake_bin "$FIX/asset/pristine" ok pristine
 PRISTINE="$(sha256_of "$FIX/asset/pristine")"
-cp "$FIX/asset/pristine" "$FIX/asset/agent-relay-broker-test-test"
-zero_page "$FIX/asset/agent-relay-broker-test-test"
-check "fixture really differs from pristine" test "$(sha256_of "$FIX/asset/agent-relay-broker-test-test")" != "$PRISTINE"
-make_release_json "$FIX/release.json" "agent-relay-broker-test-test" "$PRISTINE"
-fetch_release_asset agent-relay-broker-test-test "$D" raw; rc=$?
+cp "$FIX/asset/pristine" "$FIX/asset/agent-relay-tool-test-test"
+zero_page "$FIX/asset/agent-relay-tool-test-test"
+check "fixture really differs from pristine" test "$(sha256_of "$FIX/asset/agent-relay-tool-test-test")" != "$PRISTINE"
+make_release_json "$FIX/release.json" "agent-relay-tool-test-test" "$PRISTINE"
+fetch_release_asset agent-relay-tool-test-test "$D" raw; rc=$?
 check "damaged download rejected (rc 2)" test "$rc" -eq 2
 check "mismatch reported" contains "$(cat "$LOG")" "SHA-256 mismatch"
 check "destination untouched" test "$(sha256_of "$DEST")" = "$OLD_HASH"
 check "no temp files left behind" test -z "$(leftovers "$D")"
 
-echo "== (b2) no digest, but the binary crashes on init (SIGILL) =="
+echo "== (b2) no digest, but the binary fails its post-download check =="
 reset_release
-D="$(newdir)"; DEST="$D/agent-relay-broker"
-make_fake_broker "$DEST" ok old
+D="$(newdir)"; DEST="$D/tool"
+make_fake_bin "$DEST" ok old
 OLD_HASH="$(sha256_of "$DEST")"
-make_fake_broker "$FIX/asset/agent-relay-broker-test-test" crash
-make_release_json "$FIX/release.json" "agent-relay-broker-test-test" ""
-fetch_release_asset agent-relay-broker-test-test "$D" raw; rc=$?
+make_fake_bin "$FIX/asset/agent-relay-tool-test-test" crash
+make_release_json "$FIX/release.json" "agent-relay-tool-test-test" ""
+fetch_release_asset agent-relay-tool-test-test "$D" raw; rc=$?
 check "fetch continues without a digest" test "$rc" -eq 0
-install_binary_atomic "$FETCHED_TMP" "$DEST" check_broker_binary; rc=$?
-check "crashing broker rejected" test "$rc" -ne 0
-check "smoke failure names the signal" contains "$(cat "$LOG")" "init exited with status 132"
+install_binary_atomic "$FETCHED_TMP" "$DEST" check_cli_binary; rc=$?
+check "failing binary rejected" test "$rc" -ne 0
 check "destination untouched" test "$(sha256_of "$DEST")" = "$OLD_HASH"
 check "no .prev or temp files left" test "$(find "$D" -type f | wc -l | tr -d ' ')" = "1"
-
-echo "== smoke test: telemetry opt-out is not applied on the user's behalf =="
-reset_release
-cat > "$WORK/telbroker" <<'TEL'
-#!/bin/bash
-case "$1" in --help) exit 0 ;; esac
-# crash unless the user opted out (stands in for the telemetry code path)
-if [ -z "$AGENT_RELAY_TELEMETRY_DISABLED$DO_NOT_TRACK" ]; then kill -ILL $$; fi
-exec sleep 30
-TEL
-chmod +x "$WORK/telbroker"
-smoke_test_broker "$WORK/telbroker"; rc=$?
-check "telemetry path is exercised by default" test "$rc" -ne 0
-AGENT_RELAY_TELEMETRY_DISABLED=1 smoke_test_broker "$WORK/telbroker"; rc=$?
-check "user's own opt-out is forwarded" test "$rc" -eq 0
-
-echo "== smoke test: scrubbed environment =="
-reset_release
-export AGENT_RELAY_API_KEY=secret RELAY_API_KEY=secret
-make_fake_broker "$WORK/envbroker" env
-smoke_test_broker "$WORK/envbroker"; rc=$?
-unset AGENT_RELAY_API_KEY RELAY_API_KEY
-check "RELAY_*/AGENT_RELAY_* not visible to the broker under test" test "$rc" -eq 0
 
 # ---------------------------------------------------------------------------
 echo "== (c) replacing a binary a running process holds open =="
 
 reset_release
-D="$(newdir)"; DEST="$D/agent-relay-broker"
+D="$(newdir)"; DEST="$D/tool"
 # Prefer a NATIVE executable as the running process: a shell script keeps
 # running its already parsed loop even if the file is overwritten in place, so
 # it could never tell an in-place overwrite from an atomic rename. If a copy of
@@ -341,11 +304,11 @@ echo "       (running-process fixture: $FIXTURE_KIND)"
 OLD_INODE="$(ls -i "$DEST" | awk '{print $1}')"
 exec 9< "$DEST"                 # hold the old inode open; in-place writes would show through this fd
 OLD_CONTENT_HASH="$(real_sha256_of "$DEST")"
-make_fake_broker "$FIX/asset/agent-relay-broker-test-test" ok new
-NEW="$(sha256_of "$FIX/asset/agent-relay-broker-test-test")"
-make_release_json "$FIX/release.json" "agent-relay-broker-test-test" "$NEW"
-fetch_release_asset agent-relay-broker-test-test "$D" raw
-install_binary_atomic "$FETCHED_TMP" "$DEST" check_broker_binary; rc=$?
+make_fake_bin "$FIX/asset/agent-relay-tool-test-test" ok new
+NEW="$(sha256_of "$FIX/asset/agent-relay-tool-test-test")"
+make_release_json "$FIX/release.json" "agent-relay-tool-test-test" "$NEW"
+fetch_release_asset agent-relay-tool-test-test "$D" raw
+install_binary_atomic "$FETCHED_TMP" "$DEST" check_cli_binary; rc=$?
 check "install over a running binary succeeded" test "$rc" -eq 0
 sleep 1
 check "running process still alive" kill -0 "$RUNNING"
@@ -354,10 +317,10 @@ check "destination is a different inode (atomic rename, not in-place write)" tes
 check "the old inode, still open, still has the OLD content" test "$(cat <&9 | real_sha256_of)" = "$OLD_CONTENT_HASH"
 exec 9<&-
 # detector self-test: an in-place overwrite WOULD be caught by the fd check
-cp "$D/agent-relay-broker" "$D/inplace"
+cp "$D/tool" "$D/inplace"
 exec 8< "$D/inplace"
 before="$(real_sha256_of "$D/inplace")"
-cat "$FIX/asset/pristine" > "$D/inplace" 2>/dev/null || make_fake_broker "$D/inplace" crash inplace
+cat "$FIX/asset/pristine" > "$D/inplace" 2>/dev/null || make_fake_bin "$D/inplace" crash inplace
 check "detector self-test: the open-fd check notices an in-place overwrite" test "$(cat <&8 | real_sha256_of)" != "$before"
 exec 8<&-
 kill "$RUNNING" 2>/dev/null; { wait "$RUNNING"; } 2>/dev/null
@@ -367,17 +330,17 @@ echo "== (d) missing digest warns instead of silently passing =="
 
 reset_release
 D="$(newdir)"
-make_fake_broker "$FIX/asset/agent-relay-broker-test-test" ok new
-make_release_json "$FIX/release.json" "agent-relay-broker-test-test" ""
-fetch_release_asset agent-relay-broker-test-test "$D" raw; rc=$?
+make_fake_bin "$FIX/asset/agent-relay-tool-test-test" ok new
+make_release_json "$FIX/release.json" "agent-relay-tool-test-test" ""
+fetch_release_asset agent-relay-tool-test-test "$D" raw; rc=$?
 check "continues (rc 0)" test "$rc" -eq 0
 check "warns about the missing digest" contains "$(cat "$LOG")" "publishes no SHA-256 digest"
 rm -f "$FETCHED_TMP"
 
 reset_release   # no release.json at all: API unavailable / rate limited
 D="$(newdir)"
-make_fake_broker "$FIX/asset/agent-relay-broker-test-test" ok new
-fetch_release_asset agent-relay-broker-test-test "$D" raw; rc=$?
+make_fake_bin "$FIX/asset/agent-relay-tool-test-test" ok new
+fetch_release_asset agent-relay-tool-test-test "$D" raw; rc=$?
 check "API failure continues (rc 0)" test "$rc" -eq 0
 check "API failure warns" contains "$(cat "$LOG")" "Could not fetch release metadata"
 rm -f "$FETCHED_TMP"
@@ -387,9 +350,9 @@ echo "== (e) checksum mismatch fails =="
 
 reset_release
 D="$(newdir)"
-make_fake_broker "$FIX/asset/agent-relay-broker-test-test" ok new
-make_release_json "$FIX/release.json" "agent-relay-broker-test-test" "0000000000000000000000000000000000000000000000000000000000000000"
-fetch_release_asset agent-relay-broker-test-test "$D" raw; rc=$?
+make_fake_bin "$FIX/asset/agent-relay-tool-test-test" ok new
+make_release_json "$FIX/release.json" "agent-relay-tool-test-test" "0000000000000000000000000000000000000000000000000000000000000000"
+fetch_release_asset agent-relay-tool-test-test "$D" raw; rc=$?
 check "mismatch returns 2" test "$rc" -eq 2
 check "mismatch warns with both digests" contains "$(cat "$LOG")" "expected 0000"
 check "nothing left in the install dir" test -z "$(ls -A "$D")"
@@ -399,7 +362,7 @@ echo "== gz assets: digest of the archive, clean-decode cross-check =="
 
 reset_release
 D="$(newdir)"
-make_fake_broker "$WORK/plain" ok gz
+make_fake_bin "$WORK/plain" ok gz
 gzip -c "$WORK/plain" > "$FIX/asset/agent-relay-test-test.gz"
 GZ="$(sha256_of "$FIX/asset/agent-relay-test-test.gz")"
 make_release_json "$FIX/release.json" "agent-relay-test-test.gz" "$GZ"
@@ -417,26 +380,33 @@ fetch_release_asset agent-relay-test-test.gz "$D" gz; rc=$?
 check "gz digest mismatch rejected" test "$rc" -eq 2
 
 # ---------------------------------------------------------------------------
-echo "== transactional standalone install (CLI + broker) =="
+echo "== transactional standalone install (CLI + launchers) =="
 
 detect_platform >/dev/null 2>&1
 REAL_PLATFORM="$PLATFORM"
 make_fake_cli() { # make_fake_cli <path> <version>
     printf '#!/bin/bash\n[ "$1" = "--version" ] && { echo "%s"; exit 0; }\nexit 0\n' "$2" > "$1"; chmod +x "$1"
 }
-e2e_setup() { # e2e_setup <broker-mode> <digests: yes|no> [old-cli: yes|no]
+make_broken_cli() { # make_broken_cli <path>: its --version check fails
+    printf '#!/bin/bash\necho "boom: broken build"\nexit 1\n' > "$1"; chmod +x "$1"
+}
+# An agent-relay-broker an older release installed. The installer must leave it
+# alone: never replace, remove or run it. Running it leaves a marker.
+make_legacy_broker() { # make_legacy_broker <path>
+    printf '#!/bin/bash\n: > "%s/broker-ran"\necho "legacy broker"\n' "$WORK" > "$1"; chmod +x "$1"
+}
+e2e_setup() { # e2e_setup <cli-mode: ok|crash> <digests: yes|no> [old-cli: yes|no]
     reset_release
+    rm -f "$WORK/broker-ran"
     INSTALL_DIR="$(newdir)"; BIN_DIR="$(newdir)"; mkdir -p "$INSTALL_DIR/bin"
-    make_fake_broker "$INSTALL_DIR/bin/agent-relay-broker" ok oldbroker
-    make_fake_cli "$FIX/cli-new" "9.9.9"
+    make_legacy_broker "$INSTALL_DIR/bin/agent-relay-broker"
+    if [ "$1" = crash ]; then make_broken_cli "$FIX/cli-new"; else make_fake_cli "$FIX/cli-new" "9.9.9"; fi
     gzip -c "$FIX/cli-new" > "$FIX/asset/agent-relay-$REAL_PLATFORM.gz"
-    make_fake_broker "$FIX/asset/agent-relay-broker-$REAL_PLATFORM" "$1" newbroker
     if [ "${3:-yes}" = yes ]; then make_fake_cli "$INSTALL_DIR/bin/agent-relay" "1.0.0"; fi
     {
         echo '{"assets": ['
         if [ "$2" = yes ]; then
-            echo "{\"name\": \"agent-relay-$REAL_PLATFORM.gz\", \"digest\": \"sha256:$(sha256_of "$FIX/asset/agent-relay-$REAL_PLATFORM.gz")\"},"
-            echo "{\"name\": \"agent-relay-broker-$REAL_PLATFORM\", \"digest\": \"sha256:$(sha256_of "$FIX/asset/agent-relay-broker-$REAL_PLATFORM")\"}"
+            echo "{\"name\": \"agent-relay-$REAL_PLATFORM.gz\", \"digest\": \"sha256:$(sha256_of "$FIX/asset/agent-relay-$REAL_PLATFORM.gz")\"}"
         else
             echo '{"name": "unrelated", "digest": null}'
         fi
@@ -444,55 +414,70 @@ e2e_setup() { # e2e_setup <broker-mode> <digests: yes|no> [old-cli: yes|no]
     } > "$FIX/release.json"
     OLD_BROKER_HASH="$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")"
 }
-run_main() { ( export AGENT_RELAY_TELEMETRY_DISABLED=1; main ) > "$WORK/main.out" 2>&1; }
+# Standalone-only, so a rejected CLI stops instead of reaching a real npm install.
+run_main() { ( export AGENT_RELAY_TELEMETRY_DISABLED=1 AGENT_RELAY_INSTALL_METHOD=standalone; main ) > "$WORK/main.out" 2>&1; }
+old_broker_untouched() {
+    test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH" -a ! -e "$WORK/broker-ran"
+}
 
 e2e_setup ok yes
 run_main; rc=$?
 check "all good: installer exits 0" test "$rc" -eq 0
 check "all good: CLI upgraded" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "9.9.9"
 check "all good: no .prev left" test ! -e "$INSTALL_DIR/bin/agent-relay.prev"
+check "all good: no broker is installed" test ! -e "$BIN_DIR/agent-relay-broker"
 
 e2e_setup crash no
 run_main; rc=$?
-check "broker rejected: installer exits NON-zero" test "$rc" -ne 0
-check "broker rejected: previous CLI restored" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
-check "broker rejected: old broker untouched" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
-check "broker rejected: message says CLI was not kept" contains "$(cat "$WORK/main.out")" "CLI was NOT kept"
-check "broker rejected: no success message" test -z "$(grep -i 'installed successfully' "$WORK/main.out")"
-check "broker rejected: no .prev/temp files" test "$(find "$INSTALL_DIR" "$BIN_DIR" -name '.*' -type f | wc -l | tr -d ' ')" = "0" -a ! -e "$INSTALL_DIR/bin/agent-relay.prev"
+check "CLI rejected: installer exits NON-zero" test "$rc" -ne 0
+check "CLI rejected: previous CLI untouched" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
+check "CLI rejected: old broker untouched and never run" old_broker_untouched
+check "CLI rejected: reason reported" contains "$(cat "$WORK/main.out")" "Standalone binary verification failed"
+check "CLI rejected: no success message" test -z "$(grep -i 'installed successfully' "$WORK/main.out")"
+check "CLI rejected: no .prev/temp files" test "$(find "$INSTALL_DIR" "$BIN_DIR" -name '.*' -type f | wc -l | tr -d ' ')" = "0" -a ! -e "$INSTALL_DIR/bin/agent-relay.prev"
 
 e2e_setup crash no no
 run_main; rc=$?
-check "fresh install + rejected broker: exits non-zero" test "$rc" -ne 0
-check "fresh install + rejected broker: new CLI removed" test ! -e "$INSTALL_DIR/bin/agent-relay" -a ! -e "$BIN_DIR/agent-relay"
+check "fresh install + rejected CLI: exits non-zero" test "$rc" -ne 0
+check "fresh install + rejected CLI: no CLI or launcher left" test ! -e "$INSTALL_DIR/bin/agent-relay" -a ! -e "$BIN_DIR/agent-relay"
 
-echo "== standalone-only update: an unavailable broker rolls the CLI back (#1963) =="
-e2e_setup ok yes
-rm -f "$FIX/asset/agent-relay-broker-$REAL_PLATFORM"   # broker download fails (rc 1)
-( export AGENT_RELAY_INSTALL_METHOD=standalone; run_main ); rc=$?
-check "standalone-only + missing broker: exits non-zero" test "$rc" -ne 0
-check "standalone-only + missing broker: previous CLI restored (no skew)" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
-check "standalone-only + missing broker: old broker untouched" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
-check "standalone-only + missing broker: says why" contains "$(cat "$WORK/main.out")" "could not be downloaded"
-e2e_setup ok yes
-rm -f "$FIX/asset/agent-relay-broker-$REAL_PLATFORM"
-run_main; rc=$?
-check "default mode + missing broker: still installs the CLI (unchanged behaviour)" test "$rc" -eq 0 -a "$("$INSTALL_DIR/bin/agent-relay" --version)" = "9.9.9"
+echo "== a broker left by an older release never blocks or rolls back an install =="
+for mode in default standalone; do
+    e2e_setup ok yes
+    make_legacy_broker "$BIN_DIR/agent-relay-broker"
+    cp -p "$INSTALL_DIR/bin/agent-relay-broker" "$WORK/broker1.orig"
+    cp -p "$BIN_DIR/agent-relay-broker" "$WORK/broker2.orig"
+    # no broker asset is published at all
+    : > "$WORK/curl.log"
+    if [ "$mode" = standalone ]; then
+        run_main; rc=$?
+    else
+        ( export AGENT_RELAY_TELEMETRY_DISABLED=1; main ) > "$WORK/main.out" 2>&1; rc=$?
+    fi
+    check "legacy broker ($mode): install exits 0" test "$rc" -eq 0
+    check "legacy broker ($mode): CLI upgraded" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "9.9.9"
+    check "legacy broker ($mode): INSTALL_DIR copy byte-identical" cmp -s "$INSTALL_DIR/bin/agent-relay-broker" "$WORK/broker1.orig"
+    check "legacy broker ($mode): BIN_DIR copy byte-identical" cmp -s "$BIN_DIR/agent-relay-broker" "$WORK/broker2.orig"
+    check "legacy broker ($mode): never run" test ! -e "$WORK/broker-ran"
+    check "legacy broker ($mode): no broker download attempted" test -z "$(grep -i broker "$WORK/curl.log" "$WORK/main.out" "$LOG")"
+    check "legacy broker ($mode): no .prev/temp files" test -z "$(find "$INSTALL_DIR" "$BIN_DIR" -name '.*.??????' -o -name '*.prev*' | head -1)"
+done
 
 echo "== an existing .prev survives until the new binary is verified =="
 reset_release
 D="$(newdir)"; DEST="$D/tool"
-make_fake_broker "$DEST" ok current
-make_fake_broker "$D/tool.prev" ok oldest
+make_fake_bin "$DEST" ok current
+make_fake_bin "$D/tool.prev" ok oldest
 OLDEST="$(sha256_of "$D/tool.prev")"
-make_fake_broker "$D/new" crash broken
-install_binary_atomic "$D/new" "$DEST" check_broker_binary; rc=$?
+make_fake_bin "$D/new" crash broken
+install_binary_atomic "$D/new" "$DEST" check_cli_binary; rc=$?
 check "failed verification: install rejected" test "$rc" -ne 0
 check "failed verification: existing .prev intact" test "$(sha256_of "$D/tool.prev")" = "$OLDEST"
-make_fake_broker "$D/new2" ok newer
-install_binary_atomic "$D/new2" "$DEST" check_broker_binary; rc=$?
+make_fake_bin "$D/new2" ok newer
+install_binary_atomic "$D/new2" "$DEST" check_cli_binary; rc=$?
 check "successful install over an existing .prev" test "$rc" -eq 0
 check "the older .prev is rotated to .prev.1, not lost" test "$(sha256_of "$D/tool.prev.1")" = "$OLDEST"
+
 
 echo "== a stale CLI .prev is not mistaken for this run's backup =="
 e2e_setup crash no no
@@ -502,29 +487,8 @@ check "stale .prev: installer exits non-zero" test "$rc" -ne 0
 check "stale .prev: not resurrected as the CLI" test ! -e "$INSTALL_DIR/bin/agent-relay"
 check "stale .prev: left untouched" test -e "$INSTALL_DIR/bin/agent-relay.prev"
 
-echo "== broker copy into BIN_DIR fails after the INSTALL_DIR install committed =="
-e2e_setup ok yes
-orig_copy="$(declare -f copy_binary_atomic)"
-copy_binary_atomic() { echo "[test] simulated full/unwritable BIN_DIR" >> "$LOG"; return 1; }
-run_main; rc=$?
-eval "$orig_copy"
-check "second-destination failure: exits non-zero" test "$rc" -ne 0
-check "second-destination failure: INSTALL_DIR broker is the OLD one again (no skew)" \
-    test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
-check "second-destination failure: CLI restored" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
-check "second-destination failure: no .prev/temp files" \
-    test -z "$(find "$INSTALL_DIR" "$BIN_DIR" -name '*.prev*' -o -name '.*.??????' | head -1)"
-
-e2e_setup ok yes no
-orig_copy="$(declare -f copy_binary_atomic)"
-copy_binary_atomic() { return 1; }
-run_main; rc=$?
-eval "$orig_copy"
-check "fresh install, second copy fails: exits non-zero and leaves no new broker" test "$rc" -ne 0 -a ! -e "$INSTALL_DIR/bin/agent-relay-broker.prev"
-
-echo "== a pre-existing launcher survives a rejected broker =="
+echo "== a pre-existing launcher survives a rejected CLI =="
 e2e_setup crash no no
-rm -f "$INSTALL_DIR/bin/agent-relay-broker"
 printf '#!/bin/bash\n# npm launcher\nexec node /somewhere "$@"\n' > "$BIN_DIR/agent-relay"; chmod +x "$BIN_DIR/agent-relay"
 cp -p "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
 run_main; rc=$?
@@ -537,7 +501,7 @@ e2e_setup crash no yes
 printf '#!/bin/bash\n# older launcher\nexec "%s/bin/agent-relay" "$@"\n' "$INSTALL_DIR" > "$BIN_DIR/agent-relay"; chmod +x "$BIN_DIR/agent-relay"
 cp -p "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
 run_main; rc=$?
-check "launcher + previous CLI: launcher byte-identical after rollback" cmp -s "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
+check "launcher + previous CLI: launcher byte-identical after a rejected CLI" cmp -s "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
 
 echo "== the short relay launcher is part of the same transaction =="
 # our_relay_launcher <path> <label>: a relay launcher written by an earlier install.sh run
@@ -556,6 +520,7 @@ check "relay launcher: same body as agent-relay" cmp -s "$BIN_DIR/relay" "$BIN_D
 check "relay launcher: relay runs the new CLI" test "$("$BIN_DIR/relay" --version)" = "9.9.9"
 check "relay launcher: agent-relay runs the new CLI" test "$("$BIN_DIR/agent-relay" --version)" = "9.9.9"
 check "relay launcher: usage lists both launchers" contains "$(cat "$WORK/main.out")" "$BIN_DIR/agent-relay, $BIN_DIR/relay"
+check "relay launcher: usage points at relay init" contains "$(cat "$WORK/main.out")" "agent-relay init"
 check "relay launcher: no backup/temp files left" test -z "$(find "$BIN_DIR" "$INSTALL_DIR" -name '.*.??????' -o -name '*.prev*' | head -1)"
 
 e2e_setup ok yes yes
@@ -570,22 +535,22 @@ cp -p "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
 our_relay_launcher "$BIN_DIR/relay" "older install"
 cp -p "$BIN_DIR/relay" "$WORK/relay.orig"
 run_main; rc=$?
-check "relay rollback: exits non-zero" test "$rc" -ne 0
-check "relay rollback: agent-relay launcher byte-identical" cmp -s "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
-check "relay rollback: relay launcher byte-identical" cmp -s "$BIN_DIR/relay" "$WORK/relay.orig"
-check "relay rollback: no backup/temp files left" test -z "$(find "$BIN_DIR" "$INSTALL_DIR" -name '.*.??????' -o -name '*.prev*' | head -1)"
+check "relay, rejected CLI: exits non-zero" test "$rc" -ne 0
+check "relay, rejected CLI: agent-relay launcher byte-identical" cmp -s "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
+check "relay, rejected CLI: relay launcher byte-identical" cmp -s "$BIN_DIR/relay" "$WORK/relay.orig"
+check "relay, rejected CLI: no backup/temp files left" test -z "$(find "$BIN_DIR" "$INSTALL_DIR" -name '.*.??????' -o -name '*.prev*' | head -1)"
 
 e2e_setup crash no no
 run_main; rc=$?
-check "relay rollback, fresh install: both new launchers removed" test "$rc" -ne 0 -a ! -e "$BIN_DIR/agent-relay" -a ! -e "$BIN_DIR/relay"
+check "relay, rejected CLI on a fresh install: no launchers created" test "$rc" -ne 0 -a ! -e "$BIN_DIR/agent-relay" -a ! -e "$BIN_DIR/relay"
 
 for outcome in ok crash; do
     e2e_setup "$outcome" yes yes
     foreign_relay "$BIN_DIR/relay"; cp -p "$BIN_DIR/relay" "$WORK/relay.orig"
     run_main; rc=$?
-    check "foreign relay ($outcome broker): left byte-identical" cmp -s "$BIN_DIR/relay" "$WORK/relay.orig"
-    check "foreign relay ($outcome broker): warned to use agent-relay" contains "$(cat "$LOG")" "was not installed by Agent Relay; leaving it alone. Use \`agent-relay\`"
-    check "foreign relay ($outcome broker): warned once" test "$(grep -c 'was not installed by Agent Relay' "$LOG")" = "1"
+    check "foreign relay ($outcome CLI): left byte-identical" cmp -s "$BIN_DIR/relay" "$WORK/relay.orig"
+    check "foreign relay ($outcome CLI): warned to use agent-relay" contains "$(cat "$LOG")" "was not installed by Agent Relay; leaving it alone. Use \`agent-relay\`"
+    check "foreign relay ($outcome CLI): warned once" test "$(grep -c 'was not installed by Agent Relay' "$LOG")" = "1"
 done
 e2e_setup ok yes yes
 foreign_relay "$BIN_DIR/relay"
@@ -641,14 +606,14 @@ SHIMEOF
         AGENT_RELAY_INSTALL_DIR="$I" AGENT_RELAY_BIN_DIR="$B" AGENT_RELAY_TELEMETRY_DISABLED=1 \
         bash install.sh ) > "$WORK/int.out" 2>&1; rc=$?
     check "$sig during download: installer stopped" test "$rc" -ne 0
-    check "$sig during download: no .download/.decoded/.copy temp files left" \
+    check "$sig during download: no .download/.decoded temp files left" \
         test -z "$(find "$I" "$B" -type f -name '.*.??????' | head -1)"
 done
 
-echo "== a signal during the broker step rolls the whole transaction back =="
+echo "== a signal before the install commits rolls the whole transaction back =="
 
 # run the real installer with a curl shim that serves the fixtures
-run_installer_shim() { # run_installer_shim <signal-on-broker-download: TERM|INT|HUP|none>
+run_installer_shim() { # run_installer_shim <signal-on-CLI-download: TERM|INT|HUP|none>
     local shim; shim="$(newdir)"
     cat > "$shim/curl" <<'SHIMEOF'
 #!/bin/bash
@@ -656,18 +621,17 @@ out=""; url=""; prev=""
 for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; case "$a" in http*) url="$a" ;; esac; prev="$a"; done
 case "$url" in
   https://api.github.com/*) exit 22 ;;
-  *agent-relay-broker-*)
+  *)
       if [ "$SHIM_SIGNAL" != none ]; then [ -n "$out" ] && echo partial > "$out"; kill -"$SHIM_SIGNAL" "$PPID"; sleep 1; exit 0; fi
-      cp "$SHIM_FIX/asset/${url##*/}" "$out" ;;
-  *) f="$SHIM_FIX/asset/${url##*/}"; [ -f "$f" ] || exit 22; cp "$f" "$out" ;;
+      f="$SHIM_FIX/asset/${url##*/}"; [ -f "$f" ] || exit 22; cp "$f" "$out" ;;
 esac
 SHIMEOF
     chmod +x "$shim/curl"
     ( cd "$ROOT" && env -u AGENT_RELAY_INSTALL_SOURCE_ONLY ${INSTALLER_SHELLOPTS:+SHELLOPTS="$INSTALLER_SHELLOPTS"} PATH="$shim:$PATH" SHIM_SIGNAL="$1" SHIM_FIX="$FIX" HOME="$HOME" \
         AGENT_RELAY_VERSION=1.2.3 AGENT_RELAY_INSTALL_DIR="$INSTALL_DIR" AGENT_RELAY_BIN_DIR="$BIN_DIR" \
-        AGENT_RELAY_TELEMETRY_DISABLED=1 AGENT_RELAY_SMOKE_SECONDS=2 bash install.sh ) > "$WORK/sig.out" 2>&1
+        AGENT_RELAY_TELEMETRY_DISABLED=1 AGENT_RELAY_INSTALL_METHOD=standalone bash install.sh ) > "$WORK/sig.out" 2>&1
 }
-sig_setup() { # previous CLI 1.0.0, old broker, existing agent-relay and relay launchers
+sig_setup() { # previous CLI 1.0.0, a legacy broker, existing agent-relay and relay launchers
     e2e_setup "${1:-ok}" no yes
     printf '#!/bin/bash\n# existing launcher\nexec "%s/bin/agent-relay" "$@"\n' "$INSTALL_DIR" > "$BIN_DIR/agent-relay"
     chmod +x "$BIN_DIR/agent-relay"; cp -p "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
@@ -676,84 +640,49 @@ sig_setup() { # previous CLI 1.0.0, old broker, existing agent-relay and relay l
 sig_assert() { # sig_assert <label>
     check "$1: installer stopped" test "$rc" -ne 0
     check "$1: previous CLI restored" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
-    check "$1: old broker untouched" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
+    check "$1: old broker untouched and never run" old_broker_untouched
     check "$1: launcher byte-identical" cmp -s "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
     check "$1: relay launcher byte-identical" cmp -s "$BIN_DIR/relay" "$WORK/relay.orig"
     check "$1: no .prev/temp files left" test -z "$(find "$INSTALL_DIR" "$BIN_DIR" -type f \( -name '.*.??????' -o -name '*.prev*' \) | head -1)"
 }
 for sig in TERM INT HUP; do
     sig_setup ok; run_installer_shim "$sig"; rc=$?
-    sig_assert "$sig during broker download"
+    sig_assert "$sig during the CLI download"
 done
 
-# signal while the broker smoke test is running (the fake broker signals its parent, the installer)
-sig_setup sigsmoke
-cat > "$FIX/asset/agent-relay-broker-$REAL_PLATFORM" <<'B'
-#!/bin/bash
-case "$1" in --help|--version) exit 0 ;; init) kill -TERM "$PPID"; exec sleep 30 ;; esac
-B
-chmod +x "$FIX/asset/agent-relay-broker-$REAL_PLATFORM"
-run_installer_shim none; rc=$?
-sig_assert "TERM during the broker smoke test"
-
-# Signal windows around the two broker destinations. The transaction (CLI + launcher + both
-# broker copies) either rolls back completely or is fully committed, never mixed.
-old_bin_broker() { # an OLD broker also exists on PATH (BIN_DIR)
-    cp -p "$INSTALL_DIR/bin/agent-relay-broker" "$BIN_DIR/agent-relay-broker"
-}
 sig_main_pid() { ( sh -c 'echo $PPID' > "$WORK/main.pid"; export AGENT_RELAY_TELEMETRY_DISABLED=1; main ) > "$WORK/main.out" 2>&1; }
-both_brokers_old() {
-    test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH" \
-        -a "$(sha256_of "$BIN_DIR/agent-relay-broker")" = "$OLD_BROKER_HASH"
-}
 
-# (1) after the first copy, before the second
-sig_setup ok; old_bin_broker
-orig_copy="$(declare -f copy_binary_atomic)"
+# (1) after the new CLI and both launchers are in place, before the install committed
+sig_setup ok
+orig_prepend="$(declare -f prepend_bin_dir_to_path)"
 # (bash 3.2 has no $BASHPID: a child sh reports its parent, the subshell running main)
-copy_binary_atomic() { kill -TERM "$(cat "$WORK/main.pid")"; sleep 1; return 0; }
+prepend_bin_dir_to_path() { kill -TERM "$(cat "$WORK/main.pid")"; sleep 1; return 0; }
 sig_main_pid; rc=$?
-eval "$orig_copy"
-sig_assert "TERM between the two broker copies"
-check "TERM between the two broker copies: BOTH broker locations are the old broker" both_brokers_old
+eval "$orig_prepend"
+sig_assert "TERM after the CLI and launchers were replaced, before the commit"
 
-# (2) after the second copy committed, before the install committed
-sig_setup ok; old_bin_broker
-orig_copy="$(declare -f copy_binary_atomic)"
-eval "$(printf '%s\n' "$orig_copy" | sed '1s/copy_binary_atomic/real_copy_binary_atomic/')"
-copy_binary_atomic() { real_copy_binary_atomic "$@" || return 1; kill -TERM "$(cat "$WORK/main.pid")"; sleep 1; return 0; }
-sig_main_pid; rc=$?
-eval "$orig_copy"
-sig_assert "TERM right after the second copy committed"
-check "TERM right after the second copy committed: BOTH broker locations are the old broker" both_brokers_old
-
-# (3) after the whole install committed (during the ACP bridge step): fully NEW, nothing rolled back
-sig_setup ok; old_bin_broker
+# (2) after the whole install committed (during the ACP bridge step): fully NEW, nothing rolled back
+sig_setup ok
 orig_acp="$(declare -f install_acp_bridge)"
 install_acp_bridge() { kill -TERM "$(cat "$WORK/main.pid")"; sleep 1; return 0; }
 sig_main_pid; rc=$?
 eval "$orig_acp"
-NEW_B="$(sha256_of "$FIX/asset/agent-relay-broker-$REAL_PLATFORM")"
 check "TERM after commit: CLI is the new one (not rolled back)" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "9.9.9"
 check "TERM after commit: relay launcher is the new one" cmp -s "$BIN_DIR/relay" "$BIN_DIR/agent-relay"
-check "TERM after commit: BOTH broker locations are the new broker" \
-    test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$NEW_B" -a "$(sha256_of "$BIN_DIR/agent-relay-broker")" = "$NEW_B"
+check "TERM after commit: old broker untouched and never run" old_broker_untouched
 
-# (4) during the read-back hash of a just-renamed destination (CLI, then broker)
-for victim in agent-relay agent-relay-broker; do
-    sig_setup ok; old_bin_broker
-    rm -f "$WORK/sig-once"
-    sha256_of() {
-        if [ "$1" = "$INSTALL_DIR/bin/$victim" ] && [ ! -e "$WORK/sig-once" ]; then
-            : > "$WORK/sig-once"; kill -TERM "$(cat "$WORK/main.pid")"; sleep 1
-        fi
-        real_sha256_of "$@"
-    }
-    sig_main_pid; rc=$?
-    sha256_of() { real_sha256_of "$@"; }
-    sig_assert "TERM during the read-back hash of $victim"
-    check "TERM during the read-back hash of $victim: BOTH broker locations are the old broker" both_brokers_old
-done
+# (3) during the read-back hash of the just-renamed CLI
+sig_setup ok
+rm -f "$WORK/sig-once"
+sha256_of() {
+    if [ "$1" = "$INSTALL_DIR/bin/agent-relay" ] && [ ! -e "$WORK/sig-once" ]; then
+        : > "$WORK/sig-once"; kill -TERM "$(cat "$WORK/main.pid")"; sleep 1
+    fi
+    real_sha256_of "$@"
+}
+sig_main_pid; rc=$?
+sha256_of() { real_sha256_of "$@"; }
+sig_assert "TERM during the read-back hash of agent-relay"
 
 echo "== an existing launcher whose backup fails is never replaced =="
 sig_setup ok
@@ -769,19 +698,18 @@ check "launcher backup failure: launcher untouched" cmp -s "$BIN_DIR/agent-relay
 check "launcher backup failure: CLI not replaced" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
 check "launcher backup failure: reported" contains "$(cat "$LOG")" "Could not back up the existing"
 
+
 echo "== version probes cannot abort a rollback under inherited pipefail =="
-sig_setup crash
+sig_setup ok
 printf '#!/bin/bash\nexit 1\n' > "$INSTALL_DIR/bin/agent-relay"; chmod +x "$INSTALL_DIR/bin/agent-relay"   # old CLI whose --version fails
 cp -p "$INSTALL_DIR/bin/agent-relay" "$WORK/oldcli.orig"
-printf '#!/bin/bash\nexit 1\n' > "$INSTALL_DIR/bin/agent-relay-broker"; chmod +x "$INSTALL_DIR/bin/agent-relay-broker"
-OLD_BROKER_HASH="$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")"
-INSTALLER_SHELLOPTS=pipefail run_installer_shim none; rc=$?
+INSTALLER_SHELLOPTS=pipefail run_installer_shim TERM; rc=$?
 INSTALLER_SHELLOPTS=
 check "pipefail: installer stopped" test "$rc" -ne 0
-check "pipefail: rejection reason is reported" contains "$(cat "$WORK/sig.out")" "was rejected"
+check "pipefail: the rollback is reported" contains "$(cat "$WORK/sig.out")" "Interrupted:"
 check "pipefail: previous CLI restored" cmp -s "$INSTALL_DIR/bin/agent-relay" "$WORK/oldcli.orig"
 check "pipefail: launcher byte-identical" cmp -s "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
-check "pipefail: old broker untouched" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
+check "pipefail: old broker untouched and never run" old_broker_untouched
 
 echo "== codesign missing / failing on macOS fails closed =="
 SAVED_OS="$OS"
@@ -953,26 +881,6 @@ check "version_gt is strict" eval '! version_gt 11.0.0 11.0.0'
 rm -f "$FIX/asset/$RC_ASSET" "$FIX/asset/$RC_ASSET.sha256"
 OS="$SAVED_OS"; PLATFORM="test-test"
 
-echo "== AGENT_RELAY_SMOKE_SECONDS is validated =="
-for v in 0 abc -1 "" 1.5 99999; do
-    got="$(AGENT_RELAY_SMOKE_SECONDS="$v" resolve_smoke_seconds 2>/dev/null)"
-    case "$v" in 99999) want=60 ;; *) want=4 ;; esac
-    check "AGENT_RELAY_SMOKE_SECONDS='$v' resolves to $want" test "$got" = "$want"
-done
-check "a valid value is kept" test "$(AGENT_RELAY_SMOKE_SECONDS=7 resolve_smoke_seconds)" = "7"
-cat > "$WORK/late-crash" <<'B'
-#!/bin/bash
-case "$1" in --help) exit 0 ;; init) sleep 2; kill -ILL $$ ;; esac
-B
-chmod +x "$WORK/late-crash"
-AGENT_RELAY_SMOKE_SECONDS=0 smoke_test_broker "$WORK/late-crash"; rc=$?
-check "SMOKE_SECONDS=0 cannot make a crashing broker pass vacuously" test "$rc" -ne 0
-printf '#!/bin/bash\ncase "$1" in --help) exit 0 ;; init) kill -ILL $$ ;; esac\n' > "$WORK/fast-crash"; chmod +x "$WORK/fast-crash"
-warn() { echo "[warn] $1"; }
-out="$(AGENT_RELAY_SMOKE_SECONDS=abc smoke_test_broker "$WORK/fast-crash" 2>&1)"
-warn() { echo "[warn] $1" >> "$LOG"; }
-check "invalid AGENT_RELAY_SMOKE_SECONDS warning is visible through smoke_test_broker" contains "$out" "Ignoring invalid AGENT_RELAY_SMOKE_SECONDS"
-
 # ---------------------------------------------------------------------------
 echo "== unwritable TMPDIR / temp-file failures are not verification failures (#1963) =="
 
@@ -987,8 +895,8 @@ check "check_cli_binary still rejects a failing CLI" test "$rc" -ne 0
 check "and reports its first output line" test "$CLI_CHECK_OUTPUT" = "boom: broken build"
 
 reset_release
-make_fake_broker "$FIX/asset/agent-relay-broker-test-test" ok new
-fetch_release_asset agent-relay-broker-test-test "$WORK/no-such-dir/bin" raw; rc=$?
+make_fake_bin "$FIX/asset/agent-relay-tool-test-test" ok new
+fetch_release_asset agent-relay-tool-test-test "$WORK/no-such-dir/bin" raw; rc=$?
 check "fetch_release_asset returns 3 (not 1 = unavailable) when no temp file can be created" test "$rc" -eq 3
 
 out="$( (INSTALL_DIR="$WORK/no-such-dir"; INSTALL_ID=""; temp_file_failure "$INSTALL_DIR/bin") 2>&1)"; rc=$?
@@ -1003,89 +911,6 @@ check "standalone-only mode exits non-zero" test "$rc" -ne 0
 check "standalone-only mode stops before the fallback" eval '! contains "$out" REACHED'
 check "standalone-only mode reports the reason" contains "$out" "sha mismatch"
 
-# ---------------------------------------------------------------------------
-if [ -n "${AGENT_RELAY_TEST_BROKER:-}" ]; then
-    echo "== real broker binary (pristine published build) =="
-    D="$(newdir)"
-    PRISTINE_BIN="$D/pristine"
-    cp "$AGENT_RELAY_TEST_BROKER" "$PRISTINE_BIN"; chmod +x "$PRISTINE_BIN"
-    # ZEROED: published bytes with the 16 KiB page at 0x900000 zero-filled, signature untouched
-    ZEROED="$D/zeroed"
-    cp "$AGENT_RELAY_TEST_BROKER" "$ZEROED"
-    dd if=/dev/zero of="$ZEROED" bs=16384 seek=576 count=1 conv=notrunc 2>/dev/null
-    chmod +x "$ZEROED"
-    # RESIGNED: what the old installer left behind (zeroed + locally re-signed)
-    RESIGNED="$D/resigned"
-    cp "$ZEROED" "$RESIGNED"
-    if [ "$(uname -s)" = Darwin ]; then
-        codesign --remove-signature "$RESIGNED" >/dev/null 2>&1
-        codesign --force --sign - "$RESIGNED" >/dev/null 2>&1
-    fi
-    check "fixtures differ from pristine" test "$(sha256_of "$ZEROED")" != "$(sha256_of "$PRISTINE_BIN")"
-
-    AGENT_RELAY_SMOKE_SECONDS=4
-    for optout in none opt-out; do
-        for which in pristine resigned; do
-            bin="$D/$which"
-            if [ "$optout" = none ]; then
-                smoke_test_broker "$bin"; rc=$?
-            else
-                AGENT_RELAY_TELEMETRY_DISABLED=1 smoke_test_broker "$bin"; rc=$?
-            fi
-            if [ "$which" = pristine ]; then
-                check "smoke: pristine PASSES ($optout)" test "$rc" -eq 0
-            else
-                check "smoke: corrupt re-signed FAILS ($optout)" test "$rc" -ne 0
-            fi
-        done
-    done
-
-    if [ "$(uname -s)" = Darwin ]; then
-        echo "== macOS signature check (offline integrity) =="
-        # shellcheck disable=SC2034
-        OS=darwin
-        cp "$PRISTINE_BIN" "$D/p2"; prepare_downloaded_binary "$D/p2"; rc=$?
-        check "pristine passes codesign --verify --strict" test "$rc" -eq 0
-        check "valid shipped signature is kept (not re-signed)" test "$(sha256_of "$D/p2")" = "$(sha256_of "$PRISTINE_BIN")"
-        cp "$ZEROED" "$D/z2"; prepare_downloaded_binary "$D/z2"; rc=$?
-        check "zero-filled page fails the signature check" test "$rc" -ne 0
-        check "damaged file was not re-signed" test "$(sha256_of "$D/z2")" = "$(sha256_of "$ZEROED")"
-
-        echo "== real broker: download_broker_binary, scenarios A-D =="
-        PLATFORM="darwin-arm64"
-        A="agent-relay-broker-$PLATFORM"
-        scenario() { # scenario <name> <served-file> <digest-of: file or none>
-            reset_release
-            INSTALL_DIR="$(newdir)"; BIN_DIR="$(newdir)"; mkdir -p "$INSTALL_DIR/bin"
-            cp "$PRISTINE_BIN" "$INSTALL_DIR/bin/agent-relay-broker"
-            cp "$2" "$FIX/asset/$A"
-            if [ "$3" = none ]; then make_release_json "$FIX/release.json" "$A" ""
-            else make_release_json "$FIX/release.json" "$A" "$(sha256_of "$3")"; fi
-            LIVE_BEFORE="$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")"
-            download_broker_binary >/dev/null; SC_RC=$?
-        }
-        scenario A "$PRISTINE_BIN" "$PRISTINE_BIN"
-        check "A clean+digest: installed" test "$SC_RC" -eq 0
-        check "A: installed bytes == published bytes (signature kept)" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$(sha256_of "$PRISTINE_BIN")" -a "$(sha256_of "$BIN_DIR/agent-relay-broker")" = "$(sha256_of "$PRISTINE_BIN")"
-        scenario B "$ZEROED" "$PRISTINE_BIN"
-        check "B corrupt+digest: rejected (rc 2)" test "$SC_RC" -eq 2
-        check "B: digest mismatch reported" contains "$(cat "$LOG")" "SHA-256 mismatch"
-        check "B: live broker untouched" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$LIVE_BEFORE"
-        scenario C "$PRISTINE_BIN" none
-        check "C clean, no digest: installed" test "$SC_RC" -eq 0
-        check "C: warned about the missing digest" contains "$(cat "$LOG")" "publishes no SHA-256 digest"
-        scenario D "$ZEROED" none
-        check "D corrupt, no digest: REJECTED (rc 2)" test "$SC_RC" -eq 2
-        check "D: rejected by the signature check" contains "$(cat "$LOG")" "Code signature check failed"
-        check "D: live broker untouched" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$LIVE_BEFORE"
-        # Even if the signature check were bypassed, the (re-signed) damage is caught by the smoke test
-        prepare_downloaded_binary() { codesign --force --sign - "$1" >/dev/null 2>&1; return 0; }
-        scenario D2 "$ZEROED" none
-        check "D (signature check bypassed): smoke test still rejects it" test "$SC_RC" -eq 2
-        check "D2: smoke failure reported (status 132)" contains "$(cat "$LOG")" "init exited with status 132"
-        check "D2: live broker untouched" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$LIVE_BEFORE"
-    fi
-fi
 
 echo
 echo "Passed: $PASS  Failed: $FAIL"
