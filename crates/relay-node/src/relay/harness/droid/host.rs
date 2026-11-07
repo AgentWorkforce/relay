@@ -315,7 +315,7 @@ fn drive(
 ) -> Result<()> {
     let mut pending = Vec::new();
     loop {
-        loop {
+        for _ in 0..64 {
             let frame = match rx.try_recv() {
                 Ok(frame) => frame,
                 Err(mpsc::TryRecvError::Empty) => break,
@@ -325,7 +325,10 @@ fn drive(
                 }
             };
             engine.observe(&frame);
-            answer_request(input, &frame, Some(engine))?;
+            if answer_request(input, &frame, Some(engine)).is_err() {
+                engine.uncertain();
+                return Err(anyhow!("Droid JSON-RPC reply queue failed"));
+            }
         }
         if provider.0.try_wait()?.is_some() {
             return Err(anyhow!("Droid JSON-RPC exited"));
@@ -339,6 +342,10 @@ fn drive(
                 return Err(anyhow!("Droid JSON-RPC input closed"));
             }
         }
+        if input.pump().is_err() {
+            engine.uncertain();
+            return Err(anyhow!("Droid JSON-RPC input stopped making progress"));
+        }
         std::thread::sleep(Duration::from_millis(10));
     }
 }
@@ -350,9 +357,9 @@ fn send(input: &mut impl Write, mut frame: Value) -> Result<()> {
     } else {
         "response"
     });
-    input.write_all(&serde_json::to_vec(&frame)?)?;
-    input.write_all(b"\n")?;
-    input.flush()?;
+    let mut bytes = serde_json::to_vec(&frame)?;
+    bytes.push(b'\n');
+    input.write_all(&bytes)?;
     Ok(())
 }
 fn answer_request(input: &mut impl Write, frame: &Value, engine: Option<&Engine>) -> Result<()> {
@@ -368,17 +375,16 @@ fn answer_request(input: &mut impl Write, frame: &Value, engine: Option<&Engine>
     Ok(())
 }
 
-fn reply(
-    rx: &Receiver<Value>,
-    input: &mut impl Write,
-    id: &str,
-    timeout: Duration,
-) -> Result<Value> {
+fn reply(rx: &Receiver<Value>, input: &mut Input, id: &str, timeout: Duration) -> Result<Value> {
     let deadline = Instant::now() + timeout;
     loop {
-        let frame = rx
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .map_err(|_| anyhow!("Droid JSON-RPC did not answer"))?;
+        input.pump()?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let frame = match rx.recv_timeout(remaining.min(Duration::from_millis(10))) {
+            Ok(frame) => frame,
+            Err(mpsc::RecvTimeoutError::Timeout) if Instant::now() < deadline => continue,
+            Err(_) => return Err(anyhow!("Droid JSON-RPC did not answer")),
+        };
         answer_request(input, &frame, None)?;
         if frame["id"] == id && frame.get("method").is_none() {
             if frame.get("error").is_some() {
