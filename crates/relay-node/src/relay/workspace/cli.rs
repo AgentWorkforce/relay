@@ -37,7 +37,8 @@
 
 use super::origin_binding::{self, OriginBindings};
 use super::{
-    is_workspace_key, Secret, Workspace, WorkspaceSource, ARMADILLO_ORIGIN, DEFAULT_BASE_URL,
+    is_workspace_key, validated_base_url, Secret, Workspace, WorkspaceSource, ARMADILLO_ORIGIN,
+    DEFAULT_BASE_URL,
 };
 use crate::relay::links;
 use sha2::{Digest, Sha256};
@@ -253,7 +254,8 @@ fn transport(
 /// `validatePersistedRelaycastBaseUrl`: no route is `None`; a route must be
 /// complete and name the gateway its kind belongs to, bare https. In a site
 /// build the hosted gateways never count: every kind must name the site's
-/// own Relaycast origin.
+/// own Relaycast origin, as a bare origin by the rules its sign-in used
+/// ([`validated_base_url`]), so a loopback origin with a port counts there.
 fn persisted_route_origin(
     project: Option<&ProjectSession>,
     build: Build<'_>,
@@ -270,9 +272,7 @@ fn persisted_route_origin(
     let (Some(base_url), Some(route)) = (&project.relaycast_base_url, project.route) else {
         return Err("The persisted Relaycast workspace route is incomplete.".into());
     };
-    let site_relaycast = build.site_relaycast.into_iter().collect::<Vec<_>>();
     let expected: &[&str] = match route {
-        _ if build.is_site() => &site_relaycast,
         Route::Canonical
             if project.relaycast_cloud_api_url.as_deref() == Some(DEV_CLOUD_API_URL) =>
         {
@@ -299,23 +299,37 @@ fn persisted_route_origin(
     };
     let parsed = url::Url::parse(base_url)
         .map_err(|_| "The persisted Relaycast workspace route is invalid.".to_string())?;
-    if parsed.scheme() != "https"
-        || !parsed.username().is_empty()
-        || parsed.password().is_some()
-        || parsed.port().is_some()
-        || parsed.query().is_some()
-        || parsed.fragment().is_some()
-        || !(parsed.path().is_empty() || parsed.path() == "/")
-        || !expected.contains(&parsed.origin().ascii_serialization().as_str())
-    {
-        return Err(untrusted());
-    }
+    let origin = if build.is_site() {
+        // The site's origin came through `validated_base_url` at sign-in;
+        // normalize both sides the same way so the comparison is like for
+        // like (lowercase, default port dropped, loopback http and ports
+        // allowed only where the sign-in allowed them).
+        let origin = validated_base_url(base_url).ok_or_else(untrusted)?;
+        let own = build.site_relaycast.and_then(validated_base_url);
+        if own.as_deref() != Some(origin.as_str()) {
+            return Err(untrusted());
+        }
+        origin
+    } else {
+        if parsed.scheme() != "https"
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+            || parsed.port().is_some()
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+            || !(parsed.path().is_empty() || parsed.path() == "/")
+            || !expected.contains(&parsed.origin().ascii_serialization().as_str())
+        {
+            return Err(untrusted());
+        }
+        parsed.origin().ascii_serialization()
+    };
     if route == Route::Agent37Isolated && project.relaycast_api_key.is_none() {
         return Err(
             "The persisted isolated Relaycast credential is unavailable or mismatched.".into(),
         );
     }
-    Ok(Some(parsed.origin().ascii_serialization()))
+    Ok(Some(origin))
 }
 
 /// `acceptDerivedDestination`, without the write: a bound credential may go
