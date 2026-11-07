@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "unified-node-release",
+  "kind": "bugfix",
+  "title": "Resolve node downloads from the matching unified CLI release",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/unified-node-release/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "node_download_uses_separate_release_tag"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "node_download_uses_matching_cli_release_tag"
+    }
+  }
+}

@@ -40,6 +40,7 @@
 pub mod ansi;
 pub mod codex_session;
 pub mod crash_insights;
+pub mod credentials;
 pub mod detection;
 pub mod inject;
 pub mod pty;

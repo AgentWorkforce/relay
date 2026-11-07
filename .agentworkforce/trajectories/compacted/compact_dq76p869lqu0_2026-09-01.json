@@ -1,0 +1,136 @@
+{
+  "id": "compact_dq76p869lqu0",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-01T21:08:39.422Z",
+  "sourceTrajectories": [
+    "traj_mg41jmxii00f"
+  ],
+  "dateRange": {
+    "start": "2026-09-01T21:07:46.358Z",
+    "end": "2026-09-01T21:08:38.932Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "tooling",
+      "decisions": [
+        {
+          "question": "Use privileged sentinel-mapped process probes",
+          "chosen": "Use privileged sentinel-mapped process probes",
+          "reasoning": "Non-root pgrep can report no matches when procfs hidepid conceals another UID; a non-interactive root wrapper maps pgrep match, no-match, and error to distinct statuses and cleanup accepts only two explicit no-match sentinels.",
+          "fromTrajectory": "traj_mg41jmxii00f"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": [],
+  "narrative": "This session closes the PR #1632 hardening line for `.github/workflows/relayflow-pr-proof-broker.yml` by replacing the post-build builder-UID reap proof with a privileged, sentinel-mapped process probe. The prior design (recorded in compacted trajectory compact_l31655y2bfxb / compact_3w8vxbaxywtd) ran `pgrep -u \"$BUILDER_UID\"` and `pgrep -U \"$BUILDER_UID\"` as the unprivileged runner user and treated exit 1 as proof of an empty process set. That is unsound: on a `/proc` mounted with `hidepid`, a non-root `pgrep` cannot see processes owned by another UID and returns exit 1 — indistinguishable from \"the reap actually worked.\" The security boundary that the whole workflow rests on (no PR-authored build process survives the sandbox) could therefore be declared proven while builder processes were still live. The fix introduces a `probe_builder_uid()` shell function that runs the probe through `sudo --non-interactive env -i PATH=/usr/bin:/bin BUILDER_UID=\"$BUILDER_UID\" /bin/sh -c '...' sh \"$selector\"`. Root visibility defeats `hidepid`; `env -i` plus a fixed `PATH` and the absolute `/usr/bin/pgrep` strip the PR-influenced environment from the privileged context; `--non-interactive` means a password prompt fails instead of hanging the job; and the `-u`/`-U` selector is passed as positional `$1` rather than interpolated, so it cannot widen the command. The inner shell maps pgrep's three outcomes to disjoint sentinels — 10 = match, 11 = no match, 12 = pgrep error — and the caller matches on the pair `\"$effective_probe_status:$real_probe_status\"`: only `11:11` returns success, `10:10|10:11|11:10` keeps polling (100 iterations × 0.1s), and every other pair (including sudo's own failure statuses and 12) falls through to `return 1` with \"unable to prove builder UID process set is empty\". The final diagnostic dump was also promoted to `sudo pgrep -a -u/-U` so the failure message isn't itself blinded by hidepid. The contract assertions in `tests/fixtures/pr-proof-contract.test.ts` (`trusted dispatcher source contract`) were rewritten from the old `pgrep`/`-gt 1`/`-eq 1` string checks to pin the new shape: the `sudo --non-interactive env -i` prefix, `PATH=/usr/bin:/bin`, the `/usr/bin/pgrep \"$1\" \"$BUILDER_UID\"` invocation, each of `0) exit 10`, `1) exit 11`, `*) exit 12`, both `probe_builder_uid -u/-U` call sites, and the `11:11` / `10:10|10:11|11:10` case arms. The existing source-ordering assertion (cleanup → `KILL_STATUS` → `BUILD_STATUS`) is untouched and still enforces reap-outranks-build precedence. `tests/relayflows/cases/README.md` documents the hidepid rationale and the clean-environment requirement. A markdownlint MD058 finding from CodeRabbit on `.agentworkforce/trajectories/compacted/compact_3w8vxbaxywtd_2026-09-01.md` (missing blank line before the Key Decisions table, plus a missing trailing newline) was fixed in the same pass. Gates on the final state: focused PR-proof contract suite 68 pass / 1 skip (the Linux-`/proc` reap assertion, unrunnable on the darwin dev host), Prettier, actionlint, a Bash parse of the embedded `run:` blocks, diff check, and an Ubuntu 24.04 smoke run exercising the 10/11/12 sentinel mapping end to end.",
+  "decisions": [
+    {
+      "question": "Can an unprivileged `pgrep -u/-U \"$BUILDER_UID\"` exit 1 be trusted as proof that the builder UID owns no processes?",
+      "chosen": "No — run the probe as root via `sudo --non-interactive`, superseding the non-sudo probe from compact_l31655y2bfxb.",
+      "reasoning": "A `/proc` mounted with `hidepid=1|2` hides another UID's processes from a non-root reader, so `pgrep` returns no-match (exit 1) whether the reap succeeded or the processes are merely invisible. The two cases must be distinguishable for the reap to be a real security boundary.",
+      "impact": "The zero-process proof now reflects kernel truth rather than the runner user's visibility. Requires passwordless sudo on the runner; if sudo is unavailable the probe fails closed rather than silently passing."
+    },
+    {
+      "question": "How should the three pgrep outcomes (match / no-match / error) be distinguished across the sudo boundary?",
+      "chosen": "Map them to disjoint sentinel exit codes inside the privileged shell: `0) exit 10`, `1) exit 11`, `*) exit 12`.",
+      "reasoning": "Passing pgrep's native 0/1/2 through sudo is ambiguous — sudo itself exits 1 on auth failure and 126/127 on exec failure, which would collide with pgrep's 'no match'. Sentinels above that range make every non-probe failure fall into the unknown bucket.",
+      "impact": "A sudo/auth/exec failure can never be misread as 'no builder processes remain'; it lands in the default case and fails the job."
+    },
+    {
+      "question": "Which status pairs are allowed to conclude the reap is complete?",
+      "chosen": "Only `11:11` (both effective-UID and real-UID probes report explicit no-match) returns 0; `10:10|10:11|11:10` continue polling; everything else fails closed with 'unable to prove builder UID process set is empty'.",
+      "reasoning": "An allowlist of exactly the two no-match sentinels means any new or unexpected status is a failure by construction, rather than an unhandled case that falls through to success.",
+      "impact": "No sentinel can be added or leaked without an explicit decision; ambiguity always terminates the job with the security boundary unproven and workflow-command parsing still suspended."
+    },
+    {
+      "question": "What environment should the privileged probe inherit?",
+      "chosen": "`env -i` with only `PATH=/usr/bin:/bin` and `BUILDER_UID` forwarded, invoking `/usr/bin/pgrep` by absolute path, with the `-u`/`-U` selector passed as positional `$1` to `/bin/sh -c`.",
+      "reasoning": "The build step ran PR-authored code, so anything in the ambient environment (PATH, IFS, LD_*, function exports) is attacker-influenced. Passing the selector positionally rather than interpolating it keeps the privileged command line fixed.",
+      "impact": "The root probe cannot be redirected to an attacker-planted `pgrep` or perturbed by environment injection; a PR cannot widen the sudo command via the selector."
+    },
+    {
+      "question": "How is a shell-source property with no single observable behavior enforced?",
+      "chosen": "String-level source assertions in `tests/fixtures/pr-proof-contract.test.ts` pinning each sentinel arm, the sudo prefix, the clean env, and the accepted status-pair cases.",
+      "reasoning": "The guarantee lives in the exact shape of the embedded `run:` block; a behavioral test on a darwin dev host cannot exercise Linux `/proc` semantics (hence the 1 skip in 68/1).",
+      "impact": "Any reshuffle or 'readability' rewrite of the probe block breaks the contract suite loudly instead of silently weakening the boundary."
+    }
+  ],
+  "conventions": [
+    {
+      "pattern": "Privileged probes in CI use `sudo --non-interactive env -i PATH=<fixed> VAR=... /bin/sh -c '<script>' sh \"$arg\"` — clean environment, absolute binary paths, arguments passed positionally.",
+      "rationale": "Escalation performed after untrusted code has run must not inherit that code's environment or PATH, and must fail rather than block on a password prompt.",
+      "scope": "Any `sudo` invocation in `.github/workflows/relayflow-pr-proof-broker.yml` and sibling PR-proof workflows."
+    },
+    {
+      "pattern": "Cross-privilege-boundary status is encoded as disjoint sentinels (10/11/12) rather than reusing the inner tool's native exit codes.",
+      "rationale": "`sudo`, the shell, and exec failures occupy 1/126/127 and would alias onto tool statuses; sentinels keep 'no match' unforgeable by a failing wrapper.",
+      "scope": "Any CI shell helper whose result crosses `sudo`, `ssh`, or a container boundary."
+    },
+    {
+      "pattern": "Safety checks use an explicit allowlist of success statuses with a catch-all `*)` that fails closed; never an allowlist of failures with an implicit success fallthrough.",
+      "rationale": "Unhandled or newly-introduced states must default to 'boundary unproven', not 'boundary proven'.",
+      "scope": "All `case`/status handling in PR-proof workflow cleanup paths."
+    },
+    {
+      "pattern": "Diagnostic dumps on failure run at the same privilege as the check they explain (`sudo pgrep -a -u/-U`).",
+      "rationale": "An unprivileged diagnostic under hidepid prints an empty list, making a real failure look like a phantom.",
+      "scope": "Failure-path logging in CI cleanup functions."
+    },
+    {
+      "pattern": "Source-shape guarantees are pinned by `expect(source).toContain(...)` assertions in `tests/fixtures/pr-proof-contract.test.ts`, with the human rationale mirrored in `tests/relayflows/cases/README.md`.",
+      "rationale": "Contract tests say what must not change; the README says why, so a future editor doesn't 'simplify' the block and then loosen the test to match.",
+      "scope": "PR-proof broker workflow contract."
+    },
+    {
+      "pattern": "Gate set for a workflow-YAML change: focused contract suite + Prettier + actionlint + Bash parse of embedded `run:` blocks + diff check + an Ubuntu 24.04 smoke of the actual runtime behavior.",
+      "rationale": "Source assertions alone can pin a shape that doesn't execute; the Ubuntu smoke proved the 10/11/12 mapping really fires on the target OS, which the darwin host cannot.",
+      "scope": "Every change to `.github/workflows/relayflow-pr-proof-broker.yml`."
+    }
+  ],
+  "lessons": [
+    {
+      "lesson": "A 'not found' result from an unprivileged query is not evidence of absence — visibility restrictions and true emptiness produce identical exit codes.",
+      "context": "The superseded non-sudo probe in compact_l31655y2bfxb treated `pgrep` exit 1 as proof the builder UID had been fully reaped; under `hidepid` that same 1 is returned while builder processes are alive.",
+      "recommendation": "Before trusting a negative result as a security proof, ask what the observer is permitted to see. Run the check with authority sufficient to see everything it claims to rule out, or explicitly detect and reject the degraded-visibility case."
+    },
+    {
+      "lesson": "Wrapping a check in `sudo` silently merges the wrapper's failure modes into the check's result space.",
+      "context": "Without sentinels, `sudo` auth failure (exit 1) would have been read as pgrep's 'no matches' — an escalation failure would have *strengthened* the false proof.",
+      "recommendation": "Whenever a status crosses a privilege or transport boundary, re-encode it into a range the wrapper cannot produce, and default everything else to failure."
+    },
+    {
+      "lesson": "Contract tests that pin source text must be rewritten in lockstep with the code, or they become a rubber stamp on the old design.",
+      "context": "The four old assertions (`pgrep -u \"$BUILDER_UID\" ...`, `-gt 1`, `-eq 1`) all still described a probe that no longer existed; they were replaced with fourteen assertions covering the sudo prefix, clean env, each sentinel arm, and both accepted status pairs.",
+      "recommendation": "When replacing a guarded implementation, delete the old assertions rather than adding around them, and confirm the new suite fails against the pre-change workflow."
+    },
+    {
+      "lesson": "A skipped test is a coverage hole that needs a named substitute, not a silent pass.",
+      "context": "The suite reports 68 pass / 1 skip — the reap assertion needs Linux `/proc` and cannot run on the darwin dev host.",
+      "recommendation": "Pair every host-gated skip with a run on the real target OS (here the Ubuntu 24.04 sentinel smoke) and state both results together when claiming green."
+    },
+    {
+      "lesson": "Automated review findings on trajectory/doc artifacts are worth clearing in the same pass as the substantive fix.",
+      "context": "CodeRabbit flagged markdownlint MD058 (table not surrounded by blank lines) plus a missing EOF newline in `compact_3w8vxbaxywtd_2026-09-01.md`.",
+      "recommendation": "Treat compacted trajectory files as lintable repo content — they are tracked per CLAUDE.md and go through the same review bots as source."
+    }
+  ],
+  "openQuestions": [
+    "Does every runner that executes this workflow have passwordless sudo for the runner user? Without it `probe_builder_uid` fails closed on every attempt and the reap can never succeed — the failure mode is safe but would hard-fail the job; no explicit preflight sudo check exists.",
+    "The Linux-only reap assertion remains skipped on darwin; is the Ubuntu 24.04 smoke wired into required CI, or is it a manual run that could silently stop happening?",
+    "Is `/proc` on the GitHub-hosted runners actually mounted with `hidepid`, or is this hardening against a future/self-hosted configuration? The distinction matters for whether the old probe was already broken in practice or only latently unsound.",
+    "The 100 × 0.1s poll (10s ceiling) is unchanged from the prior design — was that bound re-validated now that each iteration costs two `sudo` invocations rather than two direct `pgrep` calls?",
+    "`pkill` still runs as `sudo pkill ... || true`; only the verification probe distinguishes error from success. Should kill failures be surfaced independently, or is the probe intentionally the sole authority?"
+  ]
+}

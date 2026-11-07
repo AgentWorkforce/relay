@@ -1,0 +1,6 @@
+{
+  "name": "agent-relay-mobile",
+  "version": "0.1.0",
+  "description": "Continue your Claude conversation from Agent Relay on mobile.",
+  "author": { "name": "Agent Relay" }
+}

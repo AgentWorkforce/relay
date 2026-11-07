@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1807-pr-proof-listener-event-kind",
+  "kind": "bugfix",
+  "title": "Accept the listener's pull_request.<action> event names without accepting foreign events",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1807-pr-proof-listener-event-kind/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 600,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "listener_pull_request_delivery_rejected"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "listener_pull_request_delivery_accepted_foreign_rejected"
+    }
+  }
+}

@@ -161,6 +161,29 @@ describe('SpawnedAgentHandle lifecycle helpers', () => {
     await expect(pending).resolves.toEqual({ reason: 'ready', runtime: 'pty', pid: 44 });
   });
 
+  it('distinguishes unproven startup fallback from a missing handshake at the deadline', async () => {
+    const fallback = {
+      kind: 'worker_startup_fallback',
+      name: 'worker',
+      runtime: 'pty',
+      pid: 42,
+    } as BrokerEvent;
+    for (const replay of [false, true]) {
+      const stub = createStubClient(replay ? [fallback] : []);
+      const pending = createHandle(stub).waitForReady(5);
+      if (!replay) stub.emit(fallback);
+      await expect(pending).resolves.toEqual({ reason: 'startup_fallback', runtime: 'pty', pid: 42 });
+    }
+  });
+
+  it('keeps waiting after fallback so a later proven handshake can succeed', async () => {
+    const stub = createStubClient();
+    const pending = createHandle(stub).waitForReady(50);
+    stub.emit({ kind: 'worker_startup_fallback', name: 'worker', runtime: 'pty' } as BrokerEvent);
+    stub.emit({ kind: 'worker_ready', name: 'worker', runtime: 'pty', pid: 43 } as BrokerEvent);
+    await expect(pending).resolves.toEqual({ reason: 'ready', runtime: 'pty', pid: 43 });
+  });
+
   it('reports an exit before readiness and times out when no handshake arrives', async () => {
     const exitedStub = createStubClient();
     const exitedHandle = createHandle(exitedStub);
@@ -211,6 +234,16 @@ describe('SpawnedAgentHandle lifecycle helpers', () => {
     stub.emit({ kind: 'agent_exit', name: 'worker' } as BrokerEvent);
 
     await expect(pending).resolves.toEqual({ reason: 'exited', exit: { reason: 'exited' } });
+  });
+
+  it('guards cleanup against a later worker generation with the same name', async () => {
+    const stub = createStubClient();
+    const handle = new SpawnedAgentHandle(
+      { name: 'worker', runtime: 'pty', generation: 'owned-generation' },
+      stub as unknown as HarnessDriverClient
+    );
+    await handle.release('setup failed');
+    expect(stub.release).toHaveBeenCalledWith('worker', 'setup failed', 'owned-generation');
   });
 
   it('forwards release requests to the client', async () => {

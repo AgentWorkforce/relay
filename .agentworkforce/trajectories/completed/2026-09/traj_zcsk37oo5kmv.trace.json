@@ -1,0 +1,79 @@
+{
+  "version": "1.0.0",
+  "id": "b15a1aba-0655-43c5-80b3-b5f8353b50f8",
+  "timestamp": "2026-09-03T00:53:07.992Z",
+  "trajectory": "traj_zcsk37oo5kmv",
+  "files": [
+    {
+      "path": "scripts/verify-features/escalate-infra.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 48,
+              "end_line": 67,
+              "revision": "d5860fa4cef094f97194125ad286324b774b73d5"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/fixtures/verify-features-escalation.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 273,
+              "end_line": 279,
+              "revision": "d5860fa4cef094f97194125ad286324b774b73d5"
+            },
+            {
+              "start_line": 281,
+              "end_line": 292,
+              "revision": "d5860fa4cef094f97194125ad286324b774b73d5"
+            },
+            {
+              "start_line": 299,
+              "end_line": 305,
+              "revision": "d5860fa4cef094f97194125ad286324b774b73d5"
+            },
+            {
+              "start_line": 312,
+              "end_line": 318,
+              "revision": "d5860fa4cef094f97194125ad286324b774b73d5"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1642-verify-features-escalation/run.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 298,
+              "end_line": 309,
+              "revision": "d5860fa4cef094f97194125ad286324b774b73d5"
+            },
+            {
+              "start_line": 321,
+              "end_line": 327,
+              "revision": "d5860fa4cef094f97194125ad286324b774b73d5"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

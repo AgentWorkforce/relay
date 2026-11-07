@@ -1,8 +1,10 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
@@ -13,6 +15,7 @@ import {
   PrProofContractError,
   changedRelayFlowCaseIds,
   classifyPullRequest,
+  runtimeSurfaceChanged,
   validateCaseManifest,
   validateEvidence,
   validateObservation,
@@ -33,22 +36,56 @@ import {
   resolvePullRequest,
 } from '../../scripts/pr-proof/report-status.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
-import { assertSamePullRequestSnapshot, pullRequestSnapshot } from '../../scripts/pr-proof/prepare.mjs';
+import {
+  assertSamePullRequestSnapshot,
+  main as prepareMain,
+  pullRequestFiles,
+  pullRequestSnapshot,
+} from '../../scripts/pr-proof/prepare.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
+  boundedDiagnostic,
   boundedDuration,
+  createCommandOutputRedactors,
   createPreparedRunProgressParser,
+  createCredentialRedactor,
   createCliApiKeyEnvironment,
+  formatCloudRunArtifact,
+  formatCloudRunDiagnostics,
+  maskCapturedCommandOutput,
+  parseJsonOutput,
   preparedRunIdFromOutput,
+  recognizedCloudStatusFromOutput,
+  recognizedCloudRunStatus,
+  sanitizeCloudCommandOutput,
+  sanitizeCloudStatusDiagnostic,
+  writeStatusPollDeadlineDiagnostics,
+  writeStatusPollTimeoutDiagnostics,
 } from '../../scripts/pr-proof/run-cloud.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
-import { runProcess } from '../../scripts/pr-proof/run-arm.mjs';
+import { runBoundedProcess } from '../../scripts/pr-proof/process-runner.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import {
+  openVerifiedBrokerExecutable,
+  probeLandlockedProcessSupport,
+  runLandlockedProcess,
+  runProcess,
+  verifyProtectedBrokerExecutable,
+} from '../../scripts/pr-proof/run-arm.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import {
+  resolveBrokerArtifact,
+  resolveBrokerArtifactPair,
+} from '../../scripts/pr-proof/resolve-broker-artifacts.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import { inspectBrokerArtifact } from '../../scripts/pr-proof/stage-broker-artifacts.mjs';
 
 const BASE_SHA = '1'.repeat(40);
 const HEAD_SHA = '2'.repeat(40);
 const CASE_ID = '1591-application-ack-reconnect';
 const HANDOFF_NONCE = 'a'.repeat(32);
 const PS_PATH = ['/bin/ps', '/usr/bin/ps'].find((candidate) => existsSync(candidate));
+const HAS_TRUSTED_LANDLOCK_RUNTIME = probeLandlockedProcessSupport();
 
 function proofBody(type = 'bugfix', caseId = CASE_ID) {
   return [
@@ -68,6 +105,7 @@ function manifest(kind = 'bugfix') {
     runner: {
       command: ['node', `tests/relayflows/cases/${CASE_ID}/run.mjs`],
     },
+    requirements: [],
     timeoutSeconds: 900,
     expected: {
       base: {
@@ -125,7 +163,13 @@ describe('RelayFlow PR proof classification', () => {
   });
 
   it('requires explicit classification even without a conventional title', () => {
-    const result = classifyPullRequest({ title: 'Update reconnect documentation', body: '' });
+    // A read diff that touches nothing shippable: the exemption has to come
+    // from the files, so the assertion below is about the missing metadata.
+    const result = classifyPullRequest({
+      title: 'Update reconnect documentation',
+      body: '',
+      changedFiles: ['docs/reconnect.md'],
+    });
     expect(result.required).toBe(false);
     expect(result.errors).toContainEqual(
       expect.stringContaining('must declare a RelayFlow Proof change type')
@@ -145,14 +189,16 @@ describe('RelayFlow PR proof classification', () => {
     const result = classifyPullRequest({
       title: 'docs: explain reconnect behavior',
       body: proofBody('non-functional', 'n/a'),
+      changedFiles: ['docs/reconnect.md'],
     });
     expect(result).toMatchObject({ required: false, caseId: null, errors: [] });
   });
 
-  it('rejects attempts to mark a fix title non-functional', () => {
+  it('rejects attempts to mark a runtime fix non-functional', () => {
     const result = classifyPullRequest({
       title: 'fix(broker): reconnect dead links',
       body: proofBody('non-functional', 'n/a'),
+      changedFiles: ['crates/broker/src/runtime/delivery.rs'],
     });
     expect(result.errors).toContainEqual(expect.stringContaining('cannot be non-functional'));
   });
@@ -205,6 +251,17 @@ describe('RelayFlow case manifest', () => {
     expect(() => validateCaseManifest(invalid, { caseId: CASE_ID, kind: 'feature' })).toThrow(
       /Invalid RelayFlow case manifest/
     );
+  });
+
+  it('accepts only the exact broker runtime requirement', () => {
+    const brokerManifest = { ...manifest(), requirements: ['broker-linux-x64'] };
+    expect(validateCaseManifest(brokerManifest, { caseId: CASE_ID, kind: 'bugfix' })).toEqual(brokerManifest);
+    expect(() =>
+      validateCaseManifest(
+        { ...manifest(), requirements: ['broker-linux-x64', 'arbitrary-tool'] },
+        { caseId: CASE_ID, kind: 'bugfix' }
+      )
+    ).toThrow(PrProofContractError);
   });
 });
 
@@ -396,6 +453,420 @@ describe('Cloud dispatcher API key lifecycle', () => {
     );
   });
 
+  it('retains terminal status diagnostics when Cloud logs are empty', () => {
+    const diagnostics = formatCloudRunDiagnostics({
+      runId: 'cloud-run-123',
+      terminalStatus: 'failed',
+      lastStatusOutput: '{"status":"failed","error":"step timeout"}',
+      statusPollFailures: 2,
+      logs: { stdout: '', stderr: '', exitCode: 0, timedOut: false },
+    });
+
+    expect(diagnostics).toContain('run_id=cloud-run-123');
+    expect(diagnostics).toContain('terminal_status=failed');
+    expect(diagnostics).toContain('status_poll_failures=2');
+    expect(diagnostics).not.toContain('step timeout');
+    expect(diagnostics).toContain('cloud_logs_output=empty');
+  });
+
+  it('allowlists status diagnostics without retaining nested workflow output', () => {
+    const rawStatus = JSON.stringify({
+      runId: 'cloud-run-123',
+      status: 'failed',
+      updatedAt: '2026-09-08T10:00:00.000Z',
+      workflow: 'return process.env.SECRET',
+      error: 'top-level-error-must-not-survive ci-key',
+      message: 'top-level-message-must-not-survive',
+      dispatchType: 'arbitrary free text must not survive',
+      result: {
+        error: {
+          token: 'rk_live_0123456789abcdef',
+          detail: 'nested-result-must-not-survive',
+        },
+      },
+      failure: {
+        phase: 'launch',
+        code: 'workflow_launch_failed',
+        message: 'failure-message-must-not-survive ci-key rk_live_0123456789abcdef',
+        sandboxId: 'sandbox id with arbitrary free text',
+        causeChain: ['nested-cause-must-not-survive'],
+      },
+    });
+    const diagnostic = sanitizeCloudStatusDiagnostic(`status response follows\n${rawStatus}`, ['ci-key']);
+
+    expect(JSON.parse(diagnostic)).toEqual({
+      runId: 'cloud-run-123',
+      status: 'failed',
+      updatedAt: '2026-09-08T10:00:00.000Z',
+      failure: {
+        phase: 'launch',
+        code: 'workflow_launch_failed',
+      },
+    });
+    expect(diagnostic).not.toContain('nested-result-must-not-survive');
+    expect(diagnostic).not.toContain('top-level-error-must-not-survive');
+    expect(diagnostic).not.toContain('top-level-message-must-not-survive');
+    expect(diagnostic).not.toContain('failure-message-must-not-survive');
+    expect(diagnostic).not.toContain('arbitrary free text');
+    expect(diagnostic).not.toContain('nested-cause-must-not-survive');
+    expect(diagnostic).not.toContain('0123456789abcdef');
+
+    const persisted = formatCloudRunDiagnostics({
+      runId: 'cloud-run-123',
+      terminalStatus: 'failed',
+      lastStatusOutput: rawStatus,
+      statusPollFailures: 0,
+      logs: { stdout: '', stderr: '', exitCode: 0, timedOut: false },
+      diagnosticSecretValues: ['ci-key'],
+    });
+    expect(persisted).toContain('workflow_launch_failed');
+    expect(persisted).not.toContain('nested-result-must-not-survive');
+    expect(persisted).not.toContain('top-level-error-must-not-survive');
+    expect(persisted).not.toContain('top-level-message-must-not-survive');
+    expect(persisted).not.toContain('failure-message-must-not-survive');
+    expect(persisted).not.toContain('arbitrary free text');
+    expect(persisted).not.toContain('ci-key');
+  });
+
+  it('omits non-JSON status errors even when they contain configured secrets', () => {
+    const diagnostic = sanitizeCloudStatusDiagnostic('Status request failed: upstream rejected short-key', [
+      'short-key',
+    ]);
+
+    expect(diagnostic).toBe('<non-JSON status response omitted>');
+    expect(diagnostic).not.toContain('short-key');
+  });
+
+  it('accepts only known Cloud run statuses', () => {
+    expect(recognizedCloudRunStatus('RUNNING')).toBe('running');
+    expect(recognizedCloudRunStatus('failed')).toBe('failed');
+    expect(recognizedCloudRunStatus('running-opaque-secret')).toBeNull();
+    expect(recognizedCloudRunStatus(null)).toBeNull();
+  });
+
+  it('treats malformed and status-less successful poll output as retryable', () => {
+    expect(recognizedCloudStatusFromOutput('{"status":unknown-secret}')).toBeNull();
+    expect(recognizedCloudStatusFromOutput('{"runId":"still-running"}')).toBeNull();
+    expect(recognizedCloudStatusFromOutput('{"workflowRun":{"status":"running"}}')).toBe('running');
+  });
+
+  it('redacts configured and recognized credentials from raw command output and artifacts', () => {
+    const raw = 'stdout ci-api-key rk_live_0123456789abcdef';
+    expect(sanitizeCloudCommandOutput(raw, ['ci-api-key'])).toBe('stdout [redacted] rk_live_…');
+    const githubToken = 'github_pat_0123456789abcdef0123456789abcdef';
+    expect(sanitizeCloudCommandOutput(`status ${githubToken}`)).toBe('status github_pat_…');
+
+    const artifact = formatCloudRunArtifact({
+      runId: 'cloud-run-123',
+      terminalStatus: 'failed',
+      lastStatusOutput: '{"status":"failed","error":"opaque-status-secret"}',
+      statusPollFailures: 0,
+      logs: {
+        stdout: `workflow output ci-api-key\n`,
+        stderr: 'failure rth_at_0123456789abcdef\n',
+        exitCode: 0,
+        timedOut: false,
+      },
+      diagnosticSecretValues: ['ci-api-key'],
+    });
+
+    expect(artifact).toContain('workflow output [redacted]');
+    expect(artifact).toContain('failure rth_at_…');
+    expect(artifact).not.toContain('ci-api-key');
+    expect(artifact).not.toContain('0123456789abcdef');
+    expect(artifact).not.toContain('opaque-status-secret');
+  });
+
+  it('redacts complete credentials before configured prefix secrets in console and artifacts', () => {
+    const credentialSuffix = '0123456789abcdef';
+    const consoleOutput = sanitizeCloudCommandOutput(`launch rk_live_${credentialSuffix}`, ['rk_live_']);
+    expect(consoleOutput).toBe('launch [redacted]…');
+    expect(consoleOutput).not.toContain(credentialSuffix);
+
+    const artifact = formatCloudRunArtifact({
+      runId: 'cloud-run-prefix-secret',
+      terminalStatus: 'failed',
+      lastStatusOutput: '{"status":"failed"}',
+      statusPollFailures: 0,
+      logs: {
+        stdout: `workflow output rk_live_${credentialSuffix}\n`,
+        stderr: '',
+        exitCode: 0,
+        timedOut: false,
+      },
+      diagnosticSecretValues: ['rk_live_'],
+    });
+
+    expect(artifact).toContain('workflow output [redacted]…');
+    expect(artifact).not.toContain(credentialSuffix);
+  });
+
+  it('redacts credentials reconstructed across captured stdout and stderr', () => {
+    const configuredArtifact = formatCloudRunArtifact({
+      runId: 'cloud-run-split-secret',
+      terminalStatus: 'failed',
+      lastStatusOutput: '{"status":"failed"}',
+      statusPollFailures: 0,
+      logs: { stdout: 'split-', stderr: 'secret', exitCode: 1, timedOut: false },
+      diagnosticSecretValues: ['split-secret'],
+    });
+    expect(configuredArtifact).toContain('[redacted]');
+    expect(configuredArtifact).not.toContain('split-secret');
+
+    const prefixedArtifact = formatCloudRunArtifact({
+      runId: 'cloud-run-split-prefix',
+      terminalStatus: 'failed',
+      lastStatusOutput: '{"status":"failed"}',
+      statusPollFailures: 0,
+      logs: { stdout: 'rk_', stderr: 'live_token', exitCode: 1, timedOut: false },
+    });
+    expect(prefixedArtifact).toContain('rk_live_…');
+    expect(prefixedArtifact).not.toContain('rk_live_token');
+  });
+
+  it('keeps credential fragments attached to their originating output stream', async () => {
+    const captureWithRedaction = async (code: string, secretValues: string[]) => {
+      const redactors = createCommandOutputRedactors(secretValues);
+      const capture = await runBoundedProcess(process.execPath, ['-e', code], {
+        echo: false,
+        transformChunk: (text, stream, final) => redactors[stream].push(text, final),
+      });
+      return maskCapturedCommandOutput(capture, redactors);
+    };
+
+    const configuredCapture = await captureWithRedaction(
+      "process.stdout.write('secret'); setTimeout(() => process.stderr.write('split-'), 25)",
+      ['split-secret']
+    );
+    const configuredArtifact = formatCloudRunArtifact({
+      runId: 'cloud-run-redaction-a',
+      terminalStatus: 'failed',
+      lastStatusOutput: '{"status":"failed"}',
+      statusPollFailures: 0,
+      logs: configuredCapture,
+      diagnosticSecretValues: ['split-secret'],
+    });
+
+    expect(configuredCapture.stdout).toBe('secret');
+    expect(configuredCapture.stderr).toBe('split-');
+    expect(configuredArtifact).not.toContain('split-secret');
+
+    const prefixCapture = await captureWithRedaction(
+      "process.stdout.write('live_token'); setTimeout(() => process.stderr.write('rk_'), 25)",
+      []
+    );
+    const prefixArtifact = formatCloudRunArtifact({
+      runId: 'cloud-run-redaction-b',
+      terminalStatus: 'failed',
+      lastStatusOutput: '{"status":"failed"}',
+      statusPollFailures: 0,
+      logs: prefixCapture,
+      diagnosticSecretValues: [],
+    });
+
+    expect(prefixCapture.stdout).toBe('live_token');
+    expect(prefixCapture.stderr).toBe('rk_');
+    expect(prefixArtifact).not.toContain('rk_live_token');
+
+    const benignTrailingPrefix = createCommandOutputRedactors();
+    expect(
+      benignTrailingPrefix.stdout.push('finished with br', false) + benignTrailingPrefix.stdout.push('', true)
+    ).toBe('finished with br');
+  });
+
+  it('redacts credential prefixes and configured secrets across subprocess chunk boundaries', async () => {
+    const redactor = createCredentialRedactor(['split-secret']);
+    const sanitized =
+      redactor.push('prefix rk_', false) +
+      redactor.push('live_0123456789 split-', false) +
+      redactor.push('secret tail', true);
+    expect(sanitized).toBe('prefix rk_live_… [redacted] tail');
+
+    const longCredentialLength = 200_000;
+    const capture = await runBoundedProcess(
+      process.execPath,
+      ['-e', `process.stdout.write('head rk_live_' + 'a'.repeat(${longCredentialLength}) + ' tail')`],
+      {
+        echo: false,
+        maxCaptureBytes: 128,
+        maxLiveOutputBytes: 128,
+        transformChunk: (text, stream, final) => redactor.push(text, final),
+      }
+    );
+
+    expect(capture.stdout).toBe('head rk_live_… tail');
+    expect(capture.stdout).not.toContain('a'.repeat(longCredentialLength));
+
+    const captureLimit = 2 * 1024 * 1024;
+    const boundaryCredential = '0123456789abcdef'.repeat(128);
+    const boundaryRedactor = createCredentialRedactor();
+    const boundaryCapture = await runBoundedProcess(
+      process.execPath,
+      [
+        '-e',
+        [
+          `process.stdout.write('x'.repeat(${captureLimit - 'rk_live_'.length}))`,
+          "process.stdout.write('rk_')",
+          "setImmediate(() => process.stdout.write('live_' + process.env.BOUNDARY_CREDENTIAL + ' tail'))",
+        ].join(';'),
+      ],
+      {
+        echo: false,
+        env: { ...process.env, BOUNDARY_CREDENTIAL: boundaryCredential },
+        maxCaptureBytes: captureLimit,
+        maxLiveOutputBytes: 128,
+        transformChunk: (text, stream, final) => {
+          // Force the credential prefix to cross a redactor boundary even if
+          // the OS coalesces the two writes into one pipe chunk.
+          const prefixIndex = text.indexOf('rk_live_');
+          if (prefixIndex >= 0) {
+            const split = prefixIndex + 'rk_'.length;
+            return (
+              boundaryRedactor.push(text.slice(0, split), false) +
+              boundaryRedactor.push(text.slice(split), final)
+            );
+          }
+          return boundaryRedactor.push(text, final);
+        },
+      }
+    );
+
+    expect(Buffer.byteLength(boundaryCapture.stdout, 'utf8')).toBeLessThanOrEqual(captureLimit);
+    expect(boundaryCapture.stdout).toContain('rk_live_…');
+    expect(boundaryCapture.stdout).not.toContain('0123456789abcdef');
+  });
+
+  it('preserves large credential-free output without pathological rescanning', () => {
+    const cleanOutput = `head ${'ordinary-output '.repeat(20_000)}tail`;
+    expect(sanitizeCloudCommandOutput(cleanOutput, ['configured-secret'])).toBe(cleanOutput);
+  });
+
+  it('rejects and terminates when an output transform throws', async () => {
+    await expect(
+      runBoundedProcess(process.execPath, ['-e', "process.stdout.write('trigger')"], {
+        echo: false,
+        transformChunk: () => {
+          throw new Error('transform failed');
+        },
+      })
+    ).rejects.toThrow('transform failed');
+  });
+
+  it.skipIf(process.platform === 'win32' || !PS_PATH)(
+    'kills same-group descendants when an output transform fails during final flush',
+    async () => {
+      const script = [
+        "const { spawn } = require('node:child_process');",
+        "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+        "process.stdout.write(String(child.pid) + '\\n');",
+        'child.unref();',
+      ].join('');
+      let transformed = '';
+      await expect(
+        runBoundedProcess(process.execPath, ['-e', script], {
+          echo: false,
+          transformChunk: (text, _stream, final) => {
+            if (final) throw new Error('final transform failed');
+            transformed += text;
+            return text;
+          },
+        })
+      ).rejects.toThrow('final transform failed');
+
+      const descendantPid = Number(transformed.trim());
+      expect(descendantPid).toBeGreaterThan(0);
+      const deadline = Date.now() + 2_000;
+      let running = true;
+      while (running && Date.now() < deadline) {
+        let processState = '';
+        try {
+          processState = execFileSync(PS_PATH!, ['-o', 'stat=', '-p', String(descendantPid)], {
+            encoding: 'utf8',
+          }).trim();
+        } catch (error) {
+          const status = (error as { status?: number }).status;
+          if (status !== 1) throw error;
+        }
+        running = processState.length > 0 && !processState.startsWith('Z');
+        if (running) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      if (running) process.kill(descendantPid, 'SIGKILL');
+      expect(running).toBe(false);
+    }
+  );
+
+  it('omits malformed JSON status payloads instead of falling back to raw output', () => {
+    const diagnostic = sanitizeCloudStatusDiagnostic(
+      '{"status":"failed","result":{"token":"unknown-secret"}'
+    );
+
+    expect(diagnostic).toBe('<malformed JSON status response omitted>');
+    expect(diagnostic).not.toContain('unknown-secret');
+  });
+
+  it('uses a fixed error when malformed JSON contains unrecognized secrets', () => {
+    const malformed = 'status response follows\n{"status":"failed","token":unknown-secret}';
+
+    expect(() => parseJsonOutput(malformed, 'Cloud status')).toThrow(
+      new Error('Cloud status did not return JSON')
+    );
+  });
+
+  it('persists bounded diagnostics when a Cloud status poll times out', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-status-timeout-'));
+    const logsPath = path.join(root, 'nested', 'cloud.log');
+    try {
+      await writeStatusPollTimeoutDiagnostics({
+        logsPath,
+        runId: 'cloud-run-timeout',
+        lastStatusOutput: '😀'.repeat(100_000),
+        statusPollFailures: 3,
+      });
+
+      const diagnostics = await readFile(logsPath, 'utf8');
+      expect(diagnostics).toContain('run_id=cloud-run-timeout');
+      expect(diagnostics).toContain('terminal_status=status_poll_timeout');
+      expect(diagnostics).toContain('status_poll_failures=3');
+      expect(diagnostics).toContain('cloud_logs_timed_out=true');
+      expect(Buffer.byteLength(diagnostics, 'utf8')).toBeLessThanOrEqual(65 * 1024);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['nonzero', 'Status request failed: unknown-secret'],
+    ['malformed', '{"status":unknown-secret}'],
+    ['status-less', '{"runId":"cloud-run-deadline","result":{"token":"unknown-secret"}}'],
+  ])('persists safe bounded diagnostics when %s polls exhaust the deadline', async (_case, output) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-status-deadline-'));
+    const logsPath = path.join(root, 'nested', 'cloud.log');
+    try {
+      await writeStatusPollDeadlineDiagnostics({
+        logsPath,
+        runId: 'cloud-run-deadline',
+        lastStatusOutput: output,
+        statusPollFailures: 4,
+      });
+
+      const diagnostics = await readFile(logsPath, 'utf8');
+      expect(diagnostics).toContain('run_id=cloud-run-deadline');
+      expect(diagnostics).toContain('terminal_status=status_poll_deadline_exceeded');
+      expect(diagnostics).toContain('status_poll_failures=4');
+      expect(diagnostics).not.toContain('unknown-secret');
+      expect(Buffer.byteLength(diagnostics, 'utf8')).toBeLessThanOrEqual(65 * 1024);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds multibyte Cloud diagnostics by UTF-8 bytes', () => {
+    const diagnostics = boundedDiagnostic('😀'.repeat(100_000));
+
+    expect(Buffer.byteLength(diagnostics, 'utf8')).toBeLessThanOrEqual(64 * 1024);
+    expect(diagnostics).toContain('[... diagnostic output truncated ...]');
+  });
+
   it('waits for a complete prepared-run progress line split across stderr chunks', () => {
     const runIds: string[] = [];
     const parser = createPreparedRunProgressParser((runId: string) => runIds.push(runId));
@@ -417,11 +888,769 @@ describe('Cloud dispatcher API key lifecycle', () => {
 
     expect(auth.cliEnv.CLOUD_API_URL).toBe(credentialEnv.CLOUD_API_URL);
     expect(auth.cliEnv.CLOUD_API_KEY).toBe(credentialEnv.CLOUD_API_KEY);
+    expect(auth.diagnosticSecretValues).toEqual([credentialEnv.CLOUD_API_KEY]);
     expect(auth.cliEnv.CLOUD_API_ACCESS_TOKEN).toBeUndefined();
     expect(auth.cliEnv.CLOUD_API_REFRESH_TOKEN).toBeUndefined();
     expect(auth.cliEnv.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT).toBeUndefined();
     expect(auth.cliEnv.CLOUD_API_REFRESH_TOKEN_EXPIRES_AT).toBeUndefined();
   });
+});
+
+describe('exact broker artifact handoff', () => {
+  it('requires exact per-arm broker provenance when the case requests it', () => {
+    const brokerManifest = { ...manifest(), requirements: ['broker-linux-x64'] };
+    const rawInput = {
+      version: 1,
+      repository: 'AgentWorkforce/relay',
+      pullRequest: 1610,
+      baseSha: BASE_SHA,
+      headSha: HEAD_SHA,
+      caseId: CASE_ID,
+      kind: 'bugfix',
+      handoffNonce: HANDOFF_NONCE,
+      manifest: brokerManifest,
+    };
+    expect(() => validateProofInput(rawInput)).toThrow(PrProofContractError);
+    expect(
+      validateProofInput({
+        ...rawInput,
+        runtimeArtifacts: {
+          broker: {
+            base: {
+              path: '.relayflow/pr-proof-binaries/base/agent-relay-broker',
+              sha256: '5'.repeat(64),
+              sourceSha: BASE_SHA,
+            },
+            head: {
+              path: '.relayflow/pr-proof-binaries/head/agent-relay-broker',
+              sha256: '6'.repeat(64),
+              sourceSha: HEAD_SHA,
+            },
+          },
+        },
+      })
+    ).toMatchObject({ runtimeArtifacts: { broker: { base: { sourceSha: BASE_SHA } } } });
+  });
+
+  it('resolves only a successful artifact from the dedicated workflow', async () => {
+    const sha = '3'.repeat(40);
+    const inspectedRunIds: number[] = [];
+    const fetchImpl = async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value.includes('/actions/artifacts?')) {
+        return Response.json({
+          artifacts: [
+            {
+              name: `relayflow-broker-${sha}`,
+              expired: true,
+              updated_at: '2026-09-01T00:04:00Z',
+              workflow_run: { id: 46 },
+            },
+            {
+              name: `relayflow-broker-${sha}`,
+              expired: false,
+              updated_at: '2026-09-01T00:03:00Z',
+              workflow_run: { id: 44 },
+            },
+            {
+              name: `relayflow-broker-${sha}`,
+              expired: false,
+              updated_at: '2026-09-01T00:02:00Z',
+              workflow_run: { id: 43 },
+            },
+            {
+              name: `relayflow-broker-${sha}`,
+              expired: false,
+              updated_at: '2026-09-01T00:00:00Z',
+              workflow_run: { id: 42 },
+            },
+          ],
+        });
+      }
+      const runId = Number(value.split('/').at(-1));
+      inspectedRunIds.push(runId);
+      return Response.json({
+        path:
+          runId === 43
+            ? '.github/workflows/untrusted-broker.yml'
+            : '.github/workflows/relayflow-pr-proof-broker.yml',
+        conclusion: runId === 44 ? 'failure' : 'success',
+        head_sha: sha,
+        event: 'pull_request_target',
+        head_branch: 'feature/exact-broker',
+      });
+    };
+    await expect(
+      resolveBrokerArtifact({
+        apiUrl: 'https://api.github.test',
+        repository: 'AgentWorkforce/relay',
+        token: 'test-token',
+        sha,
+        fetchImpl,
+      })
+    ).resolves.toEqual({ artifactName: `relayflow-broker-${sha}`, runId: 42 });
+    expect(inspectedRunIds).toEqual([44, 43, 42]);
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, -1, 0, 1.5, 2_147_483_648])(
+    'rejects invalid polling interval %s before querying GitHub',
+    async (pollIntervalMs) => {
+      const fetchImpl = vi.fn();
+      await expect(
+        resolveBrokerArtifact({
+          apiUrl: 'https://api.github.test',
+          repository: 'AgentWorkforce/relay',
+          token: 'test-token',
+          sha: '3'.repeat(40),
+          fetchImpl,
+          pollIntervalMs,
+        })
+      ).rejects.toThrow('broker artifact polling bounds are invalid');
+      expect(fetchImpl).not.toHaveBeenCalled();
+    }
+  );
+
+  it('explains how to recover when the only exact artifact has expired', async () => {
+    const sha = '3'.repeat(40);
+    const fetchImpl = async () =>
+      Response.json({
+        artifacts: [
+          {
+            name: `relayflow-broker-${sha}`,
+            expired: true,
+            updated_at: '2026-05-01T00:00:00Z',
+            workflow_run: { id: 42 },
+          },
+        ],
+      });
+    await expect(
+      resolveBrokerArtifact({
+        apiUrl: 'https://api.github.test',
+        repository: 'AgentWorkforce/relay',
+        token: 'test-token',
+        sha,
+        fetchImpl,
+        maxAttempts: 1,
+      })
+    ).rejects.toThrow('expired after the 90-day retention window; update/rebase the PR onto current main');
+  });
+
+  it('rejects an artifact whose workflow run belongs to another source SHA', async () => {
+    const sha = '3'.repeat(40);
+    const fetchImpl = async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value.includes('/actions/artifacts?')) {
+        return Response.json({
+          artifacts: [
+            {
+              name: `relayflow-broker-${sha}`,
+              expired: false,
+              updated_at: '2026-09-01T00:00:00Z',
+              workflow_run: { id: 42 },
+            },
+          ],
+        });
+      }
+      return Response.json({
+        path: '.github/workflows/relayflow-pr-proof-broker.yml',
+        conclusion: 'success',
+        head_sha: '4'.repeat(40),
+        event: 'pull_request_target',
+        head_branch: 'feature/exact-broker',
+      });
+    };
+    await expect(
+      resolveBrokerArtifact({
+        apiUrl: 'https://api.github.test',
+        repository: 'AgentWorkforce/relay',
+        token: 'test-token',
+        sha,
+        fetchImpl,
+        maxAttempts: 1,
+      })
+    ).rejects.toThrow(
+      `No successful .github/workflows/relayflow-pr-proof-broker.yml artifact named relayflow-broker-${sha} after 1 attempts`
+    );
+  });
+
+  it.each([
+    ['pull_request', 'feature/exact-broker'],
+    ['workflow_dispatch', 'main'],
+    ['push', 'feature/exact-broker'],
+    ['schedule', 'feature/exact-broker'],
+  ])('rejects an artifact from untrusted event %s on %s', async (event, headBranch) => {
+    const sha = '3'.repeat(40);
+    const fetchImpl = async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value.includes('/actions/artifacts?')) {
+        return Response.json({
+          artifacts: [
+            {
+              name: `relayflow-broker-${sha}`,
+              expired: false,
+              updated_at: '2026-09-01T00:00:00Z',
+              workflow_run: { id: 42 },
+            },
+          ],
+        });
+      }
+      return Response.json({
+        path: '.github/workflows/relayflow-pr-proof-broker.yml',
+        conclusion: 'success',
+        head_sha: sha,
+        event,
+        head_branch: headBranch,
+      });
+    };
+    await expect(
+      resolveBrokerArtifact({
+        apiUrl: 'https://api.github.test',
+        repository: 'AgentWorkforce/relay',
+        token: 'test-token',
+        sha,
+        fetchImpl,
+        maxAttempts: 1,
+      })
+    ).rejects.toThrow(
+      `No successful .github/workflows/relayflow-pr-proof-broker.yml artifact named relayflow-broker-${sha} after 1 attempts`
+    );
+  });
+
+  it.each(['push', 'schedule'])('accepts an exact artifact from a main %s', async (event) => {
+    const sha = '3'.repeat(40);
+    const fetchImpl = async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value.includes('/actions/artifacts?')) {
+        return Response.json({
+          artifacts: [
+            {
+              name: `relayflow-broker-${sha}`,
+              expired: false,
+              updated_at: '2026-09-01T00:00:00Z',
+              workflow_run: { id: 42 },
+            },
+          ],
+        });
+      }
+      return Response.json({
+        path: '.github/workflows/relayflow-pr-proof-broker.yml',
+        conclusion: 'success',
+        head_sha: sha,
+        event,
+        head_branch: 'main',
+      });
+    };
+    await expect(
+      resolveBrokerArtifact({
+        apiUrl: 'https://api.github.test',
+        repository: 'AgentWorkforce/relay',
+        token: 'test-token',
+        sha,
+        fetchImpl,
+      })
+    ).resolves.toEqual({ artifactName: `relayflow-broker-${sha}`, runId: 42 });
+  });
+
+  it('waits for the exact broker workflow artifact to finish', async () => {
+    const sha = '3'.repeat(40);
+    let listingCalls = 0;
+    let sleeps = 0;
+    const fetchImpl = async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value.includes('/actions/artifacts?')) {
+        listingCalls += 1;
+        return Response.json({
+          artifacts:
+            listingCalls === 1
+              ? []
+              : [
+                  {
+                    name: `relayflow-broker-${sha}`,
+                    expired: false,
+                    updated_at: '2026-09-01T00:00:00Z',
+                    workflow_run: { id: 42 },
+                  },
+                ],
+        });
+      }
+      return Response.json({
+        path: '.github/workflows/relayflow-pr-proof-broker.yml',
+        conclusion: 'success',
+        head_sha: sha,
+        event: 'pull_request_target',
+        head_branch: 'feature/exact-broker',
+      });
+    };
+    await expect(
+      resolveBrokerArtifact({
+        apiUrl: 'https://api.github.test',
+        repository: 'AgentWorkforce/relay',
+        token: 'test-token',
+        sha,
+        fetchImpl,
+        maxAttempts: 2,
+        pollIntervalMs: 25,
+        sleepImpl: async (milliseconds: number) => {
+          expect(milliseconds).toBe(25);
+          sleeps += 1;
+        },
+      })
+    ).resolves.toEqual({ artifactName: `relayflow-broker-${sha}`, runId: 42 });
+    expect(listingCalls).toBe(2);
+    expect(sleeps).toBe(1);
+  });
+
+  it('aborts the sibling exact-SHA lookup when either concurrent resolution fails', async () => {
+    const baseSha = '3'.repeat(40);
+    const headSha = '4'.repeat(40);
+    let beginBaseFailure: (() => void) | undefined;
+    const headSleeping = new Promise<void>((resolve) => {
+      beginBaseFailure = resolve;
+    });
+    let siblingAborted = false;
+    const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes(`relayflow-broker-${baseSha}`)) {
+        await headSleeping;
+        return new Response('failed', { status: 500 });
+      }
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      return Response.json({ artifacts: [] });
+    };
+    const sleepImpl = async (_milliseconds: number, { signal }: { signal: AbortSignal }) => {
+      beginBaseFailure?.();
+      await new Promise<never>((_resolve, reject) => {
+        const onAbort = () => {
+          siblingAborted = true;
+          reject(signal.reason);
+        };
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      });
+    };
+
+    await expect(
+      resolveBrokerArtifactPair({
+        apiUrl: 'https://api.github.test',
+        repository: 'AgentWorkforce/relay',
+        token: 'test-token',
+        baseSha,
+        headSha,
+        fetchImpl,
+        maxAttempts: 2,
+        pollIntervalMs: 10_000,
+        sleepImpl,
+      })
+    ).rejects.toThrow('GitHub API 500');
+    expect(siblingAborted).toBe(true);
+  });
+
+  it('waits through producer queue headroom and the broker timeout by default', async () => {
+    let elapsedMs = 0;
+    let listingCalls = 0;
+    const fetchImpl = async () => {
+      listingCalls += 1;
+      return Response.json({ artifacts: [] });
+    };
+    await expect(
+      resolveBrokerArtifact({
+        apiUrl: 'https://api.github.test',
+        repository: 'AgentWorkforce/relay',
+        token: 'test-token',
+        sha: '3'.repeat(40),
+        fetchImpl,
+        sleepImpl: async (milliseconds: number) => {
+          elapsedMs += milliseconds;
+        },
+      })
+    ).rejects.toThrow(
+      'allows 10 minutes for Actions queue/start delay and 30 minutes for producer execution'
+    );
+    expect(listingCalls).toBe(243);
+    expect(elapsedMs).toBe(40 * 60_000 + 20_000);
+  });
+
+  it('verifies exact source provenance and binary digest before staging', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-broker-'));
+    const sha = '4'.repeat(40);
+    const directory = path.join(root, '.relayflow', 'pr-proof-binaries', 'base');
+    const binary = Buffer.from('exact broker fixture');
+    const sha256 = createHash('sha256').update(binary).digest('hex');
+    await mkdir(directory, { recursive: true });
+    await writeFile(path.join(directory, 'agent-relay-broker'), binary);
+    await writeFile(
+      path.join(directory, 'broker-manifest.json'),
+      JSON.stringify({ version: 1, sourceSha: sha, sha256 })
+    );
+    await expect(inspectBrokerArtifact({ arm: 'base', expectedSha: sha, root })).resolves.toEqual({
+      path: '.relayflow/pr-proof-binaries/base/agent-relay-broker',
+      sha256,
+      sourceSha: sha,
+    });
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it.skipIf(!HAS_TRUSTED_LANDLOCK_RUNTIME)(
+    'keeps the exact launcher probe eligible under a caller controlling TTY',
+    () => {
+      const moduleUrl = pathToFileURL(path.resolve('scripts/pr-proof/run-arm.mjs')).href;
+      const probeScript = [
+        "import { closeSync, openSync } from 'node:fs';",
+        "const tty = openSync('/dev/tty', 'w');",
+        'closeSync(tty);',
+        `const { probeLandlockedProcessSupport } = await import(${JSON.stringify(moduleUrl)});`,
+        'process.exit(probeLandlockedProcessSupport() ? 0 : 1);',
+      ].join('\n');
+      const ptyScript = [
+        'import os',
+        'import pty',
+        'import sys',
+        'pid, master = pty.fork()',
+        'if pid == 0:',
+        '    os.execv(sys.argv[1], [sys.argv[1], "--input-type=module", "-e", sys.argv[2]])',
+        '_, status = os.waitpid(pid, 0)',
+        'os.close(master)',
+        'if not os.WIFEXITED(status):',
+        '    sys.exit(125)',
+        'sys.exit(os.WEXITSTATUS(status))',
+      ].join('\n');
+
+      expect(() =>
+        execFileSync('/usr/bin/python3', ['-c', ptyScript, process.execPath, probeScript], {
+          stdio: 'ignore',
+          timeout: 15_000,
+        })
+      ).not.toThrow();
+    }
+  );
+
+  it.skipIf(!HAS_TRUSTED_LANDLOCK_RUNTIME)(
+    'isolates trusted bootstrap imports from the case working directory',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-bootstrap-import-'));
+      const importAttackMarker = path.join(root, 'root-import-attack');
+      try {
+        await writeFile(
+          path.join(root, 'ctypes.py'),
+          `open(${JSON.stringify(importAttackMarker)}, "w").write("root import escaped")\n`
+        );
+        const result = await runLandlockedProcess('/bin/true', [], {
+          writableRoots: [root],
+          cwd: root,
+          echo: false,
+          timeoutMs: 2_000,
+        });
+        expect(
+          result,
+          `isolated bootstrap failed:\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`
+        ).toMatchObject({ exitCode: 0, timedOut: false });
+        expect(existsSync(importAttackMarker)).toBe(false);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.skipIf(!HAS_TRUSTED_LANDLOCK_RUNTIME)(
+    'allows private PTY allocation only after dropping bootstrap privileges',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-openpty-'));
+      try {
+        const result = await runLandlockedProcess(
+          '/usr/bin/python3',
+          [
+            '-c',
+            [
+              'import ctypes',
+              'import errno',
+              'import os',
+              'import pty',
+              'status = {}',
+              'with open("/proc/self/status", encoding="utf-8") as status_file:',
+              '    for line in status_file:',
+              '        if ":" in line:',
+              '            key, value = line.split(":", 1)',
+              '            status[key] = value.strip()',
+              'for capability_set in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"):',
+              '    assert int(status[capability_set], 16) == 0',
+              'assert status["NoNewPrivs"] == "1"',
+              'for fd in range(3, 256):',
+              '    try:',
+              '        os.fstat(fd)',
+              '    except OSError as error:',
+              '        assert error.errno == errno.EBADF',
+              '    else:',
+              '        raise AssertionError(f"inherited file descriptor {fd}")',
+              'assert not [entry for entry in os.listdir("/dev/pts") if entry.isdecimal()]',
+              'libc = ctypes.CDLL(None, use_errno=True)',
+              'mount_result = libc.mount(None, b"/", None, 0, None)',
+              'assert mount_result == -1 and ctypes.get_errno() == errno.EPERM',
+              'ctypes.set_errno(0)',
+              'unshare_result = libc.syscall(272, 0x00020000)',
+              'assert unshare_result == -1 and ctypes.get_errno() == errno.EPERM',
+              'try:',
+              '    controlling_tty = os.open("/dev/tty", os.O_WRONLY | os.O_CLOEXEC)',
+              'except OSError as error:',
+              '    assert error.errno in (errno.ENXIO, errno.ENODEV, errno.ENOENT, errno.EACCES)',
+              'else:',
+              '    os.close(controlling_tty)',
+              '    raise AssertionError("case inherited a writable controlling TTY")',
+              'assert os.path.samefile("/dev/ptmx", "/dev/pts/ptmx")',
+              'master, slave = pty.openpty()',
+              'try:',
+              '    assert os.ttyname(slave).startswith("/dev/pts/")',
+              'finally:',
+              '    os.close(slave)',
+              '    os.close(master)',
+            ].join('\n'),
+          ],
+          {
+            writableRoots: [root],
+            cwd: root,
+            echo: false,
+            timeoutMs: 2_000,
+          }
+        );
+        expect(
+          result,
+          `private PTY launcher failed:\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`
+        ).toMatchObject({ exitCode: 0, timedOut: false });
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.skipIf(!HAS_TRUSTED_LANDLOCK_RUNTIME)(
+    'isolates case PTYs from an occupied outer devpts namespace',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-occupied-devpts-'));
+      const holder = spawn(
+        '/usr/bin/python3',
+        [
+          '-c',
+          [
+            'import os',
+            'import pty',
+            'import select',
+            'import sys',
+            'master, slave = pty.openpty()',
+            'print(os.ttyname(slave), flush=True)',
+            'data = b""',
+            'while True:',
+            '    readable, _, _ = select.select([master, sys.stdin.buffer], [], [])',
+            '    if master in readable:',
+            '        data += os.read(master, 4096)',
+            '    if sys.stdin.buffer in readable:',
+            '        if sys.stdin.buffer.read(1) != b"D":',
+            '            raise RuntimeError("PTY holder lost its completion signal")',
+            '        while select.select([master], [], [], 0)[0]:',
+            '            data += os.read(master, 4096)',
+            '        break',
+            'attacked = b"OUTER_PTY_ATTACK" in data',
+            'print("OUTER_PTY_ATTACKED" if attacked else "OUTER_PTY_UNTOUCHED", flush=True)',
+            'os.close(slave)',
+            'os.close(master)',
+            'sys.exit(9 if attacked else 0)',
+          ].join('\n'),
+        ],
+        { stdio: ['pipe', 'pipe', 'pipe'] }
+      );
+      let holderStdout = '';
+      const holderExit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
+        holder.once('exit', (code, signal) => {
+          resolve({ code, signal });
+        })
+      );
+      try {
+        const slavePath = await new Promise<string>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('PTY holder did not start')), 2_000);
+          holder.stdout.on('data', (chunk) => {
+            holderStdout += chunk.toString();
+            const newline = holderStdout.indexOf('\n');
+            if (newline < 0) return;
+            clearTimeout(timer);
+            resolve(holderStdout.slice(0, newline));
+          });
+          holder.once('exit', (code, signal) => {
+            clearTimeout(timer);
+            reject(new Error(`PTY holder exited before readiness (${signal ?? code ?? 'unknown'})`));
+          });
+          holder.once('error', (error) => {
+            clearTimeout(timer);
+            reject(error);
+          });
+        });
+        expect(slavePath).toMatch(/^\/dev\/pts\/\d+$/);
+
+        const result = await runLandlockedProcess(
+          '/usr/bin/python3',
+          [
+            '-c',
+            [
+              'import os',
+              'import pty',
+              'import sys',
+              'assert not [entry for entry in os.listdir("/dev/pts") if entry.isdecimal()]',
+              'master, slave = pty.openpty()',
+              'try:',
+              '    outer_path = sys.argv[1]',
+              '    if os.path.exists(outer_path):',
+              '        with open(outer_path, "wb", buffering=0) as outer_candidate:',
+              '            outer_candidate.write(b"OUTER_PTY_ATTACK\\n")',
+              'finally:',
+              '    os.close(slave)',
+              '    os.close(master)',
+            ].join('\n'),
+            slavePath,
+          ],
+          {
+            writableRoots: [root],
+            cwd: root,
+            echo: false,
+            timeoutMs: 5_000,
+          }
+        );
+        holder.stdin.end('D');
+        expect(result).toMatchObject({ exitCode: 0, timedOut: false });
+        const outerResult = await holderExit;
+        expect(outerResult).toEqual({ code: 0, signal: null });
+        expect(holderStdout).toContain('OUTER_PTY_UNTOUCHED');
+      } finally {
+        if (holder.exitCode === null && holder.signalCode === null) {
+          holder.kill('SIGTERM');
+          await holderExit;
+        }
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.skipIf(!HAS_TRUSTED_LANDLOCK_RUNTIME)(
+    'prevents the case from reacquiring sudo after no_new_privs',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-no-sudo-'));
+      try {
+        const result = await runLandlockedProcess('/usr/bin/sudo', ['-n', '/bin/true'], {
+          writableRoots: [root],
+          cwd: root,
+          echo: false,
+          timeoutMs: 2_000,
+        });
+        expect(result.exitCode).not.toBe(0);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.skipIf(!HAS_TRUSTED_LANDLOCK_RUNTIME)(
+    'keeps a stable self-spawning broker immutable under the case Landlock policy',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-broker-exec-'));
+      const sha = '4'.repeat(40);
+      const directory = path.join(root, '.relayflow', 'pr-proof-binaries', 'base');
+      const binaryPath = path.join(directory, 'agent-relay-broker');
+      const privateRoot = path.join(root, 'private');
+      const writableRoot = path.join(root, 'writable');
+      await mkdir(directory, { recursive: true });
+      await mkdir(privateRoot);
+      await mkdir(writableRoot);
+      await copyFile('/bin/sh', binaryPath);
+      const binary = await readFile(binaryPath);
+      const sha256 = createHash('sha256').update(binary).digest('hex');
+      await writeFile(
+        path.join(directory, 'broker-manifest.json'),
+        JSON.stringify({ version: 1, sourceSha: sha, sha256 })
+      );
+
+      const executable = await openVerifiedBrokerExecutable({
+        input: {
+          baseSha: sha,
+          headSha: '5'.repeat(40),
+          runtimeArtifacts: {
+            broker: {
+              base: {
+                path: '.relayflow/pr-proof-binaries/base/agent-relay-broker',
+                sha256,
+                sourceSha: sha,
+              },
+            },
+          },
+        },
+        arm: 'base',
+        privateRoot,
+        root,
+      });
+      try {
+        expect(executable).not.toBeNull();
+        await copyFile('/bin/false', binaryPath);
+        const processOptions = {
+          writableRoots: [writableRoot],
+          cwd: writableRoot,
+          echo: false,
+          timeoutMs: 2_000,
+        };
+        const chmodAttack = await runLandlockedProcess(
+          '/bin/chmod',
+          ['u+w', executable!.path],
+          processOptions
+        );
+        expect(chmodAttack).toMatchObject({ exitCode: 0, timedOut: false });
+        await expect(
+          verifyProtectedBrokerExecutable({
+            brokerPath: executable!.path,
+            expectedSha256: executable!.sha256,
+            expectedSize: executable!.size,
+          })
+        ).rejects.toThrow('protected broker inode metadata changed');
+
+        const writeAttack = await runLandlockedProcess(
+          '/bin/sh',
+          ['-c', 'cat /bin/false > "$1"', 'broker-write-attack', executable!.path],
+          processOptions
+        );
+        expect(writeAttack.exitCode).not.toBe(0);
+        await chmod(executable!.path, 0o500);
+
+        for (const attack of ['truncate -s 0 "$1"', 'rm "$1"', 'mv "$1" "$2/moved"', 'ln "$1" "$2/alias"']) {
+          const attackResult = await runLandlockedProcess(
+            '/bin/sh',
+            ['-c', attack, 'broker-path-attack', executable!.path, writableRoot],
+            processOptions
+          );
+          expect(attackResult.exitCode).not.toBe(0);
+        }
+        const allowedWrite = await runLandlockedProcess(
+          '/bin/sh',
+          ['-c', 'printf allowed > "$1/allowed"', 'allowed-write', writableRoot],
+          processOptions
+        );
+        expect(allowedWrite).toMatchObject({ exitCode: 0, timedOut: false });
+
+        const selfSpawn = await runLandlockedProcess(
+          executable!.path,
+          [
+            '-c',
+            'actual=$(readlink /proc/$$/exe) && [ "$actual" = "$1" ] && "$actual" -c "exit 0"',
+            'broker-self-spawn',
+            executable!.path,
+          ],
+          processOptions
+        );
+        expect(selfSpawn).toMatchObject({ exitCode: 0, timedOut: false });
+        await expect(
+          verifyProtectedBrokerExecutable({
+            brokerPath: executable!.path,
+            expectedSha256: executable!.sha256,
+            expectedSize: executable!.size,
+          })
+        ).resolves.toBeUndefined();
+      } finally {
+        if (executable) await chmod(executable.directory, 0o700);
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
 });
 
 describe('process timeout contract', () => {
@@ -459,7 +1688,8 @@ describe('process timeout contract', () => {
       ].join('');
       const result = await runProcess(process.execPath, ['-e', script], {
         echo: false,
-        timeoutMs: 100,
+        // Allow the fixture to start and print its PID before testing forced cleanup.
+        timeoutMs: 1_000,
         terminationGraceMs: 100,
       });
       const descendantPid = Number(result.stdout.trim());
@@ -688,42 +1918,257 @@ describe('pull request snapshot consistency', () => {
 });
 
 describe('trusted dispatcher source contract', () => {
-  it('never checks out PR head code on the credential-bearing GitHub runner', async () => {
-    const source = await readFile('.github/workflows/relayflow-pr-proof.yml', 'utf8');
-    expect(source).toContain('pull_request_target:');
-    expect(source).toContain('ref: ${{ github.event.pull_request.base.sha || github.sha }}');
+  /**
+   * The v1 dispatcher was a `pull_request_target` job whose security rested on
+   * never checking out PR head code on a credential-bearing runner. A deployed
+   * v2 flow has no runner and no checkout, so the equivalent boundary moved:
+   * the listener's event envelope is attacker-influenced data, and the flow
+   * must reduce it to a pull request NUMBER before anything trusts it. Every
+   * SHA, title, and body in the proof contract then comes from the GitHub API
+   * via `prepare.mjs`, exactly as the dispatcher resolved them.
+   */
+  it('never lets listener-supplied pull request data reach the proof contract', async () => {
+    const normalizer = await readFile('scripts/pr-proof/event-from-input.mjs', 'utf8');
+    // The only thing extracted from the envelope, and the only thing written.
+    expect(normalizer).toContain('pullRequestNumber');
+    expect(normalizer).toContain('{ inputs: { pr_number: number } }');
+    // Safe, not merely integral: JSON.parse rounds past 2^53, so an integral
+    // check would accept a rounded id and prove the wrong pull request.
+    expect(normalizer).toContain('Number.isSafeInteger(value) && value > 0');
+    // A non-pull_request event must refuse rather than guess a number out of it.
+    expect(normalizer).toContain('This flow proves pull requests; the listener delivered a');
+    // base64 keeps attacker-controlled text out of the lowered shell command.
+    expect(normalizer).toContain('BASE64 = /^[A-Za-z0-9+/]*={0,2}$/');
+    expect(normalizer).not.toContain('headSha');
+    expect(normalizer).not.toContain('baseSha');
+  });
+
+  it('gives the flow the classification, staging, and status work the dispatcher did', async () => {
+    const source = await readFile('flows/ci/pr-proof.flow.ts', 'utf8');
+    expect(source).toContain('event-from-input.mjs --input-base64 ${encodeInput(input)}');
+    expect(source).not.toContain('JSON.stringify(input)}');
+    expect(source).toContain('prepare.mjs --event ${EVENT_PATH}');
+    expect(source).toContain('resolve-broker-artifacts.mjs');
+    expect(source).toContain('stage-broker-artifacts.mjs');
+    // Broker binaries come from authenticated Actions run storage, never the
+    // workspace seed; `gh run download` replaces actions/download-artifact.
+    expect(source).toContain('gh run download');
+    expect(source).toContain('--source cloud');
+  });
+
+  it('fits broker resolution and the proof itself inside the flow budget', async () => {
+    const source = await readFile('flows/ci/pr-proof.flow.ts', 'utf8');
+    const resolver = await readFile('scripts/pr-proof/resolve-broker-artifacts.mjs', 'utf8');
+    const budgetMinutes = Number(source.match(/wallclock: '(\d+)m'/)?.[1]);
+    const brokerProducerMinutes = Number(resolver.match(/BROKER_PRODUCER_TIMEOUT_MS = (\d+) \* 60_000/)?.[1]);
+    const brokerQueueMinutes = Number(resolver.match(/BROKER_QUEUE_HEADROOM_MS = (\d+) \* 60_000/)?.[1]);
+    const pollIntervalMs = Number(
+      resolver.match(/RESOLVE_POLL_INTERVAL_MS = ([\d_]+)/)?.[1]?.replaceAll('_', '')
+    );
+    const pollSlackAttempts = Number(resolver.match(/RESOLVE_POLL_SLACK_ATTEMPTS = (\d+)/)?.[1]);
+    // Broker resolution now runs inside the flow rather than in the job around
+    // it, so the budget must cover the resolver's worst case on top of the
+    // proof's own 45 minutes. Under-budgeting fails a PR whose broker artifact
+    // is still building by the clock instead of judging it on evidence.
+    const proofMs = 45 * 60_000;
+    expect(resolver).toContain('const [base, head] = await Promise.all([');
+    expect(budgetMinutes * 60_000).toBeGreaterThanOrEqual(
+      (brokerProducerMinutes + brokerQueueMinutes) * 60_000 + pollSlackAttempts * pollIntervalMs + proofMs
+    );
+  });
+
+  it('builds proof brokers from an attested exact checkout without secrets', async () => {
+    const source = await readFile('.github/workflows/relayflow-pr-proof-broker.yml', 'utf8');
+    const triggerSection = source.slice(source.indexOf('on:'), source.indexOf('permissions:'));
+    const pushSection = source.slice(source.indexOf('  push:'), source.indexOf('  pull_request:'));
+    expect(triggerSection).toContain('  schedule:');
+    expect(triggerSection).toContain("cron: '17 3 * * 1'");
+    expect(triggerSection).toContain(
+      "  pull_request:\n    paths:\n      - '.github/workflows/relayflow-pr-proof-broker.yml'"
+    );
+    expect(triggerSection).toContain('  pull_request_target:');
+    expect(triggerSection).toContain('types: [opened, synchronize, reopened, edited, ready_for_review]');
+    expect(triggerSection).not.toContain('  workflow_dispatch:');
+    expect(source).toContain('SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}');
+    expect(source).toContain('ref: ${{ env.SOURCE_SHA }}');
     expect(source).toContain('persist-credentials: false');
-    expect(source).toContain('git add -f -- .relayflow/pr-proof-input.json');
-    expect(source).toContain('statuses: write');
-    expect(source).toContain('report-status.mjs start');
-    expect(source).toContain('report-status.mjs finish');
-    expect(source).toContain('concurrency:');
+    expect(source).toContain('permissions:\n  contents: read');
+    expect(source).toContain(
+      'group: relayflow-pr-proof-broker-${{ github.event_name }}-${{ github.event.pull_request.head.sha || github.sha }}'
+    );
     expect(source).toContain('cancel-in-progress: true');
-    expect(source).toContain("if: always() && steps.status.outputs.head_sha != ''");
-    expect(source).not.toContain('always() && !cancelled()');
-    expect(source).toContain('--expected-head-sha "${{ steps.status.outputs.head_sha }}"');
-    expect(source).toContain('actions/checkout@11d5960a326750d5838078e36cf38b85af677262');
-    expect(source).toContain('actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020');
-    expect(source).toContain('actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02');
-    expect(source).not.toContain('github.event.pull_request.head.sha }}');
+    expect(source).toContain(
+      "name: ${{ github.event_name == 'pull_request' && 'Validate PR-head Linux broker' || 'Build exact Linux broker' }}"
+    );
+    expect(source).toContain("github.event_name != 'pull_request_target'");
+    expect(source).toContain('github.event.pull_request.head.repo.full_name == github.repository');
+    expect(source).toContain('"$CARGO_BIN" build');
+    expect(source).not.toContain('Swatinem/rust-cache');
+    expect(source).not.toContain('actions/cache');
+    expect(source).not.toContain('Cache Rust build');
+    expect(source).toContain('--locked --release');
+    const cacheCredentialUnset = source.indexOf(
+      'unset ACTIONS_CACHE_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL ACTIONS_RESULTS_URL'
+    );
+    expect(cacheCredentialUnset).toBeGreaterThan(0);
+    expect(cacheCredentialUnset).toBeLessThan(source.indexOf('"$CARGO_BIN" build'));
+    const workflowFileUnset = source.indexOf(
+      'unset GITHUB_ENV GITHUB_PATH GITHUB_OUTPUT GITHUB_STEP_SUMMARY'
+    );
+    const isolatedBuild = source.indexOf('-- env -i', source.indexOf('BUILD_STATUS=0'));
+    expect(workflowFileUnset).toBeGreaterThan(cacheCredentialUnset);
+    expect(workflowFileUnset).toBeLessThan(isolatedBuild);
+    const cargoBuild = source.indexOf('"$CARGO_BIN" build');
+    expect(isolatedBuild).toBeLessThan(cargoBuild);
+    const isolatedEnvironment = source.slice(isolatedBuild, cargoBuild);
+    for (const forbidden of [
+      'ACTIONS_CACHE_URL=',
+      'ACTIONS_RUNTIME_TOKEN=',
+      'ACTIONS_RUNTIME_URL=',
+      'ACTIONS_RESULTS_URL=',
+      'GITHUB_ENV=',
+      'GITHUB_PATH=',
+      'GITHUB_OUTPUT=',
+      'GITHUB_STEP_SUMMARY=',
+    ]) {
+      expect(isolatedEnvironment).not.toContain(forbidden);
+    }
+    expect(source).toContain('useradd --system --user-group --no-create-home');
+    expect(source).toContain('BUILD_ROOT="/opt/relay-pr-proof-builder"');
+    expect(source).toContain('ISOLATED_SOURCE_ROOT="$BUILD_ROOT/source"');
+    expect(source).toContain('-o "$RUNNER_UID" -g "$BUILDER_GID" -m 0710 "$BUILD_ROOT"');
+    expect(source).toContain(
+      'sudo install -d -o "$RUNNER_UID" -g "$BUILDER_GID" -m 0750 "$ISOLATED_SOURCE_ROOT"'
+    );
+    expect(source).toContain('git archive --format=tar "$SOURCE_SHA" | tar -xf - -C "$ISOLATED_SOURCE_ROOT"');
+    expect(source).toContain(
+      'sudo install -d -o "$RUNNER_UID" -g "$BUILDER_GID" -m 0750 "$ISOLATED_TOOLCHAIN_ROOT"'
+    );
+    expect(source).toContain('cp -a --reflink=auto "$HOST_TOOLCHAIN_ROOT/." "$ISOLATED_TOOLCHAIN_ROOT/"');
+    expect(source).toContain('TOOLCHAIN_BIN="$ISOLATED_TOOLCHAIN_ROOT/bin"');
+    expect(source).toContain('CARGO_BIN="$TOOLCHAIN_BIN/cargo"');
+    expect(source).toContain('test -r "$1/Cargo.toml"');
+    expect(source).toContain('test -x "$2/bin/cargo"');
+    expect(source).toContain('"$2/bin/cargo" --version >/dev/null');
+    expect(source).toContain('test ! -w "$2/bin/cargo"');
+    const isolatedWorkingDirectory = source.indexOf('cd "$ISOLATED_SOURCE_ROOT"');
+    expect(isolatedWorkingDirectory).toBeGreaterThan(0);
+    expect(isolatedWorkingDirectory).toBeLessThan(isolatedBuild);
+    expect(source).toContain('--manifest-path "$ISOLATED_SOURCE_ROOT/Cargo.toml"');
+    for (const flag of [
+      '--clear-groups',
+      '--no-new-privs',
+      '--bounding-set=-all',
+      '--inh-caps=-all',
+      '--ambient-caps=-all',
+    ]) {
+      expect(source.match(new RegExp(flag, 'g'))).toHaveLength(2);
+    }
+    expect(source).toContain('chmod -R go-w "$GITHUB_WORKSPACE"');
+    expect(source).toContain('test ! -w "$1/Cargo.toml"');
+    expect(source).toContain('test "$(id -G | wc -w)" -eq 1');
+    expect(source).toContain('for capability_set in CapInh CapPrm CapEff CapBnd CapAmb');
+    expect(source).toContain('test "$(status_value NoNewPrivs)" = 1');
+    expect(source).toContain('echo "::stop-commands::$WORKFLOW_COMMAND_TOKEN"');
+    expect(source).toContain('trap cleanup_on_exit EXIT');
+    expect(source).toContain('if [ "$cleanup_status" -ne 0 ]; then\n              exit "$cleanup_status"');
+    expect(source).toContain('if [ "$KILL_STATUS" -eq 0 ]; then\n            resume_workflow_commands');
+    expect(source).toContain('pkill -KILL -u "$BUILDER_UID"');
+    expect(source).toContain('pkill -KILL -U "$BUILDER_UID"');
+    expect(source).toContain('sudo --non-interactive env -i');
+    expect(source).toContain('PATH=/usr/bin:/bin');
+    expect(source).toContain('BUILDER_UID="$BUILDER_UID"');
+    expect(source).toContain('/bin/sh -c');
+    expect(source).toContain('/usr/bin/pgrep "$1" "$BUILDER_UID"');
+    expect(source).toContain('0) exit 10 ;;');
+    expect(source).toContain('1) exit 11 ;;');
+    expect(source).toContain('*) exit 12 ;;');
+    expect(source).toContain('probe_builder_uid -u || effective_probe_status=$?');
+    expect(source).toContain('probe_builder_uid -U || real_probe_status=$?');
+    expect(source).toContain('11:11) return 0 ;;');
+    expect(source).toContain('10:10|10:11|11:10) ;;');
+    expect(source).toContain('sudo pgrep -a -u "$BUILDER_UID"');
+    expect(source).toContain('sudo pgrep -a -U "$BUILDER_UID"');
+    const cleanup = source.indexOf('kill_builder_processes || KILL_STATUS=$?');
+    const killStatusBranch = source.indexOf('if [ "$KILL_STATUS" -ne 0 ]; then');
+    const buildStatusBranch = source.indexOf('if [ "$BUILD_STATUS" -ne 0 ]; then');
+    const stage = source.indexOf('"$BUILDER_BROKER" "$STAGING_DIR/agent-relay-broker"');
+    expect(cleanup).toBeGreaterThan(cargoBuild);
+    expect(killStatusBranch).toBeGreaterThan(cleanup);
+    expect(buildStatusBranch).toBeGreaterThan(killStatusBranch);
+    expect(stage).toBeGreaterThan(buildStatusBranch);
+    expect(source).toContain('BROKER_SOURCE: /opt/relay-pr-proof-builder/staging/agent-relay-broker');
+    expect(source).toContain('name: relayflow-broker-${{ env.SOURCE_SHA }}');
+    expect(source).toContain("if: github.event_name != 'pull_request'");
+    expect(source).toContain('retention-days: 90');
+    expect(source).toContain("- 'tests/relayflows/cases/**'");
+    expect(pushSection).not.toContain('paths:');
+    expect(source).not.toContain('secrets.');
   });
 
   it('gates head execution on deterministic base evidence', async () => {
-    const source = await readFile('workflows/pr-proof.ts', 'utf8');
-    expect(source).toContain(".onError('fail-fast')");
-    expect(source).toContain(".step('gate-base'");
-    expect(source).toContain("dependsOn: ['gate-base']");
-    expect(source).toContain(".step('gate-red-green'");
+    const source = await readFile('flows/ci/pr-proof.flow.ts', 'utf8');
+    // Ordering is the gate: the head arm must not be reachable until the base
+    // arm's evidence has passed a deterministic check. In v1 that was
+    // `dependsOn: ['gate-base']`; in an awaited body it is source order, so
+    // assert the four positions directly rather than trusting the read.
+    const baseArm = source.indexOf("f\n      .agent('base-prover'");
+    const baseGate = source.indexOf('--arm base');
+    const headArm = source.indexOf("f\n      .agent('head-verifier'");
+    const redGreen = source.indexOf('--arm both');
+    expect(baseArm).toBeGreaterThan(-1);
+    expect(baseGate).toBeGreaterThan(baseArm);
+    expect(headArm).toBeGreaterThan(baseGate);
+    expect(redGreen).toBeGreaterThan(headArm);
     expect(source).toContain('PR_PROOF_ARM_COMPLETE arm=base');
     expect(source).toContain('PR_PROOF_ARM_COMPLETE arm=head');
     expect(source).toContain('--source cloud');
-    expect(source).toContain("result.status !== 'completed'");
+    // v1 said this with `.onError('fail-fast')` and `retries: 0`. v2 has no
+    // repair agents and no step retries, so no agent can edit the harness or
+    // the artifacts after a gate rejects them. Assert on the body rather than
+    // the file: the header comment names both v1 knobs to explain their
+    // absence, and must not be read as reintroducing them.
+    const body = source.slice(source.indexOf('export default flow'));
+    expect(body).not.toContain('retries');
+    expect(body).not.toContain('onError');
   });
 
   it('records the per-step Cloud sandbox id instead of the orchestrator id', async () => {
     const source = await readFile('scripts/pr-proof/run-arm.mjs', 'utf8');
     expect(source).toContain('process.env.SANDBOX_ID');
     expect(source).not.toContain('process.env.DAYTONA_SANDBOX_ID');
+    expect(source).toContain('SYS_LANDLOCK_CREATE_RULESET = 444');
+    expect(source).toContain('SYS_LANDLOCK_RESTRICT_SELF = 446');
+    expect(source).toContain('secure broker execution requires Landlock ABI >= 3');
+    expect(source).toContain('WRITE_FILE = 1 << 1');
+    expect(source).toContain('SYS_UNSHARE = 272');
+    expect(source).toContain('SYS_CAPSET = 126');
+    expect(source).toContain('newinstance,ptmxmode=0666,mode=0600,max=64');
+    expect(source).toContain('secure broker execution refuses an inherited controlling TTY');
+    expect(source).toContain('MS_NOSUID | MS_NOEXEC');
+    expect(source).toContain('mount("/dev/pts/ptmx", "/dev/ptmx", None, MS_BIND, None)');
+    expect(source.match(/os\.path\.samefile\("\/dev\/ptmx", "\/dev\/pts\/ptmx"\)/g)).toHaveLength(2);
+    expect(source).toContain('for capability_set in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")');
+    expect(source).toContain('SYS_CLOSE_RANGE = 436');
+    expect(source).toContain('secure broker execution requires locked non-root securebits');
+    expect(source).toContain('secure broker execution requires NoNewPrivs=1');
+    expect(source).toContain('("/dev/null", "/dev/ptmx")');
+    expect(source).toContain('allow_path("/dev/pts", WRITE_FILE)');
+    expect(source).toContain("'/usr/bin/sudo'");
+    expect(source).toContain("'-I'");
+    expect(source).toContain("'-S'");
+    expect(source).toContain('REFER = 1 << 13');
+    expect(source).toContain('TRUNCATE = 1 << 14');
+    expect(source).toContain('PR_SET_NO_NEW_PRIVS = 38');
+    expect(source).toContain('await handle.close();\n    await chmod(privateDirectory, 0o500);');
+    expect(source).toContain('writableRoots: [temporaryHome, harnessDir, targetDir, resultDir, scratchDir]');
+    expect(source).not.toContain('writableRoots: [temporaryRoot');
+    expect(source).not.toContain('memfd_create');
+    expect(source).toContain("access('/usr/bin/python3', fsConstants.X_OK)");
+    expect(source).toContain("access('/usr/bin/sudo', fsConstants.X_OK)");
+    expect(source).toContain('CASE_ENVIRONMENT_KEYS.includes(key)');
+    expect(source).toContain('{ ...options, env: caseEnvironment }');
+    expect(source).not.toContain('options.env ?? process.env');
   });
 
   it('uses one non-refreshing API key and cancels remote work on termination', async () => {
@@ -736,6 +2181,15 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain("requiredCredential(env, 'CLOUD_API_KEY')");
     expect(source).not.toContain("path.join(authDir, 'cloud-auth.json')");
     expect(source).not.toContain('CLOUD_API_REFRESH_TOKEN=');
+    expect(source).toContain('formatCloudRunArtifact({');
+    expect(source).toContain('sanitizeCloudCommandOutput(launch.stderr');
+    expect(source).toContain('const sanitizedLogs = sanitizeCloudCommandOutput(');
+    expect(source).toContain("`${logs.stdout ?? ''}${logs.stderr ?? ''}`");
+    expect(source).toContain('sanitizeCloudCommandOutput(error.message');
+    expect(source).toContain("console.warn('Cloud RelayFlow status: <unrecognized>')");
+    expect(source).not.toContain('process.stderr.write(launch.stderr)');
+    expect(source).not.toContain('process.stdout.write(logs.stdout)');
+    expect(source).not.toContain('process.stderr.write(logs.stderr)');
   });
 
   it('emits the prepared Cloud run id before upload and final submission', async () => {
@@ -746,5 +2200,391 @@ describe('trusted dispatcher source contract', () => {
     expect(marker).toBeGreaterThan(0);
     expect(marker).toBeLessThan(upload);
     expect(marker).toBeLessThan(launch);
+  });
+});
+
+describe('classification reads the diff, not the title', () => {
+  const nonFunctional = (caseId = 'n/a') =>
+    [
+      `- Change type: \`non-functional\` <!-- relay-pr-proof:type -->`,
+      `- RelayFlow case: \`${caseId}\` <!-- relay-pr-proof:case -->`,
+    ].join('\n');
+
+  it('treats a workflow-only change as non-runtime', () => {
+    expect(runtimeSurfaceChanged(['flows/verify/features.spec.ts', 'scripts/pr-proof/contract.mjs'])).toBe(
+      false
+    );
+  });
+
+  it('treats top-level repo metadata as non-runtime', () => {
+    expect(runtimeSurfaceChanged(['.gitignore'])).toBe(false);
+    expect(runtimeSurfaceChanged(['.editorconfig'])).toBe(false);
+  });
+
+  /**
+   * .gitattributes is NOT exempt: `export-ignore` changes what `git archive`
+   * emits, and relayflow-pr-proof-broker.yml builds its isolated source tree
+   * with exactly that command, so an edit here can change what a proof
+   * compiles against.
+   */
+  it('still treats .gitattributes as runtime', () => {
+    expect(runtimeSurfaceChanged(['.gitattributes'])).toBe(true);
+  });
+
+  /**
+   * Listed individually, not as a dotfile glob: a top-level dotfile that does
+   * affect what gets built or installed must still demand a proof.
+   */
+  it('still treats a build-affecting top-level dotfile as runtime', () => {
+    expect(runtimeSurfaceChanged(['.npmrc'])).toBe(true);
+    expect(runtimeSurfaceChanged(['.nvmrc'])).toBe(true);
+  });
+
+  it('treats any broker or package source change as runtime', () => {
+    expect(runtimeSurfaceChanged(['crates/broker/src/runtime/fleet.rs'])).toBe(true);
+    expect(runtimeSurfaceChanged(['packages/cli/src/cli/commands/local-agent.ts'])).toBe(true);
+  });
+
+  it('fails closed for a path the allowlist has never seen', () => {
+    // A new top-level directory must not become proof-exempt by default.
+    expect(runtimeSurfaceChanged(['some-brand-new-top-level/thing.ts'])).toBe(true);
+  });
+
+  /**
+   * Package-local unit tests are test corpus too, not just the top-level
+   * tests/ tree: published tarballs pin an explicit `files` array that
+   * excludes them, so they never reach a shipped artifact regardless of
+   * where they live under packages/.
+   */
+  it('exempts a package-local *.test.ts(x) file under packages/', () => {
+    expect(runtimeSurfaceChanged(['packages/cli/src/cli/publish-workflow.test.ts'])).toBe(false);
+    expect(runtimeSurfaceChanged(['packages/sdk/src/__tests__/widget.test.tsx'])).toBe(false);
+  });
+
+  it('still treats the runtime file next to an edited test as runtime', () => {
+    // The test-file exemption must not blanket-cover a PR that also edits
+    // real runtime code alongside its test.
+    expect(
+      runtimeSurfaceChanged([
+        'packages/cli/src/cli/commands/local-agent.ts',
+        'packages/cli/src/cli/commands/local-agent.test.ts',
+      ])
+    ).toBe(true);
+  });
+
+  it('does not let a *.test.ts suffix exempt a runtime script outside packages/', () => {
+    // An unanchored `\.test\.tsx?$` pattern would also match this path,
+    // contradicting "scripts/ is NOT exempt wholesale" and this allowlist's
+    // fail-closed treatment of an unseen scripts/ subtree.
+    expect(runtimeSurfaceChanged(['scripts/some-new-tool/main.test.ts'])).toBe(true);
+  });
+
+  /**
+   * The defect this closes, direction 1: a `fix(` PR that only edits a
+   * scheduled workflow was told its change type "cannot be non-functional",
+   * so it had to fabricate a runtime proof it could not honestly build.
+   */
+  it('accepts non-functional on a fix( PR that changes no runtime file', () => {
+    const result = classifyPullRequest({
+      title: 'fix(workflow): fail loudly on alert delivery',
+      body: nonFunctional(),
+      changedFiles: ['flows/verify/features.spec.ts', 'CHANGELOG.md'],
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.required).toBe(false);
+  });
+
+  it('still rejects non-functional when the same PR touches runtime code', () => {
+    const result = classifyPullRequest({
+      title: 'fix(workflow): fail loudly on alert delivery',
+      body: nonFunctional(),
+      changedFiles: ['flows/verify/features.spec.ts', 'crates/broker/src/runtime/fleet.rs'],
+    });
+    expect(result.errors.join(' ')).toContain('changes runtime files');
+  });
+
+  /**
+   * Direction 2, and the more serious hole: the gate was bypassable by wording.
+   * A runtime change titled `chore(` required no proof at all.
+   */
+  it('requires a proof for a runtime change even when the title is chore(', () => {
+    const result = classifyPullRequest({
+      title: 'chore(broker): tidy delivery bookkeeping',
+      body: '',
+      changedFiles: ['crates/broker/src/runtime/delivery.rs'],
+    });
+    expect(result.required).toBe(true);
+  });
+
+  it('does not require a proof for a chore( PR that only touches docs', () => {
+    const result = classifyPullRequest({
+      title: 'chore(docs): clarify attach modes',
+      body: nonFunctional(),
+      changedFiles: ['docs/attach.md', 'README.md'],
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.required).toBe(false);
+  });
+
+  /**
+   * `scripts/` is not exempt wholesale: publish.yml runs
+   * scripts/inject-posthog-key.mjs to rewrite the compiled CLI before it
+   * ships, so editing it changes what users receive.
+   */
+  it('treats a publish-time script as runtime', () => {
+    expect(runtimeSurfaceChanged(['scripts/inject-posthog-key.mjs'])).toBe(true);
+  });
+
+  it('fails closed for a scripts/ subtree the allowlist has never seen', () => {
+    expect(runtimeSurfaceChanged(['scripts/some-new-tool/main.mjs'])).toBe(true);
+  });
+
+  it('still exempts the CI-only script subtrees', () => {
+    expect(runtimeSurfaceChanged(['scripts/pr-proof/prepare.mjs'])).toBe(false);
+    expect(runtimeSurfaceChanged(['scripts/evals/run-relay-evals.mjs'])).toBe(false);
+    expect(runtimeSurfaceChanged(['scripts/verify-features/targeted-pr-plan.mjs'])).toBe(false);
+  });
+
+  /**
+   * A rename reports only its destination path. Moving a runtime file into
+   * docs/ must not read as a docs-only change.
+   */
+  it('treats a runtime file renamed into an exempt directory as runtime', () => {
+    expect(runtimeSurfaceChanged(['docs/old-fleet.rs', 'crates/broker/src/runtime/fleet.rs'])).toBe(true);
+  });
+
+  /**
+   * Without this, a `chore(`-titled runtime change declaring non-functional
+   * with a valid case id was silently coerced to `bugfix` and raised nothing.
+   */
+  it('rejects a non-functional declaration on a runtime change whatever the title says', () => {
+    const result = classifyPullRequest({
+      title: 'chore(broker): tidy delivery bookkeeping',
+      body: nonFunctional('1593-parked-agent-orphaned-receipt'),
+      changedFiles: ['crates/broker/src/runtime/delivery.rs'],
+    });
+    expect(result.errors.join(' ')).toContain('cannot be non-functional');
+  });
+
+  /**
+   * The false green this closes. When the GitHub files API is unreadable,
+   * `prepare.mjs` classifies with `changedFiles: null`. Classification then
+   * fell back to the title, and a PR whose title carried no conventional
+   * `feat(`/`fix(` prefix returned `required: false` — so a transient API
+   * failure published a green "proof not required" skip on the one check that
+   * gates the merge. An unread diff exempts nothing.
+   */
+  it('requires a proof for a chore( non-functional PR when the diff is unreadable', () => {
+    const result = classifyPullRequest({
+      title: 'chore(broker): tidy delivery bookkeeping',
+      body: nonFunctional(),
+      changedFiles: null,
+    });
+    expect(result).toMatchObject({
+      required: true,
+      kind: null,
+      reason: 'changed-file list unavailable',
+    });
+    expect(result.reason).toBe('changed-file list unavailable');
+    expect(result.errors.join(' ')).toContain('changed-file list could not be read');
+    // The declared `n/a` case is consistent with the declared change type, so
+    // the unreadable diff must not be reported as a case-selector mistake.
+    expect(result.errors.join(' ')).not.toContain('RelayFlow case id');
+  });
+
+  it('requires a proof when the diff is unreadable and the title is conventional', () => {
+    const result = classifyPullRequest({
+      title: 'fix(broker): reconnect dead links',
+      body: nonFunctional(),
+      changedFiles: null,
+    });
+    expect(result.required).toBe(true);
+    expect(result.errors.join(' ')).toContain('changed-file list could not be read');
+  });
+
+  it('requires a proof for an unreadable diff with no proof metadata at all', () => {
+    const result = classifyPullRequest({
+      title: 'chore(broker): tidy delivery bookkeeping',
+      body: '',
+      changedFiles: null,
+    });
+    expect(result.required).toBe(true);
+  });
+
+  /**
+   * The fail-closed rule must not swallow a legitimate exemption: a diff that
+   * WAS read and touches nothing shippable still classifies as exempt.
+   */
+  it('still exempts a declared non-functional PR whose diff was read', () => {
+    const result = classifyPullRequest({
+      title: 'chore(docs): clarify attach modes',
+      body: nonFunctional(),
+      changedFiles: ['docs/attach.md'],
+    });
+    expect(result.required).toBe(false);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('keeps a declared bug-fix case selectable when the diff is unreadable', () => {
+    // Still required, still the declared case: the fail-closed path adds no
+    // spurious errors to a PR that already declares a proof.
+    const result = classifyPullRequest({
+      title: 'fix(broker): reconnect dead links',
+      body: [
+        '- Change type: `bugfix` <!-- relay-pr-proof:type -->',
+        '- RelayFlow case: `1593-parked-agent-orphaned-receipt` <!-- relay-pr-proof:case -->',
+      ].join('\n'),
+      changedFiles: null,
+    });
+    expect(result).toMatchObject({
+      required: true,
+      kind: 'bugfix',
+      caseId: '1593-parked-agent-orphaned-receipt',
+      errors: [],
+    });
+  });
+});
+
+describe('RelayFlow proof changed-file collection', () => {
+  const withStubbedFetch = async (impl: typeof globalThis.fetch, run: () => Promise<void>) => {
+    const original = globalThis.fetch;
+    globalThis.fetch = impl;
+    try {
+      await run();
+    } finally {
+      globalThis.fetch = original;
+    }
+  };
+
+  const jsonResponse = (payload: unknown) =>
+    ({ ok: true, status: 200, json: async () => payload }) as unknown as Response;
+
+  /**
+   * GitHub reports a rename's destination in `filename` and its origin in
+   * `previous_filename`. Dropping the latter let a runtime file move into an
+   * exempt directory and read as a non-runtime change.
+   */
+  it('includes the pre-rename path of a renamed file', async () => {
+    await withStubbedFetch(
+      (async () =>
+        jsonResponse([
+          {
+            filename: 'docs/retired-fleet-notes.md',
+            previous_filename: 'crates/broker/src/runtime/fleet.rs',
+          },
+        ])) as unknown as typeof globalThis.fetch,
+      async () => {
+        const files = await pullRequestFiles('https://api.github.test', 'o/r', 1, 't');
+        expect(files).toContain('crates/broker/src/runtime/fleet.rs');
+        expect(runtimeSurfaceChanged(files)).toBe(true);
+      }
+    );
+  });
+
+  /**
+   * A short diff returns on the first page, so pagination itself needs its own
+   * cover: if accumulation regressed to keeping only the last page, runtime
+   * files from earlier pages would silently drop out of the list and the PR
+   * could read as non-runtime.
+   */
+  it('accumulates files across every page of a multi-page diff', async () => {
+    const lastPage = 3;
+    await withStubbedFetch(
+      (async (url: string) => {
+        const page = Number(new URL(String(url)).searchParams.get('page'));
+        // Pages 1 and 2 are full; page 3 is short and ends pagination.
+        const size = page < lastPage ? 100 : 40;
+        return jsonResponse(Array.from({ length: size }, (_, i) => ({ filename: `docs/p${page}-f${i}.md` })));
+      }) as unknown as typeof globalThis.fetch,
+      async () => {
+        const files = await pullRequestFiles('https://api.github.test', 'o/r', 1, 't');
+        expect(files).toHaveLength(240);
+        // One from every page, not just the last.
+        expect(files).toContain('docs/p1-f0.md');
+        expect(files).toContain('docs/p2-f0.md');
+        expect(files).toContain('docs/p3-f39.md');
+      }
+    );
+  });
+
+  /**
+   * GitHub caps this endpoint at 3,000 files, so a full 30th page cannot be
+   * told apart from a truncated diff. Refusing is the only safe answer:
+   * classifying on a truncated list would let runtime files past the cap go
+   * unseen and the PR read as non-runtime.
+   *
+   * The stub is page-aware and returns distinct filenames per page, so the
+   * test fails if pagination stalls on page 1 instead of advancing.
+   */
+  it('refuses a diff that reaches the 3,000-file API cap', async () => {
+    const pagesRequested: number[] = [];
+    await withStubbedFetch(
+      (async (url: string) => {
+        const page = Number(new URL(String(url)).searchParams.get('page'));
+        pagesRequested.push(page);
+        return jsonResponse(
+          Array.from({ length: 100 }, (_, i) => ({
+            filename: `packages/cli/src/p${page}-f${i}.ts`,
+          }))
+        );
+      }) as unknown as typeof globalThis.fetch,
+      async () => {
+        await expect(pullRequestFiles('https://api.github.test', 'o/r', 1, 't')).rejects.toMatchObject({
+          ambiguousScope: true,
+        });
+        // Exactly the 30 capped pages, each requested once and in order.
+        expect(pagesRequested).toEqual(Array.from({ length: 30 }, (_, i) => i + 1));
+      }
+    );
+  });
+});
+
+describe('RelayFlow proof preparation with an unreadable diff', () => {
+  /**
+   * The title-only fallback can legitimately reach the required path with
+   * `changedFiles === null`. Downstream, `changedFiles.some(...)` then threw a
+   * bare TypeError — a crash instead of a diagnosis. A required proof cannot be
+   * validated without the file list, so it must fail closed and say why.
+   */
+  it('fails closed with a clear error instead of a TypeError', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'pr-proof-nulldiff-'));
+    const eventPath = path.join(dir, 'event.json');
+    const pull = {
+      number: 7,
+      title: 'fix(broker): reconnect dead links',
+      body: [
+        '- Change type: `bugfix` <!-- relay-pr-proof:type -->',
+        '- RelayFlow case: `1593-parked-agent-orphaned-receipt` <!-- relay-pr-proof:case -->',
+      ].join('\n'),
+      head: { sha: 'a'.repeat(40), repo: { full_name: 'AgentWorkforce/relay' } },
+      base: { sha: 'b'.repeat(40) },
+    };
+    await writeFile(eventPath, JSON.stringify({ pull_request: pull }), 'utf8');
+
+    const originalFetch = globalThis.fetch;
+    const originalArgv = process.argv;
+    const env = { ...process.env };
+    globalThis.fetch = (async (url: string) => {
+      // The files endpoint is down; every other read succeeds.
+      if (String(url).includes('/files?')) {
+        return { ok: false, status: 500, json: async () => ({}) } as unknown as Response;
+      }
+      return { ok: true, status: 200, json: async () => pull } as unknown as Response;
+    }) as unknown as typeof globalThis.fetch;
+    process.argv = ['node', 'prepare.mjs', '--event', eventPath, '--output', path.join(dir, 'out.json')];
+    process.env.GITHUB_TOKEN = 'test-token';
+    process.env.GITHUB_REPOSITORY = 'AgentWorkforce/relay';
+    process.env.GITHUB_API_URL = 'https://api.github.test';
+    delete process.env.GITHUB_OUTPUT;
+    delete process.env.GITHUB_STEP_SUMMARY;
+
+    try {
+      await expect(prepareMain()).rejects.toThrow(/cannot be validated without the changed-file list/);
+    } finally {
+      globalThis.fetch = originalFetch;
+      process.argv = originalArgv;
+      process.env = env;
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

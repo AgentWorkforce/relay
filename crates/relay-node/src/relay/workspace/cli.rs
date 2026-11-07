@@ -1,0 +1,583 @@
+//! The workspace the `agent-relay` CLI selects, read and never written.
+//!
+//! This follows the CLI's precedence ladder
+//! (`packages/cloud/src/project-workspace-key.ts` `resolveWorkspaceSelection`)
+//! and its transport rule (`packages/cli/src/cli/lib/sdk-client.ts`
+//! `resolveWorkspaceTransport`), minus the `--workspace-key` flag the daemon
+//! has no equivalent of:
+//!
+//! 1. **env**: `RELAY_WORKSPACE_KEY` > `AGENT_RELAY_WORKSPACE_KEY` > `RELAY_API_KEY`;
+//! 2. **project**: `<project>/.agentworkforce/relay/workspace-key.json`, where
+//!    the project is `AGENT_RELAY_PROJECT` (the CLI's explicit project root;
+//!    the daemon has no working directory of its own to search from). An
+//!    absent or malformed pin falls through, as in the CLI;
+//! 3. **store**: the active entry of `$AGENT_RELAY_HOME/workspaces.json`
+//!    (`{ active, workspaces: { name: { key } } }`). A file that exists but
+//!    cannot be read or parsed is an error, as in the CLI.
+//!
+//! The destination is then chosen the CLI's way:
+//!
+//! - a persisted project route (`relaycastRoute` + `relaycastBaseUrl`) must be
+//!   one of Agent Relay's own gateways, and a credential bound to another
+//!   server is refused rather than sent there;
+//! - otherwise a non-blank `RELAY_BASE_URL` is used (a malformed one is an
+//!   error, never a fallback);
+//! - otherwise the credential's binding in `relaycast-origins.json`;
+//! - otherwise `https://cast.agentrelay.com`, where unbound keys belong.
+//!
+//! A build made for its own site ([`links::is_site_build`]) never sends a
+//! key to Agent Relay's public gateways on its own: an unbound key (no
+//! recorded server, no `RELAY_BASE_URL`; an `ar_ws_`/`ar_ag_` key is not
+//! presumed armadillo's) is an error naming the bindings file and the site,
+//! and a persisted route must name the site's own Relaycast origin (what its
+//! sign-in recorded) whatever its kind.
+//!
+//! Whenever a credential is about to be used the bindings file must parse:
+//! a malformed one fails closed.
+
+use super::origin_binding::{self, OriginBindings};
+use super::{
+    is_workspace_key, validated_base_url, Secret, Workspace, WorkspaceSource, ARMADILLO_ORIGIN,
+    DEFAULT_BASE_URL,
+};
+use crate::relay::links;
+use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
+
+/// Workspace-key environment variables, highest precedence first.
+pub const WORKSPACE_KEY_ENV_VARS: [&str; 3] = [
+    "RELAY_WORKSPACE_KEY",
+    "AGENT_RELAY_WORKSPACE_KEY",
+    "RELAY_API_KEY",
+];
+/// The CLI's explicit project root.
+pub const PROJECT_ENV: &str = "AGENT_RELAY_PROJECT";
+/// The explicit Relaycast base URL the CLI honours.
+pub const BASE_URL_ENV: &str = "RELAY_BASE_URL";
+pub const WORKSPACE_STORE_FILE: &str = "workspaces.json";
+pub const PROJECT_WORKSPACE_KEY_FILE: &str = "workspace-key.json";
+pub const RELAYCAST_CREDENTIALS_FILE: &str = "relaycast-credentials.json";
+const PROJECT_DATA_DIR: &str = ".agentworkforce/relay";
+
+const CANONICAL_RELAYCAST_ORIGIN: &str = "https://cast.agentrelay.com";
+const AGENT37_RELAYCAST_ORIGIN: &str = "https://agent37-cast.agentrelay.com";
+const DEV_RELAYCAST_ORIGIN: &str = "https://dev-cast.agentrelay.com";
+const DEV_CLOUD_API_URL: &str = "https://dev.agentrelay.com/cloud";
+
+/// The project pin, as the CLI reads it (`readProjectWorkspaceSession`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ProjectSession {
+    workspace_key: String,
+    route: Option<Route>,
+    relaycast_base_url: Option<String>,
+    relaycast_cloud_api_url: Option<String>,
+    /// The route credential: the one the pin's `relaycastApiKeyRef` names in
+    /// `relaycast-credentials.json` when it matches the pin, else a legacy
+    /// inline `relaycastApiKey`.
+    relaycast_api_key: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Route {
+    Canonical,
+    Agent37Isolated,
+}
+
+impl Route {
+    fn parse(value: &str) -> Option<Route> {
+        match value {
+            "canonical" => Some(Route::Canonical),
+            "agent37-isolated" => Some(Route::Agent37Isolated),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Route::Canonical => "canonical",
+            Route::Agent37Isolated => "agent37-isolated",
+        }
+    }
+}
+
+/// One selected key, where it came from, and the project route it carries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Selection {
+    key: String,
+    source: WorkspaceSource,
+    project: Option<ProjectSession>,
+}
+
+/// The build resolving a CLI key: the site it was made for and, in a site
+/// build, that site's own Relaycast origin when its sign-in recorded one.
+#[derive(Clone, Copy, Debug)]
+struct Build<'a> {
+    site: &'a str,
+    site_relaycast: Option<&'a str>,
+}
+
+impl Build<'_> {
+    fn is_site(&self) -> bool {
+        links::is_site_build_for(self.site)
+    }
+}
+
+/// The CLI's workspace for this machine: `Ok(None)` when the CLI selects
+/// none, `Err` with a printable reason (never key material) when its files
+/// or settings forbid using the one it selects.
+pub fn resolve(
+    env: &dyn Fn(&str) -> Option<String>,
+    relay_home: &Path,
+) -> Result<Option<Workspace>, String> {
+    resolve_for_site(env, relay_home, links::built_in_site_url(), None)
+}
+
+/// [`resolve`] for a build whose built-in site is `site`. In a site build
+/// `site_relaycast` is the site's own Relaycast origin (the one its
+/// sign-in recorded), the only one a persisted route may name; the default
+/// build ignores it.
+pub fn resolve_for_site(
+    env: &dyn Fn(&str) -> Option<String>,
+    relay_home: &Path,
+    site: &str,
+    site_relaycast: Option<&str>,
+) -> Result<Option<Workspace>, String> {
+    let Some(selection) = select(env, relay_home)? else {
+        return Ok(None);
+    };
+    let build = Build {
+        site,
+        site_relaycast,
+    };
+    transport(selection, env, relay_home, build).map(Some)
+}
+
+fn select(
+    env: &dyn Fn(&str) -> Option<String>,
+    relay_home: &Path,
+) -> Result<Option<Selection>, String> {
+    let data_dir = env(PROJECT_ENV)
+        .and_then(trimmed)
+        .map(|root| project_data_dir(Path::new(&root)));
+    let project = data_dir
+        .as_deref()
+        .and_then(|dir| read_project_session(dir, relay_home));
+
+    for name in WORKSPACE_KEY_ENV_VARS {
+        if let Some(key) = env(name).and_then(trimmed) {
+            // The pin's route rides along only for the same key, as in the CLI.
+            let project = project.filter(|project| project.workspace_key == key);
+            return Ok(Some(Selection {
+                key,
+                source: WorkspaceSource::CliEnv(name.to_string()),
+                project,
+            }));
+        }
+    }
+    if let (Some(project), Some(dir)) = (project, data_dir) {
+        return Ok(Some(Selection {
+            key: project.workspace_key.clone(),
+            source: WorkspaceSource::CliProject(dir.join(PROJECT_WORKSPACE_KEY_FILE)),
+            project: Some(project),
+        }));
+    }
+    let store = relay_home.join(WORKSPACE_STORE_FILE);
+    Ok(read_active_store_key(&store)?.map(|(name, key)| Selection {
+        key,
+        source: WorkspaceSource::CliStore { file: store, name },
+        project: None,
+    }))
+}
+
+fn transport(
+    selection: Selection,
+    env: &dyn Fn(&str) -> Option<String>,
+    relay_home: &Path,
+    build: Build<'_>,
+) -> Result<Workspace, String> {
+    let project = selection.project.as_ref();
+    let credential = project
+        .and_then(|project| project.relaycast_api_key.clone())
+        .unwrap_or_else(|| selection.key.clone());
+    if !is_workspace_key(&credential) {
+        return Err(format!(
+            "The workspace key from {} is not a Relaycast workspace key.",
+            selection.source.describe()
+        ));
+    }
+    let bindings_path = origin_binding::bindings_path(relay_home);
+    let bindings = origin_binding::read_bindings(&bindings_path)?;
+    let base_url = match persisted_route_origin(project, build)? {
+        Some(persisted) => {
+            // A derived destination never moves a binding.
+            accept_derived_destination(&bindings, &credential, &persisted, build)?;
+            persisted
+        }
+        None => {
+            let requested = match env(BASE_URL_ENV) {
+                Some(requested) => origin_binding::configured_base_url(&requested)
+                    .map_err(|reason| format!("{BASE_URL_ENV} {reason}."))?,
+                None => None,
+            };
+            let chosen = requested.or_else(|| {
+                bindings
+                    .bound_for_site(&credential, build.site)
+                    .map(str::to_string)
+            });
+            match chosen {
+                Some(base_url) => base_url,
+                None if build.is_site() => {
+                    return Err(format!(
+                        "The workspace key from {} has no recorded server in {} and \
+                     {BASE_URL_ENV} is not set. This build is for {}, so it will not \
+                     send the key to Agent Relay's public gateways; record the key's \
+                     server with the agent-relay CLI or set {BASE_URL_ENV}.",
+                        selection.source.describe(),
+                        bindings_path.display(),
+                        build.site
+                    ))
+                }
+                None => DEFAULT_BASE_URL.to_string(),
+            }
+        }
+    };
+    Ok(Workspace {
+        key: Secret::new(credential),
+        base_url,
+        // The pin's `workspaceId` is the Cloud's name for the workspace, not
+        // necessarily Relaycast's; verification records Relaycast's own.
+        workspace_id: None,
+        source: selection.source,
+    })
+}
+
+/// `validatePersistedRelaycastBaseUrl`: no route is `None`; a route must be
+/// complete and name the gateway its kind belongs to, bare https. In a site
+/// build the hosted gateways never count: every kind must name the site's
+/// own Relaycast origin, as a bare origin by the rules its sign-in used
+/// ([`validated_base_url`]), so a loopback origin with a port counts there.
+fn persisted_route_origin(
+    project: Option<&ProjectSession>,
+    build: Build<'_>,
+) -> Result<Option<String>, String> {
+    let Some(project) = project else {
+        return Ok(None);
+    };
+    if project.relaycast_base_url.is_none()
+        && project.route.is_none()
+        && project.relaycast_api_key.is_none()
+    {
+        return Ok(None);
+    }
+    let (Some(base_url), Some(route)) = (&project.relaycast_base_url, project.route) else {
+        return Err("The persisted Relaycast workspace route is incomplete.".into());
+    };
+    let expected: &[&str] = match route {
+        Route::Canonical
+            if project.relaycast_cloud_api_url.as_deref() == Some(DEV_CLOUD_API_URL) =>
+        {
+            &[DEV_RELAYCAST_ORIGIN]
+        }
+        Route::Canonical => &[CANONICAL_RELAYCAST_ORIGIN, ARMADILLO_ORIGIN],
+        Route::Agent37Isolated => &[AGENT37_RELAYCAST_ORIGIN],
+    };
+    let untrusted = || {
+        if !build.is_site() {
+            return "The persisted Relaycast workspace route is not trusted.".to_string();
+        }
+        let own = match build.site_relaycast {
+            Some(origin) => format!("only its own Relaycast origin {origin} counts"),
+            None => {
+                "only its own Relaycast origin counts, and its sign-in has named none".to_string()
+            }
+        };
+        format!(
+            "The persisted Relaycast workspace route is not trusted: this build is for {}, \
+             and {own}.",
+            build.site
+        )
+    };
+    let parsed = url::Url::parse(base_url)
+        .map_err(|_| "The persisted Relaycast workspace route is invalid.".to_string())?;
+    let origin = if build.is_site() {
+        // The site's origin came through `validated_base_url` at sign-in;
+        // normalize both sides the same way so the comparison is like for
+        // like (lowercase, default port dropped, loopback http and ports
+        // allowed only where the sign-in allowed them).
+        let origin = validated_base_url(base_url).ok_or_else(untrusted)?;
+        let own = build.site_relaycast.and_then(validated_base_url);
+        if own.as_deref() != Some(origin.as_str()) {
+            return Err(untrusted());
+        }
+        origin
+    } else {
+        if parsed.scheme() != "https"
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+            || parsed.port().is_some()
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+            || !(parsed.path().is_empty() || parsed.path() == "/")
+            || !expected.contains(&parsed.origin().ascii_serialization().as_str())
+        {
+            return Err(untrusted());
+        }
+        parsed.origin().ascii_serialization()
+    };
+    if route == Route::Agent37Isolated && project.relaycast_api_key.is_none() {
+        return Err(
+            "The persisted isolated Relaycast credential is unavailable or mismatched.".into(),
+        );
+    }
+    Ok(Some(origin))
+}
+
+/// `acceptDerivedDestination`, without the write: a bound credential may go
+/// only to its own server.
+fn accept_derived_destination(
+    bindings: &OriginBindings,
+    credential: &str,
+    destination: &str,
+    build: Build<'_>,
+) -> Result<(), String> {
+    let Some(bound) = bindings.bound_for_site(credential, build.site) else {
+        return Ok(());
+    };
+    let bound_origin = origin_binding::origin_of(bound).unwrap_or_else(|| bound.to_string());
+    let destination = origin_binding::origin_of(destination).unwrap_or_default();
+    if bound_origin == destination {
+        return Ok(());
+    }
+    Err(format!(
+        "This Relaycast credential belongs to {bound_origin}, so it will not be sent to {destination}."
+    ))
+}
+
+/// `<root>/.agentworkforce/relay`, the root made absolute against the
+/// daemon's working directory as the CLI's `path.resolve` would.
+fn project_data_dir(root: &Path) -> PathBuf {
+    let root = std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf());
+    root.join(PROJECT_DATA_DIR)
+}
+
+/// The project pin, or `None` when absent or malformed (the CLI falls
+/// through to the machine store then).
+fn read_project_session(data_dir: &Path, relay_home: &Path) -> Option<ProjectSession> {
+    let raw = std::fs::read_to_string(data_dir.join(PROJECT_WORKSPACE_KEY_FILE)).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let text = |field: &str| {
+        parsed
+            .get(field)
+            .and_then(|v| v.as_str())
+            .and_then(trimmed_str)
+    };
+    let workspace_key = text("workspaceKey")?;
+    let workspace_id = text("workspaceId");
+    let route = parsed
+        .get("relaycastRoute")
+        .and_then(|v| v.as_str())
+        .and_then(Route::parse);
+    let relaycast_base_url = text("relaycastBaseUrl");
+    let api_key_ref = text("relaycastApiKeyRef");
+    let relaycast_api_key = match api_key_ref {
+        Some(reference) => {
+            let expected = match (&workspace_id, route, &relaycast_base_url) {
+                (Some(id), Some(route), Some(base_url)) => {
+                    Some(credential_ref(data_dir, id, route.as_str(), base_url))
+                }
+                _ => None,
+            };
+            if expected.as_deref() == Some(reference.as_str()) {
+                read_route_credential(
+                    relay_home,
+                    &reference,
+                    workspace_id.as_deref()?,
+                    route?,
+                    relaycast_base_url.as_deref()?,
+                )
+            } else {
+                None
+            }
+        }
+        None => text("relaycastApiKey"),
+    };
+    Some(ProjectSession {
+        workspace_key,
+        route,
+        relaycast_base_url,
+        relaycast_cloud_api_url: text("relaycastCloudApiUrl"),
+        relaycast_api_key,
+    })
+}
+
+/// A route credential from `relaycast-credentials.json`, only when it
+/// records the same workspace, route and server as the pin.
+fn read_route_credential(
+    relay_home: &Path,
+    reference: &str,
+    workspace_id: &str,
+    route: Route,
+    base_url: &str,
+) -> Option<String> {
+    let raw = std::fs::read_to_string(relay_home.join(RELAYCAST_CREDENTIALS_FILE)).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let entry = parsed.get("credentials")?.get(reference)?;
+    let field = |name: &str| entry.get(name).and_then(|v| v.as_str());
+    (field("workspaceId") == Some(workspace_id)
+        && field("route") == Some(route.as_str())
+        && field("baseUrl") == Some(base_url))
+    .then(|| field("apiKey").map(str::to_string))
+    .flatten()
+}
+
+/// `relaycastCredentialRef`: SHA-256 hex of the canonical project data
+/// directory, the workspace id, the route and the server's origin, joined
+/// by NULs.
+fn credential_ref(data_dir: &Path, workspace_id: &str, route: &str, base_url: &str) -> String {
+    let trimmed = base_url.trim();
+    let endpoint = origin_binding::origin_of(trimmed).unwrap_or_else(|| trimmed.to_string());
+    let mut hasher = Sha256::new();
+    hasher.update(canonical_data_dir(data_dir).as_bytes());
+    hasher.update([0]);
+    hasher.update(workspace_id.as_bytes());
+    hasher.update([0]);
+    hasher.update(route.as_bytes());
+    hasher.update([0]);
+    hasher.update(endpoint.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// The data directory resolved through symlinks (its missing tail kept),
+/// case-folded on Windows, as the CLI's `canonicalProjectDataDir`.
+fn canonical_data_dir(data_dir: &Path) -> String {
+    let resolved = std::path::absolute(data_dir).unwrap_or_else(|_| data_dir.to_path_buf());
+    let mut current = resolved.clone();
+    let mut missing = Vec::new();
+    let canonical = loop {
+        match std::fs::canonicalize(&current) {
+            Ok(real) => {
+                break missing
+                    .iter()
+                    .rev()
+                    .fold(real, |path, part| path.join(part))
+            }
+            Err(_) => match (current.parent(), current.file_name()) {
+                (Some(parent), Some(name)) => {
+                    missing.push(name.to_os_string());
+                    current = parent.to_path_buf();
+                }
+                _ => break resolved,
+            },
+        }
+    };
+    let text = canonical.to_string_lossy().into_owned();
+    if cfg!(windows) {
+        without_verbatim_prefix(&text).to_lowercase()
+    } else {
+        text
+    }
+}
+
+/// A Windows path as Node's `fs.realpathSync.native` prints it: libuv strips
+/// the `\\?\` verbatim prefix `GetFinalPathNameByHandle` (and so
+/// `std::fs::canonicalize`) returns, and turns `\\?\UNC\server\share` back
+/// into `\\server\share`. Any other verbatim form (a volume GUID) is kept.
+fn without_verbatim_prefix(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    match path.strip_prefix(r"\\?\") {
+        Some(rest) if is_drive_path(rest) => rest.to_string(),
+        _ => path.to_string(),
+    }
+}
+
+/// `C:` or `C:\…`.
+fn is_drive_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 2
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes.len() == 2 || bytes[2] == b'\\')
+}
+
+/// The active store entry's name and key. A missing file selects nothing;
+/// one that cannot be read or parsed is an error, as in the CLI.
+///
+/// The CLI (`readWorkspaceStore` then `resolveActiveWorkspaceSelection`)
+/// throws on a top-level `null` and on an `active` or entry `key` that is
+/// present but not a string, so those fail closed here too. A `null` or
+/// missing `workspaces` is `{}` there (`parsed.workspaces ?? {}`), so it
+/// selects nothing, as does an entry that is not an object.
+fn read_active_store_key(file: &Path) -> Result<Option<(String, String)>, String> {
+    let raw = match std::fs::read_to_string(file) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => {
+            return Err(format!(
+                "Could not read {}; fix or remove it.",
+                file.display()
+            ))
+        }
+    };
+    let parsed: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|_| format!("{} is not valid JSON; fix or remove it.", file.display()))?;
+    let malformed = |what: &str| {
+        format!(
+            "{} is not a valid workspace store ({what}); fix or remove it.",
+            file.display()
+        )
+    };
+    if parsed.is_null() {
+        return Err(malformed("it is null"));
+    }
+    let Some(active) = optional_string(parsed.get("active"))
+        .map_err(|_| malformed("\"active\" is not a string"))?
+        .and_then(trimmed_str)
+    else {
+        return Ok(None);
+    };
+    let entry = match parsed.get("workspaces") {
+        Some(serde_json::Value::Object(workspaces)) => workspaces.get(&active),
+        // `workspaces[active]` on an array reads an index, as in JavaScript.
+        Some(serde_json::Value::Array(workspaces)) => active
+            .parse::<usize>()
+            .ok()
+            .filter(|index| index.to_string() == active)
+            .and_then(|index| workspaces.get(index)),
+        _ => None,
+    };
+    let key = match entry {
+        Some(serde_json::Value::Object(entry)) => optional_string(entry.get("key"))
+            .map_err(|_| malformed("the active entry's \"key\" is not a string"))?
+            .and_then(trimmed_str),
+        _ => None,
+    };
+    Ok(key.map(|key| (active, key)))
+}
+
+/// A field JavaScript would `?.trim()`: absent or `null` is unset, a string
+/// is itself, anything else throws.
+fn optional_string(value: Option<&serde_json::Value>) -> Result<Option<&str>, ()> {
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(text)) => Ok(Some(text)),
+        Some(_) => Err(()),
+    }
+}
+
+fn trimmed(value: String) -> Option<String> {
+    trimmed_str(&value)
+}
+
+fn trimmed_str(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+#[cfg(test)]
+mod tests;

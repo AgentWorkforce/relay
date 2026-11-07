@@ -13,6 +13,7 @@ import type { AgentClientOptions, RelayCastOptions } from '@relaycast/sdk';
 import type { DeliveryStatus } from '@relaycast/types';
 
 import { relaycastTelemetryOptions, type RelaycastTelemetryOptions } from '../relaycast-telemetry.js';
+import type { RelayFilesApiLike } from './files.js';
 import { definedOptions } from './relaycast-translate.js';
 import type {
   RelayCreateChannelInput,
@@ -27,7 +28,7 @@ export type RelaycastWorkspaceLike = {
     list(query?: Record<string, unknown>): Promise<unknown[]>;
     get(name: string): Promise<unknown>;
     register(input: unknown): Promise<unknown>;
-    /** Register an agent, rotating its token when the name already exists. */
+    /** Create-only registration alias; an existing name is rejected with `name_conflict`. */
     registerOrRotate?: (data: unknown) => Promise<unknown>;
     update(name: string, input: unknown): Promise<unknown>;
     delete(name: string): Promise<void>;
@@ -84,11 +85,6 @@ export type RelaycastWorkspaceLike = {
   };
   workspace?: {
     info(): Promise<unknown>;
-    fleetNodes?: {
-      get(): Promise<unknown>;
-      set(enabled: boolean): Promise<unknown>;
-      inherit(): Promise<unknown>;
-    };
   };
   as?: (agentToken: string, options?: AgentClientOptions) => RelaycastAgentLike;
   // Workspace-scoped realtime stream (relaycast 2.5+): lets a workspace-key
@@ -182,6 +178,7 @@ export type RelaycastAgentLike = {
   ackDelivery?(deliveryId: string): Promise<unknown>;
   failDelivery?(deliveryId: string, options?: { error?: string; retryable?: boolean }): Promise<unknown>;
   deferDelivery?(deliveryId: string, options: { availableAt: string; reason?: string }): Promise<unknown>;
+  files?: RelayFilesApiLike;
   markRead(messageId: string): Promise<unknown>;
   readers(messageId: string): Promise<unknown[]>;
   readStatus(channel: string): Promise<unknown[]>;
@@ -220,6 +217,11 @@ export interface RelaycastMessagingOptions extends RelaycastTelemetryOptions {
   selfNodeName?: string;
   /** Default bounded placement queue TTL. RFC placeholder default is one hour. */
   placementTtlMs?: number;
+  /**
+   * Restrict automatic and targeted placement to Cloud-provisioned sandbox
+   * nodes. Defaults to `false`; sandboxed workloads must opt in explicitly.
+   */
+  placementSandboxOnly?: boolean;
   /** Max in-process placement requests allowed to wait for an eligible node. */
   maxQueuedPlacements?: number;
   /** Receives placement queue/reject/fail log lines. */

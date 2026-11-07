@@ -1,0 +1,25 @@
+{
+  "id": "traj_doerfjl3nc8c",
+  "version": 1,
+  "task": {
+    "title": "Cover both expired resume rejection statuses for attach reconnect"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-20T02:22:43.860Z",
+  "completedAt": "2026-09-20T02:23:36.218Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Parameterized the expired-resume replacement regression across HTTP 401 and 410; both retain one replacement allocation.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "198c1726e3f27db5d06aa70c185ac516e38d192a",
+    "endRef": "198c1726e3f27db5d06aa70c185ac516e38d192a"
+  }
+}

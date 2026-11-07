@@ -628,6 +628,80 @@ describe('registerCloudCommands', () => {
     expect(optionNames).toContain('--resume');
     expect(optionNames).toContain('--start-from');
     expect(optionNames).toContain('--previous-run-id');
+    expect(optionNames).toContain('--relayflow-version');
+  });
+
+  it('cloud run rejects a mistyped relayflow generation before submission', async () => {
+    const { program } = createHarness();
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'run',
+        'workflow.yaml',
+        '--relayflow-version',
+        'V2',
+      ])
+    ).rejects.toThrow(/v1, v2/);
+    expect(cloudMocks.runWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('cloud run omits the selector when the flag is absent', async () => {
+    const { program } = createHarness();
+    cloudMocks.runWorkflow.mockResolvedValueOnce({ runId: 'run-v1', status: 'pending' });
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'run', 'workflow.yaml']);
+
+    expect(cloudMocks.runWorkflow.mock.calls[0][1]).not.toHaveProperty('relayflowVersion');
+  });
+
+  it.each(['v1', 'v2'] as const)(
+    'cloud run passes explicit %s with existing resume selectors',
+    async (relayflowVersion) => {
+      const { program } = createHarness();
+      cloudMocks.runWorkflow.mockResolvedValueOnce({ runId: 'run-selected', status: 'pending' });
+
+      await program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'run',
+        'workflow.yaml',
+        '--relayflow-version',
+        relayflowVersion,
+        '--resume',
+        'run-resume',
+        '--start-from',
+        'repair',
+        '--previous-run-id',
+        'run-cache',
+      ]);
+
+      expect(cloudMocks.runWorkflow).toHaveBeenCalledWith(
+        'workflow.yaml',
+        expect.objectContaining({
+          relayflowVersion,
+          resume: 'run-resume',
+          startFrom: 'repair',
+          previousRunId: 'run-cache',
+        })
+      );
+    }
+  );
+
+  it('cloud run leaves the stored engine version authoritative when resuming', async () => {
+    const { program } = createHarness();
+    cloudMocks.runWorkflow.mockResolvedValueOnce({ runId: 'run-v2', status: 'pending' });
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'run', 'workflow.yaml', '--resume', 'run-v2']);
+
+    expect(cloudMocks.runWorkflow).toHaveBeenCalledWith(
+      'workflow.yaml',
+      expect.objectContaining({ resume: 'run-v2' })
+    );
+    expect(cloudMocks.runWorkflow.mock.calls[0][1]).not.toHaveProperty('relayflowVersion');
   });
 
   it('status requires a runId argument', () => {
@@ -663,6 +737,8 @@ describe('registerCloudCommands', () => {
       '0 * * * *',
       '--name',
       'Hourly eval',
+      '--relayflow-version',
+      'v1',
       '--env',
       'AI_CLI_UPDATES_DRY_RUN=true',
       '--env',
@@ -674,6 +750,7 @@ describe('registerCloudCommands', () => {
       expect.objectContaining({
         cron: '0 * * * *',
         name: 'Hourly eval',
+        relayflowVersion: 'v1',
         envSecrets: {
           AI_CLI_UPDATES_DRY_RUN: 'true',
           AI_CLI_UPDATES_ONLY: 'codex',
@@ -735,7 +812,47 @@ describe('registerCloudCommands', () => {
       })
     );
     expect(cloudMocks.scheduleWorkflow.mock.calls[0][1]).not.toHaveProperty('cron');
+    expect(cloudMocks.scheduleWorkflow.mock.calls[0][1]).not.toHaveProperty('relayflowVersion');
     expect(deps.log).toHaveBeenCalledWith('Schedule created: sched-at-1');
+  });
+
+  it('schedule rejects the unsupported v2 selector before submission', async () => {
+    const { program } = createHarness();
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'schedule',
+        'workflow.yaml',
+        '--cron',
+        '0 * * * *',
+        '--relayflow-version',
+        'v2',
+      ])
+    ).rejects.toThrow('Relayflow v2 schedules are not supported; omit --relayflow-version or use v1.');
+
+    expect(cloudMocks.scheduleWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('schedule rejects a mistyped relayflow generation before submission', async () => {
+    const { program } = createHarness();
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'schedule',
+        'workflow.yaml',
+        '--cron',
+        '0 * * * *',
+        '--relayflow-version',
+        'v3',
+      ])
+    ).rejects.toThrow(/v1, v2/);
+    expect(cloudMocks.scheduleWorkflow).not.toHaveBeenCalled();
   });
 
   it('schedules lists repeatable workflow schedules', async () => {
@@ -826,7 +943,20 @@ describe('registerCloudCommands', () => {
       },
     });
 
-    await program.parseAsync(['node', 'agent-relay', 'cloud', 'run', 'workflow.yaml']);
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'run',
+      'workflow.yaml',
+      '--relayflow-version',
+      'v2',
+    ]);
+
+    expect(cloudMocks.runWorkflow).toHaveBeenCalledWith(
+      'workflow.yaml',
+      expect.objectContaining({ relayflowVersion: 'v2' })
+    );
 
     expect(deps.log).toHaveBeenCalledWith('Patches:');
     expect(deps.log).toHaveBeenCalledWith(
