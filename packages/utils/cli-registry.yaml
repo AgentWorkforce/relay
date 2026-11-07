@@ -1,6 +1,6 @@
 # CLI Registry
 # Single source of truth for CLI tools, versions, and models.
-# Used by: TS SDK, Python SDK, relay-cloud
+# Used by: TS SDK, relay-cloud
 #
 # To update: Edit this file, then run `npm run codegen:models`
 
@@ -388,6 +388,16 @@ clis:
       kimi_k2_5:
         id: 'kimi-k2.5'
         label: 'Kimi K2.5'
+
+  devin:
+    name: 'Devin'
+    package: 'devin'
+    version: '3000.10.31'
+    install: 'Install Devin CLI from https://docs.devin.ai/cli'
+    models:
+      swe_1_6:
+        id: 'swe-1.6'
+        label: 'SWE-1.6'
 
   droid:
     name: 'Droid'

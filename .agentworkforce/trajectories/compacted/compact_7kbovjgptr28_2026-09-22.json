@@ -1,0 +1,48 @@
+{
+  "id": "compact_7kbovjgptr28",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-22T18:39:39.513Z",
+  "sourceTrajectories": [
+    "traj_xjrrec3f7hzx"
+  ],
+  "dateRange": {
+    "start": "2026-09-22T18:32:56.391Z",
+    "end": "2026-09-22T18:39:20.897Z"
+  },
+  "summary": {
+    "totalDecisions": 2,
+    "totalEvents": 2,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "api",
+      "decisions": [
+        {
+          "question": "Keep hidden exit-0 compatibility commands and retain their cleanroom coverage",
+          "chosen": "Keep hidden exit-0 compatibility commands and retain their cleanroom coverage",
+          "reasoning": "Reviewed plan Option A preserves shipped scripts without invoking the removed API.",
+          "fromTrajectory": "traj_xjrrec3f7hzx"
+        }
+      ]
+    },
+    {
+      "category": "testing",
+      "decisions": [
+        {
+          "question": "Regenerate the full CLI inventory and reconcile existing option drift",
+          "chosen": "Regenerate the full CLI inventory and reconcile existing option drift",
+          "reasoning": "The live inventory includes new release/spawn options and removes obsolete node-agent options; matrix coverage must match the generated inventory exactly.",
+          "fromTrajectory": "traj_xjrrec3f7hzx"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}

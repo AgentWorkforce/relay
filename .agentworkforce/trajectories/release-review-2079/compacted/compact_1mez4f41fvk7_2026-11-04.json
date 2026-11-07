@@ -1,0 +1,48 @@
+{
+  "id": "compact_1mez4f41fvk7",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-11-04T15:29:16.040Z",
+  "sourceTrajectories": [
+    "traj_lus9g32cijle"
+  ],
+  "dateRange": {
+    "start": "2026-11-04T15:25:03.014Z",
+    "end": "2026-11-04T15:29:15.372Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "release",
+      "decisions": [
+        {
+          "question": "Split release preparation from finalization",
+          "chosen": "Split release preparation from finalization",
+          "reasoning": "Node assets must exist before npm, but latest discovery and main/staging version updates must wait for all publishers and post-publish verification. Broker smoke checks gate public release creation.",
+          "fromTrajectory": "traj_lus9g32cijle"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    ".github/workflows/publish.yml",
+    "packages/cli/src/cli/publish-workflow.test.ts",
+    "tests/relayflows/cases/unified-node-release/case.json",
+    "tests/relayflows/cases/unified-node-release/run.mjs"
+  ],
+  "commits": [
+    "4e4c89c26",
+    "ab7e95b74",
+    "de4ea70e7",
+    "839f01c27",
+    "16833634c"
+  ]
+}

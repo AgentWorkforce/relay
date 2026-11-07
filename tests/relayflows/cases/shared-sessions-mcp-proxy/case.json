@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "shared-sessions-mcp-proxy",
+  "kind": "feature",
+  "title": "Expose workspace shared sessions through the sessions-only MCP proxy",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/shared-sessions-mcp-proxy/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "absent",
+      "signature": "shared_sessions_mcp_sessions_only_absent"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "shared_sessions_mcp_sessions_only_proxies_cloud_tools"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1739-trusted-qualification-request",
+  "kind": "bugfix",
+  "title": "Validate the trusted qualification request before credentialed execution",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1739-trusted-qualification-request/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 120,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "trusted_qualification_request_validator_missing"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "trusted_qualification_request_validated"
+    }
+  }
+}

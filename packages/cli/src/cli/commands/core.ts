@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { exec, spawn as spawnProcess } from 'node:child_process';
+import { exec, execFile, spawn as spawnProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Command, InvalidArgumentError, Option } from 'commander';
 
@@ -14,8 +14,10 @@ import { runDownCommand, runStatusCommand, runUpCommand } from '../lib/broker-li
 import { runUninstallCommand, runUpdateCommand } from '../lib/core-maintenance.js';
 import { createRuntimeClient, spawnAgentWithClient } from '../lib/client-factory.js';
 import { defaultExit, runSignalHandler } from '../lib/exit.js';
+import { describeError } from '../lib/describe-error.js';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 type ExitFn = (code: number) => never;
 
@@ -33,6 +35,7 @@ export interface CoreTeamsConfig {
   agents: Array<{
     name: string;
     cli: string;
+    model?: string;
     task?: string;
   }>;
 }
@@ -48,6 +51,7 @@ export interface CoreRelay {
   spawn: (input: {
     name: string;
     cli: string;
+    model?: string;
     channels: string[];
     args?: string[];
     task?: string;
@@ -63,11 +67,19 @@ export interface CoreRelay {
   workspaceId?: string;
   /** PID of the underlying broker process, when available. */
   brokerPid?: number;
+  /** Notify the owning CLI when its broker child exits. */
+  onBrokerExit?: (listener: () => void) => () => void;
   /** Actual HTTP API port bound by the broker, including OS-assigned ports. */
   apiPort?: number;
 }
 
 export interface CoreFileSystem {
+  statSync?: (
+    path: string,
+    options: { bigint: true }
+  ) => Pick<fs.BigIntStats, 'dev' | 'ino' | 'ctimeNs' | 'mtimeNs'>;
+  realpathSync?: (path: string) => string;
+  lstatSync?: (path: string) => Pick<fs.Stats, 'isFile'>;
   existsSync: (path: string) => boolean;
   readFileSync: (path: string, encoding: BufferEncoding) => string;
   writeFileSync: (path: string, data: string, encoding?: BufferEncoding) => void;
@@ -185,10 +197,36 @@ export interface CoreDependencies {
     cwd: string,
     apiPort?: number,
     brokerName?: string,
-    verbose?: boolean
+    verbose?: boolean,
+    /**
+     * Descriptors the broker child must inherit. `node up` passes its node
+     * claim's hold descriptor here so the claim is fenced by a live process
+     * from the instant the child exists — see `openNodeClaimHold`.
+     */
+    inheritFds?: number[],
+    /**
+     * Called with the broker child's pid the moment it exists, before the
+     * handshake. `node up` records it on the node claim so the fenced child
+     * stays recognisable after a launcher script `exec`s the real broker.
+     */
+    onBrokerSpawn?: (pid: number) => void
   ) => CoreRelay | Promise<CoreRelay>;
   spawnProcess: (command: string, args: string[], options?: Record<string, unknown>) => SpawnedProcess;
   execCommand: (command: string) => Promise<{ stdout: string; stderr: string }>;
+  /** Run a program without a shell and capture its output (rejects on a non-zero exit). */
+  execFileCommand: (
+    file: string,
+    args: string[],
+    options?: { env?: NodeJS.ProcessEnv; timeoutMs?: number }
+  ) => Promise<{ stdout: string; stderr: string }>;
+  /** Run a program with inherited stdio; resolves with its exit status. */
+  runInheritedCommand: (
+    file: string,
+    args: string[],
+    options?: { env?: NodeJS.ProcessEnv }
+  ) => Promise<number>;
+  /** GET a URL and return the body as text (rejects on a non-2xx status). */
+  fetchText: (url: string) => Promise<string>;
   killProcess: (pid: number, signal?: NodeJS.Signals | number) => void;
   fs: CoreFileSystem;
   generateAgentName: () => string;
@@ -250,7 +288,9 @@ async function createDefaultRelay(
   cwd: string,
   apiPort = 0,
   brokerName?: string,
-  verbose = false
+  verbose = false,
+  inheritFds: number[] = [],
+  onBrokerSpawn?: (pid: number) => void
 ): Promise<CoreRelay> {
   // This is the `up` command's broker factory. `up` is persistent even when
   // port 0 delegates atomic port selection to the OS; the connection file is
@@ -268,6 +308,8 @@ async function createDefaultRelay(
     binaryArgs,
     brokerName,
     preferConnect: apiPort > 0,
+    ...(inheritFds.length ? { inheritFds } : {}),
+    ...(onBrokerSpawn ? { onSpawn: onBrokerSpawn } : {}),
     ...(verbose
       ? {
           onStep: (message: string) => console.error(`[agent-relay][verbose] ${message}`),
@@ -286,6 +328,7 @@ async function createDefaultRelay(
       return status;
     },
     shutdown: () => client.shutdown(),
+    onBrokerExit: (listener) => client.onBrokerExit(listener),
     get workspaceKey() {
       return client.workspaceKey;
     },
@@ -305,7 +348,10 @@ async function createDefaultRelay(
 
 export function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependencies {
   const fileSystem: CoreFileSystem = overrides.fs ?? {
+    realpathSync: fs.realpathSync,
+    lstatSync: (filePath) => fs.lstatSync(filePath),
     existsSync: fs.existsSync,
+    statSync: (filePath, options) => fs.statSync(filePath, options),
     readFileSync: (filePath, encoding) => fs.readFileSync(filePath, encoding),
     writeFileSync: (filePath, data, encoding) => fs.writeFileSync(filePath, data, encoding),
     renameSync: (oldPath, newPath) => fs.renameSync(oldPath, newPath),
@@ -331,6 +377,27 @@ export function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDep
         stdout: result.stdout ?? '',
         stderr: result.stderr ?? '',
       };
+    },
+    execFileCommand: async (file, args, options) => {
+      const result = await execFileAsync(file, args, {
+        env: options?.env,
+        timeout: options?.timeoutMs,
+        encoding: 'utf-8',
+      });
+      return { stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+    },
+    runInheritedCommand: (file, args, options) =>
+      new Promise<number>((resolve, reject) => {
+        const child = spawnProcess(file, args, { stdio: 'inherit', env: options?.env });
+        child.once('error', reject);
+        child.once('exit', (code, signal) => resolve(code ?? (signal ? 128 : 1)));
+      }),
+    fetchText: async (url: string) => {
+      const response = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return response.text();
     },
     killProcess: process.kill,
     fs: fileSystem,
@@ -378,6 +445,7 @@ export function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDep
 
 /** Options accepted by the `up` command action (shared by `local`/`node`). */
 export interface UpCommandOptions {
+  localOnly?: boolean;
   spawn?: boolean;
   background?: boolean;
   /** Internal marker set only on the detached child re-exec. */
@@ -399,6 +467,7 @@ export interface UpCommandOptions {
 export function addUpCommandOptions(command: Command): Command {
   return (
     command
+      .option('--local-only', 'DEGRADED: local agents and durable delivery only; disable fleet routing')
       .option('--spawn', 'Force spawn all agents from teams.json')
       .option('--no-spawn', 'Do not auto-spawn agents (just start broker)')
       .option('--background', 'Run broker in the background (detached)')
@@ -493,7 +562,7 @@ export function registerCoreCommands(
         const metrics = await client.getMetrics(options.agent);
         deps.log(JSON.stringify(metrics, null, 2));
       } catch (err) {
-        deps.error(err instanceof Error ? err.message : String(err));
+        deps.error(describeError(err));
         deps.exit(1);
       } finally {
         client?.disconnect();
@@ -524,7 +593,7 @@ export function registerCoreCommands(
           );
         }
       } catch (err) {
-        deps.error(err instanceof Error ? err.message : String(err));
+        deps.error(describeError(err));
         deps.exit(1);
       } finally {
         client?.disconnect();
@@ -554,7 +623,7 @@ export function registerCoreCommands(
           deps.log('No dead-letter deliveries to redeliver.');
         }
       } catch (err) {
-        deps.error(err instanceof Error ? err.message : String(err));
+        deps.error(describeError(err));
         deps.exit(1);
       } finally {
         client?.disconnect();

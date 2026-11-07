@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1654-claude-trust-menu-ordering",
+  "kind": "bugfix",
+  "title": "Select the affirmative Claude folder-trust option in either menu ordering",
+  "requirements": ["broker-linux-x64"],
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1654-claude-trust-menu-ordering/run.mjs"]
+  },
+  "timeoutSeconds": 300,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "claude_trust_confirmed_exit"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "claude_trust_confirmed_affirmative_both_orderings"
+    }
+  }
+}
