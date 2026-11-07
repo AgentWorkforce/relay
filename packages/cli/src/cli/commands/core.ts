@@ -14,6 +14,7 @@ import { runDownCommand, runStatusCommand, runUpCommand } from '../lib/broker-li
 import { runUninstallCommand, runUpdateCommand } from '../lib/core-maintenance.js';
 import { createRuntimeClient, spawnAgentWithClient } from '../lib/client-factory.js';
 import { defaultExit, runSignalHandler } from '../lib/exit.js';
+import { describeError } from '../lib/describe-error.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -461,7 +462,7 @@ export function registerCoreCommands(
         const metrics = await client.getMetrics(options.agent);
         deps.log(JSON.stringify(metrics, null, 2));
       } catch (err) {
-        deps.error(err instanceof Error ? err.message : String(err));
+        deps.error(describeError(err));
         deps.exit(1);
       } finally {
         client?.disconnect();
@@ -492,7 +493,7 @@ export function registerCoreCommands(
           );
         }
       } catch (err) {
-        deps.error(err instanceof Error ? err.message : String(err));
+        deps.error(describeError(err));
         deps.exit(1);
       } finally {
         client?.disconnect();
@@ -522,7 +523,7 @@ export function registerCoreCommands(
           deps.log('No dead-letter deliveries to redeliver.');
         }
       } catch (err) {
-        deps.error(err instanceof Error ? err.message : String(err));
+        deps.error(describeError(err));
         deps.exit(1);
       } finally {
         client?.disconnect();

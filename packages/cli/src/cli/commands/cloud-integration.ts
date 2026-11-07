@@ -4,6 +4,7 @@ import { defaultApiUrl } from '@agent-relay/cloud';
 import { stripAnsiFast } from '@agent-relay/utils';
 
 import type { CloudDependencies } from './cloud.js';
+import { describeError } from '../lib/describe-error.js';
 
 type Dependencies = Pick<
   CloudDependencies,
@@ -156,7 +157,7 @@ async function action(deps: Dependencies, fn: () => Promise<void>): Promise<void
   try {
     await fn();
   } catch (error) {
-    deps.error(error instanceof Error ? error.message : String(error));
+    deps.error(describeError(error));
     deps.exit(1);
   }
 }

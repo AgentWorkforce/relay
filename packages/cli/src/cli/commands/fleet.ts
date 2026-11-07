@@ -76,6 +76,7 @@ import {
   withSdkDefaults,
   type SdkCommandDeps,
 } from '../lib/sdk-command.js';
+import { describeError } from '../lib/describe-error.js';
 
 const FLEET_NODES_ALWAYS_ON_MESSAGE =
   'Fleet nodes need no per-workspace enablement; this command is a no-op.';
@@ -1000,9 +1001,9 @@ export function registerFleetCommands(
               })
               .catch((cleanupError) => {
                 deps.warn(
-                  `Provisioning failed after Cloud confirmed sandbox '${error.sandboxId}', and automatic cleanup failed: ${
-                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
-                  }`
+                  `Provisioning failed after Cloud confirmed sandbox '${error.sandboxId}', and automatic cleanup failed: ${describeError(
+                    cleanupError
+                  )}`
                 );
               });
           } else if (error instanceof CloudFleetSandboxProvisionError && error.noSandboxCreated) {
@@ -1029,9 +1030,9 @@ export function registerFleetCommands(
               })
               .catch((cleanupError) => {
                 deps.warn(
-                  `Provisioning failed after Cloud created sandbox '${error.sandboxId}', and automatic cleanup failed: ${
-                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
-                  }`
+                  `Provisioning failed after Cloud created sandbox '${error.sandboxId}', and automatic cleanup failed: ${describeError(
+                    cleanupError
+                  )}`
                 );
               });
           }
@@ -1044,9 +1045,9 @@ export function registerFleetCommands(
               })
               .catch((cleanupError) => {
                 deps.warn(
-                  `Sandbox repository verification failed and cleanup also failed: ${
-                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
-                  }`
+                  `Sandbox repository verification failed and cleanup also failed: ${describeError(
+                    cleanupError
+                  )}`
                 );
               });
           }
@@ -1113,9 +1114,9 @@ export function registerFleetCommands(
                 })
                 .catch((cleanupError) => {
                   deps.warn(
-                    `Relaycast workspace verification failed and sandbox cleanup also failed: ${
-                      cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
-                    }`
+                    `Relaycast workspace verification failed and sandbox cleanup also failed: ${describeError(
+                      cleanupError
+                    )}`
                   );
                 });
             }
@@ -1138,9 +1139,7 @@ export function registerFleetCommands(
               })
               .catch((error) => {
                 deps.warn(
-                  `The timed-out sandbox could not be cleaned up automatically: ${
-                    error instanceof Error ? error.message : String(error)
-                  }`
+                  `The timed-out sandbox could not be cleaned up automatically: ${describeError(error)}`
                 );
               });
           }
@@ -1161,9 +1160,9 @@ export function registerFleetCommands(
               })
               .catch((error) => {
                 deps.warn(
-                  `The unmounted sandbox could not be cleaned up automatically and may still be running: ${
-                    error instanceof Error ? error.message : String(error)
-                  }`
+                  `The unmounted sandbox could not be cleaned up automatically and may still be running: ${describeError(
+                    error
+                  )}`
                 );
               });
           }
@@ -1355,9 +1354,9 @@ export function registerFleetCommands(
               })
               .catch((cleanupError) => {
                 deps.warn(
-                  `Spawn failed and the sandbox could not be cleaned up automatically: ${
-                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
-                  }`
+                  `Spawn failed and the sandbox could not be cleaned up automatically: ${describeError(
+                    cleanupError
+                  )}`
                 );
               });
           }
@@ -1371,11 +1370,7 @@ export function registerFleetCommands(
                 deleteAgent: true,
               })
               .catch((error) => {
-                deps.warn(
-                  `Temporary launcher cleanup failed: ${
-                    error instanceof Error ? error.message : String(error)
-                  }`
-                );
+                deps.warn(`Temporary launcher cleanup failed: ${describeError(error)}`);
               });
           }
         }
@@ -1486,7 +1481,7 @@ export function registerFleetCommands(
             error: deps.error,
           });
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message = describeError(error);
           if (deleteAgent) {
             throw new Error(
               `Refusing to delete @${workerName}: could not retire provider bindings (${message}). Identity kept so \`agent-relay integration unsubscribe <provider> --owned-by @${workerName}\` can retry.`
@@ -1549,7 +1544,7 @@ export function registerFleetCommands(
     try {
       await runFleetStatus(deps, options);
     } catch (error) {
-      deps.error(error instanceof Error ? error.message : String(error));
+      deps.error(describeError(error));
       deps.exit(1);
     }
   });
@@ -1714,7 +1709,7 @@ async function runFleetAgentList(
         }));
       } catch (error) {
         deps.warn(
-          `roster unavailable (${error instanceof Error ? error.message : String(error)}); ` +
+          `roster unavailable (${describeError(error)}); ` +
             'PRESENCE column will not report roster membership.'
         );
       }
@@ -1767,7 +1762,7 @@ async function runFleetAgentList(
           localRetried = result.retried;
         }
       } catch (error) {
-        localSessionError = `local broker: ${error instanceof Error ? error.message : String(error)}`;
+        localSessionError = `local broker: ${describeError(error)}`;
       } finally {
         client.disconnect();
       }
@@ -1907,7 +1902,7 @@ async function runFleetStatus(
         running: false,
         url: conn.url,
         pid: conn.pid,
-        error: error instanceof Error ? error.message : String(error),
+        error: describeError(error),
       };
     } finally {
       client.disconnect();
@@ -1923,7 +1918,7 @@ async function runFleetStatus(
       const nodes = await relay.nodes.list({ name: nodeName });
       node = nodes[0] ?? { available: false, reason: `no node named "${nodeName}" in the workspace` };
     } catch (error) {
-      node = { error: error instanceof Error ? error.message : String(error) };
+      node = { error: describeError(error) };
     }
   } else {
     // A running broker that never reported a node name means the engine lookup

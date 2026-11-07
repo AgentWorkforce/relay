@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agents.integrations.subscribe` and session socket subscriptions exclude leftover provider events after the last subscription is removed.
 - `agent-relay file` accepts private JSON integration metadata files on Unix.
 - `agent-relay flows` reports GitLab setup requirements and resumes human-approved repository runs with their original access.
+- `agent-relay` commands such as `cloud`, `fleet`, `agent`, `core`, `doctor`, `skills` and `update` print failures that are not `Error` objects as readable messages.
+- `agent-relay` command error output masks credentials, including tokens echoed in server error messages.
 
 ## [17.2.0] - 2026-11-06
 
