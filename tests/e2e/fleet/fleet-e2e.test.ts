@@ -257,6 +257,8 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       'echo',
       'relay:delivery-cursor-v1',
       'relay:live-agents:v1',
+      'relay:native-existing-session-reconcile:v1',
+      'relay:native-existing-session:v1',
       'release',
       'spawn:claude',
       'spawn:pool',
@@ -266,6 +268,8 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       'ping',
       'relay:delivery-cursor-v1',
       'relay:live-agents:v1',
+      'relay:native-existing-session-reconcile:v1',
+      'relay:native-existing-session:v1',
       'release',
       'spawn:codex',
       'spawn:pool',
@@ -533,15 +537,17 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     { retry: 2 },
     async () => {
       const sessionRef = 'sess-resume-1';
-      await releaseAgent(engine, workspaceKey, 'resumable-1'); // idempotent cleanup for retries
+      const name = `resumable-${Date.now()}`;
+      const firstNonce = `resume-first-${Date.now()}`;
       // First spawn is UNTARGETED → the engine picks the origin node by placement.
       // We capture wherever it actually landed so the resume target is derived from
       // the agent's real origin, not hard-coded (resume = targeted-origin spawn;
       // the engine records origin_node_id but does not auto-route from session_ref).
       const first = await invokeAction(engine, driverToken, 'spawn', {
         cli: 'pool',
-        name: 'resumable-1',
+        name,
         session_ref: sessionRef,
+        task: `RELAY_E2E_BRIEF_NONCE=${firstNonce}\n`,
       });
       const originId = first.body.data.handler_node_id as string; // engine-chosen origin
       const originName = originId === 'node_a' ? 'node-a' : 'node-b';
@@ -550,24 +556,109 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
           const inv = await getInvocation(engine, driverToken, 'spawn', first.invocationId!);
           return inv.status === 'completed' || inv.status === 'failed' ? inv : null;
         },
-        { label: 'resumable spawn settled', timeoutMs: 30_000, intervalMs: 300 }
+        // A verified spawn carrying a task now completes only once that task's
+        // receipt is verified after readiness, so allow for readiness plus
+        // delivery verification rather than readiness alone.
+        { label: 'resumable spawn settled', timeoutMs: 60_000, intervalMs: 300 }
       );
       expect(firstDone.status).toBe('completed'); // resumable spawn carried session_ref through token authority
+      expect(firstDone.output).toMatchObject({ spawned: true, ready: true, name });
+      const origin = originId === 'node_a' ? nodeA : nodeB;
+      const observe = async (nonce: string) =>
+        waitFor(
+          async () => {
+            try {
+              return JSON.parse(
+                readFileSync(
+                  path.join(
+                    origin.projectDir,
+                    '.agentworkforce',
+                    'relay',
+                    'e2e-brief-actions',
+                    `${nonce}.json`
+                  ),
+                  'utf8'
+                )
+              );
+            } catch {
+              return null;
+            }
+          },
+          { label: 'resumed native worker consumed its brief', timeoutMs: 15_000 }
+        );
+      expect(await observe(firstNonce)).toMatchObject({
+        agent: name,
+        node: originName,
+        args: expect.arrayContaining(['resume', sessionRef]),
+      });
 
       // Release, then resume the SAME session targeted at the recorded origin.
-      expect(await releaseAgent(engine, workspaceKey, 'resumable-1')).toBeLessThan(300);
+      // Deleting the engine identity alone would orphan the still-running PTY.
+      const release = await invokeAction(engine, driverToken, 'release', { name });
+      expect(release.status).toBe(201);
+      const released = await waitFor(
+        async () => {
+          const inv = await getInvocation(engine, driverToken, 'release', release.invocationId!);
+          return ['completed', 'failed'].includes(inv.status) ? inv : null;
+        },
+        { label: 'origin worker release confirmed', timeoutMs: 30_000 }
+      );
+      expect(released.status, JSON.stringify(released)).toBe('completed');
+      // The legacy broker release action stops the PTY and detaches its binding;
+      // the fixture owner separately removes its retained engine identity.
+      expect(await releaseAgent(engine, workspaceKey, name)).toBeLessThan(300);
+      const resumedNonce = `resume-second-${Date.now()}`;
       const resume = await invokeAction(engine, driverToken, 'spawn', {
         cli: 'pool',
-        name: 'resumable-1',
+        name,
         target_node: originName,
         session_ref: sessionRef,
+        task: `RELAY_E2E_BRIEF_NONCE=${resumedNonce}\n`,
       });
       expect(resume.status).toBe(201);
       expect(resume.body.data.handler_node_id).toBe(originId); // resumed on the agent's origin node
       expect(resume.body.data.dispatched_node_id).toBe(originId);
+      const resumed = await waitFor(
+        async () => {
+          const inv = await getInvocation(engine, driverToken, 'spawn', resume.invocationId!);
+          return ['completed', 'failed'].includes(inv.status) ? inv : null;
+        },
+        { label: 'resumed worker confirmed ready', timeoutMs: 60_000 }
+      );
+      expect(resumed.status).toBe('completed');
+      expect(resumed.output).toMatchObject({ spawned: true, ready: true, name });
+      expect(await observe(resumedNonce)).toMatchObject({
+        agent: name,
+        node: originName,
+        args: expect.arrayContaining(['resume', sessionRef]),
+      });
     },
-    60_000
+    // Two 60 s spawn settles, two 15 s brief observations and a 30 s release
+    // wait alone reach 180 s, so leave room for the actions between them.
+    240_000
   );
+
+  it('propagates unsupported generic session resume as a terminal failure with no retained identity', async () => {
+    const name = `invalid-resume-${Date.now()}`;
+    // node-b's distinct codex capacity deliberately runs the generic node stub.
+    const spawn = await invokeAction(engine, driverToken, 'spawn', {
+      cli: 'codex',
+      target_node: 'node-b',
+      name,
+      session_ref: 'unsupported-generic-session',
+    });
+    expect(spawn.status).toBe(201);
+    const done = await waitFor(
+      async () => {
+        const inv = await getInvocation(engine, driverToken, 'spawn', spawn.invocationId!);
+        return ['completed', 'failed'].includes(inv.status) ? inv : null;
+      },
+      { label: 'unsupported resume terminal failure', timeoutMs: 30_000 }
+    );
+    expect(done.status).toBe('failed');
+    expect(done.error).toContain('session_ref resume is supported only');
+    expect(await getAgent(engine, workspaceKey, name)).toBeNull();
+  }, 45_000);
 
   it('placement failure: spawning a capability no targeted node advertises fails with capability_mismatch', async () => {
     const res = await invokeAction(engine, driverToken, 'spawn', {

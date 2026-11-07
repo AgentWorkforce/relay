@@ -31,10 +31,12 @@ import {
   IDENTITY_FILE_PATH,
   type WhoAmIResponse,
   type WorkflowFileType,
+  type RelayflowVersion,
   type WorkflowSchedule,
 } from '@agent-relay/cloud';
 
 import { linkEnrolledNodeToProjectPin, type EnrolledNodePinResult } from '../lib/enrollment-pin.js';
+import { describeError } from '../lib/describe-error.js';
 import { defaultExit } from '../lib/exit.js';
 import { sanitizeForTerminalLine } from '../lib/formatting.js';
 import { maskSecret } from '../lib/redact.js';
@@ -125,10 +127,27 @@ function parseNonNegativeInteger(value: string): number {
 }
 
 function parseWorkflowFileType(value: string): WorkflowFileType {
-  if (value === 'yaml' || value === 'ts' || value === 'py') {
+  if (value === 'yaml' || value === 'ts') {
     return value;
   }
-  throw new InvalidArgumentError('Expected workflow type to be one of: yaml, ts, py');
+  throw new InvalidArgumentError('Expected workflow type to be one of: yaml, ts');
+}
+
+function parseRelayflowVersion(value: string): RelayflowVersion {
+  if (value === 'v1' || value === 'v2') {
+    return value;
+  }
+  throw new InvalidArgumentError('Expected Relayflow version to be one of: v1, v2');
+}
+
+function parseScheduleRelayflowVersion(value: string): 'v1' {
+  const relayflowVersion = parseRelayflowVersion(value);
+  if (relayflowVersion === 'v2') {
+    throw new InvalidArgumentError(
+      'Relayflow v2 schedules are not supported; omit --relayflow-version or use v1.'
+    );
+  }
+  return relayflowVersion;
 }
 
 function parseEnvAssignment(value: string, previous: Record<string, string> = {}): Record<string, string> {
@@ -474,9 +493,9 @@ function reconcileEnrollmentPin(
     return result;
   } catch (err) {
     deps.warn(
-      `Enrollment succeeded but this project's workspace pin could not be updated: ${
-        err instanceof Error ? err.message : String(err)
-      }. 'relay node up' in this project may ignore the new enrollment.`
+      `Enrollment succeeded but this project's workspace pin could not be updated: ${describeError(
+        err
+      )}. 'relay node up' in this project may ignore the new enrollment.`
     );
     return undefined;
   }
@@ -618,6 +637,8 @@ function renderScheduleList(schedules: WorkflowSchedule[], log: (...args: unknow
     );
   }
 }
+
+import { applyV1FlowsDeprecations } from './cloud-v1-deprecations.js';
 
 // ── Command registration ─────────────────────────────────────────────────────
 
@@ -804,8 +825,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         });
 
         const payload = (await response.json().catch(() => null)) as
-          | (WhoAmIResponse & { error?: string })
-          | null;
+          (WhoAmIResponse & { error?: string }) | null;
 
         if (!response.ok || !payload?.authenticated) {
           throw new Error(payload?.error || 'Failed to resolve auth status');
@@ -875,9 +895,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         deps.error(
           isCloudLoginError(err)
             ? 'Cloud login required. Run `agent-relay cloud login` and retry.'
-            : err instanceof Error
-              ? err.message
-              : String(err)
+            : describeError(err)
         );
         deps.exit(1);
       } finally {
@@ -974,9 +992,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
             deps.upsertFleetNodeEnrollment(record);
           } catch (persistErr) {
             deps.error(
-              `Enrollment succeeded but persisting credentials failed: ${
-                persistErr instanceof Error ? persistErr.message : String(persistErr)
-              }`
+              `Enrollment succeeded but persisting credentials failed: ${describeError(persistErr)}`
             );
             // The one-time token is already consumed, so the credentials must
             // survive somewhere. Prefer a 0600 recovery file (never print the
@@ -1030,7 +1046,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
             );
           }
         } catch (err) {
-          deps.error(err instanceof Error ? err.message : String(err));
+          deps.error(describeError(err));
           deps.exit(1);
         }
       }
@@ -1043,7 +1059,8 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .description('Submit a workflow run')
     .argument('<workflow>', 'Workflow file path or inline workflow content')
     .option('--api-url <url>', 'Cloud API base URL')
-    .option('--file-type <type>', 'Workflow type: yaml, ts, or py', parseWorkflowFileType)
+    .option('--file-type <type>', 'Workflow type: yaml or ts', parseWorkflowFileType)
+    .option('--relayflow-version <version>', 'Relayflow engine generation: v1 or v2', parseRelayflowVersion)
     .option('--sync-code', 'Upload the current working directory before running')
     .option('--no-sync-code', 'Skip uploading the current working directory')
     .option('--resume <runId>', 'Resume a previously failed cloud workflow run from where it left off')
@@ -1059,6 +1076,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         options: {
           apiUrl?: string;
           fileType?: WorkflowFileType;
+          relayflowVersion?: RelayflowVersion;
           syncCode?: boolean;
           resume?: string;
           startFrom?: string;
@@ -1107,7 +1125,12 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .description('Schedule a repeatable workflow run')
     .argument('<workflow>', 'Workflow file path or inline workflow content')
     .option('--api-url <url>', 'Cloud API base URL')
-    .option('--file-type <type>', 'Workflow type: yaml, ts, or py', parseWorkflowFileType)
+    .option('--file-type <type>', 'Workflow type: yaml or ts', parseWorkflowFileType)
+    .option(
+      '--relayflow-version <version>',
+      'Relayflow engine generation for scheduled runs: v1 (v2 is not supported)',
+      parseScheduleRelayflowVersion
+    )
     .option('--cron <expression>', 'Cron expression, for example "0 * * * *"')
     .option('--at <isoTimestamp>', 'One-time ISO timestamp, for example 2026-05-10T09:00:00Z')
     .option('--timezone <timezone>', 'IANA timezone for cron schedules', 'UTC')
@@ -1126,6 +1149,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         options: {
           apiUrl?: string;
           fileType?: WorkflowFileType;
+          relayflowVersion?: 'v1';
           cron?: string;
           at?: string;
           timezone?: string;
@@ -1341,7 +1365,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         });
         deps.log('Patch applied successfully.');
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = describeError(err);
         deps.error(`Failed to apply patch: ${message}`);
         deps.error(`Patch saved to: ${tmpPatch}`);
         deps.exit(1);
@@ -1366,4 +1390,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       deps.log(`Run: ${result.runId ?? runId}`);
       deps.log(`Status: ${result.status ?? 'unknown'}`);
     });
+
+  // Applied last so every command it targets is registered.
+  applyV1FlowsDeprecations(cloudCommand);
 }

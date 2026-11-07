@@ -61,6 +61,12 @@ broker_is_running() {
   echo "$status_output" | grep -q "Status: RUNNING"
 }
 
+broker_is_ready() {
+  # The API/connection can appear before the owning CLI persists its identity.
+  # Wait for the completed startup marker before testing lifecycle commands.
+  grep -q '^Broker started\.$' "$DAEMON_LOG" && broker_is_running
+}
+
 # Cross-platform timeout function (macOS doesn't have timeout by default)
 # Returns 124 on timeout (like GNU timeout)
 run_with_timeout() {
@@ -151,29 +157,29 @@ log_phase "Phase 1: Broker Startup"
 # Kill any existing daemon (with timeout to prevent hanging)
 run_with_timeout 10 "$CLI_CMD" node down --force --timeout 5000 2>/dev/null || true
 
-# Kill any process using our target port (ensures the broker can bind)
-if command -v lsof &> /dev/null; then
-  lsof -ti:$BROKER_PORT | xargs kill -9 2>/dev/null || true
-fi
+# An occupied port is not proof of process ownership. Leave unverified
+# listeners alone; node up will report a binding failure or choose a free port.
 sleep 1
 
 # Start broker in background, redirect output to log file
 DAEMON_LOG="$PROJECT_DIR/.agentworkforce/relay/e2e-daemon.log"
 mkdir -p "$(dirname "$DAEMON_LOG")"
-AGENT_RELAY_BROKER_PORT="$BROKER_PORT" "$CLI_CMD" node up > "$DAEMON_LOG" 2>&1 &
+# This suite tests broker lifecycle, independently of repository team configuration.
+AGENT_RELAY_BROKER_PORT="$BROKER_PORT" "$CLI_CMD" node up --no-spawn > "$DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
 log_info "Daemon started (PID: $DAEMON_PID)"
 log_info "Daemon log: $DAEMON_LOG"
 
-# Wait for daemon to be ready (check health endpoint)
+# Wait for completed CLI startup and live broker status.
 log_info "Waiting for daemon to be ready..."
-for i in $(seq 1 30); do
-  if broker_is_running; then
+STARTUP_DEADLINE=$((SECONDS + 60))
+for i in $(seq 1 60); do
+  if broker_is_ready; then
     log_info "Daemon is ready!"
     break
   fi
-  if [ $i -eq 30 ]; then
-    log_error "Daemon failed to start within 30 seconds"
+  if [ $SECONDS -ge $STARTUP_DEADLINE ] || [ $i -eq 60 ]; then
+    log_error "Daemon failed to start within 60 seconds"
     log_error "Daemon log tail:"
     tail -30 "$DAEMON_LOG" 2>/dev/null || echo "(no log)"
     exit 1
@@ -242,9 +248,11 @@ log_info "All CLI command tests passed!"
 log_phase "Phase 3: Final Down Check"
 
 log_info "Testing: agent-relay node down (with 15s timeout)"
-if ! run_with_timeout 15 "$CLI_CMD" node down --timeout 10000; then
-  EXIT_CODE=$?
-  if [ $EXIT_CODE -eq 124 ]; then
+DOWN_EXIT=0
+run_with_timeout 15 "$CLI_CMD" node down --timeout 10000 || DOWN_EXIT=$?
+if [ "$DOWN_EXIT" -ne 0 ]; then
+  EXIT_CODE=$DOWN_EXIT
+  if [ "$EXIT_CODE" -eq 124 ]; then
     log_error "down command timed out (hung for >15s)"
     exit 1
   else
@@ -255,10 +263,23 @@ else
   log_info "  down command completed without hanging"
 fi
 
-# Verify broker is actually stopped
-STATUS_OUTPUT=$(run_with_timeout 5 "$CLI_CMD" node status 2>/dev/null || true)
-if echo "$STATUS_OUTPUT" | grep -q "Status: RUNNING"; then
-  log_error "Broker still reported as running after down command"
+# The broker can finish its already-bounded graceful shutdown just after the
+# CLI's own wait expires. Poll the real process effect for a short grace window
+# instead of treating one racing RUNNING snapshot as permanent. A timed-out
+# status probe is not evidence of absence and therefore never counts as stopped.
+BROKER_STOPPED=false
+STATUS_OUTPUT=""
+for _ in 1 2 3 4 5; do
+  STATUS_EXIT=0
+  STATUS_OUTPUT=$(run_with_timeout 3 "$CLI_CMD" node status 2>/dev/null) || STATUS_EXIT=$?
+  if [ $STATUS_EXIT -eq 0 ] && ! echo "$STATUS_OUTPUT" | grep -q "Status: RUNNING"; then
+    BROKER_STOPPED=true
+    break
+  fi
+  sleep 1
+done
+if [ "$BROKER_STOPPED" != true ]; then
+  log_error "Broker stop was not confirmed after down command"
   echo "$STATUS_OUTPUT"
   exit 1
 fi

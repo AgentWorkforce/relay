@@ -1,0 +1,92 @@
+{
+  "id": "traj_xed4cbgfh2fw",
+  "version": 1,
+  "task": {
+    "title": "Bound echo verification to post-submission output for PR 1634",
+    "source": {
+      "system": "plain",
+      "id": "AgentWorkforce/relay#1634"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-02T02:06:01.793Z",
+  "completedAt": "2026-09-02T02:17:51.585Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-02T02:17:41.238Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_5l0qs0dilzv3",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-02T02:17:41.238Z",
+      "endedAt": "2026-09-02T02:17:51.585Z",
+      "events": [
+        {
+          "ts": 1788315461238,
+          "type": "decision",
+          "content": "Chose monotonic PTY-output byte offsets shared by worker and wrap verification.",
+          "raw": {
+            "question": "Use monotonic PTY-output byte offsets shared by worker and wrap verification",
+            "chosen": "Use monotonic PTY-output byte offsets shared by worker and wrap verification",
+            "alternatives": [],
+            "reasoning": "Each delivery must only match output observed after its own submit boundary, including output that races ahead of the write acknowledgement; retained-tail trimming advances an absolute base offset so stale identical echoes cannot verify a new delivery."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788315461828,
+          "type": "reflection",
+          "content": "Late review feedback is implemented across both injection paths and the deterministic RelayFlow proof. Focused and full broker suites, strict clippy, proof parser tests, and the worktree-built end-to-end case are green.",
+          "raw": {
+            "focalPoints": [
+              "stale echo boundary",
+              "ack race",
+              "buffer trimming",
+              "split PTY frames",
+              "proof semantics"
+            ],
+            "adjustments": "Centralized the bounded output tail/predicate and made the fake Claude composer explicitly distinguish a paste newline from a delayed submit.",
+            "confidence": 0.93
+          },
+          "significance": "high",
+          "tags": [
+            "focal:stale echo boundary",
+            "focal:ack race",
+            "focal:buffer trimming",
+            "focal:split PTY frames",
+            "focal:proof semantics",
+            "confidence:0.93"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Scoped worker and wrap echo verification to monotonic post-submission output, preserved ack-race confirmation, reset retry boundaries, added trim/stale-echo regressions, and hardened the Claude RelayFlow proof against split PTY frames with an explicit composer/task-handler model.",
+    "approach": "Standard approach",
+    "confidence": 0.93
+  },
+  "commits": [
+    "befbea623"
+  ],
+  "filesChanged": [
+    "crates/broker/src/broker/delivery_verification.rs",
+    "crates/broker/src/pty_worker.rs",
+    "crates/broker/src/wrap.rs",
+    "tests/relayflows/cases/1634-claude-multiline-task-submit/run.mjs",
+    "tests/relayflows/cases/1634-claude-multiline-task-submit/task-observation.mjs",
+    "tests/relayflows/cases/1634-claude-multiline-task-submit/task-observation.node-test.mjs"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "00b89492b93f4adaf17a3077bd21b8d0e037d958",
+    "endRef": "befbea623e2a8437230e6432c4e7587ff3d00deb",
+    "traceId": "5efa50e3-8ffe-4f8b-8bd2-430a888b6337"
+  }
+}

@@ -4,15 +4,14 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { normalizeFleetRepoPaths } from '@agent-relay/fleet';
+import { MAX_FLEET_NODE_AGENTS, normalizeFleetRepoPaths } from '@agent-relay/fleet';
 import { createLogger } from '@agent-relay/utils';
 
 import type { CoreDependencies, SpawnedProcess } from '../commands/core.js';
 import { describeError } from './describe-error.js';
 
 /**
- * Credentials handed to an out-of-process node provider, mirroring the env
- * contract the Python provider already uses.
+ * Credentials handed to an out-of-process node provider.
  */
 export type NodeProviderCredentials = {
   nodeToken: string;
@@ -52,7 +51,7 @@ export function packageRootFromEntry(entry: string, packageName: string): string
  *
  * `@agent-relay/fleet` and `@agent-relay/sdk` are resolved from the *config's*
  * directory — the only copies on disk, since the compiled binary's own are
- * sealed inside it — mirroring how the Python provider uses the user's own SDK.
+ * sealed inside it. The child uses the user's installed SDK.
  * That makes the user's fleet version part of the contract: `serveNode`'s
  * connection shape changed in fleet 10 (`{nodeToken, nodeId}`; fleet 9 took
  * `{url, apiKey}`), so an older fleet is rejected up front rather than left to
@@ -282,12 +281,32 @@ export function parseNodeDescriptor(stdout: string): NodeDefinitionDescriptor | 
   }
   const parsed = JSON.parse(last.slice(NODE_DESCRIPTOR_MARKER.length)) as NodeDefinitionDescriptor;
   const repoPaths = parseDescriptorRepoPaths(parsed.repoPaths);
+  const maxAgents = parseDescriptorMaxAgents(parsed.maxAgents);
   return {
     name: parsed.name,
     capabilities: Array.isArray(parsed.capabilities) ? parsed.capabilities : [],
-    ...(typeof parsed.maxAgents === 'number' ? { maxAgents: parsed.maxAgents } : {}),
+    ...(maxAgents !== undefined ? { maxAgents } : {}),
     ...(repoPaths !== undefined ? { repoPaths } : {}),
   };
+}
+
+/**
+ * Validate a descriptor's agent cap against the shared range. The `--describe`
+ * child reports whatever the installed `@agent-relay/fleet` accepted, which
+ * may predate the range check — and the JSON itself is just printed text, so a
+ * malformed line must fail fast here rather than forward a cap the broker
+ * would silently normalize to unlimited.
+ */
+function parseDescriptorMaxAgents(value: unknown): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0 || value > MAX_FLEET_NODE_AGENTS) {
+    throw new Error(
+      `Fleet node descriptor maxAgents must be a positive integer no larger than ${MAX_FLEET_NODE_AGENTS}`
+    );
+  }
+  return value;
 }
 
 function parseDescriptorRepoPaths(value: unknown): Readonly<Record<string, string>> | undefined {
@@ -296,14 +315,18 @@ function parseDescriptorRepoPaths(value: unknown): Readonly<Record<string, strin
 
 /**
  * Adapt a descriptor to the capacity shape, so a node definition served
- * out-of-process still contributes its `spawn:<harness>` capabilities to the
- * broker's advertised capacity.
+ * out-of-process still contributes its `spawn:<harness>` capabilities and its
+ * `maxAgents` cap to the broker's advertised capacity.
  * @param descriptor - Descriptor reported by the `--describe` child.
  */
 export function descriptorCapacitySource(descriptor: NodeDefinitionDescriptor): {
   capabilities: Record<string, unknown>;
+  maxAgents?: number;
 } {
-  return { capabilities: Object.fromEntries(descriptor.capabilities.map((name) => [name, true])) };
+  return {
+    capabilities: Object.fromEntries(descriptor.capabilities.map((name) => [name, true])),
+    ...(typeof descriptor.maxAgents === 'number' ? { maxAgents: descriptor.maxAgents } : {}),
+  };
 }
 
 /**
@@ -313,7 +336,7 @@ export function descriptorCapacitySource(descriptor: NodeDefinitionDescriptor): 
 const JS_NODE_DEFINITION_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs']);
 const TS_NODE_DEFINITION_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts']);
 
-/** Whether `configPath` is a JS/TS node definition (as opposed to `agent-relay.py`). */
+/** Whether `configPath` is a JS/TS node definition. */
 export function isJsNodeDefinition(configPath: string): boolean {
   return JS_NODE_DEFINITION_EXTENSIONS.has(path.extname(configPath).toLowerCase());
 }
@@ -713,7 +736,7 @@ export async function startNodeJsNodeProvider(
   } catch (err) {
     materialized?.cleanup();
     deps.warn(
-      `Fleet node provider skipped: ${err instanceof Error ? err.message : String(err)}. ` +
+      `Fleet node provider skipped: ${describeError(err)}. ` +
         `Serving a JS/TS node definition from the standalone agent-relay binary requires \`${nodeBin}\` on PATH; ` +
         'set AGENT_RELAY_NODE to point at a Node.js executable.'
     );

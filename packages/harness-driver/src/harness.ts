@@ -94,9 +94,7 @@ export interface StaticNativeHarnessDefinition extends Omit<NativeHarnessConfig,
 }
 
 export type StaticHarnessDefinition =
-  | StaticPtyHarnessDefinition
-  | StaticHeadlessAppServerHarnessDefinition
-  | StaticNativeHarnessDefinition;
+  StaticPtyHarnessDefinition | StaticHeadlessAppServerHarnessDefinition | StaticNativeHarnessDefinition;
 export type HarnessDefinition = StaticHarnessDefinition;
 
 export interface ResolveStaticHarnessInput {

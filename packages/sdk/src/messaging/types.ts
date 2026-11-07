@@ -139,6 +139,38 @@ export interface RelayStoredAttachment {
   sizeBytes?: wire.FileAttachment['size_bytes'];
 }
 
+/** A stored Relaycast file, as returned by `files.upload`/`files.get`. */
+export interface RelayFileInfo {
+  id: wire.FileInfo['id'];
+  filename: wire.FileInfo['filename'];
+  contentType: wire.FileInfo['content_type'];
+  sizeBytes: wire.FileInfo['size_bytes'];
+  status?: NonNullable<wire.FileInfo['status']>;
+  /** Short-lived URL to GET the bytes; present once the upload is complete. */
+  downloadUrl?: string;
+  uploadedBy?: NonNullable<wire.FileInfo['uploaded_by']>;
+  createdAt?: NonNullable<wire.FileInfo['created_at']>;
+}
+
+export interface RelayUploadFileInput {
+  filename: string;
+  /** Defaults to `application/octet-stream`. */
+  contentType?: string;
+  data: Uint8Array | ArrayBuffer;
+}
+
+/** Cancellation and timeout controls for the signed byte-transfer request. */
+export interface RelayFileTransferOptions {
+  signal?: AbortSignal;
+  /** Signed PUT/GET timeout in milliseconds. Defaults to 30 seconds. */
+  timeoutMs?: number;
+}
+
+export interface RelayDownloadedFile {
+  file: RelayFileInfo;
+  data: Uint8Array;
+}
+
 export interface RelayTextAttachment {
   type: 'text';
   text: string;
@@ -480,6 +512,7 @@ export interface RelayCreateWebhookInput {
 
 export interface RelayEventSubscription {
   id: string;
+  events?: string[];
   event?: string;
   createdAt?: string;
   [key: string]: unknown;
@@ -555,6 +588,7 @@ export interface RelayActionInvocationAck {
   handlerNodeId?: string | null;
   dispatchedNodeId?: string | null;
   input?: Record<string, unknown>;
+  output?: Record<string, unknown> | null;
   status?: string;
   createdAt?: string;
 }
@@ -565,6 +599,8 @@ export interface RelayActionInvocation {
   actionName: string;
   callerId?: string | null;
   callerName?: string | null;
+  handlerNodeId?: string | null;
+  dispatchedNodeId?: string | null;
   input?: Record<string, unknown>;
   output?: Record<string, unknown> | null;
   status: string;
@@ -591,10 +627,7 @@ export type RelayPlacementRejectReason =
   | 'unmapped_repo';
 
 export type RelayPlacementReconcileReason =
-  | 'no_eligible_node'
-  | 'target_offline'
-  | 'unmapped_repo'
-  | 'sandbox_policy_mismatch';
+  'no_eligible_node' | 'target_offline' | 'unmapped_repo' | 'sandbox_policy_mismatch';
 
 export interface RelayPlacementReconcileEvent {
   action: 'queued' | 'failed';
@@ -646,12 +679,35 @@ export interface RelaySpawnPlacementInput {
    * invocation, and launches nothing — without this the ack is identical to a
    * real spawn. Defaults to `false` so plain dispatch keeps its semantics for
    * non-spawn capabilities; agent-spawning callers should set it.
+   * Spawn success is judged against whichever contract this request asked the
+   * node for — see `verifyReady`. Either way a terminal success must carry
+   * `spawned:true` and an explicit `ready` boolean, so a handler that reports
+   * nothing is still a failure.
    */
   confirm?: boolean;
   /**
+   * Request proven harness readiness from the broker. Defaults to `true` for
+   * spawn harnesses when `confirm: true` is set, and `false` otherwise
+   * (including `spawn:persona`, whose child is engine-owned and never reads
+   * `verify_ready`).
+   *
+   * Verified success carries `spawned:true, ready:true`; unverified success
+   * carries `spawned:true, ready:false`. Confirmation judges whichever contract
+   * was requested, so `verifyReady: false` with `confirm: true` accepts a
+   * launched-but-not-yet-ready worker.
+   *
+   * Setting this to `true` without `confirm: true` asks the broker to hold the
+   * action open until the harness is ready — and to release the worker if it
+   * never is — while this call returns as soon as the dispatch is accepted. Only
+   * do that if something else reads the invocation back.
+   */
+  verifyReady?: boolean;
+  /**
    * How long to wait for that terminal result. Must exceed the node's own
    * readiness window (the broker's `verify_ready` mode holds the action open
-   * for up to 90s). Defaults to 120000.
+   * for up to 90s, and starts that clock only once the launch completes).
+   * Defaults to 360000; `fleet spawn` enforces a 95000 floor for verified
+   * targeted spawns so the two windows nest.
    */
   confirmTimeoutMs?: number;
   /** Poll cadence while awaiting confirmation. Defaults to 500. */
@@ -672,6 +728,8 @@ export interface RelaySpawnPlacementAck extends RelayActionInvocationAck {
     repo?: string;
     attempts: number;
     queued: boolean;
+    /** Evidence state for this placement receipt. */
+    state: 'accepted' | 'ready';
     /**
      * `true` only when the node reported a terminal success for this
      * invocation. `false` means the dispatch was accepted but not confirmed —
@@ -691,12 +749,6 @@ export interface RelayWorkspaceInfo {
   [key: string]: unknown;
 }
 
-export interface RelayWorkspaceFleetNodesConfig {
-  enabled: boolean;
-  defaultEnabled: boolean;
-  override: boolean | null;
-}
-
 /**
  * Relay inbox states built on the canonical delivery-status lifecycle:
  * `queued`/`delivered`/`failed` surface directly, the terminal `acked` and
@@ -706,9 +758,7 @@ export interface RelayWorkspaceFleetNodesConfig {
  * status).
  */
 export type InboxItemState =
-  | Extract<wire.DeliveryStatus, 'queued' | 'delivered' | 'failed'>
-  | 'deferred'
-  | 'read';
+  Extract<wire.DeliveryStatus, 'queued' | 'delivered' | 'failed'> | 'deferred' | 'read';
 
 export interface InboxItem {
   id: string;
@@ -917,9 +967,10 @@ export interface RelayMessagingClient {
     get(name: string): Promise<RelayAgent>;
     register(input: RelayRegisterAgentInput): Promise<RelayAgentRegistration>;
     /**
-     * Register an agent, adopting the existing identity (with a rotated
-     * token) when the name is already taken. Optional: backends without
-     * rotation support fall back to plain `register`.
+     * Compatibility alias for `register`. Current Relaycast SDKs implement it
+     * as create-only registration: an existing name is rejected with
+     * `name_conflict` and its token is not rotated. Optional: when absent,
+     * callers fall back to plain `register`.
      */
     registerOrRotate?(input: RelayRegisterAgentInput): Promise<RelayAgentRegistration>;
     /** Resolve the identity of the agent the client is authenticated as. */
@@ -1049,11 +1100,16 @@ export interface RelayMessagingClient {
   };
   readonly workspace: {
     info(): Promise<RelayWorkspaceInfo>;
-    fleetNodes: {
-      get(): Promise<RelayWorkspaceFleetNodesConfig>;
-      set(enabled: boolean): Promise<RelayWorkspaceFleetNodesConfig>;
-      inherit(): Promise<RelayWorkspaceFleetNodesConfig>;
-    };
+  };
+  /**
+   * Stored file attachments. `upload` runs the full upload (request, byte
+   * PUT, complete) and returns a file whose `id` can be passed in a message's
+   * `attachments`.
+   */
+  readonly files?: {
+    upload(input: RelayUploadFileInput, options?: RelayFileTransferOptions): Promise<RelayFileInfo>;
+    get(id: string): Promise<RelayFileInfo>;
+    download(id: string, options?: RelayFileTransferOptions): Promise<RelayDownloadedFile>;
   };
 }
 

@@ -19,6 +19,7 @@ function node(overrides: Partial<RelayNode>): RelayNode {
     name: 'unnamed',
     status: 'online',
     live: true,
+    handlersLive: true,
     capabilities: [],
     ...overrides,
   } as RelayNode;
@@ -58,6 +59,7 @@ describe('readRemoteLiveAgents', () => {
 
     expect(result).toEqual({
       supported: true,
+      complete: true,
       agents: [{ name: 'å-worker' }, { name: 'worker-z' }],
     });
   });
@@ -65,6 +67,7 @@ describe('readRemoteLiveAgents', () => {
   it('treats an absent marker as an unsupported old broker', () => {
     expect(readRemoteLiveAgents(node({ name: 'sf-mini', capabilities: [] }))).toEqual({
       supported: false,
+      complete: false,
       agents: [],
     });
   });
@@ -83,7 +86,25 @@ describe('readRemoteLiveAgents', () => {
           ],
         })
       )
-    ).toMatchObject({ supported: true, agents: [], warning: expect.stringContaining('1 malformed') });
+    ).toMatchObject({
+      supported: true,
+      complete: false,
+      agents: [],
+      warning: expect.stringContaining('1 malformed'),
+    });
+  });
+
+  it('keeps a roster with only duplicate names complete', () => {
+    expect(
+      readRemoteLiveAgents(
+        node({
+          name: 'sf-mini',
+          capabilities: [
+            { name: LIVE_AGENT_CAPABILITY_NAME, kind: 'capacity', metadata: { names: ['w', 'w'] } },
+          ],
+        })
+      )
+    ).toMatchObject({ supported: true, complete: true, agents: [{ name: 'w' }] });
   });
 });
 
@@ -169,6 +190,7 @@ describe('buildRows — the diagnostic column exists', () => {
 
     const row = out.perNode.find((r) => r.name === 'ghost-agent');
     expect(row?.presence).toBe('inventory only');
+    expect(row?.workerLiveness).toBe('degraded');
     // State column must not lie about liveness for inventory-only rows.
     expect(row?.state).not.toContain('idle');
     expect(row?.state).not.toContain('working');
@@ -283,6 +305,203 @@ describe('buildRows — the diagnostic column exists', () => {
     expect(formatPretty(out)).toContain('names may be incomplete');
   });
 
+  it('separates an offline control plane from stale remote worker evidence', () => {
+    const out = buildRows(
+      {
+        contributions: [
+          {
+            node: node({ name: 'finn-mini', status: 'offline', live: false, activeAgents: 1 }),
+            isLocal: false,
+            remoteAgents: [remoteAgent('possibly-live')],
+          },
+        ],
+        roster: [],
+      },
+      NOW
+    );
+    expect(out.perNode[0]).toMatchObject({
+      controlPlane: 'offline',
+      workerLiveness: 'unknown',
+      presence: 'remote stale (control plane unavailable)',
+    });
+    expect(formatPretty(out)).toContain('remote stale');
+    expect(formatPretty(out)).toContain('worker liveness is unknown');
+  });
+
+  it('shows live local workers even when the control-plane link is offline', () => {
+    const out = buildRows(
+      {
+        contributions: [
+          {
+            node: node({ name: 'finn-mini', status: 'offline', live: false }),
+            isLocal: true,
+            liveAgents: [liveAgent('worker-live')],
+            inventoryAgents: [],
+          },
+        ],
+        roster: [],
+      },
+      NOW
+    );
+    expect(out.perNode[0]).toMatchObject({
+      controlPlane: 'offline',
+      workerLiveness: 'live',
+      presence: 'live only',
+    });
+  });
+
+  it.each([
+    ['offline', { status: 'offline', live: false }],
+    ['unknown', { status: 'online', live: undefined }],
+  ])('keeps a reconciled empty inventory remote-stale when the control plane is %s', (_label, state) => {
+    const out = buildRows(
+      {
+        contributions: [
+          {
+            node: node({ name: 'chief-broker', ...state, activeAgents: 0 }),
+            isLocal: false,
+            remoteAgents: [],
+          },
+        ],
+        roster: [],
+      },
+      NOW
+    );
+    expect(out.perNode[0]).toMatchObject({
+      controlPlane: _label,
+      workerLiveness: 'unknown',
+      presence: 'remote stale (control plane unavailable)',
+    });
+    expect(formatPretty(out)).toContain('remote stale');
+    expect(formatPretty(out)).not.toContain('names may be incomplete');
+  });
+
+  // relay#1563 Low: the backfill loop used to key off the *rendered* node
+  // name, which collapses to the literal '(unnamed)' placeholder for any
+  // node with an empty name. Two distinct unnamed nodes then looked
+  // identical to `Array.find`, so only the first ever got its
+  // controlPlane/workerLiveness axes filled in — the second silently kept
+  // them omitted (`undefined`), even though buildRows' own contract says
+  // every row carries both axes explicitly.
+  it('backfills controlPlane/workerLiveness independently for two distinct unnamed nodes', () => {
+    const out = buildRows(
+      {
+        contributions: [
+          {
+            node: node({ name: '', status: 'offline', live: false }),
+            isLocal: true,
+            liveAgents: [liveAgent('worker-on-unnamed-a')],
+            inventoryAgents: [],
+          },
+          {
+            node: node({ name: '', status: 'online', live: true, handlersLive: true }),
+            isLocal: true,
+            liveAgents: [],
+            inventoryAgents: [],
+          },
+        ],
+        roster: [],
+      },
+      NOW
+    );
+
+    const rowA = out.perNode.find((row) => row.name === 'worker-on-unnamed-a');
+    expect(rowA).toMatchObject({ node: '(unnamed)', controlPlane: 'offline', workerLiveness: 'live' });
+
+    const emptyRow = out.perNode.find((row) => row.name === '<0 agents on this node>');
+    expect(emptyRow).toMatchObject({ node: '(unnamed)', controlPlane: 'online', workerLiveness: 'empty' });
+  });
+
+  it('preserves stale remote evidence for two distinct unnamed offline nodes', () => {
+    const out = buildRows(
+      {
+        contributions: [
+          {
+            node: node({ name: '', status: 'offline', live: false, activeAgents: 1 }),
+            isLocal: false,
+            remoteAgents: [remoteAgent('stale-worker-a')],
+          },
+          {
+            node: node({ name: '', status: 'offline', live: false, activeAgents: 1 }),
+            isLocal: false,
+            remoteAgents: [remoteAgent('stale-worker-b')],
+          },
+        ],
+        roster: [],
+      },
+      NOW
+    );
+
+    expect(out.perNode).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'stale-worker-a',
+          node: '(unnamed)',
+          controlPlane: 'offline',
+          workerLiveness: 'unknown',
+          presence: 'remote stale (control plane unavailable)',
+        }),
+        expect.objectContaining({
+          name: 'stale-worker-b',
+          node: '(unnamed)',
+          controlPlane: 'offline',
+          workerLiveness: 'unknown',
+          presence: 'remote stale (control plane unavailable)',
+        }),
+      ])
+    );
+  });
+
+  it.each([
+    ['offline', { status: 'offline', live: false }],
+    ['unknown', { status: 'unknown', live: undefined }],
+  ])('keeps %s control-plane heartbeat mismatches remote-stale and unknown', (_label, controlPlane) => {
+    const out = buildRows(
+      {
+        contributions: [
+          {
+            node: node({ name: 'finn-mini', ...controlPlane, activeAgents: 2 }),
+            isLocal: false,
+            remoteAgents: [remoteAgent('stale-worker')],
+          },
+        ],
+        roster: [],
+      },
+      NOW
+    );
+
+    const mismatch = out.perNode.find((row) => row.name.startsWith('<'));
+    expect(mismatch).toMatchObject({
+      state: '· remote stale',
+      presence: 'remote stale (control plane unavailable)',
+      workerLiveness: 'unknown',
+    });
+    expect(mismatch?.note).toContain('stale: heartbeat reports 2, broker returned 1');
+    expect(mismatch?.note).not.toContain('degraded');
+  });
+
+  it('renders independent control-plane and worker columns in pretty output', () => {
+    const rendered = formatPretty(
+      buildRows(
+        {
+          contributions: [
+            {
+              node: node({ name: 'finn-mini', status: 'offline', live: false }),
+              isLocal: true,
+              liveAgents: [liveAgent('worker-live')],
+              inventoryAgents: [],
+            },
+          ],
+          roster: [],
+        },
+        NOW
+      )
+    );
+    expect(rendered).toContain('CONTROL PLANE');
+    expect(rendered).toContain('WORKERS');
+    expect(rendered).toContain('Offline or degraded control plane does not prove workers are dead');
+  });
+
   it('keeps known remote names but exposes a heartbeat/inventory count mismatch', () => {
     const out = buildRows(
       {
@@ -358,6 +577,8 @@ describe('buildRows — the diagnostic column exists', () => {
       node: '?',
       name: 'chief-broker-grok-capability-0817-cli',
       presence: 'roster only',
+      controlPlane: 'unknown',
+      workerLiveness: 'unknown',
     });
   });
 
@@ -652,6 +873,22 @@ describe('collectWithRetry — a transient failure retries once', () => {
       expect(result.error).toContain('test: permanent');
       expect(result.retried).toBe(true);
     }
+  });
+
+  it('describes a non-Error rejection instead of printing [object Object]', async () => {
+    const result = await collectWithRetry(
+      'roster',
+      async () => {
+        throw { message: 'workspace key rejected', status: 401 };
+      },
+      { retries: 0, sleep: async () => undefined }
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'roster: workspace key rejected (status 401)',
+      retried: false,
+    });
   });
 
   it('does not retry a terminal failure rejected by shouldRetry', async () => {

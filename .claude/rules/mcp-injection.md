@@ -58,15 +58,37 @@ In `spawner.rs`, always pass the **original CLI name** (e.g. `"claude"`, `"curso
 
 ## CLI Provider Support Matrix
 
-| CLI                   | MCP Support | Mechanism                                      | Key Function                   |
-| --------------------- | ----------- | ---------------------------------------------- | ------------------------------ |
-| **Claude**            | Full        | `--mcp-config '{json}'` flag                   | `configure_agent_relay_mcp()`  |
-| **Codex**             | Full        | Multiple `--config key=value` flags            | `configure_agent_relay_mcp()`  |
-| **Cursor**            | Full        | Writes `.cursor/mcp.json`                      | `ensure_cursor_mcp_config()`   |
-| **Opencode**          | Full        | Writes `opencode.json` + `--agent agent-relay` | `ensure_opencode_config()`     |
-| **Gemini**            | Conditional | Pre-spawn `gemini mcp add` command             | `configure_gemini_droid_mcp()` |
-| **Droid**             | Conditional | Pre-spawn `droid mcp add` command              | `configure_gemini_droid_mcp()` |
-| **Goose/Aider/Other** | None        | No injection — agent has no MCP tools          | —                              |
+| CLI                   | MCP Support | Mechanism                                                                    | Credentials                                          | Key Function                   |
+| --------------------- | ----------- | ---------------------------------------------------------------------------- | ---------------------------------------------------- | ------------------------------ |
+| **Claude**            | Full        | `--mcp-config '{json}'` flag                                                 | Values in argv (moves to a file in #1379 PR C)       | `configure_agent_relay_mcp()`  |
+| **Codex**             | Full        | Multiple `--config key=value` flags                                          | Values in argv (moves to a file in #1379 PR C)       | `configure_agent_relay_mcp()`  |
+| **Cursor**            | Full        | Writes project `.cursor/mcp.json` (git-excluded)                             | `${env:NAME}` references; values in agent env        | `ensure_cursor_mcp_config()`   |
+| **Opencode**          | Full        | Writes project `opencode.json` (git-excluded) + `--agent agent-relay`        | `{env:NAME}` references; values in agent env         | `ensure_opencode_config()`     |
+| **Gemini**            | Conditional | Pre-spawn `gemini mcp add -s project` in the agent's cwd (git-excluded file) | `${NAME}` references; values in agent env            | `configure_gemini_droid_mcp()` |
+| **Grok**              | Conditional | Pre-spawn `grok mcp add` (user `~/.grok/config.toml`)                        | `${NAME}` references; values in agent env            | `configure_grok_mcp()`         |
+| **Droid**             | Conditional | Pre-spawn `droid mcp add` command (user config)                              | Values (user scope, outside the project)             | `configure_gemini_droid_mcp()` |
+| **Muse**              | Full        | Clean config home under `~/.agentworkforce/relay/sessions/` (0700/0600)      | Values, outside the project; removed on release      | `ensure_muse_mcp_config()`     |
+| **Devin**             | Full        | Private temp `XDG_CONFIG_HOME` per worker                                    | Values, outside the project; removed with the worker | `devin::prepare_worker_config` |
+| **Goose/Aider/Other** | None        | No injection — agent has no MCP tools                                        | —                                                    | —                              |
+
+## Credentials Never Land in the Project
+
+A file the broker writes (or has a CLI write) inside the agent's working tree
+must never contain a Relay credential (`RELAY_API_KEY`, `RELAY_AGENT_TOKEN`,
+`RELAY_WORKSPACES_JSON`). A later "commit everything" step will sweep it up —
+this leaked a live workspace key and agent token through a committed
+`.cursor/mcp.json`.
+
+- Project config names each credential by environment reference
+  (`SECRET_MCP_ENV_KEYS`, `EnvRefSyntax`); `configure_agent_relay_mcp_launch()`
+  returns `McpLaunch { args, env }` and the spawner must set `env` on the agent
+  process. Verify a new CLI's reference syntax against the installed binary.
+- All project writes go through `worktree_guard::write_project_file()`, which
+  refuses credential-shaped content (`rk_`/`at_`/`nt_` + `live_`/`test_`) and
+  adds the path to `.git/info/exclude` (never the project's `.gitignore`).
+- Config that must hold values goes under
+  `worktree_guard::agent_session_root()` (outside the working tree, 0700) and is
+  removed when the worker is released.
 
 ## Adding a New CLI Provider
 
@@ -83,7 +105,7 @@ When adding MCP injection for a new CLI:
    - `RELAY_AGENT_TOKEN` — if available (pre-registered agents)
    - `RELAY_WORKSPACES_JSON` — multi-workspace context (if provided)
    - `RELAY_DEFAULT_WORKSPACE` — default workspace selection (if provided)
-5. **Include `RELAY_API_KEY`** in Claude's `--mcp-config` — Claude Code does not reliably inherit parent process env vars into MCP server subprocesses when using `--mcp-config` + `--strict-mcp-config`, so the key must be embedded directly in the JSON config. The `inject_api_key_into_mcp_json()` helper handles this after the merge step. Other CLIs (Codex, Cursor, Opencode) also include it via their own mechanisms.
+5. **Include `RELAY_API_KEY`** in Claude's `--mcp-config` — Claude Code does not reliably inherit parent process env vars into MCP server subprocesses when using `--mcp-config` + `--strict-mcp-config`, so the key must be embedded directly in the JSON config. The `inject_api_key_into_mcp_json()` helper handles this after the merge step. Codex includes it via `--config`. File-based CLIs (Cursor, Opencode, Gemini, Grok) name it — and every other credential — by environment reference only; see "Credentials Never Land in the Project".
 
 ## Workspace Variable Forwarding
 

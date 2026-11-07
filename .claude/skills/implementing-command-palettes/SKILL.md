@@ -29,57 +29,6 @@ Command palettes (Cmd+K / Ctrl+K) need precise keyboard navigation, scroll behav
 
 ## Keyboard Navigation
 
-### Critical: Wrapper Pattern for Conditional Rendering
-
-**This is the most common source of bugs.** The keyboard effect must ONLY run when the palette is open. Use a wrapper component:
-
-```tsx
-// Wrapper ensures effects only run when open
-export function CommandPalette(props: CommandPaletteProps) {
-  if (!props.isOpen) return null;
-  return <CommandPaletteContent {...props} />;
-}
-
-// Content component - effects run on mount/unmount
-function CommandPaletteContent({ onClose, ... }: CommandPaletteProps) {
-  // Effects here only run when palette is visible
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => { ... };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [deps]);
-
-  return <div>...</div>;
-}
-```
-
-**Why this matters:**
-
-- If you put `if (!isOpen) return null` AFTER useEffect hooks, the effects still run when closed
-- This causes keyboard listeners to be registered even when palette is invisible
-- The wrapper pattern ensures effects only run when the component actually renders
-
-### Input Focus + Window Listener Pattern
-
-The input MUST be focused (for typing to work), and keyboard navigation MUST use `window.addEventListener`. This works because:
-
-- The window listener receives keydown events for ALL keys
-- Arrow keys don't insert text into inputs, so `e.preventDefault()` just stops page scrolling
-- Regular character keys still reach the input for typing
-
-```tsx
-// Input with autoFocus - NOT setTimeout focus
-<input
-  autoFocus
-  type="text"
-  value={query}
-  onChange={(e) => {
-    setQuery(e.target.value);
-    setSelectedIndex(0); // Reset to first item when query changes
-  }}
-/>
-```
-
 ### Index Management
 
 ```tsx
@@ -114,7 +63,6 @@ useEffect(() => {
     }
   };
 
-  // NO capture phase needed - simple window listener works with focused input
   window.addEventListener('keydown', handleKeyDown);
   return () => window.removeEventListener('keydown', handleKeyDown);
 }, [isOpen, filteredItems, selectedIndex, close]);
@@ -125,7 +73,18 @@ useEffect(() => {
 - `e.preventDefault()` stops arrow keys from scrolling the page
 - `Math.min/max` prevents index going out of bounds
 - Effect depends on `filteredItems` so navigation updates when filter changes
-- Use `autoFocus` on input, NOT `setTimeout(() => ref.current?.focus(), 0)`
+
+### Reset Selection on Query Change
+
+```tsx
+<input
+  value={query}
+  onChange={(e) => {
+    setQuery(e.target.value);
+    setSelectedIndex(0); // Reset to first item when query changes
+  }}
+/>
+```
 
 ## Keeping Selected Item in View
 
@@ -340,21 +299,14 @@ function executeCommand(command: CommandItem) {
 
 ## Common Mistakes
 
-| Mistake                                             | Why It Fails                                                           | Fix                                                                                                           |
-| --------------------------------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| Icons inside useMemo                                | New icon element every render                                          | Define icons as constants outside component                                                                   |
-| Not resetting index on filter                       | Arrow keys start from wrong position                                   | `setSelectedIndex(0)` in onChange                                                                             |
-| `block: 'center'` in scrollIntoView                 | Jarring scroll when item already visible                               | Use `block: 'nearest'`                                                                                        |
-| Missing `e.preventDefault()`                        | Arrow keys scroll page AND move selection                              | Add preventDefault for ArrowUp/Down                                                                           |
-| Forgetting cleanup in useEffect                     | Event listeners accumulate                                             | Return cleanup function                                                                                       |
-| `undefined` for disabled action                     | Type error or click does nothing                                       | Use `noop` constant                                                                                           |
-| Using `{ capture: true }` on window listener        | Not needed and can cause issues                                        | Use simple `addEventListener` without options                                                                 |
-| Focusing a container instead of input               | Typing won't work, UX feels broken                                     | Use `autoFocus` on input, window listener handles arrows                                                      |
-| `setTimeout` for focus                              | Race conditions, focus may fail                                        | Use `autoFocus` attribute on input                                                                            |
-| `onKeyDown` on input element                        | Works but less reliable than window                                    | Use `window.addEventListener` in useEffect                                                                    |
-| Using refs to avoid re-registering listener         | Stale closures, missed updates                                         | Include deps in array, let listener re-register                                                               |
-| `if (!isOpen) return null` after useEffect          | Effects run even when closed, listener always active                   | Use wrapper component pattern (see above)                                                                     |
-| `bg-transparent` with conditional `bg-accent-light` | Tailwind CSS conflict - both set background-color, compiled order wins | Put background classes in conditional: `${selected ? 'bg-accent-light' : 'bg-transparent hover:bg-gray-100'}` |
+| Mistake                             | Why It Fails                              | Fix                                         |
+| ----------------------------------- | ----------------------------------------- | ------------------------------------------- |
+| Icons inside useMemo                | New icon element every render             | Define icons as constants outside component |
+| Not resetting index on filter       | Arrow keys start from wrong position      | `setSelectedIndex(0)` in onChange           |
+| `block: 'center'` in scrollIntoView | Jarring scroll when item already visible  | Use `block: 'nearest'`                      |
+| Missing `e.preventDefault()`        | Arrow keys scroll page AND move selection | Add preventDefault for ArrowUp/Down         |
+| Forgetting cleanup in useEffect     | Event listeners accumulate                | Return cleanup function                     |
+| `undefined` for disabled action     | Type error or click does nothing          | Use `noop` constant                         |
 
 ## Testing Checklist
 

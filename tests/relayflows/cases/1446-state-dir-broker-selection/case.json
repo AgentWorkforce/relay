@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1446-state-dir-broker-selection",
+  "kind": "bugfix",
+  "title": "Target a --state-dir broker from node agent list and release",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1446-state-dir-broker-selection/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "node_agent_state_dir_rejected"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "node_agent_state_dir_targets_broker"
+    }
+  }
+}

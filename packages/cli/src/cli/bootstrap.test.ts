@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,9 +26,8 @@ const expectedLeafCommands = [
   'node agent message flush',
   'node agent message hold',
   'node agent message auto',
-  'node workflow run',
-  'node workflow logs',
-  'node workflow sync',
+  // `node workflow run|logs|sync` run on relayflows v1 and are deprecated in
+  // favour of `agent-relay flows`; they still work but no longer appear here.
   // top-level composite status + maintenance + telemetry + mcp
   'status',
   'version',
@@ -35,20 +35,20 @@ const expectedLeafCommands = [
   'uninstall',
   'telemetry',
   'mcp',
-  // reflex
-  'reflex on',
-  'reflex off',
-  'reflex status',
-  'session replay',
-  // fleet (serve is a hidden error stub, filtered out below)
+  // Mounted product surfaces. They are commander leaves on purpose: each
+  // product's real command tree lives in its own SDK spec and is rendered by
+  // the surface mounter, so commander only ever sees the group.
+  'file',
+  'flows',
+  // `session` (singular) is the hidden alias of `sessions`, so it is absent here.
+  'sessions',
+  // fleet (serve is a hidden error stub; config/enable/disable/inherit are hidden no-ops)
   'fleet agent list',
-  'fleet config',
-  'fleet disable',
-  'fleet enable',
-  'fleet inherit',
-  'fleet nodes',
+  'fleet nodes list',
+  'fleet relayfile attach',
   'fleet release',
   'fleet spawn',
+  'fleet spawn-status',
   'fleet status',
   // cloud
   'cloud login',
@@ -83,6 +83,7 @@ const expectedLeafCommands = [
   'cloud integration disconnect',
   // workspace
   'workspace create',
+  'init',
   'workspace active',
   'workspace list',
   'workspace set_key',
@@ -126,6 +127,8 @@ const expectedLeafCommands = [
   'message inbox mark_read',
   'message inbox get_readers',
   'message file upload',
+  'message file get',
+  'message file download',
   // integration
   'integration subscribe',
   'integration unsubscribe',
@@ -149,7 +152,14 @@ const expectedLeafCommands = [
 ];
 
 function isHidden(command: Command): boolean {
-  return (command as unknown as { _hidden?: boolean })._hidden === true;
+  if ((command as unknown as { _hidden?: boolean })._hidden === true) return true;
+  // Deprecated commands are hidden through the parent's `visibleCommands` help
+  // override rather than commander's private `_hidden` flag, so ask the parent
+  // what it would actually print. Without this the inventory would claim a
+  // command is on the visible surface while `--help` omits it.
+  const parent = command.parent;
+  if (!parent) return false;
+  return !parent.createHelp().visibleCommands(parent).includes(command);
 }
 
 function collectLeafCommandPaths(program: Command): string[] {
@@ -219,7 +229,6 @@ describe('bootstrap CLI', () => {
         'integration',
         'capabilities',
         'fleet',
-        'reflex',
         'session',
         'status',
         'observer',
@@ -252,6 +261,13 @@ describe('bootstrap CLI', () => {
         'rm',
       ])
     );
+  });
+
+  it('offers a sessions-only MCP mode for plugin configuration', () => {
+    const program = createProgram();
+    const mcp = program.commands.find((command) => command.name() === 'mcp');
+
+    expect(mcp?.options.map((option) => option.long)).toContain('--sessions-only');
   });
 
   it('registers `observer` as a runnable command, not just a group', () => {
@@ -468,5 +484,46 @@ describe('telemetry context propagation', () => {
     } finally {
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('install.sh quick start', () => {
+  const installScript = fs.readFileSync(new URL('../../../../install.sh', import.meta.url), 'utf-8');
+  const usageFunction = installScript.match(/^print_usage\(\)\s*\{\n[\s\S]*?^\}/m)?.[0] ?? '';
+
+  function quickStartCommands(version: string): string[] {
+    // Run the real function so version-dependent command forms are what we check.
+    const output = execFileSync('bash', ['-c', `${usageFunction}\nprint_usage`], {
+      encoding: 'utf-8',
+      env: { ...process.env, VERSION: version, BOLD: '', NC: '' },
+    });
+    return [...output.matchAll(/^\s*agent-relay (.+)$/gm)].map((match) => match[1].trim());
+  }
+
+  it('prints only commands this CLI actually has', () => {
+    // The installer once printed `agent-relay up --background` after `up` moved
+    // under `node`, so a first run failed with "unknown command 'up'".
+    expect(usageFunction).not.toBe('');
+    const commands = quickStartCommands('latest');
+    expect(commands).toContain('node up --background');
+    const program = createProgram();
+    for (const command of commands) {
+      let current: Command = program;
+      // Flags, <placeholders>, and anything after a leaf command are arguments, not command words.
+      for (const word of command
+        .split(/\s+/)
+        .filter((part) => !part.startsWith('-') && !/^<[^>]+>$/.test(part))) {
+        if (current !== program && current.commands.length === 0) break;
+        const next = current.commands.find((sub) => sub.name() === word || sub.aliases().includes(word));
+        expect(next, `agent-relay ${command}: no "${word}" command`).toBeDefined();
+        current = next as Command;
+      }
+    }
+  });
+
+  it('keeps the top-level up/down forms for pinned installs older than 9.2.2', () => {
+    expect(quickStartCommands('9.2.1')).toEqual(['up --background', 'status', 'down']);
+    expect(quickStartCommands('9.2.2')).toEqual(['node up --background', 'status', 'node down']);
+    expect(quickStartCommands('13.1.5')).toEqual(['node up --background', 'status', 'node down']);
   });
 });

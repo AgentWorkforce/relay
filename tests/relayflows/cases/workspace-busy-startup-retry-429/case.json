@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "workspace-busy-startup-retry-429",
+  "kind": "bugfix",
+  "title": "Retry Relaycast workspace busy startup admission",
+  "requirements": ["broker-linux-x64"],
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/workspace-busy-startup-retry-429/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "startup_429_workspace_busy_not_retried"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "startup_429_workspace_busy_retried_safely"
+    }
+  }
+}

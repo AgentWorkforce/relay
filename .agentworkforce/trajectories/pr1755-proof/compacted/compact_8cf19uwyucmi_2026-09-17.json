@@ -1,0 +1,37 @@
+{
+  "id": "compact_8cf19uwyucmi",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-17T16:44:11.647Z",
+  "sourceTrajectories": [
+    "traj_o8uxe5knvia5"
+  ],
+  "dateRange": {
+    "start": "2026-09-17T16:44:10.197Z",
+    "end": "2026-09-17T16:44:11.149Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "api",
+      "decisions": [
+        {
+          "question": "Merge current main into the same feature branch after proving the hosted dispatcher remained pinned to an old base",
+          "chosen": "Merge current main into the same feature branch after proving the hosted dispatcher remained pinned to an old base",
+          "reasoning": "Attempts 1 and 2 of run 35246508818 failed before case execution with mcp-args registration response decoding errors (exit 1). Full logs and gh pr view showed trusted checkout/base SHA df3e0b2bc, despite main at b1a3777e0. Conflict-free merge 38dc806fd and push both exited 0; gh pr view now confirms base b1a3777e0, enabling current proof workflow and artifact-transfer code. This supersedes the initial no-merge decision based on file conflicts alone.",
+          "fromTrajectory": "traj_o8uxe5knvia5"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}

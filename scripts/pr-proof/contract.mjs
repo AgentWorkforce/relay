@@ -4,12 +4,18 @@ export const PR_PROOF_VERSION = 1;
 export const CASE_ROOT = 'tests/relayflows/cases';
 export const INPUT_PATH = '.relayflow/pr-proof-input.json';
 export const ARTIFACT_ROOT = '.workflow-artifacts/pr-proof';
+export const BROKER_RUNTIME_REQUIREMENT = 'broker-linux-x64';
 
 const CASE_ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const SHA_RE = /^[0-9a-f]{40}$/;
 const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const SIGNATURE_RE = /^[a-z0-9](?:[a-z0-9._:-]{0,127})$/;
 const HANDOFF_NONCE_RE = /^[0-9a-f]{32}$/;
+const SHA256_RE = /^[0-9a-f]{64}$/;
+const BROKER_ARTIFACT_PATHS = {
+  base: '.relayflow/pr-proof-binaries/base/agent-relay-broker',
+  head: '.relayflow/pr-proof-binaries/head/agent-relay-broker',
+};
 const MAX_OBSERVATION_DETAILS_LENGTH = 4_000;
 const REQUIRED_TITLE_RE = /^(feat|fix)(?:\([^)]*\))?!?:/i;
 const TYPE_MARKER_RE = /^\s*-\s*Change type:\s*`([^`]+)`\s*<!--\s*relay-pr-proof:type\s*-->\s*$/im;
@@ -73,10 +79,107 @@ export function parsePrProofMetadata(body = '') {
   };
 }
 
-export function classifyPullRequest({ title = '', body = '' }) {
+/**
+ * Paths that cannot change what a user's `agent-relay` actually does.
+ *
+ * The proof gate exists to stop a runtime behaviour change landing without a
+ * red/green demonstration. Scheduled workflow definitions, CI config, docs and
+ * test corpora are none of those: nothing here is executed by an installed CLI
+ * or broker.
+ *
+ * Deliberately an allowlist, so it fails CLOSED. A path this list has never
+ * heard of counts as runtime and still demands a proof — a new top-level
+ * directory should not silently become proof-exempt.
+ *
+ * `scripts/` is NOT exempt wholesale. `scripts/inject-posthog-key.mjs` is run
+ * by publish.yml and rewrites the compiled CLI before it ships, so a change
+ * there reaches users even though nothing under `scripts/` is imported at
+ * runtime. Only the subtrees that exist to serve CI itself are listed.
+ */
+const NON_RUNTIME_PATH_PATTERNS = Object.freeze([
+  /^workflows\//,
+  /^flows\//,
+  /^docs\//,
+  /^\.github\//,
+  /^\.agentworkforce\//,
+  /^scripts\/pr-proof\//,
+  /^scripts\/evals\//,
+  /^scripts\/verify-features\//,
+  /^tests\//,
+  // Not just the top-level tests/ tree: a package-local unit test
+  // (packages/*/src/**/*.test.ts) is test corpus too. Every published
+  // tarball pins an explicit `files` array that excludes it, so it never
+  // reaches a shipped artifact regardless of where it lives. A runtime fix
+  // that lands alongside a test still demands a proof from its OWN file —
+  // this only exempts a change confined entirely to test files.
+  //
+  // Anchored to packages/<name>/... specifically, NOT a bare `\.test\.tsx?$`
+  // suffix match: an unanchored pattern would also exempt something like
+  // scripts/some-new-tool/main.test.ts, contradicting "scripts/ is NOT exempt
+  // wholesale" above and this list's fail-closed treatment of unknown
+  // scripts/ subtrees.
+  /^packages\/[^/]+\/.+\.test\.tsx?$/,
+  /^[^/]*\.md$/,
+  // Top-level repo metadata that cannot reach a shipped artifact.
+  //
+  // Listed individually rather than as a dotfile glob, so a top-level dotfile
+  // that DOES affect a build — an .npmrc or .nvmrc — keeps demanding a proof.
+  //
+  // .gitattributes is deliberately NOT here. `export-ignore` removes files from
+  // `git archive`, and the broker proof workflow builds its isolated source
+  // tree with exactly that command, so a .gitattributes edit can change what a
+  // proof compiles against. `text`/`eol` normalisation can also change file
+  // contents. That is a different class from "which files git tracks".
+  //
+  // .gitignore stays: every published package pins an explicit `files` array,
+  // so npm never falls back to it, and the shipped consumer of a .gitignore
+  // (packages/cloud buildIgnoreMatcher) reads the USER's project root, not
+  // this repo's. Its only reach here is this repo's own cloud tarball, which
+  // is the same CI scope already exempted via workflows/ and .github/.
+  /^\.gitignore$/,
+  /^\.editorconfig$/,
+  // Session/trajectory compaction logs (chief-brain journaling for coding
+  // agent sessions). Never imported by the CLI or broker at runtime — pure
+  // record-keeping. Nested, so the top-level `*.md` pattern above doesn't
+  // already cover `.trajectories/compacted/*.md`.
+  /^\.trajectories\//,
+  // Formatter config only — cannot change what ships. Same class as
+  // .editorconfig above.
+  /^\.prettierignore$/,
+]);
+
+/**
+ * True when at least one changed file can alter shipped runtime behaviour.
+ *
+ * This is what decides whether a proof is required — NOT the PR title. Reading
+ * the title alone was wrong in both directions: a `fix(` PR touching only a
+ * scheduled workflow was forced to invent a runtime proof it could not honestly
+ * build, and a `chore(`-titled PR editing the broker skipped the gate
+ * altogether. A gate that can be bypassed by wording is not a gate.
+ */
+export function runtimeSurfaceChanged(files = []) {
+  return files
+    .filter((file) => typeof file === 'string' && file.trim())
+    .some((file) => !NON_RUNTIME_PATH_PATTERNS.some((pattern) => pattern.test(file)));
+}
+
+export function classifyPullRequest({ title = '', body = '', changedFiles = null }) {
   const metadata = parsePrProofMetadata(body);
   const conventionalKind = REQUIRED_TITLE_RE.exec(title)?.[1]?.toLowerCase() ?? null;
   const titleKind = conventionalKind === 'feat' ? 'feature' : conventionalKind === 'fix' ? 'bugfix' : null;
+  // `null` means the diff is unknown: the caller could not read it, or never
+  // had one. Unknown is NOT "nothing to prove". The title-only fallback that
+  // used to run here turned a transient GitHub files-API failure into a green
+  // skip for every PR whose title and body both read as non-functional -- a
+  // `chore(`-titled runtime change declaring `non-functional` classified as
+  // `required: false`, and the proof was never dispatched.
+  //
+  // Unknown now fails closed, so every use of `touchesRuntime` below has to
+  // distinguish `false` (a diff was read and nothing in it ships) from `null`.
+  const touchesRuntime = changedFiles === null ? null : runtimeSurfaceChanged(changedFiles);
+  // A `non-functional` declaration is a claim ABOUT the diff. With no diff to
+  // check it against, the claim is unverifiable, not accepted.
+  const unverifiableNonFunctional = touchesRuntime === null && metadata.changeType === 'non-functional';
   const errors = [];
 
   if (metadata.changeTypeCount === 0) {
@@ -94,8 +197,8 @@ export function classifyPullRequest({ title = '', body = '' }) {
 
   if (!metadata.changeType) {
     return {
-      required: Boolean(titleKind),
-      kind: titleKind,
+      required: Boolean(titleKind) || touchesRuntime !== false,
+      kind: titleKind ?? (touchesRuntime !== false ? 'bugfix' : null),
       caseId: null,
       metadata,
       errors,
@@ -111,23 +214,56 @@ export function classifyPullRequest({ title = '', body = '' }) {
 
   const metadataKind =
     metadata.changeType === 'feature' || metadata.changeType === 'bugfix' ? metadata.changeType : null;
-  if (titleKind && metadata.changeType === 'non-functional') {
-    errors.push(`PR title declares a ${titleKind}, so the change type cannot be non-functional`);
+  // A `non-functional` declaration is checked against the DIFF, not the title.
+  // Rejecting it purely because the title says `fix(` forced workflow-only and
+  // docs-only PRs to fabricate a runtime proof they could not honestly build.
+  // The diff overrules the title in BOTH directions. A runtime change cannot be
+  // non-functional no matter how the title is worded — checking `titleKind`
+  // here would let a `chore(`-titled broker change declare non-functional and
+  // have that contradiction silently coerced into `bugfix` further down.
+  if (metadata.changeType === 'non-functional' && touchesRuntime === true) {
+    errors.push('This PR changes runtime files, so the change type cannot be non-functional');
+  } else if (unverifiableNonFunctional) {
+    // Raised for ANY unreadable diff, not just a conventionally-titled PR.
+    // Gating this on `titleKind` was the false green: a `chore(`-titled PR
+    // declaring non-functional matched no branch at all and sailed through.
+    errors.push(
+      'The changed-file list could not be read, so a non-functional declaration cannot be verified'
+    );
   }
   if (titleKind && metadataKind && titleKind !== metadataKind) {
     errors.push(`PR title declares ${titleKind}, but the PR body declares ${metadataKind}`);
   }
 
-  const required = Boolean(metadataKind || titleKind);
-  const kind = metadataKind ?? titleKind;
-  if (required) {
-    if (!metadata.caseId || metadata.caseId === 'n/a') {
-      errors.push('Feature and bug-fix PRs must declare exactly one RelayFlow case id');
-    } else if (!CASE_ID_RE.test(metadata.caseId)) {
-      errors.push(`Invalid RelayFlow case id: ${metadata.caseId}`);
+  // Decided by the diff:
+  //   runtime touched            -> a proof is required, whatever the title says
+  //   nothing runtime + declared -> non-functional is legitimate, even for `fix(`
+  //   diff unknown               -> required; an unread diff exempts nothing
+  const required =
+    touchesRuntime !== false
+      ? true
+      : metadata.changeType === 'non-functional'
+        ? false
+        : Boolean(metadataKind || titleKind);
+  // An unreadable diff makes a non-functional declaration unverifiable. Keep
+  // its kind unknown rather than manufacturing a bug-fix classification from
+  // the required proof fallback. Explicit feature/bug-fix metadata remains
+  // meaningful even while the changed-file list is unavailable.
+  const kind = required && !unverifiableNonFunctional ? (metadataKind ?? titleKind ?? 'bugfix') : null;
+  // A PR held open only by an unreadable diff declared `n/a` consistently with
+  // its own change type. Demanding a case id from it would bury the one error
+  // that matters — the unreadable diff, already reported above — under a
+  // selector complaint the author cannot act on.
+  if (!unverifiableNonFunctional) {
+    if (required) {
+      if (!metadata.caseId || metadata.caseId === 'n/a') {
+        errors.push('Feature and bug-fix PRs must declare exactly one RelayFlow case id');
+      } else if (!CASE_ID_RE.test(metadata.caseId)) {
+        errors.push(`Invalid RelayFlow case id: ${metadata.caseId}`);
+      }
+    } else if (metadata.caseId !== 'n/a') {
+      errors.push('Non-functional PRs must declare the RelayFlow case as n/a');
     }
-  } else if (metadata.caseId !== 'n/a') {
-    errors.push('Non-functional PRs must declare the RelayFlow case as n/a');
   }
 
   return {
@@ -136,7 +272,11 @@ export function classifyPullRequest({ title = '', body = '' }) {
     caseId: required && metadata.caseId !== 'n/a' ? metadata.caseId : null,
     metadata,
     errors,
-    reason: required ? `declared ${kind}` : 'declared non-functional',
+    reason: !required
+      ? 'declared non-functional'
+      : touchesRuntime === null
+        ? 'changed-file list unavailable'
+        : `declared ${kind}`,
   };
 }
 
@@ -205,6 +345,17 @@ export function validateCaseManifest(value, { caseId, kind } = {}) {
   const base = validateExpectation(expected?.base, 'expected.base', baseOutcome, errors);
   const head = validateExpectation(expected?.head, 'expected.head', 'fixed', errors);
 
+  const requirements = manifest.requirements === undefined ? [] : manifest.requirements;
+  if (
+    !Array.isArray(requirements) ||
+    requirements.some((entry) => entry !== BROKER_RUNTIME_REQUIREMENT) ||
+    new Set(requirements).size !== requirements.length
+  ) {
+    errors.push(
+      `case manifest requirements must be a unique array containing only ${BROKER_RUNTIME_REQUIREMENT}`
+    );
+  }
+
   if (errors.length > 0) {
     throw new PrProofContractError('Invalid RelayFlow case manifest', errors);
   }
@@ -215,6 +366,7 @@ export function validateCaseManifest(value, { caseId, kind } = {}) {
     kind: manifestKind,
     title,
     runner: { command: command.map((entry) => entry.trim()) },
+    requirements: [...requirements],
     timeoutSeconds,
     expected: { base, head },
   };
@@ -253,6 +405,36 @@ export function validateProofInput(value) {
     if (error instanceof PrProofContractError) errors.push(...error.details);
     else throw error;
   }
+
+  let runtimeArtifacts = null;
+  const brokerRequired = manifest?.requirements.includes(BROKER_RUNTIME_REQUIREMENT);
+  if (brokerRequired) {
+    const artifacts = assertObject(input.runtimeArtifacts, 'proof input runtimeArtifacts', errors);
+    const broker = assertObject(artifacts?.broker, 'proof input runtimeArtifacts.broker', errors);
+    const arms = {};
+    for (const arm of ['base', 'head']) {
+      const artifact = assertObject(broker?.[arm], `proof input runtimeArtifacts.broker.${arm}`, errors);
+      const artifactPath = nonEmptyString(artifact?.path);
+      const sha256 = nonEmptyString(artifact?.sha256);
+      const sourceSha = nonEmptyString(artifact?.sourceSha);
+      const expectedSourceSha = arm === 'base' ? baseSha : headSha;
+      if (artifactPath !== BROKER_ARTIFACT_PATHS[arm]) {
+        errors.push(`proof input runtimeArtifacts.broker.${arm}.path is invalid`);
+      }
+      if (!sha256 || !SHA256_RE.test(sha256)) {
+        errors.push(`proof input runtimeArtifacts.broker.${arm}.sha256 is invalid`);
+      }
+      if (sourceSha !== expectedSourceSha) {
+        errors.push(`proof input runtimeArtifacts.broker.${arm}.sourceSha is invalid`);
+      }
+      if (artifactPath && sha256 && sourceSha) {
+        arms[arm] = { path: artifactPath, sha256, sourceSha };
+      }
+    }
+    runtimeArtifacts = broker ? { broker: arms } : null;
+  } else if (input.runtimeArtifacts !== undefined) {
+    errors.push('proof input runtimeArtifacts are not allowed unless the case declares a requirement');
+  }
   if (errors.length > 0) throw new PrProofContractError('Invalid PR proof input', errors);
 
   return {
@@ -265,6 +447,7 @@ export function validateProofInput(value) {
     kind,
     handoffNonce,
     manifest,
+    ...(runtimeArtifacts ? { runtimeArtifacts } : {}),
   };
 }
 

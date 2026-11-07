@@ -103,12 +103,7 @@ export type JsonValue = null | boolean | number | string | JsonValue[] | { [key:
 
 export type NativeHarnessInputMode = 'auto' | 'active' | 'idle';
 export type NativeHarnessCommandKind =
-  | 'submit_user_message'
-  | 'interrupt'
-  | 'approve_tool'
-  | 'reject_tool'
-  | 'compact'
-  | 'release';
+  'submit_user_message' | 'interrupt' | 'approve_tool' | 'reject_tool' | 'compact' | 'release';
 
 /**
  * Portable normalized agent-event payload. The SDK owns the canonical event discriminants;
@@ -238,6 +233,10 @@ export interface ListAgent {
   channels: string[];
   parent?: string;
   pid?: number;
+  /** True only after the broker observed worker_ready for this process generation. */
+  ready?: boolean;
+  /** Immutable identity for generation-checked cleanup. */
+  generation?: string;
   last_activity_at?: string;
   last_activity_ms?: number;
   context_budget_pct?: number | null;
@@ -268,6 +267,12 @@ export interface FleetInventoryAgent {
 }
 
 export interface BrokerStatus {
+  mode?: 'normal' | 'local_only';
+  status?: 'running' | 'degraded';
+  degraded?: {
+    capabilities: Record<string, boolean>;
+    reconciliation: { configured: boolean; connected: boolean; pending_records: number };
+  } | null;
   agent_count: number;
   agents: ListAgent[];
   pending_delivery_count: number;
@@ -279,6 +284,133 @@ export interface BrokerStatus {
   };
   dead_letter_count?: number;
   auth?: BrokerAuthStatus;
+}
+
+/** Where a `deliver` frame ended up once the broker had acted on it. */
+export type NodeDeliveryDisposition =
+  | 'queued_for_injection'
+  | 'surfaced_and_acked'
+  | 'held_for_manual_flush'
+  | 'surface_failed'
+  | 'acked_without_surfacing'
+  | 'rejected_identity'
+  | 'rejected_sequence_gap';
+
+/**
+ * One `deliver` frame the broker observed on `/v1/node/ws`, reduced to
+ * identifiers. Message bodies are deliberately absent: this report is meant to
+ * be safe to paste into an issue.
+ */
+export interface NodeDeliveryRecord {
+  at_ms: number;
+  agent: string;
+  agent_id: string;
+  delivery_id: string;
+  msg_id: string;
+  seq: number;
+  /** The `type` on the frame's payload, e.g. `dm.received`, `message.created`. */
+  payload_type: string;
+  /** The delivery book's verdict on the frame. */
+  decision: 'deliver' | 'duplicate' | 'stale' | 'gap' | 'identity_reject';
+  /** Where the frame ended up. `null` while still in flight. */
+  disposition:
+    | 'queued_for_injection'
+    | 'surfaced_and_acked'
+    | 'held_for_manual_flush'
+    | 'surface_failed'
+    | 'acked_without_surfacing'
+    | 'rejected_identity'
+    | 'rejected_sequence_gap'
+    | null;
+}
+
+/**
+ * Per-agent delivery tallies, retained past the FIFO eviction of
+ * `recent_delivers` so a single deaf agent stays diagnosable on a busy broker.
+ *
+ * `delivers_seen` not advancing means the frame never reached this broker;
+ * advancing while `dispositions.queued_for_injection` does not means the delivery book
+ * discarded it, and `decisions` says which way.
+ */
+export interface NodeDeliveryAgentRow {
+  agent: string;
+  agent_id: string;
+  delivers_seen: number;
+  decisions: Record<'deliver' | 'duplicate' | 'stale' | 'gap' | 'identity_reject', number>;
+  dispositions: Record<NodeDeliveryDisposition, number>;
+  last_deliver_at_ms: number | null;
+  /** Last confirmed delivery to this agent — a deaf agent from a quiet one. */
+  last_queued_for_injection_at_ms: number | null;
+}
+
+/**
+ * `GET /api/node-delivery` — whether node-control `deliver` frames are reaching
+ * the broker and what becomes of them.
+ *
+ * `socket.text_frames` counts inbound frames *before* deserialization, so a
+ * `deliver` the broker cannot parse still shows up as having arrived; compare
+ * it against `frames.deliver` and `socket.parse_failures` to tell "nothing
+ * arrived" apart from "it arrived and was discarded".
+ *
+ * The report is served from shared state rather than the broker's runtime event
+ * loop. When that loop wedges, the socket counters keep climbing while
+ * `cursors_published_at_ms` stops advancing.
+ */
+export interface NodeDeliveryReport {
+  connected: boolean;
+  token_present: boolean;
+  now_ms: number;
+  socket: {
+    connects: number;
+    disconnects: number;
+    /** Inbound WS text frames, counted before deserialization. */
+    text_frames: number;
+    parse_failures: number;
+    last_frame_at_ms: number | null;
+  };
+  frames: {
+    deliver: number;
+    action_invoke: number;
+    ping: number;
+    reply: number;
+    error: number;
+    last_deliver_at_ms: number | null;
+  };
+  decisions: Record<'deliver' | 'duplicate' | 'stale' | 'gap' | 'identity_reject', number>;
+  dispositions: Record<NodeDeliveryDisposition, number>;
+  /**
+   * Whether the `delivery_ack` the dispositions above imply actually left the
+   * broker. A disposition is stamped by the runtime when it *decides* to ack;
+   * the ack is then handed to the socket task, which is where it can still be
+   * lost. `enqueued` above `sent` means acks are stuck between the two.
+   */
+  acks: {
+    enqueued: number;
+    enqueue_failed: number;
+    sent: number;
+    send_failed: number;
+    last_sent_at_ms: number | null;
+  };
+  /** Per-agent rows, retained past the FIFO eviction of `recent_delivers`. */
+  agents: NodeDeliveryAgentRow[];
+  recent_delivers: NodeDeliveryRecord[];
+  /** Frame `type` values the broker could not deserialize, and how often. */
+  unparsed_frame_types: Record<string, number>;
+  last_parse_failure: {
+    at_ms: number;
+    error: string;
+    frame_type: string | null;
+    frame_len: number;
+  } | null;
+  /** When the runtime last republished `cursors`; stale means a stalled loop. */
+  cursors_published_at_ms: number | null;
+  cursors: Array<{
+    agent_id: string;
+    agent_name: string;
+    acked_up_to_seq: number;
+    received_up_to_seq: number;
+    has_sequenced_position: boolean;
+  }>;
 }
 
 /** A terminally-failed delivery retained in the broker's dead-letter queue. */
@@ -476,9 +608,32 @@ export type BrokerEvent =
       name: string;
       delivery_id: string;
       event_id: string;
-      /** 'echo' when confirmed in PTY output, 'timeout_fallback' when acked unverified. */
+      /**
+       * 'harness_acceptance' for accepted PTY deliveries and 'completed_replay'
+       * for duplicate completed deliveries; legacy workers may report 'echo'
+       * or 'timeout_fallback'.
+       */
       verification?: string;
       reason?: string;
+      evidence?: string | null;
+      attempts?: number | null;
+    }
+  | {
+      kind: 'delivery_unconfirmed';
+      name: string;
+      delivery_id: string;
+      event_id: string;
+      reason: string;
+      attempts: number;
+      max_attempts: number;
+    }
+  | {
+      kind: 'delivery_resubmitted';
+      name: string;
+      delivery_id: string;
+      event_id: string;
+      attempt: number;
+      strategy: string;
     }
   | {
       kind: 'delivery_failed';
@@ -552,7 +707,8 @@ export type BrokerEvent =
       channels: string[];
     }
   | {
-      kind: 'worker_ready';
+      /** Fallback releases queued legacy startup work but does not establish readiness. */
+      kind: 'worker_ready' | 'worker_startup_fallback';
       name: string;
       runtime: AgentRuntime;
       provider?: HeadlessProvider;
@@ -686,7 +842,13 @@ export type BrokerToWorker =
 export type WorkerToBroker =
   | {
       type: 'worker_ready';
-      payload: { name: string; runtime: AgentRuntime; provider?: HeadlessProvider; sessionId?: string };
+      payload: {
+        name: string;
+        runtime: AgentRuntime;
+        provider?: HeadlessProvider;
+        sessionId?: string;
+        readiness_proven?: boolean;
+      };
     }
   | {
       type: 'delivery_ack';
@@ -694,10 +856,44 @@ export type WorkerToBroker =
     }
   | {
       type: 'delivery_verified';
-      payload: { delivery_id: string; event_id: string; verification?: string; reason?: string };
+      /** See the `delivery_verified` broker event for `verification` values. */
+      payload: {
+        delivery_id: string;
+        event_id: string;
+        verification?: string;
+        reason?: string;
+        evidence?: string;
+        attempts?: number;
+      };
+    }
+  | {
+      type: 'delivery_unconfirmed';
+      payload: {
+        delivery_id: string;
+        event_id: string;
+        reason: string;
+        attempts: number;
+        max_attempts: number;
+      };
+    }
+  | {
+      type: 'delivery_resubmitted';
+      payload: {
+        delivery_id: string;
+        event_id: string;
+        attempt: number;
+        strategy: string;
+      };
     }
   | {
       type: 'delivery_failed';
+      /**
+       * Terminal and never replayed. PTY injection adds 'prompt_unproven' (no
+       * composer was recognized in time), 'body remained parked after bounded
+       * submit-key recovery', 'harness acceptance could not be proven'
+       * (neither parked nor accepted, so not evidence of loss) and
+       * 'injection_too_large: …' (rejected before any byte was written).
+       */
       payload: { delivery_id: string; event_id: string; reason: string };
     }
   | {

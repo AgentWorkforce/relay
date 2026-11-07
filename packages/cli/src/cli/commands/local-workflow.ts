@@ -9,10 +9,11 @@ import { Command, InvalidArgumentError } from 'commander';
 import { defaultExit } from '../lib/exit.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
 import { track } from '../telemetry/index.js';
+import { applyV1LocalWorkflowDeprecations } from './cloud-v1-deprecations.js';
 
 type ExitFn = (code: number) => never;
 
-type LocalWorkflowFileType = 'ts' | 'js' | 'py' | 'sh' | 'yaml';
+type LocalWorkflowFileType = 'ts' | 'js' | 'sh' | 'yaml';
 type LocalWorkflowRunStatus = 'starting' | 'running' | 'completed' | 'failed';
 
 type LocalWorkflowRunRecord = {
@@ -105,10 +106,10 @@ function parseNonNegativeInteger(value: string): number {
 }
 
 function parseLocalWorkflowFileType(value: string): LocalWorkflowFileType {
-  if (value === 'ts' || value === 'js' || value === 'py' || value === 'sh' || value === 'yaml') {
+  if (value === 'ts' || value === 'js' || value === 'sh' || value === 'yaml') {
     return value;
   }
-  throw new InvalidArgumentError('Expected workflow type to be one of: ts, js, py, sh, yaml');
+  throw new InvalidArgumentError('Expected workflow type to be one of: ts, js, sh, yaml');
 }
 
 function inferLocalWorkflowFileType(filePath: string): LocalWorkflowFileType | null {
@@ -123,8 +124,6 @@ function inferLocalWorkflowFileType(filePath: string): LocalWorkflowFileType | n
     case '.mjs':
     case '.cjs':
       return 'js';
-    case '.py':
-      return 'py';
     case '.sh':
       return 'sh';
     case '.yaml':
@@ -135,10 +134,8 @@ function inferLocalWorkflowFileType(filePath: string): LocalWorkflowFileType | n
   }
 }
 
-function toTelemetryWorkflowFileType(
-  fileType: LocalWorkflowFileType | null
-): 'yaml' | 'ts' | 'py' | 'unknown' {
-  if (fileType === 'yaml' || fileType === 'ts' || fileType === 'py') {
+function toTelemetryWorkflowFileType(fileType: LocalWorkflowFileType | null): 'yaml' | 'ts' | 'unknown' {
+  if (fileType === 'yaml' || fileType === 'ts') {
     return fileType;
   }
   return 'unknown';
@@ -279,7 +276,7 @@ async function resolveLocalWorkflowCommand(
   fileType: LocalWorkflowFileType,
   deps: LocalWorkflowDependencies
 ): Promise<{ command: string; args: string[] }> {
-  if (fileType === 'yaml' || fileType === 'ts' || fileType === 'py') {
+  if (fileType === 'yaml' || fileType === 'ts') {
     return { command: process.execPath, args: [deps.resolveRelayflowsCliEntrypoint(), 'run', workflowPath] };
   }
 
@@ -476,8 +473,8 @@ export function registerLocalWorkflowCommands(
   program
     .command('run')
     .description('Run a workflow file locally')
-    .argument('<workflow>', 'Workflow file path (.yaml, .yml, .ts, .tsx, .py, .js, or .sh)')
-    .option('--file-type <type>', 'Workflow type: ts, js, py, sh, or yaml', parseLocalWorkflowFileType)
+    .argument('<workflow>', 'Workflow file path (.yaml, .yml, .ts, .tsx, .js, or .sh)')
+    .option('--file-type <type>', 'Workflow type: ts, js, sh, or yaml', parseLocalWorkflowFileType)
     .option('--json', 'Print raw JSON response', false)
     .action(async (workflow: string, options: { fileType?: LocalWorkflowFileType; json?: boolean }) => {
       const started = Date.now();
@@ -570,4 +567,7 @@ export function registerLocalWorkflowCommands(
       }
       deps.log(result.message);
     });
+
+  // Applied last so every command it targets is registered.
+  applyV1LocalWorkflowDeprecations(program);
 }

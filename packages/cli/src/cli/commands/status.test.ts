@@ -31,6 +31,12 @@ describe('relay status (composite)', () => {
     expect(lines).toContainEqual(expect.stringContaining('logged in (https://cloud.example)'));
   });
 
+  it('reports degraded health without calling the broker healthy', async () => {
+    const { program, log } = harness({ probe: vi.fn(async () => 'degraded' as const) });
+    await program.parseAsync(['status'], { from: 'user' });
+    expect(log).toHaveBeenCalledWith('Local broker: DEGRADED (LOCAL ONLY) (http://localhost:4123)');
+  });
+
   it('reports stopped broker and not-logged-in', async () => {
     const { program, log } = harness({
       getBrokerConnection: () => null,

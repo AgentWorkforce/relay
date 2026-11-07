@@ -1,20 +1,19 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer as createHttpServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
-import {
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AgentClient, HttpClient } from '@relaycast/sdk';
 import WebSocket from 'ws';
+import { withDefaults } from '../../../packages/cli/src/cli/commands/core.js';
+import {
+  matchesBrokerIdentity,
+  readBrokerIdentities,
+  removeBrokerIdentity,
+  type BrokerProcessIdentity,
+} from '../../../packages/cli/src/cli/lib/broker-process-identity.js';
 
 // Node <22 lacks a global WebSocket, which @relaycast/sdk's in-process
 // AgentClient requires. The spawned CLI installs its own via runCli; this
@@ -28,6 +27,7 @@ export const REPO_ROOT = path.resolve(HERE, '..', '..', '..');
 export const NODE_A_FILE = path.join(HERE, 'nodes', 'node-a.ts');
 export const NODE_B_FILE = path.join(HERE, 'nodes', 'node-b.ts');
 export const CLOUD_ENROLLED_NODE_FILE = path.join(HERE, 'nodes', 'cloud-enrolled.ts');
+export const ENV_PROBE_NODE_FILE = path.join(HERE, 'nodes', 'env-probe.ts');
 
 const CLI_ENTRY = path.join(REPO_ROOT, 'packages', 'cli', 'dist', 'cli', 'index.js');
 
@@ -122,7 +122,10 @@ export async function waitFor<T>(
   opts: { timeoutMs?: number; intervalMs?: number; label?: string } = {}
 ): Promise<T> {
   const timeoutMs = opts.timeoutMs ?? 30_000;
-  const intervalMs = opts.intervalMs ?? 400;
+  // The observer shares the workspace's real free-plan API budget with broker
+  // registration and served-spawn confirmation. Poll at most once per second so
+  // the scenario driver does not itself starve membership/cleanup requests.
+  const intervalMs = opts.intervalMs ?? 1_000;
   const deadline = Date.now() + timeoutMs;
   let last: unknown;
   while (Date.now() < deadline) {
@@ -524,33 +527,68 @@ export class FleetNode {
     return this.lastLog;
   }
 
-  /** Kill the whole node host: the `node up` sidecar AND the broker it
-   * spawned. SIGKILLing only the sidecar orphans the broker (it keeps the node
-   * online + holds the state-dir flock), which breaks a later restart. */
+  /** Crash the verified broker and its directly owned supervisor. The harness
+   * itself observes the matched exit before retiring its unchanged identity. */
   async stop(): Promise<void> {
-    // Kill the broker first, by the pid it wrote to connection.json.
-    const connPath = path.join(this.projectDir, '.agentworkforce', 'relay', 'connection.json');
-    try {
-      const conn = JSON.parse(readFileSync(connPath, 'utf-8')) as { pid?: number };
-      if (typeof conn.pid === 'number') {
+    const child = this.child;
+    this.child = null;
+    if (child) {
+      const paths = {
+        projectRoot: this.projectDir,
+        dataDir: path.join(this.projectDir, '.agentworkforce', 'relay'),
+        teamDir: path.join(this.projectDir, '.agentworkforce', 'teams'),
+      };
+      const deps = withDefaults();
+      const identities = readBrokerIdentities(paths, deps);
+      const crashedBrokers: BrokerProcessIdentity[] = [];
+      for (const identity of identities ?? []) {
+        if (identity.brokerName !== this.opts.name) continue;
+        if (!(await matchesBrokerIdentity(identity, paths, deps))) continue;
         try {
-          process.kill(conn.pid, 'SIGKILL');
-        } catch {
-          /* already gone */
+          process.kill(identity.pid, 'SIGKILL');
+          crashedBrokers.push(identity);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+          removeBrokerIdentity(paths, identity, deps);
         }
       }
-    } catch {
-      /* no connection file */
-    }
-
-    if (this.child) {
-      const child = this.child;
-      this.child = null;
+      // An invalid-start fixture may never have persisted an identity. Only
+      // signal the ChildProcess handle we own; never trust connection-only PIDs.
+      if (child.exitCode === null && child.signalCode === null) {
+        // Graceful provider shutdown drains in-flight work, defeating the crash
+        // scenario. A verified broker crash must also stop its owned host now.
+        child.kill(crashedBrokers.length > 0 ? 'SIGKILL' : 'SIGTERM');
+      }
       await new Promise<void>((resolve) => {
-        child.once('exit', () => resolve());
-        child.kill('SIGKILL');
-        setTimeout(resolve, 2_000);
+        if (child.exitCode !== null || child.signalCode !== null) return resolve();
+        const finish = () => {
+          clearTimeout(timer);
+          child.removeListener('exit', finish);
+          resolve();
+        };
+        const timer = setTimeout(() => {
+          child.kill('SIGKILL');
+          finish();
+        }, 5_000);
+        child.once('exit', finish);
       });
+      for (const identity of crashedBrokers) {
+        await waitFor(
+          () => {
+            try {
+              process.kill(identity.pid, 0);
+              return false;
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+              // Unlike discovery of a dead PID, this follows our verified kill
+              // of the exact live instance. Replacement records are preserved.
+              removeBrokerIdentity(paths, identity, deps);
+              return true;
+            }
+          },
+          { timeoutMs: 5_000, label: 'verified fixture broker exit' }
+        );
+      }
     }
     // Give the engine a moment to observe the dropped node control WS.
     await new Promise((r) => setTimeout(r, 500));
@@ -607,7 +645,7 @@ export async function getInvocation(
   agentToken: string,
   action: string,
   invocationId: string
-): Promise<{ status: string; output?: any; dispatched_node_id?: string }> {
+): Promise<{ status: string; output?: any; error?: string; dispatched_node_id?: string }> {
   const { body } = await engine.fetchJson(`/v1/actions/${action}/invocations/${invocationId}`, {
     headers: { authorization: `Bearer ${agentToken}` },
   });

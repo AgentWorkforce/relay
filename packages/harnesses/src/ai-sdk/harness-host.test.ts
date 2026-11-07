@@ -162,7 +162,7 @@ describe('HarnessHost', () => {
     await vi.waitFor(() => expect(turns[0].submitToolResult).toHaveBeenCalledOnce());
     expect(execute).toHaveBeenCalledWith(
       { to: 'Worker', text: 'hello' },
-      expect.objectContaining({ abortSignal: expect.any(AbortSignal) })
+      expect.objectContaining({ abortSignal: expect.any(AbortSignal), toolCallId: 'call-1' })
     );
     expect(turns[0].submitToolResult).toHaveBeenCalledWith({
       toolCallId: 'call-1',

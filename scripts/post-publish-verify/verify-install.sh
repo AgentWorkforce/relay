@@ -44,7 +44,31 @@ fi
 
 log_header "Post-Publish Verification"
 log_info "Node.js version: $(node --version)"
-log_info "npm version: $(npm --version)"
+log_info "npm version (before upgrade): $(npm --version)"
+
+# npm <=10.9.x's arborist crashes ("Cannot read properties of null (reading
+# 'edgesOut')", npm/cli#8261) on the lockfile-less global/local installs
+# below whenever the published dependency graph needs a peer-set
+# re-resolution (see relay#1652). Unconditional on both Node matrix legs so
+# this stays correct regardless of which npm the base image happens to
+# bundle.
+npm install -g npm@11.19.1
+
+# Bash caches the resolved path of a command the first time it's looked up
+# (the "npm version (before upgrade)" call above already did). The install
+# above lands the new npm binary at a different path
+# ($NPM_CONFIG_PREFIX/bin/npm, earlier in PATH) — without `hash -r`, every
+# later bare `npm` call in this script keeps silently resolving to the OLD
+# binary, making the upgrade above a no-op. Confirmed empirically: without
+# this, `npm --version` right after the install still printed the pre-
+# upgrade version.
+hash -r
+NPM_VERSION_AFTER="$(npm --version)"
+log_info "npm version (after upgrade): $NPM_VERSION_AFTER"
+if [ "$NPM_VERSION_AFTER" != "11.19.1" ]; then
+    log_error "npm upgrade did not take effect — expected 11.19.1, got $NPM_VERSION_AFTER"
+    exit 1
+fi
 log_info "Package to test: $PACKAGE_SPEC"
 log_info "User: $(whoami)"
 log_info "Working directory: $(pwd)"
@@ -230,6 +254,8 @@ log_header "Test 4: broker binary resolution"
 
 BROKER_TEST=$(node --input-type=module -e "
 import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/harness-driver/broker-path';
+import os from 'node:os';
+import path from 'node:path';
 import { accessSync, constants } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 try {
@@ -238,8 +264,22 @@ try {
     console.log('expected:', expected);
     console.log('resolved:', p);
     if (!p) { console.log('BROKER_FAIL: resolver returned null'); process.exit(0); }
-    if (!p.replace(/\\\\/g, '/').includes(expected)) {
-        console.log('BROKER_FAIL: not via optional-dep package');
+    // npm installs resolve through the optional-dep package until the CLI's
+    // first run copies the broker into the install root's bin dir.
+    // Accept the install-root bin dir the resolver itself uses (honours
+    // AGENT_RELAY_INSTALL_DIR / AGENT_RELAY_HOME); mirror its rule for
+    // releases published before install-paths existed.
+    let canonicalBinDir;
+    try {
+      const { getRelayBinDir } = await import('@agent-relay/harness-driver/install-paths');
+      canonicalBinDir = getRelayBinDir();
+    } catch {
+      const root = (process.env.AGENT_RELAY_INSTALL_DIR || '').trim() || (process.env.AGENT_RELAY_HOME || '').trim();
+      canonicalBinDir = path.join(root ? path.resolve(root) : path.join(os.homedir(), '.agentworkforce', 'relay'), 'bin');
+    }
+    const canonical = path.join(canonicalBinDir, path.basename(p));
+    if (!p.replace(/\\\\/g, '/').includes(expected) && p !== canonical) {
+        console.log('BROKER_FAIL: neither via optional-dep package nor the canonical bin dir');
         process.exit(0);
     }
     accessSync(p, constants.X_OK);

@@ -1,0 +1,137 @@
+{
+  "version": "1.0.0",
+  "id": "c160e278-ce3e-4be6-8638-9d326b039108",
+  "timestamp": "2026-09-12T19:36:39.360Z",
+  "trajectory": "traj_6umiikoi6ork",
+  "files": [
+    {
+      "path": "crates/broker/src/relaycast/auth.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 70,
+              "end_line": 85,
+              "revision": "19a7a072eaed30be6534db2e033de6d1fcb2223d"
+            },
+            {
+              "start_line": 430,
+              "end_line": 443,
+              "revision": "19a7a072eaed30be6534db2e033de6d1fcb2223d"
+            },
+            {
+              "start_line": 477,
+              "end_line": 485,
+              "revision": "19a7a072eaed30be6534db2e033de6d1fcb2223d"
+            },
+            {
+              "start_line": 550,
+              "end_line": 563,
+              "revision": "19a7a072eaed30be6534db2e033de6d1fcb2223d"
+            },
+            {
+              "start_line": 653,
+              "end_line": 666,
+              "revision": "19a7a072eaed30be6534db2e033de6d1fcb2223d"
+            },
+            {
+              "start_line": 726,
+              "end_line": 741,
+              "revision": "19a7a072eaed30be6534db2e033de6d1fcb2223d"
+            },
+            {
+              "start_line": 744,
+              "end_line": 783,
+              "revision": "19a7a072eaed30be6534db2e033de6d1fcb2223d"
+            },
+            {
+              "start_line": 984,
+              "end_line": 998,
+              "revision": "19a7a072eaed30be6534db2e033de6d1fcb2223d"
+            },
+            {
+              "start_line": 1294,
+              "end_line": 1318,
+              "revision": "19a7a072eaed30be6534db2e033de6d1fcb2223d"
+            },
+            {
+              "start_line": 1336,
+              "end_line": 1343,
+              "revision": "19a7a072eaed30be6534db2e033de6d1fcb2223d"
+            },
+            {
+              "start_line": 1372,
+              "end_line": 1399,
+              "revision": "19a7a072eaed30be6534db2e033de6d1fcb2223d"
+            },
+            {
+              "start_line": 1567,
+              "end_line": 1583,
+              "revision": "19a7a072eaed30be6534db2e033de6d1fcb2223d"
+            },
+            {
+              "start_line": 1623,
+              "end_line": 1645,
+              "revision": "19a7a072eaed30be6534db2e033de6d1fcb2223d"
+            },
+            {
+              "start_line": 3202,
+              "end_line": 3207,
+              "revision": "19a7a072eaed30be6534db2e033de6d1fcb2223d"
+            },
+            {
+              "start_line": 3228,
+              "end_line": 3241,
+              "revision": "19a7a072eaed30be6534db2e033de6d1fcb2223d"
+            },
+            {
+              "start_line": 3254,
+              "end_line": 3342,
+              "revision": "19a7a072eaed30be6534db2e033de6d1fcb2223d"
+            },
+            {
+              "start_line": 3855,
+              "end_line": 3861,
+              "revision": "19a7a072eaed30be6534db2e033de6d1fcb2223d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/session.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 246,
+              "end_line": 270,
+              "revision": "19a7a072eaed30be6534db2e033de6d1fcb2223d"
+            },
+            {
+              "start_line": 328,
+              "end_line": 334,
+              "revision": "19a7a072eaed30be6534db2e033de6d1fcb2223d"
+            },
+            {
+              "start_line": 406,
+              "end_line": 425,
+              "revision": "19a7a072eaed30be6534db2e033de6d1fcb2223d"
+            },
+            {
+              "start_line": 683,
+              "end_line": 703,
+              "revision": "19a7a072eaed30be6534db2e033de6d1fcb2223d"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

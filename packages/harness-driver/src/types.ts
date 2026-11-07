@@ -83,6 +83,8 @@ export interface SpawnAgentResult {
   pid?: number;
   /** Immutable broker-assigned identity for this same-name worker generation. */
   generation?: string;
+  /** Effective requested channels; verify live engine membership independently. */
+  channels?: string[];
 }
 
 export interface SpawnCliInput {
@@ -125,6 +127,25 @@ export interface SendMessageInput {
   priority?: number;
   data?: Record<string, unknown>;
   mode?: MessageInjectionMode;
+}
+
+/** Result of a broker `/api/send` publication.
+ *
+ * Relaycast publication is durable acceptance, not proof that bytes reached a
+ * recipient. Named direct-message targets therefore include the engine's
+ * best-effort reachability observation; channels and conversation IDs omit the
+ * recipient fields because they do not name one agent. */
+export interface SendMessageResult {
+  event_id: string;
+  targets: string[];
+  success?: boolean;
+  relaycast_published?: boolean;
+  delivery_status?: 'published_unconfirmed';
+  recipient_live?: boolean | null;
+  recipient_status?: string;
+  local?: boolean;
+  workspace_id?: string;
+  workspace_alias?: string | null;
 }
 
 /**

@@ -63,6 +63,7 @@ export const TeamsConfigSchema = z.object({
       z.object({
         name: z.string(),
         cli: z.string(),
+        model: z.string().optional(),
         role: z.string().optional(),
         task: z.string().optional(),
       })

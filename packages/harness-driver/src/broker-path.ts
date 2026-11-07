@@ -7,14 +7,27 @@
  */
 
 import { existsSync, realpathSync } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { basename, join, dirname, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-const BROKER_NAME = 'agent-relay-broker';
+import {
+  BROKER_BINARY_NAME,
+  findExecutableOnPath,
+  getCanonicalBrokerPath,
+  getRelayBinDir,
+  isUsableBinary,
+} from './install-paths.js';
 
+const BROKER_NAME = BROKER_BINARY_NAME;
+
+/**
+ * npm package name of the platform broker, e.g. `@agent-relay/broker-linux-x64`.
+ * @param platform - Target platform
+ * @param arch - Target architecture
+ * @returns The optional-dependency package name
+ */
 export function getOptionalDepPackageName(
   platform: NodeJS.Platform = process.platform,
   arch: string = process.arch
@@ -84,7 +97,7 @@ function getCurrentModuleReference(): string | null {
   return getImportMetaUrl();
 }
 
-function getResolutionReferences(): string[] {
+function getResolutionReferences(includeCwd = true): string[] {
   const refs: string[] = [];
   addResolutionReference(refs, getCurrentModuleReference());
 
@@ -105,13 +118,15 @@ function getResolutionReferences(): string[] {
   // some vite/webpack bundling configurations, repl experimentation), but
   // the consumer's cwd is inside their own project. We only use this
   // reference to run require.resolve; no file I/O is triggered on misses.
-  addResolutionReference(refs, join(process.cwd(), 'package.json'));
+  if (includeCwd) {
+    addResolutionReference(refs, join(process.cwd(), 'package.json'));
+  }
 
   return refs;
 }
 
 /**
- * Binary locations created by Relay's standalone/npm installer. These are
+ * Binary locations created by older Relay installers. These are
  * deliberately checked without shelling out: a version manager can launch
  * Node with a minimal PATH, which is exactly when `which` cannot see the
  * broker that the Relay installer placed beside its launcher or under the
@@ -134,7 +149,6 @@ function getInstalledBinaryPaths(ext: string): string[] {
 
   const userHome = homedir();
   if (userHome) {
-    addUniquePath(binaryPaths, join(userHome, '.agentworkforce', 'relay', 'bin', binaryFile));
     addUniquePath(binaryPaths, join(userHome, '.agent-relay', 'bin', binaryFile));
     addUniquePath(binaryPaths, join(userHome, '.local', 'bin', binaryFile));
   }
@@ -149,11 +163,11 @@ function getInstalledBinaryPaths(ext: string): string[] {
  * --no-optional / --omit=optional / --include= omits optional, or when the
  * broker hasn't been published for their platform yet).
  */
-function getOptionalDepBinaryPath(ext: string): string | null {
+function getOptionalDepBinaryPath(ext: string, includeCwd = true): string | null {
   const pkgName = getOptionalDepPackageName();
   const binaryFile = `${BROKER_NAME}${ext}`;
 
-  for (const ref of getResolutionReferences()) {
+  for (const ref of getResolutionReferences(includeCwd)) {
     try {
       const pkgJsonPath = createRequire(ref).resolve(`${pkgName}/package.json`);
       const binPath = join(dirname(pkgJsonPath), 'bin', binaryFile);
@@ -223,76 +237,162 @@ function getSourceCheckoutBinaryPaths(ext: string): string[] {
   );
 }
 
+/** Where {@link resolveBrokerBinary} found the broker. */
+export type BrokerBinarySource =
+  | 'env'
+  | 'source-checkout'
+  | 'canonical'
+  | 'standalone'
+  | 'npm-optional-dependency'
+  | 'cargo-dev'
+  | 'path'
+  | 'legacy-install';
+
+/** A resolved broker binary and where it was found. */
+export interface ResolvedBrokerBinary {
+  path: string;
+  source: BrokerBinarySource;
+}
+
 /**
- * Resolve the agent-relay-broker binary path.
- *
- * Search order:
- *   1. Explicit env override (BROKER_BINARY_PATH / AGENT_RELAY_BIN)
- *   2. Local Cargo build when the runtime is loaded from an agent-relay source
- *      checkout
- *   3. Platform-specific optional-dep package
- *      (`@agent-relay/broker-<platform>-<arch>`) — primary production path
- *   4. Cargo development paths (target/release and target/debug)
- *   5. PATH lookup via `which` / `where`
- *   6. Relay installer locations (launcher/executable sibling and user bin)
- *
- * @returns Absolute path to the broker binary, or null if not found
+ * Directory of a running standalone (Bun-compiled) CLI. install.sh puts the
+ * standalone CLI and the broker side by side in the install's bin directory,
+ * so when the install root was relocated without exporting
+ * AGENT_RELAY_INSTALL_DIR at runtime, the executable's own directory is still
+ * that install's bin directory.
  */
-export function getBrokerBinaryPath(): string | null {
+function getStandaloneCliBinDir(): string | null {
+  const exe = basename(process.execPath).toLowerCase();
+  if (exe !== 'agent-relay' && exe !== 'agent-relay.exe') return null;
+  return dirname(resolve(process.execPath));
+}
+
+/**
+ * Step 3 of {@link resolveBrokerBinary}: the canonical bin dir, then a
+ * standalone CLI's own bin dir. A file there that is empty, not a regular
+ * file or not executable is skipped, so a damaged shared install cannot hide
+ * a working npm broker from SDK callers that never run the CLI's repair step.
+ */
+function findCanonicalBroker(ext: string): ResolvedBrokerBinary | null {
+  const canonical = getCanonicalBrokerPath();
+  if (existsSync(canonical) && isUsableBinary(canonical)) {
+    return { path: canonical, source: 'canonical' };
+  }
+  const standaloneBinDir = getStandaloneCliBinDir();
+  if (standaloneBinDir) {
+    const standaloneBroker = join(standaloneBinDir, `${BROKER_NAME}${ext}`);
+    if (existsSync(standaloneBroker) && isUsableBinary(standaloneBroker)) {
+      return { path: standaloneBroker, source: 'standalone' };
+    }
+  }
+  return null;
+}
+
+export interface OptionalDepBrokerPathOptions {
+  /**
+   * Also resolve through `<cwd>/package.json` (default true). The CLI passes
+   * false when choosing a broker to copy into the shared bin directory, so a
+   * project's own (possibly different) broker version never lands there.
+   */
+  includeCwd?: boolean;
+}
+
+/**
+ * The broker shipped by the npm optional dependency
+ * `@agent-relay/broker-<platform>-<arch>`, or null when it is not installed.
+ * Exposed so the CLI can copy it into the canonical bin directory.
+ * @param options - Resolution options
+ * @returns Absolute path to the npm broker, or null
+ */
+export function getOptionalDepBrokerPath(options: OptionalDepBrokerPathOptions = {}): string | null {
+  return getOptionalDepBinaryPath(process.platform === 'win32' ? '.exe' : '', options.includeCwd ?? true);
+}
+
+/**
+ * Resolve the agent-relay-broker binary and report where it came from.
+ *
+ * Search order (first existing file wins):
+ *   1. Explicit env override: BROKER_BINARY_PATH, then AGENT_RELAY_BIN.
+ *   2. Development only: the Cargo build of an agent-relay source checkout
+ *      when this runtime is loaded from (or run inside) that checkout.
+ *   3. Canonical install: `<install root>/bin/agent-relay-broker[.exe]`, where
+ *      the install root is AGENT_RELAY_INSTALL_DIR, else AGENT_RELAY_HOME,
+ *      else ~/.agentworkforce/relay. install.sh, the desktop app and the npm
+ *      CLI (on first run) all put the broker here. A standalone CLI's own bin
+ *      directory counts as its canonical install.
+ *   4. Legacy npm fallback: the platform optional-dependency package
+ *      `@agent-relay/broker-<platform>-<arch>`.
+ *   5. Cargo development paths (target/release, target/debug).
+ *   6. PATH lookup via `which` / `where`.
+ *   7. Older installer locations (launcher sibling, ~/.agent-relay/bin,
+ *      ~/.local/bin), for version managers that launch Node with a minimal
+ *      PATH.
+ *
+ * @returns The resolved broker and its source, or null if none was found
+ */
+export function resolveBrokerBinary(): ResolvedBrokerBinary | null {
   const ext = process.platform === 'win32' ? '.exe' : '';
   const override = process.env.BROKER_BINARY_PATH ?? process.env.AGENT_RELAY_BIN;
 
+  // 1. Explicit override.
   if (override) {
     const resolvedOverride = resolve(override);
     if (existsSync(resolvedOverride)) {
-      return resolvedOverride;
+      return { path: resolvedOverride, source: 'env' };
     }
   }
 
-  // 1. Prefer a local Cargo build when this runtime is being used from a source checkout.
+  // 2. A local Cargo build when this runtime is being used from a source checkout.
   for (const developmentPath of getSourceCheckoutBinaryPaths(ext)) {
     if (existsSync(developmentPath)) {
-      return developmentPath;
+      return { path: developmentPath, source: 'source-checkout' };
     }
   }
 
-  // 2. Platform-specific optional-dep package — the primary production path.
+  // 3. The canonical install location shared by every install method.
+  const installed = findCanonicalBroker(ext);
+  if (installed) {
+    return installed;
+  }
+
+  // 4. Legacy: the platform-specific npm optional dependency.
   const optionalDepBinary = getOptionalDepBinaryPath(ext);
   if (optionalDepBinary) {
-    return optionalDepBinary;
+    return { path: optionalDepBinary, source: 'npm-optional-dependency' };
   }
 
-  // 3. Common development paths for local Cargo builds.
+  // 5. Common development paths for local Cargo builds.
   for (const developmentPath of getDevelopmentBinaryPaths(ext)) {
     if (existsSync(developmentPath)) {
-      return developmentPath;
+      return { path: developmentPath, source: 'cargo-dev' };
     }
   }
 
-  // 4. PATH lookup. Prefer the operator's active PATH over fixed user install
-  // directories, which can contain stale brokers from an older Relay install.
-  try {
-    const cmd = process.platform === 'win32' ? 'where' : 'which';
-    const result = execFileSync(cmd, [BROKER_NAME], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
-    if (result) {
-      return result.split(/\r?\n/u)[0].trim();
-    }
-  } catch {
-    // Not found on PATH
+  // 6. PATH lookup.
+  const onPath = findExecutableOnPath(BROKER_NAME);
+  if (onPath) {
+    return { path: onPath, source: 'path' };
   }
 
-  // 5. Relay's npm/standalone installer locations. This also covers mise and
-  // similar version managers when their activation PATH omits the user bin.
+  // 7. Older installer locations. This also covers mise and similar version
+  // managers when their activation PATH omits the user bin.
   for (const installedPath of getInstalledBinaryPaths(ext)) {
     if (existsSync(installedPath)) {
-      return installedPath;
+      return { path: installedPath, source: 'legacy-install' };
     }
   }
 
   return null;
+}
+
+/**
+ * Resolve the agent-relay-broker binary path. See {@link resolveBrokerBinary}
+ * for the search order.
+ *
+ * @returns Absolute path to the broker binary, or null if not found
+ */
+export function getBrokerBinaryPath(): string | null {
+  return resolveBrokerBinary()?.path ?? null;
 }
 
 /**
@@ -305,9 +405,9 @@ export function formatBrokerNotFoundError(): string {
   const pkgName = getOptionalDepPackageName();
   return (
     `@agent-relay/harness-driver couldn't find an agent-relay-broker binary for ` +
-    `${process.platform}-${process.arch}. The optional dependency ` +
-    `${pkgName} is expected to be installed alongside @agent-relay/harness-driver. ` +
-    `Try reinstalling with --include=optional, or set BROKER_BINARY_PATH ` +
-    `to point at a broker binary you've downloaded manually.`
+    `${process.platform}-${process.arch}. Expected it at ${join(getRelayBinDir(), `${BROKER_NAME}${process.platform === 'win32' ? '.exe' : ''}`)} ` +
+    `(install with: curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash) ` +
+    `or in the optional dependency ${pkgName} (reinstall with --include=optional). ` +
+    `Or set BROKER_BINARY_PATH to point at a broker binary you've downloaded manually.`
   );
 }

@@ -176,6 +176,12 @@ relayfile integration set-metadata jira cloudId=<cloud-id> baseUrl=https://<site
 relayfile writeback status my-agent --json | jq
 ```
 
+#### Symptom: cloud run marked FAILED but the handler logged `runner.handler.ok`
+
+```json
+{ "message": "relayfile.mount.cleanup", "flushExitCode": 124, "killAttempted": true, "killExitCode": 0 }
+```
+
 ### Cleaning up
 
 #### When you're done with a mount and want to tear down:

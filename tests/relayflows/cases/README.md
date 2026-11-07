@@ -22,6 +22,7 @@ Create `tests/relayflows/cases/<case-id>/case.json` plus the runner named by its
   "runner": {
     "command": ["node", "tests/relayflows/cases/1591-application-ack-reconnect/run.mjs"]
   },
+  "requirements": [],
   "timeoutSeconds": 900,
   "expected": {
     "base": {
@@ -49,6 +50,37 @@ The wrapper supplies:
 - `RELAY_PR_PROOF_HARNESS_DIR`: checkout of the exact head SHA
 - `RELAY_PR_PROOF_RESULT_PATH`: destination for the observation JSON
 - `RELAY_PR_PROOF_BASE_SHA` and `RELAY_PR_PROOF_HEAD_SHA`
+
+Rust broker behavior cases can declare `"requirements": ["broker-linux-x64"]`.
+The trusted dispatcher then resolves Linux broker artifacts built from the exact
+base and head SHAs, verifies their source-SHA manifests and SHA-256 digests,
+and supplies the selected executable as `RELAY_PR_PROOF_BROKER_BINARY`. The
+runner should invoke that binary directly instead of rebuilding it in Cloud.
+Cases without this requirement receive no broker binary.
+
+The broker producer deliberately performs a cold Rust build: it never restores
+or saves a Cargo build cache. Cargo and PR-authored build scripts run under a
+fresh dedicated OS user with no supplemental groups or capabilities, an empty
+environment, `no_new_privs`, empty inheritable, permitted, effective, bounding,
+and ambient capability sets, a read-only checkout, and isolated writable Cargo
+home, target, home, and temporary build directories delegated beneath a
+runner-owned private root. GitHub Actions cache/runtime credentials and
+the workflow command files (`GITHUB_ENV`, `GITHUB_PATH`, `GITHUB_OUTPUT`, and
+`GITHUB_STEP_SUMMARY`) are not exposed, and stdout workflow commands are
+suspended around the build. Cleanup kills processes matching either the
+builder's effective or real UID and verifies none remain, including on build
+failure. Workflow-command parsing is restored only after that zero-process
+proof succeeds. Each process probe must return exactly the documented
+no-matches status. The trusted runner performs those probes as root so a
+`hidepid` mount cannot conceal builder-owned processes, maps match/no-match/error
+to distinct sentinel statuses, and accepts only two no-match sentinels. The root
+probe is non-interactive and runs with a clean, fixed environment and executable
+path. Probe or privilege-escalation errors therefore fail closed rather than
+masquerading as an empty process set. A reap failure keeps parsing suspended and
+takes precedence over the original build status. Only after successful cleanup
+does the trusted runner copy the final regular broker file into runner-owned
+staging for packaging. The 30-minute producer deadline includes this cold-build
+cost; the dispatcher resolver adds separate queue and build headroom.
 
 The runner must finish with exit code zero after observing behavior and write:
 
@@ -85,25 +117,74 @@ its red/green signatures express the claimed behavior. No generic runner can
 prove the honesty of arbitrary test code; this check supplies reproducible
 review evidence and is not a replacement for required code review.
 
+For broker cases, the wrapper's additional guarantee ends at artifact
+provenance and executable immutability. It copies the verified bytes to a
+stable private path, closes every broker file descriptor, and launches the case
+under a fail-closed Landlock policy that denies filesystem mutation outside
+the case's explicit writable directories. A fixed, trusted, isolated Python
+bootstrap uses passwordless `sudo` only to create a private mount namespace,
+make mount propagation private, and mount a fresh `devpts` instance with
+`nosuid`, `noexec`, mode `0600`, and a bounded device count. A host whose
+`/dev/ptmx` is a standalone device node gets a conditional bind of
+the private `/dev/pts/ptmx`; the bootstrap then requires both paths to name the
+same device. Hosts where `/dev/ptmx` already resolves into the private instance
+skip that bind. It refuses an inherited controlling TTY, locks non-root
+securebits, drops the capability
+bounding and ambient sets, then restores the original non-root UID and GID with
+no supplemental groups. It clears and verifies every inheritable, permitted,
+effective, bounding, and ambient capability before enabling `no_new_privs` and
+Landlock. Python isolated mode prevents the root bootstrap from importing
+PR-authored modules, and no shell interprets the command. File descriptors
+above stderr are closed before PR-authored code runs.
+
+The only device exceptions grant `WRITE_FILE` to `/dev/null`, `/dev/ptmx`, and
+slave nodes beneath that private `/dev/pts`; they grant no node creation,
+truncation, removal, replacement, rename, or hard-link rights. Agent and control
+PTYs in the outer namespace are therefore unreachable even if allocated after
+the case starts. The stable path means broker self-spawns through
+`current_exe()` keep working. The wrapper verifies the broker's link count,
+mode, size, and digest again after the runner exits. Landlock does not mediate
+`chmod`; a runner can change the mode and make its own proof fail, but cannot
+use that mode change to bypass the content and path-mutation policy.
+
+The PR-authored runner still chooses whether and how to launch that executable,
+including its arguments and environment. Reviewers must therefore confirm that
+the case invokes the supplied path directly with a neutral dynamic-loader
+environment and that the asserted behavior comes from that process. The Cloud
+sandbox must provide `/usr/bin/python3`, Landlock ABI 3 or newer, and no
+effective `CAP_SYS_PTRACE` or `CAP_SYS_ADMIN`; the wrapper fails closed when
+those prerequisites are absent.
+
+Broker artifacts are retained for 90 days. A PR that remains on the same base
+and head longer than that must be updated or rebased onto current `main`, then
+receive a refreshed head push before rerunning the proof. The trusted producer
+does not accept arbitrary historical SHAs for rebuild; push and scheduled
+builds keep current `main`, and same-repository PR events keep current heads,
+recoverable without widening the workflow's artifact provenance boundary.
+
 ## Execution and security
 
-The `pull_request_target` workflow checks out only the trusted base. It fetches
-and validates the case manifest as data, then submits the trusted
-`workflows/pr-proof.ts` RelayFlow. PR code runs only in the two Cloud agent
-sandboxes. Each prover uploads structured evidence through the run-scoped Cloud
-storage API; the case runner never receives Cloud credentials. A cryptographic
-nonce generated by the trusted dispatcher binds both handoffs to the current
-run. The base proof must pass its deterministic evidence gate before the head
-sandbox is launched, and the final gate rejects a stale nonce, identical
-sandbox IDs, or incorrect commit provenance.
+The `flows/ci/pr-proof.flow.ts` Relayflow is deployed as a hosted listener
+(`flows deploy … --on github:events=pull_request`). Cloud launches it with the
+listener's event as run input; the flow reduces that envelope to a pull request
+number and lets `prepare.mjs` resolve the authoritative pull request from the
+API, so no listener-supplied SHA, title, or body reaches the proof contract. It
+then fetches and validates the case manifest as data. PR code runs only in the
+two Cloud agent sandboxes. Each prover uploads structured evidence through the
+run-scoped Cloud storage API; the case runner never receives Cloud credentials.
+A cryptographic nonce binds both handoffs to the current run. The base proof
+must pass its deterministic evidence gate before the head sandbox is launched,
+and the final gate rejects a stale nonce, identical sandbox IDs, or incorrect
+commit provenance.
 
 The RelayFlow is explicitly fail-fast with zero retries. Automatic repair
 agents are disabled: a rejected observation is evidence to report, never an
 invitation to edit the harness or artifacts until the gate passes.
 
-The action temporarily adds the generated `.relayflow/pr-proof-input.json` to
-the runner's git index because Cloud code sync uploads git-known paths. It does
-not commit or push the generated file.
+The action temporarily adds the generated `.relayflow/pr-proof-input.json` and,
+when requested, the verified exact-SHA broker binaries to the runner's git
+index because Cloud code sync uploads git-known paths. It does not commit or
+push the generated files.
 
 Fork PRs do not receive Cloud credentials. A maintainer must reproduce the
 change and its case on a same-repository branch before merge. Non-functional

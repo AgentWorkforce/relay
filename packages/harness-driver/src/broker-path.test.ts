@@ -32,6 +32,8 @@ beforeEach(() => {
   process.env = { ...originalEnv };
   delete process.env.BROKER_BINARY_PATH;
   delete process.env.AGENT_RELAY_BIN;
+  delete process.env.AGENT_RELAY_INSTALL_DIR;
+  delete process.env.AGENT_RELAY_HOME;
   process.argv = [...originalArgv];
   process.execPath = originalExecPath;
 });
@@ -230,38 +232,151 @@ describe('broker binary path resolution', () => {
     expect(getBrokerBinaryPath()).toBe(expectedBinaryPath);
   });
 
-  it('prefers a broker on PATH over a stale user-install fallback', async () => {
+  describe('canonical install location', () => {
+    const ext = process.platform === 'win32' ? '.exe' : '';
+    const pkgName = `@agent-relay/broker-${process.platform}-${process.arch}`;
+    const optionalDepBinary = path.join('/mock/node_modules', pkgName, 'bin', `agent-relay-broker${ext}`);
     const pathBinary = '/current/bin/agent-relay-broker';
-    const staleBinary = path.join(
-      os.homedir(),
-      '.agentworkforce',
-      'relay',
-      'bin',
-      `agent-relay-broker${process.platform === 'win32' ? '.exe' : ''}`
-    );
-    const execFileSync = vi.fn(() => `${pathBinary}\n`);
 
-    vi.doMock('node:fs', async () => ({
-      ...(await vi.importActual<typeof import('node:fs')>('node:fs')),
-      existsSync: vi.fn((candidate: string) => candidate === staleBinary),
-    }));
-    vi.doMock('node:module', async () => ({
-      ...(await vi.importActual<typeof import('node:module')>('node:module')),
-      createRequire: vi.fn(() => ({
-        resolve: vi.fn(() => {
-          throw new Error('optional package unavailable');
+    async function loadWith(existing: string[], options: { unusable?: string[] } = {}) {
+      const execFileSync = vi.fn(() => `${pathBinary}\n`);
+      const unusable = options.unusable ?? [];
+      const missing = (candidate: string): Error =>
+        Object.assign(new Error(`ENOENT: ${candidate}`), { code: 'ENOENT' });
+      vi.doMock('node:fs', async () => ({
+        ...(await vi.importActual<typeof import('node:fs')>('node:fs')),
+        existsSync: vi.fn((candidate: string) => existing.includes(candidate)),
+        statSync: vi.fn((candidate: string) => {
+          if (!existing.includes(candidate)) throw missing(candidate);
+          return { isFile: () => true, size: unusable.includes(candidate) ? 0 : 1024 };
         }),
-      })),
-    }));
-    vi.doMock('node:child_process', async () => ({
-      ...(await vi.importActual<typeof import('node:child_process')>('node:child_process')),
-      execFileSync,
-    }));
+        accessSync: vi.fn((candidate: string) => {
+          if (!existing.includes(candidate)) throw missing(candidate);
+        }),
+      }));
+      const createRequire = vi.fn(() => ({
+        resolve: vi.fn((specifier: string) => {
+          if (specifier === `${pkgName}/package.json`) {
+            return path.join('/mock/node_modules', pkgName, 'package.json');
+          }
+          throw new Error(`unresolved ${specifier}`);
+        }),
+      }));
+      vi.doMock('node:module', async () => ({
+        ...(await vi.importActual<typeof import('node:module')>('node:module')),
+        createRequire,
+      }));
+      vi.doMock('node:child_process', async () => ({
+        ...(await vi.importActual<typeof import('node:child_process')>('node:child_process')),
+        execFileSync,
+      }));
+      return { mod: await loadBrokerPathModule(), execFileSync, createRequire };
+    }
 
-    const { getBrokerBinaryPath } = await loadBrokerPathModule();
+    it('prefers ~/.agentworkforce/relay/bin over the npm optional dependency and PATH', async () => {
+      const canonical = path.join(
+        os.homedir(),
+        '.agentworkforce',
+        'relay',
+        'bin',
+        `agent-relay-broker${ext}`
+      );
+      const { mod, execFileSync } = await loadWith([canonical, optionalDepBinary]);
 
-    expect(getBrokerBinaryPath()).toBe(pathBinary);
-    expect(execFileSync).toHaveBeenCalledOnce();
+      expect(mod.resolveBrokerBinary()).toEqual({ path: canonical, source: 'canonical' });
+      expect(execFileSync).not.toHaveBeenCalled();
+    });
+
+    it('honours AGENT_RELAY_INSTALL_DIR over AGENT_RELAY_HOME', async () => {
+      process.env.AGENT_RELAY_INSTALL_DIR = '/opt/relay';
+      process.env.AGENT_RELAY_HOME = '/srv/relay-home';
+      const custom = path.join('/opt/relay', 'bin', `agent-relay-broker${ext}`);
+      const home = path.join('/srv/relay-home', 'bin', `agent-relay-broker${ext}`);
+      const { mod } = await loadWith([custom, home, optionalDepBinary]);
+
+      expect(mod.getBrokerBinaryPath()).toBe(custom);
+    });
+
+    it('honours AGENT_RELAY_HOME when no install dir is set', async () => {
+      process.env.AGENT_RELAY_HOME = '/srv/relay-home';
+      const home = path.join('/srv/relay-home', 'bin', `agent-relay-broker${ext}`);
+      const { mod } = await loadWith([home, optionalDepBinary]);
+
+      expect(mod.getBrokerBinaryPath()).toBe(home);
+    });
+
+    it('keeps an explicit env override ahead of the canonical broker', async () => {
+      const canonical = path.join(
+        os.homedir(),
+        '.agentworkforce',
+        'relay',
+        'bin',
+        `agent-relay-broker${ext}`
+      );
+      process.env.BROKER_BINARY_PATH = '/custom/broker';
+      const { mod } = await loadWith(['/custom/broker', canonical]);
+
+      expect(mod.resolveBrokerBinary()).toEqual({ path: '/custom/broker', source: 'env' });
+    });
+
+    it('uses the standalone CLI bin directory when the install root was relocated', async () => {
+      process.execPath = '/opt/custom-relay/bin/agent-relay';
+      const sibling = path.join('/opt/custom-relay/bin', `agent-relay-broker${ext}`);
+      const { mod } = await loadWith([sibling, optionalDepBinary]);
+
+      expect(mod.resolveBrokerBinary()).toEqual({ path: sibling, source: 'standalone' });
+    });
+
+    it('falls back to the npm optional dependency when the canonical broker is missing', async () => {
+      const { mod, execFileSync } = await loadWith([optionalDepBinary]);
+
+      expect(mod.resolveBrokerBinary()).toEqual({
+        path: optionalDepBinary,
+        source: 'npm-optional-dependency',
+      });
+      expect(mod.getOptionalDepBrokerPath()).toBe(optionalDepBinary);
+      expect(execFileSync).not.toHaveBeenCalled();
+    });
+
+    it('skips an empty canonical broker so a working npm broker still resolves', async () => {
+      const canonical = path.join(
+        os.homedir(),
+        '.agentworkforce',
+        'relay',
+        'bin',
+        `agent-relay-broker${ext}`
+      );
+      const { mod } = await loadWith([canonical, optionalDepBinary], { unusable: [canonical] });
+
+      expect(mod.resolveBrokerBinary()).toEqual({
+        path: optionalDepBinary,
+        source: 'npm-optional-dependency',
+      });
+    });
+
+    it('can resolve the npm broker without consulting the current project', async () => {
+      const { mod, createRequire } = await loadWith([optionalDepBinary]);
+      const cwdRef = path.join(process.cwd(), 'package.json');
+
+      mod.getOptionalDepBrokerPath({ includeCwd: false });
+      expect(createRequire.mock.calls.map((call) => call[0])).not.toContain(cwdRef);
+
+      createRequire.mockClear();
+      createRequire.mockImplementation(() => ({
+        resolve: vi.fn((specifier: string) => {
+          throw new Error(`unresolved ${specifier}`);
+        }),
+      }));
+      mod.getOptionalDepBrokerPath();
+      expect(createRequire.mock.calls.map((call) => call[0])).toContain(cwdRef);
+    });
+
+    it('falls back to PATH when neither the canonical nor the npm broker exists', async () => {
+      const { mod, execFileSync } = await loadWith([]);
+
+      expect(mod.resolveBrokerBinary()).toEqual({ path: pathBinary, source: 'path' });
+      expect(execFileSync).toHaveBeenCalledOnce();
+    });
   });
 
   it('falls back to the legacy standalone broker install directory', async () => {
@@ -346,5 +461,7 @@ describe('broker binary path resolution', () => {
     expect(message).toContain(`${process.platform}-${process.arch}`);
     expect(message).toContain(getOptionalDepPackageName());
     expect(message).toContain('--include=optional');
+    expect(message).toContain('install.sh');
+    expect(message).toContain(path.join('.agentworkforce', 'relay', 'bin'));
   });
 });

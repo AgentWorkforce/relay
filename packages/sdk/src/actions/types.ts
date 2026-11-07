@@ -47,8 +47,7 @@ export interface ZodLikeError {
 }
 
 export type ZodLikeParseResult<TOutput = unknown> =
-  | { success: true; data: TOutput }
-  | { success: false; error: ZodLikeError };
+  { success: true; data: TOutput } | { success: false; error: ZodLikeError };
 
 export interface ZodLikeSchema<TOutput = unknown> {
   safeParse(input: unknown): ZodLikeParseResult<TOutput>;
