@@ -8,6 +8,7 @@ import { Command, InvalidArgumentError } from 'commander';
 
 import { defaultExit } from '../lib/exit.js';
 import { resolveWorkspaceSessionKey } from '../lib/workspace-session.js';
+import { describeError } from '../lib/describe-error.js';
 
 /** The durable reference is Relay's ai-hist session UUID, never a local alias. */
 const SESSION_REF_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -222,7 +223,7 @@ export function createSessionReplaySurface(
       try {
         sessionId = parseSessionRef(rawId);
       } catch (error) {
-        io.stderr(`error: ${error instanceof Error ? error.message : String(error)}\n`);
+        io.stderr(`error: ${describeError(error)}\n`);
         return 2;
       }
 

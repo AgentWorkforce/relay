@@ -3857,6 +3857,9 @@ async fn webhooks_belong_to_the_registered_caller() {
         json!({"provider": "gitlab", "resource": "a/b"}),
         json!({"provider": "github", "resource": " "}),
         json!({"provider": "github", "resource": "a/b", "to": "x"}),
+        json!({"provider": "jira", "resource": "/jira/issues/**", "event_types": "comment.created"}),
+        json!({"provider": "jira", "resource": "/jira/issues/**", "event_types": ["comment.*"]}),
+        json!({"provider": "jira", "resource": "/jira/issues/**", "event_types": [""]}),
     ] {
         assert_eq!(
             code(
@@ -3867,6 +3870,11 @@ async fn webhooks_belong_to_the_registered_caller() {
             "{body}"
         );
     }
+    let error = h.call(IN_CODEX, "POST", "/integrations/subscribe", json!({"provider":"jira", "resource":"/jira/issues/**", "event_types":["version_released"]})).await.unwrap_err();
+    assert!(
+        error.message.contains("Unsupported Jira event_types"),
+        "{error:?}"
+    );
     h.stop().await;
 }
 

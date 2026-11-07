@@ -14,6 +14,7 @@
  * silent no-op when the addon is unavailable or the user isn't authenticated.
  */
 import { isReflexEnabled } from '@agent-relay/config';
+import { describeError } from './describe-error.js';
 
 export interface ReflexPushResult {
   sent: number;
@@ -120,7 +121,7 @@ export function startReflexCapture(overrides: Partial<ReflexCaptureDeps> = {}): 
           deps.log(`[reflex] synced ${result.sent} record(s) to relayhistory-cloud`);
         }
       } catch (err) {
-        deps.log(`[reflex] cloud sync failed: ${err instanceof Error ? err.message : String(err)}`);
+        deps.log(`[reflex] cloud sync failed: ${describeError(err)}`);
       } finally {
         inFlight = null;
       }

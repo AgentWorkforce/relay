@@ -21,6 +21,7 @@ import { saveAgentToken } from '../lib/agent-token-store.js';
 import { guardCredentialOrigin } from '../lib/relaycast-origin-binding.js';
 import { resolveWorkspaceTransport } from '../lib/sdk-client.js';
 import { attributableReleaseReason } from '../lib/release-reason.js';
+import { describeError } from '../lib/describe-error.js';
 
 export interface AgentCommandDependencies extends SdkCommandDeps {
   /** Issue a fresh token for an existing agent with the workspace key. */
@@ -49,7 +50,7 @@ function rememberToken(
     deps.error(`Saved the token for "${name}". Act as this agent with --as ${name}.`);
   } catch (error) {
     // The token is still printed; only the convenience of --as is lost.
-    const reason = error instanceof Error ? error.message : String(error);
+    const reason = describeError(error);
     deps.error(`Could not save the token for "${name}" (${reason}). Use the printed token instead.`);
   }
 }
@@ -128,7 +129,7 @@ export function registerAgentCommands(
           )
       ).catch((error: unknown) => {
         if (!isNotFoundError(error)) throw error;
-        const detail = error instanceof Error ? error.message : String(error);
+        const detail = describeError(error);
         throw new Error(`Agent "${name}" does not exist; use "agent register" to create it. (${detail})`);
       });
       // An owner rotation needs only the workspace key, so a lost token can

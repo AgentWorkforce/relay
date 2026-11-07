@@ -875,6 +875,22 @@ describe('collectWithRetry — a transient failure retries once', () => {
     }
   });
 
+  it('describes a non-Error rejection instead of printing [object Object]', async () => {
+    const result = await collectWithRetry(
+      'roster',
+      async () => {
+        throw { message: 'workspace key rejected', status: 401 };
+      },
+      { retries: 0, sleep: async () => undefined }
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'roster: workspace key rejected (status 401)',
+      retried: false,
+    });
+  });
+
   it('does not retry a terminal failure rejected by shouldRetry', async () => {
     let calls = 0;
     const sleep = vi.fn(async () => undefined);

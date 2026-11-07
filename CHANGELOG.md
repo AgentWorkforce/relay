@@ -9,9 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay-node` built for its own site (`AGENT_RELAY_SITE_URL`) no longer falls back to Agent Relay's public gateways: a sign-in whose site named no valid Relaycast URL, or a CLI workspace key with no recorded server or `RELAY_BASE_URL`, is refused with a reason naming the site, and `RELAYCAST_URL` is ignored in such a build.
+- `agent-relay-node` lists Codex sessions and delivers messages to them promptly when Codex's thread database is large.
+
+## [17.2.1] - 2026-11-07
+
+### Fixed
+
+- `agents.integrations.subscribe` and session socket subscriptions exclude leftover provider events after the last subscription is removed.
 - `agent-relay file` accepts private JSON integration metadata files on Unix.
 - `agent-relay flows` reports GitLab setup requirements and resumes human-approved repository runs with their original access.
-- `agent-relay-node` lists Codex sessions and delivers messages to them promptly when Codex's thread database is large.
+- `agent-relay` commands such as `cloud`, `fleet`, `agent`, `core`, `doctor`, `skills` and `update` print failures that are not `Error` objects as readable messages.
+- `agent-relay` command error output masks credentials, including tokens echoed in server error messages.
 
 ## [17.2.0] - 2026-11-06
 
@@ -23,8 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `agents.integrations.subscribe` and session socket subscriptions accept an `event_types` filter for exact provider events, such as Jira `comment_created`; the core refuses servers that cannot enforce it.
 - `agent-relay-node` can deliver messages to registered VS Code Copilot chats on macOS and resume the same chat while it waits.
 - Copilot messages with uncertain delivery stay pending confirmation and are never blindly submitted again.
+
+### Changed
+
+- Codex SessionStart hooks skip the Relay preamble and early auto-activation for multi-chat app-server/IDE sessions and CLI roots holding live subagent locks.
 
 ### Fixed
 
