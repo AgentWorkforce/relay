@@ -94,11 +94,34 @@ const INHERITED_FD_GUARD = [
   'import os',
   'for fd in range(3, 256):',
   '    try:',
-  '        os.fstat(fd)',
+  '        descriptor = os.fstat(fd)',
   '    except OSError as error:',
   '        assert error.errno == errno.EBADF',
   '    else:',
+  '        try:',
+  '            link = os.readlink(f"/proc/self/fd/{fd}")[:256]',
+  '        except OSError as error:',
+  '            link = f"unavailable (errno {error.errno})"',
+  '        metadata = {"fd": fd, "type": descriptor.st_mode & 0o170000, "link": link}',
+  '        print("inherited descriptor metadata: " + repr(metadata), flush=True)',
   '        raise AssertionError(f"inherited file descriptor {fd}")',
+];
+
+const DESCRIPTOR_CENSUS_START = [
+  'def descriptor_census():',
+  '    rows = []',
+  '    for fd in range(3, 256):',
+  '        try:',
+  '            mode = os.fstat(fd).st_mode & 0o170000',
+  '            link = os.readlink(f"/proc/self/fd/{fd}")[:256]',
+  '        except OSError as error:',
+  '            if error.errno == errno.EBADF:',
+  '                continue',
+  '            raise',
+  '        rows.append({"fd": fd, "type": mode, "link": link})',
+  '    return rows',
+  'census = {"before_imports": descriptor_census()}',
+  'print("descriptor census: " + repr(census), flush=True)',
 ];
 
 function proofBody(type = 'bugfix', caseId = CASE_ID) {
@@ -1381,10 +1404,34 @@ describe('exact broker artifact handoff', () => {
         expect(result.error).toBeUndefined();
         expect(result.status).toBe(1);
         expect(result.stderr).toContain('AssertionError: inherited file descriptor 3');
+        expect(result.stdout).toContain("inherited descriptor metadata: {'fd': 3, 'type':");
+        expect(result.stdout).toContain("'link':");
       } finally {
         if (sentinel !== undefined) closeSync(sentinel);
         await rm(root, { recursive: true, force: true });
       }
+    }
+  );
+
+  it.skipIf(process.platform === 'win32' || !existsSync('/usr/bin/python3'))(
+    'retains descriptor census output when a later runtime import fails',
+    () => {
+      const result = spawnSync(
+        '/usr/bin/python3',
+        [
+          '-c',
+          [
+            ...INHERITED_FD_GUARD,
+            ...DESCRIPTOR_CENSUS_START,
+            'raise ImportError("synthetic runtime import failure")',
+          ].join('\n'),
+        ],
+        { encoding: 'utf8', timeout: 2_000 }
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('ImportError: synthetic runtime import failure');
+      expect(result.stdout).toContain("descriptor census: {'before_imports': []}");
     }
   );
 
@@ -1399,25 +1446,13 @@ describe('exact broker artifact handoff', () => {
             '-c',
             [
               ...INHERITED_FD_GUARD,
-              'def descriptor_census():',
-              '    rows = []',
-              '    for fd in range(3, 256):',
-              '        try:',
-              '            mode = os.fstat(fd).st_mode & 0o170000',
-              '            link = os.readlink(f"/proc/self/fd/{fd}")[:256]',
-              '        except OSError as error:',
-              '            if error.errno == errno.EBADF:',
-              '                continue',
-              '            raise',
-              '        rows.append({"fd": fd, "type": mode, "link": link})',
-              '    return rows',
-              'census = {"before_imports": descriptor_census()}',
+              ...DESCRIPTOR_CENSUS_START,
               'import ctypes',
               'census["after_ctypes"] = descriptor_census()',
+              'print("descriptor census: " + repr(census), flush=True)',
               'import pty',
               'census["after_pty"] = descriptor_census()',
-              'import json',
-              'print("descriptor census: " + json.dumps(census), flush=True)',
+              'print("descriptor census: " + repr(census), flush=True)',
               'status = {}',
               'with open("/proc/self/status", encoding="utf-8") as status_file:',
               '    for line in status_file:',
