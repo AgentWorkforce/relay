@@ -51,8 +51,13 @@ const cliCommand =
  */
 const UNDOCUMENTED_ALLOWLIST = new Set(['help']);
 
-/** Subcommand trees too costly or destructive to walk during an audit. */
+/**
+ * Subcommand trees too costly or destructive to walk during an audit, and the
+ * mounted products, whose trees live in their own SDK specs: the manifest
+ * documents each as a group.
+ */
 const NO_WALK = new Set(['help', 'uninstall']);
+const MOUNTED_PRODUCTS = new Set(['file', 'flows', 'sessions']);
 
 /**
  * Commands that dispatch on a positional argument instead of a subcommand, so
@@ -115,18 +120,42 @@ function parseSubcommands(helpText) {
   return names;
 }
 
+/**
+ * Whether a command missing from the tree still runs: a hidden command answers
+ * `--help` with its own usage, and a removed one with its parent's. Nothing is
+ * reported stale on absence alone, because a stale entry gets deleted.
+ *
+ * Only Commander's own "unknown command" refusal counts as a removal. Any other
+ * failure (a timeout, a crash) throws, so the audit exits 2 instead of
+ * reporting a working command as stale.
+ */
+function answersHelp(parts) {
+  let help;
+  try {
+    help = runHelp(parts);
+  } catch (err) {
+    if (/unknown command/i.test(err.message)) return false;
+    throw err;
+  }
+  const usage = help.split('\n').find((line) => line.startsWith('Usage:'));
+  return Boolean(usage?.split(/\s+/).includes(parts.at(-1)));
+}
+
 /** Walk the command tree and return every leaf command path. */
 function deriveCliLeaves() {
   const leaves = [];
   const visit = (path, depth) => {
     if (depth > 4) return; // relay's tree is 3 deep; guard against a help loop
     const children = parseSubcommands(runHelp(path));
-    const walkable = children.filter((child) => !NO_WALK.has(child));
+    const noWalk = (child) => NO_WALK.has(child) || (path.length === 0 && MOUNTED_PRODUCTS.has(child));
+    const walkable = children.filter((child) => !noWalk(child));
 
     // A no-walk child is still part of the surface — record it without
     // recursing, or the audit reports it as stale when the manifest has it.
     for (const child of children) {
-      if (!NO_WALK.has(child)) continue;
+      if (!noWalk(child)) continue;
+      // A mounted group loads its SDK on demand: help proves it still loads.
+      if (MOUNTED_PRODUCTS.has(child) && path.length === 0) runHelp([child]);
       if (!UNDOCUMENTED_ALLOWLIST.has(child)) leaves.push([...path, child].join(' '));
     }
 
@@ -397,7 +426,7 @@ async function main() {
     const parts = cmd.split(' ');
     const parent = parts.slice(0, -1).join(' ');
     if (parts.length > 1 && POSITIONAL_DISPATCH.has(parent) && cliLeafSet.has(parent)) return false;
-    return true;
+    return !answersHelp(parts);
   });
 
   const undocumentedMcp = mcpTools ? mcpTools.filter((tool) => !documentedMcp.has(tool)) : [];

@@ -84,7 +84,7 @@ function createRelayMock() {
       subscriptions: {
         create: vi.fn(async (i: unknown) => ({ id: 'sub1', ...(i as object) })),
         list: vi.fn(async () => []),
-        get: vi.fn(async (id: string) => ({ id })),
+        get: vi.fn(async (id: string) => ({ id, events: ['message.created', 'thread.reply'] })),
         delete: vi.fn(async () => undefined),
       },
     },
@@ -168,6 +168,23 @@ describe('SDK-backed CLI groups', () => {
     const { program, relay } = harness(registerChannelCommands);
     await program.parseAsync(['channel', 'set_topic', 'ops', 'New topic'], { from: 'user' });
     expect(relay.channels.update).toHaveBeenCalledWith('ops', { topic: 'New topic' });
+  });
+
+  // The 16 KiB ceiling is a PTY injection limit enforced where the broker
+  // types into a terminal. Relaycast messages may target native agents or be
+  // stored for history only, so the generic message commands must not apply it.
+  it('message post, reply and dm send publish bodies larger than the PTY injection limit', async () => {
+    const text = 'x'.repeat(20 * 1024);
+    const { program, relay, error } = harness(registerMessageCommands);
+    const reply = vi.fn(async (i: unknown) => ({ id: 'r1', ...(i as object) }));
+    (relay.messages as Record<string, unknown>).reply = reply;
+    await program.parseAsync(['message', 'post', 'ops', text], { from: 'user' });
+    await program.parseAsync(['message', 'reply', 'm1', text], { from: 'user' });
+    await program.parseAsync(['message', 'dm', 'send', 'lead', text], { from: 'user' });
+    expect(error).not.toHaveBeenCalled();
+    expect(relay.messages.send).toHaveBeenCalledWith({ channel: 'ops', text });
+    expect(reply).toHaveBeenCalledWith({ messageId: 'm1', text });
+    expect(relay.messages.direct).toHaveBeenCalledWith({ to: 'lead', text });
   });
 
   it('message post routes to messages.send with the channel', async () => {
@@ -329,7 +346,10 @@ describe('SDK-backed CLI groups', () => {
     expect(resolveLocalRelayOptions).toHaveBeenCalled();
     expect(createAgentRelay).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ workspaceKey: 'rk_live_local', baseUrl: 'https://relay.local' })
+      expect.objectContaining({
+        workspaceKey: 'rk_live_local',
+        fallbackBaseUrl: 'https://relay.local',
+      })
     );
     expect(secondRelay.integrations.webhooks.create).toHaveBeenCalledWith({
       channel: 'deploy-status',
@@ -379,7 +399,10 @@ describe('SDK-backed CLI groups', () => {
     expect(resolveLocalRelayOptions).toHaveBeenCalled();
     expect(createAgentRelay).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ workspaceKey: 'rk_live_local', baseUrl: 'https://relay.local' })
+      expect.objectContaining({
+        workspaceKey: 'rk_live_local',
+        fallbackBaseUrl: 'https://relay.local',
+      })
     );
     expect(secondRelay.webhooks.createInbound).toHaveBeenCalledWith({
       channel: 'general',
@@ -684,6 +707,9 @@ describe('SDK-backed CLI groups', () => {
       relayfile,
       cleanupJournal: memoryJournal(),
     } satisfies Partial<IntegrationCommandDependencies>);
+    relay.integrations.subscriptions.list.mockResolvedValueOnce([
+      { id: 'sub1', events: ['message.created', 'thread.reply'] } as never,
+    ]);
 
     await program.parseAsync(['integration', 'subscribe', '--list'], { from: 'user' });
 
@@ -706,6 +732,13 @@ describe('SDK-backed CLI groups', () => {
               lastSuccessAt: null,
               lastError: null,
               lastChannelMessageAt: null,
+              lastDeliverySource: null,
+              writebackSubscription: {
+                id: 'sub1',
+                events: ['message.created', 'thread.reply'],
+                active: null,
+                deliveryStatus: null,
+              },
               githubPrIdentityAuthorized: null,
             },
           ],

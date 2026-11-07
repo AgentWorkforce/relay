@@ -9,7 +9,36 @@ use std::{collections::HashMap, path::Path};
 use tokio::{sync::oneshot, task::JoinHandle};
 
 const CLEANUP_RETRY_DELAY: Duration = Duration::from_secs(5);
+const CLEANUP_RETRY_MAX_DELAY: Duration = Duration::from_secs(300);
 const CLEANUP_ACK_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The retry delay doubles per failed attempt up to the cap, with ±25%
+/// jitter, so a fleet of stuck cleanups cannot pile onto an already
+/// pressured Relaycast (e.g. sustained `d1_pressure`/`workspace_busy`).
+/// Jitter is applied inside the cap so the five-minute maximum is a real
+/// bound, not a base the jitter can exceed.
+fn cleanup_retry_delay(failed_attempts: u32) -> Duration {
+    use rand::Rng;
+    let shift = failed_attempts.saturating_sub(1).min(6);
+    let base = CLEANUP_RETRY_DELAY
+        .saturating_mul(1u32 << shift)
+        .min(CLEANUP_RETRY_MAX_DELAY);
+    let base_ms = base.as_millis() as u64;
+    let jitter = base_ms / 4;
+    Duration::from_millis(rand::thread_rng().gen_range(base_ms - jitter..=base_ms + jitter))
+        .min(CLEANUP_RETRY_MAX_DELAY)
+}
+
+/// What an owned-cleanup attempt proved about the remote identity.
+pub(super) enum CleanupOutcome {
+    /// The guarded delete (or binding-only release) was confirmed.
+    Confirmed,
+    /// The remote identity is definitively not this generation's — gone or
+    /// re-registered by a replacement. Nothing is left for this cleanup to
+    /// delete, so custody can release instead of retrying a conflict that
+    /// can never resolve.
+    IdentityNotOurs,
+}
 
 pub(super) enum CleanupCompletion {
     Api(
@@ -80,8 +109,8 @@ pub(crate) struct PendingIdentityCleanup {
     pub(super) agent_id: Option<String>,
     pub(super) expected_token_hash: Result<String, String>,
     deregistered: Arc<AtomicBool>,
-    pub(super) attempts: u8,
-    task: Option<JoinHandle<Result<(), String>>>,
+    pub(super) attempts: u32,
+    task: Option<JoinHandle<Result<CleanupOutcome, String>>>,
     pub(super) retry_at: Instant,
     pub(super) completions: Vec<CleanupCompletion>,
 }
@@ -99,8 +128,9 @@ fn start_attempt(
     delete_identity: bool,
     expected_token_hash: Result<String, String>,
     deregistered: Arc<AtomicBool>,
-) -> JoinHandle<Result<(), String>> {
+) -> JoinHandle<Result<CleanupOutcome, String>> {
     inventory.remove(&name);
+    let cleanup_agent_id = agent_id.clone();
     let acknowledgement = (|| {
         if deregistered.load(Ordering::Acquire) {
             return Ok(None);
@@ -139,16 +169,33 @@ fn start_attempt(
         // Only delete an identity created by this generation. A supplied token
         // can request binding teardown, but never grants deletion ownership.
         if delete_identity {
-            http.release_agent_identity_guarded(
-                &name,
-                Some("owned worker cleanup"),
-                true,
-                Some(&expected_token_hash?),
-            )
-            .await
-            .map_err(|error| error.to_string())?;
+            // Missing ownership proof is a cleanup failure, not evidence that
+            // the remote row is gone. Keep custody so a same-name spawn cannot
+            // collide with an identity we never verified or deleted.
+            let expected_token_hash = expected_token_hash?;
+            match http
+                .release_agent_identity_guarded_for_agent(
+                    &name,
+                    Some("owned worker cleanup"),
+                    true,
+                    Some(&expected_token_hash),
+                    cleanup_agent_id.as_deref(),
+                )
+                .await
+            {
+                Ok(()) => Ok(CleanupOutcome::Confirmed),
+                Err(error)
+                    if error
+                        .downcast_ref::<crate::relaycast::ws::ReleaseIdentityConflict>()
+                        .is_some() =>
+                {
+                    Ok(CleanupOutcome::IdentityNotOurs)
+                }
+                Err(error) => Err(error.to_string()),
+            }
+        } else {
+            Ok(CleanupOutcome::Confirmed)
         }
-        Ok(())
     })
 }
 
@@ -270,7 +317,64 @@ pub(super) fn restore_identity_cleanups(runtime: &mut BrokerRuntime) -> Result<(
     Ok(())
 }
 
+fn prepare_cleanup_completion(
+    completion: CleanupCompletion,
+    cleanup_error: Option<String>,
+) -> Option<BrokerToRelaycast> {
+    match completion {
+        CleanupCompletion::Api(reply, response) => {
+            let response = match cleanup_error {
+                Some(error) => Err(match response {
+                    Err(original) => format!("{original}; {error}"),
+                    Ok(_) => error,
+                }),
+                None => response,
+            };
+            let _ = reply.send(response);
+            None
+        }
+        CleanupCompletion::Fleet(mut response) => {
+            if let Some(error) = cleanup_error {
+                let original = match response.result {
+                    ActionResultPayload::Error(error) => error.error,
+                    _ => String::new(),
+                };
+                response.result = ActionResultPayload::Error(ActionResultError {
+                    error: format!("{original}; {error}"),
+                });
+            }
+            Some(BrokerToRelaycast::ActionResult(response))
+        }
+    }
+}
+
+fn send_cleanup_completion(
+    fleet_completion_tx: &mpsc::UnboundedSender<crate::node_control::RetainedFleetCompletion>,
+    completion: CleanupCompletion,
+    cleanup_error: Option<String>,
+) -> Option<oneshot::Receiver<()>> {
+    if let Some(message) = prepare_cleanup_completion(completion, cleanup_error) {
+        let (delivered, delivery_ack) = oneshot::channel();
+        if let Err(error) = fleet_completion_tx
+            .send(crate::node_control::RetainedFleetCompletion { message, delivered })
+        {
+            tracing::warn!(error = %error, "node-control completion lane closed before retained cleanup result was queued");
+            return None;
+        }
+        return Some(delivery_ack);
+    }
+    None
+}
+
 impl BrokerRuntime {
+    pub(super) fn reap_fleet_completion_acks(&mut self) {
+        self.fleet_completion_acks
+            .retain_mut(|delivery_ack| match delivery_ack.try_recv() {
+                Ok(()) | Err(oneshot::error::TryRecvError::Closed) => false,
+                Err(oneshot::error::TryRecvError::Empty) => true,
+            });
+    }
+
     pub(super) async fn drain_identity_cleanups_on_shutdown(&mut self) {
         // Leave room for the existing 2.5s presence phase inside the CLI stop
         // deadline. Never detach a mutating task beyond broker shutdown.
@@ -281,12 +385,45 @@ impl BrokerRuntime {
             }
         })
         .await;
+        let mut completions = Vec::new();
         for (name, pending) in &mut self.workers.identity_cleanups {
             if let Some(task) = pending.task.take() {
                 task.abort();
             }
+            let error = format!(
+                "owned identity cleanup unconfirmed for {name} generation {}; broker shutting down before reconciliation",
+                pending.generation
+            );
+            completions.extend(
+                std::mem::take(&mut pending.completions)
+                    .into_iter()
+                    .map(|completion| (completion, error.clone())),
+            );
             tracing::warn!(worker = %name, generation = %pending.generation,
                 "broker shutting down with unconfirmed owned cleanup; reconcile the recorded generation before name reuse");
+        }
+        for (completion, error) in completions {
+            if let Some(delivery_ack) =
+                send_cleanup_completion(&self.fleet_completion_tx, completion, Some(error))
+            {
+                self.fleet_completion_acks.push(delivery_ack);
+            }
+        }
+        self.reap_fleet_completion_acks();
+        let pending_delivery_count = self.fleet_completion_acks.len();
+        if pending_delivery_count > 0
+            && timeout(Duration::from_millis(500), async {
+                for delivery_ack in std::mem::take(&mut self.fleet_completion_acks) {
+                    let _ = delivery_ack.await;
+                }
+            })
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                pending_delivery_count,
+                "timed out waiting for retained Fleet cleanup results to reach the node socket"
+            );
         }
     }
 
@@ -303,8 +440,8 @@ impl BrokerRuntime {
                 continue;
             }
             if pending.task.is_none() {
-                if pending.attempts < 5 && Instant::now() >= pending.retry_at {
-                    pending.attempts += 1;
+                if Instant::now() >= pending.retry_at {
+                    pending.attempts = pending.attempts.saturating_add(1);
                     pending.task = Some(start_attempt(
                         &self.fleet_control_tx,
                         pending.agent_id.clone(),
@@ -324,17 +461,51 @@ impl BrokerRuntime {
                 .unwrap()
                 .await
                 .unwrap_or_else(|error| Err(format!("cleanup task failed: {error}")));
-            let completions = std::mem::take(&mut pending.completions);
             let generation = pending.generation;
+            // A fleet action retry retained only in this sandbox cannot
+            // outlive its action result: Cloud tears the sandbox down as soon
+            // as it receives a failed spawn. Keep fleet callers waiting while
+            // the quick retries run, and report an unconfirmed cleanup once
+            // those are spent — even though jittered background retries keep
+            // running so the name cannot stay blocked forever. API release
+            // callers retain their existing immediate-error contract because
+            // the broker remains alive for an explicit retry.
+            let completions = if result.is_err() && pending.attempts < 5 {
+                let (retained, ready): (Vec<_>, Vec<_>) = std::mem::take(&mut pending.completions)
+                    .into_iter()
+                    .partition(|completion| matches!(completion, CleanupCompletion::Fleet(_)));
+                pending.completions = retained;
+                ready
+            } else {
+                std::mem::take(&mut pending.completions)
+            };
             if let Err(error) = &result {
-                pending.retry_at = Instant::now() + CLEANUP_RETRY_DELAY;
-                if pending.attempts >= 5 {
+                pending.retry_at = Instant::now() + cleanup_retry_delay(pending.attempts);
+                if pending.attempts == 5 {
+                    // Quick retries did not confirm the remote release — the
+                    // waiters are answered above — but custody is retained
+                    // and jittered background retries continue, so a
+                    // sustained outage cannot leave the name blocked
+                    // forever.
                     tracing::error!(worker = %name, %generation, agent_id = ?pending.agent_id, %error,
-                        "owned identity cleanup retries exhausted; name stays reserved until an explicit generation-matched release retry");
+                        "owned identity cleanup still unconfirmed after quick retries; continuing on a jittered backoff");
                 } else {
-                    tracing::warn!(worker = %name, %generation, %error, "owned identity cleanup unconfirmed; name reserved for retry");
+                    tracing::warn!(worker = %name, %generation, %error, attempts = pending.attempts,
+                        "owned identity cleanup unconfirmed; name reserved for retry");
                 }
             } else {
+                if let Ok(CleanupOutcome::IdentityNotOurs) = &result {
+                    // Drop only this cleanup generation's credential. A
+                    // same-name replacement may have seeded a newer token
+                    // while the guarded request was in flight.
+                    if let Ok(expected) = pending.expected_token_hash.as_ref() {
+                        pending
+                            .http
+                            .invalidate_cached_registration_if_token_hash(name.as_str(), expected);
+                    }
+                    tracing::info!(worker = %name, %generation,
+                    "remote identity is no longer this generation's; releasing owned cleanup custody")
+                }
                 let delete_identity = pending.delete_identity;
                 let agent_id = pending.agent_id.clone();
                 self.workers.identity_cleanups.remove(&name);
@@ -362,37 +533,37 @@ impl BrokerRuntime {
                 persist_journal(&self.workers);
             }
             for completion in completions {
-                let cleanup_error = result.as_ref().err().map(|error| format!("owned identity cleanup unconfirmed for {name} generation {generation}; retry retained: {error}"));
-                match completion {
-                    CleanupCompletion::Api(reply, response) => {
-                        let response = match cleanup_error {
-                            Some(error) => Err(match response {
-                                Err(original) => format!("{original}; {error}"),
-                                Ok(_) => error,
-                            }),
-                            None => response,
-                        };
-                        let _ = reply.send(response);
-                    }
-                    CleanupCompletion::Fleet(mut response) => {
-                        if let Some(error) = cleanup_error {
-                            let original = match response.result {
-                                ActionResultPayload::Error(error) => error.error,
-                                _ => String::new(),
-                            };
-                            response.result = ActionResultPayload::Error(ActionResultError {
-                                error: format!("{original}; {error}"),
-                            });
-                        }
-                        let _ = self
-                            .fleet_control_tx
-                            .send(FleetControlCommand::Send(BrokerToRelaycast::ActionResult(
-                                response,
-                            )))
-                            .await;
-                    }
+                let cleanup_error = match &result {
+                    Err(error) => Some(format!("owned identity cleanup unconfirmed for {name} generation {generation}; retry retained: {error}")),
+                    _ => None,
+                };
+                if let Some(delivery_ack) =
+                    send_cleanup_completion(&self.fleet_completion_tx, completion, cleanup_error)
+                {
+                    self.fleet_completion_acks.push(delivery_ack);
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cleanup_retry_delay_never_exceeds_the_cap() {
+        // The ±25% jitter is applied inside the five-minute cap — a capped
+        // base must not be pushed past the stated maximum.
+        for attempt in [6_u32, 7, 8, 20, u32::MAX] {
+            for _ in 0..200 {
+                assert!(
+                    cleanup_retry_delay(attempt) <= CLEANUP_RETRY_MAX_DELAY,
+                    "delay exceeded the cap at attempt {attempt}"
+                );
+            }
+        }
+        // Lower attempts keep their jittered range below the cap anyway.
+        assert!(cleanup_retry_delay(1) <= CLEANUP_RETRY_MAX_DELAY);
     }
 }

@@ -189,12 +189,10 @@ export function correlate({
   if (actions.length > 1)
     return { pass: false, missing: 'duplicate actor actions for one unique nonce', ingestId: ingest.id };
   if (!action) return { pass: false, missing: 'exact actor digest response', ingestId: ingest.id };
-  if (
-    !(
-      Date.parse(action.created_at) >= Date.parse(injected.observedAt) &&
-      Date.parse(action.created_at) <= deadline
-    )
-  )
+  if (!(
+    Date.parse(action.created_at) >= Date.parse(injected.observedAt) &&
+    Date.parse(action.created_at) <= deadline
+  ))
     return { pass: false, missing: 'actor action within injection/deadline boundaries', ingestId: ingest.id };
   const idle = events.filter(
     (e) =>

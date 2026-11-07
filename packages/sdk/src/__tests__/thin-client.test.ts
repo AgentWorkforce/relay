@@ -199,10 +199,15 @@ describe('createAgentClient', () => {
     });
     expect(instance.as).toHaveBeenCalledWith('at_live_test', { autoHeartbeatMs: false });
 
-    const agent = relaycastMocks.agentClients[0] as { send: ReturnType<typeof vi.fn> };
+    const agent = relaycastMocks.agentClients[0] as {
+      send: ReturnType<typeof vi.fn>;
+      dm: ReturnType<typeof vi.fn>;
+    };
     const sent = await client.send('general', 'hello', { mode: 'wait' });
     expect(agent.send).toHaveBeenCalledWith('general', 'hello', { mode: 'wait' });
     expect(sent).toEqual({ raw: true, args: ['general', 'hello', { mode: 'wait' }] });
+    await client.dm('chief', 'dm', { idempotencyKey: 'dm-logical-1' });
+    expect(agent.dm).toHaveBeenCalledWith('chief', 'dm', { idempotencyKey: 'dm-logical-1' });
   });
 
   it('honors an explicit heartbeat interval', () => {
@@ -239,13 +244,16 @@ describe('createAgentClient', () => {
 
     await client.send('general', 'hello');
     await client.reply('msg_parent', 'reply');
-    await client.dm('chief', 'dm');
+    await client.dm('chief', 'dm', { idempotencyKey: 'dm-logical-1' });
     await client.dms.sendMessage('conv_group', 'group');
 
     const replayData = { session_ref: '11111111-1111-4111-8111-111111111111' };
     expect(agent.send).toHaveBeenCalledWith('general', 'hello', { data: replayData });
     expect(agent.reply).toHaveBeenCalledWith('msg_parent', 'reply', { data: replayData });
-    expect(agent.dm).toHaveBeenCalledWith('chief', 'dm', { data: replayData });
+    expect(agent.dm).toHaveBeenCalledWith('chief', 'dm', {
+      data: replayData,
+      idempotencyKey: 'dm-logical-1',
+    });
     expect(agent.dms.sendMessage).toHaveBeenCalledWith('conv_group', 'group', { data: replayData });
   });
 

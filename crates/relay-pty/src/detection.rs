@@ -1,26 +1,69 @@
 use crate::ansi::strip_ansi;
 
+/// Whether a rendered row is Codex's actual busy indicator.
+///
+/// Requiring both fragments on the same row avoids treating ordinary task
+/// text that mentions the interrupt hint as harness activity.
+pub fn is_codex_busy_status_line(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .any(|word| word == "working")
+        && lower.contains("esc to interrupt")
+}
+
 #[derive(Debug, Clone)]
 pub struct ActivityDetector {
     patterns: Vec<&'static str>,
+    codex_working_pair: bool,
 }
 
 impl ActivityDetector {
     pub fn for_cli(cli: &str) -> Self {
         let lower = cli.to_lowercase();
+        let codex_working_pair = lower.contains("codex");
         let patterns = if lower.contains("claude") {
-            vec!["⠋", "⠙", "⠹", "Tool:", "Read(", "Write(", "Edit("]
+            vec![
+                "⠋",
+                "⠙",
+                "⠹",
+                "Tool:",
+                "Read(",
+                "Write(",
+                "Edit(",
+                "esc to interrupt",
+            ]
         } else if lower.contains("codex") {
+            // Current Codex renders `Working (… • esc to interrupt)` after a
+            // composer submission. Older builds used `Thinking...`/`Running:`.
+            // Keep both generations: this detector is acceptance evidence, so
+            // missing the current marker leaves a body parked while an echo is
+            // incorrectly treated as delivery success.
             vec!["Thinking...", "Running:", "$ ", "function_call"]
         } else if crate::readiness::is_devin_cli(cli) {
             vec!["Thinking ·", "Guide Devin while it works"]
         } else if lower.contains("gemini") {
             vec!["Generating", "Action:", "Executing"]
+        } else if lower.contains("opencode") {
+            // OpenCode's ordinary transcript frequently contains the generic
+            // words "tool", "Thinking", and "Working". Until a distinctive
+            // busy marker is established, rely on composer clearing instead.
+            Vec::new()
         } else {
             Vec::new()
         };
 
-        Self { patterns }
+        Self {
+            patterns,
+            codex_working_pair,
+        }
+    }
+
+    /// Whether this detector has harness-specific evidence that a turn began.
+    /// Generic output is useful for activity telemetry, but a TUI repaint is
+    /// not strong enough to acknowledge a broker delivery.
+    pub fn has_explicit_patterns(&self) -> bool {
+        !self.patterns.is_empty()
     }
 
     pub fn detect_activity(&self, output: &str, expected_echo: &str) -> Option<String> {
@@ -30,6 +73,10 @@ impl ActivityDetector {
         } else {
             clean_output.replace(expected_echo, "")
         };
+
+        if self.codex_working_pair && relevant_output.lines().any(is_codex_busy_status_line) {
+            return Some("Working+esc to interrupt".to_string());
+        }
 
         if self.patterns.is_empty() {
             if relevant_output.trim().is_empty() {
@@ -83,11 +130,32 @@ mod tests {
         let detector = ActivityDetector::for_cli("codex");
         assert_eq!(
             detector.detect_activity(
+                "Working appears in the parked task body",
+                "Relay message from Alice [evt_1]: hello"
+            ),
+            None
+        );
+        assert_eq!(
+            detector.detect_activity(
+                "Working (2s • esc to interrupt)",
+                "Relay message from Alice [evt_1]: hello"
+            ),
+            Some("Working+esc to interrupt".to_string())
+        );
+        assert_eq!(
+            detector.detect_activity(
                 "Thinking... running tool",
                 "Relay message from Alice [evt_1]: hello"
             ),
             Some("Thinking...".to_string())
         );
+        assert!(is_codex_busy_status_line("Working (2s • esc to interrupt)"));
+        assert!(!is_codex_busy_status_line(
+            "task text mentions esc to interrupt"
+        ));
+        assert!(!is_codex_busy_status_line(
+            "networking (2s • esc to interrupt)"
+        ));
     }
 
     #[test]
@@ -112,6 +180,13 @@ mod tests {
             ),
             Some("any_output".to_string())
         );
+    }
+
+    #[test]
+    fn only_known_harnesses_have_explicit_acceptance_patterns() {
+        assert!(ActivityDetector::for_cli("codex").has_explicit_patterns());
+        assert!(ActivityDetector::for_cli("claude").has_explicit_patterns());
+        assert!(!ActivityDetector::for_cli("muse").has_explicit_patterns());
     }
 
     #[test]

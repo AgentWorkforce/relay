@@ -9,7 +9,8 @@ import { redactCredentialValues } from '@agent-relay/cloud/redact';
 
 import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
 import {
-  brokerIdentityPath,
+  brokerIdentityDirectory,
+  locateBrokerIdentityFile,
   matchesBrokerIdentity,
   persistBrokerIdentity,
   readBrokerIdentities,
@@ -26,11 +27,7 @@ import {
   resolveNodeMaxAgents,
   type NodeCapacitySource,
 } from './fleet-sidecar.js';
-import {
-  discoverNodeConfigPath,
-  discoverPythonNodeConfigPath,
-  loadNodeDefinition,
-} from './node-definition-loader.js';
+import { discoverNodeConfigPath, loadNodeDefinition } from './node-definition-loader.js';
 import {
   describeNodeDefinitionViaNode,
   descriptorCapacitySource,
@@ -753,10 +750,9 @@ async function readBrokerNodeIdentity(
 /**
  * Serve the project's capability definitions as node providers connected
  * directly to the engine, alongside the broker provider: an `agent-relay.{ts,…}`
- * definition via {@link startServeNode}, and an `agent-relay.py` script spawned
- * as a supervised `python` child with the node token in its env. When no
- * definition exists, nothing is served — the broker's capacity already brings
- * the node online. Best-effort: a provider setup failure never aborts `up`.
+ * definition via {@link startServeNode}. When no definition exists, nothing is
+ * served — the broker's capacity already brings the node online. Best-effort:
+ * a provider setup failure never aborts `up`.
  */
 async function startNodeCapabilityProviders(
   paths: CoreProjectPaths,
@@ -765,10 +761,7 @@ async function startNodeCapabilityProviders(
   deps: CoreDependencies,
   nodePlan: NodeDefinitionPlan | undefined
 ): Promise<RunningNodeProviders | undefined> {
-  // Definition discovery is opt-in (`node up` only), matching the TS config scan.
-  const pythonConfig =
-    options.discoverConfig === true ? discoverPythonNodeConfigPath(paths.projectRoot) : undefined;
-  if (!nodePlan && !pythonConfig) {
+  if (!nodePlan) {
     return undefined;
   }
 
@@ -798,7 +791,6 @@ async function startNodeCapabilityProviders(
   }
 
   const served: RunningNode[] = [];
-  let pythonChild: SpawnedProcess | undefined;
   let nodeJsChild: RunningNodeProviderChild | undefined;
 
   if (nodePlan?.mode === 'in-process') {
@@ -848,22 +840,7 @@ async function startNodeCapabilityProviders(
     );
   }
 
-  if (pythonConfig) {
-    pythonChild = startPythonNodeProvider(
-      pythonConfig,
-      {
-        nodeToken,
-        baseUrl,
-        nodeId: identity.nodeId,
-        // Prefer the enrolled/override name so a Cloud-enrolled py provider
-        // registers under the same name as the TS provider, not the broker default.
-        nodeName: options.nodeName ?? identity.nodeName,
-      },
-      deps
-    );
-  }
-
-  if (served.length === 0 && !pythonChild && !nodeJsChild) {
+  if (served.length === 0 && !nodeJsChild) {
     return undefined;
   }
 
@@ -871,45 +848,8 @@ async function startNodeCapabilityProviders(
     ...(nodeJsChild ? { done: nodeJsChild.done } : {}),
     stop: async () => {
       await Promise.all([...served.map((node) => node.stop().catch(() => undefined)), nodeJsChild?.stop()]);
-      if (pythonChild?.pid) {
-        try {
-          deps.killProcess(pythonChild.pid, 'SIGTERM');
-        } catch {
-          // Already exited.
-        }
-      }
     },
   };
-}
-
-/**
- * Spawn `python agent-relay.py` as a supervised child with the node credentials
- * in its environment. The child connects to the engine on its own via the SDK's
- * `NodeProvider.from_enrollment()`.
- */
-function startPythonNodeProvider(
-  configPath: string,
-  credentials: { nodeToken: string; baseUrl?: string; nodeId: string; nodeName: string },
-  deps: CoreDependencies
-): SpawnedProcess | undefined {
-  const python = deps.env.AGENT_RELAY_PYTHON?.trim() || 'python3';
-  const env: NodeJS.ProcessEnv = {
-    ...deps.env,
-    RELAY_NODE_TOKEN: credentials.nodeToken,
-    RELAY_NODE_ID: credentials.nodeId,
-    RELAY_NODE_NAME: credentials.nodeName,
-    ...(credentials.baseUrl ? { RELAY_BASE_URL: credentials.baseUrl } : {}),
-  };
-  try {
-    const child = deps.spawnProcess(python, [configPath], { stdio: 'inherit', env });
-    deps.log(
-      `Serving Python node provider: ${python} ${path.basename(configPath)} (pid: ${child.pid ?? 'unknown'}).`
-    );
-    return child;
-  } catch (err) {
-    deps.warn(`Python node provider skipped: ${toErrorMessage(err)}`);
-    return undefined;
-  }
 }
 
 function isBrokerAlreadyRunningError(message: string): boolean {
@@ -1077,7 +1017,7 @@ async function killOrphanedBrokerProcesses(
   const identities = readBrokerIdentities(paths, deps);
   if (!identities) {
     deps.warn(
-      `Broker identities could not be read in ${path.join(paths.projectRoot, '.agentworkforce', 'relay')}. State retained; inspect the records and verify process ownership before manual recovery.`
+      `Broker identities could not be read in ${brokerIdentityDirectory(paths, deps)}. State retained; inspect the records and verify process ownership before manual recovery.`
     );
     return { matchedCount: 1, killedCount: 0 };
   }
@@ -1093,7 +1033,7 @@ async function killOrphanedBrokerProcesses(
       if (options?.matchBrokerName) {
         result.matchedCount++;
         deps.warn(
-          `Recorded broker has already exited; its identity was retained because no matched exit was observed. Verify ownership before removing ${brokerIdentityPath(paths, deps, identity.brokerName)} and restarting.`
+          `Recorded broker has already exited; its identity was retained because no matched exit was observed. Verify ownership before removing ${locateBrokerIdentityFile(paths, deps, identity.brokerName)} and restarting.`
         );
       }
       continue;
@@ -1114,7 +1054,7 @@ async function stopRecordedBroker(
   // escalation after a wait. Never rediscover ownership from rendered argv.
   if (!(await matchesBrokerIdentity(identity, paths, deps))) {
     deps.warn(
-      `Broker identity could not be verified (pid: ${identity.pid}). State retained; verify process ownership before stopping it manually. If the recorded broker has exited, remove its stale identity file: ${brokerIdentityPath(paths, deps, identity.brokerName)}`
+      `Broker identity could not be verified (pid: ${identity.pid}). State retained; verify process ownership before stopping it manually. If the recorded broker has exited, remove its stale identity file: ${locateBrokerIdentityFile(paths, deps, identity.brokerName)}`
     );
     return false;
   }
@@ -1186,7 +1126,7 @@ async function recoverHalfStartedBroker(
     if (!stopped) {
       deps.error(
         `Failed to stop half-started broker process (pid: ${readiness.conn.pid}). ` +
-          `Verify process ownership manually before stopping it; inspect identities in ${path.join(paths.projectRoot, '.agentworkforce', 'relay')}. Connection metadata alone cannot authorize a signal.`
+          `Verify process ownership manually before stopping it; inspect identities in ${brokerIdentityDirectory(paths, deps)}. Connection metadata alone cannot authorize a signal.`
       );
       return 'blocked';
     }
@@ -1541,8 +1481,7 @@ async function resolveNodeDefinitionForUp(
  * whenever the package's entry lives in a subdirectory (`dist/`), i.e. every
  * TypeScript-built package, and the failure is transitive through the user's
  * whole dependency graph — so the CLI only learns its descriptor (via a
- * `--describe` child) and hands the file to a child `node` process to serve,
- * exactly as `agent-relay.py` is handed to `python3`.
+ * `--describe` child) and hands the file to a child `node` process to serve.
  */
 type NodeDefinitionPlan =
   | { mode: 'in-process'; definition: FleetNodeDefinition }
@@ -2026,7 +1965,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
         if (!stopped) {
           deps.error(
             `Failed to stop half-started broker process (pid: ${cleanupPid}). ` +
-              `Verify process ownership before stopping it manually; inspect identities in ${path.join(paths.projectRoot, '.agentworkforce', 'relay')}.`
+              `Verify process ownership before stopping it manually; inspect identities in ${brokerIdentityDirectory(paths, deps)}.`
           );
         }
       }
@@ -2073,7 +2012,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
           allStopped = false;
           deps.error(
             `Failed to stop broker process after Cloud enrollment startup failed (pid: ${cleanupPid}). ` +
-              `Verify process ownership before stopping it manually; inspect identities in ${path.join(paths.projectRoot, '.agentworkforce', 'relay')}.`
+              `Verify process ownership before stopping it manually; inspect identities in ${brokerIdentityDirectory(paths, deps)}.`
           );
         }
       }
@@ -2095,7 +2034,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     }
     if (!identityReady) {
       deps.error(
-        `Broker API is ready but process identity was not confirmed (pid: ${readiness.conn.pid}). State retained; verify ownership manually and inspect identities in ${path.join(paths.projectRoot, '.agentworkforce', 'relay')}.`
+        `Broker API is ready but process identity was not confirmed (pid: ${readiness.conn.pid}). State retained; verify ownership manually and inspect identities in ${brokerIdentityDirectory(paths, deps)}.`
       );
       deps.exit(1);
       return;
@@ -2510,11 +2449,74 @@ async function reportNodeClaimsElsewhere(paths: CoreProjectPaths, deps: CoreDepe
   deps.log('Stop one with: agent-relay node down --state-dir <state dir>');
 }
 
+/**
+ * Resolve `--state-dir` for commands that inspect an existing broker. A fleet
+ * node directory holds its broker state in `state/`, so accept the node
+ * directory too when the nested one holds the broker (relay#1575).
+ *
+ * Evidence is ranked, checking the exact directory before `state/` at each
+ * rank: an identity record verified against its running process (start
+ * time, executable and held lock, as `down` requires before signalling),
+ * then a `connection.json` whose pid is running, then any `connection.json`,
+ * then any broker lock or record. Leftover files in the node directory —
+ * including a connection file whose pid was reused by another process —
+ * therefore cannot shadow a verified nested broker, and `down --force` can
+ * still recover a broker whose connection file is gone.
+ */
+async function resolveExistingStateDir(stateDir: string, deps: CoreDependencies): Promise<string> {
+  const exact = path.resolve(stateDir);
+  const candidates = [exact, path.join(exact, 'state')];
+  const ranks: Array<(dir: string) => boolean | Promise<boolean>> = [
+    (dir) => hasVerifiedBrokerIdentity(dir, deps),
+    (dir) => hasLiveConnection(dir, deps),
+    (dir) => deps.fs.existsSync(path.join(dir, CONNECTION_FILENAME)),
+    (dir) => hasBrokerStateFiles(dir, deps),
+  ];
+  for (const matches of ranks) {
+    for (const candidate of candidates) {
+      if (await matches(candidate)) return candidate;
+    }
+  }
+  return exact;
+}
+
+function brokerStateFiles(dir: string, deps: CoreDependencies): string[] {
+  try {
+    return deps.fs
+      .readdirSync(dir)
+      .filter((file) => file.startsWith('broker-') && (file.endsWith('.lock') || file.endsWith('.json')));
+  } catch {
+    return [];
+  }
+}
+
+function hasBrokerStateFiles(dir: string, deps: CoreDependencies): boolean {
+  return brokerStateFiles(dir, deps).length > 0;
+}
+
+/** A connection file only proves a live broker while its pid is running. */
+function hasLiveConnection(dir: string, deps: CoreDependencies): boolean {
+  const pid = readBrokerConnectionFromFs(deps.fs, dir)?.pid;
+  return typeof pid === 'number' && pid > 0 && isProcessRunning(pid, deps);
+}
+
+/**
+ * Whether `dir` holds an identity record that still matches its process. A
+ * bare pid check would trust a stale record whose pid has been reused.
+ */
+async function hasVerifiedBrokerIdentity(dir: string, deps: CoreDependencies): Promise<boolean> {
+  const paths = { ...deps.getProjectPaths(), dataDir: dir };
+  for (const identity of readBrokerIdentities(paths, deps) ?? []) {
+    if (await matchesBrokerIdentity(identity, paths, deps)) return true;
+  }
+  return false;
+}
+
 // eslint-disable-next-line complexity, max-depth
 export async function runDownCommand(options: DownOptions, deps: CoreDependencies): Promise<void> {
   const paths = deps.getProjectPaths();
   if (options.stateDir) {
-    paths.dataDir = path.resolve(options.stateDir);
+    paths.dataDir = await resolveExistingStateDir(options.stateDir, deps);
   }
   const timeout = Number.parseInt(options.timeout ?? '5000', 10) || 5000;
 
@@ -2612,9 +2614,19 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
 
   const identities = readBrokerIdentities(paths, deps);
   const identity = identities?.find((record) => record.pid === pid);
+  if (identities && !identity) {
+    deps.error(
+      `No identity record for the running broker (pid: ${pid}) in ${brokerIdentityDirectory(paths, deps)}; retained its state. ` +
+        'It was started by an older CLI or directly with `agent-relay-broker init`, which record none. ' +
+        `Verify ownership and stop it manually once, then start it with \`agent-relay node up --state-dir ${paths.dataDir}\` ` +
+        'so later `node down` calls can verify it. Connection metadata alone cannot authorize a signal.'
+    );
+    deps.exit(1);
+    return;
+  }
   if (!identity || !(await matchesBrokerIdentity(identity, paths, deps))) {
     deps.error(
-      `Broker identity could not be verified (pid: ${pid}); retained its state. Verify ownership before stopping the process manually; inspect identities in ${path.join(paths.projectRoot, '.agentworkforce', 'relay')}. Connection metadata alone cannot authorize a signal.`
+      `Broker identity could not be verified (pid: ${pid}); retained its state. Verify ownership before stopping the process manually; inspect identities in ${brokerIdentityDirectory(paths, deps)}. Connection metadata alone cannot authorize a signal.`
     );
     deps.exit(1);
     return;
@@ -2684,7 +2696,7 @@ export async function runStatusCommand(
 ): Promise<void> {
   const paths = deps.getProjectPaths();
   if (options?.stateDir) {
-    paths.dataDir = path.resolve(options.stateDir);
+    paths.dataDir = await resolveExistingStateDir(options.stateDir, deps);
   }
   const waitMs = parseWaitForMs(options?.waitFor, deps);
   if (waitMs === null) {
@@ -2727,6 +2739,14 @@ export async function runStatusCommand(
   }
   deps.log(`PID: ${readiness.conn.pid}`);
   deps.log(`Project: ${paths.projectRoot}`);
+  const identities = readBrokerIdentities(paths, deps);
+  if (identities && !identities.some((record) => record.pid === readiness.conn.pid)) {
+    // Surface this before an outage: without a record `node down` refuses to signal.
+    deps.warn(
+      `Broker identity: not recorded in ${brokerIdentityDirectory(paths, deps)}; \`node down\` cannot verify this broker. ` +
+        `Restart it once with \`agent-relay node up --state-dir ${paths.dataDir}\` to record one.`
+    );
+  }
   const source = workspaceBindingSource(readiness.conn.workspace_source);
   deps.log(
     source

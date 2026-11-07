@@ -39,6 +39,8 @@ const LIVE_CREDENTIAL_PREFIXES = [
   'at_live_',
   'nt_live_',
   'ot_live_',
+  'ar_ws_',
+  'ar_ag_',
   'cld_at_',
   'rth_at_',
   'ocl_node_enr_',

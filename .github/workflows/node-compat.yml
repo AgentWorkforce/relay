@@ -18,11 +18,14 @@ concurrency:
 
 jobs:
   changes:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.github/workflows/detect-changes.yml
   install-test:
     name: Install Test (Node ${{ matrix.node-version }})
     needs: changes
-    if: needs.changes.outputs.node_changed == 'true'
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (needs.changes.outputs.node_changed == 'true')
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -83,7 +86,9 @@ jobs:
   fresh-install:
     name: Fresh Install (Node ${{ matrix.node-version }})
     needs: changes
-    if: needs.changes.outputs.node_changed == 'true'
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (needs.changes.outputs.node_changed == 'true')
     runs-on: ubuntu-latest
     strategy:
       matrix:

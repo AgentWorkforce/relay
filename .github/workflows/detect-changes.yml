@@ -10,6 +10,9 @@ name: Detect Changes
 #                       TS suite exercises a broker built from the PR's sources.
 #   sdk_swift_changed — Swift SDK jobs (swift build/test)
 #
+# crates/relay-node/ selects none of these, because Relay node CI covers it on its own
+# paths. The exception is protocol.rs, which selects node_changed.
+#
 # When the change scope is unknown (API failure, truncated file list,
 # unexpected event) every output is true — fail open, never silently skip.
 
@@ -111,12 +114,20 @@ jobs:
               file === 'LICENSE' ||
               (/\.mdx?$/i.test(file) && !file.includes('/'));
 
+            // The core sits outside the Cargo workspace and reaches Node only
+            // through the pinned release, so Relay node CI covers it. The bridge
+            // protocol stays Node-affecting: relay-node.test.ts reads it.
+            const isCore = (file) => file.startsWith('crates/relay-node/');
+            const isCoreOnly = (file) =>
+              isCore(file) && file !== 'crates/relay-node/src/relay/protocol.rs';
+
             const classifyFiles = (changedFiles) => ({
               rustChanged: changedFiles.some(
-                (file) => (isRust(file) && !isInert(file)) || isCi(file)
+                (file) =>
+                  (isRust(file) && !isInert(file) && !isCore(file)) || isCi(file)
               ),
               nodeChanged: changedFiles.some(
-                (file) => !isSwift(file) && !isInert(file)
+                (file) => !isSwift(file) && !isInert(file) && !isCoreOnly(file)
               ),
               sdkSwiftChanged: changedFiles.some(
                 (file) => isSwift(file) || isCi(file)

@@ -273,16 +273,14 @@ export interface CliUpdateEvent {
   to_version: string;
   /** True when the update install command completed successfully. */
   success: boolean;
+  /** How the running CLI was installed ('standalone', 'npm' or 'unknown'). */
+  install_method?: 'standalone' | 'npm' | 'unknown';
   /** Error constructor/category when success=false. */
   error_class?: string;
 }
 
 export type AgentRelayToolCallType =
-  | 'agent.create'
-  | 'agent.release'
-  | 'agent.attach'
-  | 'agent.status'
-  | (string & {});
+  'agent.create' | 'agent.release' | 'agent.attach' | 'agent.status' | (string & {});
 
 export type AgentRelayToolCallCategory =
   | 'spawn'
@@ -322,7 +320,7 @@ export interface AgentRelayToolCallEvent {
 // Tier 3: Domain Events (high-signal product flows)
 // =============================================================================
 
-export type WorkflowFileType = 'yaml' | 'ts' | 'py' | 'unknown';
+export type WorkflowFileType = 'yaml' | 'ts' | 'unknown';
 
 /**
  * workflow_run - Emitted when `agent-relay run <file>` finishes (success or failure).
@@ -337,7 +335,7 @@ export interface WorkflowRunEvent {
   is_resume: boolean;
   /** True if --start-from was passed */
   is_start_from: boolean;
-  /** True for .ts/.tsx/.py scripts (as opposed to YAML) */
+  /** True for .ts/.tsx scripts (as opposed to YAML) */
   is_script: boolean;
   /** True if the command completed successfully */
   success: boolean;

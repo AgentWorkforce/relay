@@ -552,15 +552,13 @@ node ${shellQuote(path.join(TRUSTED_ROOT, 'scripts/verify-features/materialize-f
     {
       workflows: [
         {
-          steps: steps.map(
-            (step): RelayFlowTimeoutStep => ({
-              name: step.id,
-              timeoutMs: planTimeouts.get(step.id) as number,
-              retries: planRetries.get(step.id) ?? 0,
-              ...(step.agent ? { agent: step.agent as string } : {}),
-              dependsOn: (step.dependsOn as string[] | undefined) ?? [],
-            })
-          ),
+          steps: steps.map((step): RelayFlowTimeoutStep => ({
+            name: step.id,
+            timeoutMs: planTimeouts.get(step.id) as number,
+            retries: planRetries.get(step.id) ?? 0,
+            ...(step.agent ? { agent: step.agent as string } : {}),
+            dependsOn: (step.dependsOn as string[] | undefined) ?? [],
+          })),
         },
       ],
       errorHandling: { maxRetries: 0 },

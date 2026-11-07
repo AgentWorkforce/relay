@@ -66,22 +66,23 @@ Is cost the primary concern?
 
 These 14 additional patterns exist in `SwarmPattern` (types.ts:114-139). The coordinator has role-based auto-selection heuristics (`coordinator.ts:51-165`), but they only fire when `swarm.pattern` is **omitted** — YAML validation requires it (`runner.ts:2105-2117`), so auto-selection is effectively a programmatic-API feature. In YAML, set `swarm.pattern` explicitly.
 Topology is still resolved per-pattern once selected; the "Triggering roles" column reflects what the coordinator looks for to shape edges (per `coordinator.ts:250-450`):
-| Pattern | Roles the topology keys off | Topology |
+
+| Pattern           | Roles the topology keys off                             | Topology                                       |
 | ----------------- | ------------------------------------------------------- | ---------------------------------------------- |
-| `map-reduce` | `mapper` + `reducer` | coordinator → mappers → reducers → coordinator |
-| `scatter-gather` | — | hub → workers → hub |
-| `supervisor` | `supervisor` | supervisor ↔ workers |
-| `reflection` | `critic` or `reviewer` (auto-select uses `critic` only) | producers → critic → producers (loop) |
-| `red-team` | `attacker`/`red-team` + `defender`/`blue-team` | adversarial mesh with optional judges |
-| `verifier` | `verifier` | producers → verifiers → back to producers |
-| `auction` | `auctioneer` | auctioneer → bidders → auctioneer |
-| `escalation` | `tier-*` | tiered chain, escalate up / report down |
-| `saga` | `saga-orchestrator`, `compensate-handler` | orchestrator ↔ participants |
-| `circuit-breaker` | `primary` + `fallback`/`backup` | try primary, fallback on failure |
-| `blackboard` | `blackboard` / `shared-workspace` | shared state hub |
-| `swarm` | `hive-mind` / `swarm-agent` | stigmergy-style |
-| `competitive` | — (declared explicitly) | independent parallel implementations + judge |
-| `review-loop` | `implement*` + 2+ `reviewer*` | implementer ↔ reviewers |
+| `map-reduce`      | `mapper` + `reducer`                                    | coordinator → mappers → reducers → coordinator |
+| `scatter-gather`  | —                                                       | hub → workers → hub                            |
+| `supervisor`      | `supervisor`                                            | supervisor ↔ workers                           |
+| `reflection`      | `critic` or `reviewer` (auto-select uses `critic` only) | producers → critic → producers (loop)          |
+| `red-team`        | `attacker`/`red-team` + `defender`/`blue-team`          | adversarial mesh with optional judges          |
+| `verifier`        | `verifier`                                              | producers → verifiers → back to producers      |
+| `auction`         | `auctioneer`                                            | auctioneer → bidders → auctioneer              |
+| `escalation`      | `tier-*`                                                | tiered chain, escalate up / report down        |
+| `saga`            | `saga-orchestrator`, `compensate-handler`               | orchestrator ↔ participants                    |
+| `circuit-breaker` | `primary` + `fallback`/`backup`                         | try primary, fallback on failure               |
+| `blackboard`      | `blackboard` / `shared-workspace`                       | shared state hub                               |
+| `swarm`           | `hive-mind` / `swarm-agent`                             | stigmergy-style                                |
+| `competitive`     | — (declared explicitly)                                 | independent parallel implementations + judge   |
+| `review-loop`     | `implement*` + 2+ `reviewer*`                           | implementer ↔ reviewers                        |
 
 ### Structured Squad Review Loop
 
@@ -303,15 +304,16 @@ flat names. In a client that decorates MCP tools, the prefix comes from the
 configured server key. With the relay broker's `agent-relay` server key, Claude
 Code users commonly see `mcp__agent-relay__send_dm`; Codex and opencode users
 see the bare canonical name `send_dm`.
-| Purpose | Canonical tool | Claude Code form with `agent-relay` key |
+
+| Purpose                  | Canonical tool    | Claude Code form with `agent-relay` key |
 | ------------------------ | ----------------- | --------------------------------------- |
-| Send DM to another agent | `send_dm` | `mcp__agent-relay__send_dm` |
-| Check inbox | `check_inbox` | `mcp__agent-relay__check_inbox` |
-| List agents | `list_agents` | `mcp__agent-relay__list_agents` |
-| Post to a channel | `post_message` | `mcp__agent-relay__post_message` |
-| Reply in a thread | `reply_to_thread` | `mcp__agent-relay__reply_to_thread` |
-| Spawn sub-agent | `add_agent` | `mcp__agent-relay__add_agent` |
-| Remove sub-agent | `remove_agent` | `mcp__agent-relay__remove_agent` |
+| Send DM to another agent | `send_dm`         | `mcp__agent-relay__send_dm`             |
+| Check inbox              | `check_inbox`     | `mcp__agent-relay__check_inbox`         |
+| List agents              | `list_agents`     | `mcp__agent-relay__list_agents`         |
+| Post to a channel        | `post_message`    | `mcp__agent-relay__post_message`        |
+| Reply in a thread        | `reply_to_thread` | `mcp__agent-relay__reply_to_thread`     |
+| Spawn sub-agent          | `add_agent`       | `mcp__agent-relay__add_agent`           |
+| Remove sub-agent         | `remove_agent`    | `mcp__agent-relay__remove_agent`        |
 
 > `interactive: false` agents run as non-interactive subprocesses with no relay connection. They must not call Relay MCP tools.
 

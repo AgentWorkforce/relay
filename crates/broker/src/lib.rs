@@ -9,9 +9,11 @@
 mod devin;
 pub mod fleet_wire;
 pub mod ids;
+mod injection_wire;
 pub mod protocol;
 pub mod snippets;
 
+pub(crate) mod attachments;
 pub(crate) mod broker;
 pub(crate) mod cli;
 pub(crate) mod cli_mcp_args;
@@ -27,6 +29,7 @@ pub(crate) mod events;
 pub(crate) mod listen_api;
 #[allow(dead_code)]
 pub(crate) mod metrics;
+pub(crate) mod native_delivery;
 pub(crate) mod node_control;
 pub(crate) mod node_delivery_probe;
 #[allow(dead_code)]
@@ -56,11 +59,13 @@ pub(crate) mod swarm_tui;
 #[allow(dead_code)]
 pub(crate) mod telemetry;
 pub(crate) mod terminal_control;
+pub(crate) mod transport;
 #[allow(dead_code)]
 pub(crate) mod types;
 pub(crate) mod util;
 pub(crate) mod worker;
 pub(crate) mod worker_request;
+pub mod worktree_guard;
 pub(crate) mod wrap;
 
 // The PTY layer — session management, terminal grid snapshots, and CLI

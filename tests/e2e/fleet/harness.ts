@@ -27,6 +27,7 @@ export const REPO_ROOT = path.resolve(HERE, '..', '..', '..');
 export const NODE_A_FILE = path.join(HERE, 'nodes', 'node-a.ts');
 export const NODE_B_FILE = path.join(HERE, 'nodes', 'node-b.ts');
 export const CLOUD_ENROLLED_NODE_FILE = path.join(HERE, 'nodes', 'cloud-enrolled.ts');
+export const ENV_PROBE_NODE_FILE = path.join(HERE, 'nodes', 'env-probe.ts');
 
 const CLI_ENTRY = path.join(REPO_ROOT, 'packages', 'cli', 'dist', 'cli', 'index.js');
 

@@ -44,7 +44,6 @@ try {
   run('npm', ['run', 'build:config'], targetDir, 'configuration package build');
   run('npm', ['run', 'build:cloud'], targetDir, 'Cloud package build');
   run('npm', ['run', 'build:utils'], targetDir, 'utilities package build');
-  run('npm', ['run', 'build:policy'], targetDir, 'policy package build');
   run('npm', ['run', 'build:sdk'], targetDir, 'SDK package build');
   run('npm', ['run', 'build:harness-driver'], targetDir, 'harness driver package build');
   run('npm', ['run', 'build:harnesses'], targetDir, 'harnesses package build');
