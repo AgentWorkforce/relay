@@ -103,11 +103,36 @@ export function nameTakenSpawnError(name: string, error: Error & SpawnContext): 
   );
 }
 
+/**
+ * A completed result decides a spawn only when it carries explicit proof: an
+ * explicit `spawned:false`, or `spawned:true` with the readiness the caller
+ * requires. Missing proof fields are ambiguous, not evidence of failure.
+ */
+function hasDecisiveSpawnResult(output: unknown, requireReady: boolean): boolean {
+  if (!output || typeof output !== 'object') return false;
+  const result = output as Record<string, unknown>;
+  if (result.spawned === false) return true;
+  // A persona handler's result can be the acknowledgement of a nested spawn;
+  // that is decisive for this invocation, and the caller follows the child.
+  const nested =
+    result.result && typeof result.result === 'object' ? (result.result as Record<string, unknown>) : {};
+  if (
+    String(result.status).toLowerCase() === 'dispatched' ||
+    String(nested.status).toLowerCase() === 'dispatched'
+  )
+    return true;
+  return (
+    result.spawned === true && typeof result.ready === 'boolean' && (!requireReady || result.ready === true)
+  );
+}
+
 /** Reads are bounded and client construction is fallible (agent-token-only callers are supported). */
 export async function probeSpawnLiveness(options: {
   name: string;
   targetNode?: string;
   getInvocation?: () => Promise<unknown>;
+  /** The caller's readiness contract; decides whether a completed read is decisive. */
+  requireReady?: boolean;
   createClient: () => {
     nodes: { get: (name: string) => Promise<RelayNode | null>; list: () => Promise<RelayNode[]> };
     agents: { get: (name: string) => Promise<unknown> };
@@ -124,13 +149,17 @@ export async function probeSpawnLiveness(options: {
       const value = await read(options.getInvocation);
       if (value && typeof value === 'object') {
         const invocation = value as Record<string, unknown>;
+        const status = String(invocation.status);
         if (
-          /^(completed|succeeded|success|failed|error|cancelled|canceled|denied)$/i.test(
-            String(invocation.status)
-          )
+          /^(failed|error|cancelled|canceled|denied)$/i.test(status) ||
+          (/^(completed|succeeded|success)$/i.test(status) &&
+            hasDecisiveSpawnResult(invocation.output, options.requireReady === true))
         ) {
           return { evidence: 'invocation_terminal', invocation };
         }
+        // A completed invocation without launch/readiness proof (and without an
+        // explicit `spawned:false`) does not show the worker failed; fall
+        // through to roster evidence so the caller reports a pending spawn.
       }
     } catch (error) {
       readError = safeRelayErrorMessage(error);

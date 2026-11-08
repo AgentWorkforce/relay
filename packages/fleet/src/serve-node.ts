@@ -392,12 +392,18 @@ export async function waitForDelegatedSpawn(options: ServeNodeOptions, placement
       if (response?.ok) {
         const invocation = body?.data;
         if (invocation?.status === 'completed') {
-          if (invocation.output?.spawned !== true || invocation.output?.ready !== true) {
-            throw new Error(
-              `spawn_readiness_unconfirmed: ${invocationId} completed without confirmed launch/readiness`
-            );
+          if (invocation.output?.spawned === false) {
+            throw new Error(`spawn_failed: ${invocationId} completed with explicit spawned:false`);
           }
-          return invocation.output;
+          // A terminal success without the newer proof fields is ambiguous,
+          // not evidence that the worker failed. Preserve the broker's output
+          // so the caller can report an unconfirmed spawn and avoid blindly
+          // launching a duplicate. The placement layer still requires the
+          // explicit proof before it reports the worker as ready.
+          // The provider wire requires an output or an error for action.result.
+          // Older completed invocations can omit output entirely; preserve the
+          // completed-but-unproven state with a serializable empty result.
+          return invocation.output ?? {};
         }
         if (['failed', 'denied', 'cancelled'].includes(invocation?.status ?? '')) {
           throw new Error(`spawn_failed: ${invocationId}: ${invocation?.error ?? invocation?.status}`);

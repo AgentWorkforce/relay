@@ -170,6 +170,31 @@ describe('spawn liveness resolution', () => {
       'launch error'
     );
   });
+  it.each([
+    [{ status: 'completed' }, false, 'absent'],
+    [{ status: 'completed', output: { spawned: true } }, false, 'absent'],
+    [{ status: 'completed', output: { spawned: true, ready: false } }, true, 'absent'],
+    [{ status: 'completed', output: { spawned: true, ready: false } }, false, 'invocation_terminal'],
+    [{ status: 'completed', output: { spawned: false } }, true, 'invocation_terminal'],
+    [{ status: 'failed', error: 'launch error' }, true, 'invocation_terminal'],
+    [
+      { status: 'completed', output: { status: 'dispatched', invocationId: 'inv_child' } },
+      true,
+      'invocation_terminal',
+    ],
+  ] as const)(
+    'treats a completed read without proof as undecided (%j, requireReady %s)',
+    async (invocation, requireReady, evidence) => {
+      const result = await probeSpawnLiveness({
+        name: 'worker',
+        getInvocation: async () => invocation,
+        requireReady,
+        createClient: () => client(),
+      });
+      expect(result.evidence).toBe(evidence);
+    }
+  );
+
   it('distinguishes registered, absent and unavailable reads', async () => {
     const workspace = client();
     workspace.agents.get.mockResolvedValueOnce({ status: 'released' });
