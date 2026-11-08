@@ -216,6 +216,14 @@ pub trait MethodExtension: Send + Sync + 'static {
 
     /// Answers `method`, or `None` when it is not this extension's.
     /// `context` says which client asked.
+    ///
+    /// No handler is ever cancelled, this one or a built-in one: a call
+    /// admitted before [`MethodExtension::connection_closed`] fired quiesces
+    /// and records normally, possibly after that hook ran. Its answer is
+    /// still written while the client's write side is open, and discarded
+    /// once a write to the client failed. A call of the connection queued
+    /// behind it is never made after the hook: it fails before entering the
+    /// extension.
     fn call<'a>(
         &'a self,
         core: &'a Arc<Core>,
@@ -226,6 +234,21 @@ pub trait MethodExtension: Send + Sync + 'static {
 
     /// The bridge connection described by `context` ended. Implementations
     /// must return promptly and must not assume the client sent a final RPC.
+    ///
+    /// This is the transport's request-side teardown barrier. A read EOF or
+    /// half-close means no new requests will be accepted; the write side may
+    /// stay open long enough to return the in-flight answer and the
+    /// permitted queued answers. An admitted extension handler quiesces and
+    /// records normally; queued extension calls see the closed marker and
+    /// fail before entering the extension; built-in calls drain; a writer
+    /// failure discards answers. The callback fires exactly once per
+    /// connection, promptly from the transport, even while one of its calls
+    /// (a long poll, say) is in flight: implementations should use it to
+    /// wake such waiting calls. It also fires when the client sends more
+    /// than the connection reads ahead during a call (32 lines or 1 MiB),
+    /// sends a line over the frame limit, or the core stops. Memory is
+    /// bounded (32 lines / the byte limit), responses stay ordered, and no
+    /// handler is ever cancelled.
     fn connection_closed(&self, _context: &CallContext) {}
 }
 
