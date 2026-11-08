@@ -1303,7 +1303,9 @@ async function executeCommandSpec(spec, { baseEnv, context, repoRoot }) {
 
 async function executeCorpus(spec, { baseEnv, context, repoRoot, repeats }) {
   const caseRoot = path.join(repoRoot, 'tests/relayflows/cases');
-  const contract = await import(pathToFileURL(path.join(repoRoot, 'scripts/pr-proof/contract.mjs')).href);
+  const contract = await import(
+    pathToFileURL(path.join(repoRoot, 'scripts/verify-features/case-contract.mjs')).href
+  );
   const entries = (await readdir(caseRoot, { withFileTypes: true }))
     .filter((entry) => entry.isDirectory())
     .sort((left, right) => left.name.localeCompare(right.name));
