@@ -3,7 +3,6 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createRequire } from 'node:module';
 import { Command, Option } from 'commander';
 import { extract } from 'tar';
 
@@ -20,6 +19,7 @@ import {
 } from '@agent-relay/cloud';
 
 import { defaultExit } from '../lib/exit.js';
+import { buildRelayflowsRunArgs, resolveAgentRelayCliChildCommand } from '../lib/agent-relay-cli-reentry.js';
 import {
   isCliCredentialsPayload,
   cliLoginHome,
@@ -40,10 +40,8 @@ export interface CloudWorkerDependencies {
   now: () => Date;
   cwd: () => string;
   fetchImpl: typeof fetch;
-  resolveRelayflowsCliEntrypoint: () => string;
+  resolveAgentRelayCliEntrypoint: () => string;
 }
-
-const nodeRequire = createRequire(import.meta.url);
 
 function withDefaults(overrides: Partial<CloudWorkerDependencies> = {}): CloudWorkerDependencies {
   return {
@@ -55,7 +53,7 @@ function withDefaults(overrides: Partial<CloudWorkerDependencies> = {}): CloudWo
     now: () => new Date(),
     cwd: () => process.cwd(),
     fetchImpl: fetch,
-    resolveRelayflowsCliEntrypoint: () => nodeRequire.resolve('@relayflows/cli'),
+    resolveAgentRelayCliEntrypoint: () => process.argv[1] ?? 'agent-relay',
     ...overrides,
   };
 }
@@ -107,19 +105,18 @@ function buildWorkerRuntimeEnv(
   };
 }
 
-function relayflowsArgs(
-  relayflowsCli: string,
-  workflowPath: string,
-  payload: WorkerWorkflowPayload
-): string[] {
-  return [
-    relayflowsCli,
-    'run',
-    workflowPath,
-    ...(payload.resumeRunId ? ['--resume', payload.resumeRunId] : []),
-    ...(payload.startFrom ? ['--start-from', payload.startFrom] : []),
-    ...(payload.previousRunId ? ['--previous-run-id', payload.previousRunId] : []),
-  ];
+function assertFreshWorkerAssignment(payload: WorkerWorkflowPayload): void {
+  const unsupportedSelectors = [
+    payload.resumeRunId ? 'resumeRunId' : undefined,
+    payload.startFrom ? 'startFrom' : undefined,
+    payload.previousRunId ? 'previousRunId' : undefined,
+  ].filter((name): name is string => name !== undefined);
+  if (unsupportedSelectors.length > 0) {
+    throw new Error(
+      `Cloud worker cannot execute state-bearing v2 assignment selectors: ${unsupportedSelectors.join(', ')}. ` +
+        'Submit a fresh assignment; resume requires hosted v2 run state.'
+    );
+  }
 }
 
 async function runChild(input: {
@@ -224,9 +221,11 @@ async function materializeCodeMounts(input: {
 
 export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): ExecuteWorkerAssignment {
   return async ({ payload, worker, signal }) => {
-    // Cloud owns assignment control-plane semantics. relayflows owns execution.
-    // This boundary materializes the Cloud payload into a local workflow
-    // directory/env and then invokes relayflows with the equivalent run flags.
+    // Cloud owns assignment control-plane semantics. Relayflows owns execution.
+    // This boundary materializes a fresh Cloud payload into a local workflow
+    // directory/env and re-enters Relay's v2 `flows run` surface. State-bearing
+    // assignments fail closed until the worker protocol carries hosted v2 state.
+    assertFreshWorkerAssignment(payload);
     const runDir = path.join(cloudWorkerStateDir(deps.env), 'runs', payload.runId);
     const keepRunDir = deps.env.AGENT_RELAY_WORKER_KEEP_RUN_DIR === '1';
     const cliCredentials = isCliCredentialsPayload(payload.cliCredentials) ? payload.cliCredentials : null;
@@ -251,10 +250,15 @@ export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): Ex
         });
       }
 
-      const relayflowsCli = deps.resolveRelayflowsCliEntrypoint();
+      const agentRelayCli = resolveAgentRelayCliChildCommand({
+        execPath: process.execPath,
+        cliEntrypoint: deps.resolveAgentRelayCliEntrypoint(),
+        args: buildRelayflowsRunArgs(workflowPath, payload.fileType),
+        cwd: deps.cwd(),
+      });
       const result = await runChild({
-        command: process.execPath,
-        args: relayflowsArgs(relayflowsCli, workflowPath, payload),
+        command: agentRelayCli.command,
+        args: agentRelayCli.args,
         cwd: runDir,
         env: buildWorkerRuntimeEnv(payload, deps, materialized?.env),
         deps,
@@ -328,21 +332,25 @@ async function startDaemon(input: {
   const logPath = path.join(stateDir, `${input.worker.workerId}.log`);
   const logFd = fs.openSync(logPath, 'a');
   let child: ChildProcess;
-  const args = [
-    process.argv[1] ?? 'agent-relay',
-    'cloud',
-    'worker',
-    'start',
-    '--worker-id',
-    input.worker.workerId,
-    '--base-url',
-    input.worker.baseUrl,
-    '--foreground-child',
-    ...(input.options.once ? ['--once'] : []),
-  ];
+  const launch = resolveAgentRelayCliChildCommand({
+    execPath: process.execPath,
+    cliEntrypoint: input.deps.resolveAgentRelayCliEntrypoint(),
+    args: [
+      'cloud',
+      'worker',
+      'start',
+      '--worker-id',
+      input.worker.workerId,
+      '--base-url',
+      input.worker.baseUrl,
+      '--foreground-child',
+      ...(input.options.once ? ['--once'] : []),
+    ],
+    cwd: input.deps.cwd(),
+  });
 
   try {
-    child = input.deps.spawnProcess(process.execPath, args, {
+    child = input.deps.spawnProcess(launch.command, launch.args, {
       detached: true,
       stdio: ['ignore', logFd, logFd],
       env: input.deps.env,
