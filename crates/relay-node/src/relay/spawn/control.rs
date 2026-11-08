@@ -2,9 +2,11 @@
 //! This is deliberately not an HTTP proxy: callers supply no URL, token, headers or output schema.
 use crate::relay::contract::spawn_control::*;
 use crate::relay::contract::{answer, method};
-use crate::relay::daemon::Core;
+use crate::relay::daemon::{
+    CallContext, Core, ExternalCaller, SpawnCall, SpawnCallers, SpawnRequest,
+};
 use crate::relay::diagnostic_http::HttpClient;
-use crate::relay::protocol::{ErrorKind, RpcError};
+use crate::relay::protocol::{ErrorKind, RefusalReason, RpcError};
 use crate::relay::sdk_gaps;
 use crate::relay::store::{Registration, Store};
 use crate::relay::workspace::{Secret, Workspace};
@@ -15,6 +17,7 @@ mod claims;
 
 pub(crate) async fn call(
     core: &Arc<Core>,
+    context: &CallContext,
     name: &str,
     raw: Value,
 ) -> Option<Result<Value, RpcError>> {
@@ -26,18 +29,22 @@ pub(crate) async fn call(
             .await,
         ),
         method::SpawnInvoke::NAME => Some(
-            answer::<method::SpawnInvoke, _>(raw, |params| async { invoke(core, params).await })
-                .await,
+            answer::<method::SpawnInvoke, _>(raw, |params| async {
+                invoke(core, context, params).await
+            })
+            .await,
         ),
         method::SpawnInvocation::NAME => Some(
             answer::<method::SpawnInvocation, _>(raw, |params| async {
-                invocation(core, params).await
+                invocation(core, context, params).await
             })
             .await,
         ),
         method::SpawnRelease::NAME => Some(
-            answer::<method::SpawnRelease, _>(raw, |params| async { release(core, params).await })
-                .await,
+            answer::<method::SpawnRelease, _>(raw, |params| async {
+                release(core, context, params).await
+            })
+            .await,
         ),
         method::SpawnClaimRetry::NAME => Some(
             answer::<method::SpawnClaimRetry, _>(raw, |_| async {
@@ -57,6 +64,18 @@ fn refused() -> RpcError {
     RpcError::new(
         ErrorKind::Refused,
         "The exact active local spawn identity is required.",
+    )
+}
+fn not_owner() -> RpcError {
+    RpcError::refused_because(
+        RefusalReason::NotOwner,
+        "This caller did not start that agent.",
+    )
+}
+fn outside_scope() -> RpcError {
+    RpcError::refused_because(
+        RefusalReason::OutsideScope,
+        "That harness or folder is outside this caller's limits.",
     )
 }
 fn malformed() -> RpcError {
@@ -129,11 +148,118 @@ fn workspace_http(core: &Core) -> Result<HttpClient, RpcError> {
     let workspace = workspace(core)?;
     sdk_gaps::http(&workspace.base_url, &workspace.key).map_err(|e| RpcError::from_relaycast(&e))
 }
-fn caller_http_in(core: &Core, workspace: &Workspace, name: &str) -> Result<HttpClient, RpcError> {
-    let token = core
-        .store
-        .read(|store| caller_token(store, workspace, name))?;
-    sdk_gaps::http(&workspace.base_url, &token).map_err(|e| RpcError::from_relaycast(&e))
+
+/// Who calls a native spawn control: a session registration, named alone,
+/// or a caller the [`SpawnCallers`] plugin vouches for by name and secret.
+enum Caller {
+    Session {
+        agent_id: String,
+        token: Secret,
+    },
+    External {
+        caller: ExternalCaller,
+        plugin: Arc<dyn SpawnCallers>,
+    },
+}
+
+impl Caller {
+    fn agent_id(&self) -> &str {
+        match self {
+            Caller::Session { agent_id, .. } => agent_id,
+            Caller::External { caller, .. } => &caller.agent_id,
+        }
+    }
+
+    fn http(&self, workspace: &Workspace) -> Result<HttpClient, RpcError> {
+        let token = match self {
+            Caller::Session { token, .. } => token,
+            Caller::External { caller, .. } => &caller.token,
+        };
+        sdk_gaps::http(&workspace.base_url, token).map_err(|e| RpcError::from_relaycast(&e))
+    }
+
+    fn external(&self) -> Option<&ExternalCaller> {
+        match self {
+            Caller::Session { .. } => None,
+            Caller::External { caller, .. } => Some(caller),
+        }
+    }
+
+    /// Runs `run` as `call`: a session caller's directly, an external
+    /// caller's only once the plugin admits it, recording what came of it.
+    async fn admitted<F>(
+        &self,
+        call: SpawnCall<'_>,
+        run: F,
+    ) -> Result<SpawnControlInvocation, RpcError>
+    where
+        F: std::future::Future<Output = Result<SpawnControlInvocation, RpcError>>,
+    {
+        let Caller::External { caller, plugin } = self else {
+            return run.await;
+        };
+        let permit = plugin.admit(caller, &call)?;
+        let outcome = run.await;
+        plugin.record(permit, &outcome);
+        outcome
+    }
+}
+
+/// The caller `name` names: with no `secret`, exactly as before the plugin
+/// existed (an active registration in `workspace` and its token); with one,
+/// whoever the [`SpawnCallers`] plugin resolves, and a refusal without it.
+fn caller_in(
+    core: &Core,
+    workspace: &Workspace,
+    name: &str,
+    secret: Option<String>,
+) -> Result<Caller, RpcError> {
+    let Some(secret) = secret else {
+        let (agent_id, token) = core.store.read(|store| {
+            let token = caller_token(store, workspace, name)?;
+            let agent_id = store
+                .registrations
+                .iter()
+                .find(|r| r.name == name && active(r, workspace))
+                .map(|r| r.agent_id.clone())
+                .ok_or_else(refused)?;
+            Ok::<_, RpcError>((agent_id, token))
+        })?;
+        return Ok(Caller::Session { agent_id, token });
+    };
+    if secret.trim().is_empty() {
+        return Err(refused());
+    }
+    segment(name)?;
+    let plugin = core.plugins.spawn_callers.clone().ok_or_else(refused)?;
+    let caller = plugin.resolve(workspace, name, &Secret::new(secret))?;
+    if caller.token.expose().is_empty() || segment(&caller.agent_id).is_err() {
+        return Err(refused());
+    }
+    Ok(Caller::External { caller, plugin })
+}
+
+/// The directory an external caller may launch in. Restricted paths are
+/// resolved once and the resolved path is the one sent to Relaycast, so a
+/// caller cannot swap an allowed symlink while the node lookup is in flight.
+fn scoped_directory(
+    caller: &ExternalCaller,
+    harness: &str,
+    directory: &str,
+) -> Result<std::path::PathBuf, RpcError> {
+    if let Some(harnesses) = &caller.harnesses {
+        if !harnesses.iter().any(|allowed| allowed == harness) {
+            return Err(outside_scope());
+        }
+    }
+    let Some(roots) = &caller.directory_roots else {
+        return Ok(directory.into());
+    };
+    let directory = std::fs::canonicalize(directory).map_err(|_| outside_scope())?;
+    let allowed = roots
+        .iter()
+        .any(|root| std::fs::canonicalize(root).is_ok_and(|root| directory.starts_with(root)));
+    allowed.then_some(directory).ok_or_else(outside_scope)
 }
 
 fn field(value: &Value, name: &str) -> Result<String, RpcError> {
@@ -220,6 +346,7 @@ fn receipt(data: &Value) -> Result<SpawnControlInvocation, RpcError> {
             .map(str::to_string),
         spawned: output["spawned"] == true,
         ready: output["ready"] == true,
+        released: output["released"] == true,
         task_unconfirmed: output["warning"] == "spawn_task_unconfirmed"
             || output["warning"]["code"] == "spawn_task_unconfirmed",
         error_code: code,
@@ -260,8 +387,10 @@ fn error_code(data: &Value) -> Option<String> {
 
 async fn invoke(
     core: &Core,
-    params: SpawnInvokeParams,
+    context: &CallContext,
+    mut params: SpawnInvokeParams,
 ) -> Result<SpawnControlInvocation, RpcError> {
+    let secret = params.caller_secret.take();
     for value in [&params.node_id, &params.node_name, &params.name] {
         segment(value)?;
     }
@@ -291,7 +420,29 @@ async fn invoke(
     {
         return Err(invalid());
     }
-    let http = caller_http_in(core, &workspace, &params.caller_name)?;
+    let caller = caller_in(core, &workspace, &params.caller_name, secret)?;
+    let call = SpawnCall {
+        peer_pid: context.peer_pid,
+        workspace: &workspace,
+        request: SpawnRequest::Invoke(&params),
+    };
+    caller
+        .admitted(call, invoke_as(&caller, &workspace, harness, &params))
+        .await
+}
+
+async fn invoke_as(
+    caller: &Caller,
+    workspace: &Workspace,
+    harness: crate::relay::harness::HarnessId,
+    params: &SpawnInvokeParams,
+) -> Result<SpawnControlInvocation, RpcError> {
+    let directory = match caller.external() {
+        Some(external) => scoped_directory(external, &params.harness, &params.directory)?,
+        None => params.directory.clone().into(),
+    };
+    let directory = directory.to_str().ok_or_else(outside_scope)?;
+    let http = caller.http(workspace)?;
     let workspace_client = sdk_gaps::http(&workspace.base_url, &workspace.key)
         .map_err(|e| RpcError::from_relaycast(&e))?;
     let listed = targets(&workspace_client).await?;
@@ -305,12 +456,14 @@ async fn invoke(
     }) {
         return Err(refused());
     }
-    let body = json!({"input": {"name": params.name, "cli": params.harness, "task": params.task, "target_node": params.node_name, "worker_cwd": params.directory, "verify_ready": true}});
+    let body = json!({"input": {"name": params.name, "cli": params.harness, "task": params.task, "target_node": params.node_name, "worker_cwd": directory, "verify_ready": true}});
     let result: Value = http
         .post(
             "/v1/actions/spawn/invoke",
             Some(body),
-            Some(RequestOptions::with_idempotency_key(params.idempotency_key)),
+            Some(RequestOptions::with_idempotency_key(
+                params.idempotency_key.clone(),
+            )),
         )
         .await
         .map_err(|e| RpcError::from_relaycast(&e))?;
@@ -319,16 +472,36 @@ async fn invoke(
 
 async fn invocation(
     core: &Core,
-    params: SpawnInvocationParams,
+    context: &CallContext,
+    mut params: SpawnInvocationParams,
 ) -> Result<SpawnControlInvocation, RpcError> {
+    let secret = params.caller_secret.take();
     segment(&params.invocation_id)?;
     let workspace = workspace(core)?;
+    let caller = caller_in(core, &workspace, &params.caller_name, secret)?;
+    let call = SpawnCall {
+        peer_pid: context.peer_pid,
+        workspace: &workspace,
+        request: SpawnRequest::Status(&params),
+    };
+    caller
+        .admitted(call, invocation_as(core, &caller, &workspace, &params))
+        .await
+}
+
+async fn invocation_as(
+    core: &Core,
+    caller: &Caller,
+    workspace: &Workspace,
+    params: &SpawnInvocationParams,
+) -> Result<SpawnControlInvocation, RpcError> {
     let action = match params.action {
         SpawnControlAction::Spawn => "spawn",
         SpawnControlAction::Release => "release",
     };
     let path = format!("/v1/actions/{action}/invocations/{}", params.invocation_id);
-    let data: Value = caller_http_in(core, &workspace, &params.caller_name)?
+    let data: Value = caller
+        .http(workspace)?
         .get(&path, None, None)
         .await
         .map_err(|e| RpcError::from_relaycast(&e))?;
@@ -339,7 +512,7 @@ async fn invocation(
     if action == "spawn" {
         return core
             .store
-            .read(|store| local_spawn_identity(receipt, store, &workspace));
+            .read(|store| local_spawn_identity(receipt, store, workspace));
     }
     Ok(receipt)
 }
@@ -373,7 +546,42 @@ fn local_spawn_identity(
 /// Whether the worker to release is exactly one this computer saved, in
 /// `workspace`; whether it still runs does not matter.
 fn release_target(store: &Store, workspace: &Workspace, params: &SpawnReleaseParams) -> bool {
-    store.registrations.iter().any(|r| {
+    release_targets(store, workspace, params).next().is_some()
+}
+
+/// [`release_target`], narrowed to a worker whose recorded requester (as
+/// Relaycast reported it, never the caller's word) is `requester_id`. Only
+/// external callers that may release just their own agents are held to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ReleaseOwnership {
+    Owned,
+    Other,
+    Unknown(String),
+}
+
+fn release_target_ownership(
+    store: &Store,
+    workspace: &Workspace,
+    params: &SpawnReleaseParams,
+    requester_id: &str,
+) -> Option<ReleaseOwnership> {
+    let spawn = release_targets(store, workspace, params)
+        .next()?
+        .spawn
+        .as_ref()?;
+    Some(match spawn.requester.as_ref() {
+        Some(requester) if requester.agent_id == requester_id => ReleaseOwnership::Owned,
+        Some(_) => ReleaseOwnership::Other,
+        None => ReleaseOwnership::Unknown(spawn.invocation_id.clone()),
+    })
+}
+
+fn release_targets<'a>(
+    store: &'a Store,
+    workspace: &'a Workspace,
+    params: &'a SpawnReleaseParams,
+) -> impl Iterator<Item = &'a Registration> {
+    store.registrations.iter().filter(move |r| {
         r.name == params.name
             && r.agent_id == params.expected_agent_id
             && in_workspace(r, workspace)
@@ -385,8 +593,10 @@ fn release_target(store: &Store, workspace: &Workspace, params: &SpawnReleasePar
 
 async fn release(
     core: &Core,
-    params: SpawnReleaseParams,
+    context: &CallContext,
+    mut params: SpawnReleaseParams,
 ) -> Result<SpawnControlInvocation, RpcError> {
+    let secret = params.caller_secret.take();
     for value in [
         &params.node_id,
         &params.node_name,
@@ -397,33 +607,68 @@ async fn release(
     }
     key(&params.idempotency_key)?;
     let workspace = workspace(core)?;
-    let http = caller_http_in(core, &workspace, &params.caller_name)?;
-    let caller_id = core
-        .store
-        .read(|store| {
-            store
-                .registrations
-                .iter()
-                .find(|r| r.name == params.caller_name && active(r, &workspace))
-                .map(|r| r.agent_id.clone())
-        })
-        .ok_or_else(refused)?;
-    let exact = core
-        .store
-        .read(|store| release_target(store, &workspace, &params));
+    let caller = caller_in(core, &workspace, &params.caller_name, secret)?;
+    let call = SpawnCall {
+        peer_pid: context.peer_pid,
+        workspace: &workspace,
+        request: SpawnRequest::Release(&params),
+    };
+    caller
+        .admitted(call, release_as(core, &caller, &workspace, &params))
+        .await
+}
+
+async fn release_as(
+    core: &Core,
+    caller: &Caller,
+    workspace: &Workspace,
+    params: &SpawnReleaseParams,
+) -> Result<SpawnControlInvocation, RpcError> {
+    let http = caller.http(workspace)?;
+    let (exact, ownership) = core.store.read(|store| {
+        let ownership = caller
+            .external()
+            .filter(|external| external.owns_only)
+            .and_then(|external| {
+                release_target_ownership(store, workspace, params, &external.agent_id)
+            });
+        (release_target(store, workspace, params), ownership)
+    });
+    let owns_only = caller.external().is_some_and(|caller| caller.owns_only);
+    let owner_verified = match ownership {
+        Some(ReleaseOwnership::Owned) => true,
+        Some(ReleaseOwnership::Other) => return Err(not_owner()),
+        Some(ReleaseOwnership::Unknown(invocation_id)) => {
+            crate::relay::spawn::report_back::requester(workspace, &invocation_id)
+                .await
+                .is_some_and(|requester| requester.agent_id == caller.agent_id())
+        }
+        None => false,
+    };
+    if exact && owns_only && !owner_verified {
+        return Err(not_owner());
+    }
+    let ownership = match (owns_only, owner_verified) {
+        (false, _) => claims::Ownership::Unrestricted,
+        (true, true) => claims::Ownership::Verified,
+        (true, false) => claims::Ownership::ClaimOnly,
+    };
     claims::release(
         &core.config.app_data_dir,
-        &workspace,
-        &caller_id,
-        &params,
+        workspace,
+        caller.agent_id(),
+        params,
         exact,
+        ownership,
     )?;
     let body = json!({"name": params.name, "expected_agent_id": params.expected_agent_id, "delete_agent": true, "reason": "Released through native desktop spawn controls"});
     let data: Value = http
         .post(
             "/v1/agents/release-exact",
             Some(body),
-            Some(RequestOptions::with_idempotency_key(params.idempotency_key)),
+            Some(RequestOptions::with_idempotency_key(
+                params.idempotency_key.clone(),
+            )),
         )
         .await
         .map_err(|e| RpcError::from_relaycast(&e))?;

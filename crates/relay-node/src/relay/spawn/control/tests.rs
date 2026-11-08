@@ -97,26 +97,123 @@ fn release_replay_keeps_immutable_identity_after_the_local_agent_is_removed() {
     let workspace = selected_workspace();
     let params = SpawnReleaseParams {
         caller_name: "test-caller".into(),
+        caller_secret: None,
         node_id: "node_1".into(),
         node_name: "test-desktop".into(),
         name: "test-agent".into(),
         expected_agent_id: "agent_1".into(),
         idempotency_key: "release-test-20261015-0001".into(),
     };
-    assert!(claims::release(folder.path(), &workspace, "caller_id", &params, false).is_err());
-    claims::release(folder.path(), &workspace, "caller_id", &params, true).unwrap();
-    claims::release(folder.path(), &workspace, "caller_id", &params, false).unwrap();
+    assert!(claims::release(
+        folder.path(),
+        &workspace,
+        "caller_id",
+        &params,
+        false,
+        claims::Ownership::Unrestricted,
+    )
+    .is_err());
+    claims::release(
+        folder.path(),
+        &workspace,
+        "caller_id",
+        &params,
+        true,
+        claims::Ownership::Unrestricted,
+    )
+    .unwrap();
+    let legacy_path = std::fs::read_dir(folder.path().join("spawn-control-releases"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    std::fs::write(
+        legacy_path,
+        serde_json::to_vec(&json!([
+            params.node_id,
+            params.node_name,
+            params.name,
+            params.expected_agent_id
+        ]))
+        .unwrap(),
+    )
+    .unwrap();
+    // A claim created without ownership verification cannot become an
+    // owns-only release merely because the caller's policy changed later.
+    // This also preserves the on-disk shape written before ownership proof.
+    assert!(claims::release(
+        folder.path(),
+        &workspace,
+        "caller_id",
+        &params,
+        false,
+        claims::Ownership::ClaimOnly,
+    )
+    .is_err());
+    let owned = tempfile::tempdir().unwrap();
+    claims::release(
+        owned.path(),
+        &workspace,
+        "caller_id",
+        &params,
+        true,
+        claims::Ownership::Verified,
+    )
+    .unwrap();
+    claims::release(
+        owned.path(),
+        &workspace,
+        "caller_id",
+        &params,
+        false,
+        claims::Ownership::ClaimOnly,
+    )
+    .unwrap();
+    claims::release(
+        folder.path(),
+        &workspace,
+        "caller_id",
+        &params,
+        false,
+        claims::Ownership::Unrestricted,
+    )
+    .unwrap();
     let replacement = SpawnReleaseParams {
         expected_agent_id: "agent_2".into(),
         ..params.clone()
     };
-    assert!(claims::release(folder.path(), &workspace, "caller_id", &replacement, true).is_err());
-    assert!(claims::release(folder.path(), &workspace, "other_caller", &params, false).is_err());
+    assert!(claims::release(
+        folder.path(),
+        &workspace,
+        "caller_id",
+        &replacement,
+        true,
+        claims::Ownership::Unrestricted,
+    )
+    .is_err());
+    assert!(claims::release(
+        folder.path(),
+        &workspace,
+        "other_caller",
+        &params,
+        false,
+        claims::Ownership::Unrestricted,
+    )
+    .is_err());
     let other_workspace = Workspace {
         key: Secret::new("other-secret"),
         ..workspace
     };
-    assert!(claims::release(folder.path(), &other_workspace, "caller_id", &params, false).is_err());
+    assert!(claims::release(
+        folder.path(),
+        &other_workspace,
+        "caller_id",
+        &params,
+        false,
+        claims::Ownership::Unrestricted,
+    )
+    .is_err());
     for entry in std::fs::read_dir(folder.path().join("spawn-control-releases")).unwrap() {
         let text = std::fs::read_to_string(entry.unwrap().path()).unwrap();
         assert!(!text.contains("test-workspace-secret"));
@@ -232,6 +329,41 @@ fn legacy_reason_suffixes_and_structured_errors_return_only_allowlisted_codes() 
 }
 
 #[test]
+fn receipt_projects_only_explicit_release_success() {
+    let released = receipt(&json!({
+        "id": "release_1",
+        "status": "completed",
+        "output": { "released": true, "name": "worker_1" }
+    }))
+    .unwrap();
+    assert!(released.released);
+
+    for (id, output) in [
+        ("release_missing", json!({ "name": "worker_1" })),
+        (
+            "release_false",
+            json!({ "released": false, "name": "worker_1" }),
+        ),
+        (
+            "release_string",
+            json!({ "released": "true", "name": "worker_1" }),
+        ),
+        (
+            "release_number",
+            json!({ "released": 1, "name": "worker_1" }),
+        ),
+    ] {
+        let completed_without_proof = receipt(&json!({
+            "id": id,
+            "status": "completed",
+            "output": output
+        }))
+        .unwrap();
+        assert!(!completed_without_proof.released, "{id}");
+    }
+}
+
+#[test]
 fn a_crashed_worker_is_releasable_by_its_exact_saved_identity() {
     let workspace = selected_workspace();
     let mut worker = registered();
@@ -244,6 +376,7 @@ fn a_crashed_worker_is_releasable_by_its_exact_saved_identity() {
     store.registrations.push(worker);
     let params = |name: &str, agent: &str, node: &str| SpawnReleaseParams {
         caller_name: "test-caller".into(),
+        caller_secret: None,
         node_id: node.into(),
         node_name: "test-desktop".into(),
         name: name.into(),
@@ -287,3 +420,5 @@ fn capacity_refusals_keep_their_retry_codes() {
         );
     }
 }
+
+mod callers;

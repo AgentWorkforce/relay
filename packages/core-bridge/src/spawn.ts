@@ -124,13 +124,13 @@ export interface SpawnControlInvocation {
   name: string | null;
   spawned: boolean;
   ready: boolean;
-  task_unconfirmed: boolean;
   /**
    * True only when the provider reported the agent released. Never derived
    * from `status`: a `completed` release without it is not a confirmed one.
    * An older core that does not send it reads as `false`.
    */
   released: boolean;
+  task_unconfirmed: boolean;
   error_code: SpawnErrorCode | null;
 }
 

@@ -8,7 +8,7 @@
 
 use crate::relay::contract::connection::{HelloResult, Stopping, Subscribed, Unsubscribed};
 use crate::relay::contract::{self, answer, method};
-use crate::relay::daemon::Core;
+use crate::relay::daemon::{CallContext, Core};
 use crate::relay::peer::current_uid;
 use crate::relay::protocol::{
     ErrorKind, Event, Request, Response, RpcError, Topic, BRIDGE_VERSION, MAX_FRAME_BYTES,
@@ -30,6 +30,7 @@ pub async fn accept_loop(
     mut stop: watch::Receiver<bool>,
 ) {
     let mut connections = tokio::task::JoinSet::new();
+    let mut next_connection_id = 1u64;
     loop {
         let accepted = tokio::select! {
             accepted = listener.accept() => accepted,
@@ -45,7 +46,17 @@ pub async fn accept_loop(
         };
         match stream.peer_credentials() {
             Ok(peer) if peer.uid == current_uid() => {
-                connections.spawn(connection(stream, core.clone(), core.shutdown_requested()));
+                let context = CallContext {
+                    peer_pid: peer.pid,
+                    connection_id: Some(next_connection_id),
+                };
+                next_connection_id = next_connection_id.wrapping_add(1).max(1);
+                connections.spawn(connection(
+                    stream,
+                    core.clone(),
+                    core.shutdown_requested(),
+                    context,
+                ));
             }
             _ => drop(stream),
         }
@@ -67,9 +78,16 @@ const SHUTDOWN_FLUSH: Duration = Duration::from_millis(500);
 struct Session {
     greeted: bool,
     topics: Arc<Mutex<HashSet<Topic>>>,
+    /// The client, as the kernel reported it at connect.
+    context: CallContext,
 }
 
-async fn connection(stream: CoreStream, core: Arc<Core>, mut stop: watch::Receiver<bool>) {
+async fn connection(
+    stream: CoreStream,
+    core: Arc<Core>,
+    mut stop: watch::Receiver<bool>,
+    context: CallContext,
+) {
     let (read, mut write) = stream.into_split();
     let (lines, mut outgoing) = mpsc::channel::<String>(OUTGOING_LINES);
     let writer = tokio::spawn(async move {
@@ -85,6 +103,7 @@ async fn connection(stream: CoreStream, core: Arc<Core>, mut stop: watch::Receiv
     let session = Session {
         greeted: false,
         topics: Arc::new(Mutex::new(HashSet::new())),
+        context,
     };
     // Subscribed from the start so nothing published after a `subscribe`
     // reply can be missed; the topic set filters what is forwarded.
@@ -158,6 +177,9 @@ async fn connection(stream: CoreStream, core: Arc<Core>, mut stop: watch::Receiv
         }
     } else {
         let _ = writer.await;
+    }
+    for extension in &core.plugins.extensions {
+        extension.connection_closed(&context);
     }
 }
 
@@ -322,7 +344,7 @@ async fn dispatch(
             })
             .await
         }
-        _ => call(core, name, raw).await,
+        _ => call_from(core, &session.context, name, raw).await,
     }
 }
 
@@ -335,8 +357,18 @@ fn sorted(topics: &HashSet<Topic>) -> Vec<Topic> {
 /// Answers a method that needs no connection state: everything but
 /// `hello`, `subscribe`, `unsubscribe` and `daemon.shutdown`. The core's own
 /// modules (the relay-send socket's setup routes) call methods through this
-/// too, so they act exactly as a client's request would.
+/// too, so they act exactly as a client's request would, from no peer.
 pub async fn call(core: &Arc<Core>, name: &str, raw: Value) -> Result<Value, RpcError> {
+    call_from(core, &CallContext::default(), name, raw).await
+}
+
+/// [`call`] for the client `context` describes.
+pub async fn call_from(
+    core: &Arc<Core>,
+    context: &CallContext,
+    name: &str,
+    raw: Value,
+) -> Result<Value, RpcError> {
     if *core.shutdown_requested().borrow() {
         return Err(RpcError::new(
             ErrorKind::ShuttingDown,
@@ -368,9 +400,9 @@ pub async fn call(core: &Arc<Core>, name: &str, raw: Value) -> Result<Value, Rpc
         _ => {
             let answer = match methods::call(core, name, raw.clone()).await {
                 Some(answer) => Some(answer),
-                None => match local_methods::call(core, name, raw.clone()).await {
+                None => match local_methods::call_from(core, context, name, raw.clone()).await {
                     Some(answer) => Some(answer),
-                    None => extension_call(core, name, raw).await,
+                    None => extension_call(core, context, name, raw).await,
                 },
             };
             answer.unwrap_or_else(|| Err(no_such_method()))
@@ -417,6 +449,7 @@ fn needs_account(core: &Core, name: &str) -> bool {
 /// The first extension that answers `name`.
 async fn extension_call(
     core: &Arc<Core>,
+    context: &CallContext,
     name: &str,
     raw: Value,
 ) -> Option<Result<Value, RpcError>> {
@@ -424,7 +457,7 @@ async fn extension_call(
         if !extension.specs().iter().any(|spec| spec.name == name) {
             continue;
         }
-        if let Some(answer) = extension.call(core, name, raw.clone()).await {
+        if let Some(answer) = extension.call(core, context, name, raw.clone()).await {
             return Some(answer);
         }
     }
