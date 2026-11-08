@@ -32,7 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `agent-relay-node` has an optional `SpawnCallers` plugin hook: `spawn.invoke`, `spawn.status` and `spawn.release` accept an optional `caller_secret` that the plugin resolves to an external caller, admits and records, and extension methods now receive the caller's process id. Spawn control refusals carry an optional typed `reason` (such as `not_owner` or `outside_scope`) while `kind` stays `refused`. Without the plugin the core behaves as before and refuses any `caller_secret`.
+- `agent-relay-node` has an optional `SpawnCallers` plugin hook: the plugin says whether a bridge connection is bound to a service caller, admits each `spawn.invoke`, `spawn.status` and `spawn.release` that caller makes, and records its outcome; a call's receipt is returned only after the plugin recorded it, and extension methods now receive the caller's process id. Spawn control refusals carry an optional typed `reason` (such as `not_owner` or `outside_scope`) while `kind` stays `refused`. No spawn control takes a credential: `caller_secret` is refused (`legacy_credential_refused`), a bound connection names no caller, and an unbound one without `caller_name` is refused `caller_unbound`. Without the plugin the core behaves as before for session callers.
+- `@agent-relay/core-bridge` authenticates service callers: `readCallerCredential(path)` reads `caller.json` (refusing, on macOS and Linux, a file that is not 0600 and owned by you; on Windows it checks path and link only), and `authenticate(client, credential)` binds the connection by challenge and HMAC, so the secret never crosses the bridge. The spawn helpers refuse a `caller_secret` locally, make `caller_name` optional, and take an `actionTimeoutMs` option for `spawn.invoke` and `spawn.release` (default six minutes, `DEFAULT_SPAWN_ACTION_TIMEOUT_MS`), separate from the 15-second call deadline.
 
 ### Fixed
 

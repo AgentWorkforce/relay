@@ -4,8 +4,14 @@
  * no token, URL or header: the core uses the caller's own stored registration.
  *
  * Server rules a caller must know:
- * - `caller_name` must be an active local registration of this core that has
- *   a stored token; the core never returns that token.
+ * - A service caller binds its connection first with `authenticate`
+ *   (`auth.ts`) and then names no caller: the bound connection is the caller.
+ *   Naming `caller_name` on a bound connection is refused.
+ * - A session caller names `caller_name`, which must be an active local
+ *   registration of this core that has a stored token; the core never
+ *   returns that token.
+ * - No credential is ever a param. A `caller_secret` key is refused
+ *   (`legacy_credential_refused`) locally and by the core.
  * - `spawn.invoke` targets only this computer's own spawn node, which must be
  *   live, have `handlers_live`, not be stale, and advertise `spawn:<harness>`.
  * - Idempotency keys must be persisted by the caller and reused on retry.
@@ -43,13 +49,11 @@ export interface SpawnTargets {
 
 /** The params of `spawn.invoke`; the core refuses any other key. */
 export interface SpawnInvokeParams {
-  caller_name: string;
   /**
-   * A secret naming a service caller the core's spawn caller plugin vouches
-   * for instead of a session registration; omit it for a session caller. A
-   * core without the plugin refuses it.
+   * The session registration that calls. Omit it on a connection bound by
+   * `authenticate`, where the core refuses it.
    */
-  caller_secret?: string;
+  caller_name?: string;
   node_id: string;
   node_name: string;
   name: string;
@@ -64,26 +68,22 @@ export type SpawnControlAction = 'spawn' | 'release';
 
 /** The params of `spawn.status`; the core refuses any other key. */
 export interface SpawnStatusParams {
-  caller_name: string;
   /**
-   * A secret naming a service caller the core's spawn caller plugin vouches
-   * for instead of a session registration; omit it for a session caller. A
-   * core without the plugin refuses it.
+   * The session registration that calls. Omit it on a connection bound by
+   * `authenticate`, where the core refuses it.
    */
-  caller_secret?: string;
+  caller_name?: string;
   action: SpawnControlAction;
   invocation_id: string;
 }
 
 /** The params of `spawn.release`; the core refuses any other key. */
 export interface SpawnReleaseParams {
-  caller_name: string;
   /**
-   * A secret naming a service caller the core's spawn caller plugin vouches
-   * for instead of a session registration; omit it for a session caller. A
-   * core without the plugin refuses it.
+   * The session registration that calls. Omit it on a connection bound by
+   * `authenticate`, where the core refuses it.
    */
-  caller_secret?: string;
+  caller_name?: string;
   node_id: string;
   node_name: string;
   name: string;
@@ -156,7 +156,6 @@ function invocationOf(reply: SpawnControlInvocation): SpawnControlInvocation {
  */
 export const SPAWN_INVOKE_KEYS = [
   'caller_name',
-  'caller_secret',
   'node_id',
   'node_name',
   'name',
@@ -167,13 +166,11 @@ export const SPAWN_INVOKE_KEYS = [
 ] as const satisfies readonly (keyof SpawnInvokeParams)[];
 export const SPAWN_STATUS_KEYS = [
   'caller_name',
-  'caller_secret',
   'action',
   'invocation_id',
 ] as const satisfies readonly (keyof SpawnStatusParams)[];
 export const SPAWN_RELEASE_KEYS = [
   'caller_name',
-  'caller_secret',
   'node_id',
   'node_name',
   'name',
@@ -184,7 +181,25 @@ export const SPAWN_RELEASE_KEYS = [
 const SEGMENT = /^[A-Za-z0-9_-]{1,200}$/;
 const MIN_KEY_LENGTH = 16;
 const MAX_TASK_BYTES = 64 * 1024;
-const DEFAULT_SPAWN_ACTION_TIMEOUT_MS = 360_000;
+
+/**
+ * The default timeout of `spawn.invoke` and `spawn.release`: six minutes,
+ * because target lookup, verified agent startup and exact remote cleanup can
+ * outlast the bridge client's 15-second call deadline. Override it per call
+ * with {@link SpawnActionOptions.actionTimeoutMs}.
+ */
+export const DEFAULT_SPAWN_ACTION_TIMEOUT_MS = 360_000;
+
+/** Call options for the action-length calls, `spawn.invoke` and `spawn.release`. */
+export interface SpawnActionOptions extends CallOptions {
+  /**
+   * How long to wait for the action, in milliseconds. It is separate from the
+   * client's call deadline (15 seconds by default), which other calls keep.
+   * When unset, `timeoutMs` applies if given, else
+   * {@link DEFAULT_SPAWN_ACTION_TIMEOUT_MS}.
+   */
+  actionTimeoutMs?: number;
+}
 
 function invalid(field: string, rule: string): CoreBridgeError {
   // Names the field only: values (the task above all) may hold user text.
@@ -214,12 +229,21 @@ function pick<K extends string>(params: object, keys: readonly K[]): Partial<Rec
   return out;
 }
 
-function callerSecret(params: object): void {
-  const value = (params as Record<string, unknown>).caller_secret;
-  // Names the field only: the value is a credential.
-  if (value !== undefined && (typeof value !== 'string' || value.trim().length === 0)) {
-    throw invalid('caller_secret', 'must be a non-empty string when given');
+/**
+ * Refuses a `caller_secret` key before anything filters the params, so a
+ * secret is never silently dropped or sent. The message never holds the value.
+ */
+function noLegacyCredential(params: object): void {
+  if (params !== null && typeof params === 'object' && Object.hasOwn(params, 'caller_secret')) {
+    throw new CoreBridgeError(
+      'legacy_credential_refused',
+      'caller_secret is no longer accepted; bind the connection with authenticate() and omit the caller.'
+    );
   }
+}
+
+function optionalSegment(params: object, field: string): void {
+  if ((params as Record<string, unknown>)[field] !== undefined) segment(params, field);
 }
 
 function requireMethod(client: CoreClient, method: string): void {
@@ -257,19 +281,20 @@ export async function spawnTargets(client: CoreClient, options?: CallOptions): P
  * makes Relaycast calls; poll on a second connection while it runs.
  * @param client - A greeted connection to the Agent Relay core.
  * @param params - The exact spawn request accepted by the core.
- * @param options - Optional timeout and cancellation controls. The default
- * timeout is six minutes because target lookup and verified agent startup can
- * legitimately exceed the bridge client's 15-second default.
+ * @param options - Optional timeout and cancellation controls.
+ * `actionTimeoutMs` defaults to {@link DEFAULT_SPAWN_ACTION_TIMEOUT_MS} (six
+ * minutes), separate from the bridge client's 15-second call deadline.
  * @returns The accepted spawn invocation receipt.
  */
 export async function spawnInvoke(
   client: CoreClient,
   params: SpawnInvokeParams,
-  options: CallOptions = {}
+  options: SpawnActionOptions = {}
 ): Promise<SpawnControlInvocation> {
+  noLegacyCredential(params);
   requireMethod(client, 'spawn.invoke');
-  for (const field of ['caller_name', 'node_id', 'node_name', 'name']) segment(params, field);
-  callerSecret(params);
+  optionalSegment(params, 'caller_name');
+  for (const field of ['node_id', 'node_name', 'name']) segment(params, field);
   key(params, 'idempotency_key');
   if (typeof params.harness !== 'string' || params.harness.length === 0)
     throw invalid('harness', 'must be named');
@@ -308,9 +333,9 @@ export async function spawnStatus(
   params: SpawnStatusParams,
   options?: CallOptions
 ): Promise<SpawnControlInvocation> {
+  noLegacyCredential(params);
   requireMethod(client, 'spawn.status');
-  segment(params, 'caller_name');
-  callerSecret(params);
+  optionalSegment(params, 'caller_name');
   segment(params, 'invocation_id');
   if (params.action !== 'spawn' && params.action !== 'release')
     throw invalid('action', 'must be "spawn" or "release"');
@@ -323,20 +348,20 @@ export async function spawnStatus(
  * Releases an agent this core spawned, by its exact identity (`spawn.release`).
  * @param client - A greeted connection to the Agent Relay core.
  * @param params - The exact worker identity and stable release key.
- * @param options - Optional timeout and cancellation controls. The default
- * timeout is six minutes because exact remote cleanup can exceed the bridge
- * client's 15-second default.
+ * @param options - Optional timeout and cancellation controls.
+ * `actionTimeoutMs` defaults to {@link DEFAULT_SPAWN_ACTION_TIMEOUT_MS} (six
+ * minutes), separate from the bridge client's 15-second call deadline.
  * @returns The accepted release invocation receipt.
  */
 export async function spawnRelease(
   client: CoreClient,
   params: SpawnReleaseParams,
-  options: CallOptions = {}
+  options: SpawnActionOptions = {}
 ): Promise<SpawnControlInvocation> {
+  noLegacyCredential(params);
   requireMethod(client, 'spawn.release');
-  for (const field of ['caller_name', 'node_id', 'node_name', 'name', 'expected_agent_id'])
-    segment(params, field);
-  callerSecret(params);
+  optionalSegment(params, 'caller_name');
+  for (const field of ['node_id', 'node_name', 'name', 'expected_agent_id']) segment(params, field);
   key(params, 'idempotency_key');
   return invocationOf(
     await client.call<SpawnControlInvocation>(
@@ -347,6 +372,7 @@ export async function spawnRelease(
   );
 }
 
-function spawnActionOptions(options: CallOptions): CallOptions {
-  return { ...options, timeoutMs: options.timeoutMs ?? DEFAULT_SPAWN_ACTION_TIMEOUT_MS };
+function spawnActionOptions(options: SpawnActionOptions): CallOptions {
+  const { actionTimeoutMs, ...call } = options;
+  return { ...call, timeoutMs: actionTimeoutMs ?? call.timeoutMs ?? DEFAULT_SPAWN_ACTION_TIMEOUT_MS };
 }

@@ -5118,50 +5118,48 @@ public struct SpawnHarnessSettings: Codable, Equatable, Hashable, Sendable {
 
 public struct SpawnInvocationParams: Codable, Equatable, Hashable, Sendable {
     public let action: SpawnControlAction
-    public let callerName: String
-    /// A secret that names a caller the core's spawn caller plugin
-    /// vouches for instead of a session registration; absent for a session
-    /// caller. A core without the plugin refuses it.
-    public let callerSecret: String?
+    /// The session registration that calls, on a connection that has not
+    /// authenticated as a service caller: the session path, unchanged. A
+    /// connection bound to a service caller acts as that caller and must
+    /// not send it (`legacy_credential_refused`); a call without it on an
+    /// unbound connection is refused `caller_unbound`.
+    public let callerName: String?
     public let invocationId: String
 
-    public init(action: SpawnControlAction, callerName: String, callerSecret: String? = nil, invocationId: String) {
+    public init(action: SpawnControlAction, callerName: String? = nil, invocationId: String) {
         self.action = action
         self.callerName = callerName
-        self.callerSecret = callerSecret
         self.invocationId = invocationId
     }
 
     enum CodingKeys: String, CodingKey {
         case action
         case callerName = "caller_name"
-        case callerSecret = "caller_secret"
         case invocationId = "invocation_id"
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.action = try c.decode(SpawnControlAction.self, forKey: .action)
-        self.callerName = try c.decode(String.self, forKey: .callerName)
-        self.callerSecret = try c.decodeIfPresent(String.self, forKey: .callerSecret)
+        self.callerName = try c.decodeIfPresent(String.self, forKey: .callerName)
         self.invocationId = try c.decode(String.self, forKey: .invocationId)
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(self.action, forKey: .action)
-        try c.encode(self.callerName, forKey: .callerName)
-        try c.encodeIfPresent(self.callerSecret, forKey: .callerSecret)
+        try c.encodeIfPresent(self.callerName, forKey: .callerName)
         try c.encode(self.invocationId, forKey: .invocationId)
     }
 }
 
 public struct SpawnInvokeParams: Codable, Equatable, Hashable, Sendable {
-    public let callerName: String
-    /// A secret that names a caller the core's spawn caller plugin
-    /// vouches for instead of a session registration; absent for a session
-    /// caller. A core without the plugin refuses it.
-    public let callerSecret: String?
+    /// The session registration that calls, on a connection that has not
+    /// authenticated as a service caller: the session path, unchanged. A
+    /// connection bound to a service caller acts as that caller and must
+    /// not send it (`legacy_credential_refused`); a call without it on an
+    /// unbound connection is refused `caller_unbound`.
+    public let callerName: String?
     public let directory: String
     public let harness: String
     public let idempotencyKey: String
@@ -5170,9 +5168,8 @@ public struct SpawnInvokeParams: Codable, Equatable, Hashable, Sendable {
     public let nodeName: String
     public let task: String
 
-    public init(callerName: String, callerSecret: String? = nil, directory: String, harness: String, idempotencyKey: String, name: String, nodeId: String, nodeName: String, task: String) {
+    public init(callerName: String? = nil, directory: String, harness: String, idempotencyKey: String, name: String, nodeId: String, nodeName: String, task: String) {
         self.callerName = callerName
-        self.callerSecret = callerSecret
         self.directory = directory
         self.harness = harness
         self.idempotencyKey = idempotencyKey
@@ -5184,7 +5181,6 @@ public struct SpawnInvokeParams: Codable, Equatable, Hashable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case callerName = "caller_name"
-        case callerSecret = "caller_secret"
         case directory
         case harness
         case idempotencyKey = "idempotency_key"
@@ -5196,8 +5192,7 @@ public struct SpawnInvokeParams: Codable, Equatable, Hashable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.callerName = try c.decode(String.self, forKey: .callerName)
-        self.callerSecret = try c.decodeIfPresent(String.self, forKey: .callerSecret)
+        self.callerName = try c.decodeIfPresent(String.self, forKey: .callerName)
         self.directory = try c.decode(String.self, forKey: .directory)
         self.harness = try c.decode(String.self, forKey: .harness)
         self.idempotencyKey = try c.decode(String.self, forKey: .idempotencyKey)
@@ -5209,8 +5204,7 @@ public struct SpawnInvokeParams: Codable, Equatable, Hashable, Sendable {
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(self.callerName, forKey: .callerName)
-        try c.encodeIfPresent(self.callerSecret, forKey: .callerSecret)
+        try c.encodeIfPresent(self.callerName, forKey: .callerName)
         try c.encode(self.directory, forKey: .directory)
         try c.encode(self.harness, forKey: .harness)
         try c.encode(self.idempotencyKey, forKey: .idempotencyKey)
@@ -5222,20 +5216,20 @@ public struct SpawnInvokeParams: Codable, Equatable, Hashable, Sendable {
 }
 
 public struct SpawnReleaseParams: Codable, Equatable, Hashable, Sendable {
-    public let callerName: String
-    /// A secret that names a caller the core's spawn caller plugin
-    /// vouches for instead of a session registration; absent for a session
-    /// caller. A core without the plugin refuses it.
-    public let callerSecret: String?
+    /// The session registration that calls, on a connection that has not
+    /// authenticated as a service caller: the session path, unchanged. A
+    /// connection bound to a service caller acts as that caller and must
+    /// not send it (`legacy_credential_refused`); a call without it on an
+    /// unbound connection is refused `caller_unbound`.
+    public let callerName: String?
     public let expectedAgentId: String
     public let idempotencyKey: String
     public let name: String
     public let nodeId: String
     public let nodeName: String
 
-    public init(callerName: String, callerSecret: String? = nil, expectedAgentId: String, idempotencyKey: String, name: String, nodeId: String, nodeName: String) {
+    public init(callerName: String? = nil, expectedAgentId: String, idempotencyKey: String, name: String, nodeId: String, nodeName: String) {
         self.callerName = callerName
-        self.callerSecret = callerSecret
         self.expectedAgentId = expectedAgentId
         self.idempotencyKey = idempotencyKey
         self.name = name
@@ -5245,7 +5239,6 @@ public struct SpawnReleaseParams: Codable, Equatable, Hashable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case callerName = "caller_name"
-        case callerSecret = "caller_secret"
         case expectedAgentId = "expected_agent_id"
         case idempotencyKey = "idempotency_key"
         case name
@@ -5255,8 +5248,7 @@ public struct SpawnReleaseParams: Codable, Equatable, Hashable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.callerName = try c.decode(String.self, forKey: .callerName)
-        self.callerSecret = try c.decodeIfPresent(String.self, forKey: .callerSecret)
+        self.callerName = try c.decodeIfPresent(String.self, forKey: .callerName)
         self.expectedAgentId = try c.decode(String.self, forKey: .expectedAgentId)
         self.idempotencyKey = try c.decode(String.self, forKey: .idempotencyKey)
         self.name = try c.decode(String.self, forKey: .name)
@@ -5266,8 +5258,7 @@ public struct SpawnReleaseParams: Codable, Equatable, Hashable, Sendable {
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(self.callerName, forKey: .callerName)
-        try c.encodeIfPresent(self.callerSecret, forKey: .callerSecret)
+        try c.encodeIfPresent(self.callerName, forKey: .callerName)
         try c.encode(self.expectedAgentId, forKey: .expectedAgentId)
         try c.encode(self.idempotencyKey, forKey: .idempotencyKey)
         try c.encode(self.name, forKey: .name)

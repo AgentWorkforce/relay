@@ -119,17 +119,30 @@ copied from the core's contract. Each helper:
   makes that check on any reply.
 
 Each helper accepts per-call timeout and cancellation options. `spawn.invoke`
-and `spawn.release` default to a six-minute timeout because verified startup
-and exact cleanup can legitimately exceed the bridge client's 15-second call
-default; callers can still select a shorter bound explicitly.
+and `spawn.release` take `actionTimeoutMs`, which defaults to six minutes
+(`DEFAULT_SPAWN_ACTION_TIMEOUT_MS`) because verified startup and exact cleanup
+can legitimately exceed the bridge client's 15-second call deadline; that
+deadline still governs every other call.
 
 The core stays authoritative. Rules a caller must know:
 
-- `caller_name` must be an active local registration of this core with a stored
-  token. The core uses that registration; no token crosses the bridge.
-- A service caller instead passes `caller_secret`, which the core's spawn caller
-  plugin checks; a core without that plugin refuses it. Leave it out for a
-  session caller.
+- A session caller passes `caller_name`, which must be an active local
+  registration of this core with a stored token. The core uses that
+  registration; no token crosses the bridge.
+- A service caller binds its connection first and then passes no caller:
+
+  ```ts
+  const credential = await readCallerCredential('/path/to/caller.json');
+  await authenticate(client, credential); // spawn_callers.challenge + .authenticate
+  await spawnInvoke(client, { node_id, node_name, name, harness, task, directory, idempotency_key });
+  ```
+
+  `authenticate` answers a single-use challenge with
+  `HMAC-SHA256(SHA-256(secret), transcript)`. A connection binds once; three
+  failed attempts lock it (`auth_locked`), so open a new connection.
+
+- No params carry a credential. A `caller_secret` key is refused locally
+  (`legacy_credential_refused`) before anything is sent, and by the core.
 - `spawn.invoke` targets only this computer's own spawn node, which must be
   live, have `handlers_live`, not be stale, and advertise `spawn:<harness>`.
 - Persist idempotency keys (`newIdempotencyKey()` makes one) and reuse them on
@@ -159,6 +172,14 @@ bump is a semver-major release of this package.
   only the current user, refuses remote clients and holds the name exclusively,
   but unlike the Rust clients this package cannot verify that the pipe's
   _server_ runs as the current user without native code.
-- The only credential that crosses this client is an optional `caller_secret`,
-  and it never logs params or replies (a spawn task can hold user text, and a
-  spawn param can hold that secret).
+- No credential crosses this client: `authenticate` sends a caller id and an
+  HMAC, never the secret or its key, and `CallerCredential` prints as
+  `[redacted]`. It never logs params or replies (a spawn task can hold user
+  text).
+- `readCallerCredential` refuses, on macOS and Linux, a `caller.json` that is a
+  symlink, not a regular file, not owned by you, has any group or other
+  permission bit, sits in a group- or world-writable directory that is not
+  sticky, or is over 64 KiB. **Windows gap:** Node cannot read access lists,
+  so on Windows it checks only that the path is absolute, not a link or
+  reparse point, a regular file and at most 64 KiB; it relies on the per-user
+  profile's access list that Agent Relay Desktop writes the file under.

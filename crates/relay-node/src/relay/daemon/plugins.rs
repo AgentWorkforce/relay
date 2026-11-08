@@ -104,33 +104,65 @@ pub trait SessionPolicy: Send + Sync + 'static {
 }
 
 /// Callers of the native spawn controls (`spawn.invoke`, `spawn.status`,
-/// `spawn.release`) that are not session registrations: a request that
-/// carries `caller_secret` is answered through this plugin, one without it
-/// exactly as without the plugin. A core without one refuses every
-/// `caller_secret`. An unsupported internal seam, like [`SessionPolicy`].
+/// `spawn.release`) that are not session registrations. A service caller is
+/// whoever its bridge connection authenticated as: the plugin owns the
+/// challenge, the binding and its teardown (usually through a
+/// [`MethodExtension`] whose `connection_closed` retires the connection's
+/// slot and binding), and the core only asks it how a connection resolves.
+/// A connection the plugin does not know takes the session path exactly as
+/// without the plugin. No caller credential ever reaches the core: a
+/// `spawn.*` params object carrying `caller_secret` is refused
+/// `legacy_credential_refused` before it is read, with or without the
+/// plugin. An unsupported internal seam, like [`SessionPolicy`].
 ///
 /// The core never stores, lists or provisions such callers; the plugin owns
 /// their records, limits and audit.
 pub trait SpawnCallers: Send + Sync + 'static {
-    /// The caller `name` and `secret` name in `workspace`, or a typed
-    /// refusal (`RpcError::refused_because`). Called before any Relaycast
-    /// request.
-    fn resolve(
-        &self,
-        workspace: &Workspace,
-        name: &str,
-        secret: &Secret,
-    ) -> Result<ExternalCaller, RpcError>;
+    /// How the bridge connection `context` describes resolves: not a
+    /// service caller (the session path), bound to one, or refused with the
+    /// class the plugin's state gives (`caller_unbound` after a challenge,
+    /// `auth_locked`, `binding_stale`, `connection_closed`). Called once,
+    /// before a `spawn.*` call's params are read, and never for a call
+    /// without a `connection_id` (the core's own calls, always the session
+    /// path). A session call is resolved again just before its side effect:
+    /// a connection that turned external meanwhile is refused
+    /// `caller_unbound`. Must return promptly and not block on I/O.
+    fn connection(&self, context: &CallContext) -> ConnectionCaller;
     /// Admits `call` before its Relaycast request (rate, live-agent cap,
     /// ledger), or refuses it, in which case nothing is sent. The permit
     /// comes back to [`SpawnCallers::record`]; a call that is dropped before
     /// it finishes drops the permit instead.
     fn admit(&self, caller: &ExternalCaller, call: &SpawnCall<'_>) -> Result<Permit, RpcError>;
     /// What became of an admitted call, success or refusal (audit, ledger).
-    fn record(&self, permit: Permit, outcome: &Result<SpawnControlInvocation, RpcError>);
+    /// `outcome` is the exact answer the caller gets: a success is the
+    /// authoritative receipt, the same value the core writes back, so the
+    /// plugin persists that and nothing it derives.
+    ///
+    /// The receipt is gated on it: when this fails after a successful call,
+    /// the caller gets this error instead of the receipt. The Relaycast side
+    /// effect has happened, so return a retryable error (`store_failed`,
+    /// say): the same request again, with the same `idempotency_key` for
+    /// invoke and release, replays the invocation and recovers its receipt.
+    /// A failure after a refused call changes nothing; the refusal stands.
+    fn record(
+        &self,
+        permit: Permit,
+        outcome: &Result<SpawnControlInvocation, RpcError>,
+    ) -> Result<(), RpcError>;
 }
 
-/// A caller [`SpawnCallers::resolve`] vouches for: a Relaycast agent whose
+/// How [`SpawnCallers::connection`] resolves a bridge connection.
+#[derive(Clone, Debug)]
+pub enum ConnectionCaller {
+    /// Not a service caller connection: the session path, unchanged.
+    NotExternal,
+    /// Bound to this service caller, with its generation and scope current.
+    Bound(ExternalCaller),
+    /// Known to the plugin but not usable for a call; answered as is.
+    Refused(RpcError),
+}
+
+/// A caller [`SpawnCallers::connection`] found bound: a Relaycast agent whose
 /// token stays in the core, and the bounds it acts within.
 #[derive(Clone, Debug)]
 pub struct ExternalCaller {
@@ -149,12 +181,14 @@ pub struct ExternalCaller {
 }
 
 /// One native spawn control call by an [`ExternalCaller`], as
-/// [`SpawnCallers::admit`] sees it. The parameters never carry the caller's
-/// secret.
+/// [`SpawnCallers::admit`] sees it. The parameters never carry a caller
+/// credential.
 #[derive(Clone, Copy, Debug)]
 pub struct SpawnCall<'a> {
     /// The bridge client's process, when the platform reports it.
     pub peer_pid: Option<i32>,
+    /// The bridge connection the caller is bound on.
+    pub connection_id: Option<u64>,
     pub workspace: &'a Workspace,
     pub request: SpawnRequest<'a>,
 }
@@ -273,7 +307,7 @@ pub struct Plugins {
     /// Which sessions may join the relay, be asked to, and publish activity.
     pub session_policy: Option<Arc<dyn SessionPolicy>>,
     /// Native spawn control callers that are not session registrations;
-    /// without it every `caller_secret` is refused.
+    /// without it every bridge connection takes the session path.
     pub spawn_callers: Option<Arc<dyn SpawnCallers>>,
     /// Messages for Conductor's Codex chats that Agent Relay's Codex Stop
     /// hook collects (`POST /codex/stop-hook`); none without the hook.
