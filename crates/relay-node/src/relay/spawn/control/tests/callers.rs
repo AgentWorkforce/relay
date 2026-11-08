@@ -384,6 +384,30 @@ async fn an_external_caller_uses_its_own_token_and_agent_id_for_release_claims()
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_old_unrestricted_claim_cannot_bypass_a_new_owns_only_policy() {
+    let relaycast = Relaycast::new();
+    let stub = Stub::new(service(true));
+    let (_home, core) = core_with(Some(stub), &relaycast.base);
+    let workspace = core.workspace().unwrap();
+    let params: SpawnReleaseParams = serde_json::from_value(release_params(None)).unwrap();
+    claims::release(
+        &core.config.app_data_dir,
+        &workspace,
+        "agent_service",
+        &params,
+        true,
+        claims::Ownership::Unrestricted,
+    )
+    .unwrap();
+    let error = server::call(&core, "spawn.release", release_params(Some(SECRET)))
+        .await
+        .unwrap_err();
+    assert_eq!(error.data.kind, ErrorKind::Refused);
+    assert_eq!(error.data.reason, Some(RefusalReason::NotOwner));
+    assert!(relaycast.untouched());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_owns_only_caller_cannot_release_an_agent_another_requester_started() {
     let relaycast = Relaycast::new();
     let stub = Stub::new(service(true));
@@ -412,11 +436,16 @@ async fn an_owns_only_caller_cannot_release_an_agent_another_requester_started()
     // A worker with no recorded requester is not the caller's either.
     let (_none_home, core) = core_with(Some(stub.clone()), &relaycast.base);
     seed(&core, &relaycast.base, None);
+    let served = relaycast.serve(vec![
+        json!({"caller_name":"someone","caller_id":"agent_other"}),
+    ]);
     let error = server::call(&core, "spawn.release", release_params(Some(SECRET)))
         .await
         .unwrap_err();
     assert_eq!(reason(&error), Some(RefusalReason::NotOwner));
-    assert!(relaycast.untouched());
+    let requests = served.join().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("GET /v1/actions/spawn/invocations/invocation_1 "));
     // Without the plugin, the session caller releases it as before.
     let (_other_home, plain) = core_with(None, &relaycast.base);
     seed(&plain, &relaycast.base, Some("agent_other"));
@@ -425,6 +454,27 @@ async fn an_owns_only_caller_cannot_release_an_agent_another_requester_started()
         .await
         .unwrap();
     assert!(served.join().unwrap()[0].contains("test-agent-secret"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_owns_only_caller_revalidates_a_missing_requester_before_release() {
+    let relaycast = Relaycast::new();
+    let stub = Stub::new(service(true));
+    let (_home, core) = core_with(Some(stub), &relaycast.base);
+    seed(&core, &relaycast.base, None);
+    let served = relaycast.serve(vec![
+        json!({"caller_name":"flows-test","caller_id":"agent_service"}),
+        released(),
+    ]);
+    server::call(&core, "spawn.release", release_params(Some(SECRET)))
+        .await
+        .unwrap();
+    let requests = served.join().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].starts_with("GET /v1/actions/spawn/invocations/invocation_1 "));
+    assert!(requests[0].contains("test-workspace-secret"));
+    assert!(requests[1].starts_with("POST /v1/agents/release-exact "));
+    assert!(requests[1].contains("service-agent-token"));
 }
 
 #[test]
@@ -447,40 +497,32 @@ fn an_owns_only_caller_releases_its_crashed_worker() {
         idempotency_key: IDEMPOTENCY.into(),
     };
     let exact = params("test-worker", "agent_worker", "node_local");
-    assert!(release_target_owned(
-        &store,
-        &workspace,
-        &exact,
-        "agent_service"
-    ));
-    assert!(!release_target_owned(
-        &store,
-        &workspace,
-        &exact,
-        "agent_other"
-    ));
+    assert_eq!(
+        release_target_ownership(&store, &workspace, &exact, "agent_service"),
+        Some(ReleaseOwnership::Owned)
+    );
+    assert_eq!(
+        release_target_ownership(&store, &workspace, &exact, "agent_other"),
+        Some(ReleaseOwnership::Other)
+    );
     for wrong in [
         params("test-worker", "agent_other", "node_local"),
         params("test-other", "agent_worker", "node_local"),
         params("test-worker", "agent_worker", "node_remote"),
     ] {
-        assert!(!release_target_owned(
-            &store,
-            &workspace,
-            &wrong,
-            "agent_service"
-        ));
+        assert_eq!(
+            release_target_ownership(&store, &workspace, &wrong, "agent_service"),
+            None
+        );
     }
     let other_workspace = Workspace {
         key: Secret::new("another-workspace"),
         ..workspace
     };
-    assert!(!release_target_owned(
-        &store,
-        &other_workspace,
-        &exact,
-        "agent_service"
-    ));
+    assert_eq!(
+        release_target_ownership(&store, &other_workspace, &exact, "agent_service"),
+        None
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -511,6 +553,11 @@ fn refusal_reasons_serialize_and_old_errors_omit_reason() {
     let old: ErrorData =
         serde_json::from_value(json!({"kind":"refused","retryable":false})).unwrap();
     assert_eq!(old.reason, None);
+    let future: ErrorData = serde_json::from_value(
+        json!({"kind":"refused","retryable":false,"reason":"future_policy"}),
+    )
+    .unwrap();
+    assert_eq!(future.reason, Some(RefusalReason::Other));
     for (reason, wire) in [
         (RefusalReason::ServiceUnknown, "service_unknown"),
         (RefusalReason::ServiceDisabled, "service_disabled"),
@@ -654,6 +701,64 @@ async fn an_external_caller_is_held_to_its_harnesses_and_folders() {
     assert!(requests[1].contains("service-agent-token"));
     assert!(!requests[1].contains(SECRET));
     assert_eq!(stub.log().last().unwrap(), "record:invoke:ok");
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_scoped_spawn_forwards_the_checked_path_after_a_symlink_swap() {
+    use std::os::unix::fs::symlink;
+
+    let relaycast = Relaycast::new();
+    let allowed = tempfile::tempdir().unwrap();
+    let checked = allowed.path().join("checked");
+    std::fs::create_dir(&checked).unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let selected = allowed.path().join("selected");
+    symlink(&checked, &selected).unwrap();
+    let stub = Stub::new(ExternalCaller {
+        harnesses: Some(vec!["codex".into()]),
+        directory_roots: Some(vec![allowed.path().into()]),
+        ..service(true)
+    });
+    let (_home, core) = core_with(Some(stub), &relaycast.base);
+    let listener = relaycast.listener.try_clone().unwrap();
+    let node = crate::relay::spawn::node_name(&core.machine_prefix);
+    let moved = selected.clone();
+    let escaped = outside.path().to_path_buf();
+    let served = std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        for body in [
+            json!([{"id":"node_local","name":node,"live":true,"handlers_live":true,"active_agents":0,"reserved_agents":0,"max_agents":4,"capabilities":["spawn:codex"]}]),
+            json!({"id":"invocation_new","status":"pending"}),
+        ] {
+            let (mut stream, _) = listener.accept().unwrap();
+            requests.push(read_request(&mut stream));
+            if requests.len() == 1 {
+                std::fs::remove_file(&moved).unwrap();
+                symlink(&escaped, &moved).unwrap();
+            }
+            let body = json!({"ok":true,"data":body}).to_string();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        }
+        requests
+    });
+    server::call(
+        &core,
+        "spawn.invoke",
+        invoke_params(&core, "codex", selected.to_str().unwrap()),
+    )
+    .await
+    .unwrap();
+    let requests = served.join().unwrap();
+    assert!(requests[1].contains(checked.to_str().unwrap()));
+    assert!(!requests[1].contains(selected.to_str().unwrap()));
+    assert!(!requests[1].contains(outside.path().to_str().unwrap()));
 }
 
 #[tokio::test(flavor = "multi_thread")]

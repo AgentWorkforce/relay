@@ -150,6 +150,7 @@ pub enum RefusalReason {
     /// client whose process could not be read.
     ManagementPeer,
     /// A reason this build does not know.
+    #[serde(other)]
     Other,
 }
 

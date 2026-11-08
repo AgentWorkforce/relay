@@ -8,12 +8,20 @@ use std::sync::Mutex;
 
 static WRITING: Mutex<()> = Mutex::new(());
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Ownership {
+    Unrestricted,
+    Verified,
+    ClaimOnly,
+}
+
 pub(super) fn release(
     folder: &Path,
     workspace: &Workspace,
     caller_id: &str,
     params: &SpawnReleaseParams,
     exact: bool,
+    ownership: Ownership,
 ) -> Result<(), RpcError> {
     let _writing = WRITING.lock().unwrap_or_else(|e| e.into_inner());
     let scope = json!([
@@ -36,11 +44,23 @@ pub(super) fn release(
     match std::fs::read(&path) {
         Ok(bytes) => {
             let previous: Value = serde_json::from_slice(&bytes).map_err(|_| malformed())?;
-            return if previous == identity {
-                Ok(())
-            } else {
-                Err(refused())
+            let (previous_identity, previous_owner_verified) = match previous.as_object() {
+                Some(previous) => (
+                    previous.get("identity").cloned().unwrap_or(Value::Null),
+                    previous
+                        .get("owner_verified")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                ),
+                None => (previous, false),
             };
+            if previous_identity != identity {
+                return Err(refused());
+            }
+            if ownership != Ownership::Unrestricted && !previous_owner_verified {
+                return Err(not_owner());
+            }
+            return Ok(());
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(_) => return Err(refused()),
@@ -62,7 +82,11 @@ pub(super) fn release(
             )
         })?;
         let mut temporary = tempfile::NamedTempFile::new_in(&folder)?;
-        temporary.write_all(&serde_json::to_vec(&identity)?)?;
+        let claim = json!({
+            "identity": identity,
+            "owner_verified": ownership == Ownership::Verified,
+        });
+        temporary.write_all(&serde_json::to_vec(&claim)?)?;
         temporary.as_file().sync_all()?;
         temporary.persist_noclobber(path).map_err(|e| e.error)?;
         sync_dir(&folder)

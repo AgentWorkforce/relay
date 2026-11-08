@@ -236,22 +236,27 @@ fn caller_in(
     Ok(Caller::External { caller, plugin })
 }
 
-/// Whether an external caller's limits allow `harness` in `directory`.
-fn in_scope(caller: &ExternalCaller, harness: &str, directory: &str) -> bool {
+/// The directory an external caller may launch in. Restricted paths are
+/// resolved once and the resolved path is the one sent to Relaycast, so a
+/// caller cannot swap an allowed symlink while the node lookup is in flight.
+fn scoped_directory(
+    caller: &ExternalCaller,
+    harness: &str,
+    directory: &str,
+) -> Result<std::path::PathBuf, RpcError> {
     if let Some(harnesses) = &caller.harnesses {
         if !harnesses.iter().any(|allowed| allowed == harness) {
-            return false;
+            return Err(outside_scope());
         }
     }
     let Some(roots) = &caller.directory_roots else {
-        return true;
+        return Ok(directory.into());
     };
-    let Ok(directory) = std::fs::canonicalize(directory) else {
-        return false;
-    };
-    roots
+    let directory = std::fs::canonicalize(directory).map_err(|_| outside_scope())?;
+    let allowed = roots
         .iter()
-        .any(|root| std::fs::canonicalize(root).is_ok_and(|root| directory.starts_with(root)))
+        .any(|root| std::fs::canonicalize(root).is_ok_and(|root| directory.starts_with(root)));
+    allowed.then_some(directory).ok_or_else(outside_scope)
 }
 
 fn field(value: &Value, name: &str) -> Result<String, RpcError> {
@@ -428,11 +433,11 @@ async fn invoke_as(
     harness: crate::relay::harness::HarnessId,
     params: &SpawnInvokeParams,
 ) -> Result<SpawnControlInvocation, RpcError> {
-    if let Some(external) = caller.external() {
-        if !in_scope(external, &params.harness, &params.directory) {
-            return Err(outside_scope());
-        }
-    }
+    let directory = match caller.external() {
+        Some(external) => scoped_directory(external, &params.harness, &params.directory)?,
+        None => params.directory.clone().into(),
+    };
+    let directory = directory.to_str().ok_or_else(outside_scope)?;
     let http = caller.http(workspace)?;
     let workspace_client = sdk_gaps::http(&workspace.base_url, &workspace.key)
         .map_err(|e| RpcError::from_relaycast(&e))?;
@@ -447,7 +452,7 @@ async fn invoke_as(
     }) {
         return Err(refused());
     }
-    let body = json!({"input": {"name": params.name, "cli": params.harness, "task": params.task, "target_node": params.node_name, "worker_cwd": params.directory, "verify_ready": true}});
+    let body = json!({"input": {"name": params.name, "cli": params.harness, "task": params.task, "target_node": params.node_name, "worker_cwd": directory, "verify_ready": true}});
     let result: Value = http
         .post(
             "/v1/actions/spawn/invoke",
@@ -543,17 +548,27 @@ fn release_target(store: &Store, workspace: &Workspace, params: &SpawnReleasePar
 /// [`release_target`], narrowed to a worker whose recorded requester (as
 /// Relaycast reported it, never the caller's word) is `requester_id`. Only
 /// external callers that may release just their own agents are held to it.
-fn release_target_owned(
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ReleaseOwnership {
+    Owned,
+    Other,
+    Unknown(String),
+}
+
+fn release_target_ownership(
     store: &Store,
     workspace: &Workspace,
     params: &SpawnReleaseParams,
     requester_id: &str,
-) -> bool {
-    release_targets(store, workspace, params).any(|r| {
-        r.spawn
-            .as_ref()
-            .and_then(|s| s.requester.as_ref())
-            .is_some_and(|requester| requester.agent_id == requester_id)
+) -> Option<ReleaseOwnership> {
+    let spawn = release_targets(store, workspace, params)
+        .next()?
+        .spawn
+        .as_ref()?;
+    Some(match spawn.requester.as_ref() {
+        Some(requester) if requester.agent_id == requester_id => ReleaseOwnership::Owned,
+        Some(_) => ReleaseOwnership::Other,
+        None => ReleaseOwnership::Unknown(spawn.invocation_id.clone()),
     })
 }
 
@@ -606,24 +621,41 @@ async fn release_as(
     params: &SpawnReleaseParams,
 ) -> Result<SpawnControlInvocation, RpcError> {
     let http = caller.http(workspace)?;
-    let (exact, owned) = core.store.read(|store| {
-        let owned = caller
+    let (exact, ownership) = core.store.read(|store| {
+        let ownership = caller
             .external()
             .filter(|external| external.owns_only)
-            .map(|external| release_target_owned(store, workspace, params, &external.agent_id));
-        (release_target(store, workspace, params), owned)
+            .and_then(|external| {
+                release_target_ownership(store, workspace, params, &external.agent_id)
+            });
+        (release_target(store, workspace, params), ownership)
     });
-    // A worker saved here that another requester started; with no saved
-    // worker, only this caller's own earlier claim can still release it.
-    if exact && owned == Some(false) {
+    let owns_only = caller.external().is_some_and(|caller| caller.owns_only);
+    let owner_verified = match ownership {
+        Some(ReleaseOwnership::Owned) => true,
+        Some(ReleaseOwnership::Other) => return Err(not_owner()),
+        Some(ReleaseOwnership::Unknown(invocation_id)) => {
+            crate::relay::spawn::report_back::requester(workspace, &invocation_id)
+                .await
+                .is_some_and(|requester| requester.agent_id == caller.agent_id())
+        }
+        None => false,
+    };
+    if exact && owns_only && !owner_verified {
         return Err(not_owner());
     }
+    let ownership = match (owns_only, owner_verified) {
+        (false, _) => claims::Ownership::Unrestricted,
+        (true, true) => claims::Ownership::Verified,
+        (true, false) => claims::Ownership::ClaimOnly,
+    };
     claims::release(
         &core.config.app_data_dir,
         workspace,
         caller.agent_id(),
         params,
         exact,
+        ownership,
     )?;
     let body = json!({"name": params.name, "expected_agent_id": params.expected_agent_id, "delete_agent": true, "reason": "Released through native desktop spawn controls"});
     let data: Value = http

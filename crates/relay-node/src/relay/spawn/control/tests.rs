@@ -104,20 +104,116 @@ fn release_replay_keeps_immutable_identity_after_the_local_agent_is_removed() {
         expected_agent_id: "agent_1".into(),
         idempotency_key: "release-test-20261015-0001".into(),
     };
-    assert!(claims::release(folder.path(), &workspace, "caller_id", &params, false).is_err());
-    claims::release(folder.path(), &workspace, "caller_id", &params, true).unwrap();
-    claims::release(folder.path(), &workspace, "caller_id", &params, false).unwrap();
+    assert!(claims::release(
+        folder.path(),
+        &workspace,
+        "caller_id",
+        &params,
+        false,
+        claims::Ownership::Unrestricted,
+    )
+    .is_err());
+    claims::release(
+        folder.path(),
+        &workspace,
+        "caller_id",
+        &params,
+        true,
+        claims::Ownership::Unrestricted,
+    )
+    .unwrap();
+    let legacy_path = std::fs::read_dir(folder.path().join("spawn-control-releases"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    std::fs::write(
+        legacy_path,
+        serde_json::to_vec(&json!([
+            params.node_id,
+            params.node_name,
+            params.name,
+            params.expected_agent_id
+        ]))
+        .unwrap(),
+    )
+    .unwrap();
+    // A claim created without ownership verification cannot become an
+    // owns-only release merely because the caller's policy changed later.
+    // This also preserves the on-disk shape written before ownership proof.
+    assert!(claims::release(
+        folder.path(),
+        &workspace,
+        "caller_id",
+        &params,
+        false,
+        claims::Ownership::ClaimOnly,
+    )
+    .is_err());
+    let owned = tempfile::tempdir().unwrap();
+    claims::release(
+        owned.path(),
+        &workspace,
+        "caller_id",
+        &params,
+        true,
+        claims::Ownership::Verified,
+    )
+    .unwrap();
+    claims::release(
+        owned.path(),
+        &workspace,
+        "caller_id",
+        &params,
+        false,
+        claims::Ownership::ClaimOnly,
+    )
+    .unwrap();
+    claims::release(
+        folder.path(),
+        &workspace,
+        "caller_id",
+        &params,
+        false,
+        claims::Ownership::Unrestricted,
+    )
+    .unwrap();
     let replacement = SpawnReleaseParams {
         expected_agent_id: "agent_2".into(),
         ..params.clone()
     };
-    assert!(claims::release(folder.path(), &workspace, "caller_id", &replacement, true).is_err());
-    assert!(claims::release(folder.path(), &workspace, "other_caller", &params, false).is_err());
+    assert!(claims::release(
+        folder.path(),
+        &workspace,
+        "caller_id",
+        &replacement,
+        true,
+        claims::Ownership::Unrestricted,
+    )
+    .is_err());
+    assert!(claims::release(
+        folder.path(),
+        &workspace,
+        "other_caller",
+        &params,
+        false,
+        claims::Ownership::Unrestricted,
+    )
+    .is_err());
     let other_workspace = Workspace {
         key: Secret::new("other-secret"),
         ..workspace
     };
-    assert!(claims::release(folder.path(), &other_workspace, "caller_id", &params, false).is_err());
+    assert!(claims::release(
+        folder.path(),
+        &other_workspace,
+        "caller_id",
+        &params,
+        false,
+        claims::Ownership::Unrestricted,
+    )
+    .is_err());
     for entry in std::fs::read_dir(folder.path().join("spawn-control-releases")).unwrap() {
         let text = std::fs::read_to_string(entry.unwrap().path()).unwrap();
         assert!(!text.contains("test-workspace-secret"));
