@@ -7,7 +7,7 @@ import type { AgentIdentity, AgentIdentityInput, HarnessConfig } from './types.j
 /**
  * Common shape of any agent produced by a harness factory: a {@link RelayAgentHandle}
  * (so `relay.on(agent.status.becomes(...))` works) tagged with the `kind` of factory
- * that built it (e.g. `'session'`, or `'pty'` from `@agent-relay/harnesses`).
+ * that built it (e.g. `'session'`).
  */
 export interface RelayHarnessAgent extends RelayAgentHandle {
   kind: string;
@@ -15,8 +15,7 @@ export interface RelayHarnessAgent extends RelayAgentHandle {
 
 /**
  * A harness factory: `create`/`new` produce a registerable {@link RelayHarnessAgent}.
- * The in-process session harnesses below and the PTY harnesses in
- * `@agent-relay/harnesses` share this shape.
+ * The in-process session harnesses below use this shape.
  */
 export interface HarnessFactory<TInput, TAgent extends RelayHarnessAgent> {
   readonly name: string;

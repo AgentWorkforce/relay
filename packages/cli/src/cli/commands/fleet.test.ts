@@ -4,47 +4,10 @@ import path from 'node:path';
 
 import { Command } from 'commander';
 import { CloudFleetSandboxProvisionError } from '@agent-relay/cloud';
-import { HarnessDriverClient } from '@agent-relay/harness-driver';
-import { defineNode, invokeNodeHandler, spawn as fleetSpawn } from '@agent-relay/fleet';
 import { RelayPlacementError } from '@agent-relay/sdk';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 afterEach(() => vi.unstubAllEnvs());
-
-// `fleet status` fetches the broker session (which carries the node token and
-// workspace key) and queries the engine nodes API; stub both so the redaction
-// path can be exercised without a running broker.
-vi.mock('../lib/broker-lifecycle.js', () => ({
-  readBrokerConnection: vi.fn(() => ({ url: 'http://127.0.0.1:1', api_key: 'k', pid: 1, port: 1 })),
-}));
-// Only the driver client is stubbed. The rest of the module stays real so the
-// fleet spawn handler can resolve a static harness config through the same code
-// path a node runs.
-vi.mock('@agent-relay/harness-driver', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@agent-relay/harness-driver')>()),
-  HarnessDriverClient: class {
-    static connect = vi.fn();
-    async getSession() {
-      return {
-        workspace_key: 'rk_live_secret',
-        node_token: 'nt_live_secret',
-        node_id: 'node_1',
-        node_name: 'live-node',
-        broker_version: '9.2.3',
-        protocol_version: 2,
-        mode: 'persist',
-        uptime_secs: 1,
-      };
-    }
-    async listAgents() {
-      return [];
-    }
-    async listFleetInventory() {
-      return { nodeName: 'live-node', agents: [] };
-    }
-    disconnect() {}
-  },
-}));
 
 import { registerFleetCommands } from './fleet.js';
 import { writeProjectWorkspaceKey } from '../lib/project-workspace-key.js';
@@ -459,52 +422,6 @@ describe('fleet command support', () => {
     expect(output.perNode.some((row: { node: string }) => row.node === 'live-node')).toBe(false);
   });
 
-  it('preserves known offline metadata when the local node is filtered from the default list', async () => {
-    const nodes = {
-      list: vi.fn(async () => [
-        {
-          name: 'live-node',
-          status: 'offline',
-          live: false,
-          handlersLive: false,
-          capabilities: [],
-        },
-      ]),
-    };
-    const agents = { list: vi.fn(async () => []) };
-    const logs: string[] = [];
-    const program = new Command();
-    program.exitOverride();
-    registerFleetCommands(program, {
-      resolveSandboxRepository: () => undefined,
-      core: {
-        getProjectPaths: () => ({ projectRoot: '/p', dataDir: '/p/.agentworkforce/relay', teamDir: '/p' }),
-        exit: vi.fn(),
-      } as never,
-      sdk: {
-        createAgentRelay: vi.fn() as never,
-        createWorkspaceRelay: vi.fn(() => ({ nodes, agents })) as never,
-        createWorkspace: vi.fn() as never,
-        log: (message: unknown) => logs.push(String(message)),
-        error: vi.fn(),
-        exit: vi.fn() as never,
-      },
-      log: () => undefined,
-      warn: () => undefined,
-      error: () => undefined,
-    });
-
-    await program.parseAsync(['fleet', 'agent', 'list', '--json', '--workspace-key', 'rk_live_test'], {
-      from: 'user',
-    });
-
-    expect(JSON.parse(logs[0]!).perNode[0]).toMatchObject({
-      node: 'live-node',
-      controlPlane: 'offline',
-      workerLiveness: 'empty',
-    });
-  });
-
   it('must-not-fire: fleet agent list --node excludes other nodes and roster-only rows', async () => {
     const nodes = {
       // Deliberately return an extra node even though the query names finn-mini:
@@ -908,36 +825,6 @@ describe('fleet command support', () => {
         session_ref: 'session-1',
       },
     });
-    // Exercise the actual two-package boundary: the CLI's targeted-placement
-    // input must be readable by the Fleet DSL spawn handler, which forwards it
-    // to the broker's registration path.
-    const fleetNode = defineNode({
-      name: 'sf-mini',
-      capabilities: {
-        'spawn:codex': fleetSpawn({ runtime: 'pty', command: 'codex' }),
-      },
-    });
-    const spawnAgent = vi.fn(async () => undefined);
-    // `mock.calls` is an array of argument lists, so the request object is the
-    // first argument of the first call — not the first call itself.
-    const [[{ input: handlerInput }]] = placement.spawn.mock.calls;
-    await invokeNodeHandler(fleetNode, 'spawn:codex', handlerInput, {
-      node: { name: fleetNode.name, capabilities: Object.keys(fleetNode.capabilities) },
-      relay: { sendMessage: vi.fn() },
-      spawnAgent,
-    });
-    expect(spawnAgent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        agent: expect.objectContaining({ cwd: '/srv/relay' }),
-        registrationMetadata: {
-          organization: 'Agent Workforce',
-          project: 'Relay',
-          workstream: 'fleet-metadata',
-          role: 'implementation',
-          objective: 'ACK and wait',
-        },
-      })
-    );
     expect(createFleetWorkspaceClient).not.toHaveBeenCalled();
     expect(logs).toHaveLength(1);
     expect(JSON.parse(logs[0]!)).toMatchObject({
@@ -1354,7 +1241,6 @@ describe('fleet command support', () => {
         relayfileMountPath: '/workspace',
       },
       invocation: { invocationId: 'inv_sandbox' },
-      attachCommand: "agent-relay node agent attach 'sandbox-worker' --mode drive",
     });
   });
 
@@ -2452,9 +2338,8 @@ describe('fleet command support', () => {
       })
     );
     expect(persistWorkspaceRelaycastTarget).toHaveBeenCalled();
-    expect(JSON.parse(logs[0]!).attachCommand).toBe(
-      "cd '/local/cloud/packages/web team'\\''s' && agent-relay node agent attach 'cloud-worker' --mode drive"
-    );
+    // The removed `node agent attach` is no longer advertised.
+    expect(JSON.parse(logs[0]!).attachCommand).toBeUndefined();
   });
 
   it('--checkout keeps cross-repo --cwd inference on the actual checkout while using the explicit project workspace', async () => {
@@ -4779,12 +4664,8 @@ describe('fleet command support', () => {
     expect(placement.spawn.mock.calls[0]![0]).toMatchObject({ confirm: true, confirmTimeoutMs: 95_000 });
   });
 
-  describe('local default spawn', () => {
-    function setup(useDefaultConnector = false) {
-      const cwd = path.resolve(os.tmpdir(), 'relay-local-fixture', 'packages', 'web');
-      const projectRoot = path.resolve(cwd, '../..');
-      const local = { spawnPty: vi.fn(async () => undefined), disconnect: vi.fn() };
-      const connectLocalBroker = vi.fn(async () => local);
+  describe('flag-free spawn', () => {
+    function setup() {
       const remoteSpawn = vi.fn(async () => ({ invocation_id: 'inv_explicit_auto', status: 'accepted' }));
       const createFleetWorkspaceClient = vi.fn(() => ({ agents: { spawn: remoteSpawn } }));
       const ensureCloudFleetSandbox = vi.fn();
@@ -4794,12 +4675,6 @@ describe('fleet command support', () => {
       const program = new Command();
       program.exitOverride();
       registerFleetCommands(program, {
-        cwd: () => cwd,
-        findProjectRoot: (directory) => {
-          expect(directory).toBe(cwd);
-          return projectRoot;
-        },
-        ...(useDefaultConnector ? {} : { connectLocalBroker: connectLocalBroker as never }),
         createFleetWorkspaceClient: createFleetWorkspaceClient as never,
         ensureCloudFleetSandbox,
         sdk: {
@@ -4821,10 +4696,6 @@ describe('fleet command support', () => {
         );
       return {
         program,
-        cwd,
-        projectRoot,
-        local,
-        connectLocalBroker,
         createFleetWorkspaceClient,
         remoteSpawn,
         ensureCloudFleetSandbox,
@@ -4835,23 +4706,19 @@ describe('fleet command support', () => {
       };
     }
 
-    it('reads --task-file before spawning through the existing task transport', async () => {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-fleet-brief-'));
-      try {
-        const brief = path.join(dir, 'brief.md');
-        fs.writeFileSync(brief, '  Full brief\r\nsecond line\n');
-        const fixture = setup();
-        await fixture.program.parseAsync(
-          ['fleet', 'spawn', 'claude', '--name', 'file-worker', '--task-file', brief],
-          { from: 'user' }
-        );
-        expect(fixture.errors).toEqual([]);
-        expect(fixture.local.spawnPty).toHaveBeenCalledWith(
-          expect.objectContaining({ task: '  Full brief\r\nsecond line\n' })
-        );
-      } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
-      }
+    it('explains that local spawning moved to the core instead of spawning anything', async () => {
+      vi.stubEnv('RELAY_WORKSPACE_KEY', 'rk_live_ambient_test');
+      const fixture = setup();
+      await expect(fixture.parse()).rejects.toThrow('__exit__');
+      const errors = fixture.errors.join('\n');
+      expect(errors).toContain('removed together with the local broker');
+      expect(errors).toContain("'relay init'");
+      expect(errors).toContain('--node <name>, --auto-place or --sandbox');
+      expect(fixture.logs).toEqual([]);
+      // Ambient hosted credentials still never turn a flag-free spawn remote.
+      expect(fixture.createFleetWorkspaceClient).not.toHaveBeenCalled();
+      expect(fixture.createWorkspaceRelay).not.toHaveBeenCalled();
+      expect(fixture.ensureCloudFleetSandbox).not.toHaveBeenCalled();
     });
 
     it.each([[], ['--task', 'brief', '--task-file', 'brief.md']])(
@@ -4864,84 +4731,18 @@ describe('fleet command support', () => {
           })
         ).rejects.toThrow('__exit__');
         expect(fixture.errors.join('\n')).toContain('exactly one');
-        expect(fixture.local.spawnPty).not.toHaveBeenCalled();
       }
     );
-
-    it('uses the caller nested directory and local broker despite ambient hosted credentials', async () => {
-      vi.stubEnv('RELAY_WORKSPACE_KEY', 'rk_live_ambient_test');
-      vi.stubEnv('RELAY_AGENT_TOKEN', 'at_live_ambient_test');
-      vi.stubEnv('RELAY_BASE_URL', 'https://agent37-cast.agentrelay.com');
-      const fixture = setup();
-      await fixture.parse();
-      expect(fixture.connectLocalBroker).toHaveBeenCalledWith(fixture.projectRoot);
-      expect(fixture.local.spawnPty).toHaveBeenCalledWith({
-        name: 'local-worker',
-        cli: 'codex',
-        task: 'Inspect the checkout',
-        channels: ['general'],
-        cwd: fixture.cwd,
-      });
-      expect(fixture.local.disconnect).toHaveBeenCalledOnce();
-      expect(fixture.createFleetWorkspaceClient).not.toHaveBeenCalled();
-      expect(fixture.createWorkspaceRelay).not.toHaveBeenCalled();
-      expect(fixture.ensureCloudFleetSandbox).not.toHaveBeenCalled();
-      expect(JSON.parse(fixture.logs[0]!)).toEqual({
-        local: { name: 'local-worker', cli: 'codex', cwd: fixture.cwd },
-      });
-    });
-
-    it('ignores another checkout state directory when selecting the default local broker', async () => {
-      vi.stubEnv('AGENT_RELAY_STATE_DIR', '/tmp/unrelated-checkout/relay');
-      const fixture = setup(true);
-      vi.mocked(HarnessDriverClient.connect).mockReturnValueOnce(fixture.local as never);
-      await fixture.parse();
-      expect(HarnessDriverClient.connect).toHaveBeenLastCalledWith({
-        cwd: fixture.projectRoot,
-        connectionPath: path.join(fixture.projectRoot, '.agentworkforce/relay/connection.json'),
-      });
-      expect(fixture.local.spawnPty).toHaveBeenCalledWith(expect.objectContaining({ cwd: fixture.cwd }));
-      expect(fixture.createFleetWorkspaceClient).not.toHaveBeenCalled();
-    });
-
-    it('keeps model and channel options local and resolves cwd relative to the caller', async () => {
-      const fixture = setup();
-      await fixture.parse(['--cwd', '../core', '--model', 'gpt-5', '--channel', 'review']);
-      expect(fixture.local.spawnPty).toHaveBeenCalledWith({
-        name: 'local-worker',
-        cli: 'codex',
-        task: 'Inspect the checkout',
-        channels: ['review'],
-        model: 'gpt-5',
-        cwd: path.resolve(fixture.cwd, '../core'),
-      });
-      expect(fixture.createFleetWorkspaceClient).not.toHaveBeenCalled();
-    });
-
-    it('never falls back to remote placement after a local connection or spawn failure', async () => {
-      const unavailable = setup();
-      unavailable.connectLocalBroker.mockRejectedValue(new Error('Local broker is unavailable'));
-      await expect(unavailable.parse()).rejects.toThrow('__exit__');
-      expect(unavailable.createFleetWorkspaceClient).not.toHaveBeenCalled();
-      expect(unavailable.ensureCloudFleetSandbox).not.toHaveBeenCalled();
-      const failedSpawn = setup();
-      failedSpawn.local.spawnPty.mockRejectedValue(new Error('Local harness failed'));
-      await expect(failedSpawn.parse()).rejects.toThrow('__exit__');
-      expect(failedSpawn.local.disconnect).toHaveBeenCalledOnce();
-      expect(failedSpawn.createFleetWorkspaceClient).not.toHaveBeenCalled();
-    });
 
     it('requires explicit automatic placement and rejects conflicting placement options', async () => {
       const automatic = setup();
       await automatic.parse(['--auto-place']);
       expect(automatic.remoteSpawn).toHaveBeenCalledOnce();
-      expect(automatic.connectLocalBroker).not.toHaveBeenCalled();
       for (const selection of [['--sandbox'], ['--node', 'sf-mini']]) {
         const conflict = setup();
         await expect(conflict.parse(['--auto-place', ...selection])).rejects.toThrow('__exit__');
         expect(conflict.errors.join('\n')).toContain('--auto-place cannot be combined');
         expect(conflict.ensureCloudFleetSandbox).not.toHaveBeenCalled();
-        expect(conflict.connectLocalBroker).not.toHaveBeenCalled();
       }
     });
   });
@@ -5775,72 +5576,39 @@ describe('fleet command support', () => {
     expect(retireOwnedBindings).not.toHaveBeenCalled();
   });
 
-  it('fleet status output redacts the node token and workspace key from the session', async () => {
-    const logs: string[] = [];
-    const nodes = { list: vi.fn(async () => [{ name: 'live-node', status: 'online', capabilities: [] }]) };
-    const program = new Command();
-    program.exitOverride();
-    registerFleetCommands(program, {
-      resolveSandboxRepository: () => undefined,
-      core: {
-        getProjectPaths: () => ({ projectRoot: '/p', dataDir: '/p/.agentworkforce/relay', teamDir: '/p' }),
-        exit: vi.fn(),
-      } as never,
-      sdk: {
-        createAgentRelay: vi.fn() as never,
-        createWorkspaceRelay: vi.fn(() => ({ nodes })) as never,
-        createWorkspace: vi.fn() as never,
-        log: vi.fn() as never,
-        error: vi.fn(),
-        exit: vi.fn() as never,
-      },
-      log: (...args: unknown[]) => logs.push(args.join(' ')),
-      warn: () => undefined,
-      error: () => undefined,
-    });
+  it.each(['serve', 'status'])(
+    'registers `fleet %s` as a hidden stub that explains the removal and exits 1',
+    async (name) => {
+      const errors: string[] = [];
+      const exit = vi.fn(() => {
+        throw new Error('__exit__');
+      });
+      const program = new Command();
+      program.exitOverride();
+      registerFleetCommands(program, {
+        resolveSandboxRepository: () => undefined,
+        error: (...args: unknown[]) => errors.push(args.join(' ')),
+        log: () => undefined,
+        warn: () => undefined,
+        exit: exit as never,
+      });
 
-    await program.parseAsync(['fleet', 'status'], { from: 'user' });
+      const fleet = program.commands.find((command) => command.name() === 'fleet');
+      const stub = fleet?.commands.find((command) => command.name() === name);
+      expect(stub).toBeDefined();
+      expect((stub as unknown as { _hidden?: boolean })._hidden).toBe(true);
 
-    const output = logs.join('\n');
-    // The session carried rk_live_/nt_live_ secrets; the printed status must not.
-    expect(output).not.toMatch(/rk_live_|nt_live_/);
-    expect(output).toContain('[redacted]');
-    // Non-secret identity is still shown.
-    expect(output).toContain('node_1');
-    expect(output).toContain('live-node');
-  });
+      await program
+        .parseAsync(['fleet', name, 'some-file.ts', '--enrollment-token', 'x'], {
+          from: 'user',
+        })
+        .catch(() => undefined);
 
-  it('registers `fleet serve` as a hidden stub that prints migration guidance and exits 1', async () => {
-    const errors: string[] = [];
-    const exit = vi.fn(() => {
-      throw new Error('__exit__');
-    });
-    const program = new Command();
-    program.exitOverride();
-    registerFleetCommands(program, {
-      resolveSandboxRepository: () => undefined,
-      error: (...args: unknown[]) => errors.push(args.join(' ')),
-      log: () => undefined,
-      warn: () => undefined,
-      exit: exit as never,
-    });
-
-    const fleet = program.commands.find((command) => command.name() === 'fleet');
-    const serve = fleet?.commands.find((command) => command.name() === 'serve');
-    expect(serve).toBeDefined();
-    expect((serve as unknown as { _hidden?: boolean })._hidden).toBe(true);
-
-    await program
-      .parseAsync(['fleet', 'serve', 'some-file.ts', '--enrollment-token', 'x'], {
-        from: 'user',
-      })
-      .catch(() => undefined);
-
-    expect(exit).toHaveBeenCalledWith(1);
-    expect(errors.join('\n')).toMatch(/'fleet serve' has been replaced/);
-    expect(errors.join('\n')).toMatch(/relay node up/);
-    expect(errors.join('\n')).toMatch(/relay cloud enroll/);
-  });
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(errors.join('\n')).toContain(`'relay fleet ${name}' was removed together with the local broker`);
+      expect(errors.join('\n')).toMatch(/relay init/);
+    }
+  );
 });
 
 describe('fleet spawn-status', () => {

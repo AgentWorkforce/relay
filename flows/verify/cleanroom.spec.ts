@@ -2,10 +2,9 @@
  * relay.verify.cleanroom — generator for the Relay clean-room verification.
  *
  * v2 port of `workflows/verify-cleanroom.ts`, emitted as a Relayflows v2
- * `FlowSpec` for the same three reasons as `fleet-daytona.spec.ts`: lane steps
- * run far past `f.run`'s 15-minute lease cap, reviewers and lane agents need
- * `permissions`, and the v1 step names are the vocabulary the runner and its
- * evidence already use. See that file's header for the detail.
+ * `FlowSpec` for three reasons: lane steps run far past `f.run`'s 15-minute
+ * lease cap, reviewers and lane agents need `permissions`, and the v1 step
+ * names are the vocabulary the runner and its evidence already use.
  *
  * Usage:
  *   VERIFY_CLEANROOM_PROFILE=full node --experimental-strip-types flows/verify/cleanroom.spec.ts --out <path>

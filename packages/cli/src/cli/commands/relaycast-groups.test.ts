@@ -752,7 +752,7 @@ describe('SDK-backed CLI groups', () => {
     expect(error).not.toHaveBeenCalled();
   });
 
-  it('integration subscribe requires explicit spawn when a target agent is absent', async () => {
+  it('integration subscribe refuses a target agent that does not exist', async () => {
     const relay = createRelayMock();
     relay.agents.list.mockResolvedValueOnce([]);
     const log = vi.fn();
@@ -789,7 +789,9 @@ describe('SDK-backed CLI groups', () => {
       from: 'user',
     });
 
-    expect(error).toHaveBeenCalledWith('Recipient @ghost does not exist; use --spawn <cli> to launch it.');
+    expect(error).toHaveBeenCalledWith(
+      'Recipient @ghost does not exist; start that agent first (for example with the Agent Relay MCP spawn tools after relay init), then subscribe it.'
+    );
     expect(exit).toHaveBeenCalledWith(1);
     expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
   });

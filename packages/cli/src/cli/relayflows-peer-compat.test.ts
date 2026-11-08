@@ -87,7 +87,7 @@ function firstUnsupportedMajor(version: string, peerRanges: string[]): string {
   throw new Error(`@relayflows/sdk peers ${peerRanges.join(', ')} accept every major up to ${major + 10}`);
 }
 
-function writeWorkspacePackage(root: string, name: 'sdk' | 'harness-driver', version: string): void {
+function writeWorkspacePackage(root: string, name: 'sdk', version: string): void {
   const dir = path.join(root, 'pkgs', name);
   mkdirSync(dir, { recursive: true });
   writeFileSync(
@@ -121,8 +121,9 @@ describe('published CLI @relayflows/sdk peer compatibility', () => {
 
     const root = mkdtempSync(path.join(tmpdir(), 'relayflows-peer-compat-'));
     try {
+      // @agent-relay/harness-driver is no longer a workspace package; npm
+      // resolves the frozen registry release that @relayflows/sdk peers on.
       writeWorkspacePackage(root, 'sdk', current);
-      writeWorkspacePackage(root, 'harness-driver', current);
 
       writeFileSync(
         path.join(root, 'package.json'),
@@ -132,7 +133,6 @@ describe('published CLI @relayflows/sdk peer compatibility', () => {
             private: true,
             dependencies: {
               '@agent-relay/sdk': 'file:pkgs/sdk',
-              '@agent-relay/harness-driver': 'file:pkgs/harness-driver',
               '@relayflows/sdk': pin,
             },
           },
@@ -152,14 +152,11 @@ describe('published CLI @relayflows/sdk peer compatibility', () => {
       const installedSdk = JSON.parse(
         readFileSync(path.join(root, 'node_modules/@relayflows/sdk/package.json'), 'utf8')
       ) as { peerDependencies?: Record<string, string> };
-      const peerRanges = ['@agent-relay/sdk', '@agent-relay/harness-driver'].map(
-        (name) => installedSdk.peerDependencies?.[name] ?? '*'
-      );
+      const peerRanges = [installedSdk.peerDependencies?.['@agent-relay/sdk'] ?? '*'];
       const unsupported = firstUnsupportedMajor(current, peerRanges);
       rmSync(path.join(root, 'node_modules'), { recursive: true, force: true });
       rmSync(path.join(root, 'package-lock.json'));
       writeWorkspacePackage(root, 'sdk', unsupported);
-      writeWorkspacePackage(root, 'harness-driver', unsupported);
       let rejected: { status?: number; stderr?: string } | undefined;
       try {
         execFileSync('npm', ['install', '--no-fund', '--no-audit'], {

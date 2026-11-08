@@ -7,9 +7,9 @@ paths:
 
 ## Binary
 
-- `agent-relay` = TypeScript CLI (user-facing, 35+ commands)
-- `agent-relay-broker` = Rust binary (internal broker engine)
-- NEVER confuse the two in code or docs
+- `agent-relay` (alias `relay`) = TypeScript CLI (user-facing)
+- `agent-relay-node` = the Agent Relay core (Rust, `crates/relay-node`); `relay init` installs it when needed and starts it, or reuses the one the desktop app or a service already runs (one core per machine)
+- The Rust broker (`agent-relay-broker`) was retired; do not add code that launches or talks to it
 
 ## Entry Point
 
@@ -37,24 +37,23 @@ export function registerFooCommands(program: Command, overrides: Partial<FooDepe
 
 ## Command Modules
 
-Located in `packages/cli/src/cli/commands/`:
+Located in `packages/cli/src/cli/commands/` (a representative list; `bootstrap.ts` registers them all):
 
-- `agent-management.ts` — spawn, release, agents, who, shadow
-- `messaging.ts` — send, inbox, channels, DMs
-- `cloud.ts` — link, unlink, cloud status
-- `monitoring.ts` — status, metrics, health
-- `auth.ts` — login, logout, token management
-- `setup.ts` — init, config, install hooks
-- `core.ts` — run, workflows, version, completions
+- `init.ts` — `relay init`: local or hosted server, agent tools, and the core
+- `agent.ts`, `channel.ts`, `message.ts` — workspace agents and messaging
+- `cloud.ts`, `workspace.ts` — Cloud login, runs, and workspace selection
+- `fleet.ts` — fleet nodes, placement spawn, release
+- `integration.ts` — relayfile integration subscriptions and webhooks
+- `node.ts`, `local-workflow.ts` — `relay node workflow …` and removal notices for the retired broker verbs
+- `core.ts` — version, update, uninstall
 
 ## Shared Helpers
 
 Located in `packages/cli/src/cli/lib/`:
 
-- `client-factory.ts` — creates AgentRelayClient instances
-- `broker-lifecycle.ts` — broker start/stop helpers
+- `sdk-client.ts`, `sdk-command.ts` — workspace selection and SDK-backed command plumbing
+- `relay-node.ts`, `install-paths.ts` — the core binary and the canonical install directory
 - `formatting.ts` — output formatting utilities
-- `paths.ts` — path resolution helpers
 
 ## Key Rules
 

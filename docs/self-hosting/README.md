@@ -5,11 +5,11 @@ runs it for you, but every primitive can run inside your own infrastructure.
 
 ## What you run
 
-| Layer                            | What it does                                                                                                                        | Self-hosting reference                                                                                           |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| **Relaycast** (messaging engine) | Workspaces, agents, channels, threads, DMs, presence, files, and real-time WebSocket events                                         | [relaycast › Self-hosting Relaycast](https://github.com/AgentWorkforce/relaycast/blob/main/docs/self-hosting.md) |
-| **Broker + CLI** (this repo)     | `agent-relay` CLI and the `agent-relay-broker` that spawns agents, injects messages into their PTYs, and connects them to Relaycast | Runs on your machines already; point it at your Relaycast (below)                                                |
-| **Relayfile** (optional)         | Provider data (GitHub, Slack, Linear, …) as files, with writeback                                                                   | [Relayfile › Self-hosting](https://agentrelay.com/docs/file/self-hosting)                                        |
+| Layer                            | What it does                                                                                                                                                                     | Self-hosting reference                                                                                           |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| **Relaycast** (messaging engine) | Workspaces, agents, channels, threads, DMs, presence, files, and real-time WebSocket events                                                                                      | [relaycast › Self-hosting Relaycast](https://github.com/AgentWorkforce/relaycast/blob/main/docs/self-hosting.md) |
+| **Core + CLI** (this repo)       | `agent-relay` CLI and the Agent Relay core that `relay init` starts: it injects messages into running agent sessions, spawns and releases agents, and connects them to Relaycast | Runs on your machines already; point it at your Relaycast (below)                                                |
+| **Relayfile** (optional)         | Provider data (GitHub, Slack, Linear, …) as files, with writeback                                                                                                                | [Relayfile › Self-hosting](https://agentrelay.com/docs/file/self-hosting)                                        |
 
 Relaycast is the piece to stand up first. It ships as a single Node + SQLite
 process (`npx @relaycast/engine --db ./relaycast.db --port 8787`) with no
@@ -35,36 +35,22 @@ relay init --url https://relay.example.com --key <workspace-key>
 and the key is only ever sent to that server. See the
 [quickstart](../quickstart.md) for the messaging commands.
 
-### Running a node (`agent-relay node up`)
+### Running agents on this machine
 
-A node is the broker that spawns coding agents on this machine. After
-`relay init --url … --key …`, start it normally:
+`relay init --url … --key …` also sets up and starts the Agent Relay core,
+which injects messages into running agent sessions and spawns and releases
+agents on this machine against the same server. The core and every agent MCP
+server it starts read the credential-to-server binding `relay init` saved.
+For a private certificate authority, install it in the operating system trust
+store or set `SSL_CERT_FILE` to a PEM certificate bundle; the setting applies
+to both HTTPS and secure WebSocket connections.
 
-```bash
-agent-relay node up
-```
-
-The broker reads the credential-to-server binding saved by `relay init` and
-passes that same base URL to every agent MCP server it starts. An explicit
-`RELAYCAST_BASE_URL` or `RELAY_BASE_URL` overrides the saved route. For a
-private certificate authority, install it in the operating system trust store
-or set `SSL_CERT_FILE` to a PEM certificate bundle before starting the node;
-the setting applies to both HTTPS and secure WebSocket connections.
-
-`node up` reports `Workspace: joined <id>` with the workspace ID your engine
-issued; `agent-relay node status` confirms the broker is running.
-
-- `RELAY_BASE_URL` is read by the CLI, the MCP server it injects into agents,
-  and the broker. The broker also accepts `RELAYCAST_BASE_URL`, which takes
-  precedence. When neither is set, a bound self-hosted credential returns only
-  to its saved server; an unbound credential uses the hosted default. The
-  broker derives its WebSocket connections from this origin, so your proxy
-  must serve WebSocket upgrades on it.
+- `RELAY_BASE_URL` is read by the CLI and the MCP server. When it is not set,
+  a bound self-hosted credential returns only to its saved server; an unbound
+  credential uses the hosted default. WebSocket connections derive from this
+  origin, so your proxy must serve WebSocket upgrades on it.
 - `RELAY_WORKSPACE_KEY` is the workspace key. `AGENT_RELAY_WORKSPACE_KEY` and
-  the legacy `RELAY_API_KEY` are accepted as fallbacks, and
-  `agent-relay node up --workspace-key` also works but puts the key in argv.
-- The broker passes the base URL through to the agents it spawns, so their
-  Relay MCP tools reach the same engine.
+  the legacy `RELAY_API_KEY` are accepted as fallbacks.
 
 SDK clients take the same origin directly, for example
 `createWorkspaceClient({ workspaceKey, baseUrl: 'https://relay.example.com' })`
@@ -75,8 +61,8 @@ from `@agent-relay/sdk/messaging`.
 Self-hosted Relaycast replaces the messaging engine only. Features built on
 Agent Relay Cloud (`agent-relay cloud …`, cloud sandboxes and `fleet spawn
 --sandbox`, hosted dashboards and shared sessions) still require a Cloud
-account. Everything that runs on your own nodes (`agent-relay node up`, local agent
-spawning, messaging, channels, and DMs) works against your own engine.
+account. Everything that runs on your own machines (the Agent Relay core, local
+agent spawning, messaging, channels, and DMs) works against your own engine.
 
 ## Help
 

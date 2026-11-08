@@ -498,13 +498,6 @@ function gateSpecs() {
   const paths = repoPaths();
   const specs = [
     {
-      id: 'relay-fleet-catalog',
-      cwd: paths.relay,
-      command: 'node',
-      args: ['scripts/verify-features/fleet-daytona.mjs', 'validate'],
-      timeoutMs: 120_000,
-    },
-    {
       id: 'relay-cleanroom-fixtures',
       cwd: paths.relay,
       command: 'npx',
@@ -512,7 +505,6 @@ function gateSpecs() {
         'vitest',
         'run',
         'tests/fixtures/verify-cleanroom.test.ts',
-        'tests/fixtures/verify-fleet-daytona.test.ts',
         'tests/fixtures/qualification-manifest.test.ts',
         'tests/fixtures/qualification-capabilities.test.ts',
         'tests/fixtures/diagnostic-seal.test.ts',

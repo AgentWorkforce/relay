@@ -4,7 +4,6 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { constants as fsConstants } from 'node:fs';
 import {
-  access,
   chmod,
   copyFile,
   lstat,
@@ -23,33 +22,20 @@ import { readRegularFileNoFollow } from './safe-file.mjs';
 const SHA40 = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
-const PACKAGE_DIRS = [
-  'cli',
-  'cloud',
-  'config',
-  'fleet',
-  'harness-driver',
-  'harnesses',
-  'sdk',
-  'session',
-  'utils',
-];
+const PACKAGE_DIRS = ['cli', 'cloud', 'config', 'sdk', 'session', 'utils'];
 const REQUIRED_PACKAGE_NAMES = new Set([
   'agent-relay',
   '@agent-relay/cloud',
   '@agent-relay/config',
-  '@agent-relay/fleet',
-  '@agent-relay/harness-driver',
-  '@agent-relay/harnesses',
   '@agent-relay/sdk',
   '@agent-relay/session',
   '@agent-relay/utils',
 ]);
-const PLATFORM_PACKAGE_NAME = /^@agent-relay\/broker-(?:darwin|linux|win32)-(?:arm64|x64)$/;
 const CLI_RELATIVE_PATH = 'node_modules/agent-relay/dist/cli/index.js';
 const LOCKFILE_NAME = 'candidate-package-lock.json';
 export const REQUIRED_NPM_VERSION = '10.9.7';
-const INSTALL_STRATEGY = 'omit-optional-with-direct-platform-broker';
+const INSTALL_STRATEGY = 'omit-optional';
+const ATTESTATION_VERSION = 5;
 const NPM_INSTALL_POLICY_ARGS = ['--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund'];
 let activePrivateRootHandle;
 
@@ -255,100 +241,6 @@ export function validateCandidateLockfile(value, packages) {
   return lockfile;
 }
 
-function platformPackage(platform = process.platform, arch = process.arch) {
-  const key = `${platform}-${arch}`;
-  const packages = {
-    'darwin-arm64': 'broker-darwin-arm64',
-    'darwin-x64': 'broker-darwin-x64',
-    'linux-arm64': 'broker-linux-arm64',
-    'linux-x64': 'broker-linux-x64',
-    'win32-x64': 'broker-win32-x64',
-  };
-  const directory = packages[key];
-  if (!directory) throw new Error(`unsupported candidate install platform ${key}`);
-  return directory;
-}
-
-function brokerRelativePath(platform = process.platform, arch = process.arch) {
-  const packageDirectory = platformPackage(platform, arch);
-  const binary = platform === 'win32' ? 'agent-relay-broker.exe' : 'agent-relay-broker';
-  return path.posix.join('node_modules', '@agent-relay', packageDirectory, 'bin', binary);
-}
-
-export function sourceBrokerBuildPlan(platform = process.platform, arch = process.arch) {
-  // Validate the same platform/architecture pair that selects the destination
-  // package before deriving a build target.
-  platformPackage(platform, arch);
-  const binary = platform === 'win32' ? 'agent-relay-broker.exe' : 'agent-relay-broker';
-  if (platform === 'linux') {
-    const target =
-      arch === 'x64' ? 'x86_64-unknown-linux-musl' : arch === 'arm64' ? 'aarch64-unknown-linux-musl' : null;
-    if (!target) throw new Error(`unsupported portable Linux broker architecture ${arch}`);
-    return {
-      cargoArgs: ['build', '--locked', '--release', '--bin', 'agent-relay-broker', '--target', target],
-      built: path.join('target', target, 'release', binary),
-      env: { RUSTFLAGS: '-C target-feature=+crt-static' },
-      target,
-    };
-  }
-  return {
-    cargoArgs: ['build', '--locked', '--release', '--bin', 'agent-relay-broker'],
-    built: path.join('target', 'release', binary),
-    env: {},
-    target: `${platform}-${arch}-native`,
-  };
-}
-
-export function sourceBrokerToolchainPlan(
-  buildPlan,
-  { muslGccAvailable = false, aptGetAvailable = false, sudoAvailable = false, isRoot = false } = {}
-) {
-  if (!String(buildPlan?.target ?? '').endsWith('-unknown-linux-musl')) return [];
-  const commands = [{ command: 'rustup', args: ['target', 'add', buildPlan.target] }];
-  if (muslGccAvailable) return commands;
-  if (!aptGetAvailable) {
-    throw new Error('portable Linux broker staging requires apt-get to provision musl-tools');
-  }
-  const aptCommand = isRoot ? 'apt-get' : sudoAvailable ? 'sudo' : null;
-  if (!aptCommand) {
-    throw new Error('portable Linux broker staging requires root or sudo to provision musl-tools');
-  }
-  const aptPrefix = isRoot ? [] : ['apt-get'];
-  commands.push(
-    { command: aptCommand, args: [...aptPrefix, 'update'] },
-    { command: aptCommand, args: [...aptPrefix, 'install', '-y', 'musl-tools'] }
-  );
-  return commands;
-}
-
-async function executableOnPath(command) {
-  for (const directory of String(process.env.PATH ?? '').split(path.delimiter)) {
-    if (!directory) continue;
-    try {
-      await access(path.join(directory, command), fsConstants.X_OK);
-      return true;
-    } catch {
-      // Continue searching PATH.
-    }
-  }
-  return false;
-}
-
-async function rejectBundledBrokerContamination() {
-  for (const directory of ['packages/sdk/bin', 'packages/harness-driver/bin']) {
-    const names = await readdir(directory).catch((error) => {
-      if (error?.code === 'ENOENT') return [];
-      throw error;
-    });
-    const brokerFiles = names.filter((name) => name.startsWith('agent-relay-broker'));
-    if (brokerFiles.length > 0) {
-      throw new Error(
-        `${directory} contains an untracked bundled broker; use only the staged platform package`
-      );
-    }
-  }
-}
-
 export function privateNpmInvocation(
   args,
   childRoot,
@@ -414,59 +306,6 @@ function run(command, args, options = {}) {
   return result.stdout;
 }
 
-async function stageSourceBroker() {
-  const [rootPackage, sourceSha, sourceStatus] = await Promise.all([
-    readFile('package.json', 'utf8').then(JSON.parse),
-    Promise.resolve(run('git', ['rev-parse', 'HEAD']).trim()),
-    Promise.resolve(run('git', ['status', '--porcelain']).trim()),
-  ]);
-  if (!SHA40.test(sourceSha)) throw new Error('could not resolve a source commit');
-  if (sourceStatus) throw new Error('source broker staging requires a clean source tree');
-  const packageVersion = requiredString(rootPackage.version, 'root package version', VERSION);
-  const buildPlan = sourceBrokerBuildPlan();
-  const toolchainCommands = sourceBrokerToolchainPlan(buildPlan, {
-    muslGccAvailable: await executableOnPath('musl-gcc'),
-    aptGetAvailable: await executableOnPath('apt-get'),
-    sudoAvailable: await executableOnPath('sudo'),
-    isRoot: typeof process.getuid === 'function' && process.getuid() === 0,
-  });
-  for (const { command, args } of toolchainCommands) {
-    run(command, args, { timeoutMs: 900_000 });
-  }
-  if (process.platform === 'linux' && !(await executableOnPath('musl-gcc'))) {
-    throw new Error('portable Linux broker staging could not provision musl-gcc');
-  }
-  run('cargo', buildPlan.cargoArgs, {
-    timeoutMs: 1_800_000,
-    env: { ...buildPlan.env, AGENT_RELAY_VERSION: packageVersion },
-  });
-  const binary = process.platform === 'win32' ? 'agent-relay-broker.exe' : 'agent-relay-broker';
-  const destination = path.join('packages', platformPackage(), 'bin', binary);
-  await mkdir(path.dirname(destination), { recursive: true });
-  await copyFile(buildPlan.built, destination);
-  if (process.platform !== 'win32') await chmod(destination, 0o755);
-  const { bytes, mode } = await readRegularFileNoFollow(destination, {
-    label: 'staged source broker',
-  });
-  if (bytes.length < 1 || (process.platform !== 'win32' && mode !== 0o755)) {
-    throw new Error('staged source broker is not an executable regular file');
-  }
-  if (
-    run(destination, ['--version'], { timeoutMs: 30_000 }).trim() !== `agent-relay-broker ${packageVersion}`
-  ) {
-    throw new Error('staged source broker reported a different version');
-  }
-  if (
-    run('git', ['rev-parse', 'HEAD']).trim() !== sourceSha ||
-    run('git', ['status', '--porcelain']).trim()
-  ) {
-    throw new Error('source changed while the broker was staged');
-  }
-  process.stdout.write(
-    `RELAY_SOURCE_BROKER_STAGED package=${platformPackage()} target=${buildPlan.target} bytes=${bytes.length}\n`
-  );
-}
-
 function parseArgs(argv) {
   const [command, ...rest] = argv;
   const options = {};
@@ -483,7 +322,7 @@ function parseArgs(argv) {
 
 export function validateCandidateInstallAttestation(value, expected = {}) {
   const attestation = object(value, 'candidate install attestation');
-  if (attestation.version !== 4 || attestation.kind !== 'relay-candidate-clean-install') {
+  if (attestation.version !== ATTESTATION_VERSION || attestation.kind !== 'relay-candidate-clean-install') {
     throw new Error('candidate install attestation identity is invalid');
   }
   const sourceSha = requiredString(attestation.sourceSha, 'attestation.sourceSha', SHA40);
@@ -497,16 +336,6 @@ export function validateCandidateInstallAttestation(value, expected = {}) {
     throw new Error('candidate install CLI relative path is invalid');
   }
   const cliSha256 = requiredString(attestation.cliSha256, 'attestation.cliSha256', SHA256);
-  const brokerPath = requiredString(
-    attestation.brokerRelativePath,
-    'attestation.brokerRelativePath',
-    /^node_modules\/@agent-relay\/broker-(?:darwin|linux|win32)-(?:arm64|x64)\/bin\/agent-relay-broker(?:\.exe)?$/
-  );
-  requiredString(attestation.brokerSha256, 'attestation.brokerSha256', SHA256);
-  if (!Number.isSafeInteger(attestation.brokerBytes) || attestation.brokerBytes < 1) {
-    throw new Error('attestation.brokerBytes is invalid');
-  }
-  if (attestation.brokerMode !== '755') throw new Error('attestation.brokerMode must equal 755');
   if (attestation.npmVersion !== REQUIRED_NPM_VERSION) {
     throw new Error(`attestation.npmVersion must equal ${REQUIRED_NPM_VERSION}`);
   }
@@ -527,11 +356,8 @@ export function validateCandidateInstallAttestation(value, expected = {}) {
   if (!Number.isSafeInteger(attestation.closureBytes) || attestation.closureBytes < 1) {
     throw new Error('attestation.closureBytes is invalid');
   }
-  const platform = requiredString(attestation.platform, 'attestation.platform', /^(?:darwin|linux|win32)$/);
-  const arch = requiredString(attestation.arch, 'attestation.arch', /^(?:arm64|x64)$/);
-  if (brokerPath !== brokerRelativePath(platform, arch)) {
-    throw new Error('candidate install broker path does not match its platform');
-  }
+  requiredString(attestation.platform, 'attestation.platform', /^(?:darwin|linux|win32)$/);
+  requiredString(attestation.arch, 'attestation.arch', /^(?:arm64|x64)$/);
   if (attestation.sourceDirty !== false) throw new Error('candidate install source was dirty');
   if (expected.sourceSha && sourceSha !== expected.sourceSha) {
     throw new Error('candidate install source SHA does not match');
@@ -542,7 +368,7 @@ export function validateCandidateInstallAttestation(value, expected = {}) {
   if (expected.cliSha256 && cliSha256 !== expected.cliSha256) {
     throw new Error('candidate install CLI digest does not match');
   }
-  if (!Array.isArray(attestation.packages) || attestation.packages.length !== PACKAGE_DIRS.length + 1) {
+  if (!Array.isArray(attestation.packages) || attestation.packages.length !== PACKAGE_DIRS.length) {
     throw new Error('candidate install package closure is incomplete');
   }
   const names = new Set();
@@ -576,10 +402,6 @@ export function validateCandidateInstallAttestation(value, expected = {}) {
   }
   for (const name of REQUIRED_PACKAGE_NAMES) {
     if (!names.has(name)) throw new Error(`candidate install package closure is missing ${name}`);
-  }
-  const platformNames = [...names].filter((name) => PLATFORM_PACKAGE_NAME.test(name));
-  if (platformNames.length !== 1 || platformNames[0] !== `@agent-relay/broker-${platform}-${arch}`) {
-    throw new Error('candidate install package closure must contain exactly one platform broker');
   }
   return attestation;
 }
@@ -634,27 +456,6 @@ export async function verifyCandidateInstall(attestationPath, expected = {}) {
   ) {
     throw new Error('candidate complete installed closure changed');
   }
-  const brokerPath = path.join(installDir, ...attestation.brokerRelativePath.split('/'));
-  const { bytes: brokerBytes, mode: brokerMode } = await readRegularFileNoFollow(brokerPath, {
-    label: 'candidate broker',
-  });
-  if (attestation.platform !== 'win32' && brokerMode !== 0o755) {
-    throw new Error('candidate broker mode is not exactly 0755');
-  }
-  if (sha256(brokerBytes) !== attestation.brokerSha256) {
-    throw new Error('candidate broker digest changed');
-  }
-  if (brokerBytes.length !== attestation.brokerBytes) throw new Error('candidate broker size changed');
-  // Hydration runs from a credential-bearing, trusted workflow checkout. The
-  // candidate package is data at that boundary: verify its bytes and metadata,
-  // but do not run its broker or CLI until the isolated Fleet qualification.
-  const executeCandidate = expected.executeCandidate === true;
-  if (executeCandidate) {
-    const brokerVersion = run(brokerPath, ['--version'], { timeoutMs: 30_000 }).trim();
-    if (brokerVersion !== `agent-relay-broker ${attestation.packageVersion}`) {
-      throw new Error('clean-installed candidate broker reported a different version');
-    }
-  }
   for (const entry of attestation.packages) {
     const installedRoot = packageRoot(installDir, entry.name);
     const [tarballBytes, installedBytes, installedTree] = await Promise.all([
@@ -687,6 +488,10 @@ export async function verifyCandidateInstall(attestationPath, expected = {}) {
   const { bytes: cliBytes } = await readRegularFileNoFollow(expectedCli, {
     label: 'candidate CLI entrypoint',
   });
+  // Hydration runs from a credential-bearing, trusted workflow checkout. The
+  // candidate package is data at that boundary: verify its bytes and metadata,
+  // but do not run its CLI until the isolated Fleet qualification.
+  const executeCandidate = expected.executeCandidate === true;
   if (sha256(cliBytes) !== attestation.cliSha256) {
     throw new Error('candidate install CLI digest changed');
   }
@@ -784,10 +589,9 @@ async function prepare(outputRoot) {
     ) {
       throw new Error('candidate source changed while its build outputs were produced');
     }
-    await rejectBundledBrokerContamination();
     const packageVersion = requiredString(rootPackage.version, 'root package version', VERSION);
 
-    const packageDirectories = [...PACKAGE_DIRS, platformPackage()];
+    const packageDirectories = PACKAGE_DIRS;
     const packed = [];
     for (const directory of packageDirectories) {
       const packageJson = JSON.parse(
@@ -844,12 +648,6 @@ async function prepare(outputRoot) {
     if (!installedLockfileBytes.equals(lockfileBytes)) {
       throw new Error('npm ci changed the candidate package lockfile');
     }
-    const installedBrokerPackages = (await readdir(path.join(installDir, 'node_modules', '@agent-relay')))
-      .filter((name) => name.startsWith('broker-'))
-      .sort();
-    if (installedBrokerPackages.join('\0') !== [platformPackage()].join('\0')) {
-      throw new Error('candidate install materialized the wrong platform broker closure');
-    }
 
     const packages = [];
     for (const entry of packed) {
@@ -885,20 +683,9 @@ async function prepare(outputRoot) {
     if (reportedVersion !== `agent-relay v${packageVersion}`) {
       throw new Error('clean-installed candidate CLI reported a different version');
     }
-    const brokerPath = path.join(installDir, ...brokerRelativePath().split('/'));
-    const { bytes: brokerBytes, mode: brokerMode } = await readRegularFileNoFollow(brokerPath, {
-      label: 'clean-installed candidate broker',
-    });
-    if (process.platform !== 'win32' && brokerMode !== 0o755) {
-      throw new Error('clean-installed candidate broker mode is not exactly 0755');
-    }
-    const brokerVersion = run(brokerPath, ['--version'], { timeoutMs: 30_000 }).trim();
-    if (brokerVersion !== `agent-relay-broker ${packageVersion}`) {
-      throw new Error('clean-installed candidate broker reported a different version');
-    }
     const closureTree = await digestInstalledClosureTree(path.join(installDir, 'node_modules'));
     const attestation = validateCandidateInstallAttestation({
-      version: 4,
+      version: ATTESTATION_VERSION,
       kind: 'relay-candidate-clean-install',
       sourceSha,
       sourceDirty: false,
@@ -907,10 +694,6 @@ async function prepare(outputRoot) {
       arch: process.arch,
       cliRelativePath: CLI_RELATIVE_PATH,
       cliSha256: sha256(cliBytes),
-      brokerRelativePath: brokerRelativePath(),
-      brokerSha256: sha256(brokerBytes),
-      brokerBytes: brokerBytes.length,
-      brokerMode: '755',
       npmVersion,
       installStrategy: INSTALL_STRATEGY,
       lockfileFile: LOCKFILE_NAME,
@@ -1032,11 +815,6 @@ async function hydrate(
 
 async function main() {
   const { command, options } = parseArgs(process.argv.slice(2));
-  if (command === 'stage-source-broker') {
-    if (Object.keys(options).length > 0) throw new Error('stage-source-broker does not accept options');
-    await stageSourceBroker();
-    return;
-  }
   if (command === 'prepare') {
     await prepare(requiredString(options.output, '--output'));
     return;
@@ -1062,7 +840,7 @@ async function main() {
     );
     return;
   }
-  throw new Error('command must be stage-source-broker, prepare, hydrate, or verify');
+  throw new Error('command must be prepare, hydrate, or verify');
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

@@ -3,11 +3,7 @@ name: Detect Changes
 # Reusable change-scope detection so each CI workflow only runs the jobs a
 # change can actually affect. Callers gate jobs on the outputs below:
 #
-#   rust_changed      — Rust toolchain jobs (cargo test/clippy/fmt/cross-compile)
 #   node_changed      — Node/TypeScript jobs (npm test, lint, package validation).
-#                       Rust changes count as node-affecting because `npm test`
-#                       runs `pretest` -> `npm run build` -> `build:rust`, so the
-#                       TS suite exercises a broker built from the PR's sources.
 #   sdk_swift_changed — Swift SDK jobs (swift build/test)
 #
 # crates/relay-node/ selects none of these, because Relay node CI covers it on its own
@@ -19,9 +15,6 @@ name: Detect Changes
 on:
   workflow_call:
     outputs:
-      rust_changed:
-        description: 'True when Rust sources (crates/, Cargo manifests) or CI config changed'
-        value: ${{ jobs.changes.outputs.rust_changed }}
       node_changed:
         description: 'True when anything affecting the Node/TypeScript toolchain changed'
         value: ${{ jobs.changes.outputs.node_changed }}
@@ -40,7 +33,6 @@ jobs:
     name: Detect change scope
     runs-on: ubuntu-latest
     outputs:
-      rust_changed: ${{ steps.scope.outputs.rust_changed }}
       node_changed: ${{ steps.scope.outputs.node_changed }}
       sdk_swift_changed: ${{ steps.scope.outputs.sdk_swift_changed }}
     steps:
@@ -94,11 +86,6 @@ jobs:
             const isCi = (file) => file.startsWith('.github/');
             const isSwift = (file) =>
               file.startsWith('packages/sdk-swift/') || file === 'Package.swift';
-            const isRust = (file) =>
-              file.startsWith('crates/') ||
-              file.startsWith('.cargo/') ||
-              file.endsWith('.rs') ||
-              ['Cargo.toml', 'Cargo.lock', 'Cross.toml', 'rust-toolchain', 'rust-toolchain.toml'].includes(file);
             // Agent implementations and their tests are part of the Node test
             // surface. Other AgentWorkforce records remain inert metadata.
             const isAgentRuntime = (file) =>
@@ -114,18 +101,14 @@ jobs:
               file === 'LICENSE' ||
               (/\.mdx?$/i.test(file) && !file.includes('/'));
 
-            // The core sits outside the Cargo workspace and reaches Node only
-            // through the pinned release, so Relay node CI covers it. The bridge
-            // protocol stays Node-affecting: relay-node.test.ts reads it.
+            // The core reaches Node only through the pinned release, so Relay
+            // node CI covers it. The bridge protocol stays Node-affecting:
+            // relay-node.test.ts reads it.
             const isCore = (file) => file.startsWith('crates/relay-node/');
             const isCoreOnly = (file) =>
               isCore(file) && file !== 'crates/relay-node/src/relay/protocol.rs';
 
             const classifyFiles = (changedFiles) => ({
-              rustChanged: changedFiles.some(
-                (file) =>
-                  (isRust(file) && !isInert(file) && !isCore(file)) || isCi(file)
-              ),
               nodeChanged: changedFiles.some(
                 (file) => !isSwift(file) && !isInert(file) && !isCoreOnly(file)
               ),
@@ -140,10 +123,9 @@ jobs:
               '.agentworkforce/agents/ci-scope-probe.ts',
             ]);
             core.info(
-              `agent_runtime_probe rust_changed=${agentRuntimeProbe.rustChanged} node_changed=${agentRuntimeProbe.nodeChanged} sdk_swift_changed=${agentRuntimeProbe.sdkSwiftChanged}`
+              `agent_runtime_probe node_changed=${agentRuntimeProbe.nodeChanged} sdk_swift_changed=${agentRuntimeProbe.sdkSwiftChanged}`
             );
             if (
-              agentRuntimeProbe.rustChanged ||
               !agentRuntimeProbe.nodeChanged ||
               agentRuntimeProbe.sdkSwiftChanged
             ) {
@@ -151,14 +133,12 @@ jobs:
             }
 
             const detectedScope = classifyFiles(files);
-            const rustChanged = unknownScope || detectedScope.rustChanged;
             const nodeChanged = unknownScope || detectedScope.nodeChanged;
             const sdkSwiftChanged = unknownScope || detectedScope.sdkSwiftChanged;
 
             core.info(`Changed files (${files.length}): ${files.join(', ')}`);
             core.info(
-              `unknownScope=${unknownScope} rust_changed=${rustChanged} node_changed=${nodeChanged} sdk_swift_changed=${sdkSwiftChanged}`
+              `unknownScope=${unknownScope} node_changed=${nodeChanged} sdk_swift_changed=${sdkSwiftChanged}`
             );
-            core.setOutput('rust_changed', rustChanged ? 'true' : 'false');
             core.setOutput('node_changed', nodeChanged ? 'true' : 'false');
             core.setOutput('sdk_swift_changed', sdkSwiftChanged ? 'true' : 'false');

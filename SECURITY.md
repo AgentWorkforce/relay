@@ -26,15 +26,15 @@ no details, no reproduction steps — and a maintainer will follow up.
 
 The more of this you can provide, the faster we can confirm and fix:
 
-- The affected component and version (`agent-relay --version`, the npm package
-  and version, or the broker build).
+- The affected component and version (`agent-relay --version`, or the npm
+  package and version).
 - The type of issue (authentication bypass, credential disclosure, injection,
   privilege escalation across agents, denial of service, and so on).
 - Step-by-step reproduction, ideally as a minimal workspace or script.
 - The impact: what an attacker gains, and what access they need to start.
 - Any proof-of-concept code, logs, or transcripts.
 
-**Redact credentials before you send them.** Workspace keys, broker keys,
+**Redact credentials before you send them.** Workspace keys, agent tokens, node tokens,
 observer tokens, API keys, and OAuth tokens frequently appear in Relay logs and
 terminal transcripts. Replace them with placeholders. If a report requires a
 live credential to demonstrate, say so and we will arrange a channel for it
@@ -63,10 +63,13 @@ current 11.x is how you receive the fix.
 | Component                                       | Reports investigated | Fix delivered in |
 | ----------------------------------------------- | -------------------- | ---------------- |
 | `agent-relay` CLI and `@agent-relay/*` packages | any 11.x             | latest 11.x      |
-| `agent-relay-broker` crate                      | any 3.x              | latest 3.x       |
 
-Releases before 11.0 (CLI and packages) and before 3.0 (broker) are
-unsupported — we will not investigate a report that reproduces only there.
+Releases before 11.0 (CLI and packages) are unsupported — we will not
+investigate a report that reproduces only there. The `agent-relay-broker`
+Rust broker and the `@agent-relay/harness-driver`, `@agent-relay/harnesses`,
+`@agent-relay/fleet`, `@agent-relay/evals` and `@agent-relay/broker-*` packages were retired: their
+published versions stay installable but receive no further releases, so a
+report that reproduces only there is out of scope.
 Upgrade before reporting against an older release; the issue may already be
 fixed.
 
@@ -74,8 +77,8 @@ fixed.
 
 **In scope:**
 
-- The `agent-relay` CLI and the published `@agent-relay/*` npm packages.
-- The `agent-relay-broker` Rust crate and its prebuilt platform binaries.
+- The `agent-relay` CLI and the published `@agent-relay/*` npm packages, except
+  the retired packages listed under Supported versions.
 - The message protocol itself: authentication, authorization between agents,
   workspace and channel isolation, delivery integrity, action routing.
 - Credential handling: how keys and tokens are stored on disk, passed to
@@ -109,8 +112,8 @@ precise about what actually runs:
 - **CodeQL, `npm audit`, and license compliance** run only when a change
   touches the Node toolchain, so docs-only and Swift-only changes skip them.
 - **Dependency review** runs on pull requests only.
-- **CodeQL analyzes JavaScript and TypeScript only.** The `agent-relay-broker`
-  Rust crate is in scope for this policy but is not covered by CodeQL.
+- **CodeQL analyzes JavaScript and TypeScript only.** The Rust code in this
+  repository is not covered by CodeQL.
 - Several of these jobs are advisory rather than blocking, so a green run does
   not by itself mean no findings.
 

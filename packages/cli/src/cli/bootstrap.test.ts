@@ -9,25 +9,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createProgram, propagateTelemetryContextToChildren } from './bootstrap.js';
 
 const expectedLeafCommands = [
-  // node broker + agent group (local is a hidden alias, filtered out below)
-  'node up',
-  'node down',
-  'node status',
-  'node metrics',
-  'node deadletters',
-  'node redeliver',
-  'node tail',
-  'node agent list',
-  'node agent spawn',
-  'node agent new',
-  'node agent release',
-  'node agent set-model',
-  'node agent attach',
-  'node agent message flush',
-  'node agent message hold',
-  'node agent message auto',
   // `node workflow run|logs|sync` run on relayflows v1 and are deprecated in
   // favour of `agent-relay flows`; they still work but no longer appear here.
+  // The broker verbs (`node up|down|status|…`, `node agent …`, `node tail`)
+  // were removed with the local broker and survive only as hidden notices.
   // top-level composite status + maintenance + telemetry + mcp
   'status',
   'version',
@@ -42,14 +27,13 @@ const expectedLeafCommands = [
   'flows',
   // `session` (singular) is the hidden alias of `sessions`, so it is absent here.
   'sessions',
-  // fleet (serve is a hidden error stub; config/enable/disable/inherit are hidden no-ops)
+  // fleet (serve/status are hidden removal stubs; config/enable/disable/inherit are hidden no-ops)
   'fleet agent list',
   'fleet nodes list',
   'fleet relayfile attach',
   'fleet release',
   'fleet spawn',
   'fleet spawn-status',
-  'fleet status',
   // cloud
   'cloud login',
   'cloud logout',
@@ -196,7 +180,7 @@ describe('createProgram output redaction', () => {
     }) as never);
     try {
       await expect(
-        program.parseAsync(['node', 'agent-relay', 'node', 'up', '--workspce-key=rk_live_0123456789abcdef'])
+        program.parseAsync(['node', 'agent-relay', 'status', '--workspce-key=rk_live_0123456789abcdef'])
       ).rejects.toThrow();
     } finally {
       spy.mockRestore();
@@ -303,7 +287,8 @@ describe('bootstrap CLI', () => {
     expect(isHidden(local as Command)).toBe(true);
     // Hidden from the rendered help output.
     expect(program.helpInformation()).not.toContain('Deprecated alias');
-    // Still routable: the flat `local run|logs|sync` + agent surface is intact.
+    // Still routable: the flat `local run|logs|sync`, plus removal notices for
+    // the broker verbs it used to carry.
     expect(local?.commands.map((command) => command.name())).toEqual(
       expect.arrayContaining(['up', 'down', 'status', 'metrics', 'run', 'logs', 'sync', 'agent', 'tail'])
     );
@@ -505,7 +490,8 @@ describe('install.sh quick start', () => {
     // under `node`, so a first run failed with "unknown command 'up'".
     expect(usageFunction).not.toBe('');
     const commands = quickStartCommands('latest');
-    expect(commands).toContain('node up --background');
+    expect(commands).toContain('init');
+    expect(commands.some((command) => /\bnode (up|down)\b/.test(command))).toBe(false);
     const program = createProgram();
     for (const command of commands) {
       let current: Command = program;
@@ -521,9 +507,9 @@ describe('install.sh quick start', () => {
     }
   });
 
-  it('keeps the top-level up/down forms for pinned installs older than 9.2.2', () => {
-    expect(quickStartCommands('9.2.1')).toEqual(['up --background', 'status', 'down']);
-    expect(quickStartCommands('9.2.2')).toEqual(['node up --background', 'status', 'node down']);
-    expect(quickStartCommands('13.1.5')).toEqual(['node up --background', 'status', 'node down']);
+  it('prints the same broker-free quick start for every pinned version', () => {
+    for (const version of ['9.2.1', '13.1.5', 'latest']) {
+      expect(quickStartCommands(version)).toEqual(['init', 'status', '--help']);
+    }
   });
 });

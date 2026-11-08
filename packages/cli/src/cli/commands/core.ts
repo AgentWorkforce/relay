@@ -1,20 +1,15 @@
 import fs from 'node:fs';
-import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { exec, execFile, spawn as spawnProcess } from 'node:child_process';
 import { promisify } from 'node:util';
-import { Command, InvalidArgumentError, Option } from 'commander';
+import type { Command } from 'commander';
 
-import { getProjectPaths, loadTeamsConfig } from '@agent-relay/config';
-import { HarnessDriverClient, type BrokerInitArgs } from '@agent-relay/harness-driver';
-import { checkForUpdates, generateAgentName } from '@agent-relay/utils';
+import { getProjectPaths } from '@agent-relay/config';
+import { checkForUpdates } from '@agent-relay/utils';
 
-import { runDownCommand, runStatusCommand, runUpCommand } from '../lib/broker-lifecycle.js';
 import { runUninstallCommand, runUpdateCommand } from '../lib/core-maintenance.js';
-import { createRuntimeClient, spawnAgentWithClient } from '../lib/client-factory.js';
-import { defaultExit, runSignalHandler } from '../lib/exit.js';
-import { describeError } from '../lib/describe-error.js';
+import { defaultExit } from '../lib/exit.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -27,50 +22,6 @@ export interface CoreProjectPaths {
   teamDir: string;
   dbPath?: string;
   projectId?: string;
-}
-
-export interface CoreTeamsConfig {
-  team: string;
-  autoSpawn?: boolean;
-  agents: Array<{
-    name: string;
-    cli: string;
-    model?: string;
-    task?: string;
-  }>;
-}
-
-export interface SpawnedProcess {
-  pid?: number;
-  killed?: boolean;
-  kill: (signal?: NodeJS.Signals | number) => void;
-  unref?: () => void;
-}
-
-export interface CoreRelay {
-  spawn: (input: {
-    name: string;
-    cli: string;
-    model?: string;
-    channels: string[];
-    args?: string[];
-    task?: string;
-    team?: string;
-    shadowOf?: string;
-    shadowMode?: 'subagent' | 'process';
-  }) => Promise<unknown>;
-  getStatus: () => Promise<unknown>;
-  shutdown: () => Promise<unknown>;
-  /** Agent Relay workspace key, available after the hello handshake. */
-  workspaceKey?: string;
-  /** Relay workspace id the broker joined, available after the hello handshake. */
-  workspaceId?: string;
-  /** PID of the underlying broker process, when available. */
-  brokerPid?: number;
-  /** Notify the owning CLI when its broker child exits. */
-  onBrokerExit?: (listener: () => void) => () => void;
-  /** Actual HTTP API port bound by the broker, including OS-assigned ports. */
-  apiPort?: number;
 }
 
 export interface CoreFileSystem {
@@ -99,26 +50,6 @@ type UpdateInfo = {
 
 export interface CoreDependencies {
   getProjectPaths: () => CoreProjectPaths;
-  loadTeamsConfig: (projectRoot: string) => CoreTeamsConfig | null;
-  createRelay: (
-    cwd: string,
-    apiPort?: number,
-    brokerName?: string,
-    verbose?: boolean,
-    /**
-     * Descriptors the broker child must inherit. `node up` passes its node
-     * claim's hold descriptor here so the claim is fenced by a live process
-     * from the instant the child exists — see `openNodeClaimHold`.
-     */
-    inheritFds?: number[],
-    /**
-     * Called with the broker child's pid the moment it exists, before the
-     * handshake. `node up` records it on the node claim so the fenced child
-     * stays recognisable after a launcher script `exec`s the real broker.
-     */
-    onBrokerSpawn?: (pid: number) => void
-  ) => CoreRelay | Promise<CoreRelay>;
-  spawnProcess: (command: string, args: string[], options?: Record<string, unknown>) => SpawnedProcess;
   execCommand: (command: string) => Promise<{ stdout: string; stderr: string }>;
   /** Run a program without a shell and capture its output (rejects on a non-zero exit). */
   execFileCommand: (
@@ -136,19 +67,12 @@ export interface CoreDependencies {
   fetchText: (url: string) => Promise<string>;
   killProcess: (pid: number, signal?: NodeJS.Signals | number) => void;
   fs: CoreFileSystem;
-  generateAgentName: () => string;
   checkForUpdates: (version: string) => Promise<UpdateInfo>;
   getVersion: () => string;
   env: NodeJS.ProcessEnv;
-  argv: string[];
   execPath: string;
   cliScript: string;
   pid: number;
-  now: () => number;
-  sleep: (ms: number) => Promise<void>;
-  onSignal: (signal: NodeJS.Signals, handler: () => void | Promise<void>) => void;
-  holdOpen: () => Promise<void>;
-  isPortInUse: (port: number) => Promise<boolean>;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   warn: (...args: unknown[]) => void;
@@ -185,68 +109,6 @@ function resolveCliVersion(fileSystem: CoreFileSystem): string {
   }
 }
 
-async function createDefaultRelay(
-  cwd: string,
-  apiPort = 0,
-  brokerName?: string,
-  verbose = false,
-  inheritFds: number[] = [],
-  onBrokerSpawn?: (pid: number) => void
-): Promise<CoreRelay> {
-  // This is the `up` command's broker factory. `up` is persistent even when
-  // port 0 delegates atomic port selection to the OS; the connection file is
-  // how later `status`, `down`, and enrolled-node recovery find that broker.
-  const binaryArgs: BrokerInitArgs = {
-    persist: true,
-    apiPort,
-  };
-  const stateDir = process.env.AGENT_RELAY_STATE_DIR;
-  if (stateDir) {
-    binaryArgs.stateDir = stateDir;
-  }
-  const client = await createRuntimeClient({
-    cwd,
-    binaryArgs,
-    brokerName,
-    preferConnect: apiPort > 0,
-    ...(inheritFds.length ? { inheritFds } : {}),
-    ...(onBrokerSpawn ? { onSpawn: onBrokerSpawn } : {}),
-    ...(verbose
-      ? {
-          onStep: (message: string) => console.error(`[agent-relay][verbose] ${message}`),
-          onStderr: (line: string) => console.error(`[broker] ${line}`),
-        }
-      : {}),
-  });
-
-  const relay: CoreRelay = {
-    spawn: (input) => spawnAgentWithClient(client, input),
-    getStatus: async () => {
-      const status = await client.getStatus();
-      if (!client.workspaceKey) {
-        await client.getSession().catch(() => undefined);
-      }
-      return status;
-    },
-    shutdown: () => client.shutdown(),
-    onBrokerExit: (listener) => client.onBrokerExit(listener),
-    get workspaceKey() {
-      return client.workspaceKey;
-    },
-    get workspaceId() {
-      return client.workspaceId;
-    },
-    get brokerPid() {
-      return client.brokerPid;
-    },
-    get apiPort() {
-      const port = Number.parseInt(new URL(client.baseUrl).port, 10);
-      return Number.isInteger(port) && port > 0 ? port : undefined;
-    },
-  };
-  return relay;
-}
-
 export function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependencies {
   const fileSystem: CoreFileSystem = overrides.fs ?? {
     realpathSync: fs.realpathSync,
@@ -267,11 +129,6 @@ export function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDep
 
   return {
     getProjectPaths: () => getProjectPaths() as unknown as CoreProjectPaths,
-    loadTeamsConfig: (projectRoot: string) =>
-      (loadTeamsConfig(projectRoot) as unknown as CoreTeamsConfig | null) ?? null,
-    createRelay: createDefaultRelay,
-    spawnProcess: (command, args, options) =>
-      spawnProcess(command, args, options as Parameters<typeof spawnProcess>[2]) as unknown as SpawnedProcess,
     execCommand: async (command: string) => {
       const result = await execAsync(command);
       return {
@@ -302,39 +159,12 @@ export function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDep
     },
     killProcess: process.kill,
     fs: fileSystem,
-    generateAgentName,
     checkForUpdates: (version: string) => checkForUpdates(version) as Promise<UpdateInfo>,
     getVersion: () => defaultVersion,
     env: process.env,
-    argv: process.argv,
     execPath: process.execPath,
     cliScript: process.argv[1] || 'dist/src/cli/index.js',
     pid: process.pid,
-    isPortInUse: (port: number) =>
-      new Promise((resolve) => {
-        // Use a connect probe instead of a bind probe.  On macOS,
-        // net.createServer().listen() sets SO_REUSEADDR which can succeed
-        // even when another process is already listening on the port.
-        // A connect() call reliably detects whether something is listening.
-        const socket = net.createConnection({ port, host: '127.0.0.1' });
-        socket.once('connect', () => {
-          socket.destroy();
-          resolve(true); // something is listening → port is in use
-        });
-        socket.once('error', () => {
-          socket.destroy();
-          resolve(false); // nothing listening → port is free
-        });
-      }),
-    now: () => Date.now(),
-    sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
-    onSignal: (signal: NodeJS.Signals, handler: () => void | Promise<void>) => {
-      // See `runSignalHandler` — wraps the handler so `CliExit` thrown by
-      // `deps.exit(code)` becomes a flush-then-real-exit, not an unhandled
-      // async rejection (which would override the intended exit code).
-      process.on(signal, () => runSignalHandler(handler));
-    },
-    holdOpen: () => new Promise(() => undefined),
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
     warn: (...args: unknown[]) => console.warn(...args),
@@ -343,210 +173,9 @@ export function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDep
   };
 }
 
-/** Options accepted by the `up` command action (shared by `local`/`node`). */
-export interface UpCommandOptions {
-  localOnly?: boolean;
-  spawn?: boolean;
-  background?: boolean;
-  /** Internal marker set only on the detached child re-exec. */
-  backgroundChild?: boolean;
-  verbose?: boolean;
-  workspaceKey?: string;
-  stateDir?: string;
-  brokerName?: string;
-  config?: string;
-  logFile?: string;
-  logLevel?: string;
-  logJson?: boolean;
-}
-
 /**
- * Attach the shared `up` broker options to a command. `node up` adds `--config`
- * on top of these; `local up` uses them as-is.
- */
-export function addUpCommandOptions(command: Command): Command {
-  return (
-    command
-      .option('--local-only', 'DEGRADED: local agents and durable delivery only; disable fleet routing')
-      .option('--spawn', 'Force spawn all agents from teams.json')
-      .option('--no-spawn', 'Do not auto-spawn agents (just start broker)')
-      .option('--background', 'Run broker in the background (detached)')
-      .addOption(new Option('--background-child').hideHelp())
-      .option('--verbose', 'Enable verbose logging')
-      .option('--workspace-key <key>', 'Use a pre-established Relaycast workspace key')
-      .option('--wk <key>', 'Alias for --workspace-key')
-      .option(
-        '--state-dir <path>',
-        'Directory for broker state and connection files (default: .agentworkforce/relay/)'
-      )
-      .option('--broker-name <name>', 'Override the broker name (defaults to project directory basename)')
-      .option(
-        '--log-file <path>',
-        'Write structured node logs (capabilities registered, actions invoked/completed) to a file'
-      )
-      .option(
-        '--log-level <level>',
-        'Node log verbosity: debug | info | warn | error (default: info)',
-        parseLogLevel
-      )
-      .option('--log-json', 'Emit node logs as JSON lines instead of text')
-      // Fold the `--wk` alias into `workspaceKey` before the action runs, matching
-      // the SDK commands' `addSdkOptions`. An explicit `--workspace-key` wins.
-      .hook('preAction', (thisCommand) => {
-        const opts = thisCommand.opts();
-        if (typeof opts.wk === 'string' && opts.wk.trim() && !opts.workspaceKey) {
-          thisCommand.setOptionValue('workspaceKey', opts.wk);
-        }
-      })
-  );
-}
-
-const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
-
-/**
- * Validate `--log-level` at parse time (case-insensitive). Rejecting a typo here
- * — rather than passing it through — avoids the silent failure where an
- * unrecognized `AGENT_RELAY_LOG_LEVEL` drops every log line.
- */
-function parseLogLevel(value: string): string {
-  const normalized = value.toLowerCase();
-  if (!(LOG_LEVELS as readonly string[]).includes(normalized)) {
-    throw new InvalidArgumentError(`Expected one of: ${LOG_LEVELS.join(', ')}.`);
-  }
-  return normalized;
-}
-
-export function registerCoreCommands(
-  program: Command,
-  overrides: Partial<CoreDependencies> = {},
-  opts: { includeUp?: boolean } = {}
-): void {
-  const deps = withDefaults(overrides);
-
-  if (opts.includeUp !== false) {
-    addUpCommandOptions(program.command('up').description('Start the local broker')).action(
-      async (options: UpCommandOptions) => {
-        await runUpCommand(options, deps);
-      }
-    );
-  }
-
-  program
-    .command('down')
-    .description('Stop broker')
-    .option('--force', 'Force cleanup even if process is stuck')
-    .option('--all', 'Kill all agent-relay processes system-wide')
-    .option('--timeout <ms>', 'Timeout waiting for graceful shutdown', '5000')
-    .option('--state-dir <path>', 'Directory for broker state and connection files')
-    .action(async (options: { force?: boolean; all?: boolean; timeout?: string; stateDir?: string }) => {
-      await runDownCommand(options, deps);
-    });
-
-  program
-    .command('status')
-    .description('Check whether the local broker daemon is running')
-    .option('--state-dir <path>', 'Directory for broker state and connection files')
-    .option('--wait-for <seconds>', 'Poll for broker readiness for up to this many seconds')
-    .action(async (options: { stateDir?: string; waitFor?: string }) => {
-      await runStatusCommand(deps, options);
-    });
-
-  program
-    .command('metrics')
-    .description('Show resource usage for the local broker and its agents')
-    .option('--agent <name>', 'Filter to a single agent')
-    .action(async (options: { agent?: string }) => {
-      let client: HarnessDriverClient | undefined;
-      try {
-        client = HarnessDriverClient.connect({ cwd: process.cwd() });
-        const metrics = await client.getMetrics(options.agent);
-        deps.log(JSON.stringify(metrics, null, 2));
-      } catch (err) {
-        deps.error(describeError(err));
-        deps.exit(1);
-      } finally {
-        client?.disconnect();
-      }
-    });
-
-  program
-    .command('deadletters')
-    .description('List terminally-failed deliveries retained in the broker dead-letter queue')
-    .option('--json', 'Output raw JSON')
-    .action(async (options: { json?: boolean }) => {
-      let client: HarnessDriverClient | undefined;
-      try {
-        client = HarnessDriverClient.connect({ cwd: process.cwd() });
-        const result = await client.getDeadLetters();
-        if (options.json) {
-          deps.log(JSON.stringify(result, null, 2));
-          return;
-        }
-        if (result.count === 0) {
-          deps.log('No dead-letter deliveries.');
-          return;
-        }
-        for (const entry of result.dead_letters) {
-          deps.log(
-            `${entry.delivery_id}  recipient=${entry.worker_name}  from=${entry.from}  ` +
-              `age=${formatAgeMs(entry.age_ms)}  attempts=${entry.attempts}  reason=${entry.reason}`
-          );
-        }
-      } catch (err) {
-        deps.error(describeError(err));
-        deps.exit(1);
-      } finally {
-        client?.disconnect();
-      }
-    });
-
-  program
-    .command('redeliver [id]')
-    .description('Requeue dead-letter deliveries through the normal delivery path')
-    .option('--all', 'Redeliver every dead-letter entry')
-    .action(async (id: string | undefined, options: { all?: boolean }) => {
-      if (Boolean(id) === Boolean(options.all)) {
-        deps.error('Provide exactly one of <id> or --all.');
-        deps.exit(1);
-      }
-      let client: HarnessDriverClient | undefined;
-      try {
-        client = HarnessDriverClient.connect({ cwd: process.cwd() });
-        const result = await client.redeliverDeadLetters(id ? { id } : { all: true });
-        for (const entry of result.redelivered) {
-          deps.log(`Redelivered ${entry.delivery_id} to ${entry.worker_name}`);
-        }
-        for (const entry of result.skipped) {
-          deps.warn(`Skipped ${entry.delivery_id} (${entry.worker_name}): ${entry.reason}`);
-        }
-        if (result.redelivered.length === 0 && result.skipped.length === 0) {
-          deps.log('No dead-letter deliveries to redeliver.');
-        }
-      } catch (err) {
-        deps.error(describeError(err));
-        deps.exit(1);
-      } finally {
-        client?.disconnect();
-      }
-    });
-}
-
-/** Render a millisecond age as a compact human-readable duration. */
-function formatAgeMs(ageMs: number): string {
-  const seconds = Math.floor(ageMs / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h${minutes % 60 ? `${minutes % 60}m` : ''}`;
-  const days = Math.floor(hours / 24);
-  return `${days}d${hours % 24 ? `${hours % 24}h` : ''}`;
-}
-
-/**
- * Top-level maintenance verbs that live outside the `local` namespace because
- * they manage the installed CLI itself, not the broker: `version`, `update`,
- * `uninstall`.
+ * Top-level maintenance verbs that manage the installed CLI itself:
+ * `version`, `update`, `uninstall`.
  */
 export function registerCoreMaintenance(program: Command, overrides: Partial<CoreDependencies> = {}): void {
   const deps = withDefaults(overrides);
