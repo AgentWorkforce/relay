@@ -128,8 +128,8 @@ describe('contract drift against crates/relay-node', () => {
       name: null,
       spawned: false,
       ready: false,
-      task_unconfirmed: false,
       released: false,
+      task_unconfirmed: false,
       error_code: null,
     };
     expect(Object.keys(target)).toEqual(fields(block(contract, 'struct', 'SpawnControlTarget')));
