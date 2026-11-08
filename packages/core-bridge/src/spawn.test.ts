@@ -1,8 +1,11 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import type { CoreClient, HelloResult } from './client.js';
 import { CoreBridgeError, CoreRpcError } from './errors.js';
 import {
+  DEFAULT_SPAWN_ACTION_TIMEOUT_MS,
   isReleaseConfirmed,
   newIdempotencyKey,
   spawnInvoke,
@@ -93,25 +96,15 @@ describe('spawn helpers', () => {
     ]);
   });
 
-  it('keep caller_secret through the key filter on every spawn control', async () => {
+  it('send no caller on a bound connection, under the same key order', async () => {
     const { client, calls } = fakeClient();
-    const caller_secret = 'svc_secret_value';
-    await spawnInvoke(client, { ...invoke, caller_secret });
-    await spawnStatus(client, {
-      caller_name: 'lead',
-      caller_secret,
-      action: 'spawn',
-      invocation_id: 'inv_1',
-    });
-    await spawnRelease(client, { ...release, caller_secret });
-    expect(calls.map((c) => (c.params as Record<string, unknown>).caller_secret)).toEqual([
-      caller_secret,
-      caller_secret,
-      caller_secret,
-    ]);
+    const { caller_name: _invoker, ...boundInvoke } = invoke;
+    const { caller_name: _releaser, ...boundRelease } = release;
+    await spawnInvoke(client, boundInvoke);
+    await spawnStatus(client, { action: 'spawn', invocation_id: 'inv_1' });
+    await spawnRelease(client, boundRelease);
+    for (const call of calls) expect(call.params).not.toHaveProperty('caller_name');
     expect(Object.keys(calls[0].params as object)).toEqual([
-      'caller_name',
-      'caller_secret',
       'node_id',
       'node_name',
       'name',
@@ -120,21 +113,7 @@ describe('spawn helpers', () => {
       'directory',
       'idempotency_key',
     ]);
-    expect(Object.keys(calls[1].params as object)).toEqual([
-      'caller_name',
-      'caller_secret',
-      'action',
-      'invocation_id',
-    ]);
-    expect(Object.keys(calls[2].params as object)).toEqual([
-      'caller_name',
-      'caller_secret',
-      'node_id',
-      'node_name',
-      'name',
-      'expected_agent_id',
-      'idempotency_key',
-    ]);
+    expect(Object.keys(calls[1].params as object)).toEqual(['action', 'invocation_id']);
   });
 
   it('give slow spawn actions a long default while preserving per-call controls', async () => {
@@ -150,36 +129,44 @@ describe('spawn helpers', () => {
       }
     );
     await spawnRelease(client, release, { timeoutMs: 84, signal });
+    await spawnInvoke(client, invoke, { actionTimeoutMs: 900_000, timeoutMs: 1, signal });
+    await spawnRelease(client, release, { actionTimeoutMs: 120_000 });
     expect(options).toEqual([
-      { timeoutMs: 360_000, signal },
+      { timeoutMs: DEFAULT_SPAWN_ACTION_TIMEOUT_MS, signal },
       { timeoutMs: 42, signal },
       { timeoutMs: 84, signal },
+      { timeoutMs: 900_000, signal },
+      { timeoutMs: 120_000 },
     ]);
+    expect(DEFAULT_SPAWN_ACTION_TIMEOUT_MS).toBe(360_000);
   });
 
-  it('refuse an empty, whitespace-only or non-string caller_secret without echoing it', async () => {
+  it('refuse a caller_secret on every spawn control before filtering, without echoing it', async () => {
     const { client, calls } = fakeClient();
-    const error = await invalidParams(spawnInvoke(client, { ...invoke, caller_secret: '' }));
-    expect(error.message).toBe(
-      'Native spawn input is invalid: caller_secret must be a non-empty string when given.'
-    );
-    await invalidParams(
-      spawnStatus(client, {
-        caller_name: 'lead',
-        caller_secret: 42 as never,
-        action: 'spawn',
-        invocation_id: 'inv_1',
-      })
-    );
-    await invalidParams(spawnRelease(client, { ...release, caller_secret: null as never }));
-    for (const caller_secret of [' ', '\t', '\r\n']) {
-      await invalidParams(spawnInvoke(client, { ...invoke, caller_secret }));
-      await invalidParams(
-        spawnStatus(client, { caller_name: 'lead', caller_secret, action: 'spawn', invocation_id: 'inv_1' })
+    const secret = 'rsc_never_sent_value';
+    const legacy = async (promise: Promise<unknown>) => {
+      const error = await promise.catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(CoreBridgeError);
+      expect((error as CoreBridgeError).code).toBe('legacy_credential_refused');
+      expect((error as Error).message).not.toContain(secret);
+    };
+    for (const caller_secret of [secret, '', undefined, null]) {
+      await legacy(spawnInvoke(client, { ...invoke, caller_secret } as never));
+      await legacy(
+        spawnStatus(client, {
+          caller_name: 'lead',
+          caller_secret,
+          action: 'spawn',
+          invocation_id: 'inv_1',
+        } as never)
       );
-      await invalidParams(spawnRelease(client, { ...release, caller_secret }));
+      await legacy(spawnRelease(client, { ...release, caller_secret } as never));
     }
+    // Even before the method check: nothing reaches the core.
+    const bare = fakeClient(['hello']);
+    await legacy(spawnInvoke(bare.client, { ...invoke, caller_secret: secret } as never));
     expect(calls).toEqual([]);
+    expect(bare.calls).toEqual([]);
   });
 
   it('keeps a slow successful spawn receipt beyond the bridge default timeout', async () => {
@@ -319,6 +306,27 @@ describe('spawn helpers', () => {
         expect(isReleaseConfirmed(reply)).toBe(reply.released === true);
       }
     );
+
+    it('reads the shared release receipt vectors as the core records them', async () => {
+      // The same file the core's Rust test checks its recorded receipts against.
+      const vectors = JSON.parse(
+        readFileSync(
+          new URL('../../../crates/relay-node/tests/fixtures/spawn-release-receipts.json', import.meta.url),
+          'utf8'
+        )
+      ) as {
+        version: number;
+        cases: Array<{ name: string; receipt: SpawnControlInvocation; confirmed: boolean }>;
+      };
+      expect(vectors.version).toBe(1);
+      expect(vectors.cases.length).toBeGreaterThanOrEqual(4);
+      for (const vector of vectors.cases) {
+        expect(isReleaseConfirmed(vector.receipt), vector.name).toBe(vector.confirmed);
+        const answer = await spawnRelease(replying(vector.receipt), release);
+        expect(answer.released, vector.name).toBe(vector.confirmed);
+        expect({ ...answer, released: vector.receipt.released }, vector.name).toEqual(vector.receipt);
+      }
+    });
 
     it('never confirms from status alone, nor a missing invocation', () => {
       const completed: SpawnControlInvocation = {

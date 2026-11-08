@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "description": "Service-caller challenge transcript v1 vectors (docs: service-callers-auth.md section 3). The key is SHA-256 of the secret's UTF-8 bytes; the authenticator is HMAC-SHA256(key, transcript) in base64url without padding. Each substitution changes one input of the base case and must change the authenticator. Desktop's verifier checks the same vectors.",
+  "base": {
+    "secret": "rsc_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "key_hex": "db5641ac1182faf857d441d9a339e9f35fcb4d8eac3c88b0ddc26999ab3f1384",
+    "challenge_id": "ch_00112233445566778899aabbccddeeff",
+    "nonce": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    "caller_id": "sc_0123456789abcdef",
+    "site_url": "site_url_fixture",
+    "workspace_id": "ws_fixture",
+    "user_id": "user_fixture",
+    "issued_at_ms": 1767225600000,
+    "expires_at_ms": 1767225630000,
+    "transcript_len": 188,
+    "transcript_hex": "01001d6167656e742d72656c61792f736572766963652d63616c6c65722f7631002363685f30303131323233333434353536363737383839396161626263636464656566660020000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f001373635f303132333435363738396162636465660010736974655f75726c5f66697874757265000a77735f66697874757265000c757365725f6669787475726500080000019b76daa80000080000019b76db1d30",
+    "authenticator_hex": "1596bcaa9ccfd3281c17143a2bbc454e5c7ace8f1aa2b116fc98a992a1d96810",
+    "authenticator": "FZa8qpzP0ygcFxQ6K7xFTlx6zo8aorEW_JipkqHZaBA"
+  },
+  "substitutions": [
+    { "field": "version", "value": 2, "authenticator": "ytYdc6SC4A5naYk1moQty9PkZ_8CR9GCkxEjy2NpDVk" },
+    {
+      "field": "domain",
+      "value": "agent-relay/service-caller/v2",
+      "authenticator": "1hm1pWOYedETLDYKFVoPW62dSjR_fl6oXR7do_ofRuk"
+    },
+    {
+      "field": "challenge_id",
+      "value": "ch_00112233445566778899aabbccddeef0",
+      "authenticator": "wImhtl7U6PxbjNh7e4SvQ-nPiaf5y9kgBypFzpvzC2o"
+    },
+    {
+      "field": "nonce",
+      "value": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+      "authenticator": "Svpce1v9liBMFExSt88igkQ0x2cfWrJi5zUHBekKlco"
+    },
+    {
+      "field": "caller_id",
+      "value": "sc_0123456789abcdee",
+      "authenticator": "NzR8x7ElcNUXO1s6783ZAjNgNQUXLNivHt2XGSRPi8M"
+    },
+    {
+      "field": "site_url",
+      "value": "site_url_fixturf",
+      "authenticator": "woUTvsNxPRuO1ikHE9YrUlI7pkfz0WAqOZysSKRS7jA"
+    },
+    {
+      "field": "workspace_id",
+      "value": "ws_fixturf",
+      "authenticator": "QI721dcTqq5gbHd_PM3yGKa5a_qOirYPXuQ2V5t5nzU"
+    },
+    {
+      "field": "user_id",
+      "value": "user_fixturf",
+      "authenticator": "MJzaetgUe1Vi_YETwSu_jtpdYTtkAgKE7ilLeFRXE7A"
+    },
+    {
+      "field": "issued_at_ms",
+      "value": 1767225600001,
+      "authenticator": "4qaJpKyxJbKGiQ7R96TSx0k_8J1XOm6vpbVaJf4tF80"
+    },
+    {
+      "field": "expires_at_ms",
+      "value": 1767225630001,
+      "authenticator": "RtEUtwmq3jOyjCZ9if7Uhadgy57dXXpo5m7_NsiGks0"
+    }
+  ]
+}
