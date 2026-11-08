@@ -10,7 +10,7 @@ import {
   caseManifestPath,
   validateCaseManifest,
   validateObservation,
-} from '../pr-proof/contract.mjs';
+} from './case-contract.mjs';
 import { runTargetedProcess } from './targeted-process-runner.mjs';
 
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
