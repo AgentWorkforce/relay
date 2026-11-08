@@ -1,0 +1,38 @@
+{
+  "status": "completed",
+  "startedAt": "2026-11-08T14:59:29.5318886-08:00",
+  "agents": [
+    {
+      "name": "codex-windows-support",
+      "role": "implementer",
+      "joinedAt": "2026-11-08T14:59:29.5318886-08:00"
+    }
+  ],
+  "task": {
+    "source": {
+      "id": "245318319801446400",
+      "system": "agent-relay"
+    },
+    "title": "Discover the Windows Codex desktop bundled executable"
+  },
+  "chapters": [
+    {
+      "title": "Implementation and native ARM64 verification",
+      "agentName": "codex-windows-support",
+      "startedAt": "2026-11-08T14:59:29.5318886-08:00",
+      "events": [
+        {
+          "ts": 1794178769531,
+          "type": "decision",
+          "content": "Extend the existing public-core Windows candidate resolver rather than duplicating detection in Desktop. Prefer the newest complete native desktop build, preserve explicit overrides and npm/PATH fallbacks, and reject a relative LOCALAPPDATA."
+        }
+      ],
+      "id": "ch_windows_codex"
+    }
+  ],
+  "version": 1,
+  "id": "traj_windows_codex_discovery",
+  "completedAt": "2026-11-08T23:04:27.2776248+00:00",
+  "summary": "Added Windows desktop Codex discovery, deterministic complete-build preference, and preserved overrides/npm/PATH. Four native ARM64 Windows tests passed.",
+  "confidence": 0.9
+}

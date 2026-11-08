@@ -167,7 +167,8 @@ pub fn executable_candidates(env: &dyn Fn(&str) -> Option<String>, home: &Path) 
     }
 }
 
-/// `executable_candidates` on Windows: npm's global folder (where
+/// `executable_candidates` on Windows: the native executable bundled with
+/// the Codex desktop app, then npm's global folder (where
 /// `npm install -g @openai/codex` puts `codex.cmd`; an app started from the
 /// Start menu still has it on `PATH`, but a logon task may not), the
 /// person's `.local\bin`, then `PATH`. Each folder is tried with every
@@ -191,12 +192,40 @@ fn windows_executable_candidates(
     if let Some(path) = set("PATH") {
         folders.extend(std::env::split_paths(&path).filter(|dir| dir.is_absolute()));
     }
-    let mut candidates: Vec<PathBuf> = folders
-        .iter()
-        .flat_map(|folder| names.iter().map(move |name| folder.join(name)))
-        .collect();
+    let mut candidates = windows_desktop_executables(env, home);
+    candidates.extend(
+        folders
+            .iter()
+            .flat_map(|folder| names.iter().map(move |name| folder.join(name))),
+    );
     candidates.retain(|path| !is_shim(path));
     candidates
+}
+
+#[cfg(windows)]
+fn windows_desktop_executables(env: &dyn Fn(&str) -> Option<String>, home: &Path) -> Vec<PathBuf> {
+    let root = env("LOCALAPPDATA")
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| home.join(r"AppData\Local"))
+        .join(r"OpenAI\Codex\bin");
+    let mut found: Vec<_> = std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path().join("codex.exe"))
+        .filter(|path| is_executable_file(path))
+        .collect();
+    // Updates leave multiple build folders behind. Prefer the newest complete
+    // native executable and use its path to break equal-timestamp ties.
+    found.sort_by_cached_key(|path| {
+        (
+            std::cmp::Reverse(std::fs::metadata(path).and_then(|m| m.modified()).ok()),
+            path.clone(),
+        )
+    });
+    found
 }
 
 #[cfg(not(windows))]
@@ -782,6 +811,82 @@ mod tests {
         std::fs::write(npm.join("codex.cmd"), "@echo off\r\n").unwrap();
         let config = CodexConfig::from_env(&env(&values), home);
         assert_eq!(config.executable, Some(npm.join("codex.cmd")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_desktop_codex_is_found_without_path_or_npm() {
+        let home = tempfile::tempdir().unwrap();
+        for local in [
+            home.path().join("custom-local"),
+            home.path().join(r"AppData\Local"),
+        ] {
+            let root = local.join(r"OpenAI\Codex\bin");
+            let binary = root.join("complete-build/codex.exe");
+            executable(&binary);
+            std::fs::create_dir_all(root.join("incomplete-build")).unwrap();
+            std::fs::write(root.join("incomplete-build/codex"), b"shell script").unwrap();
+            std::fs::create_dir_all(root.join("not-a-file/codex.exe")).unwrap();
+            let value = local.to_str().unwrap();
+            let values = if local.ends_with("custom-local") {
+                vec![("LOCALAPPDATA", value)]
+            } else {
+                vec![]
+            };
+            assert_eq!(
+                CodexConfig::from_env(&env(&values), home.path()).executable,
+                Some(binary)
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_desktop_codex_prefers_the_newest_complete_build_over_npm() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join(r"AppData\Local\OpenAI\Codex\bin");
+        let older = root.join("older/codex.exe");
+        let newer = root.join("newer/codex.exe");
+        let npm = home.path().join(r"AppData\Roaming\npm\codex.cmd");
+        for (path, seconds) in [(&older, 1), (&newer, 2), (&npm, 3)] {
+            executable(path);
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(
+                    std::fs::FileTimes::new().set_modified(
+                        std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds),
+                    ),
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            CodexConfig::from_env(&env(&[]), home.path()).executable,
+            Some(newer)
+        );
+        assert_eq!(
+            CodexConfig::from_env(
+                &env(&[("RELAY_DESKTOP_CODEX", npm.to_str().unwrap())]),
+                home.path()
+            )
+            .executable,
+            Some(npm)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_desktop_codex_ignores_relative_local_app_data() {
+        let home = tempfile::tempdir().unwrap();
+        let binary = home
+            .path()
+            .join(r"AppData\Local\OpenAI\Codex\bin\build\codex.exe");
+        executable(&binary);
+        assert_eq!(
+            CodexConfig::from_env(&env(&[("LOCALAPPDATA", "relative")]), home.path()).executable,
+            Some(binary)
+        );
     }
 
     fn runner_hosting(loaded: &[&str]) -> FakeRunner {
