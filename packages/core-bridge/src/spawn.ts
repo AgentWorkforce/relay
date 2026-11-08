@@ -197,6 +197,12 @@ function key(params: object, field: string): void {
   }
 }
 
+function rejectLegacyCallerSecret(params: object): void {
+  if (Object.prototype.hasOwnProperty.call(params, 'caller_secret')) {
+    throw invalid('caller_secret', 'is not accepted; call spawnCallerAuthenticate first');
+  }
+}
+
 function pick<K extends string>(params: object, keys: readonly K[]): Partial<Record<K, unknown>> {
   const out: Partial<Record<K, unknown>> = {};
   for (const k of keys) {
@@ -222,6 +228,11 @@ const SPAWN_CALLER_CHALLENGE = /^agent-relay\/spawn-caller\/v1:[A-Za-z0-9_-]{43}
  * Proves a service-caller secret once and binds it to this exact greeted core
  * connection. The secret itself is used only as the local HMAC key and never
  * appears in bridge params, replies or errors.
+ * @param client - The greeted core connection to authenticate.
+ * @param callerName - The service caller name.
+ * @param secret - The reusable secret used locally to compute the proof.
+ * @param options - Optional timeout and cancellation controls for each call.
+ * @returns Confirmation of the caller bound to this connection.
  */
 export async function spawnCallerAuthenticate(
   client: CoreClient,
@@ -304,6 +315,7 @@ export async function spawnInvoke(
   options: CallOptions = {}
 ): Promise<SpawnControlInvocation> {
   requireMethod(client, 'spawn.invoke');
+  rejectLegacyCallerSecret(params);
   for (const field of ['caller_name', 'node_id', 'node_name', 'name']) segment(params, field);
   key(params, 'idempotency_key');
   if (typeof params.harness !== 'string' || params.harness.length === 0)
@@ -344,6 +356,7 @@ export async function spawnStatus(
   options?: CallOptions
 ): Promise<SpawnControlInvocation> {
   requireMethod(client, 'spawn.status');
+  rejectLegacyCallerSecret(params);
   segment(params, 'caller_name');
   segment(params, 'invocation_id');
   if (params.action !== 'spawn' && params.action !== 'release')
@@ -368,6 +381,7 @@ export async function spawnRelease(
   options: CallOptions = {}
 ): Promise<SpawnControlInvocation> {
   requireMethod(client, 'spawn.release');
+  rejectLegacyCallerSecret(params);
   for (const field of ['caller_name', 'node_id', 'node_name', 'name', 'expected_agent_id'])
     segment(params, field);
   key(params, 'idempotency_key');

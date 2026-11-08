@@ -111,6 +111,27 @@ describe('spawn helpers', () => {
     ]);
   });
 
+  it('refuses legacy caller_secret fields instead of falling through to session authority', async () => {
+    const { client, calls } = fakeClient();
+    const legacy = { caller_secret: 'reusable-secret' };
+    for (const request of [
+      spawnInvoke(client, { ...invoke, ...legacy } as SpawnInvokeParams),
+      spawnStatus(client, {
+        caller_name: 'lead',
+        action: 'spawn',
+        invocation_id: 'inv_1',
+        ...legacy,
+      } as never),
+      spawnRelease(client, { ...release, ...legacy } as SpawnReleaseParams),
+    ]) {
+      const error = await invalidParams(request);
+      expect(error.message).toBe(
+        'Native spawn input is invalid: caller_secret is not accepted; call spawnCallerAuthenticate first.'
+      );
+    }
+    expect(calls).toEqual([]);
+  });
+
   it('proves a service caller once without sending its reusable secret', async () => {
     const { client, calls } = fakeClient();
     const secret = 'svc_secret_value';
