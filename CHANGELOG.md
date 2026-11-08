@@ -25,15 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Migrate workflow files and invocations to `agent-relay flows run`; use the hosted v2 runner for resume until the Cloud worker protocol carries hosted v2 state.
 
-### Changed
-
-- The local Rust broker (`agent-relay-broker`) is retired: the CLI no longer installs, starts or talks to it, and no new broker binaries are released. Run `relay init` (or `agent-relay init`) to set up and start the Agent Relay core, which delivers messages and spawns, lists and releases agents through the Agent Relay MCP spawn tools or the desktop app; `relay init --hosted` uses the hosted service instead.
-- `relay node up`, `down`, `status`, `metrics`, `deadletters`, `redeliver` and `relay node tail` now print a removal notice pointing to `relay init`, as do `relay node agent spawn`, `new`, `list`, `release`, `set-model`, `attach` and `message flush|hold|auto`. The deprecated `relay local` alias keeps only `run`, `logs` and `sync`.
-- `relay fleet status` is removed, and `relay fleet spawn` no longer spawns on this machine: pass `--node`, `--auto-place` or `--sandbox`. `relay fleet spawn --sandbox` no longer prints an `attachCommand`, and the JSON of `relay fleet agent list` no longer has `localNode`.
-- `relay integration subscribe --spawn` (with `--spawn-arg`, `--cwd`, `--task` and `--broker-connection`) is removed; subscribe an agent that already exists.
-- `relay status` reports the workspace and Cloud login only, without a local broker line. `relay update` on a standalone install updates and checks only the CLI, and `install.sh` installs the CLI without the broker; a broker binary an earlier release installed is left in place and not run.
-- New versions of `@agent-relay/harness-driver`, `@agent-relay/harnesses`, `@agent-relay/fleet`, `@agent-relay/evals` and `@agent-relay/broker-<platform>` are no longer published; the last published versions stay on npm.
-
 ### Fixed
 
 - `agent-relay-node` built for its own site (`AGENT_RELAY_SITE_URL`) no longer falls back to Agent Relay's public gateways: a sign-in whose site named no valid Relaycast URL, or a CLI workspace key with no recorded server or `RELAY_BASE_URL`, is refused with a reason naming the site, and `RELAYCAST_URL` is ignored in such a build.

@@ -1,9 +1,8 @@
-import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { getProjectPaths } from '@agent-relay/config';
-import { formatBrokerNotFoundError, getBrokerBinaryPath } from '@agent-relay/harness-driver/broker-path';
 import { describeError } from '../lib/describe-error.js';
 
 /**
@@ -30,8 +29,11 @@ import { describeError } from '../lib/describe-error.js';
  * excluded from git by @agent-relay/config's ensureGitExclude) and is written
  * 0600 via temp-file write + fsync + atomic rename + parent-directory fsync,
  * so a committed update survives host/power crashes, and every
- * read-modify-write runs under an exclusive lockfile so concurrent CLI
- * processes cannot lose entries. A corrupt or unreadable journal FAILS
+ * read-modify-write runs under an exclusive lock directory
+ * (`pending-cleanups.json.lock.d`) so concurrent CLI processes cannot lose
+ * entries. The lock is plain filesystem state taken in-process, so it needs
+ * no helper binary and works in the standalone install. A corrupt or
+ * unreadable journal FAILS
  * CLOSED: reads throw, nothing is swept, and callers abort before creating
  * new external resources.
  *
@@ -238,217 +240,309 @@ function parseEntries(raw: string, file: string): PendingCleanupEntry[] {
   return parsed;
 }
 
+/** How often a holder refreshes its lease while a transaction is open. */
+const LOCK_HEARTBEAT_MS = 5_000;
 /**
- * One locked journal transaction, delegated to the already-required Rust
- * broker binary's hidden `journal-lock` helper. The helper holds a KERNEL
- * advisory lock (flock(2) on Unix, LockFileEx on Windows via std
- * File::try_lock) on a stable lock file — created 0600 once, NEVER unlinked
- * or renamed — and ALSO performs the journal's durable replacement while the
- * lock is held: the parent never writes the journal itself, so lock
- * ownership provably spans read → mutate → atomic commit. The kernel
- * releases the lock when the helper exits or dies; the helper commits (or,
- * on an empty payload, releases untouched) when our stdin pipe reaches EOF.
- * No native addon is imported anywhere — this works identically under Node
- * and the Bun standalone, which already ships and spawns the broker binary
- * for its core commands.
+ * A lock held from ANOTHER host (a shared data directory) whose heartbeat is
+ * older than this is abandoned: its pid cannot be probed from here.
+ */
+const LOCK_LEASE_MS = 60_000;
+/**
+ * A holder on THIS host is broken as soon as its pid is gone. While its pid
+ * still answers it is broken only once its heartbeat is older than this: a live
+ * holder refreshes every few seconds, so a heartbeat this old means the pid was
+ * reused by an unrelated process after a crash. The window is far longer than
+ * any stalled fsync, so a live writer keeps exclusive ownership through its
+ * commit.
+ */
+const LOCK_LOCAL_REUSE_MS = 15 * 60_000;
+/** A lock directory with no readable owner (crash between mkdir and write). */
+const LOCK_ORPHAN_MS = 30_000;
+const LOCK_RETRY_MS = 25;
+const LOCK_OWNER_FILE = 'owner.json';
+
+interface JournalLockOwner {
+  pid: number;
+  host: string;
+  token: string;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isLockContention(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  if (code === 'EEXIST') return true;
+  // Windows can report a racing directory create/remove as a sharing violation.
+  return process.platform === 'win32' && (code === 'EACCES' || code === 'EBUSY' || code === 'EPERM');
+}
+
+function readLockOwner(lockDir: string): { owner: JournalLockOwner; heartbeatAt: number } | undefined {
+  const ownerFile = path.join(lockDir, LOCK_OWNER_FILE);
+  try {
+    const parsed = JSON.parse(fs.readFileSync(ownerFile, 'utf8')) as Partial<JournalLockOwner>;
+    if (
+      typeof parsed.pid !== 'number' ||
+      !Number.isInteger(parsed.pid) ||
+      parsed.pid <= 0 ||
+      !isNonEmptyString(parsed.host) ||
+      !isNonEmptyString(parsed.token)
+    ) {
+      return undefined;
+    }
+    return {
+      owner: { pid: parsed.pid, host: parsed.host, token: parsed.token },
+      heartbeatAt: fs.statSync(ownerFile).mtimeMs,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM: the pid exists but belongs to someone else — still alive.
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+/**
+ * The token of an abandoned lock (holder on this host exited or its pid was
+ * reused, a holder on another host let its lease expire, or an ownerless
+ * directory older than the orphan window), or undefined while the lock is live. An ownerless stale lock yields the empty token.
+ */
+function staleLockToken(lockDir: string, now: number): string | undefined {
+  const current = readLockOwner(lockDir);
+  if (current) {
+    const { owner, heartbeatAt } = current;
+    if (owner.host === os.hostname()) {
+      if (!processIsAlive(owner.pid)) return owner.token;
+      return now - heartbeatAt >= LOCK_LOCAL_REUSE_MS ? owner.token : undefined;
+    }
+    return now - heartbeatAt >= LOCK_LEASE_MS ? owner.token : undefined;
+  }
+  try {
+    return now - fs.statSync(lockDir).mtimeMs >= LOCK_ORPHAN_MS ? '' : undefined;
+  } catch {
+    return undefined; // already gone; the next mkdir attempt decides
+  }
+}
+
+/**
+ * Break an abandoned lock. The directory is first renamed aside (atomic), then
+ * judged again where it now lies: if a live contender re-took the lock, or the
+ * holder refreshed its heartbeat, between our staleness check and the rename,
+ * it is put back instead of being deleted.
+ */
+function breakStaleLock(lockDir: string, staleToken: string): boolean {
+  const tombstone = `${lockDir}.stale-${process.pid}-${randomUUID()}`;
+  try {
+    fs.renameSync(lockDir, tombstone);
+  } catch {
+    return true; // someone else broke (or released) it first: retry the mkdir
+  }
+  const moved = readLockOwner(tombstone);
+  const stillStale = staleLockToken(tombstone, Date.now()) === staleToken;
+  if ((moved?.owner.token ?? '') !== staleToken || !stillStale) {
+    try {
+      fs.renameSync(tombstone, lockDir);
+      return false;
+    } catch {
+      // A third contender already holds a fresh lock; the one we moved is
+      // superseded either way.
+    }
+  }
+  fs.rmSync(tombstone, { recursive: true, force: true });
+  return true;
+}
+
+/** Whether this process still owns `lockDir` under `token`. */
+function ownsLock(lockDir: string, token: string): boolean {
+  return readLockOwner(lockDir)?.owner.token === token;
+}
+
+class LockLostError extends Error {}
+
+/**
+ * Replace `journal` durably: exclusive 0600 temp file, fsync, atomic rename,
+ * then fsync the parent directory so the rename itself survives a crash.
+ */
+function replaceJournalDurably(journal: string, payload: string, stillOwned: () => boolean): void {
+  const tmp = `${journal}.tmp-${process.pid}-${randomUUID()}`;
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(tmp, 'wx', 0o600);
+    fs.writeFileSync(fd, payload, 'utf8');
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
+    // Re-checked after the (possibly slow) fsync, immediately before the one
+    // step that changes the journal.
+    if (!stillOwned()) throw new LockLostError();
+    fs.renameSync(tmp, journal);
+  } catch (err) {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // already failing
+      }
+    }
+    fs.rmSync(tmp, { force: true });
+    throw err;
+  }
+  // The journal is in place from here on: a failed directory fsync weakens
+  // crash durability of the rename but must not report the committed update as
+  // failed (callers treat a failure as "nothing changed" and would redo it).
+  // Windows cannot open or fsync a directory handle this way at all.
+  let dirFd: number | undefined;
+  try {
+    dirFd = fs.openSync(path.dirname(journal), 'r');
+    fs.fsyncSync(dirFd);
+  } catch {
+    // Best-effort, see above.
+  } finally {
+    if (dirFd !== undefined) {
+      try {
+        fs.closeSync(dirFd);
+      } catch {
+        // Best-effort.
+      }
+    }
+  }
+}
+
+/**
+ * One locked journal transaction, held in-process.
  *
- * The helper owns the lock-marker rules (fsync'd v2 marker, strict-prefix
- * heal, unrecognized pre-release sentinel fails closed) and the commit
- * (temp + fsync + atomic rename + directory fsync). Exit 4 = a live holder
- * out-waited our timeout; exit 3 = sentinel; exit 2 = clap usage, i.e. an
- * older broker without the subcommand (version skew).
+ * Exclusion is a lock DIRECTORY next to the journal (`mkdir` is atomic on
+ * every platform and filesystem we support), carrying an owner record
+ * (`pid`, `host`, a per-transaction token) whose mtime is refreshed as a lease
+ * heartbeat while the transaction is open. A holder that crashes leaves the
+ * directory behind; the next contender breaks it as soon as the owner pid is
+ * provably gone on this host; a holder on another host sharing the directory
+ * is broken once its lease heartbeat is older than `LOCK_LEASE_MS`. Contenders in the
+ * same process wait like any other, so concurrent updates serialize.
+ *
+ * The commit re-checks ownership after writing and syncing the replacement and
+ * immediately before renaming it into place, so a holder whose lock was broken
+ * out from under it never overwrites a newer journal.
+ * The lock directory is removed on release (only when this transaction still
+ * owns it).
+ *
+ * Releases up to 17.2.1 held a kernel lock on `pending-cleanups.json.lock`
+ * through the retired broker's `journal-lock` helper. That file is never
+ * read, written or removed here, so an older CLI still finds it as it left it.
+ * The journal file, its format and its durable-replacement rules are
+ * unchanged.
  */
 interface JournalTransaction {
   /** Abort: release the lock with the journal untouched. Idempotent. */
   abort(): Promise<void>;
-  /** Commit: hand the complete serialized journal to the helper and await
-   * its durable replacement + exit. Throws with the journal untouched if the
-   * helper died first or the commit fails. */
+  /** Commit: durably replace the journal with `payload`, then release. Throws
+   * with the journal untouched if the lock was lost or the write fails. */
   commit(payload: string): Promise<void>;
 }
 
-async function beginJournalTransaction(lockFile: string, journalFile: string): Promise<JournalTransaction> {
-  const binary = getBrokerBinaryPath();
-  if (!binary) {
-    throw new CleanupJournalError('io', formatBrokerNotFoundError());
-  }
-  const child = spawn(
-    binary,
-    [
-      'journal-lock',
-      '--file',
-      lockFile,
-      '--journal-file',
-      journalFile,
-      '--timeout-ms',
-      String(LOCK_TIMEOUT_MS),
-    ],
-    { stdio: ['pipe', 'pipe', 'pipe'] }
-  );
-
-  const exit = new Promise<number | null>((resolve) => {
-    child.on('exit', (code) => resolve(code));
-    child.on('error', () => resolve(null));
-  });
-  let exited = false;
-  void exit.then(() => {
-    exited = true;
-  });
-
-  // Exact framed handshake: buffer stdout until the first newline and demand
-  // the line be precisely `locked` — no substring matching, and a hard
-  // startup deadline that kills a wedged helper.
-  await new Promise<void>((resolve, reject) => {
-    let settled = false;
-    let buffer = '';
-    const settle = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(deadline);
-      fn();
-    };
-    const deadline = setTimeout(() => {
-      settle(() => {
-        child.kill('SIGKILL');
-        reject(
-          new CleanupJournalError(
-            'io',
-            `The journal-lock helper did not complete its handshake for ${lockFile} in time and was killed.`
-          )
-        );
-      });
-    }, LOCK_TIMEOUT_MS + 2_000);
-    child.stdout!.on('data', (chunk: Buffer) => {
-      buffer += chunk.toString('utf8');
-      const newline = buffer.indexOf('\n');
-      if (newline < 0) return;
-      const line = buffer.slice(0, newline);
-      if (line === 'locked') {
-        settle(resolve);
-      } else {
-        settle(() => {
-          child.kill('SIGKILL');
-          reject(
-            new CleanupJournalError(
-              'io',
-              `The journal-lock helper sent an unexpected handshake for ${lockFile}.`
-            )
-          );
-        });
-      }
-    });
-    child.on('error', (err) =>
-      settle(() =>
-        reject(
-          new CleanupJournalError('io', `Could not spawn the journal-lock helper (${binary}): ${err.message}`)
-        )
-      )
-    );
-    void exit.then((code) => {
-      settle(() => {
-        if (code === 4) {
-          reject(
-            new CleanupJournalError(
-              'locked',
-              `Timed out waiting for the pending-cleanup journal lock at ${lockFile}: another agent-relay process holds it. The kernel releases it automatically when that process exits; retry afterwards.`
-            )
-          );
-        } else if (code === 3) {
-          reject(
-            new CleanupJournalError(
-              'locked',
-              `The pending-cleanup journal lock at ${lockFile} contains an unrecognized sentinel from an older format. Nothing was swept or overwritten; inspect and remove the file to continue.`
-            )
-          );
-        } else if (code === 2) {
-          // clap usage error: this broker binary predates the journal-lock
-          // helper (version skew), or the invocation is malformed.
-          reject(
-            new CleanupJournalError(
-              'io',
-              `The resolved agent-relay-broker binary (${binary}) does not support the journal-lock helper; upgrade the broker (or set AGENT_RELAY_BIN to a current build) and retry.`
-            )
-          );
-        } else {
-          reject(
-            new CleanupJournalError(
-              'io',
-              `The journal-lock helper exited unexpectedly (code ${code ?? 'unknown'}) before acquiring ${lockFile}.`
-            )
-          );
-        }
-      });
-    });
-  });
-
-  const finish = async (payload: Buffer | undefined, failure: string): Promise<void> => {
-    const committing = payload !== undefined;
-    if (exited) {
-      if (committing) {
-        // The lock (and with it transactional isolation) is already gone; the
-        // journal is untouched — surface instead of committing blind.
-        throw new CleanupJournalError('io', failure);
-      }
-      return; // abort: nothing left to release
-    }
-    // The helper can die between the `exited` check and (or during) the
-    // stdin write: swallow the stream error (EPIPE would otherwise be an
-    // unhandled 'error' event) and never hang on an end-callback that will
-    // no longer fire — the authoritative verdict is the exit code below.
-    await new Promise<void>((resolve) => {
-      let settled = false;
-      const settle = () => {
-        if (settled) return;
-        settled = true;
-        resolve();
-      };
-      const stdin = child.stdin!;
-      stdin.once('error', settle);
-      void exit.then(settle);
+async function beginJournalTransaction(lockDir: string, journalFile: string): Promise<JournalTransaction> {
+  const token = randomUUID();
+  const owner: JournalLockOwner = { pid: process.pid, host: os.hostname(), token };
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  for (;;) {
+    try {
+      fs.mkdirSync(lockDir, { mode: 0o700 });
       try {
-        if (committing) {
-          stdin.end(payload, settle);
-        } else {
-          stdin.end(settle);
-        }
-      } catch {
-        settle();
+        fs.writeFileSync(path.join(lockDir, LOCK_OWNER_FILE), JSON.stringify(owner), { mode: 0o600 });
+      } catch (err) {
+        fs.rmSync(lockDir, { recursive: true, force: true });
+        throw err;
       }
-    });
-    const code = await exit;
-    if (committing && code !== 0) {
-      throw new CleanupJournalError('io', failure);
+      break;
+    } catch (err) {
+      if (!isLockContention(err)) {
+        throw new CleanupJournalError(
+          'io',
+          `Could not take the pending-cleanup journal lock at ${lockDir}: ${describeError(err)}`
+        );
+      }
+    }
+    const staleToken = staleLockToken(lockDir, Date.now());
+    // Retry at once after breaking an abandoned lock. A lock that was put
+    // back (it turned out live) falls through to the deadline and back-off,
+    // so a lock that keeps being judged stale and then live cannot spin
+    // past the timeout.
+    if (staleToken !== undefined && breakStaleLock(lockDir, staleToken)) {
+      continue;
+    }
+    if (Date.now() >= deadline) {
+      throw new CleanupJournalError(
+        'locked',
+        `Timed out waiting for the pending-cleanup journal lock at ${lockDir}: another agent-relay process holds it. It is released when that process finishes (or broken automatically once that process has exited); retry afterwards. If no agent-relay process is running, remove ${lockDir} and retry.`
+      );
+    }
+    await sleep(LOCK_RETRY_MS);
+  }
+
+  const ownerFile = path.join(lockDir, LOCK_OWNER_FILE);
+  const heartbeat = setInterval(() => {
+    // Never refresh a lock this transaction no longer owns: that would keep a
+    // successor's abandoned lock looking alive.
+    if (!ownsLock(lockDir, token)) {
+      clearInterval(heartbeat);
+      return;
+    }
+    try {
+      const now = new Date();
+      fs.utimesSync(ownerFile, now, now);
+    } catch {
+      // A lost lock is detected at commit; the heartbeat itself is best-effort.
+    }
+  }, LOCK_HEARTBEAT_MS);
+  heartbeat.unref?.();
+
+  let released = false;
+  const release = (): void => {
+    if (released) return;
+    released = true;
+    clearInterval(heartbeat);
+    if (ownsLock(lockDir, token)) {
+      fs.rmSync(lockDir, { recursive: true, force: true });
     }
   };
 
   return {
     async abort() {
-      if (exited) return;
-      await finish(undefined, '');
+      release();
     },
     async commit(payload: string) {
-      // Framed envelope: magic/version + declared byte length + SHA-256 of
-      // the payload. The helper commits ONLY after both validate exactly, so
-      // a parent dying mid-write (partial bytes + clean EOF) can never
-      // replace good journal contents with a truncated payload. Frame
-      // construction failures release the lock (abort) instead of leaving
-      // the helper's stdin open.
-      let framed: Buffer;
       try {
-        const body = Buffer.from(payload, 'utf8');
-        const digest = createHash('sha256').update(body).digest('hex');
-        framed = Buffer.concat([Buffer.from(`ARJL1\n${body.byteLength}\n${digest}\n`, 'utf8'), body]);
-      } catch (err) {
-        await finish(undefined, '');
-        throw new CleanupJournalError(
-          'io',
-          `Could not frame the pending-cleanup journal payload: ${describeError(err)}`
-        );
+        if (released || !ownsLock(lockDir, token)) {
+          throw new CleanupJournalError(
+            'io',
+            `The pending-cleanup journal lock at ${lockDir} was lost before ${journalFile} could be committed; the journal was left unmodified.`
+          );
+        }
+        try {
+          replaceJournalDurably(journalFile, payload, () => ownsLock(lockDir, token));
+        } catch (err) {
+          if (err instanceof LockLostError) {
+            throw new CleanupJournalError(
+              'io',
+              `The pending-cleanup journal lock at ${lockDir} was lost before ${journalFile} could be committed; the journal was left unmodified.`
+            );
+          }
+          throw new CleanupJournalError(
+            'io',
+            `Could not commit the pending-cleanup journal at ${journalFile}: ${describeError(err)}`
+          );
+        }
+      } finally {
+        release();
       }
-      await finish(
-        framed,
-        `The journal-lock helper was lost before the pending-cleanup journal at ${journalFile} could be committed; the journal was left unmodified.`
-      );
     },
   };
 }
@@ -479,11 +573,10 @@ export function fileCleanupJournal(dataDirOverride?: string): CleanupJournal {
     async update(mutate) {
       const file = journalFile();
       fs.mkdirSync(path.dirname(file), { recursive: true });
-      const transaction = await beginJournalTransaction(`${file}.lock`, file);
+      const transaction = await beginJournalTransaction(`${file}.lock.d`, file);
       // EVERYTHING that can throw before the commit — the read, the mutator,
       // and the serialization itself — runs inside the abort-protected block,
-      // or a failure would leave the helper's stdin open and the lock held
-      // until this process exits.
+      // or a failure would leave the lock held until this process exits.
       let payload: string;
       try {
         const next = await mutate(read(file));
@@ -492,8 +585,8 @@ export function fileCleanupJournal(dataDirOverride?: string): CleanupJournal {
         await transaction.abort();
         throw err;
       }
-      // The helper performs the durable replacement (temp + fsync + atomic
-      // rename + dir fsync) while it still holds the kernel lock.
+      // The durable replacement (temp + fsync + atomic rename + dir fsync)
+      // runs while this transaction still holds the lock.
       await transaction.commit(payload);
     },
   };
