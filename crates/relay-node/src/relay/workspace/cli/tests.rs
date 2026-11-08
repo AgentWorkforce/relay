@@ -677,6 +677,91 @@ fn a_site_build_trusts_only_routes_to_its_own_relaycast() {
 }
 
 #[test]
+fn a_site_build_trusts_its_own_loopback_relaycast_with_a_port() {
+    let pin = |base_url: &str| {
+        serde_json::json!({
+            "workspaceKey": "rk_live_project00",
+            "relaycastRoute": "canonical",
+            "relaycastBaseUrl": base_url,
+        })
+    };
+    // A loopback site origin with a port, as its sign-in accepted it, counts
+    // with or without a trailing slash, and is returned as the bare origin.
+    for (site_relaycast, base_url) in [
+        (LOCAL, LOCAL.to_string()),
+        (LOCAL, format!("{LOCAL}/")),
+        (
+            "https://localhost:8443",
+            "https://localhost:8443".to_string(),
+        ),
+        (
+            "https://localhost:8443",
+            "https://LOCALHOST:8443/".to_string(),
+        ),
+    ] {
+        let machine = Machine::new().in_project().pin(pin(&base_url));
+        let found = machine
+            .resolve_at(SITE, Some(site_relaycast))
+            .unwrap_or_else(|error| panic!("{base_url}: {error}"))
+            .expect("a CLI workspace");
+        assert_eq!(
+            key_and_origin(&found),
+            ("rk_live_project00", site_relaycast),
+            "{base_url}"
+        );
+    }
+    // Any other origin, or the site's own with more than an origin, is
+    // still refused with the site's reason.
+    for base_url in [
+        CANONICAL_RELAYCAST_ORIGIN,
+        "http://cast.relay.corp.test:8787",
+        "http://127.0.0.1:8788",
+        "https://127.0.0.1:8787",
+        "http://localhost:8787",
+        "http://127.0.0.1:8787/v1",
+        "http://127.0.0.1:8787/?a=b",
+        "http://user@127.0.0.1:8787",
+        "http://127.0.0.1:8787#x",
+    ] {
+        let machine = Machine::new().in_project().pin(pin(base_url));
+        let error = machine.resolve_at(SITE, Some(LOCAL)).unwrap_err();
+        assert!(error.contains("not trusted"), "{base_url}: {error}");
+        assert!(error.contains(SITE), "{base_url}: {error}");
+        assert!(error.contains(LOCAL), "{base_url}: {error}");
+    }
+    // A non-loopback http site origin never counts, even when it matches.
+    let plain = Machine::new()
+        .in_project()
+        .pin(pin("http://cast.relay.corp.test"));
+    let error = plain
+        .resolve_at(SITE, Some("http://cast.relay.corp.test"))
+        .unwrap_err();
+    assert!(error.contains("not trusted"), "{error}");
+}
+
+#[test]
+fn the_default_build_still_refuses_loopback_or_ported_routes() {
+    for base_url in [
+        LOCAL,
+        "http://localhost",
+        "https://localhost:8443",
+        "https://cast.agentrelay.com:8443",
+        "http://cast.agentrelay.com",
+    ] {
+        let machine = Machine::new().in_project().pin(serde_json::json!({
+            "workspaceKey": "rk_live_project00",
+            "relaycastRoute": "canonical",
+            "relaycastBaseUrl": base_url,
+        }));
+        let error = machine.resolve().unwrap_err();
+        assert_eq!(
+            error, "The persisted Relaycast workspace route is not trusted.",
+            "{base_url}"
+        );
+    }
+}
+
+#[test]
 fn a_bound_credential_is_never_sent_to_a_persisted_route() {
     let error = Machine::new()
         .in_project()
