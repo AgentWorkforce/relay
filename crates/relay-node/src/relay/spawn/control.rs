@@ -227,7 +227,7 @@ fn caller_in(
         })?;
         return Ok(Caller::Session { agent_id, token });
     };
-    if secret.is_empty() {
+    if secret.trim().is_empty() {
         return Err(refused());
     }
     segment(name)?;

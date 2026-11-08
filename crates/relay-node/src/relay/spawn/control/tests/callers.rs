@@ -279,20 +279,22 @@ async fn a_core_without_spawn_callers_refuses_any_caller_secret() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_empty_external_caller_secret_is_refused_before_plugin_resolution() {
+async fn an_empty_or_whitespace_external_caller_secret_is_refused_before_plugin_resolution() {
     let relaycast = Relaycast::new();
     let stub = Stub::new(service(true));
     let (_home, core) = core_with(Some(stub.clone()), &relaycast.base);
     seed(&core, &relaycast.base, Some("agent_caller"));
-    let mut invoke = invoke_params(&core, "claude", std::env::temp_dir().to_str().unwrap());
-    invoke["caller_secret"] = json!("");
+    for secret in ["", " \t\r\n"] {
+        let mut invoke = invoke_params(&core, "claude", std::env::temp_dir().to_str().unwrap());
+        invoke["caller_secret"] = json!(secret);
 
-    let error = server::call(&core, "spawn.invoke", invoke)
-        .await
-        .unwrap_err();
-    assert_eq!(error.data.kind, ErrorKind::Refused);
-    assert!(stub.log().is_empty());
-    assert!(relaycast.untouched());
+        let error = server::call(&core, "spawn.invoke", invoke)
+            .await
+            .unwrap_err();
+        assert_eq!(error.data.kind, ErrorKind::Refused, "{secret:?}");
+        assert!(stub.log().is_empty(), "{secret:?}");
+        assert!(relaycast.untouched(), "{secret:?}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
