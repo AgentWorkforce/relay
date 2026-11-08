@@ -12,8 +12,26 @@ import {
   type IntegrationCommandDependencies,
   type RelayfileBinding,
 } from './integration.js';
-import type { PendingCleanupEntry } from './integration-cleanup-journal.js';
+import { fileCleanupJournal, type PendingCleanupEntry } from './integration-cleanup-journal.js';
 import { writeProjectWorkspaceKey } from '../lib/project-workspace-key.js';
+
+// Pass-through child_process spies, so a test can prove the subscribe path
+// starts no helper process (a fresh standalone install has none to start).
+const childProcessCalls = vi.hoisted(() => ({ spawn: 0, execFile: 0 }));
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...actual,
+    spawn: ((...args: Parameters<typeof actual.spawn>) => {
+      childProcessCalls.spawn += 1;
+      return actual.spawn(...args);
+    }) as typeof actual.spawn,
+    execFile: ((...args: Parameters<typeof actual.execFile>) => {
+      childProcessCalls.execFile += 1;
+      return (actual.execFile as (...a: unknown[]) => unknown)(...args);
+    }) as typeof actual.execFile,
+  };
+});
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -559,6 +577,71 @@ describe('integration subscribe', () => {
       expect(String(call[0])).not.toContain('old_whsub');
       expect(String(call[0])).not.toContain(INBOUND_URL);
     }
+  });
+
+  it('writes the cleanup record on a fresh standalone install with no broker binary (P1)', async () => {
+    // A fresh standalone install has no agent-relay-broker and no older npm
+    // package tree: nothing on PATH, no resolver override pointing anywhere
+    // real. The REAL file-backed journal must still take its lock, persist the
+    // attempt reservation before any create, and keep the cleanup record.
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'subscribe-nobroker-'));
+    vi.stubEnv('PATH', empty);
+    vi.stubEnv('BROKER_BINARY_PATH', path.join(empty, 'agent-relay-broker'));
+    vi.stubEnv('AGENT_RELAY_BIN', path.join(empty, 'agent-relay-broker'));
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'subscribe-journal-'));
+    const journalFile = path.join(dataDir, 'pending-cleanups.json');
+    const fileJournal = fileCleanupJournal(dataDir);
+    const persisted: PendingCleanupEntry[][] = [];
+    const journal = {
+      list: vi.fn(() => fileJournal.list()),
+      update: vi.fn(async (mutate: Parameters<typeof fileJournal.update>[0]) => {
+        await fileJournal.update(mutate);
+        persisted.push(JSON.parse(fs.readFileSync(journalFile, 'utf8')) as PendingCleanupEntry[]);
+      }),
+    };
+    const prior: RelayfileBinding = {
+      provider: 'slack',
+      resource: RESOURCE,
+      channel: 'general',
+      webhookId: 'old_wh',
+      subscriptionId: 'old_sub',
+      webhookSubscriptionId: 'old_whsub',
+    };
+    const relayfile = createRelayfileMock([prior], {
+      deleteWebhookSubscription: vi.fn(async (id: string) => {
+        if (id === 'old_whsub') throw new Error('temporary relayfile-cloud outage');
+      }),
+    });
+    const { program, relay, exit } = harness({
+      relayfile,
+      journal: journal as unknown as ReturnType<typeof memoryJournal>,
+    });
+
+    const spawnsBefore = { ...childProcessCalls };
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(relayfile.bind).toHaveBeenCalled();
+    // No helper process was started for the journal lock.
+    expect(childProcessCalls).toEqual(spawnsBefore);
+    // The first committed write is this run's owned attempt reservation, and
+    // it lands before any external create.
+    expect(persisted[0]).toEqual([
+      expect.objectContaining({ kind: 'subscribe-attempt', provider: 'slack', owner: expect.any(Object) }),
+    ]);
+    expect(journal.update.mock.invocationCallOrder[0]!).toBeLessThan(
+      relay.webhooks.createInbound.mock.invocationCallOrder[0]!
+    );
+    // The superseded id is durably recorded on disk; the attempt is cleared.
+    expect(JSON.parse(fs.readFileSync(journalFile, 'utf8'))).toEqual([
+      { kind: 'relayfile-webhook-subscription', scope: RELAYFILE_SCOPE, id: 'old_whsub' },
+    ]);
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(journalFile).mode & 0o777).toBe(0o600);
+    }
+    // No lock directory left behind. The older broker's lock file is held
+    // during the transaction and kept on purpose, so older CLIs stay excluded.
+    expect(fs.readdirSync(dataDir).sort()).toEqual(['pending-cleanups.json', 'pending-cleanups.json.lock']);
   });
 
   it('retries a journaled cloud-subscription cleanup on the next run, sparing keep/active ids', async () => {

@@ -21,6 +21,8 @@ pub use receipts::SystemReceipts;
 
 use super::{Binding, Coordinator, Failure, Gate, Journal, Outcome, Provider, Request, Transport};
 use crate::relay::muse::MuseConfig;
+#[cfg(unix)]
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -298,6 +300,469 @@ struct CourierProc {
     _master: std::fs::File,
     _drain: Option<std::thread::JoinHandle<()>>,
     session_id_holder: String,
+    _private_store: Option<PrivateStore>,
+}
+
+/// One launch's private XDG data home. Dropping it removes the entire home, so
+/// cleanup does not depend on Muse publishing a session id before a timeout.
+struct PrivateStore {
+    root: PathBuf,
+    #[cfg(unix)]
+    parent: std::fs::File,
+    #[cfg(unix)]
+    directory: std::fs::File,
+    #[cfg(unix)]
+    name: std::ffi::CString,
+}
+
+#[cfg(unix)]
+struct InheritedDataHome {
+    directory: std::fs::File,
+    path: PathBuf,
+    #[cfg(not(target_os = "linux"))]
+    path_name: std::ffi::CString,
+}
+
+#[cfg(unix)]
+impl InheritedDataHome {
+    /// Prepare the already-open store for the exec boundary. Linux can name a
+    /// directory fd directly; macOS cannot traverse `/dev/fd/<n>`, so its
+    /// current kernel path is checked against the retained inode immediately
+    /// before exec and the launch fails closed if it changed again.
+    unsafe fn prepare_for_exec(&self) -> std::io::Result<()> {
+        #[cfg(target_os = "linux")]
+        use std::os::fd::AsRawFd;
+
+        #[cfg(target_os = "linux")]
+        {
+            let fd = self.directory.as_raw_fd();
+            let flags = libc::fcntl(fd, libc::F_GETFD);
+            if flags == -1 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        if !private_path_is(&self.path_name, &self.directory)? {
+            return Err(std::io::Error::other(
+                "private Muse courier data home changed before exec",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl PrivateStore {
+    #[cfg(unix)]
+    fn inherited_data_home(&self) -> std::io::Result<InheritedDataHome> {
+        use std::os::fd::AsRawFd;
+        #[cfg(not(target_os = "linux"))]
+        use std::os::unix::ffi::OsStrExt;
+
+        let directory = self.directory.try_clone()?;
+        #[cfg(target_os = "linux")]
+        let path = Path::new("/proc/self/fd").join(directory.as_raw_fd().to_string());
+        #[cfg(target_os = "macos")]
+        let path = {
+            let mut bytes = vec![0u8; libc::PATH_MAX as usize];
+            if unsafe {
+                libc::fcntl(
+                    directory.as_raw_fd(),
+                    libc::F_GETPATH,
+                    bytes.as_mut_ptr().cast::<libc::c_char>(),
+                )
+            } == -1
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            let end = bytes.iter().position(|byte| *byte == 0).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "private Muse courier path was not terminated",
+                )
+            })?;
+            PathBuf::from(std::ffi::OsStr::from_bytes(&bytes[..end]))
+        };
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let path = self.root.clone();
+        #[cfg(not(target_os = "linux"))]
+        let path_name = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "NUL in private Muse courier path",
+            )
+        })?;
+        Ok(InheritedDataHome {
+            directory,
+            path,
+            #[cfg(not(target_os = "linux"))]
+            path_name,
+        })
+    }
+
+    #[cfg(unix)]
+    fn remove_once(&self) -> std::io::Result<()> {
+        remove_private_contents(&self.directory)?;
+        if !private_name_is(&self.parent, &self.name, &self.directory)? {
+            return Err(std::io::Error::other(
+                "private Muse courier directory changed during cleanup",
+            ));
+        }
+        let removed = unsafe {
+            libc::unlinkat(
+                std::os::fd::AsRawFd::as_raw_fd(&self.parent),
+                self.name.as_ptr(),
+                libc::AT_REMOVEDIR,
+            )
+        };
+        if removed == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    fn remove_once(&self) -> std::io::Result<()> {
+        std::fs::remove_dir_all(&self.root)
+    }
+
+    fn remove(&self) -> std::io::Result<()> {
+        let mut last = None;
+        for attempt in 0..3 {
+            match self.remove_once() {
+                Ok(()) => return Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => last = Some(error),
+            }
+            if attempt < 2 {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        }
+        Err(last.expect("a failed private-store removal records its error"))
+    }
+}
+
+#[cfg(unix)]
+fn private_name(value: &str) -> std::io::Result<std::ffi::CString> {
+    std::ffi::CString::new(value)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "NUL in directory name"))
+}
+
+#[cfg(unix)]
+fn open_private_dir(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut options = std::fs::OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    options.open(path)
+}
+
+#[cfg(unix)]
+fn open_private_child(
+    parent: &std::fs::File,
+    child: &std::ffi::CStr,
+) -> std::io::Result<std::fs::File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            child.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+}
+
+/// Removes an empty directory created before its validated handle was ready.
+/// It never descends, so a replacement non-empty tree is left untouched.
+#[cfg(unix)]
+struct PendingPrivateDir {
+    parent: Option<std::fs::File>,
+    name: std::ffi::CString,
+    armed: bool,
+}
+
+#[cfg(unix)]
+impl PendingPrivateDir {
+    fn finish(mut self, directory: std::fs::File) -> CreatedPrivateDir {
+        self.armed = false;
+        CreatedPrivateDir {
+            parent: self
+                .parent
+                .take()
+                .expect("pending directory has its parent"),
+            directory,
+            name: self.name.clone(),
+        }
+    }
+
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+#[cfg(unix)]
+impl Drop for PendingPrivateDir {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+
+        if self.armed {
+            if let Some(parent) = &self.parent {
+                let removed = unsafe {
+                    libc::unlinkat(parent.as_raw_fd(), self.name.as_ptr(), libc::AT_REMOVEDIR)
+                };
+                if removed == -1 {
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() != std::io::ErrorKind::NotFound {
+                        eprintln!(
+                            "Agent Relay could not roll back private Muse courier directory {}: {error}",
+                            self.name.to_string_lossy()
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+struct CreatedPrivateDir {
+    parent: std::fs::File,
+    directory: std::fs::File,
+    name: std::ffi::CString,
+}
+
+#[cfg(unix)]
+fn private_child_dir(parent: &std::fs::File, child: &str) -> std::io::Result<std::fs::File> {
+    use std::os::fd::AsRawFd;
+
+    let child = private_name(child)?;
+    // Clone before mkdir so every post-create failure has an owned rollback
+    // handle and cannot strand the new directory.
+    let rollback_parent = parent.try_clone()?;
+    let created = unsafe { libc::mkdirat(parent.as_raw_fd(), child.as_ptr(), 0o700) };
+    let pending = if created == 0 {
+        Some(PendingPrivateDir {
+            parent: Some(rollback_parent),
+            name: child.clone(),
+            armed: true,
+        })
+    } else {
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            return Err(error);
+        }
+        None
+    };
+    let directory = open_private_child(parent, &child)?;
+    if unsafe { libc::fchmod(directory.as_raw_fd(), 0o700) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if let Some(pending) = pending {
+        pending.disarm();
+    }
+    Ok(directory)
+}
+
+#[cfg(unix)]
+fn private_unique_child(
+    parent: &std::fs::File,
+    prefix: &str,
+) -> std::io::Result<CreatedPrivateDir> {
+    use std::os::fd::AsRawFd;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    for _ in 0..100 {
+        let child = format!(
+            "{prefix}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        );
+        let child = private_name(&child)?;
+        // Acquire the rollback handle before creation. Once mkdir succeeds,
+        // PendingPrivateDir owns cleanup until the validated fd is returned.
+        let rollback_parent = parent.try_clone()?;
+        let created = unsafe { libc::mkdirat(parent.as_raw_fd(), child.as_ptr(), 0o700) };
+        if created == 0 {
+            let pending = PendingPrivateDir {
+                parent: Some(rollback_parent),
+                name: child.clone(),
+                armed: true,
+            };
+            let directory = open_private_child(parent, &child)?;
+            if unsafe { libc::fchmod(directory.as_raw_fd(), 0o700) } == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            return Ok(pending.finish(directory));
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            return Err(error);
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not allocate a private courier directory",
+    ))
+}
+
+#[cfg(unix)]
+fn private_stat_at(parent: &std::fs::File, name: &std::ffi::CStr) -> std::io::Result<libc::stat> {
+    use std::os::fd::AsRawFd;
+
+    let mut stat = unsafe { std::mem::zeroed() };
+    if unsafe {
+        libc::fstatat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            &mut stat,
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } == -1
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(stat)
+}
+
+#[cfg(unix)]
+fn private_name_is(
+    parent: &std::fs::File,
+    name: &std::ffi::CStr,
+    directory: &std::fs::File,
+) -> std::io::Result<bool> {
+    use std::os::fd::AsRawFd;
+
+    let named = private_stat_at(parent, name)?;
+    let mut opened: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(directory.as_raw_fd(), &mut opened) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(named.st_dev == opened.st_dev
+        && named.st_ino == opened.st_ino
+        && named.st_mode & libc::S_IFMT == libc::S_IFDIR)
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn private_path_is(path: &std::ffi::CStr, directory: &std::fs::File) -> std::io::Result<bool> {
+    use std::os::fd::AsRawFd;
+
+    let mut named: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe {
+        libc::fstatat(
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            &mut named,
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } == -1
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut opened: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(directory.as_raw_fd(), &mut opened) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(named.st_dev == opened.st_dev
+        && named.st_ino == opened.st_ino
+        && named.st_mode & libc::S_IFMT == libc::S_IFDIR)
+}
+
+#[cfg(unix)]
+fn private_entries(directory: &std::fs::File) -> std::io::Result<Vec<std::ffi::CString>> {
+    use std::ffi::CStr;
+    use std::os::fd::{FromRawFd, IntoRawFd};
+
+    // openat(".") creates a new directory description whose readdir offset is
+    // independent of the long-lived cleanup handle and of previous retries.
+    let current = private_name(".")?;
+    let scan = open_private_child(directory, &current)?;
+    let scan_fd = scan.into_raw_fd();
+    let stream = unsafe { libc::fdopendir(scan_fd) };
+    if stream.is_null() {
+        let error = std::io::Error::last_os_error();
+        drop(unsafe { std::fs::File::from_raw_fd(scan_fd) });
+        return Err(error);
+    }
+    struct Stream(*mut libc::DIR);
+    impl Drop for Stream {
+        fn drop(&mut self) {
+            unsafe {
+                libc::closedir(self.0);
+            }
+        }
+    }
+    let stream = Stream(stream);
+    let mut entries = Vec::new();
+    loop {
+        nix::errno::Errno::clear();
+        let entry = unsafe { libc::readdir(stream.0) };
+        if entry.is_null() {
+            let error = nix::errno::errno();
+            if error != 0 {
+                return Err(std::io::Error::from_raw_os_error(error));
+            }
+            break;
+        }
+        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
+        if name.to_bytes() != b"." && name.to_bytes() != b".." {
+            entries.push(name.to_owned());
+        }
+    }
+    Ok(entries)
+}
+
+#[cfg(unix)]
+fn remove_private_contents(directory: &std::fs::File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    for name in private_entries(directory)? {
+        let stat = match private_stat_at(directory, &name) {
+            Ok(stat) => stat,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if stat.st_mode & libc::S_IFMT == libc::S_IFDIR {
+            let child = open_private_child(directory, &name)?;
+            remove_private_contents(&child)?;
+            if !private_name_is(directory, &name, &child)? {
+                return Err(std::io::Error::other(
+                    "private Muse courier child changed during cleanup",
+                ));
+            }
+            if unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) }
+                == -1
+            {
+                let error = std::io::Error::last_os_error();
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    return Err(error);
+                }
+            }
+        } else if unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) } == -1 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return Err(error);
+            }
+        }
+    }
+    Ok(())
+}
+
+impl Drop for PrivateStore {
+    fn drop(&mut self) {
+        if let Err(error) = self.remove() {
+            eprintln!(
+                "Agent Relay could not remove private Muse courier store {}: {error}",
+                self.root.display()
+            );
+        }
+    }
 }
 
 impl CourierProc {
@@ -341,6 +806,7 @@ const BODY_END: &str = "<<<END RELAY MESSAGE BODY>>>";
 
 pub struct SystemCourier {
     config: MuseConfig,
+    private_base: Option<PathBuf>,
     model: Option<String>,
     in_flight: std::sync::Mutex<Vec<CourierProc>>,
 }
@@ -349,9 +815,75 @@ impl SystemCourier {
     pub fn new(config: MuseConfig, model: Option<String>) -> Self {
         Self {
             config,
+            private_base: None,
             model,
             in_flight: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// Keep the courier's required session log in Relay-owned app data while
+    /// linking only Muse's live registry to the target's store. Peer messaging
+    /// requires session logging, but Desktop history must not ingest this
+    /// implementation-only conversation.
+    pub fn isolated(config: MuseConfig, model: Option<String>, private_base: PathBuf) -> Self {
+        let config = MuseConfig {
+            data_dir: std::path::absolute(&config.data_dir).unwrap_or(config.data_dir),
+        };
+        let private_base = std::path::absolute(&private_base).unwrap_or(private_base);
+        Self {
+            config,
+            private_base: Some(private_base),
+            model,
+            in_flight: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Prepare a unique `<base>/couriers/<target+store>/<launch>/muse` data
+    /// home, linking only its runtime registry to the target's. Every ancestor
+    /// below `base` is opened with `O_NOFOLLOW`; stale links or files fail
+    /// closed instead of redirecting transcripts or permission changes.
+    #[cfg(unix)]
+    fn prepare_private_store(&self, target_session: &str) -> Option<PrivateStore> {
+        use std::ffi::CString;
+        use std::os::fd::AsRawFd;
+        use std::os::unix::ffi::OsStrExt;
+
+        let base = self.private_base.as_ref()?;
+        if !base.is_absolute() || !self.config.data_dir.is_absolute() {
+            return None;
+        }
+        let base_dir = open_private_dir(base).ok()?;
+        let couriers_dir = private_child_dir(&base_dir, "couriers").ok()?;
+        let mut key = Sha256::new();
+        key.update(target_session.as_bytes());
+        key.update([0]);
+        key.update(self.config.data_dir.as_os_str().as_bytes());
+        let target_key = format!("{:x}", key.finalize());
+        let target_dir = private_child_dir(&couriers_dir, &target_key[..24]).ok()?;
+        let launch = private_unique_child(&target_dir, "launch").ok()?;
+        let launch_name = launch.name.to_str().ok()?;
+        let root = base
+            .join("couriers")
+            .join(&target_key[..24])
+            .join(launch_name);
+        // From this point every early return removes the launch directory.
+        let private = PrivateStore {
+            root,
+            parent: launch.parent,
+            directory: launch.directory,
+            name: launch.name,
+        };
+        let muse_dir = private_child_dir(&private.directory, "muse").ok()?;
+        let runtime_dir = private_child_dir(&muse_dir, "runtime").ok()?;
+
+        let target = CString::new(self.config.runtime_dir().as_os_str().as_bytes()).ok()?;
+        let registry = private_name("muse").ok()?;
+        if unsafe { libc::symlinkat(target.as_ptr(), runtime_dir.as_raw_fd(), registry.as_ptr()) }
+            == -1
+        {
+            return None;
+        }
+        Some(private)
     }
 
     /// Reap any couriers whose process has exited.
@@ -408,6 +940,33 @@ impl SystemCourier {
         )
     }
 
+    /// Arguments for Relay's one-shot courier. Session logging stays enabled:
+    /// Muse requires it for `send_session_message`. [`Self::isolated`] keeps
+    /// that log out of the user's normal Muse history instead.
+    fn launch_args(&self, target_session: &str, text: &str) -> Vec<String> {
+        let mut args = vec![
+            "--reasoning-effort".into(),
+            "low".into(),
+            "--trust-workspace".into(),
+        ];
+        if let Some(full_access) = crate::relay::harness::muse::courier_access(
+            &self.config,
+            &crate::relay::process::SystemProcesses::default(),
+            crate::relay::peer::current_uid(),
+            target_session,
+        ) {
+            args.extend(["--approval-mode".into(), "never".into()]);
+            if full_access {
+                args.push("--yolo".into());
+            }
+        }
+        if let Some(model) = &self.model {
+            args.extend(["--model".into(), model.clone()]);
+        }
+        args.extend(["--".into(), Self::forwarding_prompt(target_session, text)]);
+        args
+    }
+
     /// Launch a courier in `workspace` that runs the forwarding prompt, and
     /// return the process and the courier session id Muse minted for it.
     #[cfg(unix)]
@@ -415,15 +974,25 @@ impl SystemCourier {
         use std::os::unix::io::{AsRawFd, FromRawFd};
         use std::os::unix::process::CommandExt;
 
-        let mut master: libc::c_int = 0;
-        let mut slave: libc::c_int = 0;
+        // Prepare fallible filesystem state before opening PTY descriptors so
+        // a broken private store cannot leak them across delivery retries.
+        let private_store = if self.private_base.is_some() {
+            Some(self.prepare_private_store(target_session)?)
+        } else {
+            None
+        };
+        let home = std::env::var_os("HOME").map(PathBuf::from)?;
+        let path_var = std::env::var_os("PATH");
+        let launcher = crate::relay::muse::launcher(&home, path_var.as_deref())?;
+        let mut master_fd: libc::c_int = 0;
+        let mut slave_fd: libc::c_int = 0;
         let mut size: libc::winsize = unsafe { std::mem::zeroed() };
         size.ws_row = 24;
         size.ws_col = 80;
         if unsafe {
             libc::openpty(
-                &mut master,
-                &mut slave,
+                &mut master_fd,
+                &mut slave_fd,
                 std::ptr::null_mut(),
                 std::ptr::null_mut::<libc::termios>(),
                 &mut size as *mut libc::winsize,
@@ -432,55 +1001,51 @@ impl SystemCourier {
         {
             return None;
         }
+        // Acquire owners immediately: every later return closes both PTY
+        // descriptors as well as the unique private store.
+        let master_file = unsafe { std::fs::File::from_raw_fd(master_fd) };
+        let slave_file = unsafe { std::fs::File::from_raw_fd(slave_fd) };
 
-        let home = std::env::var_os("HOME").map(PathBuf::from)?;
-        let path_var = std::env::var_os("PATH");
-        let launcher = crate::relay::muse::launcher(&home, path_var.as_deref())?;
         let mut command = std::process::Command::new(&launcher);
         command.env(
             "PATH",
             crate::relay::muse::courier_path(&launcher, path_var.as_deref()),
         );
-        // The target's store, not whatever `XDG_DATA_HOME` this probe
-        // inherited. The courier's registry and the session log are read
-        // back from `self.config`, so the process must write there too.
-        if let Some(data_home) = self.config.data_home() {
+        // The isolated store retains the session log but links its registry
+        // to the target store. A non-isolated courier keeps the legacy target
+        // store behavior for direct callers and tests.
+        let (inherited_data_home, data_home) = if let Some(store) = &private_store {
+            let inherited = store.inherited_data_home().ok()?;
+            let path = inherited.path.clone();
+            (Some(inherited), Some(path))
+        } else {
+            (None, self.config.data_home().map(Path::to_path_buf))
+        };
+        if let Some(data_home) = data_home {
             command.env("XDG_DATA_HOME", data_home);
         }
         command.current_dir(workspace);
         command.env("TERM", "xterm-256color");
-        command.arg("--reasoning-effort").arg("low");
-        command.arg("--trust-workspace");
-        if let Some(full_access) = crate::relay::harness::muse::courier_access(
-            &self.config,
-            &crate::relay::process::SystemProcesses::default(),
-            crate::relay::peer::current_uid(),
-            target_session,
-        ) {
-            command.args(["--approval-mode", "never"]);
-            if full_access {
-                command.arg("--yolo");
-            }
-        }
-        if let Some(model) = &self.model {
-            command.arg("--model").arg(model);
-        }
         // The forwarding prompt runs on startup; no keystrokes are sent.
-        command
-            .arg("--")
-            .arg(Self::forwarding_prompt(target_session, text));
+        command.args(self.launch_args(target_session, text));
         command.env(crate::relay::muse::COURIER_MARKER, "1");
         command.env_remove(crate::relay::harness::muse::SPAWN_MARKER);
         command.env_remove(crate::relay::harness::muse::SPAWN_ACCESS);
         command.env_remove("RELAY_ATTEST_SESSION_ID");
         command.env_remove("MUSE_TOOL_USE_ID");
-        let slave_fd = slave;
+        let stdin = slave_file.try_clone().ok()?;
+        let stdout = slave_file.try_clone().ok()?;
+        let stderr = slave_file.try_clone().ok()?;
+        let slave_fd = slave_file.as_raw_fd();
         unsafe {
             command
-                .stdin(std::process::Stdio::from_raw_fd(libc::dup(slave_fd)))
-                .stdout(std::process::Stdio::from_raw_fd(libc::dup(slave_fd)))
-                .stderr(std::process::Stdio::from_raw_fd(libc::dup(slave_fd)));
+                .stdin(std::process::Stdio::from(stdin))
+                .stdout(std::process::Stdio::from(stdout))
+                .stderr(std::process::Stdio::from(stderr));
             command.pre_exec(move || {
+                if let Some(data_home) = &inherited_data_home {
+                    data_home.prepare_for_exec()?;
+                }
                 if libc::setsid() == -1 {
                     return Err(std::io::Error::last_os_error());
                 }
@@ -492,23 +1057,18 @@ impl SystemCourier {
         }
         let child = match command.spawn() {
             Ok(child) => child,
-            Err(_) => {
-                unsafe {
-                    libc::close(master);
-                    libc::close(slave);
-                }
-                return None;
-            }
+            Err(_) => return None,
         };
-        unsafe {
-            libc::close(slave);
-        }
+        // Command retains its configured Stdio handles after spawn. Release
+        // those slave clones before readiness polling so timeout reaping can
+        // close the PTY and join the master reader.
+        drop(command);
+        drop(slave_file);
         let pid = child.id() as i32;
         // Reaping is by pid through waitpid; let the Child go without waiting.
         std::mem::forget(child);
 
         // Drain the PTY so the TUI never blocks writing its redraws.
-        let master_file = unsafe { std::fs::File::from_raw_fd(master) };
         let drain_fd = master_file.as_raw_fd();
         let drain = std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
@@ -531,6 +1091,7 @@ impl SystemCourier {
                     _master: master_file,
                     _drain: Some(drain),
                     session_id_holder: session_id,
+                    _private_store: private_store,
                 });
             }
             if Instant::now() >= deadline {
@@ -539,6 +1100,7 @@ impl SystemCourier {
                     _master: master_file,
                     _drain: Some(drain),
                     session_id_holder: String::new(),
+                    _private_store: private_store,
                 };
                 proc.reap();
                 return None;
@@ -629,6 +1191,7 @@ mod tests {
             _master: std::fs::File::open("/dev/null").unwrap(),
             _drain: None,
             session_id_holder: "test-owned-session".into(),
+            _private_store: None,
         });
         drop(courier);
         // ECHILD also proves CourierProc reaped the direct child itself.
@@ -714,6 +1277,223 @@ mod tests {
         let prompt = SystemCourier::forwarding_prompt(TARGET, "please ack");
         assert!(prompt.ends_with(&format!("{BODY_START}\nplease ack\n{BODY_END}")));
         assert_eq!(prompt.matches(BODY_START).count(), 2);
+    }
+
+    #[test]
+    fn a_courier_isolated_store_keeps_messaging_enabled_and_history_private() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target_store = MuseConfig {
+            data_dir: tmp.path().join("target").join("muse"),
+        };
+        std::fs::create_dir_all(target_store.runtime_dir()).unwrap();
+        let private_base = tmp.path().join("relay-private");
+        std::fs::create_dir_all(&private_base).unwrap();
+        let courier = SystemCourier::isolated(target_store.clone(), None, private_base.clone());
+        let private_store = courier.prepare_private_store(TARGET).unwrap();
+        let args = courier.launch_args(TARGET, "please ack");
+        assert!(!args.iter().any(|arg| arg == "--no-session-log"));
+        assert!(private_store
+            .root
+            .starts_with(private_base.join("couriers")));
+        assert_eq!(
+            std::fs::read_link(private_store.root.join("muse/runtime/muse")).unwrap(),
+            target_store.runtime_dir()
+        );
+        assert_ne!(private_store.root.join("muse"), target_store.data_dir);
+        assert_eq!(
+            args.last(),
+            Some(&SystemCourier::forwarding_prompt(TARGET, "please ack"))
+        );
+    }
+
+    #[test]
+    fn releasing_an_isolated_courier_removes_only_its_private_transcript() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target_store = MuseConfig {
+            data_dir: tmp.path().join("target").join("muse"),
+        };
+        std::fs::create_dir_all(target_store.runtime_dir()).unwrap();
+        let private_base = tmp.path().join("relay-private");
+        std::fs::create_dir_all(&private_base).unwrap();
+        let system = SystemCourier::isolated(target_store.clone(), None, private_base);
+        let private_store = system.prepare_private_store(TARGET).unwrap();
+        let relative = Path::new("sessions/2026/11/07").join(TARGET);
+        let private_session = private_store.root.join("muse").join(&relative);
+        let target_session = target_store.data_dir.join(&relative);
+        let private_root = private_store.root.clone();
+        std::fs::create_dir_all(&private_session).unwrap();
+        std::fs::create_dir_all(&target_session).unwrap();
+        std::fs::write(private_session.join("session.jsonl"), b"private").unwrap();
+        std::fs::write(target_session.join("session.jsonl"), b"target").unwrap();
+
+        let courier = CourierProc {
+            pid: 0,
+            _master: std::fs::File::open("/dev/null").unwrap(),
+            _drain: None,
+            // Cleanup must not depend on registry discovery succeeding.
+            session_id_holder: String::new(),
+            _private_store: Some(private_store),
+        };
+        drop(courier);
+
+        assert!(!private_root.exists());
+        assert!(target_session.join("session.jsonl").is_file());
+    }
+
+    #[test]
+    fn cleanup_stays_on_the_open_directory_when_the_hash_path_is_replaced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target_store = MuseConfig {
+            data_dir: tmp.path().join("target").join("muse"),
+        };
+        std::fs::create_dir_all(target_store.runtime_dir()).unwrap();
+        let private_base = tmp.path().join("relay-private");
+        std::fs::create_dir_all(&private_base).unwrap();
+        let system = SystemCourier::isolated(target_store, None, private_base);
+        let private_store = system.prepare_private_store(TARGET).unwrap();
+        let launch_root = private_store.root.clone();
+        let launch_name = launch_root.file_name().unwrap().to_owned();
+        let hash_dir = launch_root.parent().unwrap().to_path_buf();
+        let couriers_dir = hash_dir.parent().unwrap();
+        let moved_hash = couriers_dir.join("moved-target-hash");
+
+        std::fs::rename(&hash_dir, &moved_hash).unwrap();
+        let unrelated = hash_dir.join("unrelated");
+        std::fs::create_dir_all(&unrelated).unwrap();
+        std::fs::write(unrelated.join("keep"), b"not the courier store").unwrap();
+
+        drop(private_store);
+
+        assert!(unrelated.join("keep").is_file());
+        assert!(!moved_hash.join(launch_name).exists());
+    }
+
+    #[test]
+    fn inherited_data_home_stays_on_the_open_directory_after_path_replacement() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let target_store = MuseConfig {
+            data_dir: tmp.path().join("target").join("muse"),
+        };
+        std::fs::create_dir_all(target_store.runtime_dir()).unwrap();
+        let private_base = tmp.path().join("relay-private");
+        std::fs::create_dir_all(&private_base).unwrap();
+        let system = SystemCourier::isolated(target_store, None, private_base);
+        let private_store = system.prepare_private_store(TARGET).unwrap();
+        let launch_root = private_store.root.clone();
+        let moved_launch = launch_root.with_file_name("moved-launch");
+        let unrelated = tmp.path().join("unrelated-data-home");
+
+        std::fs::rename(&launch_root, &moved_launch).unwrap();
+        std::fs::create_dir_all(unrelated.join("muse")).unwrap();
+        symlink(&unrelated, &launch_root).unwrap();
+        let inherited = private_store.inherited_data_home().unwrap();
+        std::fs::write(inherited.path.join("muse").join("bound"), b"private").unwrap();
+
+        assert!(moved_launch.join("muse").join("bound").is_file());
+        assert!(!unrelated.join("muse").join("bound").exists());
+
+        #[cfg(target_os = "macos")]
+        {
+            let moved_again = launch_root.with_file_name("moved-again");
+            std::fs::rename(&moved_launch, &moved_again).unwrap();
+            symlink(&unrelated, &moved_launch).unwrap();
+            assert!(unsafe { inherited.prepare_for_exec() }.is_err());
+            std::fs::remove_file(&moved_launch).unwrap();
+            std::fs::rename(&moved_again, &moved_launch).unwrap();
+        }
+
+        std::fs::remove_file(&launch_root).unwrap();
+        std::fs::rename(&moved_launch, &launch_root).unwrap();
+        drop(inherited);
+        drop(private_store);
+    }
+
+    #[test]
+    fn a_pending_private_directory_is_rolled_back_before_handoff() {
+        use std::os::fd::AsRawFd;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = open_private_dir(tmp.path()).unwrap();
+        let name = private_name("pending-launch").unwrap();
+        assert_eq!(
+            unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) },
+            0
+        );
+        let pending = PendingPrivateDir {
+            parent: Some(parent.try_clone().unwrap()),
+            name,
+            armed: true,
+        };
+
+        drop(pending);
+
+        assert!(!tmp.path().join("pending-launch").exists());
+    }
+
+    #[test]
+    fn a_symlinked_private_ancestor_is_refused_without_touching_its_target() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let target_store = MuseConfig {
+            data_dir: tmp.path().join("target").join("muse"),
+        };
+        std::fs::create_dir_all(target_store.runtime_dir()).unwrap();
+        let private_base = tmp.path().join("relay-private");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&private_base).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, private_base.join("couriers")).unwrap();
+
+        let courier = SystemCourier::isolated(target_store, None, private_base);
+        assert!(courier.prepare_private_store(TARGET).is_none());
+        assert_eq!(std::fs::read_dir(outside).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_resumed_target_in_another_store_gets_a_fresh_registry_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let private_base = tmp.path().join("relay-private");
+        std::fs::create_dir_all(&private_base).unwrap();
+        let store = |name: &str| MuseConfig {
+            data_dir: tmp.path().join(name).join("muse"),
+        };
+        let first_target = store("first-target");
+        let second_target = store("second-target");
+        std::fs::create_dir_all(first_target.runtime_dir()).unwrap();
+        std::fs::create_dir_all(second_target.runtime_dir()).unwrap();
+
+        let first = SystemCourier::isolated(first_target.clone(), None, private_base.clone())
+            .prepare_private_store(TARGET)
+            .unwrap();
+        let second = SystemCourier::isolated(second_target.clone(), None, private_base)
+            .prepare_private_store(TARGET)
+            .unwrap();
+
+        assert_ne!(first.root.parent(), second.root.parent());
+        assert_eq!(
+            std::fs::read_link(first.root.join("muse/runtime/muse")).unwrap(),
+            first_target.runtime_dir()
+        );
+        assert_eq!(
+            std::fs::read_link(second.root.join("muse/runtime/muse")).unwrap(),
+            second_target.runtime_dir()
+        );
+    }
+
+    #[test]
+    fn isolated_paths_are_resolved_against_the_daemon_working_directory() {
+        let courier = SystemCourier::isolated(
+            MuseConfig {
+                data_dir: PathBuf::from("relative-target/muse"),
+            },
+            None,
+            PathBuf::from("relative-private-base"),
+        );
+        assert!(courier.config.data_dir.is_absolute());
+        assert!(courier.private_base.as_ref().unwrap().is_absolute());
     }
 
     #[test]
@@ -886,7 +1666,14 @@ mod tests {
         let model = std::env::var("MUSE_TEST_MODEL").ok();
         let home = dirs_home();
         let config = MuseConfig::from_env(&|k| std::env::var(k).ok(), &home);
-        let courier = Arc::new(SystemCourier::new(config.clone(), model));
+        let tmp = tempfile::tempdir().unwrap();
+        let journal = tmp.path().join("existing-muse-sessions").join("journal");
+        std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+        let courier = Arc::new(SystemCourier::isolated(
+            config.clone(),
+            model,
+            journal.parent().unwrap().to_path_buf(),
+        ));
         let receipts = Arc::new(SystemReceipts::new(&config));
         let t = Target {
             session_id: target_id,
@@ -895,9 +1682,8 @@ mod tests {
             owner_id: "tester".into(),
             owner_uid: unsafe { libc::getuid() },
         };
-        let tmp = tempfile::tempdir().unwrap();
         let outcome = deliver(
-            &tmp.path().join("existing-muse-sessions").join("journal"),
+            &journal,
             courier.clone(),
             receipts,
             &t,

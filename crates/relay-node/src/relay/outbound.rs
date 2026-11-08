@@ -408,6 +408,7 @@ impl Outbound {
             ("POST", "/codex/stop-hook" | "/claude/attestation" | "/copilot/hook") => {
                 self.hook_route(pid, uid, request).await
             }
+            ("POST", "/copilot/mcp") => self.hook_route(pid, uid, request).await,
             ("GET", "/setup/status") => {
                 // The SessionStart hook only reads. Applying the agent-led
                 // defaults here would turn automatic activation on, which is

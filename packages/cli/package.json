@@ -47,7 +47,6 @@
     "@agent-relay/cloud": "17.2.1",
     "@agent-relay/config": "17.2.1",
     "@agent-relay/core-bridge": "17.2.1",
-    "@agent-relay/harness-driver": "17.2.1",
     "@agent-relay/sdk": "17.2.1",
     "@agent-relay/session": "17.2.1",
     "@agent-relay/utils": "17.2.1",

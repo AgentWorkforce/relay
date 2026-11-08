@@ -300,6 +300,7 @@ mod sandbox_rule_reach_tests {
             ("POST", "/webhooks"),
             ("DELETE", "/webhooks"),
             ("POST", "/claude/attestation"),
+            ("POST", "/copilot/mcp"),
             ("POST", "/register"),
             ("DELETE", "/register"),
         ] {

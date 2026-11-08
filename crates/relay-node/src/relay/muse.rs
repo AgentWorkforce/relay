@@ -240,7 +240,9 @@ pub fn active_sessions(
             .is_some_and(|process| process.uid == uid)
             && is_muse_process(table, record.pid)
             // A courier Muse session the probe launched is never a listable
-            // session, a binding target, or a relay caller.
+            // session, a binding target, or a relay caller. If its environment
+            // cannot be read, the marker cannot be disproved, so fail closed.
+            && table.environment_readable(record.pid)
             && table.environment_var(record.pid, COURIER_MARKER).is_none();
         if alive {
             found.push(record);
@@ -1130,6 +1132,26 @@ mod tests {
         // A courier Muse session the probe launched is never listed.
         assert!(discover(&config(temp.path()), &table, 501, true, &|_| false).is_empty());
         assert!(active_sessions(&config(temp.path()), &table, 501).is_empty());
+    }
+
+    #[test]
+    fn a_muse_session_with_an_unreadable_environment_is_not_discovered() {
+        let temp = tempfile::tempdir().unwrap();
+        record(temp.path(), SESSION, 100, "api", true);
+        let table = FakeProcesses::default();
+        table.insert(
+            100,
+            FakeProcess {
+                uid: 501,
+                executable: Some("/home/me/.local/bin/muse".into()),
+                cwd: Some("/w/api".into()),
+                ..FakeProcess::default()
+            },
+        );
+        table.unreadable_environment.lock().unwrap().insert(100);
+
+        assert!(active_sessions(&config(temp.path()), &table, 501).is_empty());
+        assert!(discover(&config(temp.path()), &table, 501, true, &|_| false).is_empty());
     }
 
     #[test]
