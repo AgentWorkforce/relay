@@ -600,9 +600,8 @@ test('head-only corpus identities are accepted without weakening base discrimina
 });
 
 test('case manifest and observations use the current verify-features contract', async () => {
-  const { validateCaseManifest, validateObservation } = await import(
-    '../../../../scripts/verify-features/case-contract.mjs'
-  );
+  const { validateCaseManifest, validateObservation } =
+    await import('../../../../scripts/verify-features/case-contract.mjs');
   const manifest = validateCaseManifest(JSON.parse(await readFile(path.join(caseDir, 'case.json'), 'utf8')), {
     caseId: '2100-copilot-native-mcp-route',
     kind: 'bugfix',

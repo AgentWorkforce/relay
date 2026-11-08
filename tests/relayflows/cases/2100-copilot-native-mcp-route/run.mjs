@@ -18,9 +18,8 @@ assertArmIdentity(arm, baseSha, headSha);
 const inputs = { target, harness, targetSha: arm === 'base' ? baseSha : headSha, headSha };
 await assertProofInputs(inputs, 'before');
 // Load the shared corpus validator only after its tracked provenance is checked.
-const { validateCaseManifest, validateObservation } = await import(
-  '../../../../scripts/verify-features/case-contract.mjs'
-);
+const { validateCaseManifest, validateObservation } =
+  await import('../../../../scripts/verify-features/case-contract.mjs');
 const manifest = validateCaseManifest(JSON.parse(await readFile(path.join(caseDir, 'case.json'), 'utf8')), {
   caseId: CASE_ID,
   kind: 'bugfix',
