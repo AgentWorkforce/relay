@@ -167,6 +167,67 @@ fn select_list(columns: &HashSet<String>) -> Option<String> {
 /// selected column), rows without one last.
 const ORDER: &str = "order by 5 desc";
 
+/// A thread id matched through the primary key's index. `collate nocase`
+/// cannot use that index, so every lookup read the whole table — titles
+/// and all, hundreds of megabytes on a computer with thousands of `codex
+/// exec` threads, many times per delivery. Codex writes ids in lowercase;
+/// the uppercase spelling and the caller's own keep a differently cased
+/// caller matching. Other conditions beside it are written `+column`: the
+/// unary plus keeps SQLite from answering through that column's index
+/// (`archived` would walk every unarchived thread) instead of the key's.
+const ID_MATCHES: &str = "id in (?1, lower(?1), upper(?1))";
+
+/// [`read_one`]'s statement.
+fn read_one_sql(columns: &HashSet<String>) -> Option<String> {
+    Some(format!(
+        "select {} from threads where {ID_MATCHES} and +archived = 0 and +source in ('cli', 'vscode', 'exec') limit 1",
+        select_list(columns)?
+    ))
+}
+
+/// Whether the thread `?1` exists with its archived flag set (`archived`)
+/// or not.
+fn exists_sql(archived: bool) -> String {
+    let flag = if archived {
+        "+archived != 0"
+    } else {
+        "+archived = 0"
+    };
+    format!("select exists(select 1 from threads where {ID_MATCHES} and {flag})")
+}
+
+/// [`rollout_column`]'s statement.
+fn rollout_sql() -> String {
+    format!("select rollout_path from threads where {ID_MATCHES} limit 1")
+}
+
+/// [`read_recent`]'s statement: the newest `?1` of the person's threads.
+fn recent_sql(columns: &HashSet<String>) -> Option<String> {
+    Some(format!(
+        "select {} from threads where rowid in ({}) {}",
+        select_list(columns)?,
+        newest_rowids(columns, "archived = 0 and source in ('cli', 'vscode')"),
+        ORDER
+    ))
+}
+
+/// The rowids of the newest `?1` threads matching `filter`, ordered by the
+/// same updated time the row reports. Only the rowid and that time are
+/// sorted to choose the page, so the sort over every thread never carries
+/// a thread's title — which is its first prompt and can run to a megabyte.
+/// The outer select reads, and orders, the full rows of that page alone (at
+/// most `?1` of them).
+fn newest_rowids(columns: &HashSet<String>, filter: &str) -> String {
+    let has = |column: &str| columns.contains(column);
+    let updated = match (has("updated_at_ms"), has("updated_at")) {
+        (true, true) => "coalesce(updated_at_ms, updated_at * 1000)",
+        (true, false) => "updated_at_ms",
+        (false, true) => "updated_at * 1000",
+        (false, false) => "null",
+    };
+    format!("select rowid from threads where {filter} order by {updated} desc limit ?1")
+}
+
 type Row = (
     String,
     Option<String>,
@@ -202,11 +263,7 @@ fn thread((id, title, cwd, created, updated): Row) -> CodexThread {
 pub fn read_recent(config: &CodexConfig, limit: usize) -> Option<Vec<CodexThread>> {
     with_connection(config, Duration::from_secs(8), |connection| {
         let columns = columns(connection)?;
-        let sql = format!(
-            "select {} from threads where archived = 0 and source in ('cli', 'vscode') {} limit ?1",
-            select_list(&columns)?,
-            ORDER
-        );
+        let sql = recent_sql(&columns)?;
         let mut statement = connection.prepare_cached(&sql).ok()?;
         // Read past relay-spawned rows so skipping them cannot crowd out the
         // requested number of the person's own threads.
@@ -239,8 +296,9 @@ pub fn created_since(config: &CodexConfig, since_ms: i64, scan: usize) -> Option
     with_connection(config, Duration::from_secs(8), |connection| {
         let columns = columns(connection)?;
         let sql = format!(
-            "select {} from threads where archived = 0 {} limit ?1",
+            "select {} from threads where rowid in ({}) {}",
             select_list(&columns)?,
+            newest_rowids(&columns, "archived = 0"),
             ORDER
         );
         let mut statement = connection.prepare_cached(&sql).ok()?;
@@ -268,10 +326,7 @@ pub fn read_one(config: &CodexConfig, id: &str) -> Option<CodexThread> {
     }
     with_connection(config, Duration::from_secs(2), |connection| {
         let columns = columns(connection)?;
-        let sql = format!(
-            "select {} from threads where id = ?1 collate nocase and archived = 0 and source in ('cli', 'vscode', 'exec') limit 1",
-            select_list(&columns)?
-        );
+        let sql = read_one_sql(&columns)?;
         let found = connection.query_row(&sql, [id], row).ok()?;
         Some(thread(found))
     })
@@ -294,11 +349,7 @@ pub fn contains_unarchived(config: &CodexConfig, id: &str) -> Option<bool> {
             return None;
         }
         connection
-            .query_row(
-                "select exists(select 1 from threads where id = ?1 collate nocase and archived = 0)",
-                [id],
-                |row| row.get(0),
-            )
+            .query_row(&exists_sql(false), [id], |row| row.get(0))
             .ok()
     })
 }
@@ -325,11 +376,7 @@ pub fn archived_ids<'a>(
         {
             return None;
         }
-        let mut statement = connection
-            .prepare_cached(
-                "select exists(select 1 from threads where id = ?1 collate nocase and archived != 0)",
-            )
-            .ok()?;
+        let mut statement = connection.prepare_cached(&exists_sql(true)).ok()?;
         Some(
             ids.into_iter()
                 .filter(|id| statement.query_row([id], |row| row.get(0)).unwrap_or(false))
@@ -344,11 +391,7 @@ pub fn archived_ids<'a>(
 pub fn rollout_column(config: &CodexConfig, id: &str) -> Option<String> {
     with_connection(config, Duration::from_secs(2), |connection| {
         connection
-            .query_row(
-                "select rollout_path from threads where id = ?1 collate nocase",
-                [id],
-                |row| row.get::<_, Option<String>>(0),
-            )
+            .query_row(&rollout_sql(), [id], |row| row.get::<_, Option<String>>(0))
             .ok()
             .flatten()
             .filter(|path| !path.is_empty())
@@ -670,5 +713,102 @@ pub(crate) mod tests {
         let threads = read_recent(&config(home.path()), 1).unwrap();
         assert_eq!(ids(&threads), [newest]);
         assert_eq!(threads[0].updated_at_ms, Some(1_890_000_000_000));
+    }
+
+    /// Codex's own schema: `id` is the primary key and titles are first
+    /// prompts. Lookups by id go through that key's index and the recent
+    /// page is chosen without sorting titles, so neither reads the whole
+    /// table on a computer with thousands of large `codex exec` threads.
+    fn seed_codex_schema(home: &Path) -> Connection {
+        let db = Connection::open(home.join("state_5.sqlite")).unwrap();
+        db.execute_batch(
+            "create table threads (id text primary key not null, rollout_path text, created_at integer, updated_at integer, source text, cwd text, title text, archived integer, created_at_ms integer, updated_at_ms integer, name text);
+             create index idx_threads_archived on threads(archived);
+             create index idx_threads_source on threads(source);",
+        )
+        .unwrap();
+        db
+    }
+
+    fn plan(db: &Connection, sql: &str) -> String {
+        let mut statement = db.prepare(&format!("explain query plan {sql}")).unwrap();
+        let parameters: Vec<&str> = vec!["x"; statement.parameter_count()];
+        let details = statement
+            .query_map(rusqlite::params_from_iter(parameters), |row| {
+                row.get::<_, String>(3)
+            })
+            .unwrap()
+            .flatten()
+            .collect::<Vec<_>>();
+        details.join("\n")
+    }
+
+    #[test]
+    fn id_lookups_use_the_primary_key_index() {
+        let home = tempfile::tempdir().unwrap();
+        let db = seed_codex_schema(home.path());
+        let columns = columns(&db).unwrap();
+        for sql in [
+            rollout_sql(),
+            exists_sql(false),
+            exists_sql(true),
+            read_one_sql(&columns).unwrap(),
+        ] {
+            let plan = plan(&db, &sql);
+            assert!(plan.contains("sqlite_autoindex_threads_1"), "{sql}: {plan}");
+            assert!(!plan.contains("SCAN threads"), "{sql}: {plan}");
+        }
+    }
+
+    #[test]
+    fn the_recent_page_is_chosen_without_sorting_titles() {
+        let home = tempfile::tempdir().unwrap();
+        let db = seed_codex_schema(home.path());
+        let columns = columns(&db).unwrap();
+        let plan = plan(&db, &recent_sql(&columns).unwrap());
+        // The outer read fetches the chosen rows by rowid; only the inner
+        // page selection sorts, and it selects rowids alone.
+        assert!(
+            plan.contains("SEARCH threads USING INTEGER PRIMARY KEY"),
+            "{plan}"
+        );
+    }
+
+    #[test]
+    fn a_thread_is_found_by_id_in_any_case() {
+        let home = tempfile::tempdir().unwrap();
+        let db = seed_codex_schema(home.path());
+        let upper = "10000000-0000-0000-0000-00000000ABCD";
+        db.execute(
+            "insert into threads (id, rollout_path, source, title, archived, updated_at) values (?1, '/r/lower.jsonl', 'cli', 'Lower', 0, 1790000000), (?2, '/r/upper.jsonl', 'cli', 'Upper', 1, 1790000001)",
+            [THREAD, upper],
+        )
+        .unwrap();
+        let config = config(home.path());
+        for id in [THREAD.to_string(), THREAD.to_uppercase()] {
+            assert_eq!(
+                rollout_column(&config, &id).as_deref(),
+                Some("/r/lower.jsonl"),
+                "{id}"
+            );
+            assert_eq!(
+                read_one(&config, &id).map(|t| t.title).as_deref(),
+                Some("Lower"),
+                "{id}"
+            );
+            assert_eq!(contains_unarchived(&config, &id), Some(true), "{id}");
+        }
+        for id in [upper.to_string(), upper.to_lowercase()] {
+            assert_eq!(
+                rollout_column(&config, &id).as_deref(),
+                Some("/r/upper.jsonl"),
+                "{id}"
+            );
+            assert_eq!(contains_unarchived(&config, &id), Some(false), "{id}");
+            assert_eq!(
+                archived_ids(&config, [id.as_str()]),
+                HashSet::from([id.clone()])
+            );
+        }
     }
 }
