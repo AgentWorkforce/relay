@@ -109,8 +109,7 @@ export class BridgeStore {
     const value = canonical(binding);
     this.transaction(() => {
       const row = this.db.prepare('SELECT value FROM binding WHERE id=1').get() as
-        | { value: string }
-        | undefined;
+        { value: string } | undefined;
       if (row && row.value !== value) throw new Error('bridge_binding_mismatch');
       if (!row) this.db.prepare('INSERT INTO binding(id, value) VALUES (1, ?)').run(value);
     });
@@ -127,8 +126,7 @@ export class BridgeStore {
     const { assignment, digest, now } = input;
     return this.transaction(() => {
       const existing = this.db.prepare('SELECT digest FROM tasks WHERE task_id=?').get(assignment.taskId) as
-        | { digest: string }
-        | undefined;
+        { digest: string } | undefined;
       if (existing) return existing.digest === digest ? 'duplicate' : 'conflict';
       const { total } = this.db
         .prepare('SELECT COALESCE(SUM(reservation_micros), 0) AS total FROM tasks')
@@ -236,7 +234,9 @@ export class BridgeStore {
       if (!row) return;
       this.enqueue(taskId, row.digest, row.next_sequence, 'running', now);
       this.db
-        .prepare(`UPDATE tasks SET state='running', running_at=?, next_sequence=next_sequence+1 WHERE task_id=?`)
+        .prepare(
+          `UPDATE tasks SET state='running', running_at=?, next_sequence=next_sequence+1 WHERE task_id=?`
+        )
         .run(now, taskId);
     });
   }
@@ -317,9 +317,9 @@ export class BridgeStore {
   }
 
   cursor(conversationId: string): string | undefined {
-    const row = this.db.prepare('SELECT message_id FROM cursors WHERE conversation_id=?').get(conversationId) as
-      | { message_id: string }
-      | undefined;
+    const row = this.db
+      .prepare('SELECT message_id FROM cursors WHERE conversation_id=?')
+      .get(conversationId) as { message_id: string } | undefined;
     return row?.message_id;
   }
 
@@ -343,8 +343,7 @@ export class BridgeStore {
 
   chiefConversation(): string | undefined {
     const row = this.db.prepare('SELECT conversation_id FROM chief_conversation WHERE id=1').get() as
-      | { conversation_id: string }
-      | undefined;
+      { conversation_id: string } | undefined;
     return row?.conversation_id;
   }
 

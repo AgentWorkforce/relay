@@ -78,7 +78,13 @@ export class ExecutionBridge {
     if (identity.address !== undefined && identity.address !== worker.address) {
       throw new Error('bridge_refused:address_mismatch');
     }
-    this.store.pinBinding({ workerAgentId: worker.agentId, workspaceId, chiefAgentId: chief.agentId, chiefId: chief.chiefId, node: node.id });
+    this.store.pinBinding({
+      workerAgentId: worker.agentId,
+      workspaceId,
+      chiefAgentId: chief.agentId,
+      chiefId: chief.chiefId,
+      node: node.id,
+    });
     const refusal = await this.node.preflight(harness, node);
     if (refusal) throw new Error(`bridge_refused:${refusal}`);
     this.identity = identity;
@@ -150,7 +156,11 @@ export class ExecutionBridge {
     // Any other DM is ignored. Only a validated assignment ever reaches a native spawn.
   }
 
-  private onAssignment(message: RelayMessage, metadata: Record<string, unknown>, identity: RelayIdentity): void {
+  private onAssignment(
+    message: RelayMessage,
+    metadata: Record<string, unknown>,
+    identity: RelayIdentity
+  ): void {
     const now = this.now();
     let read: ReturnType<typeof readAssignment>;
     try {
@@ -310,7 +320,12 @@ export class ExecutionBridge {
 
   private finishClaimed(task: TaskRow): void {
     const state = task.pendingResult === 'completed' ? 'completed' : 'failed';
-    this.store.finish(task.taskId, state, state === 'failed' ? 'agent_reported_failure' : undefined, this.now());
+    this.store.finish(
+      task.taskId,
+      state,
+      state === 'failed' ? 'agent_reported_failure' : undefined,
+      this.now()
+    );
     this.log('task_finished', { taskId: task.taskId, state });
   }
 
@@ -340,7 +355,7 @@ export class ExecutionBridge {
   private async flushReports(): Promise<void> {
     const now = this.now();
     // Each pass sends the lowest unsent report per task, so a delivered report frees the next.
-    for (let delivered = true; delivered; ) {
+    for (let delivered = true; delivered;) {
       delivered = false;
       for (const { report, attempts } of this.store.dueReports(now)) {
         try {

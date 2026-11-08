@@ -14,9 +14,23 @@ describe('agreement with relay-chief', () => {
 
   it('accepts what relay-chief accepts', () => {
     const read = readAssignment(
-      { workspaceId: 'ws-1', senderAgentId: 'agent-chief', recipientAgentId: 'agent-worker', recipientAddress: 'worker@node' },
+      {
+        workspaceId: 'ws-1',
+        senderAgentId: 'agent-chief',
+        recipientAgentId: 'agent-worker',
+        recipientAddress: 'worker@node',
+      },
       { chief_assignment: assignment, assignment_digest: golden.digest },
-      { chiefAgentId: 'agent-chief', chiefId: 'chief-1', organizationId: 'org-1', projectId: 'project-1', repositories: ['acme/app'], actions: ['investigate'], maxReservationMicros: 5000, maxEvidenceAgeMs: 3_600_000 },
+      {
+        chiefAgentId: 'agent-chief',
+        chiefId: 'chief-1',
+        organizationId: 'org-1',
+        projectId: 'project-1',
+        repositories: ['acme/app'],
+        actions: ['investigate'],
+        maxReservationMicros: 5000,
+        maxEvidenceAgeMs: 3_600_000,
+      },
       golden.now
     );
     expect(read.digest).toBe(golden.digest);
@@ -55,7 +69,9 @@ describe('agent task text', () => {
 
   it('withholds deployment, IAM and secret authority', () => {
     const { assignment, digest } = makeAssignment();
-    expect(buildTask(assignment, digest)).toMatch(/no authority to deploy, change IAM or other access, or create, read or move secrets/);
+    expect(buildTask(assignment, digest)).toMatch(
+      /no authority to deploy, change IAM or other access, or create, read or move secrets/
+    );
   });
 
   it('drops references before going over the core limit', () => {
@@ -83,10 +99,12 @@ describe('claimed result', () => {
     expect(parseClaimedResult(text)).toBe(expected);
   });
 
-  it.each(['completed', 'CHIEF_RESULT: done', 'CHIEF_RESULT: completed\nand then more', 'say CHIEF_RESULT: completed'])(
-    'refuses %j',
-    (text) => {
-      expect(parseClaimedResult(text)).toBeUndefined();
-    }
-  );
+  it.each([
+    'completed',
+    'CHIEF_RESULT: done',
+    'CHIEF_RESULT: completed\nand then more',
+    'say CHIEF_RESULT: completed',
+  ])('refuses %j', (text) => {
+    expect(parseClaimedResult(text)).toBeUndefined();
+  });
 });

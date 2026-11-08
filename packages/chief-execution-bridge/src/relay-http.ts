@@ -52,7 +52,10 @@ const receiptSchema = envelope(
 function toReceipt(raw: z.infer<typeof receiptSchema>['data']): SpawnReceipt {
   const id = raw.invocation_id ?? raw.id;
   if (!id) throw new RelayError('relay_response_invalid', true);
-  const output = (typeof raw.output === 'object' && raw.output !== null ? raw.output : {}) as Record<string, unknown>;
+  const output = (typeof raw.output === 'object' && raw.output !== null ? raw.output : {}) as Record<
+    string,
+    unknown
+  >;
   const warning = output.warning as { code?: unknown } | string | undefined;
   return {
     id,
@@ -81,7 +84,10 @@ export class RelayHttpClient implements RelayPort {
     if (!token.trim()) throw new Error('relay_token_missing');
   }
 
-  private async request(path: string, init: { method?: string; body?: unknown; key?: string } = {}): Promise<unknown> {
+  private async request(
+    path: string,
+    init: { method?: string; body?: unknown; key?: string } = {}
+  ): Promise<unknown> {
     let response: Response;
     try {
       response = await this.fetchImpl(new URL(path, this.origin), {
@@ -101,7 +107,11 @@ export class RelayHttpClient implements RelayPort {
     if (!response.ok) {
       // Cancel without reading: a provider body must not reach logs or errors.
       await response.body?.cancel().catch(() => undefined);
-      const retryable = response.status >= 500 || response.status === 408 || response.status === 409 || response.status === 429;
+      const retryable =
+        response.status >= 500 ||
+        response.status === 408 ||
+        response.status === 409 ||
+        response.status === 429;
       throw new RelayError(`relay_http_${response.status}`, retryable);
     }
     let text: string;

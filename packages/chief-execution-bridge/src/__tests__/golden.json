@@ -10,17 +10,12 @@
     "projectId": "project-1",
     "repository": "acme/app",
     "workKey": "issue-42",
-    "resourceKeys": [
-      "issue-42",
-      "src/auth.ts"
-    ],
+    "resourceKeys": ["issue-42", "src/auth.ts"],
     "action": "investigate",
     "worker": {
       "agentId": "agent-worker",
       "address": "worker@node",
-      "actions": [
-        "investigate"
-      ]
+      "actions": ["investigate"]
     },
     "policyVersion": "p1",
     "configurationRevision": 1,
@@ -36,19 +31,12 @@
       "projectId": "project-1",
       "repository": "acme/app",
       "workKey": "issue-42",
-      "resourceKeys": [
-        "issue-42",
-        "src/auth.ts"
-      ],
+      "resourceKeys": ["issue-42", "src/auth.ts"],
       "observedAt": 1800000000000,
       "summary": "Redacted evidence with unicode é and \"quotes\"",
-      "references": [
-        "https://github.com/acme/app/issues/42"
-      ]
+      "references": ["https://github.com/acme/app/issues/42"]
     },
-    "acceptance": [
-      "The test passes"
-    ]
+    "acceptance": ["The test passes"]
   },
   "digest": "9503545e60a04a0ec6ea6e39fa82e47176d624a46b5e9d63762412d26c16223c",
   "canonicalAssignmentHash": "9503545e60a04a0ec6ea6e39fa82e47176d624a46b5e9d63762412d26c16223c",

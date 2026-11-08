@@ -103,7 +103,12 @@ export class FakeRelay implements RelayPort {
     return id;
   }
 
-  deliverAssignment(assignment: Assignment, digest: string, from = CHIEF, metadataOverride?: Record<string, unknown>): string {
+  deliverAssignment(
+    assignment: Assignment,
+    digest: string,
+    from = CHIEF,
+    metadataOverride?: Record<string, unknown>
+  ): string {
     return this.deliver(from, from === CHIEF ? 'chief' : from, 'assignment', {
       chief_assignment: assignment,
       assignment_digest: digest,
@@ -120,9 +125,11 @@ export class FakeRelay implements RelayPort {
   }
 
   async conversations(): Promise<RelayConversation[]> {
-    const real = [...this.conversationsById.entries()].map(
-      ([id, c]): RelayConversation => ({ id, type: '1:1', participants: [WORKER, c.peer] })
-    );
+    const real = [...this.conversationsById.entries()].map(([id, c]): RelayConversation => ({
+      id,
+      type: '1:1',
+      participants: [WORKER, c.peer],
+    }));
     // Newest first, as Relaycast lists them.
     return [...this.extraConversations, ...real.reverse()].slice(0, this.conversationListLimit);
   }
@@ -212,14 +219,26 @@ export function makeConfig(overrides: Record<string, unknown> = {}): BridgeConfi
     relayOrigin: 'https://relay.example',
     workspaceId: 'ws-1',
     worker: { agentId: WORKER, address: 'worker@node' },
-    chief: { agentId: CHIEF, address: 'chief@host', chiefId: 'chief-1', organizationId: 'org-1', projectId: 'project-1' },
+    chief: {
+      agentId: CHIEF,
+      address: 'chief@host',
+      chiefId: 'chief-1',
+      organizationId: 'org-1',
+      projectId: 'project-1',
+    },
     repositories: { 'acme/app': '/srv/work/app', 'acme/other': '/srv/work/other' },
     actions: ['investigate', 'coordinate', 'unblock'],
     maxEvidenceAgeMs: 3_600_000,
     harness: 'claude',
     node: { id: 'node-1', name: 'node-one' },
     isolation: { dedicatedNode: true, scrubbedEnvironment: true },
-    limits: { maxConcurrent: 2, maxReservationMicros: 5000, budgetMicros: 100_000, maxRuntimeMs: 1_800_000, maxQueuedMs: 900_000 },
+    limits: {
+      maxConcurrent: 2,
+      maxReservationMicros: 5000,
+      budgetMicros: 100_000,
+      maxRuntimeMs: 1_800_000,
+      maxQueuedMs: 900_000,
+    },
     ledgerPath: '/tmp/unused.db',
     ...overrides,
   });
@@ -244,7 +263,14 @@ export async function makeHarness(configOverrides: Record<string, unknown> = {})
   const logs: Harness['logs'] = [];
   const config = makeConfig(configOverrides);
   const build = (store: BridgeStore) =>
-    new ExecutionBridge({ config, store, relay, node, now: () => clock.now, log: (event, fields) => logs.push({ event, fields }) });
+    new ExecutionBridge({
+      config,
+      store,
+      relay,
+      node,
+      now: () => clock.now,
+      log: (event, fields) => logs.push({ event, fields }),
+    });
   const store = new BridgeStore(path);
   const harness: Harness = {
     relay,

@@ -46,19 +46,19 @@ without one is otherwise ignored.
 
 ## Requirements
 
-| Requirement | Status |
-| --- | --- |
-| Sender and recipient from authenticated Relay data | Enforced. The recipient address is the configured one, checked against `/v1/agent` when Relay returns it |
-| Durable dedupe before native execution | Enforced |
-| Generic DM never becomes native input | Enforced |
-| Reports with increasing sequences; safe retry | Enforced |
-| Failed or timed-out agent reports `failed` | Enforced, including a report owed across a restart |
-| Session binding | Enforced as above. The agent ID is trust-on-first-use, since an agent token cannot read it from Relaycast |
-| Resource limits | Enforced: concurrency, one task per repository, wall-clock runtime, queue time, node capacity |
-| Spending limits | **Partly.** Per-task and lifetime *reservation* caps only. **Real provider spend is not metered or enforced**: a spawn has no budget parameter |
-| Allowlisted agent environment | **Unmet on any node not set up as below.** `spawn.invoke` has no environment parameter and spawned harnesses inherit the core's environment and the person's MCP servers |
-| Evidence is data, not instructions | Evidence is fenced and labelled in the prompt. This reduces injection risk and does not remove it |
-| No deployment, IAM or secret authority | Stated in the prompt and never granted by the bridge; the actual boundary is what the node's account can reach |
+| Requirement                                        | Status                                                                                                                                                                   |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Sender and recipient from authenticated Relay data | Enforced. The recipient address is the configured one, checked against `/v1/agent` when Relay returns it                                                                 |
+| Durable dedupe before native execution             | Enforced                                                                                                                                                                 |
+| Generic DM never becomes native input              | Enforced                                                                                                                                                                 |
+| Reports with increasing sequences; safe retry      | Enforced                                                                                                                                                                 |
+| Failed or timed-out agent reports `failed`         | Enforced, including a report owed across a restart                                                                                                                       |
+| Session binding                                    | Enforced as above. The agent ID is trust-on-first-use, since an agent token cannot read it from Relaycast                                                                |
+| Resource limits                                    | Enforced: concurrency, one task per repository, wall-clock runtime, queue time, node capacity                                                                            |
+| Spending limits                                    | **Partly.** Per-task and lifetime _reservation_ caps only. **Real provider spend is not metered or enforced**: a spawn has no budget parameter                           |
+| Allowlisted agent environment                      | **Unmet on any node not set up as below.** `spawn.invoke` has no environment parameter and spawned harnesses inherit the core's environment and the person's MCP servers |
+| Evidence is data, not instructions                 | Evidence is fenced and labelled in the prompt. This reduces injection risk and does not remove it                                                                        |
+| No deployment, IAM or secret authority             | Stated in the prompt and never granted by the bridge; the actual boundary is what the node's account can reach                                                           |
 
 ## Node requirements
 
@@ -86,9 +86,9 @@ It does not use the Flows runtime, so Flows' missing linux-arm64 build does not 
 
 ## What has been verified
 
-| Against | What |
-| --- | --- |
+| Against                                        | What                                                                                                                                              |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Fakes (`npm test`, no network beyond loopback) | All bridge behaviour above, on a real on-disk SQLite ledger with restarts; the HTTP adapter over loopback; the core adapter against a fake client |
-| relay-chief's real code | Digest, `readAssignment` and report shape, through a generated fixture |
-| A real local core (read-only, by hand) | `settings.get` carries the keys preflight reads; `agents.end` and `spawn.targets` exist |
-| **Not verified** | A real Relaycast, a real spawn, a real harness final answer, `agents.end` on a real agent, or a configured dedicated node |
+| relay-chief's real code                        | Digest, `readAssignment` and report shape, through a generated fixture                                                                            |
+| A real local core (read-only, by hand)         | `settings.get` carries the keys preflight reads; `agents.end` and `spawn.targets` exist                                                           |
+| **Not verified**                               | A real Relaycast, a real spawn, a real harness final answer, `agents.end` on a real agent, or a configured dedicated node                         |

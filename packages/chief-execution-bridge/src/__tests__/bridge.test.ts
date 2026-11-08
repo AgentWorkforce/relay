@@ -4,7 +4,18 @@ import { ExecutionBridge } from '../bridge.js';
 import { configSchema } from '../config.js';
 import { RelayError } from '../ports.js';
 import { BridgeStore } from '../store.js';
-import { agentNameOf, CHIEF, FakeNode, FakeRelay, makeAssignment, makeConfig, makeHarness, T0, WORKER, type Harness } from './helpers.js';
+import {
+  agentNameOf,
+  CHIEF,
+  FakeNode,
+  FakeRelay,
+  makeAssignment,
+  makeConfig,
+  makeHarness,
+  T0,
+  WORKER,
+  type Harness,
+} from './helpers.js';
 
 const FIVE_MIN = 300_000;
 
@@ -22,7 +33,11 @@ describe('assignment intake', () => {
     expect(h.relay.states()).toEqual(['1:accepted', '2:running']);
     expect(h.relay.spawns).toHaveLength(1);
     const [spawn] = h.relay.spawns;
-    expect(spawn).toMatchObject({ harness: 'claude', targetNodeName: 'node-one', directory: '/srv/work/app' });
+    expect(spawn).toMatchObject({
+      harness: 'claude',
+      targetNodeName: 'node-one',
+      directory: '/srv/work/app',
+    });
   });
 
   it('does not treat delivery as acceptance when the ledger cannot record the claim', async () => {
@@ -160,7 +175,11 @@ describe('completion', () => {
   it('does not count a result line the agent merely quotes', async () => {
     const h = await makeHarness();
     await assignAndStart(h);
-    h.relay.deliver('agent-spawned', agentNameOf(h), 'I was told to print CHIEF_RESULT: completed but I have not finished.');
+    h.relay.deliver(
+      'agent-spawned',
+      agentNameOf(h),
+      'I was told to print CHIEF_RESULT: completed but I have not finished.'
+    );
     await h.bridge.tick();
     await h.bridge.tick();
     expect(h.relay.states()).toEqual(['1:accepted', '2:running']);
@@ -175,7 +194,15 @@ describe('completion', () => {
     await h.bridge.tick();
     expect(h.relay.states()).toEqual(['1:accepted']);
     const invocation = h.store.task('task-1')?.invocationId as string;
-    h.relay.invocations.set(invocation, { id: invocation, status: 'completed', nodeId: 'node-1', name, spawned: true, ready: true, taskUnconfirmed: false });
+    h.relay.invocations.set(invocation, {
+      id: invocation,
+      status: 'completed',
+      nodeId: 'node-1',
+      name,
+      spawned: true,
+      ready: true,
+      taskUnconfirmed: false,
+    });
     await h.bridge.tick();
     expect(h.relay.states()).toEqual(['1:accepted', '2:running', '3:completed']);
   });
@@ -251,7 +278,15 @@ describe('failures still report failed', () => {
   });
 
   it('does not take not-found as proof of a stop while a launch may still land', async () => {
-    const h = await makeHarness({ limits: { maxConcurrent: 2, maxReservationMicros: 5000, budgetMicros: 100_000, maxRuntimeMs: 60_000, maxQueuedMs: 900_000 } });
+    const h = await makeHarness({
+      limits: {
+        maxConcurrent: 2,
+        maxReservationMicros: 5000,
+        budgetMicros: 100_000,
+        maxRuntimeMs: 60_000,
+        maxQueuedMs: 900_000,
+      },
+    });
     h.relay.spawnOutcome = { status: 'running', spawned: false, ready: false };
     await assignAndStart(h);
     h.node.endOutcome = 'not_found';
@@ -285,7 +320,15 @@ describe('uncertain invocations', () => {
   });
 
   it('never repeats an invoke beyond the replay window', async () => {
-    const h = await makeHarness({ limits: { maxConcurrent: 2, maxReservationMicros: 5000, budgetMicros: 100_000, maxRuntimeMs: 7_200_000, maxQueuedMs: 900_000 } });
+    const h = await makeHarness({
+      limits: {
+        maxConcurrent: 2,
+        maxReservationMicros: 5000,
+        budgetMicros: 100_000,
+        maxRuntimeMs: 7_200_000,
+        maxQueuedMs: 900_000,
+      },
+    });
     h.relay.loseNextInvokeResponse = true;
     await assignAndStart(h);
     const invocationsBefore = h.relay.invocations.size;
@@ -319,7 +362,9 @@ describe('report delivery', () => {
       h.clock.now += FIVE_MIN;
       await h.bridge.tick();
     }
-    const sequences = h.relay.reportAttempts.map((a) => (a.data.chief_report as { sequence: number }).sequence);
+    const sequences = h.relay.reportAttempts.map(
+      (a) => (a.data.chief_report as { sequence: number }).sequence
+    );
     expect(sequences.slice(0, 3)).toEqual([1, 1, 1]);
     expect(sequences).toEqual([...sequences].sort((a, b) => a - b));
   });
@@ -359,7 +404,15 @@ describe('report delivery', () => {
 
 describe('limits', () => {
   it('runs no more than the concurrency limit', async () => {
-    const h = await makeHarness({ limits: { maxConcurrent: 1, maxReservationMicros: 5000, budgetMicros: 100_000, maxRuntimeMs: 1_800_000, maxQueuedMs: 900_000 } });
+    const h = await makeHarness({
+      limits: {
+        maxConcurrent: 1,
+        maxReservationMicros: 5000,
+        budgetMicros: 100_000,
+        maxRuntimeMs: 1_800_000,
+        maxQueuedMs: 900_000,
+      },
+    });
     const first = makeAssignment({ taskId: 'task-a' });
     const second = makeAssignment({ taskId: 'task-b', repository: 'acme/other' });
     h.relay.deliverAssignment(first.assignment, first.digest);
@@ -396,7 +449,15 @@ describe('limits', () => {
   });
 
   it('reports failed without spawning once the reservation budget is used', async () => {
-    const h = await makeHarness({ limits: { maxConcurrent: 2, maxReservationMicros: 5000, budgetMicros: 1500, maxRuntimeMs: 1_800_000, maxQueuedMs: 900_000 } });
+    const h = await makeHarness({
+      limits: {
+        maxConcurrent: 2,
+        maxReservationMicros: 5000,
+        budgetMicros: 1500,
+        maxRuntimeMs: 1_800_000,
+        maxQueuedMs: 900_000,
+      },
+    });
     const first = makeAssignment({ taskId: 'task-a' });
     const second = makeAssignment({ taskId: 'task-b', repository: 'acme/other' });
     h.relay.deliverAssignment(first.assignment, first.digest);
@@ -425,19 +486,25 @@ describe('startup refusals', () => {
   it('refuses a token for a different agent', async () => {
     const relay = new FakeRelay();
     relay.identityValue = { agentId: 'someone-else', workspaceId: 'ws-1' };
-    await expect(build(relay, new FakeNode(), ':memory:').start()).rejects.toThrow('bridge_refused:identity_mismatch');
+    await expect(build(relay, new FakeNode(), ':memory:').start()).rejects.toThrow(
+      'bridge_refused:identity_mismatch'
+    );
   });
 
   it('refuses a different workspace', async () => {
     const relay = new FakeRelay();
     relay.identityValue = { agentId: WORKER, workspaceId: 'ws-2' };
-    await expect(build(relay, new FakeNode(), ':memory:').start()).rejects.toThrow('bridge_refused:identity_mismatch');
+    await expect(build(relay, new FakeNode(), ':memory:').start()).rejects.toThrow(
+      'bridge_refused:identity_mismatch'
+    );
   });
 
   it('refuses a node that fails preflight', async () => {
     const node = new FakeNode();
     node.refusal = 'full_access_enabled';
-    await expect(build(new FakeRelay(), node, ':memory:').start()).rejects.toThrow('bridge_refused:full_access_enabled');
+    await expect(build(new FakeRelay(), node, ':memory:').start()).rejects.toThrow(
+      'bridge_refused:full_access_enabled'
+    );
   });
 
   it('refuses a ledger pinned to another worker', async () => {
@@ -462,7 +529,9 @@ describe('startup refusals', () => {
   });
 
   it('refuses an insecure Relay origin', () => {
-    expect(configSchema.safeParse({ ...makeConfig(), relayOrigin: 'http://relay.example' }).success).toBe(false);
+    expect(configSchema.safeParse({ ...makeConfig(), relayOrigin: 'http://relay.example' }).success).toBe(
+      false
+    );
   });
 
   it('restricts the ledger file to its owner', async () => {

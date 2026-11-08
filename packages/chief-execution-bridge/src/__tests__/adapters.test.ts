@@ -38,7 +38,10 @@ describe('RelayHttpClient over loopback HTTP', () => {
       auth = req.headers.authorization;
       json(res, 200, { ok: true, data: { id: 'a1', workspace_id: 'w1' } });
     });
-    await expect(new RelayHttpClient(origin, TOKEN).identity()).resolves.toMatchObject({ agentId: 'a1', workspaceId: 'w1' });
+    await expect(new RelayHttpClient(origin, TOKEN).identity()).resolves.toMatchObject({
+      agentId: 'a1',
+      workspaceId: 'w1',
+    });
     expect(auth).toBe(`Bearer ${TOKEN}`);
   });
 
@@ -46,29 +49,56 @@ describe('RelayHttpClient over loopback HTTP', () => {
     let seen: { url?: string; key?: string | string[]; body?: unknown } = {};
     const origin = await serve((req, res, body) => {
       seen = { url: req.url, key: req.headers['idempotency-key'], body: JSON.parse(body) };
-      json(res, 201, { ok: true, data: { invocation_id: 'inv1', status: 'dispatched', dispatched_node_id: 'n1' } });
+      json(res, 201, {
+        ok: true,
+        data: { invocation_id: 'inv1', status: 'dispatched', dispatched_node_id: 'n1' },
+      });
     });
     const receipt = await new RelayHttpClient(origin, TOKEN).invokeSpawn({
-      name: 'chief-x', harness: 'claude', task: 'do it', targetNodeName: 'node-one', directory: '/srv/app', idempotencyKey: 'chief-spawn-1234567890',
+      name: 'chief-x',
+      harness: 'claude',
+      task: 'do it',
+      targetNodeName: 'node-one',
+      directory: '/srv/app',
+      idempotencyKey: 'chief-spawn-1234567890',
     });
     expect(seen).toEqual({
       url: '/v1/actions/spawn/invoke',
       key: 'chief-spawn-1234567890',
-      body: { input: { name: 'chief-x', cli: 'claude', task: 'do it', target_node: 'node-one', worker_cwd: '/srv/app', verify_ready: true } },
+      body: {
+        input: {
+          name: 'chief-x',
+          cli: 'claude',
+          task: 'do it',
+          target_node: 'node-one',
+          worker_cwd: '/srv/app',
+          verify_ready: true,
+        },
+      },
     });
     expect(receipt).toMatchObject({ id: 'inv1', status: 'dispatched', nodeId: 'n1', spawned: false });
   });
 
   it('reads spawned and ready only when exactly true', async () => {
     const origin = await serve((_req, res) => {
-      json(res, 200, { ok: true, data: { id: 'inv1', status: 'completed', output: { name: 'x', spawned: 'true', ready: 1 } } });
+      json(res, 200, {
+        ok: true,
+        data: { id: 'inv1', status: 'completed', output: { name: 'x', spawned: 'true', ready: 1 } },
+      });
     });
-    await expect(new RelayHttpClient(origin, TOKEN).invocation('inv1')).resolves.toMatchObject({ spawned: false, ready: false });
+    await expect(new RelayHttpClient(origin, TOKEN).invocation('inv1')).resolves.toMatchObject({
+      spawned: false,
+      ready: false,
+    });
   });
 
   it('refuses a receipt for a different invocation', async () => {
-    const origin = await serve((_req, res) => json(res, 200, { ok: true, data: { id: 'inv2', status: 'running' } }));
-    await expect(new RelayHttpClient(origin, TOKEN).invocation('inv1')).rejects.toMatchObject({ code: 'relay_response_invalid' });
+    const origin = await serve((_req, res) =>
+      json(res, 200, { ok: true, data: { id: 'inv2', status: 'running' } })
+    );
+    await expect(new RelayHttpClient(origin, TOKEN).invocation('inv1')).rejects.toMatchObject({
+      code: 'relay_response_invalid',
+    });
   });
 
   it('sends a report by exact address with its key', async () => {
@@ -77,10 +107,20 @@ describe('RelayHttpClient over loopback HTTP', () => {
       seen = { key: req.headers['idempotency-key'], body: JSON.parse(body) };
       json(res, 201, { ok: true, data: {} });
     });
-    await new RelayHttpClient(origin, TOKEN).sendReport({ address: 'chief@host', text: 'Worker accepted', data: { chief_report: { sequence: 1 } }, idempotencyKey: 'chief-report-abc' });
+    await new RelayHttpClient(origin, TOKEN).sendReport({
+      address: 'chief@host',
+      text: 'Worker accepted',
+      data: { chief_report: { sequence: 1 } },
+      idempotencyKey: 'chief-report-abc',
+    });
     expect(seen).toEqual({
       key: 'chief-report-abc',
-      body: { address: 'chief@host', text: 'Worker accepted', mode: 'wait', data: { chief_report: { sequence: 1 } } },
+      body: {
+        address: 'chief@host',
+        text: 'Worker accepted',
+        mode: 'wait',
+        data: { chief_report: { sequence: 1 } },
+      },
     });
   });
 
@@ -97,7 +137,9 @@ describe('RelayHttpClient over loopback HTTP', () => {
 
   it('never puts a response body or token in an error', async () => {
     const origin = await serve((_req, res) => json(res, 500, { provider_secret: 'sk-provider-body' }));
-    const error = (await new RelayHttpClient(origin, TOKEN).identity().catch((e: unknown) => e)) as RelayError;
+    const error = (await new RelayHttpClient(origin, TOKEN)
+      .identity()
+      .catch((e: unknown) => e)) as RelayError;
     expect(error).toBeInstanceOf(RelayError);
     const rendered = `${error.message} ${JSON.stringify(error)} ${String(error.stack)}`;
     expect(rendered).not.toContain('sk-provider-body');
@@ -111,13 +153,18 @@ describe('RelayHttpClient over loopback HTTP', () => {
       res.writeHead(302, { location: '/elsewhere' });
       res.end();
     });
-    await expect(new RelayHttpClient(origin, TOKEN).identity()).rejects.toMatchObject({ code: 'relay_transport_failed', retryable: true });
+    await expect(new RelayHttpClient(origin, TOKEN).identity()).rejects.toMatchObject({
+      code: 'relay_transport_failed',
+      retryable: true,
+    });
     expect(hits).toBe(1);
   });
 
   it('refuses a malformed success', async () => {
     const origin = await serve((_req, res) => json(res, 200, { ok: true, data: { nope: 1 } }));
-    await expect(new RelayHttpClient(origin, TOKEN).identity()).rejects.toMatchObject({ code: 'relay_response_invalid' });
+    await expect(new RelayHttpClient(origin, TOKEN).identity()).rejects.toMatchObject({
+      code: 'relay_response_invalid',
+    });
   });
 
   it('refuses an empty token', () => {
@@ -127,8 +174,22 @@ describe('RelayHttpClient over loopback HTTP', () => {
 
 describe('CoreNode preflight against a fake core', () => {
   const node = { id: 'n1', name: 'node-one' };
-  const goodTarget = { id: 'n1', name: 'node-one', live: true, handlers_live: true, stale: false, capabilities: ['spawn:claude'], active_agents: 0, reserved_agents: 0, max_agents: 2 };
-  const goodSettings = { accept_spawns: true, spawn_full_access_claude: false, spawn_requester_approvals: false };
+  const goodTarget = {
+    id: 'n1',
+    name: 'node-one',
+    live: true,
+    handlers_live: true,
+    stale: false,
+    capabilities: ['spawn:claude'],
+    active_agents: 0,
+    reserved_agents: 0,
+    max_agents: 2,
+  };
+  const goodSettings = {
+    accept_spawns: true,
+    spawn_full_access_claude: false,
+    spawn_requester_approvals: false,
+  };
 
   function fakeCore(settings: object, targets: object[], calls: string[] = []): () => Promise<CoreClient> {
     return async () =>
@@ -150,10 +211,20 @@ describe('CoreNode preflight against a fake core', () => {
   });
 
   it.each([
-    ['full access on', { ...goodSettings, spawn_full_access_claude: true }, [goodTarget], 'full_access_enabled'],
+    [
+      'full access on',
+      { ...goodSettings, spawn_full_access_claude: true },
+      [goodTarget],
+      'full_access_enabled',
+    ],
     ['full access unreported', { accept_spawns: true }, [goodTarget], 'full_access_enabled'],
     ['spawns off', { ...goodSettings, accept_spawns: false }, [goodTarget], 'spawns_not_accepted'],
-    ['requester approvals on', { ...goodSettings, spawn_requester_approvals: true }, [goodTarget], 'requester_approvals_enabled'],
+    [
+      'requester approvals on',
+      { ...goodSettings, spawn_requester_approvals: true },
+      [goodTarget],
+      'requester_approvals_enabled',
+    ],
     ['unknown node', goodSettings, [{ ...goodTarget, id: 'other' }], 'node_not_found'],
     ['offline', goodSettings, [{ ...goodTarget, live: false }], 'node_not_live'],
     ['stale', goodSettings, [{ ...goodTarget, stale: true }], 'node_not_live'],
@@ -165,13 +236,19 @@ describe('CoreNode preflight against a fake core', () => {
   });
 
   it('fails closed when the core cannot be reached', async () => {
-    const core = new CoreNode({ connect: async () => { throw new Error('nope'); } });
+    const core = new CoreNode({
+      connect: async () => {
+        throw new Error('nope');
+      },
+    });
     await expect(core.preflight('claude', node)).resolves.toBe('core_unavailable');
   });
 
   const failing = (kind: string) => async () =>
     ({
-      call: async () => { throw new CoreRpcError('x', { kind: kind as never }); },
+      call: async () => {
+        throw new CoreRpcError('x', { kind: kind as never });
+      },
       close: async () => undefined,
     }) as unknown as CoreClient;
 

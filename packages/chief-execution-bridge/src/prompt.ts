@@ -15,8 +15,7 @@ const RESULT_LINE = /^CHIEF_RESULT:\s*(completed|failed)\s*$/;
  */
 export function buildTask(assignment: Assignment, digest: string): string | undefined {
   const fence = `untrusted-${createHash('sha256').update(`fence:${digest}`).digest('hex').slice(0, 24)}`;
-  const block = (label: string, body: string) =>
-    `<${fence} kind="${label}">\n${body}\n</${fence}>`;
+  const block = (label: string, body: string) => `<${fence} kind="${label}">\n${body}\n</${fence}>`;
   const render = (references: string[]) =>
     [
       `You have one Relay Chief assignment: ${assignment.action} in ${assignment.repository}.`,
