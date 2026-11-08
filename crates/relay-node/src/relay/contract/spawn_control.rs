@@ -6,6 +6,11 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct SpawnInvokeParams {
     pub caller_name: String,
+    /// A secret that names a caller the core's spawn caller plugin
+    /// vouches for instead of a session registration; absent for a session
+    /// caller. A core without the plugin refuses it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_secret: Option<String>,
     pub node_id: String,
     pub node_name: String,
     pub name: String,
@@ -19,6 +24,11 @@ pub struct SpawnInvokeParams {
 #[serde(deny_unknown_fields)]
 pub struct SpawnInvocationParams {
     pub caller_name: String,
+    /// A secret that names a caller the core's spawn caller plugin
+    /// vouches for instead of a session registration; absent for a session
+    /// caller. A core without the plugin refuses it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_secret: Option<String>,
     pub action: SpawnControlAction,
     pub invocation_id: String,
 }
@@ -34,6 +44,11 @@ pub enum SpawnControlAction {
 #[serde(deny_unknown_fields)]
 pub struct SpawnReleaseParams {
     pub caller_name: String,
+    /// A secret that names a caller the core's spawn caller plugin
+    /// vouches for instead of a session registration; absent for a session
+    /// caller. A core without the plugin refuses it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_secret: Option<String>,
     pub node_id: String,
     pub node_name: String,
     pub name: String,

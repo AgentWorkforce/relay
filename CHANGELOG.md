@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Patch]
 
+### Added
+
+- `agent-relay-node` has an optional `SpawnCallers` plugin hook: `spawn.invoke`, `spawn.status` and `spawn.release` accept an optional `caller_secret` that the plugin resolves to an external caller, admits and records, and extension methods now receive the caller's process id. Spawn control refusals carry an optional typed `reason` (such as `not_owner` or `outside_scope`) while `kind` stays `refused`. Without the plugin the core behaves as before and refuses any `caller_secret`.
+
 ### Fixed
 
 - `agent-relay-node` built for its own site (`AGENT_RELAY_SITE_URL`) no longer falls back to Agent Relay's public gateways: a sign-in whose site named no valid Relaycast URL, or a CLI workspace key with no recorded server or `RELAY_BASE_URL`, is refused with a reason naming the site, and `RELAYCAST_URL` is ignored in such a build.

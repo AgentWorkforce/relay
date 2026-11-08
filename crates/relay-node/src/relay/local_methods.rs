@@ -23,9 +23,29 @@ use std::sync::Arc;
 mod discovery;
 pub(crate) use discovery::PresentationSnapshot;
 
-/// Answers `method`, or `None` when this module has no such method.
+/// Answers `method`, or `None` when this module has no such method, for a
+/// caller whose connection is not known (as [`call_from`] with the default
+/// context).
 pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<Value, RpcError>> {
-    if let Some(result) = crate::relay::spawn::control::call(core, method, raw.clone()).await {
+    call_from(
+        core,
+        &crate::relay::daemon::CallContext::default(),
+        method,
+        raw,
+    )
+    .await
+}
+
+/// [`call`], where `context` says which client asked.
+pub async fn call_from(
+    core: &Arc<Core>,
+    context: &crate::relay::daemon::CallContext,
+    method: &str,
+    raw: Value,
+) -> Option<Result<Value, RpcError>> {
+    if let Some(result) =
+        crate::relay::spawn::control::call(core, context, method, raw.clone()).await
+    {
         return Some(result);
     }
     if let Some(result) = crate::relay::openclaw::relay_tools::call(core, method, raw.clone()).await

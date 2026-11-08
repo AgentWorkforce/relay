@@ -97,6 +97,7 @@ fn release_replay_keeps_immutable_identity_after_the_local_agent_is_removed() {
     let workspace = selected_workspace();
     let params = SpawnReleaseParams {
         caller_name: "test-caller".into(),
+        caller_secret: None,
         node_id: "node_1".into(),
         node_name: "test-desktop".into(),
         name: "test-agent".into(),
@@ -244,6 +245,7 @@ fn a_crashed_worker_is_releasable_by_its_exact_saved_identity() {
     store.registrations.push(worker);
     let params = |name: &str, agent: &str, node: &str| SpawnReleaseParams {
         caller_name: "test-caller".into(),
+        caller_secret: None,
         node_id: node.into(),
         node_name: "test-desktop".into(),
         name: name.into(),
@@ -287,3 +289,5 @@ fn capacity_refusals_keep_their_retry_codes() {
         );
     }
 }
+
+mod callers;
