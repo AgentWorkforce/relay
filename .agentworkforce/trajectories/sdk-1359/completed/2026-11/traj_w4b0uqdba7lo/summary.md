@@ -1,34 +1,18 @@
-# Trajectory: Revalidate and fix SDK issue 1359
+# SDK issue1359 repair
 
-> **Status:** ✅ Completed
-> **Task:** [1359](https://github.com/AgentWorkforce/relay/issues/1359)
-> **Confidence:** 95%
-> **Started:** November 7, 2026 at 05:25 PM
-> **Completed:** November 7, 2026 at 05:28 PM
+Summary: Revalidated all three reports against main72d9858. Fixed returned agent API types and immediate actionable listener diagnostics. Autofixes cover unsupported workspace operations, verified event scope, injected clients and exact-token stream reuse. Two independent final code reviews passed.
 
----
+Validation in this Relay checkout:
+- npm --prefix packages/sdk test:200 passed.
+- npm --prefix packages/sdk run test:types:10 passed.
+- npm --prefix packages/sdk run build and npm --prefix packages/sdk run check: passed.
+- npm run typecheck built all cross-package prerequisites; final CLI TypeScript check passed after the returned-client-only workspace correction.
+- Prettier and git diff --check against the base: passed.
 
-## Summary
+Reproducible companion parity check:
+- Source: scripts/verify-sdk-realtime-blocks.mjs in this PR.
+- Build Relay SDK and companion Relaycast SDK, then run node scripts/verify-sdk-realtime-blocks.mjs <relaycast-checkout>.
+- Verified with Relaycast implementation3af3b99 from AgentWorkforce/relaycast PR634.
+- Real built SDK node-WebSocket transport, Relay adapter and public listener preserve a49KB block and the original arbitrary kind/payload object, matching fixture REST readback. All HTTP/WebSocket I/O is mocked. This does not exercise a database or live service.
 
-Revalidated issue1359 on main 72d9858. Fixed full agent return types and synchronous actionable listener diagnostics, including agent-token and observer regressions. SDK runtime196, strict types9, SDK build/check, full repository typecheck and formatting pass. Independent first review PASS. Blocks loss isolated to upstream Relaycast transport; companion repair in progress and issue remains open.
-
-**Approach:** Standard approach
-
----
-
-## Key Decisions
-
-### Split fixes by owning repository
-- **Chose:** Split fixes by owning repository
-- **Reasoning:** Relay owns agent return types and listener diagnostics. Relaycast transport drops blocks before Relay sees them and needs a companion upstream fix. Keep issue open pending upstream release integration.
-
----
-
-## Chapters
-
-### 1. Work
-*Agent: default*
-
-- Split fixes by owning repository: Split fixes by owning repository
-
-Validation evidence (local, commands run in Relay checkout): npm --prefix packages/sdk test (200 passed); npm --prefix packages/sdk run test:types (10 passed); npm --prefix packages/sdk run build; npm --prefix packages/sdk run check; node node_modules/typescript/bin/tsc -p packages/cli/tsconfig.json --noEmit. Cross-package build stages were run by npm run typecheck; final CLI check was rerun after narrowing the returned type. Companion SDK and shared-type checks ran separately in the Relaycast checkout. Cross-repo fixture command: node C:/Users/hello/AppData/Local/Temp/relay-1359-crossrepo.mjs, using built SDKs and mocked I/O;49KB blocks matched listener/REST readback. Commit/file provenance is recorded in trajectory.json through the latest implementation revision; the subsequent metadata-only commit records this evidence.
+The upstream transport/schema/engine repair is PR634. Issue1359 remains open until a human-published upstream release is integrated. No merge, release, deployment or production operation was performed. Exact product implementation commits and changed files are recorded in trajectory.json; later verification/evidence-only commits are outside that product-code trace.

@@ -43,7 +43,7 @@
     }
   ],
   "retrospective": {
-    "summary": "Revalidated issue1359. Fixed returned agent types and immediate listener diagnostics; autofixed unsupported workspace type exposure, duplicate root streams, verified source scope and injected-token identity binding. Local validation: SDK200 runtime,10 strict type tests, SDK build/check, all repository typecheck build stages plus final CLI tsc pass. Two independent agent reviews recorded; final autofix re-review in progress. Upstream blocks repair is Relaycast PR634; issue stays open for human release integration.",
+    "summary": "Fixed returned-agent types and immediate listener diagnostics, with verified source scope and exact-token cache binding. SDK200 and strict types10 pass; SDK build/check, cross-package prerequisites and final CLI TypeScript check pass. Two independent final code reviews PASS. Reproducible scripts/verify-sdk-realtime-blocks.mjs validates49KB and original arbitrary block parity against companion Relaycast implementation3af3b99 with mocked I/O. Upstream release/integration remains human-gated.",
     "approach": "Standard approach",
     "confidence": 0.95
   },
