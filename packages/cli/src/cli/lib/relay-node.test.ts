@@ -7,11 +7,9 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
-  BRIDGE_VERSION,
   connectCore,
   coreSocketPath,
   enableDelivery,
-  pipeName,
   relayNodeAssetName,
   relayNodeAssetUrl,
   readCoreState,
@@ -59,35 +57,7 @@ describe('relayNodeAssetName', () => {
   });
 });
 
-describe('core socket', () => {
-  it('defaults to the desktop socket under home, as the core does', () => {
-    expect(coreSocketPath({}, '/home/me')).toBe('/home/me/.agentworkforce/desktop/core.sock');
-  });
-
-  it('honours AGENT_RELAY_CORE_SOCKET, a relative one beside the default', () => {
-    expect(coreSocketPath({ AGENT_RELAY_CORE_SOCKET: '/run/x.sock' }, '/home/me')).toBe('/run/x.sock');
-    expect(coreSocketPath({ AGENT_RELAY_CORE_SOCKET: 'core.dev.sock' }, '/home/me')).toBe(
-      '/home/me/.agentworkforce/desktop/core.dev.sock'
-    );
-    expect(coreSocketPath({ AGENT_RELAY_CORE_SOCKET: '  ' }, '/home/me')).toBe(
-      '/home/me/.agentworkforce/desktop/core.sock'
-    );
-  });
-
-  it('derives the Windows pipe exactly as the core does (relay::transport tests share the vector)', () => {
-    const expected = '\\\\.\\pipe\\agent-relay-367ccf5106272db6';
-    expect(pipeName('C:\\Users\\A\\.agentworkforce\\desktop\\core.sock')).toBe(expected);
-    expect(pipeName('c:/users/a/.agentworkforce/desktop/core.sock')).toBe(expected);
-    expect(pipeName('\\\\?\\C:\\Users\\A\\.agentworkforce\\desktop\\core.sock')).toBe(expected);
-  });
-
-  it('speaks the bridge version the core declares', () => {
-    const protocol = fs.readFileSync(path.join(repoRoot, 'crates/relay-node/src/relay/protocol.rs'), 'utf8');
-    expect(protocol).toContain(`pub const BRIDGE_VERSION: u32 = ${BRIDGE_VERSION};`);
-  });
-});
-
-describe.skipIf(process.platform === 'win32')('connectCore', () => {
+describe.skipIf(process.platform === 'win32')('connectCore adapter', () => {
   let dir: string;
   let server: net.Server | undefined;
 
@@ -103,84 +73,31 @@ describe.skipIf(process.platform === 'win32')('connectCore', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  /** A tiny NDJSON core: answers hello and status.get, sends an event in between, refuses the rest. */
-  async function serve(
-    socket: string,
-    seen: string[],
-    greeting: unknown = { bridge_version: BRIDGE_VERSION, pid: 42 }
-  ): Promise<void> {
-    server = net.createServer((connection) => {
-      let buffer = '';
-      connection.on('data', (chunk) => {
-        buffer += chunk.toString('utf8');
-        let newline = buffer.indexOf('\n');
-        while (newline >= 0) {
-          const request = JSON.parse(buffer.slice(0, newline)) as {
-            id: number;
-            method: string;
-            params: unknown;
-          };
-          buffer = buffer.slice(newline + 1);
-          newline = buffer.indexOf('\n');
-          seen.push(`${request.method} ${JSON.stringify(request.params)}`);
-          connection.write(
-            `${JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { revision: 3 } })}\n`
-          );
-          const reply =
-            request.method === 'hello'
-              ? { result: greeting }
-              : request.method === 'status.get'
-                ? { result: { daemon: { pid: 42, version: '15.0.0', socket } } }
-                : { error: { code: -32601, message: 'Unknown method.' } };
-          connection.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, ...reply })}\n`);
-        }
-      });
-    });
-    await new Promise<void>((resolve) => server!.listen(socket, resolve));
-    // The core binds its socket 0600.
-    fs.chmodSync(socket, 0o600);
-  }
-
-  it('greets the core, skips events, and returns results and errors by id', async () => {
-    const socket = path.join(dir, 'core.sock');
-    const seen: string[] = [];
-    await serve(socket, seen);
-    const client = (await connectCore(socket, 2_000))!;
-    expect(client).toBeDefined();
-    await expect(client.call('status.get')).resolves.toMatchObject({ daemon: { pid: 42 } });
-    await expect(client.call('nope')).rejects.toThrow('Unknown method.');
-    client.close();
-    expect(seen[0]).toBe(`hello {"bridge_version":${BRIDGE_VERSION}}`);
-  });
-
   it('answers undefined when no core listens', async () => {
     await expect(connectCore(path.join(dir, 'missing.sock'), 500)).resolves.toBeUndefined();
   });
 
-  it('refuses a socket in a directory others can write to', async () => {
+  it('answers undefined when the socket file is left but nothing listens', async () => {
     const socket = path.join(dir, 'core.sock');
-    await serve(socket, []);
-    fs.chmodSync(dir, 0o777);
-    await expect(connectCore(socket, 500)).rejects.toThrow('only you can write to');
+    server = net.createServer();
+    await new Promise<void>((resolve) => server!.listen(socket, resolve));
+    fs.chmodSync(socket, 0o600);
+    // Closing the server unlinks the socket; keep a stale socket file instead.
+    const stale = path.join(dir, 'stale.sock');
+    fs.renameSync(socket, stale);
+    await new Promise<void>((resolve) => server!.close(() => resolve()));
+    server = undefined;
+    await expect(connectCore(stale, 500)).resolves.toBeUndefined();
   });
 
-  it('refuses a socket others can use, which the core never binds', async () => {
-    const socket = path.join(dir, 'core.sock');
-    await serve(socket, []);
-    fs.chmodSync(socket, 0o666);
-    await expect(connectCore(socket, 500)).rejects.toThrow('only you can use');
-  });
-
-  it('refuses a plain file in place of the socket', async () => {
+  it('still throws, rather than answering undefined, for a socket it must not trust', async () => {
     const socket = path.join(dir, 'core.sock');
     fs.writeFileSync(socket, '', { mode: 0o600 });
     await expect(connectCore(socket, 500)).rejects.toThrow('only you can use');
   });
 
-  it("refuses a peer whose greeting is not the core's", async () => {
-    const socket = path.join(dir, 'core.sock');
-    await serve(socket, [], { ok: true });
-    await expect(connectCore(socket, 2_000)).rejects.toThrow('is not an Agent Relay core');
+  it('resolves the default socket through the package', () => {
+    expect(coreSocketPath({}, '/home/me')).toBe('/home/me/.agentworkforce/desktop/core.sock');
   });
 });
 

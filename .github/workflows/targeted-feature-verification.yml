@@ -140,7 +140,6 @@ jobs:
         with:
           cache-bin: false
           workspaces: |
-            . -> target
             crates/relay-node -> target
 
       - name: Set up Swift

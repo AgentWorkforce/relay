@@ -7,8 +7,6 @@ function harness(overrides: Partial<StatusDependencies> = {}) {
   const log = vi.fn();
   const deps: Partial<StatusDependencies> = {
     getProjectRoot: () => '/tmp/project',
-    getBrokerConnection: () => ({ url: 'http://localhost:4123' }),
-    probe: vi.fn(async () => true),
     getCloudAuth: vi.fn(async () => ({ apiUrl: 'https://cloud.example' })),
     log,
     error: vi.fn(),
@@ -22,29 +20,19 @@ function harness(overrides: Partial<StatusDependencies> = {}) {
 }
 
 describe('relay status (composite)', () => {
-  it('reports workspace, running broker, and cloud login', async () => {
+  it('reports workspace and cloud login', async () => {
     const { program, log } = harness();
     await program.parseAsync(['status'], { from: 'user' });
     const lines = log.mock.calls.map((c) => String(c[0]));
     expect(lines).toContainEqual(expect.stringContaining('/tmp/project'));
-    expect(lines).toContainEqual(expect.stringContaining('running (http://localhost:4123)'));
     expect(lines).toContainEqual(expect.stringContaining('logged in (https://cloud.example)'));
+    expect(lines.some((line) => /broker/i.test(line))).toBe(false);
   });
 
-  it('reports degraded health without calling the broker healthy', async () => {
-    const { program, log } = harness({ probe: vi.fn(async () => 'degraded' as const) });
-    await program.parseAsync(['status'], { from: 'user' });
-    expect(log).toHaveBeenCalledWith('Local broker: DEGRADED (LOCAL ONLY) (http://localhost:4123)');
-  });
-
-  it('reports stopped broker and not-logged-in', async () => {
-    const { program, log } = harness({
-      getBrokerConnection: () => null,
-      getCloudAuth: vi.fn(async () => null),
-    });
+  it('reports not-logged-in', async () => {
+    const { program, log } = harness({ getCloudAuth: vi.fn(async () => null) });
     await program.parseAsync(['status'], { from: 'user' });
     const lines = log.mock.calls.map((c) => String(c[0]));
-    expect(lines).toContainEqual(expect.stringContaining('Local broker: stopped'));
     expect(lines).toContainEqual(expect.stringContaining('not logged in'));
   });
 });

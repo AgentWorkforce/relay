@@ -42,9 +42,6 @@ function mockBootstrapDependencies(parseSpy: ReturnType<typeof vi.fn>): void {
   vi.doMock('./commands/setup.js', () => ({
     registerSetupCommands: vi.fn(),
   }));
-  vi.doMock('./commands/core.js', () => ({
-    registerCoreCommands: vi.fn(),
-  }));
   vi.doMock('./commands/swarm.js', () => ({
     registerSwarmCommands: vi.fn(),
   }));
@@ -91,30 +88,14 @@ describe('CLI entrypoints', () => {
 
   it('index invokes runCli exactly once when used as the entrypoint', async () => {
     const runCli = vi.fn().mockResolvedValue(undefined);
-    const runAiSdkSidecarMain = vi.fn().mockResolvedValue(undefined);
     vi.doMock('./bootstrap.js', () => ({
       runCli,
     }));
-    vi.doMock('@agent-relay/harnesses', () => ({ runAiSdkSidecarMain }));
     process.argv = ['node', indexEntryPath, 'status'];
 
     await import('./index.js');
 
     expect(runCli).toHaveBeenCalledTimes(1);
-    expect(runAiSdkSidecarMain).not.toHaveBeenCalled();
-  });
-
-  it('index re-enters the bundled AI SDK sidecar without invoking Commander', async () => {
-    const runCli = vi.fn().mockResolvedValue(undefined);
-    const runAiSdkSidecarMain = vi.fn().mockResolvedValue(undefined);
-    vi.doMock('./bootstrap.js', () => ({ runCli }));
-    vi.doMock('@agent-relay/harnesses', () => ({ runAiSdkSidecarMain }));
-    process.argv = ['bun', indexEntryPath, '__ai-sdk-sidecar'];
-
-    await import('./index.js');
-
-    expect(runAiSdkSidecarMain).toHaveBeenCalledWith([]);
-    expect(runCli).not.toHaveBeenCalled();
   });
 
   it('publishes the CLI binary from the single index entrypoint', () => {
@@ -130,6 +111,8 @@ describe('CLI entrypoints', () => {
       dependencies?: Record<string, string>;
     };
 
-    expect(packageJson.dependencies?.['@relayflows/cli']).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(packageJson.dependencies?.['@relayflows/sdk']).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(packageJson.dependencies).not.toHaveProperty('@relayflows/cli');
+    expect(packageJson.dependencies).not.toHaveProperty('@relayflows/core');
   });
 });

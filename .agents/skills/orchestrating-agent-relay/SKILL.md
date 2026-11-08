@@ -1,14 +1,24 @@
 ---
 name: orchestrating-agent-relay
-description: The canonical way to run agent-relay - self-bootstrap the local broker and autonomously spawn, monitor, and coordinate a team of worker agents without human intervention. Covers infrastructure startup, agent spawning, lifecycle monitoring, message-based reading via the relay MCP, and team coordination.
+description: The canonical way to run agent-relay - set up the Agent Relay core with `agent-relay init` and autonomously spawn, monitor, and coordinate a team of worker agents without human intervention. Covers infrastructure startup, agent spawning, lifecycle monitoring, message-based reading via the relay MCP, and team coordination.
 ---
+
+> **The local broker was removed.** `agent-relay node up`, `node down`,
+> `node status`, `node metrics`, `node tail`, `node deadletters`,
+> `node redeliver` and `node agent …` now only print a removal notice. Run
+> `agent-relay init` to set up and start the Agent Relay core (or
+> `agent-relay init --hosted` for the hosted service), then spawn, list and
+> release agents through the relay MCP (`add_agent`, `list_agents`,
+> `remove_agent`) or the desktop app. Sections below that still mention the
+> broker, `node agent …`, `node tail` or `--state-dir` describe older releases.
 
 ### Overview
 
 A headless orchestrator is an agent that:
 
-1. Starts the local relay broker itself (`agent-relay node up`)
-2. Spawns and manages worker agents on that broker
+1. Makes sure the Agent Relay core is set up on this machine (`agent-relay init`;
+   `agent-relay init --hosted` to use the hosted service instead)
+2. Spawns and manages worker agents through the relay MCP
 3. Monitors agent lifecycle events
 4. Coordinates work without human intervention
 
@@ -16,9 +26,8 @@ The orchestrator drives the team and reads/sends/lists through the **Agent
 Relay MCP server** (`agent-relay mcp`). The session registers itself once with
 the `register_agent` tool (name it `orchestrator`) — every messaging tool
 errors with `Not registered. Call the "register_agent" tool first.` until it
-does. Lifecycle
-control — starting the broker, spawning/releasing local agents, streaming
-broker debug events — goes through the `agent-relay node` command group. The
+does. Spawning and releasing agents go through the same MCP (`add_agent` /
+`remove_agent`). The
 workers it spawns are registered participants too; their peer-messaging
 reference is the **`using-agent-relay`** skill.
 
@@ -31,29 +40,25 @@ reference is the **`using-agent-relay`** skill.
 ### When to Use
 
 - Agent needs full control over its worker team
-- No human available to run `agent-relay node up` manually
+- No human available to run `agent-relay init` manually
 - Agent should manage agent lifecycle autonomously
 - Building self-contained multi-agent systems
 
 ### Quick Reference
 
-| Step                              | Command/Tool                                                      |
-| --------------------------------- | ----------------------------------------------------------------- |
-| Verify installation               | `command -v agent-relay` or `npx agent-relay --version`           |
-| Verify Node runtime if shim fails | `node --version` or fix mise/asdf first                           |
-| Start broker                      | `agent-relay node up --background --verbose`                      |
-| Check broker readiness            | `agent-relay node status --wait-for 10`                           |
-| Workspace + cloud + broker status | `agent-relay status`                                              |
-| Spawn worker                      | `agent-relay node agent spawn claude --name Worker1 --task "..."` |
-| List workers                      | `agent-relay node agent list`                                     |
-| Resource usage                    | `agent-relay node metrics`                                        |
-| Send DM to worker (MCP)           | `send_dm(to: "Worker1", text: "...")`                             |
-| Post to channel (MCP)             | `post_message(channel: "general", text: "...")`                   |
-| Read worker replies (MCP)         | `check_inbox(limit: 20)` / `list_messages(channel: "general")`    |
-| Give a human a follow-along link  | `agent-relay observer`                                            |
-| Inspect a worker's TTY            | `agent-relay node agent attach Worker1 --mode view`               |
-| Release worker                    | `agent-relay node agent release Worker1`                          |
-| Stop broker                       | `agent-relay node down`                                           |
+| Step                              | Command/Tool                                                   |
+| --------------------------------- | -------------------------------------------------------------- |
+| Verify installation               | `command -v agent-relay` or `npx agent-relay --version`        |
+| Verify Node runtime if shim fails | `node --version` or fix mise/asdf first                        |
+| Set up and start the core         | `agent-relay init` (hosted: `agent-relay init --hosted`)       |
+| Workspace + cloud status          | `agent-relay status`                                           |
+| Spawn worker (MCP)                | `add_agent(name: "Worker1", cli: "claude", task: "...")`       |
+| List workers (MCP)                | `list_agents(status: "online")`                                |
+| Send DM to worker (MCP)           | `send_dm(to: "Worker1", text: "...")`                          |
+| Post to channel (MCP)             | `post_message(channel: "general", text: "...")`                |
+| Read worker replies (MCP)         | `check_inbox(limit: 20)` / `list_messages(channel: "general")` |
+| Give a human a follow-along link  | `agent-relay observer`                                         |
+| Release worker (MCP)              | `remove_agent(name: "Worker1", reason: "...")`                 |
 
 ### Bootstrap Flow
 
@@ -74,19 +79,28 @@ npm install -g agent-relay
 npx agent-relay --version
 ```
 
-#### Step 1: Start the Broker
+#### Step 1: Set Up the Core
 
 ```bash
-# Starts a detached broker and returns after API readiness
-agent-relay node up --background --verbose
+# Sets up and starts the Agent Relay core on this machine
+agent-relay init
+
+# Or use the hosted service so agents on other machines can join
+agent-relay init --hosted
 ```
+
+`agent-relay status` reports workspace and cloud login together. The CLI writes
+runtime state to `.agentworkforce/relay/` and may create `.mcp.json`; clean
+those files after validation if a worktree should remain clean.
 
 #### Step 2: Spawn Workers
 
-```bash
-agent-relay node agent spawn claude \
-  --name Worker1 \
-  --task "Implement the authentication module following the existing patterns"
+```text
+add_agent(
+  name: "Worker1",
+  cli: "claude",
+  task: "Implement the authentication module following the existing patterns"
+)
 ```
 
 #### Step 2.5: Give the Human a Way to Watch (optional)
@@ -121,12 +135,6 @@ list_agents(status: "online")
 
 ```text
 remove_agent(name: "Worker1", reason: "Work accepted")
-```
-
-#### Step 5: Shutdown (optional)
-
-```bash
-agent-relay node down
 ```
 
 ### Coordination Commands
