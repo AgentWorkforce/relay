@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay-node` finds the Codex desktop app's bundled Windows executable without a separate CLI on PATH, preferring the newest complete app build while retaining an explicit executable override.
+- `agent-relay-node` finds the Codex desktop app's bundled Windows executable without a separate CLI on PATH, preferring the most recently installed complete app build as a fallback while retaining an existing CLI and an explicit executable override.
 - Spawn release receipts preserve the provider's exact `released` proof, and newer desktop clients safely treat that field as false when an older core omits it or sends `null` or a non-boolean value.
 - Muse courier sessions used for incoming Relay messages no longer appear in session history or uploads; their delivery receipts and replies remain recorded on the target session.
 - `agent-relay-node` tells extensions a bridge connection closed as soon as its client disconnects or closes its sending side, even while one of its calls (such as a long poll) is still waiting, instead of when that call returns, so extensions can wake the waiting call. In-flight calls now always run to completion, so an effect a call admitted (such as a Relaycast channel created by `agents.webhook.create`) is recorded even if the client disconnects. A half-closed client still gets the in-flight answer and the answers to requests it queued behind it, in order; queued extension calls fail with an error without running; nothing is written once a write to the client failed. A client that sends 32 further requests (or 1 MiB of them) during one call is answered up to those and then disconnected with an error, instead of no longer being read.
