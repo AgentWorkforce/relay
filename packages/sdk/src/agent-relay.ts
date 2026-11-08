@@ -47,6 +47,11 @@ import {
 import type { AgentSessionEvent } from './session/index.js';
 
 export interface AgentRelayOptions extends RelaycastMessagingOptions {
+  /**
+   * Custom messaging adapter. Set its events.scope to 'agent' when it owns
+   * an authenticated agent stream. An unspecified scope uses the workspace
+   * fallback until a registered agent source is available.
+   */
   messaging?: RelayMessaging;
   actions?: AgentRelayActions;
   /** Factory for agent-token-scoped messaging clients. Defaults to a Relaycast client. */
@@ -167,7 +172,8 @@ export class AgentRelay implements AgentRelayAgent {
       // never falls back to the workspace client and never warns about
       // missing agent sources.
       this.eventFanIn = createEventFanIn(undefined, {
-        onError: (error) => this.reportError(error, { source: 'listener', selector: 'events.connect' }),
+        onError: (error) =>
+          this.reportError(error, { source: 'listener', operation: 'connect', selector: 'events.connect' }),
       });
       this.eventFanIn.addSource(
         createObserverEventSource({
@@ -175,7 +181,8 @@ export class AgentRelay implements AgentRelayAgent {
           baseUrl: messagingOptions.baseUrl,
           sinceSeq,
           onCursor,
-          onError: (error) => this.reportError(error, { source: 'listener', selector: 'events.connect' }),
+          onError: (error) =>
+            this.reportError(error, { source: 'listener', operation: 'connect', selector: 'events.connect' }),
         })
       );
     } else {
@@ -185,8 +192,17 @@ export class AgentRelay implements AgentRelayAgent {
       // (added in `messagingForToken`), keeping the workspace client only as a
       // pre-registration fallback.
       this.eventFanIn = createEventFanIn(this.messaging.events, {
-        onError: (error) => this.reportError(error, { source: 'listener', selector: 'events.connect' }),
+        onError: (error) =>
+          this.reportError(error, { source: 'listener', operation: 'connect', selector: 'events.connect' }),
       });
+      if (this.messaging.events.scope === 'agent') {
+        this.eventFanIn.addSource(this.messaging.events);
+        // Injected clients may belong to a different identity than a token
+        // option. Only cache a transport we constructed from this exact token.
+        if (messagingOptions.agentToken && !messaging && !messagingOptions.agentClient) {
+          this.clientsByToken.set(messagingOptions.agentToken, this.messaging);
+        }
+      }
     }
     if (onError) {
       this.errorHooks.add(onError);

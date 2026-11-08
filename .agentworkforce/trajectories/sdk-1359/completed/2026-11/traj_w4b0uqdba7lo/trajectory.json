@@ -1,0 +1,75 @@
+{
+  "id": "traj_w4b0uqdba7lo",
+  "version": 1,
+  "task": {
+    "title": "Revalidate and fix SDK issue 1359",
+    "source": {
+      "system": "github",
+      "id": "1359",
+      "url": "https://github.com/AgentWorkforce/relay/issues/1359"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-11-08T01:25:31.734Z",
+  "completedAt": "2026-11-08T01:28:43.161Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-11-08T01:28:07.818Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_yvfsqidt9rg3",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-11-08T01:28:07.818Z",
+      "endedAt": "2026-11-08T01:28:43.161Z",
+      "events": [
+        {
+          "ts": 1794101287820,
+          "type": "decision",
+          "content": "Split fixes by owning repository: Split fixes by owning repository",
+          "raw": {
+            "question": "Split fixes by owning repository",
+            "chosen": "Split fixes by owning repository",
+            "alternatives": [],
+            "reasoning": "Relay owns agent return types and listener diagnostics. Relaycast transport drops blocks before Relay sees them and needs a companion upstream fix. Keep issue open pending upstream release integration."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Fixed returned-agent types and immediate listener diagnostics, with verified source scope and exact-token cache binding. SDK200 and strict types10 pass; SDK build/check, cross-package prerequisites and final CLI TypeScript check pass. Two independent final code reviews PASS. Reproducible scripts/verify-sdk-realtime-blocks.mjs validates49KB and original arbitrary block parity against companion Relaycast implementation3af3b99 with mocked I/O. Upstream release/integration remains human-gated.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [
+    "073f014b4b949232c6927780a711e40e1eb00f2d",
+    "c99b88d863f3c1e194a76ef6209f2d1256f7862e",
+    "b85b72ee37da8b2fa335ff2c6aa2e2ecbc5a4f4c"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/sdk-1359/completed/2026-11/traj_w4b0uqdba7lo/summary.md",
+    ".agentworkforce/trajectories/sdk-1359/completed/2026-11/traj_w4b0uqdba7lo/trajectory.json",
+    "CHANGELOG.md",
+    "packages/sdk/src/__tests__/agent-client.test-d.ts",
+    "packages/sdk/src/__tests__/event-fanin.test.ts",
+    "packages/sdk/src/__tests__/listeners.test.ts",
+    "packages/sdk/src/__tests__/observer-source.test.ts",
+    "packages/sdk/src/agent-relay.ts",
+    "packages/sdk/src/facade.ts",
+    "packages/sdk/src/messaging/event-fanin.ts",
+    "packages/sdk/src/messaging/relaycast.ts",
+    "packages/sdk/src/messaging/types.ts"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "72d98585dabd0fcf88ab45b2b6d21ff18d655c28",
+    "endRef": "b85b72ee37da8b2fa335ff2c6aa2e2ecbc5a4f4c"
+  }
+}

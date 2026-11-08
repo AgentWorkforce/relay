@@ -586,9 +586,11 @@ describe('AgentRelay observer mode', () => {
     vi.stubGlobal('WebSocket', FakeWebSocket);
     vi.stubGlobal('fetch', createBackfillFetch([logRow(1, 'm1')]));
 
+    const onError = vi.fn();
     const relay = new AgentRelay({
       observerToken: 'ot_live_test',
       baseUrl: 'https://api.example.test',
+      onError,
     });
 
     const received: unknown[] = [];
@@ -606,5 +608,6 @@ describe('AgentRelay observer mode', () => {
     sockets[0].onmessage?.({ data: JSON.stringify(liveFrame('m2', 2)) });
 
     expect(received).toHaveLength(2);
+    expect(onError).not.toHaveBeenCalled();
   });
 });
