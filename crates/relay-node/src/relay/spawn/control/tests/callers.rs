@@ -371,7 +371,10 @@ async fn an_external_caller_uses_its_own_token_and_agent_id_for_release_claims()
     let (home, core) = core_with(Some(stub.clone()), &relaycast.base);
     seed(&core, &relaycast.base, Some("agent_other"));
     let served = relaycast.serve(vec![released()]);
-    let context = CallContext { peer_pid: Some(42) };
+    let context = CallContext {
+        peer_pid: Some(42),
+        connection_id: Some(1),
+    };
     let answer = server::call_from(
         &core,
         &context,
@@ -862,7 +865,10 @@ async fn record_runs_for_success_and_refusal() {
     let (_home, core) = core_with(Some(stub.clone()), &relaycast.base);
     seed(&core, &relaycast.base, Some("agent_other"));
     let served = relaycast.serve(vec![json!({"id":"invocation_9","status":"running"})]);
-    let context = CallContext { peer_pid: Some(7) };
+    let context = CallContext {
+        peer_pid: Some(7),
+        connection_id: Some(1),
+    };
     server::call_from(&core, &context, "spawn.status", status_params(Some(SECRET)))
         .await
         .unwrap();

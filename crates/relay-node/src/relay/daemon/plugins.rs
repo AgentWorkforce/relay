@@ -200,6 +200,10 @@ pub struct CallContext {
     /// connect; `None` where the platform does not report it or the call
     /// did not come over the bridge.
     pub peer_pid: Option<i32>,
+    /// This bridge connection's core-lifetime identity. Calls made inside the
+    /// core have none. Extensions use it only to retire connection-scoped
+    /// resources when [`MethodExtension::connection_closed`] follows.
+    pub connection_id: Option<u64>,
 }
 
 /// Extra bridge methods a build of the core adds. An unsupported internal
@@ -219,6 +223,10 @@ pub trait MethodExtension: Send + Sync + 'static {
         method: &'a str,
         raw: Value,
     ) -> BoxFuture<'a, Option<Result<Value, RpcError>>>;
+
+    /// The bridge connection described by `context` ended. Implementations
+    /// must return promptly and must not assume the client sent a final RPC.
+    fn connection_closed(&self, _context: &CallContext) {}
 }
 
 /// What the core is built with beyond its configuration: the session side
@@ -402,7 +410,10 @@ mod tests {
     }
 
     /// Answers `extension.ping` and keeps the context each call carried.
-    struct Witness(Arc<std::sync::Mutex<Vec<CallContext>>>);
+    struct Witness {
+        calls: Arc<std::sync::Mutex<Vec<CallContext>>>,
+        closed: Arc<std::sync::Mutex<Vec<CallContext>>>,
+    }
 
     impl MethodExtension for Witness {
         fn specs(&self) -> Vec<MethodSpec> {
@@ -420,9 +431,13 @@ mod tests {
                 if method != Ping::NAME {
                     return None;
                 }
-                self.0.lock().unwrap().push(*context);
+                self.calls.lock().unwrap().push(*context);
                 Some(answer::<Ping, _>(raw, |_| async { Ok(Done {}) }).await)
             })
+        }
+
+        fn connection_closed(&self, context: &CallContext) {
+            self.closed.lock().unwrap().push(*context);
         }
     }
 
@@ -433,8 +448,12 @@ mod tests {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let closed = Arc::new(std::sync::Mutex::new(Vec::new()));
         let (home, core) = test_core_with_plugins(Plugins {
-            extensions: vec![Arc::new(Witness(seen.clone()))],
+            extensions: vec![Arc::new(Witness {
+                calls: seen.clone(),
+                closed: closed.clone(),
+            })],
             ..Plugins::default()
         });
         let socket = home.path().join("peer.sock");
@@ -458,7 +477,8 @@ mod tests {
         assert_eq!(
             *seen.lock().unwrap(),
             [CallContext {
-                peer_pid: Some(std::process::id() as i32)
+                peer_pid: Some(std::process::id() as i32),
+                connection_id: Some(1),
             }]
         );
         // The core's own calls come from no peer.
@@ -469,6 +489,13 @@ mod tests {
         drop(write);
         stop.send(true).unwrap();
         server.await.unwrap();
+        assert_eq!(
+            *closed.lock().unwrap(),
+            [CallContext {
+                peer_pid: Some(std::process::id() as i32),
+                connection_id: Some(1),
+            }]
+        );
     }
 
     #[test]

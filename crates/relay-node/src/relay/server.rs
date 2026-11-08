@@ -30,6 +30,7 @@ pub async fn accept_loop(
     mut stop: watch::Receiver<bool>,
 ) {
     let mut connections = tokio::task::JoinSet::new();
+    let mut next_connection_id = 1u64;
     loop {
         let accepted = tokio::select! {
             accepted = listener.accept() => accepted,
@@ -45,7 +46,11 @@ pub async fn accept_loop(
         };
         match stream.peer_credentials() {
             Ok(peer) if peer.uid == current_uid() => {
-                let context = CallContext { peer_pid: peer.pid };
+                let context = CallContext {
+                    peer_pid: peer.pid,
+                    connection_id: Some(next_connection_id),
+                };
+                next_connection_id = next_connection_id.wrapping_add(1).max(1);
                 connections.spawn(connection(
                     stream,
                     core.clone(),
@@ -172,6 +177,9 @@ async fn connection(
         }
     } else {
         let _ = writer.await;
+    }
+    for extension in &core.plugins.extensions {
+        extension.connection_closed(&context);
     }
 }
 
