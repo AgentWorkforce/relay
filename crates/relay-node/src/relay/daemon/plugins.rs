@@ -447,6 +447,22 @@ mod tests {
         use crate::relay::transport::{CoreListener, CoreStream};
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+        async fn wait_for_closed(
+            closed: &Arc<std::sync::Mutex<Vec<CallContext>>>,
+            expected: usize,
+        ) {
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    if closed.lock().unwrap().len() == expected {
+                        return;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("ordinary disconnects notify extensions before server shutdown");
+        }
+
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let closed = Arc::new(std::sync::Mutex::new(Vec::new()));
         let (home, core) = test_core_with_plugins(Plugins {
@@ -460,35 +476,48 @@ mod tests {
         let listener = CoreListener::bind(&socket).unwrap();
         let (stop, stopped) = tokio::sync::watch::channel(false);
         let server = tokio::spawn(server::accept_loop(listener, core.clone(), stopped));
-        let (read, mut write) = CoreStream::connect(&socket).await.unwrap().into_split();
-        let mut lines = BufReader::new(read).lines();
-        for request in [
-            json!({"jsonrpc":"2.0","id":1,"method":"hello","params":{"bridge_version": BRIDGE_VERSION}}),
-            json!({"jsonrpc":"2.0","id":2,"method":"extension.ping","params":{}}),
+        let (read_one, mut write_one) = CoreStream::connect(&socket).await.unwrap().into_split();
+        let mut lines_one = BufReader::new(read_one).lines();
+        let (read_two, mut write_two) = CoreStream::connect(&socket).await.unwrap().into_split();
+        let mut lines_two = BufReader::new(read_two).lines();
+        for (write, lines) in [
+            (&mut write_one, &mut lines_one),
+            (&mut write_two, &mut lines_two),
         ] {
-            write
-                .write_all(format!("{request}\n").as_bytes())
-                .await
-                .unwrap();
-            let line = lines.next_line().await.unwrap().unwrap();
-            let response: Value = serde_json::from_str(&line).unwrap();
-            assert!(response.get("error").is_none(), "{response}");
+            for request in [
+                json!({"jsonrpc":"2.0","id":1,"method":"hello","params":{"bridge_version": BRIDGE_VERSION}}),
+                json!({"jsonrpc":"2.0","id":2,"method":"extension.ping","params":{}}),
+            ] {
+                write
+                    .write_all(format!("{request}\n").as_bytes())
+                    .await
+                    .unwrap();
+                let line = lines.next_line().await.unwrap().unwrap();
+                let response: Value = serde_json::from_str(&line).unwrap();
+                assert!(response.get("error").is_none(), "{response}");
+            }
         }
         assert_eq!(
             *seen.lock().unwrap(),
-            [CallContext {
-                peer_pid: Some(std::process::id() as i32),
-                connection_id: Some(1),
-            }]
+            [
+                CallContext {
+                    peer_pid: Some(std::process::id() as i32),
+                    connection_id: Some(1),
+                },
+                CallContext {
+                    peer_pid: Some(std::process::id() as i32),
+                    connection_id: Some(2),
+                },
+            ]
         );
         // The core's own calls come from no peer.
         server::call(&core, "extension.ping", json!({}))
             .await
             .unwrap();
-        assert_eq!(seen.lock().unwrap()[1], CallContext::default());
-        drop(write);
-        stop.send(true).unwrap();
-        server.await.unwrap();
+        assert_eq!(seen.lock().unwrap()[2], CallContext::default());
+
+        drop(write_one);
+        wait_for_closed(&closed, 1).await;
         assert_eq!(
             *closed.lock().unwrap(),
             [CallContext {
@@ -496,6 +525,25 @@ mod tests {
                 connection_id: Some(1),
             }]
         );
+
+        drop(write_two);
+        wait_for_closed(&closed, 2).await;
+        assert_eq!(
+            *closed.lock().unwrap(),
+            [
+                CallContext {
+                    peer_pid: Some(std::process::id() as i32),
+                    connection_id: Some(1),
+                },
+                CallContext {
+                    peer_pid: Some(std::process::id() as i32),
+                    connection_id: Some(2),
+                },
+            ]
+        );
+
+        stop.send(true).unwrap();
+        server.await.unwrap();
     }
 
     #[test]
