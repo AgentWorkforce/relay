@@ -782,7 +782,7 @@ export async function ensureCloudSession(options: CloudSessionOptions = {}): Pro
       throw browserRequired(
         isHeadlessEnvironment(env)
           ? 'Cloud login required. Run `agent-relay cloud login --device`.'
-          : 'Cloud login required. Run `agent-relay login`.'
+          : 'Cloud login required. Run `agent-relay cloud login`.'
       );
     }
     const auth = await loginInteractive(apiUrl, {

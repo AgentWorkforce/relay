@@ -1550,6 +1550,9 @@ print_usage() {
     echo ""
     echo -e "${BOLD}Quick Start:${NC}"
     echo ""
+    echo "  # Sign in to Agent Relay Cloud"
+    echo "  agent-relay cloud login"
+    echo ""
     echo "  # Start the local broker (detached so this terminal stays free)"
     echo "  agent-relay ${node_group}up --background"
     echo ""
@@ -1565,6 +1568,7 @@ print_usage() {
     fi
     echo -e "${BOLD}Binaries:${NC} $INSTALL_DIR/bin (launchers: $launchers)"
     echo ""
+    echo -e "${BOLD}Desktop app:${NC} https://agentrelay.com/download"
     echo -e "${BOLD}Documentation:${NC} https://github.com/AgentWorkforce/relay"
     echo ""
 }
