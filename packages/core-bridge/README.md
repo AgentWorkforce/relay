@@ -27,7 +27,7 @@ const status = await client.call('status.get');
   `connectTimeoutMs` and `callTimeoutMs` (both default 15 000 ms), and `signal`
   (aborts connecting; once connected, aborting closes the client).
 - `coreSocketPath(env?, home?)` returns `$AGENT_RELAY_CORE_SOCKET` when set, or
-  `~/.agent-relay/core.sock`. `pipeName(socket)` returns the Windows pipe the
+  `~/.agentworkforce/desktop/core.sock`. `pipeName(socket)` returns the Windows pipe the
   core binds for that path.
 
 ## CoreClient
@@ -112,6 +112,11 @@ copied from the core's contract. Each helper:
   64 KiB, an absolute directory with no NUL) and throws `CoreBridgeError`
   `invalid_params` naming the field, never its value;
 - sends exactly the contract's keys, since the core refuses unknown fields.
+
+Each helper accepts per-call timeout and cancellation options. `spawn.invoke`
+and `spawn.release` default to a six-minute timeout because verified startup
+and exact cleanup can legitimately exceed the bridge client's 15-second call
+default; callers can still select a shorter bound explicitly.
 
 The core stays authoritative. Rules a caller must know:
 

@@ -17,17 +17,19 @@ const ALL_METHODS = ['hello', 'spawn.targets', 'spawn.invoke', 'spawn.status', '
 /** A client double that records calls instead of speaking to a core. */
 function fakeClient(methods: string[] = ALL_METHODS) {
   const calls: { method: string; params: unknown }[] = [];
+  const options: Array<unknown> = [];
   const hello: HelloResult = { bridge_version: 2, daemon_version: '17.2.1', pid: 1, methods, topics: [] };
   const client = {
     hello,
     socket: '/tmp/core.sock',
     closed: false,
-    call: async (method: string, params?: unknown) => {
+    call: async (method: string, params?: unknown, opts?: unknown) => {
       calls.push({ method, params });
+      options.push(opts);
       return { id: 'inv_1' };
     },
   } as unknown as CoreClient;
-  return { client, calls };
+  return { client, calls, options };
 }
 
 const KEY = 'a'.repeat(32);
@@ -133,7 +135,27 @@ describe('spawn helpers', () => {
     ]);
   });
 
-  it('refuse an empty or non-string caller_secret without echoing it', async () => {
+  it('give slow spawn actions a long default while preserving per-call controls', async () => {
+    const { client, options } = fakeClient();
+    const signal = new AbortController().signal;
+    await spawnInvoke(client, invoke, { signal });
+    await spawnStatus(
+      client,
+      { caller_name: 'lead', action: 'spawn', invocation_id: 'inv_1' },
+      {
+        timeoutMs: 42,
+        signal,
+      }
+    );
+    await spawnRelease(client, release, { timeoutMs: 84, signal });
+    expect(options).toEqual([
+      { timeoutMs: 360_000, signal },
+      { timeoutMs: 42, signal },
+      { timeoutMs: 84, signal },
+    ]);
+  });
+
+  it('refuse an empty, whitespace-only or non-string caller_secret without echoing it', async () => {
     const { client, calls } = fakeClient();
     const error = await invalidParams(spawnInvoke(client, { ...invoke, caller_secret: '' }));
     expect(error.message).toBe(
@@ -148,7 +170,33 @@ describe('spawn helpers', () => {
       })
     );
     await invalidParams(spawnRelease(client, { ...release, caller_secret: null as never }));
+    for (const caller_secret of [' ', '\t', '\r\n']) {
+      await invalidParams(spawnInvoke(client, { ...invoke, caller_secret }));
+      await invalidParams(
+        spawnStatus(client, { caller_name: 'lead', caller_secret, action: 'spawn', invocation_id: 'inv_1' })
+      );
+      await invalidParams(spawnRelease(client, { ...release, caller_secret }));
+    }
     expect(calls).toEqual([]);
+  });
+
+  it('keeps a slow successful spawn receipt beyond the bridge default timeout', async () => {
+    const { client: fixture } = fakeClient();
+    const client = {
+      ...fixture,
+      call: async <T>(_method: string, _params?: Record<string, unknown>, options?: { timeoutMs?: number }) =>
+        new Promise<T>((resolve, reject) => {
+          const timeout = setTimeout(
+            () => reject(new Error('bridge default elapsed')),
+            options?.timeoutMs ?? 5
+          );
+          setTimeout(() => {
+            clearTimeout(timeout);
+            resolve({ id: 'inv_slow' } as T);
+          }, 20);
+        }),
+    } as CoreClient;
+    await expect(spawnInvoke(client, invoke)).resolves.toEqual({ id: 'inv_slow' });
   });
 
   it('refuse short idempotency keys locally', async () => {

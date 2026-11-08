@@ -19,7 +19,7 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
-import type { CoreClient } from './client.js';
+import type { CallOptions, CoreClient } from './client.js';
 import { CoreBridgeError, CoreRpcError } from './errors.js';
 
 /** One spawn node the workspace knows (`SpawnControlTarget`). */
@@ -162,6 +162,7 @@ export const SPAWN_RELEASE_KEYS = [
 const SEGMENT = /^[A-Za-z0-9_-]{1,200}$/;
 const MIN_KEY_LENGTH = 16;
 const MAX_TASK_BYTES = 64 * 1024;
+const DEFAULT_SPAWN_ACTION_TIMEOUT_MS = 360_000;
 
 function invalid(field: string, rule: string): CoreBridgeError {
   // Names the field only: values (the task above all) may hold user text.
@@ -194,7 +195,7 @@ function pick<K extends string>(params: object, keys: readonly K[]): Partial<Rec
 function callerSecret(params: object): void {
   const value = (params as Record<string, unknown>).caller_secret;
   // Names the field only: the value is a credential.
-  if (value !== undefined && (typeof value !== 'string' || value.length === 0)) {
+  if (value !== undefined && (typeof value !== 'string' || value.trim().length === 0)) {
     throw invalid('caller_secret', 'must be a non-empty string when given');
   }
 }
@@ -212,24 +213,37 @@ function requireMethod(client: CoreClient, method: string): void {
 /**
  * A fresh idempotency key: a random UUID without dashes (32 hex characters).
  * Persist it and reuse it when retrying the same spawn or release.
+ * @returns A fresh 32-character hexadecimal idempotency key.
  */
 export function newIdempotencyKey(): string {
   return randomUUID().replace(/-/g, '');
 }
 
-/** Lists the workspace's spawn nodes (`spawn.targets`). */
-export async function spawnTargets(client: CoreClient): Promise<SpawnTargets> {
+/**
+ * Lists the workspace's spawn nodes (`spawn.targets`).
+ * @param client - A greeted connection to the Agent Relay core.
+ * @param options - Optional timeout and cancellation controls for this call.
+ * @returns The spawn targets visible to the core.
+ */
+export async function spawnTargets(client: CoreClient, options?: CallOptions): Promise<SpawnTargets> {
   requireMethod(client, 'spawn.targets');
-  return client.call<SpawnTargets>('spawn.targets');
+  return client.call<SpawnTargets>('spawn.targets', undefined, options);
 }
 
 /**
  * Starts an agent on this computer's own spawn node (`spawn.invoke`). This
  * makes Relaycast calls; poll on a second connection while it runs.
+ * @param client - A greeted connection to the Agent Relay core.
+ * @param params - The exact spawn request accepted by the core.
+ * @param options - Optional timeout and cancellation controls. The default
+ * timeout is six minutes because target lookup and verified agent startup can
+ * legitimately exceed the bridge client's 15-second default.
+ * @returns The accepted spawn invocation receipt.
  */
 export async function spawnInvoke(
   client: CoreClient,
-  params: SpawnInvokeParams
+  params: SpawnInvokeParams,
+  options: CallOptions = {}
 ): Promise<SpawnControlInvocation> {
   requireMethod(client, 'spawn.invoke');
   for (const field of ['caller_name', 'node_id', 'node_name', 'name']) segment(params, field);
@@ -251,13 +265,24 @@ export async function spawnInvoke(
   ) {
     throw invalid('directory', 'must be an absolute path');
   }
-  return client.call<SpawnControlInvocation>('spawn.invoke', pick(params, SPAWN_INVOKE_KEYS));
+  return client.call<SpawnControlInvocation>(
+    'spawn.invoke',
+    pick(params, SPAWN_INVOKE_KEYS),
+    spawnActionOptions(options)
+  );
 }
 
-/** Reads a spawn or release invocation (`spawn.status`). */
+/**
+ * Reads a spawn or release invocation (`spawn.status`).
+ * @param client - A greeted connection to the Agent Relay core.
+ * @param params - The invocation identity and action family to read.
+ * @param options - Optional timeout and cancellation controls for this call.
+ * @returns The current invocation state.
+ */
 export async function spawnStatus(
   client: CoreClient,
-  params: SpawnStatusParams
+  params: SpawnStatusParams,
+  options?: CallOptions
 ): Promise<SpawnControlInvocation> {
   requireMethod(client, 'spawn.status');
   segment(params, 'caller_name');
@@ -265,18 +290,35 @@ export async function spawnStatus(
   segment(params, 'invocation_id');
   if (params.action !== 'spawn' && params.action !== 'release')
     throw invalid('action', 'must be "spawn" or "release"');
-  return client.call<SpawnControlInvocation>('spawn.status', pick(params, SPAWN_STATUS_KEYS));
+  return client.call<SpawnControlInvocation>('spawn.status', pick(params, SPAWN_STATUS_KEYS), options);
 }
 
-/** Releases an agent this core spawned, by its exact identity (`spawn.release`). */
+/**
+ * Releases an agent this core spawned, by its exact identity (`spawn.release`).
+ * @param client - A greeted connection to the Agent Relay core.
+ * @param params - The exact worker identity and stable release key.
+ * @param options - Optional timeout and cancellation controls. The default
+ * timeout is six minutes because exact remote cleanup can exceed the bridge
+ * client's 15-second default.
+ * @returns The accepted release invocation receipt.
+ */
 export async function spawnRelease(
   client: CoreClient,
-  params: SpawnReleaseParams
+  params: SpawnReleaseParams,
+  options: CallOptions = {}
 ): Promise<SpawnControlInvocation> {
   requireMethod(client, 'spawn.release');
   for (const field of ['caller_name', 'node_id', 'node_name', 'name', 'expected_agent_id'])
     segment(params, field);
   callerSecret(params);
   key(params, 'idempotency_key');
-  return client.call<SpawnControlInvocation>('spawn.release', pick(params, SPAWN_RELEASE_KEYS));
+  return client.call<SpawnControlInvocation>(
+    'spawn.release',
+    pick(params, SPAWN_RELEASE_KEYS),
+    spawnActionOptions(options)
+  );
+}
+
+function spawnActionOptions(options: CallOptions): CallOptions {
+  return { ...options, timeoutMs: options.timeoutMs ?? DEFAULT_SPAWN_ACTION_TIMEOUT_MS };
 }
