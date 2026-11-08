@@ -96,8 +96,7 @@ fn release_replay_keeps_immutable_identity_after_the_local_agent_is_removed() {
     let folder = tempfile::tempdir().unwrap();
     let workspace = selected_workspace();
     let params = SpawnReleaseParams {
-        caller_name: "test-caller".into(),
-        caller_secret: None,
+        caller_name: Some("test-caller".into()),
         node_id: "node_1".into(),
         node_name: "test-desktop".into(),
         name: "test-agent".into(),
@@ -375,8 +374,7 @@ fn a_crashed_worker_is_releasable_by_its_exact_saved_identity() {
     let mut store = Store::default();
     store.registrations.push(worker);
     let params = |name: &str, agent: &str, node: &str| SpawnReleaseParams {
-        caller_name: "test-caller".into(),
-        caller_secret: None,
+        caller_name: Some("test-caller".into()),
         node_id: node.into(),
         node_name: "test-desktop".into(),
         name: name.into(),
@@ -417,6 +415,30 @@ fn capacity_refusals_keep_their_retry_codes() {
         assert_eq!(
             error_code(&json!({"error":"refused","error_details":{"code": code}})).as_deref(),
             Some(code)
+        );
+    }
+}
+
+/// The cross-language release receipt vectors: what the core answers (and a
+/// spawn caller plugin records) for each Relaycast `release-exact` reply.
+/// The core-bridge reads the same file (`spawn.test.ts`).
+#[test]
+fn release_receipts_match_the_shared_vectors() {
+    let vectors: Value = serde_json::from_str(include_str!(
+        "../../../../tests/fixtures/spawn-release-receipts.json"
+    ))
+    .unwrap();
+    assert_eq!(vectors["version"], 1);
+    let cases = vectors["cases"].as_array().unwrap();
+    assert!(cases.len() >= 4);
+    for case in cases {
+        let name = case["name"].as_str().unwrap();
+        let answer = serde_json::to_value(receipt(&case["relaycast"]).unwrap()).unwrap();
+        assert_eq!(answer, case["receipt"], "{name}");
+        assert_eq!(
+            answer["released"] == true,
+            case["confirmed"] == true,
+            "{name}"
         );
     }
 }

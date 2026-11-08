@@ -3,7 +3,7 @@
 use crate::relay::contract::spawn_control::*;
 use crate::relay::contract::{answer, method};
 use crate::relay::daemon::{
-    CallContext, Core, ExternalCaller, SpawnCall, SpawnCallers, SpawnRequest,
+    CallContext, ConnectionCaller, Core, ExternalCaller, SpawnCall, SpawnCallers, SpawnRequest,
 };
 use crate::relay::diagnostic_http::HttpClient;
 use crate::relay::protocol::{ErrorKind, RefusalReason, RpcError};
@@ -28,24 +28,33 @@ pub(crate) async fn call(
             })
             .await,
         ),
-        method::SpawnInvoke::NAME => Some(
-            answer::<method::SpawnInvoke, _>(raw, |params| async {
-                invoke(core, context, params).await
-            })
-            .await,
-        ),
-        method::SpawnInvocation::NAME => Some(
-            answer::<method::SpawnInvocation, _>(raw, |params| async {
-                invocation(core, context, params).await
-            })
-            .await,
-        ),
-        method::SpawnRelease::NAME => Some(
-            answer::<method::SpawnRelease, _>(raw, |params| async {
-                release(core, context, params).await
-            })
-            .await,
-        ),
+        method::SpawnInvoke::NAME => Some(match resolve(core, context, &raw) {
+            Ok(resolved) => {
+                answer::<method::SpawnInvoke, _>(raw, |params| async {
+                    invoke(core, context, resolved, params).await
+                })
+                .await
+            }
+            Err(error) => Err(error),
+        }),
+        method::SpawnInvocation::NAME => Some(match resolve(core, context, &raw) {
+            Ok(resolved) => {
+                answer::<method::SpawnInvocation, _>(raw, |params| async {
+                    invocation(core, context, resolved, params).await
+                })
+                .await
+            }
+            Err(error) => Err(error),
+        }),
+        method::SpawnRelease::NAME => Some(match resolve(core, context, &raw) {
+            Ok(resolved) => {
+                answer::<method::SpawnRelease, _>(raw, |params| async {
+                    release(core, context, resolved, params).await
+                })
+                .await
+            }
+            Err(error) => Err(error),
+        }),
         method::SpawnClaimRetry::NAME => Some(
             answer::<method::SpawnClaimRetry, _>(raw, |_| async {
                 core.retry_spawn_claim();
@@ -57,6 +66,16 @@ pub(crate) async fn call(
     }
 }
 
+/// A params object that still carries a caller credential. Service callers
+/// authenticate their bridge connection instead (`spawn_callers.challenge`).
+fn legacy_credential() -> RpcError {
+    RpcError::new(ErrorKind::Refused, "legacy_credential_refused")
+}
+/// A call that names no session caller on a connection bound to no service
+/// caller, or whose connection stopped being a session's before it ran.
+fn unbound() -> RpcError {
+    RpcError::refused_because(RefusalReason::ServiceUnknown, "caller_unbound")
+}
 fn invalid() -> RpcError {
     RpcError::invalid_params("Native spawn input is invalid.")
 }
@@ -149,12 +168,71 @@ fn workspace_http(core: &Core) -> Result<HttpClient, RpcError> {
     sdk_gaps::http(&workspace.base_url, &workspace.key).map_err(|e| RpcError::from_relaycast(&e))
 }
 
+/// How a `spawn.*` call's bridge connection resolved, before its params
+/// were read.
+enum Resolved {
+    /// Not a service caller connection: the session path, unchanged. The
+    /// plugin, when there is one, to ask again before the side effect.
+    Session {
+        recheck: Option<Arc<dyn SpawnCallers>>,
+    },
+    External {
+        caller: ExternalCaller,
+        plugin: Arc<dyn SpawnCallers>,
+    },
+}
+
+/// Resolves a `spawn.*` call from `context` and the raw params, once and
+/// before they are read: a params value that is neither an object nor
+/// absent is invalid; a `caller_secret` key is a legacy credential on any
+/// connection; a call without a `connection_id` (the core's own) or without
+/// the plugin takes the session path; otherwise the plugin says. A bound
+/// connection may not name a session caller (`caller_name`), and a session
+/// call must.
+fn resolve(core: &Core, context: &CallContext, raw: &Value) -> Result<Resolved, RpcError> {
+    let empty = serde_json::Map::new();
+    let object = match raw {
+        Value::Null => &empty,
+        Value::Object(object) => object,
+        _ => {
+            return Err(RpcError::invalid_params(
+                "The parameters do not match this method.",
+            ))
+        }
+    };
+    if object.contains_key("caller_secret") {
+        return Err(legacy_credential());
+    }
+    let named = object.contains_key("caller_name");
+    let plugin = core.plugins.spawn_callers.clone();
+    let resolution = match (&plugin, context.connection_id) {
+        (Some(plugin), Some(_)) => plugin.connection(context),
+        _ => ConnectionCaller::NotExternal,
+    };
+    match resolution {
+        ConnectionCaller::NotExternal if named => Ok(Resolved::Session {
+            recheck: plugin.filter(|_| context.connection_id.is_some()),
+        }),
+        ConnectionCaller::NotExternal => Err(unbound()),
+        ConnectionCaller::Bound(_) if named => Err(legacy_credential()),
+        ConnectionCaller::Bound(caller) => {
+            if caller.token.expose().is_empty() || segment(&caller.agent_id).is_err() {
+                return Err(refused());
+            }
+            let plugin = plugin.unwrap_or_else(|| unreachable!("only a plugin binds"));
+            Ok(Resolved::External { caller, plugin })
+        }
+        ConnectionCaller::Refused(error) => Err(error),
+    }
+}
+
 /// Who calls a native spawn control: a session registration, named alone,
-/// or a caller the [`SpawnCallers`] plugin vouches for by name and secret.
+/// or the service caller its connection is bound to.
 enum Caller {
     Session {
         agent_id: String,
         token: Secret,
+        recheck: Option<Arc<dyn SpawnCallers>>,
     },
     External {
         caller: ExternalCaller,
@@ -185,8 +263,13 @@ impl Caller {
         }
     }
 
-    /// Runs `run` as `call`: a session caller's directly, an external
-    /// caller's only once the plugin admits it, recording what came of it.
+    /// Runs `run` as `call`: a session caller's directly, once its
+    /// connection is still not a service caller's; an external caller's only
+    /// once the plugin admits it, and its receipt only once the plugin
+    /// recorded it. A success the plugin could not record is answered with
+    /// the plugin's error, so no receipt goes out that the plugin does not
+    /// hold; the same request again recovers it (see
+    /// [`SpawnCallers::record`]).
     async fn admitted<F>(
         &self,
         call: SpawnCall<'_>,
@@ -195,48 +278,59 @@ impl Caller {
     where
         F: std::future::Future<Output = Result<SpawnControlInvocation, RpcError>>,
     {
-        let Caller::External { caller, plugin } = self else {
-            return run.await;
+        let (caller, plugin) = match self {
+            Caller::Session { recheck, .. } => {
+                if let Some(plugin) = recheck {
+                    let context = CallContext {
+                        peer_pid: call.peer_pid,
+                        connection_id: call.connection_id,
+                    };
+                    if !matches!(plugin.connection(&context), ConnectionCaller::NotExternal) {
+                        return Err(unbound());
+                    }
+                }
+                return run.await;
+            }
+            Caller::External { caller, plugin } => (caller, plugin),
         };
         let permit = plugin.admit(caller, &call)?;
         let outcome = run.await;
-        plugin.record(permit, &outcome);
-        outcome
+        match (plugin.record(permit, &outcome), outcome) {
+            (Err(error), Ok(_)) => Err(error),
+            (_, outcome) => outcome,
+        }
     }
 }
 
-/// The caller `name` names: with no `secret`, exactly as before the plugin
-/// existed (an active registration in `workspace` and its token); with one,
-/// whoever the [`SpawnCallers`] plugin resolves, and a refusal without it.
+/// The caller a resolved call acts as: a bound service caller, or the
+/// session registration `name` names, exactly as before the plugin existed
+/// (an active registration in `workspace` and its token).
 fn caller_in(
     core: &Core,
     workspace: &Workspace,
-    name: &str,
-    secret: Option<String>,
+    resolved: Resolved,
+    name: Option<&str>,
 ) -> Result<Caller, RpcError> {
-    let Some(secret) = secret else {
-        let (agent_id, token) = core.store.read(|store| {
-            let token = caller_token(store, workspace, name)?;
-            let agent_id = store
-                .registrations
-                .iter()
-                .find(|r| r.name == name && active(r, workspace))
-                .map(|r| r.agent_id.clone())
-                .ok_or_else(refused)?;
-            Ok::<_, RpcError>((agent_id, token))
-        })?;
-        return Ok(Caller::Session { agent_id, token });
+    let recheck = match resolved {
+        Resolved::External { caller, plugin } => return Ok(Caller::External { caller, plugin }),
+        Resolved::Session { recheck } => recheck,
     };
-    if secret.trim().is_empty() {
-        return Err(refused());
-    }
-    segment(name)?;
-    let plugin = core.plugins.spawn_callers.clone().ok_or_else(refused)?;
-    let caller = plugin.resolve(workspace, name, &Secret::new(secret))?;
-    if caller.token.expose().is_empty() || segment(&caller.agent_id).is_err() {
-        return Err(refused());
-    }
-    Ok(Caller::External { caller, plugin })
+    let name = name.ok_or_else(unbound)?;
+    let (agent_id, token) = core.store.read(|store| {
+        let token = caller_token(store, workspace, name)?;
+        let agent_id = store
+            .registrations
+            .iter()
+            .find(|r| r.name == name && active(r, workspace))
+            .map(|r| r.agent_id.clone())
+            .ok_or_else(refused)?;
+        Ok::<_, RpcError>((agent_id, token))
+    })?;
+    Ok(Caller::Session {
+        agent_id,
+        token,
+        recheck,
+    })
 }
 
 /// The directory an external caller may launch in. Restricted paths are
@@ -388,9 +482,9 @@ fn error_code(data: &Value) -> Option<String> {
 async fn invoke(
     core: &Core,
     context: &CallContext,
-    mut params: SpawnInvokeParams,
+    resolved: Resolved,
+    params: SpawnInvokeParams,
 ) -> Result<SpawnControlInvocation, RpcError> {
-    let secret = params.caller_secret.take();
     for value in [&params.node_id, &params.node_name, &params.name] {
         segment(value)?;
     }
@@ -420,9 +514,10 @@ async fn invoke(
     {
         return Err(invalid());
     }
-    let caller = caller_in(core, &workspace, &params.caller_name, secret)?;
+    let caller = caller_in(core, &workspace, resolved, params.caller_name.as_deref())?;
     let call = SpawnCall {
         peer_pid: context.peer_pid,
+        connection_id: context.connection_id,
         workspace: &workspace,
         request: SpawnRequest::Invoke(&params),
     };
@@ -473,14 +568,15 @@ async fn invoke_as(
 async fn invocation(
     core: &Core,
     context: &CallContext,
-    mut params: SpawnInvocationParams,
+    resolved: Resolved,
+    params: SpawnInvocationParams,
 ) -> Result<SpawnControlInvocation, RpcError> {
-    let secret = params.caller_secret.take();
     segment(&params.invocation_id)?;
     let workspace = workspace(core)?;
-    let caller = caller_in(core, &workspace, &params.caller_name, secret)?;
+    let caller = caller_in(core, &workspace, resolved, params.caller_name.as_deref())?;
     let call = SpawnCall {
         peer_pid: context.peer_pid,
+        connection_id: context.connection_id,
         workspace: &workspace,
         request: SpawnRequest::Status(&params),
     };
@@ -594,9 +690,9 @@ fn release_targets<'a>(
 async fn release(
     core: &Core,
     context: &CallContext,
-    mut params: SpawnReleaseParams,
+    resolved: Resolved,
+    params: SpawnReleaseParams,
 ) -> Result<SpawnControlInvocation, RpcError> {
-    let secret = params.caller_secret.take();
     for value in [
         &params.node_id,
         &params.node_name,
@@ -607,9 +703,10 @@ async fn release(
     }
     key(&params.idempotency_key)?;
     let workspace = workspace(core)?;
-    let caller = caller_in(core, &workspace, &params.caller_name, secret)?;
+    let caller = caller_in(core, &workspace, resolved, params.caller_name.as_deref())?;
     let call = SpawnCall {
         peer_pid: context.peer_pid,
+        connection_id: context.connection_id,
         workspace: &workspace,
         request: SpawnRequest::Release(&params),
     };
