@@ -142,6 +142,8 @@ pub struct SpawnControlInvocation {
     pub name: Option<String>,
     pub spawned: bool,
     pub ready: bool,
+    /// Explicit proof that a completed release removed the exact agent.
+    pub released: bool,
     pub task_unconfirmed: bool,
     /// A bounded machine code, never provider error text or arbitrary output.
     pub error_code: Option<String>,

@@ -346,6 +346,7 @@ fn receipt(data: &Value) -> Result<SpawnControlInvocation, RpcError> {
             .map(str::to_string),
         spawned: output["spawned"] == true,
         ready: output["ready"] == true,
+        released: output["released"] == true,
         task_unconfirmed: output["warning"] == "spawn_task_unconfirmed"
             || output["warning"]["code"] == "spawn_task_unconfirmed",
         error_code: code,

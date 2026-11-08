@@ -329,6 +329,41 @@ fn legacy_reason_suffixes_and_structured_errors_return_only_allowlisted_codes() 
 }
 
 #[test]
+fn receipt_projects_only_explicit_release_success() {
+    let released = receipt(&json!({
+        "id": "release_1",
+        "status": "completed",
+        "output": { "released": true, "name": "worker_1" }
+    }))
+    .unwrap();
+    assert!(released.released);
+
+    for (id, output) in [
+        ("release_missing", json!({ "name": "worker_1" })),
+        (
+            "release_false",
+            json!({ "released": false, "name": "worker_1" }),
+        ),
+        (
+            "release_string",
+            json!({ "released": "true", "name": "worker_1" }),
+        ),
+        (
+            "release_number",
+            json!({ "released": 1, "name": "worker_1" }),
+        ),
+    ] {
+        let completed_without_proof = receipt(&json!({
+            "id": id,
+            "status": "completed",
+            "output": output
+        }))
+        .unwrap();
+        assert!(!completed_without_proof.released, "{id}");
+    }
+}
+
+#[test]
 fn a_crashed_worker_is_releasable_by_its_exact_saved_identity() {
     let workspace = selected_workspace();
     let mut worker = registered();

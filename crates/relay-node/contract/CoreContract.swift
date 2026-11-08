@@ -4956,17 +4956,20 @@ public struct SpawnControlInvocation: Codable, Equatable, Hashable, Sendable {
     public let name: String?
     public let nodeId: String?
     public let ready: Bool
+    /// Explicit proof that a completed release removed the exact agent.
+    public let released: Bool
     public let spawned: Bool
     public let status: String
     public let taskUnconfirmed: Bool
 
-    public init(agentId: String? = nil, errorCode: String? = nil, id: String, name: String? = nil, nodeId: String? = nil, ready: Bool, spawned: Bool, status: String, taskUnconfirmed: Bool) {
+    public init(agentId: String? = nil, errorCode: String? = nil, id: String, name: String? = nil, nodeId: String? = nil, ready: Bool, released: Bool, spawned: Bool, status: String, taskUnconfirmed: Bool) {
         self.agentId = agentId
         self.errorCode = errorCode
         self.id = id
         self.name = name
         self.nodeId = nodeId
         self.ready = ready
+        self.released = released
         self.spawned = spawned
         self.status = status
         self.taskUnconfirmed = taskUnconfirmed
@@ -4979,6 +4982,7 @@ public struct SpawnControlInvocation: Codable, Equatable, Hashable, Sendable {
         case name
         case nodeId = "node_id"
         case ready
+        case released
         case spawned
         case status
         case taskUnconfirmed = "task_unconfirmed"
@@ -4992,6 +4996,7 @@ public struct SpawnControlInvocation: Codable, Equatable, Hashable, Sendable {
         self.name = try c.decodeIfPresent(String.self, forKey: .name)
         self.nodeId = try c.decodeIfPresent(String.self, forKey: .nodeId)
         self.ready = try c.decode(Bool.self, forKey: .ready)
+        self.released = try c.decode(Bool.self, forKey: .released)
         self.spawned = try c.decode(Bool.self, forKey: .spawned)
         self.status = try c.decode(String.self, forKey: .status)
         self.taskUnconfirmed = try c.decode(Bool.self, forKey: .taskUnconfirmed)
@@ -5005,6 +5010,7 @@ public struct SpawnControlInvocation: Codable, Equatable, Hashable, Sendable {
         try c.encode(self.name, forKey: .name)
         try c.encode(self.nodeId, forKey: .nodeId)
         try c.encode(self.ready, forKey: .ready)
+        try c.encode(self.released, forKey: .released)
         try c.encode(self.spawned, forKey: .spawned)
         try c.encode(self.status, forKey: .status)
         try c.encode(self.taskUnconfirmed, forKey: .taskUnconfirmed)

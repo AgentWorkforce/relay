@@ -248,7 +248,11 @@ fn invoke_params(core: &Core, harness: &str, directory: &str) -> Value {
 }
 
 fn released() -> Value {
-    json!({"id":"invocation_release","status":"completed"})
+    json!({
+        "id":"invocation_release",
+        "status":"completed",
+        "output":{"released":true,"name":"test-worker"}
+    })
 }
 
 fn reason(error: &RpcError) -> Option<RefusalReason> {
@@ -377,6 +381,7 @@ async fn an_external_caller_uses_its_own_token_and_agent_id_for_release_claims()
     .await
     .unwrap();
     assert_eq!(answer["id"], "invocation_release");
+    assert_eq!(answer["released"], true);
     let requests = served.join().unwrap();
     assert!(requests[0].contains("service-agent-token"));
     assert!(!requests[0].contains("test-agent-secret"));
