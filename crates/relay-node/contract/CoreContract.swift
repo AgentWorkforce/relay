@@ -4957,9 +4957,10 @@ public struct SpawnControlInvocation: Codable, Equatable, Hashable, Sendable {
     public let nodeId: String?
     public let ready: Bool
     /// True only when the provider reported the agent released: its output's
-    /// `released` is exactly the JSON boolean `true`. Older cores did not send
-    /// this field, so an absent value decodes as false; it is never inferred
-    /// from `status`.
+    /// `released` is exactly the JSON boolean `true`; it is never inferred
+    /// from `status`. Added within bridge version 2, so older cores did not
+    /// send it: a missing, `null` or non-boolean value reads as false. It is
+    /// always written.
     public let released: Bool
     public let spawned: Bool
     public let status: String
@@ -4999,7 +5000,7 @@ public struct SpawnControlInvocation: Codable, Equatable, Hashable, Sendable {
         self.name = try c.decodeIfPresent(String.self, forKey: .name)
         self.nodeId = try c.decodeIfPresent(String.self, forKey: .nodeId)
         self.ready = try c.decode(Bool.self, forKey: .ready)
-        self.released = try c.decodeIfPresent(Bool.self, forKey: .released) ?? false
+        self.released = (try? c.decodeIfPresent(Bool.self, forKey: .released)) ?? false
         self.spawned = try c.decode(Bool.self, forKey: .spawned)
         self.status = try c.decode(String.self, forKey: .status)
         self.taskUnconfirmed = try c.decode(Bool.self, forKey: .taskUnconfirmed)
