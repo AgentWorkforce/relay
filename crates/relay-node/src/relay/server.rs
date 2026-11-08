@@ -30,6 +30,7 @@ pub async fn accept_loop(
     mut stop: watch::Receiver<bool>,
 ) {
     let mut connections = tokio::task::JoinSet::new();
+    let mut next_connection_id = 1u64;
     loop {
         let accepted = tokio::select! {
             accepted = listener.accept() => accepted,
@@ -45,7 +46,11 @@ pub async fn accept_loop(
         };
         match stream.peer_credentials() {
             Ok(peer) if peer.uid == current_uid() => {
-                let context = CallContext { peer_pid: peer.pid };
+                let context = CallContext {
+                    peer_pid: peer.pid,
+                    connection_id: Some(next_connection_id),
+                };
+                next_connection_id = next_connection_id.wrapping_add(1).max(1);
                 connections.spawn(connection(
                     stream,
                     core.clone(),
@@ -67,8 +72,10 @@ const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 /// requests and its events lag (then resync with a fresh snapshot).
 const OUTGOING_LINES: usize = 32;
 
-/// How long a stopping daemon gives a connection to flush the shutdown event.
-const SHUTDOWN_FLUSH: Duration = Duration::from_millis(500);
+/// How long a closing connection gives its background tasks to flush. At
+/// daemon shutdown this includes the shutdown event; after EOF it includes
+/// replies already queued for the client.
+const CLOSE_FLUSH: Duration = Duration::from_millis(500);
 
 struct Session {
     greeted: bool,
@@ -155,22 +162,24 @@ async fn connection(
     // client that is not reading gets no longer than the flush allows.
     let mut forwarder = forwarder;
     if !stopping
-        || tokio::time::timeout(SHUTDOWN_FLUSH, &mut forwarder)
+        || tokio::time::timeout(CLOSE_FLUSH, &mut forwarder)
             .await
             .is_err()
     {
         forwarder.abort();
     }
     drop(lines);
-    let mut writer = writer;
-    if stopping {
-        if tokio::time::timeout(SHUTDOWN_FLUSH, &mut writer)
-            .await
-            .is_err()
-        {
-            writer.abort();
-        }
-    } else {
+    finish_writer(writer, CLOSE_FLUSH).await;
+    for extension in &core.plugins.extensions {
+        extension.connection_closed(&context);
+    }
+}
+
+/// Flushes replies already queued for a closing connection without letting a
+/// client that stopped reading postpone extension cleanup indefinitely.
+async fn finish_writer(mut writer: tokio::task::JoinHandle<()>, limit: Duration) {
+    if tokio::time::timeout(limit, &mut writer).await.is_err() {
+        writer.abort();
         let _ = writer.await;
     }
 }
@@ -458,4 +467,26 @@ async fn extension_call(
 
 fn to_line(response: &Response) -> String {
     serde_json::to_string(response).unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_stalled_writer_is_aborted_before_connection_cleanup() {
+        let (started, running) = tokio::sync::oneshot::channel();
+        let writer = tokio::spawn(async move {
+            let _ = started.send(());
+            std::future::pending::<()>().await;
+        });
+        running.await.unwrap();
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            finish_writer(writer, Duration::from_millis(10)),
+        )
+        .await
+        .expect("a client that stopped reading must not hold cleanup open");
+    }
 }
