@@ -31,9 +31,10 @@ import { describeError } from '../lib/describe-error.js';
  * so a committed update survives host/power crashes, and every
  * read-modify-write runs under an exclusive lock directory
  * (`pending-cleanups.json.lock.d`) so concurrent CLI processes cannot lose
- * entries. The lock is plain filesystem state taken in-process, so it needs
- * no helper binary and works in the standalone install. A corrupt or
- * unreadable journal FAILS
+ * entries, plus the legacy `pending-cleanups.json.lock` that CLI releases up
+ * to 17.2.1 lock, so older and newer CLIs exclude each other too. Both are
+ * taken in-process, so they need no helper binary and work in the standalone
+ * install. A corrupt or unreadable journal FAILS
  * CLOSED: reads throw, nothing is swept, and callers abort before creating
  * new external resources.
  *
@@ -271,8 +272,12 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function errorCode(error: unknown): string | undefined {
+  return (error as NodeJS.ErrnoException | undefined)?.code;
+}
+
 function isLockContention(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  const code = errorCode(error);
   if (code === 'EEXIST') return true;
   // Windows can report a racing directory create/remove as a sharing violation.
   return process.platform === 'win32' && (code === 'EACCES' || code === 'EBUSY' || code === 'EPERM');
@@ -313,7 +318,8 @@ function processIsAlive(pid: number): boolean {
 /**
  * The token of an abandoned lock (holder on this host exited or its pid was
  * reused, a holder on another host let its lease expire, or an ownerless
- * directory older than the orphan window), or undefined while the lock is live. An ownerless stale lock yields the empty token.
+ * directory older than the orphan window), or undefined while the lock is
+ * live. An ownerless stale lock yields the empty token.
  */
 function staleLockToken(lockDir: string, now: number): string | undefined {
   const current = readLockOwner(lockDir);
@@ -332,37 +338,124 @@ function staleLockToken(lockDir: string, now: number): string | undefined {
   }
 }
 
-/**
- * Break an abandoned lock. The directory is first renamed aside (atomic), then
- * judged again where it now lies: if a live contender re-took the lock, or the
- * holder refreshed its heartbeat, between our staleness check and the rename,
- * it is put back instead of being deleted.
- */
-function breakStaleLock(lockDir: string, staleToken: string): boolean {
-  const tombstone = `${lockDir}.stale-${process.pid}-${randomUUID()}`;
-  try {
-    fs.renameSync(lockDir, tombstone);
-  } catch {
-    return true; // someone else broke (or released) it first: retry the mkdir
-  }
-  const moved = readLockOwner(tombstone);
-  const stillStale = staleLockToken(tombstone, Date.now()) === staleToken;
-  if ((moved?.owner.token ?? '') !== staleToken || !stillStale) {
-    try {
-      fs.renameSync(tombstone, lockDir);
-      return false;
-    } catch {
-      // A third contender already holds a fresh lock; the one we moved is
-      // superseded either way.
-    }
-  }
-  fs.rmSync(tombstone, { recursive: true, force: true });
-  return true;
-}
-
 /** Whether this process still owns `lockDir` under `token`. */
 function ownsLock(lockDir: string, token: string): boolean {
   return readLockOwner(lockDir)?.owner.token === token;
+}
+
+/**
+ * Create the lock directory `dir` carrying `owner`. False when another holder
+ * has it; throws on any other error. The owner record is created exclusively
+ * (`wx`): if a recoverer put a lock back onto our just-created, still empty
+ * directory, that lock's owner is already there and is never overwritten.
+ */
+function createLockDir(dir: string, owner: JournalLockOwner): boolean {
+  try {
+    fs.mkdirSync(dir, { mode: 0o700 });
+  } catch (err) {
+    if (isLockContention(err)) return false;
+    throw err;
+  }
+  const ownerFile = path.join(dir, LOCK_OWNER_FILE);
+  try {
+    fs.writeFileSync(ownerFile, JSON.stringify(owner), { mode: 0o600, flag: 'wx' });
+  } catch (err) {
+    if (errorCode(err) === 'EEXIST') return false;
+    // Remove only what is provably ours: our partial owner file, then the
+    // directory if it is empty. Never a recursive delete here.
+    try {
+      fs.rmSync(ownerFile, { force: true });
+      fs.rmdirSync(dir);
+    } catch {
+      // Not empty (not ours) or already gone.
+    }
+    throw err;
+  }
+  return true;
+}
+
+/** `retry`: try the mkdir again at once. `wait`: back off under the deadline. */
+type RecoveryOutcome = 'retry' | 'wait';
+
+/**
+ * Move the abandoned lock `dir` (judged stale under `staleToken`) aside and
+ * delete it. Callers hold the recovery lock, so no other recoverer can move or
+ * replace it concurrently; the moved directory is still judged again, because
+ * a holder judged stale may have been a slow live process that released and
+ * let a new writer in between the check and the rename. A directory that
+ * turns out not to be the stale one is put back, and if that fails it is left
+ * as a tombstone: its owner then finds its lock lost and refuses to commit,
+ * which is safe, whereas deleting it would not be.
+ */
+function moveAsideIfStale(dir: string, staleToken: string): RecoveryOutcome {
+  const tombstone = `${dir}.stale-${process.pid}-${randomUUID()}`;
+  try {
+    fs.renameSync(dir, tombstone);
+  } catch (err) {
+    // Only a lock that actually disappeared earns an immediate retry. A
+    // transient Windows sharing violation backs off under the deadline; any
+    // other refusal (e.g. a parent directory that does not allow renames) is
+    // an I/O error, never a reason to spin.
+    if (errorCode(err) === 'ENOENT') return 'retry';
+    if (isLockContention(err)) return 'wait';
+    throw new CleanupJournalError(
+      'io',
+      `Could not recover the abandoned pending-cleanup journal lock at ${dir}: ${describeError(err)}`
+    );
+  }
+  const moved = readLockOwner(tombstone);
+  if ((moved?.owner.token ?? '') === staleToken && staleLockToken(tombstone, Date.now()) === staleToken) {
+    fs.rmSync(tombstone, { recursive: true, force: true });
+    return 'retry';
+  }
+  try {
+    fs.renameSync(tombstone, dir);
+  } catch {
+    // A newer lock already sits at `dir`; keep the tombstone (see above).
+  }
+  return 'wait';
+}
+
+/**
+ * Break an abandoned journal lock observed with `staleToken`.
+ *
+ * Recovery is serialized by a second lock directory, `<lockDir>.recover`, so
+ * an observation made before another recoverer broke the lock and a new writer
+ * took it can never move that writer's live lock: under the recovery lock the
+ * owner is read again and the lock is moved only if it is still the stale one.
+ * A recoverer holds the recovery lock for a few synchronous filesystem calls;
+ * one it left behind by crashing is judged by the same staleness rules (dead
+ * pid on this host, expired lease from another host, ownerless past the
+ * orphan window) and moved aside the same way.
+ */
+function breakStaleLock(lockDir: string, staleToken: string): RecoveryOutcome {
+  const recoverDir = `${lockDir}.recover`;
+  const recoverer: JournalLockOwner = { pid: process.pid, host: os.hostname(), token: randomUUID() };
+  let held: boolean;
+  try {
+    held = createLockDir(recoverDir, recoverer);
+  } catch (err) {
+    throw new CleanupJournalError(
+      'io',
+      `Could not take the pending-cleanup journal recovery lock at ${recoverDir}: ${describeError(err)}`
+    );
+  }
+  if (!held) {
+    const staleRecoverer = staleLockToken(recoverDir, Date.now());
+    if (staleRecoverer !== undefined) moveAsideIfStale(recoverDir, staleRecoverer);
+    return 'wait';
+  }
+  try {
+    if (staleLockToken(lockDir, Date.now()) !== staleToken) {
+      // Released, broken by another recoverer, or re-taken since we looked.
+      return fs.existsSync(lockDir) ? 'wait' : 'retry';
+    }
+    return moveAsideIfStale(lockDir, staleToken);
+  } finally {
+    if (ownsLock(recoverDir, recoverer.token)) {
+      fs.rmSync(recoverDir, { recursive: true, force: true });
+    }
+  }
 }
 
 class LockLostError extends Error {}
@@ -416,6 +509,232 @@ function replaceJournalDurably(journal: string, payload: string, stillOwned: () 
   }
 }
 
+/*
+ * Legacy lock (CLI releases up to 17.2.1).
+ *
+ * Those releases serialized the journal through the retired broker's hidden
+ * `journal-lock` helper: it opens `pending-cleanups.json.lock` (created 0600,
+ * a stable inode that is never renamed or unlinked) and takes an exclusive
+ * kernel lock on it with Rust's `File::try_lock`, i.e. flock(2) with
+ * LOCK_EX|LOCK_NB on Linux and macOS and LockFileEx over the whole file on
+ * Windows, retrying every 100 ms for 5 s (then exit 4, "locked"). Holding the
+ * lock it reads the file: empty or a strict prefix of the v2 marker is
+ * (re)stamped with the marker, anything else makes it exit 3 ("sentinel",
+ * reported as "locked") without touching the journal. Only then does it
+ * replace the journal, and the kernel drops the lock when it exits.
+ *
+ * Node and Bun have no flock(2)/LockFileEx API and this module must not load a
+ * native addon (the Bun standalone cannot) or spawn a helper (the standalone
+ * install ships none), so a newer transaction excludes older writers as
+ * strongly as each platform allows, for the whole transaction, after taking
+ * the lock directory:
+ *
+ * - macOS and FreeBSD: open(2) with O_EXLOCK|O_NONBLOCK takes the very same
+ *   flock(2) lock, so this is the legacy lock itself: older helpers wait for
+ *   it (and time out as "locked"), and the kernel releases it if we die.
+ * - Windows: libuv's UV_FS_O_EXLOCK opens the file with share mode 0. An older
+ *   helper cannot open it while we hold it (it exits with an error, never
+ *   touching the journal), and our open fails while a helper has it open,
+ *   which covers the whole time it holds LockFileEx.
+ * - Both are verified: a second open asking for the same exclusivity must be
+ *   refused. If the runtime ignored the flag, the marker exclusion below is
+ *   used instead.
+ * - Linux (and any runtime where the above is unavailable): the file is
+ *   stamped with a token-bearing sentinel that is not a prefix of the v2
+ *   marker, so any older helper that acquires the flock afterwards reads it
+ *   and exits 3 without touching the journal. A helper that took the flock
+ *   BEFORE the stamp is still holding it when we look, so after stamping we
+ *   read /proc/locks and wait while any FLOCK lock is held on the file's
+ *   inode (a lock on an unrelated file with the same inode number elsewhere
+ *   only makes us wait longer). Order matters: stamp, then look; a helper
+ *   that overwrote the stamp while healing it was holding the lock and is
+ *   seen, and the stamp is rewritten on the next round. On release the v2
+ *   marker is written back, only while the file still holds OUR sentinel.
+ *   Limits: a helper in another pid namespace is hidden from /proc/locks, and
+ *   without /proc only newly arriving helpers are excluded. If we crash while
+ *   holding, older CLIs keep failing closed ("locked") until the next newer
+ *   transaction restores the marker.
+ * - A file holding anything else (neither empty, a marker prefix nor a
+ *   sentinel) is left exactly as it is: older helpers already refuse to run on
+ *   it.
+ */
+const LEGACY_LOCK_MARKER = 'agent-relay-cleanup-lock v2\n';
+const LEGACY_SENTINEL_PREFIX = '{"agent-relay-cleanup-lock":"held by a newer agent-relay CLI","token":"';
+/** O_EXLOCK on macOS and FreeBSD (not exported by fs.constants). */
+const O_EXLOCK_BSD = 0x20;
+/** libuv's UV_FS_O_EXLOCK on Windows: open with share mode 0. */
+const UV_FS_O_EXLOCK_WIN = 0x10000000;
+
+interface LegacyLock {
+  /** Idempotent and never throws. */
+  release(): void;
+}
+
+function legacyLockTimeout(lockFile: string): CleanupJournalError {
+  return new CleanupJournalError(
+    'locked',
+    `Timed out waiting for the pending-cleanup journal lock at ${lockFile}: an older agent-relay CLI (17.2.1 or earlier) holds it. It is released when that process finishes; retry afterwards.`
+  );
+}
+
+function isWindowsLockViolation(error: unknown): boolean {
+  const code = errorCode(error);
+  return process.platform === 'win32' && (code === 'EBUSY' || code === 'EACCES' || code === 'EPERM');
+}
+
+/**
+ * macOS/FreeBSD/Windows: hold the legacy lock with an exclusive open. Returns
+ * the held descriptor, `busy` while an older helper holds it, or `unsupported`
+ * if the runtime ignored the flag.
+ */
+function tryKernelLegacyLock(lockFile: string): number | 'busy' | 'unsupported' {
+  const windows = process.platform === 'win32';
+  const { O_RDONLY, O_RDWR, O_CREAT, O_NONBLOCK } = fs.constants;
+  const exclusive = windows ? UV_FS_O_EXLOCK_WIN : O_EXLOCK_BSD | O_NONBLOCK;
+  const contended = (err: unknown): boolean => {
+    const code = errorCode(err);
+    return windows ? isWindowsLockViolation(err) : code === 'EAGAIN' || code === 'EWOULDBLOCK';
+  };
+  let fd: number;
+  try {
+    fd = fs.openSync(lockFile, O_RDWR | O_CREAT | exclusive, 0o600);
+  } catch (err) {
+    if (contended(err)) return 'busy';
+    throw err;
+  }
+  try {
+    const probe = fs.openSync(lockFile, windows ? O_RDONLY : O_RDONLY | exclusive);
+    fs.closeSync(probe);
+  } catch (err) {
+    if (contended(err)) return fd;
+    fs.closeSync(fd);
+    throw err;
+  }
+  fs.closeSync(fd);
+  return 'unsupported';
+}
+
+/** Linux: whether any process holds a flock(2) lock on inode `ino`; undefined
+ * when /proc/locks cannot be read. */
+function legacyFlockHeld(ino: string): boolean | undefined {
+  if (process.platform !== 'linux') return undefined;
+  let table: string;
+  try {
+    table = fs.readFileSync('/proc/locks', 'utf8');
+  } catch {
+    return undefined;
+  }
+  for (const line of table.split('\n')) {
+    // `<n>: FLOCK ADVISORY WRITE <pid> <major>:<minor>:<inode> <start> <end>`.
+    // Blocked waiters read `<n>: -> FLOCK ...` and hold nothing.
+    const fields = line.trim().split(/\s+/);
+    if (fields[1] !== 'FLOCK') continue;
+    const id = fields[5] ?? '';
+    if (id.slice(id.lastIndexOf(':') + 1) === ino) return true;
+  }
+  return false;
+}
+
+function readWholeFile(fd: number): string {
+  const size = fs.fstatSync(fd).size;
+  const buffer = Buffer.alloc(size);
+  let offset = 0;
+  while (offset < size) {
+    const read = fs.readSync(fd, buffer, offset, size - offset, offset);
+    if (read === 0) break;
+    offset += read;
+  }
+  return buffer.subarray(0, offset).toString('utf8');
+}
+
+async function stampLegacyLock(lockFile: string, token: string, deadline: number): Promise<LegacyLock> {
+  const sentinel = `${LEGACY_SENTINEL_PREFIX}${token}"}\n`;
+  const fd = fs.openSync(lockFile, fs.constants.O_RDWR | fs.constants.O_CREAT, 0o600);
+  let stamped = false;
+  let closed = false;
+  const release = (): void => {
+    if (closed) return;
+    closed = true;
+    try {
+      if (stamped && readWholeFile(fd) === sentinel) {
+        // Marker first, then trim: the file is never empty in between.
+        fs.writeSync(fd, LEGACY_LOCK_MARKER, 0);
+        fs.ftruncateSync(fd, Buffer.byteLength(LEGACY_LOCK_MARKER));
+        fs.fsyncSync(fd);
+      }
+    } catch {
+      // Best-effort: older CLIs then fail closed until the next newer run.
+    }
+    try {
+      fs.closeSync(fd);
+    } catch {
+      // Best-effort.
+    }
+  };
+  try {
+    const ino = fs.fstatSync(fd, { bigint: true }).ino.toString();
+    for (;;) {
+      let contended = false;
+      try {
+        const content = readWholeFile(fd);
+        if (LEGACY_LOCK_MARKER.startsWith(content) || content.startsWith(LEGACY_SENTINEL_PREFIX)) {
+          // In place, never by rename: older helpers lock this inode.
+          fs.writeSync(fd, sentinel, 0);
+          fs.ftruncateSync(fd, Buffer.byteLength(sentinel));
+          stamped = true;
+        }
+      } catch (err) {
+        // Windows enforces LockFileEx against our read/write: a holder.
+        if (!isWindowsLockViolation(err)) throw err;
+        contended = true;
+      }
+      if (!contended) contended = legacyFlockHeld(ino) === true;
+      if (!contended) return { release };
+      if (Date.now() >= deadline) throw legacyLockTimeout(lockFile);
+      await sleep(LOCK_RETRY_MS);
+    }
+  } catch (err) {
+    release();
+    throw err;
+  }
+}
+
+/** Exclude older CLI writers from the journal; see the comment above. */
+async function acquireLegacyLock(lockFile: string, token: string): Promise<LegacyLock> {
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  try {
+    if (process.platform === 'darwin' || process.platform === 'freebsd' || process.platform === 'win32') {
+      for (;;) {
+        const held = tryKernelLegacyLock(lockFile);
+        if (typeof held === 'number') {
+          let closed = false;
+          return {
+            release() {
+              if (closed) return;
+              closed = true;
+              try {
+                fs.closeSync(held);
+              } catch {
+                // Best-effort.
+              }
+            },
+          };
+        }
+        if (held === 'unsupported') break;
+        if (Date.now() >= deadline) throw legacyLockTimeout(lockFile);
+        await sleep(LOCK_RETRY_MS);
+      }
+    }
+    return await stampLegacyLock(lockFile, token, deadline);
+  } catch (err) {
+    if (err instanceof CleanupJournalError) throw err;
+    throw new CleanupJournalError(
+      'io',
+      `Could not take the legacy pending-cleanup journal lock at ${lockFile}: ${describeError(err)}`
+    );
+  }
+}
+
 /**
  * One locked journal transaction, held in-process.
  *
@@ -425,19 +744,22 @@ function replaceJournalDurably(journal: string, payload: string, stillOwned: () 
  * heartbeat while the transaction is open. A holder that crashes leaves the
  * directory behind; the next contender breaks it as soon as the owner pid is
  * provably gone on this host; a holder on another host sharing the directory
- * is broken once its lease heartbeat is older than `LOCK_LEASE_MS`. Contenders in the
+ * is broken once its lease heartbeat is older than `LOCK_LEASE_MS`. Breaking
+ * is serialized by a recovery lock (see `breakStaleLock`). Contenders in the
  * same process wait like any other, so concurrent updates serialize.
+ *
+ * After the lock directory, the transaction also takes the legacy lock on
+ * `pending-cleanups.json.lock` that CLI releases up to 17.2.1 use (see the
+ * comment above `LEGACY_LOCK_MARKER`), with the same timeout, so older and
+ * newer CLIs never edit the journal together. It is released after the
+ * journal rename, before the lock directory. The `.lock` file stays in place,
+ * as it always has.
  *
  * The commit re-checks ownership after writing and syncing the replacement and
  * immediately before renaming it into place, so a holder whose lock was broken
  * out from under it never overwrites a newer journal.
  * The lock directory is removed on release (only when this transaction still
- * owns it).
- *
- * Releases up to 17.2.1 held a kernel lock on `pending-cleanups.json.lock`
- * through the retired broker's `journal-lock` helper. That file is never
- * read, written or removed here, so an older CLI still finds it as it left it.
- * The journal file, its format and its durable-replacement rules are
+ * owns it). The journal file, its format and its durable-replacement rules are
  * unchanged.
  */
 interface JournalTransaction {
@@ -448,34 +770,32 @@ interface JournalTransaction {
   commit(payload: string): Promise<void>;
 }
 
-async function beginJournalTransaction(lockDir: string, journalFile: string): Promise<JournalTransaction> {
+async function beginJournalTransaction(
+  lockDir: string,
+  legacyLockFile: string,
+  journalFile: string
+): Promise<JournalTransaction> {
   const token = randomUUID();
   const owner: JournalLockOwner = { pid: process.pid, host: os.hostname(), token };
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
   for (;;) {
+    let acquired: boolean;
     try {
-      fs.mkdirSync(lockDir, { mode: 0o700 });
-      try {
-        fs.writeFileSync(path.join(lockDir, LOCK_OWNER_FILE), JSON.stringify(owner), { mode: 0o600 });
-      } catch (err) {
-        fs.rmSync(lockDir, { recursive: true, force: true });
-        throw err;
-      }
-      break;
+      acquired = createLockDir(lockDir, owner);
     } catch (err) {
-      if (!isLockContention(err)) {
-        throw new CleanupJournalError(
-          'io',
-          `Could not take the pending-cleanup journal lock at ${lockDir}: ${describeError(err)}`
-        );
-      }
+      throw new CleanupJournalError(
+        'io',
+        `Could not take the pending-cleanup journal lock at ${lockDir}: ${describeError(err)}`
+      );
     }
+    if (acquired) break;
     const staleToken = staleLockToken(lockDir, Date.now());
-    // Retry at once after breaking an abandoned lock. A lock that was put
-    // back (it turned out live) falls through to the deadline and back-off,
-    // so a lock that keeps being judged stale and then live cannot spin
-    // past the timeout.
-    if (staleToken !== undefined && breakStaleLock(lockDir, staleToken)) {
+    // Retry at once only after an abandoned lock was actually removed (or
+    // vanished). Everything else — a live lock, a lock put back, a busy
+    // recovery lock — falls through to the deadline and back-off, so a lock
+    // that keeps being judged stale and then live cannot spin past the
+    // timeout. Recovery I/O errors propagate.
+    if (staleToken !== undefined && breakStaleLock(lockDir, staleToken) === 'retry') {
       continue;
     }
     if (Date.now() >= deadline) {
@@ -504,15 +824,24 @@ async function beginJournalTransaction(lockDir: string, journalFile: string): Pr
   }, LOCK_HEARTBEAT_MS);
   heartbeat.unref?.();
 
+  let legacy: LegacyLock | undefined;
   let released = false;
   const release = (): void => {
     if (released) return;
     released = true;
     clearInterval(heartbeat);
+    legacy?.release();
     if (ownsLock(lockDir, token)) {
       fs.rmSync(lockDir, { recursive: true, force: true });
     }
   };
+
+  try {
+    legacy = await acquireLegacyLock(legacyLockFile, token);
+  } catch (err) {
+    release();
+    throw err;
+  }
 
   return {
     async abort() {
@@ -573,7 +902,7 @@ export function fileCleanupJournal(dataDirOverride?: string): CleanupJournal {
     async update(mutate) {
       const file = journalFile();
       fs.mkdirSync(path.dirname(file), { recursive: true });
-      const transaction = await beginJournalTransaction(`${file}.lock.d`, file);
+      const transaction = await beginJournalTransaction(`${file}.lock.d`, `${file}.lock`, file);
       // EVERYTHING that can throw before the commit — the read, the mutator,
       // and the serialization itself — runs inside the abort-protected block,
       // or a failure would leave the lock held until this process exits.

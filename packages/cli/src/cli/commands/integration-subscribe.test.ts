@@ -639,8 +639,9 @@ describe('integration subscribe', () => {
     if (process.platform !== 'win32') {
       expect(fs.statSync(journalFile).mode & 0o777).toBe(0o600);
     }
-    // No lock left behind, and the retired broker's lock file never appears.
-    expect(fs.readdirSync(dataDir)).toEqual(['pending-cleanups.json']);
+    // No lock directory left behind. The older broker's lock file is held
+    // during the transaction and kept on purpose, so older CLIs stay excluded.
+    expect(fs.readdirSync(dataDir).sort()).toEqual(['pending-cleanups.json', 'pending-cleanups.json.lock']);
   });
 
   it('retries a journaled cloud-subscription cleanup on the next run, sparing keep/active ids', async () => {

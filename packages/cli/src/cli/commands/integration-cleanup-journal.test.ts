@@ -1,10 +1,14 @@
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { fileCleanupJournal, type PendingCleanupEntry } from './integration-cleanup-journal.js';
+import {
+  CleanupJournalError,
+  fileCleanupJournal,
+  type PendingCleanupEntry,
+} from './integration-cleanup-journal.js';
 
 const CONCRETE: PendingCleanupEntry = {
   kind: 'relayfile-webhook-subscription',
@@ -63,6 +67,96 @@ process.stdin.on('end', () => { fs.rmSync(lock, { recursive: true, force: true }
   });
 }
 
+const LEGACY_LOCK = 'pending-cleanups.json.lock';
+const LEGACY_MARKER = 'agent-relay-cleanup-lock v2\n';
+
+/** A pid that belonged to a process on this host that has exited. */
+function deadPid(): number {
+  return spawnSync(process.execPath, ['-e', '']).pid!;
+}
+
+/**
+ * The lock protocol of the broker `journal-lock` helper that CLI releases up
+ * to 17.2.1 spawn: flock(2) LOCK_EX|LOCK_NB on the `.lock` file, retried every
+ * 100 ms until the timeout (exit 4); under the lock, anything that is not the
+ * v2 marker or a prefix of it exits 3; then `locked`, stdin to EOF, and a
+ * non-empty payload replaces the journal (temp + fsync + rename).
+ */
+const LEGACY_WRITER = String.raw`
+import fcntl, os, sys, time
+lock, journal, timeout_ms = sys.argv[1], sys.argv[2], int(sys.argv[3])
+fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+deadline = time.monotonic() + timeout_ms / 1000
+while True:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        break
+    except BlockingIOError:
+        if time.monotonic() >= deadline:
+            sys.stderr.write('timeout\n')
+            sys.exit(4)
+        time.sleep(0.1)
+marker = b'agent-relay-cleanup-lock v2\n'
+content = os.pread(fd, 4096, 0)
+if content != marker:
+    if not marker.startswith(content):
+        sys.stderr.write('sentinel\n')
+        sys.exit(3)
+    os.ftruncate(fd, 0)
+    os.pwrite(fd, marker, 0)
+    os.fsync(fd)
+sys.stdout.write('locked\n')
+sys.stdout.flush()
+payload = sys.stdin.buffer.read()
+if payload:
+    tmp = journal + '.tmp-legacy'
+    with open(tmp, 'wb') as f:
+        f.write(payload)
+        f.flush()
+        os.fsync(f.fileno())
+    os.rename(tmp, journal)
+os.close(fd)
+`;
+
+function legacyWriterAvailable(): boolean {
+  if (process.platform !== 'linux' && process.platform !== 'darwin') return false;
+  try {
+    execFileSync('python3', ['-c', 'import fcntl'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+interface LegacyWriter {
+  child: ChildProcess;
+  /** True once it holds the lock; false if it exited without taking it. */
+  locked: Promise<boolean>;
+  exit: Promise<number | null>;
+}
+
+function startLegacyWriter(dir: string, timeoutMs: number): LegacyWriter {
+  const child = spawn(
+    'python3',
+    [
+      '-c',
+      LEGACY_WRITER,
+      path.join(dir, LEGACY_LOCK),
+      path.join(dir, 'pending-cleanups.json'),
+      String(timeoutMs),
+    ],
+    { stdio: ['pipe', 'pipe', 'pipe'] }
+  );
+  const exit = new Promise<number | null>((resolve) => child.on('exit', (code) => resolve(code)));
+  const locked = new Promise<boolean>((resolve) => {
+    child.stdout!.on('data', (d) => {
+      if (String(d).includes('locked')) resolve(true);
+    });
+    void exit.then(() => resolve(false));
+  });
+  return { child, locked, exit };
+}
+
 function tmpJournalDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'cleanup-journal-'));
 }
@@ -79,8 +173,9 @@ describe('fileCleanupJournal', () => {
     if (process.platform !== 'win32') {
       expect(fs.statSync(file).mode & 0o777).toBe(0o600);
     }
-    // No temp residue and no lock left behind after a completed update.
-    expect(fs.readdirSync(dir)).toEqual(['pending-cleanups.json']);
+    // No temp residue and no lock left behind after a completed update. The
+    // legacy `.lock` file is a stable inode older CLIs lock; it stays.
+    expect(fs.readdirSync(dir).sort()).toEqual(['pending-cleanups.json', LEGACY_LOCK]);
 
     await journal.update((entries) => entries.filter((e) => e.kind !== 'relayfile-webhook-subscription'));
     await expect(journal.list()).resolves.toEqual([INTENT]);
@@ -214,7 +309,7 @@ describe('fileCleanupJournal', () => {
     await journal.update(() => [CONCRETE]);
     expect(Date.now() - started).toBeLessThan(2_000);
     await expect(journal.list()).resolves.toEqual([CONCRETE]);
-    expect(fs.readdirSync(dir)).toEqual(['pending-cleanups.json']);
+    expect(fs.readdirSync(dir).sort()).toEqual(['pending-cleanups.json', LEGACY_LOCK]);
   }, 20_000);
 
   it('does not break a live holder on this host whose heartbeat stalled', async () => {
@@ -286,8 +381,8 @@ describe('fileCleanupJournal', () => {
 
   it('leaves an unrecognized legacy lock file untouched instead of failing closed on it', async () => {
     // The broker helper refused to run on a `.lock` file holding anything but
-    // its v2 marker. The lock directory never reads that file, so it neither
-    // blocks on nor rewrites it.
+    // its v2 marker, so such a file already keeps older CLIs out: it is
+    // neither rewritten nor a reason to fail.
     const dir = tmpJournalDir();
     const legacy = path.join(dir, 'pending-cleanups.json.lock');
     fs.writeFileSync(legacy, '{"pid":123,"host":"old"}');
@@ -309,7 +404,7 @@ describe('fileCleanupJournal', () => {
     const journal = fileCleanupJournal(dir);
     await journal.update(() => [CONCRETE]);
     await expect(journal.list()).resolves.toEqual([CONCRETE]);
-    expect(fs.readdirSync(dir)).toEqual(['pending-cleanups.json']);
+    expect(fs.readdirSync(dir).sort()).toEqual(['pending-cleanups.json', LEGACY_LOCK]);
   });
 
   it('keeps a fresh ownerless lock directory and times out as `locked`', async () => {
@@ -428,4 +523,183 @@ describe('fileCleanupJournal', () => {
     expect(fs.readFileSync(journalPath, 'utf8')).toBe('[]\n');
     expect(fs.existsSync(path.join(dir, LOCK_DIR))).toBe(false);
   });
+
+  it('ends with an I/O error, not a spin, when the data directory refuses lock recovery', async () => {
+    // Root ignores the mode bits, and Windows has no equivalent of them here.
+    if (process.platform === 'win32' || process.getuid?.() === 0) return;
+    const dir = tmpJournalDir();
+    const lockDir = path.join(dir, LOCK_DIR);
+    fs.mkdirSync(lockDir);
+    fs.writeFileSync(
+      path.join(lockDir, 'owner.json'),
+      JSON.stringify({ pid: deadPid(), host: os.hostname(), token: 'crashed' })
+    );
+    // The abandoned lock can be seen but not moved: renames and creates in
+    // the data directory are refused.
+    fs.chmodSync(dir, 0o500);
+    // A loop that retries the refused recovery at once never yields to the
+    // event loop, so no test timeout could stop it. After many attempts,
+    // allow renames again: such an implementation then ends (and fails the
+    // assertions below) instead of hanging the run.
+    const realMkdir = fs.mkdirSync;
+    let attempts = 0;
+    const mkdirSpy = vi.spyOn(fs, 'mkdirSync').mockImplementation(((target: any, options: any) => {
+      if (target === lockDir && ++attempts === 10_000) fs.chmodSync(dir, 0o700);
+      return realMkdir(target, options);
+    }) as typeof fs.mkdirSync);
+    let error: unknown;
+    const started = Date.now();
+    try {
+      await fileCleanupJournal(dir).update(() => [CONCRETE]);
+    } catch (err) {
+      error = err;
+    } finally {
+      mkdirSpy.mockRestore();
+      fs.chmodSync(dir, 0o700);
+    }
+    expect(error).toBeInstanceOf(CleanupJournalError);
+    expect(error).toMatchObject({ code: 'io' });
+    // Well within the 5 s lock deadline, after a handful of attempts.
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(attempts).toBeLessThan(100);
+    expect(JSON.parse(fs.readFileSync(path.join(lockDir, 'owner.json'), 'utf8')).token).toBe('crashed');
+    expect(fs.existsSync(path.join(dir, 'pending-cleanups.json'))).toBe(false);
+  }, 20_000);
+
+  describe.runIf(legacyWriterAvailable())(
+    'with an older CLI (17.2.1 and earlier) on the same journal',
+    () => {
+      it('waits while an older CLI holds its lock, then builds on its commit', async () => {
+        const dir = tmpJournalDir();
+        const writer = startLegacyWriter(dir, 5_000);
+        expect(await writer.locked).toBe(true);
+
+        const journal = fileCleanupJournal(dir);
+        let mutatedAt = 0;
+        const update = journal.update((entries) => {
+          mutatedAt = Date.now();
+          return [...entries, INTENT];
+        });
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        expect(mutatedAt).toBe(0);
+        expect(fs.existsSync(path.join(dir, 'pending-cleanups.json'))).toBe(false);
+
+        // The older CLI commits its own record and exits, releasing its lock.
+        const releasedAt = Date.now();
+        writer.child.stdin!.end(`${JSON.stringify([CONCRETE])}\n`);
+        expect(await writer.exit).toBe(0);
+        await update;
+        expect(mutatedAt).toBeGreaterThanOrEqual(releasedAt);
+        // Neither record was lost.
+        await expect(journal.list()).resolves.toEqual([CONCRETE, INTENT]);
+        expect(fs.readFileSync(path.join(dir, LEGACY_LOCK), 'utf8')).toBe(LEGACY_MARKER);
+      }, 20_000);
+
+      it('keeps an older CLI out of the journal while a transaction is open, and lets it in afterwards', async () => {
+        const dir = tmpJournalDir();
+        const journalPath = path.join(dir, 'pending-cleanups.json');
+        fs.writeFileSync(journalPath, '[]\n');
+        const journal = fileCleanupJournal(dir);
+
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => (release = resolve));
+        let entered!: () => void;
+        const inside = new Promise<void>((resolve) => (entered = resolve));
+        const update = journal.update(async (entries) => {
+          entered();
+          await gate;
+          return [...entries, INTENT];
+        });
+        await inside;
+
+        // An older CLI either waits out its 5 s timeout (exit 4, macOS) or
+        // refuses the file at once (exit 3, Linux); both report "locked" and
+        // neither touches the journal.
+        const blocked = startLegacyWriter(dir, 1_000);
+        expect(await blocked.locked).toBe(false);
+        expect([3, 4]).toContain(await blocked.exit);
+        expect(fs.readFileSync(journalPath, 'utf8')).toBe('[]\n');
+
+        release();
+        await update;
+        await expect(journal.list()).resolves.toEqual([INTENT]);
+
+        const after = startLegacyWriter(dir, 1_000);
+        expect(await after.locked).toBe(true);
+        after.child.stdin!.end();
+        expect(await after.exit).toBe(0);
+        expect(fs.readFileSync(path.join(dir, LEGACY_LOCK), 'utf8')).toBe(LEGACY_MARKER);
+      }, 20_000);
+    }
+  );
+
+  it('never moves a fresh lock taken after a stale observation', async () => {
+    const dir = tmpJournalDir();
+    const lockDir = path.join(dir, LOCK_DIR);
+    const ownerFile = path.join(lockDir, 'owner.json');
+    fs.mkdirSync(lockDir);
+    fs.writeFileSync(ownerFile, JSON.stringify({ pid: deadPid(), host: os.hostname(), token: 'crashed' }));
+
+    const fresh = fileCleanupJournal(dir);
+    const late = fileCleanupJournal(dir);
+    let releaseFresh!: () => void;
+    const freshGate = new Promise<void>((resolve) => (releaseFresh = resolve));
+    let freshUpdate: Promise<void> | undefined;
+    let freshToken: string | undefined;
+    const movedFresh: string[] = [];
+
+    const realRead = fs.readFileSync;
+    const realRename = fs.renameSync;
+    const tokenAt = (): string | undefined => {
+      try {
+        return JSON.parse(String(realRead(ownerFile, 'utf8'))).token;
+      } catch {
+        return undefined;
+      }
+    };
+    let triggered = false;
+    const readSpy = vi.spyOn(fs, 'readFileSync').mockImplementation(((file: any, options: any) => {
+      const result = realRead(file, options);
+      if (file === ownerFile && !triggered) {
+        triggered = true;
+        // `late` has just observed the crashed owner. Before it acts, another
+        // recoverer breaks that lock and a fresh writer takes it over.
+        fs.rmSync(lockDir, { recursive: true, force: true });
+        freshUpdate = fresh.update(async (entries) => {
+          await freshGate;
+          return [...entries, CONCRETE];
+        });
+        freshToken = tokenAt();
+      }
+      return result;
+    }) as typeof fs.readFileSync);
+    const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation(((from: any, to: any) => {
+      if (from === lockDir && freshToken !== undefined && tokenAt() === freshToken) {
+        movedFresh.push(String(to));
+      }
+      return realRename(from, to);
+    }) as typeof fs.renameSync);
+
+    try {
+      const lateUpdate = late.update((entries) => [...entries, INTENT]);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(freshToken).toBeDefined();
+      expect(freshToken).not.toBe('crashed');
+      // The stale observation moved nothing: the fresh lock and its owner are
+      // exactly where the fresh writer put them.
+      expect(movedFresh).toEqual([]);
+      expect(tokenAt()).toBe(freshToken);
+
+      releaseFresh();
+      await freshUpdate;
+      await lateUpdate;
+    } finally {
+      readSpy.mockRestore();
+      renameSpy.mockRestore();
+      releaseFresh();
+    }
+    expect(movedFresh).toEqual([]);
+    await expect(late.list()).resolves.toEqual([CONCRETE, INTENT]);
+    expect(fs.readdirSync(dir).sort()).toEqual(['pending-cleanups.json', LEGACY_LOCK]);
+  }, 20_000);
 });
