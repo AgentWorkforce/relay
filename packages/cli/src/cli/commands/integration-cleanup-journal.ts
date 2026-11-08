@@ -536,9 +536,10 @@ function replaceJournalDurably(journal: string, payload: string, stillOwned: () 
  *   helper cannot open it while we hold it (it exits with an error, never
  *   touching the journal), and our open fails while a helper has it open,
  *   which covers the whole time it holds LockFileEx.
- * - Both are verified: a second open asking for the same exclusivity must be
- *   refused. If the runtime ignored the flag, the marker exclusion below is
- *   used instead.
+ * - Both are verified once per process on a scratch file next to the lock
+ *   (never by reopening the lock file): a second open asking for the same
+ *   exclusivity must be refused. If the runtime ignores the flag, the marker
+ *   exclusion below is used instead.
  * - Linux (and any runtime where the above is unavailable): the file is
  *   stamped with a token-bearing sentinel that is not a prefix of the v2
  *   marker, so any older helper that acquires the flock afterwards reads it
@@ -582,36 +583,88 @@ function isWindowsLockViolation(error: unknown): boolean {
   return process.platform === 'win32' && (code === 'EBUSY' || code === 'EACCES' || code === 'EPERM');
 }
 
+interface ExclusiveOpen {
+  /** Flags that make an open of the file exclusive on this platform. */
+  readonly flags: number;
+  /** Whether an open failed because another descriptor holds the file. */
+  contended(err: unknown): boolean;
+}
+
+/** macOS/FreeBSD/Windows: how to open a file exclusively on this platform. */
+function exclusiveOpen(): ExclusiveOpen {
+  const windows = process.platform === 'win32';
+  return {
+    flags: windows ? UV_FS_O_EXLOCK_WIN : O_EXLOCK_BSD | fs.constants.O_NONBLOCK,
+    contended(err) {
+      const code = errorCode(err);
+      return windows ? isWindowsLockViolation(err) : code === 'EAGAIN' || code === 'EWOULDBLOCK';
+    },
+  };
+}
+
+/** Open `file` once, returning `busy` if another descriptor holds it exclusively. */
+function openUnlessContended(file: string, flags: number, exclusive: ExclusiveOpen): number | 'busy' {
+  try {
+    return fs.openSync(file, flags, 0o600);
+  } catch (err) {
+    if (exclusive.contended(err)) return 'busy';
+    throw err;
+  }
+}
+
+/** Whether this runtime honours the exclusive-open flag; probed once per process. */
+let exclusiveOpenHonoured: boolean | undefined;
+
+/**
+ * Probe whether the runtime honours the exclusive-open flag, on a scratch file
+ * of our own (random name, created with O_EXCL next to the lock file) rather
+ * than the lock file itself, so the lock file is opened exactly once: hold the
+ * scratch file exclusively, then a second open asking for the same exclusivity
+ * (Windows: any open, as share mode 0 refuses them all) must be refused. The
+ * answer is a property of the runtime, so it is kept for the process.
+ */
+function exclusiveOpenSupported(dir: string, exclusive: ExclusiveOpen): boolean {
+  if (exclusiveOpenHonoured !== undefined) return exclusiveOpenHonoured;
+  const { O_RDONLY, O_RDWR, O_CREAT, O_EXCL } = fs.constants;
+  const scratch = path.join(dir, `.legacy-lock-probe-${process.pid}-${randomUUID()}`);
+  const held = openUnlessContended(scratch, O_RDWR | O_CREAT | O_EXCL | exclusive.flags, exclusive);
+  if (held === 'busy') {
+    // Nobody else can know a fresh random name; treat it as unsupported.
+    return false;
+  }
+  try {
+    const probe = openUnlessContended(
+      scratch,
+      process.platform === 'win32' ? O_RDONLY : O_RDONLY | exclusive.flags,
+      exclusive
+    );
+    if (probe !== 'busy') fs.closeSync(probe);
+    exclusiveOpenHonoured = probe === 'busy';
+    return exclusiveOpenHonoured;
+  } finally {
+    try {
+      fs.closeSync(held);
+    } catch {
+      // Best-effort.
+    }
+    try {
+      fs.rmSync(scratch, { force: true });
+    } catch {
+      // Best-effort: a leftover probe file is harmless.
+    }
+  }
+}
+
 /**
  * macOS/FreeBSD/Windows: hold the legacy lock with an exclusive open. Returns
  * the held descriptor, `busy` while an older helper holds it, or `unsupported`
- * if the runtime ignored the flag.
+ * if the runtime ignores the flag. The lock file itself is opened only once.
  */
 function tryKernelLegacyLock(lockFile: string): number | 'busy' | 'unsupported' {
-  const windows = process.platform === 'win32';
-  const { O_RDONLY, O_RDWR, O_CREAT, O_NONBLOCK } = fs.constants;
-  const exclusive = windows ? UV_FS_O_EXLOCK_WIN : O_EXLOCK_BSD | O_NONBLOCK;
-  const contended = (err: unknown): boolean => {
-    const code = errorCode(err);
-    return windows ? isWindowsLockViolation(err) : code === 'EAGAIN' || code === 'EWOULDBLOCK';
-  };
-  let fd: number;
-  try {
-    fd = fs.openSync(lockFile, O_RDWR | O_CREAT | exclusive, 0o600);
-  } catch (err) {
-    if (contended(err)) return 'busy';
-    throw err;
-  }
-  try {
-    const probe = fs.openSync(lockFile, windows ? O_RDONLY : O_RDONLY | exclusive);
-    fs.closeSync(probe);
-  } catch (err) {
-    if (contended(err)) return fd;
-    fs.closeSync(fd);
-    throw err;
-  }
-  fs.closeSync(fd);
-  return 'unsupported';
+  const exclusive = exclusiveOpen();
+  if (!exclusiveOpenSupported(path.dirname(lockFile), exclusive)) return 'unsupported';
+  const { O_RDWR, O_CREAT } = fs.constants;
+  return openUnlessContended(lockFile, O_RDWR | O_CREAT | exclusive.flags, exclusive);
 }
 
 /** Linux: whether any process holds a flock(2) lock on inode `ino`; undefined
