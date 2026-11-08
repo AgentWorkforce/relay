@@ -33,6 +33,7 @@ export {
   type RefusalReason,
 } from './errors.js';
 export {
+  isReleaseConfirmed,
   newIdempotencyKey,
   spawnInvoke,
   spawnRelease,
