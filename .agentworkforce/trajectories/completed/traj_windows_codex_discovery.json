@@ -33,6 +33,6 @@
   "version": 1,
   "id": "traj_windows_codex_discovery",
   "completedAt": "2026-11-08T23:04:27.2776248+00:00",
-  "summary": "Added Windows desktop Codex discovery, deterministic complete-build preference, and preserved overrides/npm/PATH. Four native ARM64 Windows tests passed.",
+  "summary": "Added Windows desktop Codex discovery. Consolidated review fixes preserve an existing CLI before the app fallback, use build-directory installation time instead of copied executable timestamps, accept explicit exe paths with restricted PATHEXT, and run Windows discovery regressions in CI. Five native ARM64 Windows tests passed.",
   "confidence": 0.9
 }
