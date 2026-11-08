@@ -223,6 +223,14 @@ describe('ci-standalone-smoke workspace reuse', () => {
     }
   });
 
+  it('isolates the harness-driver spawn smokes behind the loopback handshake stub', () => {
+    const publish = readFileSync(resolve('.github/workflows/publish.yml'), 'utf8');
+    const publishedDriverVerify = readFileSync(resolve('.github/workflows/verify-publish-sdk.yml'), 'utf8');
+
+    expect(publish.match(/uses: \.\/\.github\/actions\/start-relaycast-stub/g)).toHaveLength(1);
+    expect(publishedDriverVerify).toContain('uses: ./.github/actions/start-relaycast-stub');
+  });
+
   it('reports the create HTTP status and sanitized error code when no key is returned', () => {
     const script = readFileSync(smokeScript, 'utf8');
     expect(script).toContain('CREATE_ERROR_CODE=');
