@@ -1269,3 +1269,57 @@ async fn a_retry_with_the_same_idempotency_key_returns_the_receipt_after_the_nod
     )
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_receipt_neither_recorded_nor_kept_fails_closed_with_its_invocation_id() {
+    let relaycast = Relaycast::new();
+    let stub = Stub::new(service(true));
+    let (home, core) = core_with(Some(stub.clone()), &relaycast.base);
+    let directory = tempfile::tempdir().unwrap();
+    let directory = directory.path().to_str().unwrap().to_string();
+    let name = crate::relay::spawn::node_name(&core.machine_prefix);
+    let params = invoke_params(&core, "codex", &directory);
+    // The slot for this caller and key already holds another request's
+    // receipt, and a slot is never clobbered: this receipt cannot be kept.
+    let workspace = core.workspace().unwrap();
+    let mut other: SpawnInvokeParams = serde_json::from_value(params.clone()).unwrap();
+    other.task = "another task".into();
+    let occupied: SpawnControlInvocation =
+        serde_json::from_value(json!({"id":"invocation_other","status":"pending","spawned":false,"ready":false,"task_unconfirmed":false})).unwrap();
+    claims::keep_unrecorded_receipt(
+        &core.config.app_data_dir,
+        &workspace,
+        "agent_service",
+        &other,
+        &occupied,
+    )
+    .unwrap();
+    let failure = RpcError::new(ErrorKind::StoreFailed, "the receipt ledger is unavailable");
+    stub.fail_record(Some(failure.clone()));
+    let served = relaycast.serve(vec![
+        json!([{"id":"node_local","name": name,"live":true,"handlers_live":true,"active_agents":0,"reserved_agents":0,"max_agents":4,"capabilities":["spawn:codex"]}]),
+        json!({"id":"invocation_new","status":"pending"}),
+    ]);
+    let error = bound(&core, "spawn.invoke", params.clone())
+        .await
+        .unwrap_err();
+    let requests = served.join().unwrap();
+    assert!(requests[1].starts_with("POST /v1/actions/spawn/invoke "));
+    // Not the plugin's error alone: the caller learns the receipt was not
+    // kept, and which invocation was accepted.
+    assert_ne!(error, failure);
+    assert_eq!(error.data.kind, ErrorKind::StoreFailed, "{error:?}");
+    assert!(!error.data.retryable, "{error:?}");
+    assert!(error.message.contains("invocation_new"), "{error:?}");
+    assert!(error.message.contains(&failure.message), "{error:?}");
+
+    // A receipt slot that cannot be read fails the retry before the node's
+    // listing is asked for or the invocation is sent again.
+    stub.fail_record(None);
+    let kept = home.path().join("app-data").join("spawn-control-receipts");
+    std::fs::remove_dir_all(&kept).unwrap();
+    std::fs::write(&kept, b"not a folder").unwrap();
+    let error = bound(&core, "spawn.invoke", params).await.unwrap_err();
+    assert_eq!(error.data.kind, ErrorKind::StoreFailed, "{error:?}");
+    assert!(relaycast.untouched());
+}

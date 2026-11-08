@@ -97,6 +97,19 @@ fn outside_scope() -> RpcError {
         "That harness or folder is outside this caller's limits.",
     )
 }
+/// An accepted spawn neither the plugin recorded nor this computer kept:
+/// a retry may no longer recover it, so its invocation id goes out with the
+/// failure. Not retryable: once the node is offline the same request again
+/// is refused instead of answered.
+fn unkept(receipt: &SpawnControlInvocation, record: &RpcError) -> RpcError {
+    RpcError::new(
+        ErrorKind::StoreFailed,
+        format!(
+            "Native spawn invocation {} was accepted, but neither its record ({}) nor its local receipt could be saved.",
+            receipt.id, record.message
+        ),
+    )
+}
 fn malformed() -> RpcError {
     RpcError::new(
         ErrorKind::Internal,
@@ -278,16 +291,18 @@ impl Caller {
     where
         F: std::future::Future<Output = Result<SpawnControlInvocation, RpcError>>,
     {
-        self.admitted_keeping(call, run, |_| {}).await
+        self.admitted_keeping(call, run, |_| Ok(())).await
     }
 
     /// [`Caller::admitted`], handing a receipt the plugin could not record
-    /// to `unrecorded`, to keep it for the retry.
+    /// to `unrecorded`, to keep it for the retry. When it cannot be kept
+    /// either, the answer says so and names the accepted invocation, since
+    /// the same request again may no longer recover it.
     async fn admitted_keeping<F>(
         &self,
         call: SpawnCall<'_>,
         run: F,
-        unrecorded: impl FnOnce(&SpawnControlInvocation),
+        unrecorded: impl FnOnce(&SpawnControlInvocation) -> Result<(), RpcError>,
     ) -> Result<SpawnControlInvocation, RpcError>
     where
         F: std::future::Future<Output = Result<SpawnControlInvocation, RpcError>>,
@@ -310,10 +325,10 @@ impl Caller {
         let permit = plugin.admit(caller, &call)?;
         let outcome = run.await;
         match (plugin.record(permit, &outcome), outcome) {
-            (Err(error), Ok(receipt)) => {
-                unrecorded(&receipt);
-                Err(error)
-            }
+            (Err(error), Ok(receipt)) => match unrecorded(&receipt) {
+                Ok(()) => Err(error),
+                Err(_) => Err(unkept(&receipt, &error)),
+            },
             (_, outcome) => outcome,
         }
     }
@@ -545,9 +560,10 @@ async fn invoke(
     let folder = &core.config.app_data_dir;
     let external = caller.external().map(|external| external.agent_id.as_str());
     let run = async {
-        let kept = external.and_then(|caller_id| {
-            claims::unrecorded_receipt(folder, &workspace, caller_id, &params)
-        });
+        let kept = match external {
+            Some(caller_id) => claims::unrecorded_receipt(folder, &workspace, caller_id, &params)?,
+            None => None,
+        };
         match kept {
             Some(receipt) => Ok(receipt),
             None => invoke_as(&caller, &workspace, harness, &params).await,
@@ -556,8 +572,9 @@ async fn invoke(
     caller
         .admitted_keeping(call, run, |receipt| {
             if let Some(caller_id) = external {
-                claims::keep_unrecorded_receipt(folder, &workspace, caller_id, &params, receipt);
+                claims::keep_unrecorded_receipt(folder, &workspace, caller_id, &params, receipt)?;
             }
+            Ok(())
         })
         .await
 }
