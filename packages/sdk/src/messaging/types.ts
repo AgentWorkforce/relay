@@ -950,7 +950,10 @@ export type RelayMessagingEventMap = {
 };
 
 export interface RelayMessagingEventsSurface {
-  /** Credential scope of this transport, when known by the adapter. */
+  /**
+   * Credential scope known by the adapter. Custom agent streams should set
+   * 'agent'; an unspecified scope is treated as a workspace fallback.
+   */
   readonly scope?: 'agent' | 'workspace';
   connect(): void;
   disconnect(): Promise<void>;

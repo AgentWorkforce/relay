@@ -47,6 +47,11 @@ import {
 import type { AgentSessionEvent } from './session/index.js';
 
 export interface AgentRelayOptions extends RelaycastMessagingOptions {
+  /**
+   * Custom messaging adapter. Set its events.scope to 'agent' when it owns
+   * an authenticated agent stream. An unspecified scope uses the workspace
+   * fallback until a registered agent source is available.
+   */
   messaging?: RelayMessaging;
   actions?: AgentRelayActions;
   /** Factory for agent-token-scoped messaging clients. Defaults to a Relaycast client. */
