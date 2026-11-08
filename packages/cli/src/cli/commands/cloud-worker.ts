@@ -19,7 +19,7 @@ import {
 } from '@agent-relay/cloud';
 
 import { defaultExit } from '../lib/exit.js';
-import { resolveAgentRelayCliChildCommand } from '../lib/agent-relay-cli-reentry.js';
+import { buildRelayflowsRunArgs, resolveAgentRelayCliChildCommand } from '../lib/agent-relay-cli-reentry.js';
 import {
   isCliCredentialsPayload,
   cliLoginHome,
@@ -105,7 +105,7 @@ function buildWorkerRuntimeEnv(
   };
 }
 
-function relayflowsArgs(workflowPath: string, payload: WorkerWorkflowPayload): string[] {
+function assertFreshWorkerAssignment(payload: WorkerWorkflowPayload): void {
   const unsupportedSelectors = [
     payload.resumeRunId ? 'resumeRunId' : undefined,
     payload.startFrom ? 'startFrom' : undefined,
@@ -117,8 +117,6 @@ function relayflowsArgs(workflowPath: string, payload: WorkerWorkflowPayload): s
         'Submit a fresh assignment; resume requires hosted v2 run state.'
     );
   }
-
-  return ['flows', 'run', workflowPath, ...(payload.fileType === 'ts' ? ['--input', '{}'] : [])];
 }
 
 async function runChild(input: {
@@ -227,6 +225,7 @@ export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): Ex
     // This boundary materializes a fresh Cloud payload into a local workflow
     // directory/env and re-enters Relay's v2 `flows run` surface. State-bearing
     // assignments fail closed until the worker protocol carries hosted v2 state.
+    assertFreshWorkerAssignment(payload);
     const runDir = path.join(cloudWorkerStateDir(deps.env), 'runs', payload.runId);
     const keepRunDir = deps.env.AGENT_RELAY_WORKER_KEEP_RUN_DIR === '1';
     const cliCredentials = isCliCredentialsPayload(payload.cliCredentials) ? payload.cliCredentials : null;
@@ -254,7 +253,7 @@ export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): Ex
       const agentRelayCli = resolveAgentRelayCliChildCommand({
         execPath: process.execPath,
         cliEntrypoint: deps.resolveAgentRelayCliEntrypoint(),
-        args: relayflowsArgs(workflowPath, payload),
+        args: buildRelayflowsRunArgs(workflowPath, payload.fileType),
         cwd: deps.cwd(),
       });
       const result = await runChild({

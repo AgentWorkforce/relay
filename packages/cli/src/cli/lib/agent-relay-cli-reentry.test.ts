@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildRelayflowsRunArgs,
   resolveAgentRelayCliChildCommand,
   resolveAgentRelayScriptInterpreter,
 } from './agent-relay-cli-reentry.js';
@@ -52,5 +53,18 @@ describe('resolveAgentRelayScriptInterpreter', () => {
         cliEntrypoint: '/opt/agent-relay/dist/cli/index.js',
       })
     ).toBe('/usr/bin/node');
+  });
+});
+
+describe('buildRelayflowsRunArgs', () => {
+  it('supplies explicit empty input only for TypeScript workflows', () => {
+    expect(buildRelayflowsRunArgs('/work/flow.yaml', 'yaml')).toEqual(['flows', 'run', '/work/flow.yaml']);
+    expect(buildRelayflowsRunArgs('/work/flow.ts', 'ts')).toEqual([
+      'flows',
+      'run',
+      '/work/flow.ts',
+      '--input',
+      '{}',
+    ]);
   });
 });

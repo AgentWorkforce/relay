@@ -92,9 +92,9 @@ function deprecateV1RunSelector(cloudCommand: Command, overrides: Partial<Deprec
 /**
  * Deprecate the legacy local workflow command aliases.
  *
- * `agent-relay node workflow run|logs|sync` now executes through the v2
- * `@relayflows/sdk` CLI, but these aliases remain hidden and warned because
- * `agent-relay flows` is the supported command group.
+ * `agent-relay node workflow run` now executes through the v2 CLI. The local
+ * aliases remain hidden and warned because `agent-relay flows` is the supported
+ * command group for running, replaying, and syncing workflows.
  *
  * @param workflowCommand - The registered `node workflow` group.
  * @param overrides - Test seam for the warning sink.

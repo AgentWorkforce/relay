@@ -113,5 +113,6 @@ describe('CLI entrypoints', () => {
 
     expect(packageJson.dependencies?.['@relayflows/sdk']).toMatch(/^\d+\.\d+\.\d+$/);
     expect(packageJson.dependencies).not.toHaveProperty('@relayflows/cli');
+    expect(packageJson.dependencies).not.toHaveProperty('@relayflows/core');
   });
 });

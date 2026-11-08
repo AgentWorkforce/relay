@@ -546,6 +546,7 @@ describe('registerCloudCommands', () => {
   it('refuses state-bearing assignments before invoking the v2 worker runtime', async () => {
     const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-worker-state-selector-'));
     const spawnProcess = vi.fn();
+    const fetchImpl = vi.fn();
     const runner = createDefaultAssignmentRunner({
       log: vi.fn(),
       error: vi.fn(),
@@ -554,7 +555,7 @@ describe('registerCloudCommands', () => {
       spawnProcess: spawnProcess as never,
       now: () => new Date('2026-06-13T00:00:00.000Z'),
       cwd: () => tmpHome,
-      fetchImpl: vi.fn() as never,
+      fetchImpl: fetchImpl as never,
       resolveAgentRelayCliEntrypoint: () => '/opt/agent-relay/dist/cli/index.js',
     });
 
@@ -573,6 +574,11 @@ describe('registerCloudCommands', () => {
             fileType: 'yaml',
             sourceFileType: 'yaml',
             workflowFileName: 'workflow.yaml',
+            s3CodeKey: 'code/archive.tgz',
+            cliCredentials: {
+              ref: 'sh_clicred_ref',
+              path: '/api/v1/workers/{workerId}/assignments/run_stateful/cli-credentials',
+            },
             resumeRunId: 'run_previous',
             startFrom: 'repair',
             previousRunId: 'run_cache',
@@ -590,6 +596,9 @@ describe('registerCloudCommands', () => {
         })
       ).rejects.toThrow(/state-bearing v2 assignment selectors: resumeRunId, startFrom, previousRunId/);
       expect(spawnProcess).not.toHaveBeenCalled();
+      expect(cloudMocks.downloadCloudWorkerAssignmentStorage).not.toHaveBeenCalled();
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(tmpHome, 'cloud-workers', 'runs', 'run_stateful'))).toBe(false);
     } finally {
       fs.rmSync(tmpHome, { recursive: true, force: true });
     }

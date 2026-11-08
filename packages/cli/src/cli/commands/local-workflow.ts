@@ -7,6 +7,7 @@ import { Command, InvalidArgumentError } from 'commander';
 
 import { defaultExit } from '../lib/exit.js';
 import {
+  buildRelayflowsRunArgs,
   resolveAgentRelayCliChildCommand,
   resolveAgentRelayScriptInterpreter,
 } from '../lib/agent-relay-cli-reentry.js';
@@ -281,7 +282,7 @@ async function resolveLocalWorkflowCommand(
     return resolveAgentRelayCliChildCommand({
       execPath: process.execPath,
       cliEntrypoint: deps.resolveAgentRelayCliEntrypoint(),
-      args: ['flows', 'run', workflowPath, ...(fileType === 'ts' ? ['--input', '{}'] : [])],
+      args: buildRelayflowsRunArgs(workflowPath, fileType),
       cwd: deps.cwd(),
     });
   }

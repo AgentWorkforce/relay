@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `agent-relay node workflow run` and fresh Cloud worker assignments now execute through the v2 `@relayflows/sdk` CLI; the v1 `@relayflows/cli` and `@relayflows/core` runtime are no longer installed, and state-bearing worker assignments fail closed until hosted v2 state is available.
+- `agent-relay node workflow run` now runs workflows on v2; use `agent-relay flows run` for the supported command. Cloud workers reject state-bearing assignments until hosted v2 run state is available.
 - The local Rust broker (`agent-relay-broker`) is retired: the CLI no longer installs, starts or talks to it, and no new broker binaries are released. Run `relay init` (or `agent-relay init`) to set up and start the Agent Relay core, which delivers messages and spawns, lists and releases agents through the Agent Relay MCP spawn tools or the desktop app; `relay init --hosted` uses the hosted service instead.
 - `relay node up`, `down`, `status`, `metrics`, `deadletters`, `redeliver` and `relay node tail` now print a removal notice pointing to `relay init`, as do `relay node agent spawn`, `new`, `list`, `release`, `set-model`, `attach` and `message flush|hold|auto`. The deprecated `relay local` alias keeps only `run`, `logs` and `sync`.
 - `relay fleet status` is removed, and `relay fleet spawn` no longer spawns on this machine: pass `--node`, `--auto-place` or `--sandbox`. `relay fleet spawn --sandbox` no longer prints an `attachCommand`, and the JSON of `relay fleet agent list` no longer has `localNode`.
