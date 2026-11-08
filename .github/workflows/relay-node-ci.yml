@@ -210,3 +210,6 @@ jobs:
       - name: Test where the install lives
         shell: bash
         run: 'cargo test --locked --lib -- install::'
+      - name: Test Windows Codex discovery
+        shell: bash
+        run: 'cargo test --locked --lib -- relay::codex::tests::windows_'
