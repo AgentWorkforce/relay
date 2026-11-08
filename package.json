@@ -121,7 +121,9 @@
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "smoke:prod": "node tests/e2e/prod-smoke/prod-smoke.mjs",
     "test:subscriptions:proof": "node --test tests/e2e/github-subscriptions/*.test.mjs",
-    "build:cli-surface": "npm --prefix packages/cli-surface run build"
+    "build:cli-surface": "npm --prefix packages/cli-surface run build",
+    "relayflow": "relayflows",
+    "relayflow:run": "relayflows run"
   },
   "author": "AgentWorkforce <hello@agentrelay.com>",
   "license": "Apache-2.0",
