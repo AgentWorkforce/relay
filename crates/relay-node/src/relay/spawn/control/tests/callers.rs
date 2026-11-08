@@ -279,6 +279,23 @@ async fn a_core_without_spawn_callers_refuses_any_caller_secret() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_empty_external_caller_secret_is_refused_before_plugin_resolution() {
+    let relaycast = Relaycast::new();
+    let stub = Stub::new(service(true));
+    let (_home, core) = core_with(Some(stub.clone()), &relaycast.base);
+    seed(&core, &relaycast.base, Some("agent_caller"));
+    let mut invoke = invoke_params(&core, "claude", std::env::temp_dir().to_str().unwrap());
+    invoke["caller_secret"] = json!("");
+
+    let error = server::call(&core, "spawn.invoke", invoke)
+        .await
+        .unwrap_err();
+    assert_eq!(error.data.kind, ErrorKind::Refused);
+    assert!(stub.log().is_empty());
+    assert!(relaycast.untouched());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn session_callers_are_unchanged_when_a_plugin_is_present() {
     let relaycast = Relaycast::new();
     let stub = Stub::new(service(true));

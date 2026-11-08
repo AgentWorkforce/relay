@@ -227,6 +227,9 @@ fn caller_in(
         })?;
         return Ok(Caller::Session { agent_id, token });
     };
+    if secret.is_empty() {
+        return Err(refused());
+    }
     segment(name)?;
     let plugin = core.plugins.spawn_callers.clone().ok_or_else(refused)?;
     let caller = plugin.resolve(workspace, name, &Secret::new(secret))?;
