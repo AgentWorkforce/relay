@@ -954,7 +954,7 @@ export interface RelayMessagingEventsSurface {
    * Credential scope known by the adapter. Custom agent streams should set
    * 'agent'; an unspecified scope is treated as a workspace fallback.
    */
-  readonly scope?: 'agent' | 'workspace';
+  readonly scope?: string;
   connect(): void;
   disconnect(): Promise<void>;
   subscribe(channels: string[]): void;

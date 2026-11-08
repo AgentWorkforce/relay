@@ -10,6 +10,7 @@ import {
   type ZodLikeSchema,
 } from '../index.js';
 import type { ActionCompletedEvent, RelayMessageEvent, TypedActionHandle } from '../listeners.js';
+import type { RelayMessagingEventsSurface } from '../messaging/index.js';
 
 declare const relay: AgentRelay;
 
@@ -18,6 +19,13 @@ function schema<T>(): ZodLikeSchema<T> {
 }
 
 describe('registered and reconnected agent client types', () => {
+  it('accepts custom streams with a string-inferred scope property', () => {
+    const existing = {} as Omit<RelayMessagingEventsSurface, 'scope'>;
+    const customStream = { ...existing, scope: 'agent' };
+    expectTypeOf(customStream.scope).toEqualTypeOf<string>();
+    expectTypeOf(customStream).toExtend<RelayMessagingEventsSurface>();
+  });
+
   it('exposes the complete agent surface from single and array registration and reconnect', async () => {
     const registered = await relay.workspace.register({ name: 'worker' });
     const registeredMany = await relay.workspace.register([{ name: 'worker-a' }, { name: 'worker-b' }]);
