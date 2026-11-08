@@ -516,6 +516,7 @@ mod tests {
             .unwrap();
         assert_eq!(seen.lock().unwrap()[2], CallContext::default());
 
+        drop(lines_one);
         drop(write_one);
         wait_for_closed(&closed, 1).await;
         assert_eq!(
@@ -526,6 +527,7 @@ mod tests {
             }]
         );
 
+        drop(lines_two);
         drop(write_two);
         wait_for_closed(&closed, 2).await;
         assert_eq!(
