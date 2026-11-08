@@ -3,7 +3,6 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { spawn as spawnProcess, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { createRequire } from 'node:module';
 import { Command, InvalidArgumentError } from 'commander';
 
 import { defaultExit } from '../lib/exit.js';
@@ -47,7 +46,7 @@ export interface LocalWorkflowDependencies {
   cwd: () => string;
   env: NodeJS.ProcessEnv;
   spawnProcess: typeof spawnProcess;
-  resolveRelayflowsCliEntrypoint: () => string;
+  resolveAgentRelayCliEntrypoint: () => string;
   randomRunId: () => string;
   now: () => Date;
   sleep: (ms: number) => Promise<void>;
@@ -60,14 +59,12 @@ export interface LocalWorkflowDependencies {
 
 const RUN_ID_RE = /^local_[A-Za-z0-9][A-Za-z0-9_-]{0,80}$/;
 const TERMINAL_STATUSES = new Set<LocalWorkflowRunStatus>(['completed', 'failed']);
-const nodeRequire = createRequire(import.meta.url);
-
 function withDefaults(overrides: Partial<LocalWorkflowDependencies> = {}): LocalWorkflowDependencies {
   return {
     cwd: () => process.cwd(),
     env: process.env,
     spawnProcess,
-    resolveRelayflowsCliEntrypoint: () => nodeRequire.resolve('@relayflows/cli'),
+    resolveAgentRelayCliEntrypoint: () => process.argv[1] ?? 'agent-relay',
     randomRunId: () =>
       `local_${new Date().toISOString().replace(/[-:.TZ]/g, '')}_${randomBytes(4).toString('hex')}`,
     now: () => new Date(),
@@ -277,7 +274,10 @@ async function resolveLocalWorkflowCommand(
   deps: LocalWorkflowDependencies
 ): Promise<{ command: string; args: string[] }> {
   if (fileType === 'yaml' || fileType === 'ts') {
-    return { command: process.execPath, args: [deps.resolveRelayflowsCliEntrypoint(), 'run', workflowPath] };
+    return {
+      command: process.execPath,
+      args: [deps.resolveAgentRelayCliEntrypoint(), 'flows', 'run', workflowPath],
+    };
   }
 
   if (fileType === 'js') {
