@@ -427,7 +427,7 @@ pub fn run(command: RelayCommands) -> Result<()> {
             runtime,
             launch_id,
         } => relay::harness::droid::host::run(&executable, &directory, &runtime, &launch_id),
-        RelayCommands::DroidSpawnMcp { dev } => relay::harness::relay_mcp::run(dev),
+        RelayCommands::DroidSpawnMcp { dev } => relay::harness::droid::mcp::run(dev),
         RelayCommands::MuseSpawnMcp { dev } => relay::harness::relay_mcp::run(dev),
         RelayCommands::SocketRequest {
             socket,

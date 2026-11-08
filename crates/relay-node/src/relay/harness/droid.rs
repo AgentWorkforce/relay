@@ -49,6 +49,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+pub mod mcp;
+pub mod mcp_config;
+
 pub const ID: HarnessId = HarnessId("droid");
 pub const DESCRIPTOR: Descriptor = Descriptor {
     id: ID,
