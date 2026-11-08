@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay-node` built for its own site (`AGENT_RELAY_SITE_URL`) no longer falls back to Agent Relay's public gateways: a sign-in whose site named no valid Relaycast URL, or a CLI workspace key with no recorded server or `RELAY_BASE_URL`, is refused with a reason naming the site, and `RELAYCAST_URL` is ignored in such a build.
 
+### Added
+
+- `agent-relay node claim` records you as this node's owner in Agent Relay Cloud, using the node's own token (from `RELAY_NODE_TOKEN`, the stored enrollment, or the running broker), so agents the node spawns count as your own, for example for automatic replies to your agents. Needs a workspace owner's Cloud login.
+
 ## [17.2.1] - 2026-11-07
 
 ### Fixed

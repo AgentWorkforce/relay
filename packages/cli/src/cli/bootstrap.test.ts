@@ -11,6 +11,7 @@ import { createProgram, propagateTelemetryContextToChildren } from './bootstrap.
 const expectedLeafCommands = [
   // node broker + agent group (local is a hidden alias, filtered out below)
   'node up',
+  'node claim',
   'node down',
   'node status',
   'node metrics',

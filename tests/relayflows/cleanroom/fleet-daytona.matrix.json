@@ -8,7 +8,7 @@
   "requiredSnapshotRelayVersion": "11.10.3",
   "artifactRoot": ".workflow-artifacts/verify-fleet-daytona",
   "inventoryFile": "fleet-cli-inventory.json",
-  "inventorySha256": "88839ab72869ab2cfc6d0757700dd7f0253581b921c5c3d9097dd08ff4ba23df",
+  "inventorySha256": "bb2d28f85cb4ffaae2ee6d919bc6a5fd87f671afd010c950fb1efdc7aebe4723",
   "commandSurface": {
     "fleet agent list": [
       "fleet-agent-list-json",
@@ -118,7 +118,7 @@
     "node-agent-set-model-app-server-a": ["node agent spawn", "node agent set-model"],
     "node-agent-set-model-app-server-b": ["node agent spawn", "node agent set-model"]
   },
-  "deferredCommandSurface": ["fleet spawn-status"],
+  "deferredCommandSurface": ["fleet spawn-status", "node claim"],
   "optionCoverage": {
     "fleet agent list": [
       {

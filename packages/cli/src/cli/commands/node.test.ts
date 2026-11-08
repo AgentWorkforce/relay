@@ -19,6 +19,7 @@ vi.mock('../lib/broker-lifecycle.js', () => ({
   runDownCommand: (...args: unknown[]) => brokerMocks.runDownCommand(...args),
   runStatusCommand: (...args: unknown[]) => brokerMocks.runStatusCommand(...args),
   readBrokerConnection: (...args: unknown[]) => brokerMocks.readBrokerConnection(...args),
+  readRunningBrokerNodeIdentity: async () => null,
 }));
 
 import { registerNodeCommands, type NodeCommandDependencies } from './node.js';
@@ -47,6 +48,8 @@ function createNodeHarness(opts?: {
   listFleetEnrollments?: NodeCommandDependencies['listFleetEnrollments'];
   resolveProjectWorkspaceSession?: NodeCommandDependencies['resolveProjectWorkspaceSession'];
   inspectNodeClaim?: NodeCommandDependencies['inspectNodeClaim'];
+  readRunningNodeIdentity?: NodeCommandDependencies['readRunningNodeIdentity'];
+  claimNodeOwnership?: NodeCommandDependencies['claimNodeOwnership'];
 }) {
   const env: NodeJS.ProcessEnv = opts?.env ?? {};
   const exit = vi.fn((code: number) => {
@@ -86,6 +89,9 @@ function createNodeHarness(opts?: {
     // Left undefined by default so the real machine-global claim store is
     // exercised, scoped to a temp AGENT_RELAY_HOME.
     ...(opts?.inspectNodeClaim ? { inspectNodeClaim: opts.inspectNodeClaim } : {}),
+    readRunningNodeIdentity: opts?.readRunningNodeIdentity ?? vi.fn(async () => null),
+    claimNodeOwnership:
+      opts?.claimNodeOwnership ?? vi.fn(async () => ({ nodeId: 'node_abc', claimed: true })),
   });
 
   return {
@@ -776,5 +782,180 @@ describe('registerNodeCommands', () => {
       expect.objectContaining({ config: 'agent-relay.ts', discoverConfig: true }),
       expect.anything()
     );
+  });
+});
+
+describe('node claim', () => {
+  const run = (harness: ReturnType<typeof createNodeHarness>, ...args: string[]) =>
+    harness.program.parseAsync(['node', 'test', 'node', 'claim', ...args]);
+  const output = (harness: ReturnType<typeof createNodeHarness>) =>
+    JSON.stringify([harness.log.mock.calls, harness.error.mock.calls, harness.warn.mock.calls]);
+
+  it('claims with the stored enrollment, in its workspace, and never prints the token', async () => {
+    const claimNodeOwnership = vi.fn(async () => ({ nodeId: 'node_abc', claimed: true }));
+    const harness = createNodeHarness({
+      resolveEnrollment: vi.fn(
+        () => enrollmentRecord
+      ) as unknown as NodeCommandDependencies['resolveEnrollment'],
+      claimNodeOwnership,
+    });
+    await run(harness);
+    expect(claimNodeOwnership).toHaveBeenCalledWith({
+      workspace: 'rw_123',
+      nodeToken: 'nt_secret',
+      apiUrl: undefined,
+    });
+    expect(harness.log).toHaveBeenCalledWith('Claimed node node_abc: agents it spawns now count as yours.');
+    expect(output(harness)).not.toContain('nt_secret');
+  });
+
+  it('prefers RELAY_NODE_TOKEN and an explicit --workspace', async () => {
+    const claimNodeOwnership = vi.fn(async () => ({ nodeId: 'sf-mini', claimed: false }));
+    const harness = createNodeHarness({
+      env: { RELAY_NODE_TOKEN: 'nt_env' },
+      resolveEnrollment: vi.fn(
+        () => enrollmentRecord
+      ) as unknown as NodeCommandDependencies['resolveEnrollment'],
+      claimNodeOwnership,
+    });
+    await run(harness, '--workspace', 'khaliq');
+    expect(claimNodeOwnership).toHaveBeenCalledWith({
+      workspace: 'khaliq',
+      nodeToken: 'nt_env',
+      apiUrl: undefined,
+    });
+    expect(harness.log).toHaveBeenCalledWith('You already own node sf-mini.');
+  });
+
+  it("falls back to the running broker's token for a node started with a workspace key", async () => {
+    const claimNodeOwnership = vi.fn(async () => ({ nodeId: 'sf-mini', claimed: true }));
+    const harness = createNodeHarness({
+      resolveProjectWorkspaceSession: vi.fn(() => ({
+        workspaceId: 'rw_7ccfea89',
+      })) as unknown as NodeCommandDependencies['resolveProjectWorkspaceSession'],
+      readRunningNodeIdentity: vi.fn(async () => ({ nodeId: 'sf-mini', nodeToken: 'nt_broker' })),
+      claimNodeOwnership,
+    });
+    await run(harness);
+    expect(claimNodeOwnership).toHaveBeenCalledWith({
+      workspace: 'rw_7ccfea89',
+      nodeToken: 'nt_broker',
+      apiUrl: undefined,
+    });
+  });
+
+  it('stops without calling Cloud when no node token is found', async () => {
+    const claimNodeOwnership = vi.fn();
+    const harness = createNodeHarness({ claimNodeOwnership });
+    await expect(run(harness, '--workspace', 'khaliq')).rejects.toBeInstanceOf(ExitSignal);
+    expect(claimNodeOwnership).not.toHaveBeenCalled();
+    expect(harness.error).toHaveBeenCalledWith(expect.stringContaining('No node token found'));
+  });
+
+  it("prefers the running broker's live token to a stored one a rotation may have replaced", async () => {
+    const claimNodeOwnership = vi.fn(async () => ({ nodeId: 'node_abc', claimed: true }));
+    const harness = createNodeHarness({
+      resolveEnrollment: vi.fn(
+        () => enrollmentRecord
+      ) as unknown as NodeCommandDependencies['resolveEnrollment'],
+      readRunningNodeIdentity: vi.fn(async () => ({ nodeId: 'node_abc', nodeToken: 'nt_rotated' })),
+      claimNodeOwnership,
+    });
+    await run(harness);
+    expect(claimNodeOwnership).toHaveBeenCalledWith({
+      workspace: 'rw_123',
+      nodeToken: 'nt_rotated',
+      apiUrl: undefined,
+    });
+  });
+
+  it('uses explicit RELAY_NODE_TOKEN and --workspace without reading an ambiguous enrollment store', async () => {
+    const resolveEnrollment = vi.fn(() => {
+      throw new Error('Multiple fleet enrollments match; pass a base URL.');
+    }) as unknown as NodeCommandDependencies['resolveEnrollment'];
+    const claimNodeOwnership = vi.fn(async () => ({ nodeId: 'sf-mini', claimed: true }));
+    const harness = createNodeHarness({
+      env: { RELAY_NODE_TOKEN: 'nt_env' },
+      resolveEnrollment,
+      claimNodeOwnership,
+    });
+    await run(harness, '--workspace', 'khaliq');
+    expect(resolveEnrollment).not.toHaveBeenCalled();
+    expect(claimNodeOwnership).toHaveBeenCalledWith({
+      workspace: 'khaliq',
+      nodeToken: 'nt_env',
+      apiUrl: undefined,
+    });
+  });
+
+  it("reports the store's ambiguity when nothing explicit or running can stand in", async () => {
+    const claimNodeOwnership = vi.fn();
+    const harness = createNodeHarness({
+      resolveEnrollment: vi.fn(() => {
+        throw new Error('Multiple fleet enrollments match; pass a base URL.');
+      }) as unknown as NodeCommandDependencies['resolveEnrollment'],
+      claimNodeOwnership,
+    });
+    await expect(run(harness)).rejects.toBeInstanceOf(ExitSignal);
+    expect(harness.error).toHaveBeenCalledWith('Multiple fleet enrollments match; pass a base URL.');
+    expect(claimNodeOwnership).not.toHaveBeenCalled();
+  });
+
+  it('treats a blank RELAY_NODE_TOKEN as a mistake, as node up does, never claiming another node', async () => {
+    const claimNodeOwnership = vi.fn();
+    const harness = createNodeHarness({
+      env: { RELAY_NODE_TOKEN: '  ' },
+      resolveEnrollment: vi.fn(
+        () => enrollmentRecord
+      ) as unknown as NodeCommandDependencies['resolveEnrollment'],
+      claimNodeOwnership,
+    });
+    await expect(run(harness)).rejects.toBeInstanceOf(ExitSignal);
+    expect(harness.error).toHaveBeenCalledWith(expect.stringContaining('RELAY_NODE_TOKEN is set but empty'));
+    expect(claimNodeOwnership).not.toHaveBeenCalled();
+  });
+
+  it("never claims a stored enrollment's node for a different running node", async () => {
+    const claimNodeOwnership = vi.fn();
+    const harness = createNodeHarness({
+      resolveEnrollment: vi.fn(
+        () => enrollmentRecord
+      ) as unknown as NodeCommandDependencies['resolveEnrollment'],
+      readRunningNodeIdentity: vi.fn(async () => ({ nodeId: 'node_other' })),
+      claimNodeOwnership,
+    });
+    await expect(run(harness)).rejects.toBeInstanceOf(ExitSignal);
+    expect(claimNodeOwnership).not.toHaveBeenCalled();
+    expect(harness.error).toHaveBeenCalledWith(expect.stringContaining('serving node node_other'));
+  });
+
+  it('uses the stored enrollment when it is the running node, before its token is reported', async () => {
+    const claimNodeOwnership = vi.fn(async () => ({ nodeId: 'node_abc', claimed: true }));
+    const harness = createNodeHarness({
+      resolveEnrollment: vi.fn(
+        () => enrollmentRecord
+      ) as unknown as NodeCommandDependencies['resolveEnrollment'],
+      readRunningNodeIdentity: vi.fn(async () => ({ nodeId: 'node_abc' })),
+      claimNodeOwnership,
+    });
+    await run(harness);
+    expect(claimNodeOwnership).toHaveBeenCalledWith({
+      workspace: 'rw_123',
+      nodeToken: 'nt_secret',
+      apiUrl: undefined,
+    });
+  });
+
+  it("reports Cloud's refusal and exits non-zero", async () => {
+    const harness = createNodeHarness({
+      resolveEnrollment: vi.fn(
+        () => enrollmentRecord
+      ) as unknown as NodeCommandDependencies['resolveEnrollment'],
+      claimNodeOwnership: vi.fn(async () => {
+        throw new Error('Could not claim the node: Another person owns this node.');
+      }),
+    });
+    await expect(run(harness)).rejects.toBeInstanceOf(ExitSignal);
+    expect(harness.error).toHaveBeenCalledWith('Could not claim the node: Another person owns this node.');
   });
 });

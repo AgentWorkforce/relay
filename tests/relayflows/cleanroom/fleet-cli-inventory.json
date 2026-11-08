@@ -2576,6 +2576,66 @@
       ]
     },
     {
+      "path": "node claim",
+      "aliases": [],
+      "hidden": false,
+      "leaf": true,
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--api-url <url>",
+          "short": null,
+          "long": "--api-url",
+          "mandatory": false,
+          "valueRequired": true,
+          "valueOptional": false,
+          "variadic": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null,
+          "conflictsWith": [],
+          "implied": null,
+          "envVar": null,
+          "defaultValue": null,
+          "presetArg": null
+        },
+        {
+          "flags": "--json",
+          "short": null,
+          "long": "--json",
+          "mandatory": false,
+          "valueRequired": false,
+          "valueOptional": false,
+          "variadic": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null,
+          "conflictsWith": [],
+          "implied": null,
+          "envVar": null,
+          "defaultValue": null,
+          "presetArg": null
+        },
+        {
+          "flags": "--workspace <id|name>",
+          "short": null,
+          "long": "--workspace",
+          "mandatory": false,
+          "valueRequired": true,
+          "valueOptional": false,
+          "variadic": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null,
+          "conflictsWith": [],
+          "implied": null,
+          "envVar": null,
+          "defaultValue": null,
+          "presetArg": null
+        }
+      ]
+    },
+    {
       "path": "node deadletters",
       "aliases": [],
       "hidden": false,
