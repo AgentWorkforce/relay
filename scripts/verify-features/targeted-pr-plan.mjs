@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 
 import { parse } from 'yaml';
 
-import { BROKER_RUNTIME_REQUIREMENT, CASE_ROOT, validateCaseManifest } from '../pr-proof/contract.mjs';
+import { BROKER_RUNTIME_REQUIREMENT, CASE_ROOT, validateCaseManifest } from './case-contract.mjs';
 
 const DEFAULT_MATRIX = 'tests/relayflows/cleanroom/relay.matrix.json';
 const DEFAULT_MANIFEST = '.agentworkforce/features/manifest.yaml';
