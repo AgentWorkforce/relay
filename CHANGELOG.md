@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `agent-relay-node` built for its own site (`AGENT_RELAY_SITE_URL`) no longer falls back to Agent Relay's public gateways: a sign-in whose site named no valid Relaycast URL, or a CLI workspace key with no recorded server or `RELAY_BASE_URL`, is refused with a reason naming the site, and `RELAYCAST_URL` is ignored in such a build.
+- `agent-relay node up` retains a stored Cloud fleet-node identity when the repository pin and enrollment name the same Relay workspace, including with a matching explicit workspace flag or environment key. A genuinely different explicit key still wins with a warning, and enrollment-time pin linking now preserves and checks the recorded workspace ID.
 
 ## [17.2.1] - 2026-11-07
 
