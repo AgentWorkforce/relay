@@ -40,6 +40,26 @@ export interface PlanLimit {
   plan: string;
 }
 
+/**
+ * Every typed reason the core gives with a `refused` error in
+ * `error.data.reason` (`protocol.rs` `RefusalReason`). None is retryable.
+ */
+export const REFUSAL_REASONS = [
+  'service_unknown',
+  'service_disabled',
+  'service_expired',
+  'workspace_mismatch',
+  'not_owner',
+  'outside_scope',
+  'management_peer',
+] as const;
+
+/**
+ * Why the core refused a call. A reason may be added without a bridge version
+ * bump, so this also admits any other string.
+ */
+export type RefusalReason = (typeof REFUSAL_REASONS)[number] | (string & {});
+
 /** The base of every error this package throws; `code` names the class of failure. */
 export class CoreBridgeError extends Error {
   readonly code: string;
@@ -98,15 +118,24 @@ export class CoreRpcError extends CoreBridgeError {
   readonly retryable: boolean;
   /** With `plan_limit_exceeded`, the counters when the core had them. */
   readonly planLimit: PlanLimit | undefined;
+  /** With `refused`, the typed reason from `error.data.reason` when the core gave one. */
+  readonly reason: RefusalReason | undefined;
   constructor(
     message: string,
-    details: { rpcCode?: number; kind?: ErrorKind; retryable?: boolean; planLimit?: PlanLimit } = {}
+    details: {
+      rpcCode?: number;
+      kind?: ErrorKind;
+      retryable?: boolean;
+      planLimit?: PlanLimit;
+      reason?: RefusalReason;
+    } = {}
   ) {
     super('rpc_error', message);
     this.rpcCode = details.rpcCode;
     this.kind = details.kind;
     this.retryable = details.retryable ?? false;
     this.planLimit = details.planLimit;
+    this.reason = details.reason;
   }
 }
 

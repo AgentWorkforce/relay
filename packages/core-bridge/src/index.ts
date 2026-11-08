@@ -30,6 +30,7 @@ export {
   NotACoreError,
   type ErrorKind,
   type PlanLimit,
+  type RefusalReason,
 } from './errors.js';
 export {
   newIdempotencyKey,

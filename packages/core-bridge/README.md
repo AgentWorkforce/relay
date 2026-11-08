@@ -77,22 +77,26 @@ These limits are new compared with the client that used to live in the CLI:
 
 Every error extends `CoreBridgeError` and carries a `code`:
 
-| Class                                                         | `code`                    | When                                                                                        |
-| ------------------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------- |
-| `CoreNotRunningError`                                         | `core_not_running`        | no socket file (not on Windows), nothing listening, or connect timed out                    |
-| `CoreUntrustedError` (`reason`)                               | `core_untrusted`          | the socket's directory or the socket fails the owner/mode checks                            |
-| `NotACoreError`                                               | `not_a_core`              | the greeting is not a core's (no numeric `bridge_version`/`pid`, or another bridge version) |
-| `BridgeVersionMismatchError` (`clientVersion`, `coreMessage`) | `bridge_version_mismatch` | the core refused this bridge version                                                        |
-| `CoreBridgeError`                                             | `handshake_failed`        | `hello` failed for any other reason                                                         |
-| `CoreRpcError` (`rpcCode`, `kind`, `retryable`, `planLimit`)  | `rpc_error`               | any JSON-RPC error reply                                                                    |
-| `CoreTimeoutError` (`method`)                                 | `timeout`                 | no reply in time                                                                            |
-| `CoreReplyTooLargeError`                                      | `reply_too_large`         | see Size limits                                                                             |
-| `CoreRequestTooLargeError` (`method`, `bytes`, `limit`)       | `request_too_large`       | see Size limits                                                                             |
-| `CoreClosedError`                                             | `closed`                  | a call after close, or the connection closed or failed with calls pending                   |
-| `CoreBridgeError`                                             | `invalid_params`          | a spawn helper refused its params locally                                                   |
+| Class                                                                  | `code`                    | When                                                                                        |
+| ---------------------------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------- |
+| `CoreNotRunningError`                                                  | `core_not_running`        | no socket file (not on Windows), nothing listening, or connect timed out                    |
+| `CoreUntrustedError` (`reason`)                                        | `core_untrusted`          | the socket's directory or the socket fails the owner/mode checks                            |
+| `NotACoreError`                                                        | `not_a_core`              | the greeting is not a core's (no numeric `bridge_version`/`pid`, or another bridge version) |
+| `BridgeVersionMismatchError` (`clientVersion`, `coreMessage`)          | `bridge_version_mismatch` | the core refused this bridge version                                                        |
+| `CoreBridgeError`                                                      | `handshake_failed`        | `hello` failed for any other reason                                                         |
+| `CoreRpcError` (`rpcCode`, `kind`, `retryable`, `planLimit`, `reason`) | `rpc_error`               | any JSON-RPC error reply                                                                    |
+| `CoreTimeoutError` (`method`)                                          | `timeout`                 | no reply in time                                                                            |
+| `CoreReplyTooLargeError`                                               | `reply_too_large`         | see Size limits                                                                             |
+| `CoreRequestTooLargeError` (`method`, `bytes`, `limit`)                | `request_too_large`       | see Size limits                                                                             |
+| `CoreClosedError`                                                      | `closed`                  | a call after close, or the connection closed or failed with calls pending                   |
+| `CoreBridgeError`                                                      | `invalid_params`          | a spawn helper refused its params locally                                                   |
 
 `CoreRpcError.kind` is the core's `data.kind` (`ErrorKind`; unknown kinds are
-passed through as strings). `CoreCallError` is a deprecated alias of
+passed through as strings). With kind `refused`, `CoreRpcError.reason` is the
+core's `data.reason` when it gave one (`RefusalReason`: `service_unknown`,
+`service_disabled`, `service_expired`, `workspace_mismatch`, `not_owner`,
+`outside_scope`, `management_peer`; unknown reasons are passed through as
+strings) and `undefined` otherwise. `CoreCallError` is a deprecated alias of
 `CoreRpcError` and will be removed in a later release.
 
 ## Native spawn controls

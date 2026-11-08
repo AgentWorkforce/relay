@@ -13,6 +13,7 @@ import {
   NotACoreError,
   type ErrorKind,
   type PlanLimit,
+  type RefusalReason,
 } from './errors.js';
 import { BRIDGE_VERSION, MAX_REPLY_BYTES, MAX_REQUEST_BYTES, coreSocketPath, pipeName } from './paths.js';
 import { trustedSocketDirectory, trustedSocketFile } from './trust.js';
@@ -97,7 +98,7 @@ function rpcErrorOf(error: unknown): CoreRpcError {
   const raw = (typeof error === 'object' && error !== null ? error : {}) as {
     code?: unknown;
     message?: unknown;
-    data?: { kind?: unknown; retryable?: unknown; plan_limit?: unknown };
+    data?: { kind?: unknown; retryable?: unknown; plan_limit?: unknown; reason?: unknown };
   };
   const data = typeof raw.data === 'object' && raw.data !== null ? raw.data : {};
   return new CoreRpcError(String(raw.message ?? 'The core refused the request.'), {
@@ -108,6 +109,7 @@ function rpcErrorOf(error: unknown): CoreRpcError {
       typeof data.plan_limit === 'object' && data.plan_limit !== null
         ? (data.plan_limit as PlanLimit)
         : undefined,
+    reason: typeof data.reason === 'string' ? (data.reason as RefusalReason) : undefined,
   });
 }
 

@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { TOPICS } from './client.js';
-import { ERROR_KINDS } from './errors.js';
+import { ERROR_KINDS, REFUSAL_REASONS } from './errors.js';
 import { BRIDGE_VERSION, MAX_REPLY_BYTES, MAX_REQUEST_BYTES, coreSocketPath, pipeName } from './paths.js';
 import {
   SPAWN_ERROR_CODES,
@@ -76,6 +76,15 @@ describe('contract drift against crates/relay-node', () => {
   it('knows every topic and error kind', () => {
     expect([...TOPICS]).toEqual(variants(block(protocol, 'enum', 'Topic')));
     expect([...ERROR_KINDS]).toEqual(variants(block(protocol, 'enum', 'ErrorKind')));
+  });
+
+  it('knows every refusal reason', () => {
+    // RefusalReason arrives with the spawn callers hook; until it is on this
+    // base there is nothing to compare. `other` is the core's own fallback for
+    // a reason it does not know, never a reason of its own.
+    if (!protocol.includes('pub enum RefusalReason {')) return;
+    const reasons = variants(block(protocol, 'enum', 'RefusalReason')).filter((r) => r !== 'other');
+    expect([...REFUSAL_REASONS]).toEqual(reasons);
   });
 
   it('sends exactly the spawn params structs, which deny unknown fields', () => {

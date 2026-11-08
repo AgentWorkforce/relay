@@ -228,6 +228,39 @@ describe.skipIf(process.platform === 'win32')('connectCore', () => {
     expect(full.planLimit).toEqual(planLimit);
     const busy = (await client.call('agents.end').catch((e: unknown) => e)) as CoreRpcError;
     expect(busy).toMatchObject({ kind: 'busy', retryable: true, planLimit: undefined });
+    expect(full.reason).toBeUndefined();
+    expect(busy.reason).toBeUndefined();
+  });
+
+  it('surfaces a refusal reason on CoreRpcError when the core gives one', async () => {
+    const refused = (reason?: unknown) => ({
+      error: {
+        code: -32000,
+        message: 'Refused.',
+        data:
+          reason === undefined
+            ? { kind: 'refused', retryable: false }
+            : { kind: 'refused', retryable: false, reason },
+      },
+    });
+    await serve([], greeting, (request) => {
+      if (request.method === 'spawn.invoke') return refused('not_owner');
+      if (request.method === 'spawn.status') return refused('quota_exhausted');
+      if (request.method === 'spawn.release') return refused(7);
+      return refused();
+    });
+    const client = await connect();
+    const rpc = (method: string) => client.call(method).catch((e: unknown) => e) as Promise<CoreRpcError>;
+    const known = await rpc('spawn.invoke');
+    expect(known).toBeInstanceOf(CoreRpcError);
+    expect(known).toMatchObject({ kind: 'refused', retryable: false, reason: 'not_owner' });
+    // A reason this client does not know yet is kept as the core sent it.
+    expect((await rpc('spawn.status')).reason).toBe('quota_exhausted');
+    // A refusal without a reason, or with a non-string one, has none.
+    const bare = await rpc('spawn.targets');
+    expect(bare.reason).toBeUndefined();
+    expect(bare).toMatchObject({ kind: 'refused' });
+    expect((await rpc('spawn.release')).reason).toBeUndefined();
   });
 
   it('delivers events to listeners and keeps reading when one throws', async () => {
