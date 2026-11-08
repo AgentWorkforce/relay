@@ -458,12 +458,7 @@ describe('registerCloudCommands', () => {
       const call = spawnCalls[0]!;
       const workflowPath = path.join(tmpHome, 'cloud-workers', 'runs', 'run_relayflows', 'workflow.yaml');
       expect(call.command).toBe(process.execPath);
-      expect(call.args).toEqual([
-        '/opt/agent-relay/dist/cli/index.js',
-        'flows',
-        'run',
-        workflowPath,
-      ]);
+      expect(call.args).toEqual(['/opt/agent-relay/dist/cli/index.js', 'flows', 'run', workflowPath]);
       expect(call.cwd).toBe(path.dirname(workflowPath));
       expect(call.env).toMatchObject({
         BASE_ENV: 'kept',
