@@ -108,6 +108,19 @@ function trimOrUndefined(value: string | undefined): string | undefined {
 /**
  * Resolve the broker connection in priority order. Returns `null` when no
  * source provides a URL — the caller decides how to surface that.
+ *
+ * URL and API key are not resolved independently past the explicit tier.
+ * A process that is itself a relay agent carries its own broker's
+ * `RELAY_BROKER_API_KEY` in env; if that key got paired with a URL that
+ * resolved from a *different* source (typically another repo's
+ * `connection.json`, e.g. `agent-relay node agent attach` against another
+ * repo's broker), the pair can never authenticate (#1382). Once the URL
+ * resolves from env or the connection file, the key must resolve from that
+ * same tier (or an explicit `--api-key` override) — never reach past it
+ * into a different tier. An explicit `--broker-url` is exempt: it is a
+ * deliberate, single-field override, and the key still resolves normally
+ * beneath it (env, then file) so `--broker-url` alone does not force the
+ * caller to also pass `--api-key`.
  */
 export function resolveBrokerConnection(
   options: BrokerConnectionOptions,
@@ -144,11 +157,14 @@ export function resolveBrokerConnection(
   const connectionFile = deps.readConnectionFile(deps.getDefaultStateDir());
   const fileUrl = readString(connectionFile, 'url');
 
-  const url = explicitUrl ?? envUrl ?? fileUrl;
-  if (!url) return null;
-
   const fileKey = readString(connectionFile, 'api_key');
-  return finish(url, explicitKey ?? envKey ?? fileKey);
+
+  // Pair the key with the tier the URL came from (#1382); only an explicit
+  // --broker-url lets the key fall through env then file.
+  if (explicitUrl) return finish(explicitUrl, explicitKey ?? envKey ?? fileKey);
+  if (envUrl) return finish(envUrl, explicitKey ?? envKey);
+  if (fileUrl) return finish(fileUrl, explicitKey ?? fileKey);
+  return null;
 }
 
 /**
