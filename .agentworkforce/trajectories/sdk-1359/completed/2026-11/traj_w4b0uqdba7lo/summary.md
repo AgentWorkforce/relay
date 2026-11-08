@@ -4,7 +4,7 @@ Summary: Revalidated all three reports against main72d9858. Fixed returned agent
 
 Validation in this Relay checkout:
 - npm --prefix packages/sdk test — 200 passed.
-- npm --prefix packages/sdk run test:types — 10 passed.
+- npm --prefix packages/sdk run test:types — 11 passed.
 - npm --prefix packages/sdk run build and npm --prefix packages/sdk run check: passed.
 - npm run typecheck built all cross-package prerequisites; final CLI TypeScript check passed after the returned-client-only workspace correction.
 - Prettier and git diff --check against the base: passed.

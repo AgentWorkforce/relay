@@ -43,14 +43,19 @@
     }
   ],
   "retrospective": {
-    "summary": "Fixed returned-agent types and immediate listener diagnostics, with verified source scope and exact-token cache binding. SDK200 and strict types10 pass; SDK build/check, cross-package prerequisites and final CLI TypeScript check pass. Two independent final code reviews PASS. Reproducible scripts/verify-sdk-realtime-blocks.mjs validates49KB and original arbitrary block parity against companion Relaycast implementation3af3b99 with mocked I/O. Upstream release/integration remains human-gated.",
+    "summary": "Fixed returned-agent types and immediate listener diagnostics, with verified source scope and exact-token cache binding. SDK200 and strict types11 pass; SDK build/check, cross-package prerequisites and final CLI TypeScript check pass. Two independent final code reviews PASS. Reproducible scripts/verify-sdk-realtime-blocks.mjs validates49KB and original arbitrary block parity against companion Relaycast implementation3af3b99 with mocked I/O. Upstream release/integration remains human-gated. Custom injected adapters retain compatibility with string-inferred scope fields; the additional strict regression passes.",
     "approach": "Standard approach",
     "confidence": 0.95
   },
   "commits": [
     "073f014b4b949232c6927780a711e40e1eb00f2d",
     "c99b88d863f3c1e194a76ef6209f2d1256f7862e",
-    "b85b72ee37da8b2fa335ff2c6aa2e2ecbc5a4f4c"
+    "b85b72ee37da8b2fa335ff2c6aa2e2ecbc5a4f4c",
+    "52eae5c56d3d77386c0c59b1b558fb90e9c73f6a",
+    "1d10628e61bf4141d3a29370e1b803c6edcf8e7a",
+    "c3e517829fb9178481cf8ff1128817f78d57647c",
+    "279d2bd399e277c2a4745d86481759ab287aed7f",
+    "86d8e47e21149b85ed7f860cf23b1ff2fbbe32cd"
   ],
   "filesChanged": [
     ".agentworkforce/trajectories/sdk-1359/completed/2026-11/traj_w4b0uqdba7lo/summary.md",
@@ -64,12 +69,13 @@
     "packages/sdk/src/facade.ts",
     "packages/sdk/src/messaging/event-fanin.ts",
     "packages/sdk/src/messaging/relaycast.ts",
-    "packages/sdk/src/messaging/types.ts"
+    "packages/sdk/src/messaging/types.ts",
+    "scripts/verify-sdk-realtime-blocks.mjs"
   ],
   "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
     "startRef": "72d98585dabd0fcf88ab45b2b6d21ff18d655c28",
-    "endRef": "b85b72ee37da8b2fa335ff2c6aa2e2ecbc5a4f4c"
+    "endRef": "86d8e47e21149b85ed7f860cf23b1ff2fbbe32cd"
   }
 }
