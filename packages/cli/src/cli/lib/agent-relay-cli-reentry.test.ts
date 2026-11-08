@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { resolveAgentRelayCliChildCommand } from './agent-relay-cli-reentry.js';
+import {
+  resolveAgentRelayCliChildCommand,
+  resolveAgentRelayScriptInterpreter,
+} from './agent-relay-cli-reentry.js';
 
 describe('resolveAgentRelayCliChildCommand', () => {
   it('re-enters a compiled Bun executable without its virtual entrypoint', () => {
@@ -29,5 +32,25 @@ describe('resolveAgentRelayCliChildCommand', () => {
       command: '/usr/bin/node',
       args: ['/checkout/packages/cli/dist/cli/index.js', 'flows', 'run', '/work/flow.yaml'],
     });
+  });
+});
+
+describe('resolveAgentRelayScriptInterpreter', () => {
+  it('uses Node for scripts launched by the compiled Bun executable', () => {
+    expect(
+      resolveAgentRelayScriptInterpreter({
+        execPath: '/opt/agent-relay',
+        cliEntrypoint: '/$bunfs/root/packages/cli/dist/cli/index.js',
+      })
+    ).toBe('node');
+  });
+
+  it('preserves the current runtime for an ordinary CLI script', () => {
+    expect(
+      resolveAgentRelayScriptInterpreter({
+        execPath: '/usr/bin/node',
+        cliEntrypoint: '/opt/agent-relay/dist/cli/index.js',
+      })
+    ).toBe('/usr/bin/node');
   });
 });

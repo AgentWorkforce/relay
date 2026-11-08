@@ -6,7 +6,10 @@ import { randomBytes } from 'node:crypto';
 import { Command, InvalidArgumentError } from 'commander';
 
 import { defaultExit } from '../lib/exit.js';
-import { resolveAgentRelayCliChildCommand } from '../lib/agent-relay-cli-reentry.js';
+import {
+  resolveAgentRelayCliChildCommand,
+  resolveAgentRelayScriptInterpreter,
+} from '../lib/agent-relay-cli-reentry.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
 import { track } from '../telemetry/index.js';
 import { applyV1LocalWorkflowDeprecations } from './cloud-v1-deprecations.js';
@@ -284,7 +287,13 @@ async function resolveLocalWorkflowCommand(
   }
 
   if (fileType === 'js') {
-    return { command: process.execPath, args: [workflowPath] };
+    return {
+      command: resolveAgentRelayScriptInterpreter({
+        execPath: process.execPath,
+        cliEntrypoint: deps.resolveAgentRelayCliEntrypoint(),
+      }),
+      args: [workflowPath],
+    };
   }
 
   return { command: deps.env.SHELL?.trim() || '/bin/sh', args: [workflowPath] };
@@ -361,7 +370,11 @@ async function runLocalWorkflow(
   const logFd = fs.openSync(logPath, 'a');
   let monitor: ChildProcess;
   try {
-    monitor = deps.spawnProcess(process.execPath, [runnerPath], {
+    const scriptInterpreter = resolveAgentRelayScriptInterpreter({
+      execPath: process.execPath,
+      cliEntrypoint: deps.resolveAgentRelayCliEntrypoint(),
+    });
+    monitor = deps.spawnProcess(scriptInterpreter, [runnerPath], {
       cwd,
       detached: true,
       stdio: ['ignore', logFd, logFd],

@@ -148,6 +148,34 @@ describe('registerLocalWorkflowCommands', () => {
     expect(logs).toContain('Local workflow ran in this checkout; no patch sync is required.');
   });
 
+  it('uses Node for JavaScript workflow and monitor scripts in the compiled Bun executable', async () => {
+    const spawnProcess = vi.fn(() => ({
+      pid: 4242,
+      unref: vi.fn(),
+    })) as unknown as LocalWorkflowDependencies['spawnProcess'];
+    const { program, tmpRoot } = createHarness({
+      spawnProcess,
+      resolveAgentRelayCliEntrypoint: () => '/$bunfs/root/packages/cli/dist/cli/index.js',
+    });
+    const workflowPath = path.join(tmpRoot, 'workflow.js');
+    fs.writeFileSync(workflowPath, 'console.log("workflow");\n', 'utf-8');
+
+    await program.parseAsync(['run', 'workflow.js'], { from: 'user' });
+
+    const runDir = path.join(tmpRoot, '.agentworkforce', 'relay', 'local-runs', 'local_test123');
+    const record = JSON.parse(fs.readFileSync(path.join(runDir, 'run.json'), 'utf-8')) as Record<
+      string,
+      unknown
+    >;
+    expect(record.command).toBe('node');
+    expect(record.args).toEqual([workflowPath]);
+    expect(spawnProcess).toHaveBeenCalledWith(
+      'node',
+      [path.join(runDir, 'monitor.mjs')],
+      expect.objectContaining({ cwd: tmpRoot, detached: true })
+    );
+  });
+
   it.each([
     ['YAML', 'workflow.yaml', 'version: "0.1.0"\nname: local-test\nsteps: []\n', false],
     ['YML', 'workflow.yml', 'version: "0.1.0"\nname: local-test\nsteps: []\n', false],

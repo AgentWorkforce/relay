@@ -17,3 +17,10 @@ export function resolveAgentRelayCliChildCommand(input: {
     : path.resolve(input.cwd, input.cliEntrypoint);
   return { command: input.execPath, args: [cliEntrypoint, ...input.args] };
 }
+
+export function resolveAgentRelayScriptInterpreter(input: {
+  execPath: string;
+  cliEntrypoint: string;
+}): string {
+  return isBundledBunEntrypointPath(input.cliEntrypoint) ? 'node' : input.execPath;
+}
