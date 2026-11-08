@@ -52,8 +52,7 @@ const CANDIDATE_SURFACES = new Set([
 ]);
 const OPTION_COVERAGE_STATUSES = new Set(['supported', 'unsupported', 'skipped']);
 const SECRET_OPTION_NAMES = new Set(['--api-key', '--join-ticket', '--token', '--wk', '--workspace-key']);
-// Kept local and dependency-free (like scripts/pr-proof/run-cloud.mjs's
-// LIVE_CREDENTIAL and scripts/verify-features/escalation-status.mjs's
+// Kept local and dependency-free (like scripts/verify-features/escalation-status.mjs's
 // redactAlertText) so this standalone runner never depends on workspace
 // package resolution. The live-credential prefix set must stay aligned with
 // the canonical SECRET_PREFIX in packages/cli/src/cli/lib/redact.ts.

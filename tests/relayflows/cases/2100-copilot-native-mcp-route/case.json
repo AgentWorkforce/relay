@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "id": "2100-copilot-native-mcp-route",
+  "kind": "bugfix",
+  "title": "Native Copilot initialize reaches the managed account through the public router",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/2100-copilot-native-mcp-route/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 1200,
+  "expected": {
+    "base": { "outcome": "bug", "signature": "copilot_native_mcp_route_unreachable" },
+    "head": { "outcome": "fixed", "signature": "copilot_native_mcp_route_reaches_account" }
+  }
+}

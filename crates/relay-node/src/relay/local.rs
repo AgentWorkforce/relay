@@ -1537,8 +1537,16 @@ impl LocalInjector {
                     paseo_muse::PaseoCourier::system(agent_id, endpoint, open.store.clone());
                 (Arc::new(courier), Arc::new(receipts))
             } else {
+                let private_base = journal
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| journal.to_path_buf());
                 (
-                    Arc::new(muse_open::SystemCourier::new(open.store.clone(), None)),
+                    Arc::new(muse_open::SystemCourier::isolated(
+                        open.store.clone(),
+                        None,
+                        private_base,
+                    )),
                     Arc::new(muse_open::SystemReceipts::new(&open.store)),
                 )
             };

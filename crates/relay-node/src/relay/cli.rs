@@ -579,6 +579,7 @@ fn socket_response_with(
             | "/integrations/subscribe"
             | "/connect/join"
             | "/codex/stop-hook"
+            | "/copilot/mcp"
             | "/settings"
     ) {
         "application/json"
@@ -663,6 +664,38 @@ mod tests {
             })
         });
         (directory, socket, served)
+    }
+
+    #[test]
+    fn native_copilot_transport_posts_json() {
+        let (_directory, socket, served) = serve_once(|mut stream| async move {
+            use tokio::io::AsyncReadExt;
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                assert!(head.len() < 4096);
+                head.push(stream.read_u8().await.unwrap());
+            }
+            let mut body = [0; 2];
+            stream.read_exact(&mut body).await.unwrap();
+            assert_eq!(&body, b"{}");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+                .await
+                .unwrap();
+            String::from_utf8(head).unwrap()
+        });
+        let (status, _) = socket_response(
+            &socket,
+            "POST",
+            "/copilot/mcp",
+            b"{}",
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(status, 200);
+        let head = served.join().unwrap();
+        assert!(head.starts_with("POST /copilot/mcp HTTP/1.1\r\n"));
+        assert!(head.contains("\r\nContent-Type: application/json\r\n"));
     }
 
     #[test]
