@@ -43,6 +43,10 @@ let package = Package(
             name: "AgentRelayBrokerSDKTests",
             dependencies: ["AgentRelayBrokerSDK"],
             path: "packages/sdk-swift/Tests/AgentRelayBrokerSDKTests"
+        ),
+        .testTarget(
+            name: "CoreContractTests",
+            path: "packages/sdk-swift/Tests/CoreContractTests"
         )
     ]
 )
