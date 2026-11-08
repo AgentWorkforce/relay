@@ -28,7 +28,7 @@ describe('registered and reconnected agent client types', () => {
     expectTypeOf(reconnected).toEqualTypeOf<RelayAgentClient>();
 
     for (const client of [registered, ...registeredMany, reconnected]) {
-      expectTypeOf(client).toExtend<AgentRelayAgent>();
+      expectTypeOf(client).toExtend<Omit<AgentRelayAgent, 'workspace'>>();
       expectTypeOf(client.events).toEqualTypeOf<AgentRelayAgent['events']>();
       expectTypeOf(client.capabilities).toEqualTypeOf<AgentRelayAgent['capabilities']>();
       expectTypeOf(client.capabilities.invoke('score.submit', { lead: 'acme' })).toEqualTypeOf<

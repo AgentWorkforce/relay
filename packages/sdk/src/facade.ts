@@ -164,7 +164,9 @@ export interface RelayClientReactInput {
  * and status/tool predicate builders alongside a messaging surface scoped to
  * that agent.
  */
-export interface RelayAgentClient extends RelayAgentHandle, AgentRelayAgent {
+export interface RelayAgentClient extends RelayAgentHandle, Omit<AgentRelayAgent, 'workspace'> {
+  /** Agent-scoped clients can inspect their workspace; mutations require the parent workspace client. */
+  readonly workspace: Pick<RelayWorkspace, 'info'>;
   sendMessage(input: RelaySendMessageInput): Promise<RelayMessage>;
   reply(input: RelayReplyInput): Promise<RelayMessage>;
   react(input: RelayClientReactInput): Promise<RelayMessageReaction>;

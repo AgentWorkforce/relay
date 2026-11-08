@@ -101,8 +101,7 @@ export interface AgentRelayAgent {
   readonly capabilities: RelayMessaging['commands'];
   readonly nodes: RelayMessaging['nodes'];
   readonly triggers: RelayMessaging['triggers'];
-  /** Agent-scoped clients can inspect their workspace; mutations require the parent workspace client. */
-  readonly workspace: Pick<RelayWorkspace, 'info'>;
+  readonly workspace: RelayWorkspace;
   readonly files: RelayMessaging['files'];
   registerAction<TInput, TOutput>(
     def: RegisterActionInput<TInput, TOutput>
