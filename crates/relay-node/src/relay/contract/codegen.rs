@@ -52,6 +52,11 @@ pub(super) struct Field {
     /// Always present on the wire (results) or demanded (parameters).
     pub(super) required: bool,
     default: Option<Value>,
+    /// A field's `x-fallback`, always equal to its `default`: besides a
+    /// missing value, one a client cannot read (`null` or of another type, as
+    /// a core of another version can send for a field added within a bridge
+    /// version) reads as `default` too.
+    lenient: bool,
     doc: Option<String>,
 }
 
@@ -254,12 +259,28 @@ fn fields(schema: &Value) -> Vec<Field> {
     };
     properties
         .iter()
-        .map(|(wire, property)| Field {
-            wire: wire.clone(),
-            ty: ty(property),
-            required: required.contains(&wire.as_str()),
-            default: property.get("default").cloned(),
-            doc: description(property),
+        .map(|(wire, property)| {
+            let field = Field {
+                wire: wire.clone(),
+                ty: ty(property),
+                required: required.contains(&wire.as_str()),
+                default: property.get("default").cloned(),
+                lenient: property.get("x-fallback").is_some(),
+                doc: description(property),
+            };
+            if field.lenient {
+                // The schema's `default` reads a missing value; `x-fallback`
+                // only adds that an unreadable one reads as it too.
+                assert!(
+                    field.default.is_some() && field.default.as_ref() == property.get("x-fallback"),
+                    "{wire}: an x-fallback needs an equal default"
+                );
+                assert!(
+                    !matches!(field.ty, Ty::Nullable(_)),
+                    "{wire}: a nullable field already reads a missing value as nil"
+                );
+            }
+            field
         })
         .collect()
 }
@@ -470,8 +491,9 @@ fn swift_type(ty: &Ty) -> String {
 /// A field's Swift type, and the default it reads as when absent.
 fn swift_field(field: &Field) -> (String, Option<String>) {
     match (&field.ty, field.required, &field.default) {
-        (Ty::Nullable(_), _, _) | (_, true, _) => (swift_type(&field.ty), None),
-        (_, false, Some(default)) => (swift_type(&field.ty), Some(swift_literal(default))),
+        (Ty::Nullable(_), _, _) => (swift_type(&field.ty), None),
+        (_, _, Some(default)) => (swift_type(&field.ty), Some(swift_literal(default))),
+        (_, true, None) => (swift_type(&field.ty), None),
         (_, false, None) => (format!("{}?", swift_type(&field.ty)), None),
     }
 }
@@ -516,6 +538,9 @@ fn swift_decode_expr(field: &Field) -> String {
     let key = swift_member(&field.wire);
     match (ty.strip_suffix('?'), default) {
         (Some(base), _) => format!("try c.decodeIfPresent({base}.self, forKey: .{key})"),
+        (None, Some(default)) if field.lenient => {
+            format!("(try? c.decodeIfPresent({ty}.self, forKey: .{key})) ?? {default}")
+        }
         (None, Some(default)) => {
             format!("try c.decodeIfPresent({ty}.self, forKey: .{key}) ?? {default}")
         }
@@ -1155,6 +1180,66 @@ mod tests {
     fn generation_is_deterministic() {
         let (a, b) = (Contract::collect(&[]), Contract::collect(&[]));
         assert_eq!(a.swift(), b.swift());
+    }
+
+    /// `released` was added within bridge version 2: an older core's reply
+    /// omits it, so a client reads a missing, `null` or mistyped value as
+    /// `false` instead of rejecting the whole reply, and always writes it.
+    #[test]
+    fn a_field_with_a_fallback_reads_what_it_cannot_read_as_the_fallback() {
+        let contract = Contract::collect(&[]);
+        let Def::Struct { fields, .. } = &contract.defs["SpawnControlInvocation"] else {
+            panic!("SpawnControlInvocation is a struct");
+        };
+        let released = fields.iter().find(|f| f.wire == "released").unwrap();
+        // The schema's default reads a missing value; x-fallback adds the rest.
+        assert!(released.lenient);
+        assert_eq!(released.default, Some(Value::Bool(false)));
+        let swift = contract.swift();
+        let start = swift.find("public struct SpawnControlInvocation:").unwrap();
+        let end = start + swift[start..].find("\n}\n").unwrap();
+        let generated = &swift[start..end];
+        assert!(
+            generated.contains("    public let released: Bool\n"),
+            "{generated}"
+        );
+        assert!(
+            generated.contains(
+                "public init(agentId: String? = nil, errorCode: String? = nil, id: String, name: String? = nil, nodeId: String? = nil, ready: Bool, released: Bool = false, spawned: Bool, status: String, taskUnconfirmed: Bool)"
+            ),
+            "{generated}"
+        );
+        assert!(
+            generated.contains(
+                "self.released = (try? c.decodeIfPresent(Bool.self, forKey: .released)) ?? false\n"
+            ),
+            "{generated}"
+        );
+        assert!(
+            generated.contains("try c.encode(self.released, forKey: .released)\n"),
+            "{generated}"
+        );
+        // The other fields stay strict.
+        assert!(
+            generated.contains("self.ready = try c.decode(Bool.self, forKey: .ready)\n"),
+            "{generated}"
+        );
+        // Only fields marked with an x-fallback read leniently.
+        let lenient = swift.matches("(try? c.decodeIfPresent(").count();
+        let marked = contract
+            .defs
+            .values()
+            .flat_map(|def| match def {
+                Def::Struct { fields, .. } => fields.iter().collect::<Vec<_>>(),
+                Def::Tagged { variants, .. } => {
+                    variants.iter().flat_map(|v| v.fields.iter()).collect()
+                }
+                Def::Enum { .. } => Vec::new(),
+            })
+            .filter(|field| field.lenient)
+            .count();
+        assert_eq!(lenient, marked);
+        assert!(marked >= 1);
     }
 
     #[test]

@@ -30,8 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Migrate workflow files and invocations to `agent-relay flows run`; use the hosted v2 runner for resume until the Cloud worker protocol carries hosted v2 state.
 
+### Added
+
+- `agent-relay-node` has an optional `SpawnCallers` plugin hook: `spawn.invoke`, `spawn.status` and `spawn.release` accept an optional `caller_secret` that the plugin resolves to an external caller, admits and records, and extension methods now receive the caller's process id. Spawn control refusals carry an optional typed `reason` (such as `not_owner` or `outside_scope`) while `kind` stays `refused`. Without the plugin the core behaves as before and refuses any `caller_secret`.
+
 ### Fixed
 
+- Spawn release receipts preserve the provider's exact `released` proof, and newer desktop clients safely treat that field as false when an older core omits it or sends `null` or a non-boolean value.
 - Muse courier sessions used for incoming Relay messages no longer appear in session history or uploads; their delivery receipts and replies remain recorded on the target session.
 - `POST /copilot/mcp` no longer returns an unknown-route error during native Copilot initialization: it uses Desktop's managed transport when available and otherwise reports the transport as unavailable.
 - `agent-relay-node` built for its own site (`AGENT_RELAY_SITE_URL`) no longer falls back to Agent Relay's public gateways: a sign-in whose site named no valid Relaycast URL, or a CLI workspace key with no recorded server or `RELAY_BASE_URL`, is refused with a reason naming the site, and `RELAYCAST_URL` is ignored in such a build.

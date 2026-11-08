@@ -5,6 +5,9 @@ use crate::relay::agents::SettingsExtension;
 use crate::relay::client::WorkspaceInfo;
 use crate::relay::cloud_session::{CloudAccess, SignedOut};
 use crate::relay::connect::{CloudJoinClient, ConnectJoinClient};
+use crate::relay::contract::spawn_control::{
+    SpawnControlInvocation, SpawnInvocationParams, SpawnInvokeParams, SpawnReleaseParams,
+};
 use crate::relay::contract::{self, MethodSpec};
 use crate::relay::daemon::Core;
 use crate::relay::inject::{Injector, NoInjector};
@@ -13,10 +16,11 @@ use crate::relay::protocol::RpcError;
 use crate::relay::sessions::{NoSessions, SessionDirectory};
 use crate::relay::store::Target as SessionTarget;
 use crate::relay::usage::UsageEvent;
-use crate::relay::workspace::Workspace;
+use crate::relay::workspace::{Secret, Workspace};
 use futures_util::future::BoxFuture;
 use serde_json::Value;
 use std::collections::{BTreeSet, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// The signed-in account a build of the core may carry: sign-in and Cloud
@@ -99,6 +103,105 @@ pub trait SessionPolicy: Send + Sync + 'static {
     fn leaving_after_clear(&self, agents: &[String]) -> Option<String>;
 }
 
+/// Callers of the native spawn controls (`spawn.invoke`, `spawn.status`,
+/// `spawn.release`) that are not session registrations: a request that
+/// carries `caller_secret` is answered through this plugin, one without it
+/// exactly as without the plugin. A core without one refuses every
+/// `caller_secret`. An unsupported internal seam, like [`SessionPolicy`].
+///
+/// The core never stores, lists or provisions such callers; the plugin owns
+/// their records, limits and audit.
+pub trait SpawnCallers: Send + Sync + 'static {
+    /// The caller `name` and `secret` name in `workspace`, or a typed
+    /// refusal (`RpcError::refused_because`). Called before any Relaycast
+    /// request.
+    fn resolve(
+        &self,
+        workspace: &Workspace,
+        name: &str,
+        secret: &Secret,
+    ) -> Result<ExternalCaller, RpcError>;
+    /// Admits `call` before its Relaycast request (rate, live-agent cap,
+    /// ledger), or refuses it, in which case nothing is sent. The permit
+    /// comes back to [`SpawnCallers::record`]; a call that is dropped before
+    /// it finishes drops the permit instead.
+    fn admit(&self, caller: &ExternalCaller, call: &SpawnCall<'_>) -> Result<Permit, RpcError>;
+    /// What became of an admitted call, success or refusal (audit, ledger).
+    fn record(&self, permit: Permit, outcome: &Result<SpawnControlInvocation, RpcError>);
+}
+
+/// A caller [`SpawnCallers::resolve`] vouches for: a Relaycast agent whose
+/// token stays in the core, and the bounds it acts within.
+#[derive(Clone, Debug)]
+pub struct ExternalCaller {
+    /// Its immutable Relaycast agent id; release claims are keyed by it.
+    pub agent_id: String,
+    pub name: String,
+    /// Its Relaycast agent token, sent to Relaycast and nowhere else.
+    pub token: Secret,
+    /// The harnesses it may spawn; `None` leaves only the node's own check.
+    pub harnesses: Option<Vec<String>>,
+    /// The folders it may spawn in (after canonicalisation); `None` leaves
+    /// only the node's own check.
+    pub directory_roots: Option<Vec<PathBuf>>,
+    /// Whether it may release only agents whose recorded requester is it.
+    pub owns_only: bool,
+}
+
+/// One native spawn control call by an [`ExternalCaller`], as
+/// [`SpawnCallers::admit`] sees it. The parameters never carry the caller's
+/// secret.
+#[derive(Clone, Copy, Debug)]
+pub struct SpawnCall<'a> {
+    /// The bridge client's process, when the platform reports it.
+    pub peer_pid: Option<i32>,
+    pub workspace: &'a Workspace,
+    pub request: SpawnRequest<'a>,
+}
+
+/// Which spawn control is called, with its parameters.
+#[derive(Clone, Copy, Debug)]
+pub enum SpawnRequest<'a> {
+    Invoke(&'a SpawnInvokeParams),
+    Status(&'a SpawnInvocationParams),
+    Release(&'a SpawnReleaseParams),
+}
+
+/// What [`SpawnCallers::admit`] hands back to [`SpawnCallers::record`]:
+/// whatever the plugin needs, opaque to the core.
+pub struct Permit(Box<dyn std::any::Any + Send + Sync>);
+
+impl Permit {
+    pub fn new<T: std::any::Any + Send + Sync>(value: T) -> Permit {
+        Permit(Box::new(value))
+    }
+
+    /// The plugin's own value, or the permit back when it is another type.
+    pub fn downcast<T: std::any::Any>(self) -> Result<Box<T>, Permit> {
+        if self.0.is::<T>() {
+            Ok(self.0.downcast::<T>().unwrap_or_else(|_| unreachable!()))
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl std::fmt::Debug for Permit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Permit(..)")
+    }
+}
+
+/// What the bridge knows about the client a method call came from. The
+/// core's own calls (`server::call`) carry the default: no peer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CallContext {
+    /// The connected client's process, as the kernel reported it at
+    /// connect; `None` where the platform does not report it or the call
+    /// did not come over the bridge.
+    pub peer_pid: Option<i32>,
+}
+
 /// Extra bridge methods a build of the core adds. An unsupported internal
 /// seam, not a public API: clients use the contract, and this can change
 /// between commits. The server consults extensions last, after its handshake
@@ -108,9 +211,11 @@ pub trait MethodExtension: Send + Sync + 'static {
     fn specs(&self) -> Vec<MethodSpec>;
 
     /// Answers `method`, or `None` when it is not this extension's.
+    /// `context` says which client asked.
     fn call<'a>(
         &'a self,
         core: &'a Arc<Core>,
+        context: &'a CallContext,
         method: &'a str,
         raw: Value,
     ) -> BoxFuture<'a, Option<Result<Value, RpcError>>>;
@@ -136,6 +241,9 @@ pub struct Plugins {
     pub account: Option<Arc<dyn AccountPlugin>>,
     /// Which sessions may join the relay, be asked to, and publish activity.
     pub session_policy: Option<Arc<dyn SessionPolicy>>,
+    /// Native spawn control callers that are not session registrations;
+    /// without it every `caller_secret` is refused.
+    pub spawn_callers: Option<Arc<dyn SpawnCallers>>,
     /// Messages for Conductor's Codex chats that Agent Relay's Codex Stop
     /// hook collects (`POST /codex/stop-hook`); none without the hook.
     pub codex_stop_hook: Option<Arc<crate::relay::codex::stop_hook::StopHookInbox>>,
@@ -165,6 +273,7 @@ impl Default for Plugins {
             relay_send: None,
             account: None,
             session_policy: None,
+            spawn_callers: None,
             codex_stop_hook: None,
             spawner: Arc::new(crate::relay::spawn::launch::NoSpawner),
             trusted: None,
@@ -229,6 +338,7 @@ mod tests {
         fn call<'a>(
             &'a self,
             _core: &'a Arc<Core>,
+            _context: &'a CallContext,
             method: &'a str,
             raw: Value,
         ) -> BoxFuture<'a, Option<Result<Value, RpcError>>> {
@@ -289,6 +399,76 @@ mod tests {
         let (_home, core) = test_core_with_plugins(Plugins::default());
         let answer = server::call(&core, "extension.ping", json!({})).await;
         assert_eq!(answer.unwrap_err().data.kind, ErrorKind::MethodNotFound);
+    }
+
+    /// Answers `extension.ping` and keeps the context each call carried.
+    struct Witness(Arc<std::sync::Mutex<Vec<CallContext>>>);
+
+    impl MethodExtension for Witness {
+        fn specs(&self) -> Vec<MethodSpec> {
+            vec![MethodSpec::of::<Ping>(Availability::Always)]
+        }
+
+        fn call<'a>(
+            &'a self,
+            _core: &'a Arc<Core>,
+            context: &'a CallContext,
+            method: &'a str,
+            raw: Value,
+        ) -> BoxFuture<'a, Option<Result<Value, RpcError>>> {
+            Box::pin(async move {
+                if method != Ping::NAME {
+                    return None;
+                }
+                self.0.lock().unwrap().push(*context);
+                Some(answer::<Ping, _>(raw, |_| async { Ok(Done {}) }).await)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn peer_pid_reaches_extensions() {
+        use crate::relay::protocol::BRIDGE_VERSION;
+        use crate::relay::transport::{CoreListener, CoreStream};
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (home, core) = test_core_with_plugins(Plugins {
+            extensions: vec![Arc::new(Witness(seen.clone()))],
+            ..Plugins::default()
+        });
+        let socket = home.path().join("peer.sock");
+        let listener = CoreListener::bind(&socket).unwrap();
+        let (stop, stopped) = tokio::sync::watch::channel(false);
+        let server = tokio::spawn(server::accept_loop(listener, core.clone(), stopped));
+        let (read, mut write) = CoreStream::connect(&socket).await.unwrap().into_split();
+        let mut lines = BufReader::new(read).lines();
+        for request in [
+            json!({"jsonrpc":"2.0","id":1,"method":"hello","params":{"bridge_version": BRIDGE_VERSION}}),
+            json!({"jsonrpc":"2.0","id":2,"method":"extension.ping","params":{}}),
+        ] {
+            write
+                .write_all(format!("{request}\n").as_bytes())
+                .await
+                .unwrap();
+            let line = lines.next_line().await.unwrap().unwrap();
+            let response: Value = serde_json::from_str(&line).unwrap();
+            assert!(response.get("error").is_none(), "{response}");
+        }
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [CallContext {
+                peer_pid: Some(std::process::id() as i32)
+            }]
+        );
+        // The core's own calls come from no peer.
+        server::call(&core, "extension.ping", json!({}))
+            .await
+            .unwrap();
+        assert_eq!(seen.lock().unwrap()[1], CallContext::default());
+        drop(write);
+        stop.send(true).unwrap();
+        server.await.unwrap();
     }
 
     #[test]

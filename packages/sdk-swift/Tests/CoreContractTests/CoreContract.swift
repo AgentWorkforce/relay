@@ -1,0 +1,1 @@
+../../../../crates/relay-node/contract/CoreContract.swift

@@ -577,7 +577,7 @@ public struct Agents: Codable, Equatable, Hashable, Sendable {
     /// newest first.
     public let archived: [ArchivedAgent]
 
-    public init(agents: [LocalAgent], archived: [ArchivedAgent]) {
+    public init(agents: [LocalAgent], archived: [ArchivedAgent] = []) {
         self.agents = agents
         self.archived = archived
     }
@@ -590,7 +590,7 @@ public struct Agents: Codable, Equatable, Hashable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.agents = try c.decode([LocalAgent].self, forKey: .agents)
-        self.archived = try c.decode([ArchivedAgent].self, forKey: .archived)
+        self.archived = try c.decodeIfPresent([ArchivedAgent].self, forKey: .archived) ?? []
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1575,18 +1575,24 @@ public struct ErrorData: Codable, Equatable, Hashable, Sendable {
     /// With `plan_limit_exceeded`: which cap was reached and how full it
     /// is, when Relaycast's refusal said. Absent on every other kind.
     public let planLimit: PlanLimitExceeded?
+    /// With `refused`: why, when the refusal has a typed reason. Absent on
+    /// every other kind and on refusals without one, so a client that does
+    /// not know the field reads the error as before.
+    public let reason: RefusalReason?
     /// Whether repeating the same request later can succeed.
     public let retryable: Bool
 
-    public init(kind: ErrorKind, planLimit: PlanLimitExceeded? = nil, retryable: Bool) {
+    public init(kind: ErrorKind, planLimit: PlanLimitExceeded? = nil, reason: RefusalReason? = nil, retryable: Bool) {
         self.kind = kind
         self.planLimit = planLimit
+        self.reason = reason
         self.retryable = retryable
     }
 
     enum CodingKeys: String, CodingKey {
         case kind
         case planLimit = "plan_limit"
+        case reason
         case retryable
     }
 
@@ -1594,6 +1600,7 @@ public struct ErrorData: Codable, Equatable, Hashable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.kind = try c.decode(ErrorKind.self, forKey: .kind)
         self.planLimit = try c.decodeIfPresent(PlanLimitExceeded.self, forKey: .planLimit)
+        self.reason = try c.decodeIfPresent(RefusalReason.self, forKey: .reason)
         self.retryable = try c.decode(Bool.self, forKey: .retryable)
     }
 
@@ -1601,6 +1608,7 @@ public struct ErrorData: Codable, Equatable, Hashable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(self.kind, forKey: .kind)
         try c.encodeIfPresent(self.planLimit, forKey: .planLimit)
+        try c.encodeIfPresent(self.reason, forKey: .reason)
         try c.encode(self.retryable, forKey: .retryable)
     }
 }
@@ -3093,6 +3101,35 @@ public struct RecipientParams: Codable, Equatable, Hashable, Sendable {
         try c.encodeIfPresent(self.address, forKey: .address)
         try c.encodeIfPresent(self.messageId, forKey: .messageId)
         try c.encodeIfPresent(self.to, forKey: .to)
+    }
+}
+
+/// Why a native spawn control refused its caller. `kind` stays `refused`;
+/// this only says which rule refused it. None of them is retryable.
+public enum RefusalReason: String, Codable, CaseIterable, Hashable, Sendable {
+    /// No such caller, or its secret does not match; the two read alike so
+    /// a name cannot be probed.
+    case serviceUnknown = "service_unknown"
+    /// The caller is turned off.
+    case serviceDisabled = "service_disabled"
+    /// The caller's credential expired; rotate it.
+    case serviceExpired = "service_expired"
+    /// The caller belongs to another workspace than the active one, or the
+    /// active one has no workspace id.
+    case workspaceMismatch = "workspace_mismatch"
+    /// The invocation or agent was not started by this caller.
+    case notOwner = "not_owner"
+    /// The harness or folder is outside the caller's limits.
+    case outsideScope = "outside_scope"
+    /// A management call from a spawned or session process tree, or from a
+    /// client whose process could not be read.
+    case managementPeer = "management_peer"
+    /// A reason this build does not know.
+    case other
+
+    /// A value this build does not know reads as `other`.
+    public init(from decoder: Decoder) throws {
+        self = RefusalReason(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .other
     }
 }
 
@@ -4919,17 +4956,24 @@ public struct SpawnControlInvocation: Codable, Equatable, Hashable, Sendable {
     public let name: String?
     public let nodeId: String?
     public let ready: Bool
+    /// True only when the provider reported the agent released: its output's
+    /// `released` is exactly the JSON boolean `true`; it is never inferred
+    /// from `status`. Added within bridge version 2, so older cores did not
+    /// send it: a missing, `null` or non-boolean value reads as false. It is
+    /// always written.
+    public let released: Bool
     public let spawned: Bool
     public let status: String
     public let taskUnconfirmed: Bool
 
-    public init(agentId: String? = nil, errorCode: String? = nil, id: String, name: String? = nil, nodeId: String? = nil, ready: Bool, spawned: Bool, status: String, taskUnconfirmed: Bool) {
+    public init(agentId: String? = nil, errorCode: String? = nil, id: String, name: String? = nil, nodeId: String? = nil, ready: Bool, released: Bool = false, spawned: Bool, status: String, taskUnconfirmed: Bool) {
         self.agentId = agentId
         self.errorCode = errorCode
         self.id = id
         self.name = name
         self.nodeId = nodeId
         self.ready = ready
+        self.released = released
         self.spawned = spawned
         self.status = status
         self.taskUnconfirmed = taskUnconfirmed
@@ -4942,6 +4986,7 @@ public struct SpawnControlInvocation: Codable, Equatable, Hashable, Sendable {
         case name
         case nodeId = "node_id"
         case ready
+        case released
         case spawned
         case status
         case taskUnconfirmed = "task_unconfirmed"
@@ -4955,6 +5000,7 @@ public struct SpawnControlInvocation: Codable, Equatable, Hashable, Sendable {
         self.name = try c.decodeIfPresent(String.self, forKey: .name)
         self.nodeId = try c.decodeIfPresent(String.self, forKey: .nodeId)
         self.ready = try c.decode(Bool.self, forKey: .ready)
+        self.released = (try? c.decodeIfPresent(Bool.self, forKey: .released)) ?? false
         self.spawned = try c.decode(Bool.self, forKey: .spawned)
         self.status = try c.decode(String.self, forKey: .status)
         self.taskUnconfirmed = try c.decode(Bool.self, forKey: .taskUnconfirmed)
@@ -4968,6 +5014,7 @@ public struct SpawnControlInvocation: Codable, Equatable, Hashable, Sendable {
         try c.encode(self.name, forKey: .name)
         try c.encode(self.nodeId, forKey: .nodeId)
         try c.encode(self.ready, forKey: .ready)
+        try c.encode(self.released, forKey: .released)
         try c.encode(self.spawned, forKey: .spawned)
         try c.encode(self.status, forKey: .status)
         try c.encode(self.taskUnconfirmed, forKey: .taskUnconfirmed)
@@ -5072,17 +5119,23 @@ public struct SpawnHarnessSettings: Codable, Equatable, Hashable, Sendable {
 public struct SpawnInvocationParams: Codable, Equatable, Hashable, Sendable {
     public let action: SpawnControlAction
     public let callerName: String
+    /// A secret that names a caller the core's spawn caller plugin
+    /// vouches for instead of a session registration; absent for a session
+    /// caller. A core without the plugin refuses it.
+    public let callerSecret: String?
     public let invocationId: String
 
-    public init(action: SpawnControlAction, callerName: String, invocationId: String) {
+    public init(action: SpawnControlAction, callerName: String, callerSecret: String? = nil, invocationId: String) {
         self.action = action
         self.callerName = callerName
+        self.callerSecret = callerSecret
         self.invocationId = invocationId
     }
 
     enum CodingKeys: String, CodingKey {
         case action
         case callerName = "caller_name"
+        case callerSecret = "caller_secret"
         case invocationId = "invocation_id"
     }
 
@@ -5090,6 +5143,7 @@ public struct SpawnInvocationParams: Codable, Equatable, Hashable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.action = try c.decode(SpawnControlAction.self, forKey: .action)
         self.callerName = try c.decode(String.self, forKey: .callerName)
+        self.callerSecret = try c.decodeIfPresent(String.self, forKey: .callerSecret)
         self.invocationId = try c.decode(String.self, forKey: .invocationId)
     }
 
@@ -5097,12 +5151,17 @@ public struct SpawnInvocationParams: Codable, Equatable, Hashable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(self.action, forKey: .action)
         try c.encode(self.callerName, forKey: .callerName)
+        try c.encodeIfPresent(self.callerSecret, forKey: .callerSecret)
         try c.encode(self.invocationId, forKey: .invocationId)
     }
 }
 
 public struct SpawnInvokeParams: Codable, Equatable, Hashable, Sendable {
     public let callerName: String
+    /// A secret that names a caller the core's spawn caller plugin
+    /// vouches for instead of a session registration; absent for a session
+    /// caller. A core without the plugin refuses it.
+    public let callerSecret: String?
     public let directory: String
     public let harness: String
     public let idempotencyKey: String
@@ -5111,8 +5170,9 @@ public struct SpawnInvokeParams: Codable, Equatable, Hashable, Sendable {
     public let nodeName: String
     public let task: String
 
-    public init(callerName: String, directory: String, harness: String, idempotencyKey: String, name: String, nodeId: String, nodeName: String, task: String) {
+    public init(callerName: String, callerSecret: String? = nil, directory: String, harness: String, idempotencyKey: String, name: String, nodeId: String, nodeName: String, task: String) {
         self.callerName = callerName
+        self.callerSecret = callerSecret
         self.directory = directory
         self.harness = harness
         self.idempotencyKey = idempotencyKey
@@ -5124,6 +5184,7 @@ public struct SpawnInvokeParams: Codable, Equatable, Hashable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case callerName = "caller_name"
+        case callerSecret = "caller_secret"
         case directory
         case harness
         case idempotencyKey = "idempotency_key"
@@ -5136,6 +5197,7 @@ public struct SpawnInvokeParams: Codable, Equatable, Hashable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.callerName = try c.decode(String.self, forKey: .callerName)
+        self.callerSecret = try c.decodeIfPresent(String.self, forKey: .callerSecret)
         self.directory = try c.decode(String.self, forKey: .directory)
         self.harness = try c.decode(String.self, forKey: .harness)
         self.idempotencyKey = try c.decode(String.self, forKey: .idempotencyKey)
@@ -5148,6 +5210,7 @@ public struct SpawnInvokeParams: Codable, Equatable, Hashable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(self.callerName, forKey: .callerName)
+        try c.encodeIfPresent(self.callerSecret, forKey: .callerSecret)
         try c.encode(self.directory, forKey: .directory)
         try c.encode(self.harness, forKey: .harness)
         try c.encode(self.idempotencyKey, forKey: .idempotencyKey)
@@ -5160,14 +5223,19 @@ public struct SpawnInvokeParams: Codable, Equatable, Hashable, Sendable {
 
 public struct SpawnReleaseParams: Codable, Equatable, Hashable, Sendable {
     public let callerName: String
+    /// A secret that names a caller the core's spawn caller plugin
+    /// vouches for instead of a session registration; absent for a session
+    /// caller. A core without the plugin refuses it.
+    public let callerSecret: String?
     public let expectedAgentId: String
     public let idempotencyKey: String
     public let name: String
     public let nodeId: String
     public let nodeName: String
 
-    public init(callerName: String, expectedAgentId: String, idempotencyKey: String, name: String, nodeId: String, nodeName: String) {
+    public init(callerName: String, callerSecret: String? = nil, expectedAgentId: String, idempotencyKey: String, name: String, nodeId: String, nodeName: String) {
         self.callerName = callerName
+        self.callerSecret = callerSecret
         self.expectedAgentId = expectedAgentId
         self.idempotencyKey = idempotencyKey
         self.name = name
@@ -5177,6 +5245,7 @@ public struct SpawnReleaseParams: Codable, Equatable, Hashable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case callerName = "caller_name"
+        case callerSecret = "caller_secret"
         case expectedAgentId = "expected_agent_id"
         case idempotencyKey = "idempotency_key"
         case name
@@ -5187,6 +5256,7 @@ public struct SpawnReleaseParams: Codable, Equatable, Hashable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.callerName = try c.decode(String.self, forKey: .callerName)
+        self.callerSecret = try c.decodeIfPresent(String.self, forKey: .callerSecret)
         self.expectedAgentId = try c.decode(String.self, forKey: .expectedAgentId)
         self.idempotencyKey = try c.decode(String.self, forKey: .idempotencyKey)
         self.name = try c.decode(String.self, forKey: .name)
@@ -5197,6 +5267,7 @@ public struct SpawnReleaseParams: Codable, Equatable, Hashable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(self.callerName, forKey: .callerName)
+        try c.encodeIfPresent(self.callerSecret, forKey: .callerSecret)
         try c.encode(self.expectedAgentId, forKey: .expectedAgentId)
         try c.encode(self.idempotencyKey, forKey: .idempotencyKey)
         try c.encode(self.name, forKey: .name)

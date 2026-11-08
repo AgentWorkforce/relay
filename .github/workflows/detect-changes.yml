@@ -7,7 +7,8 @@ name: Detect Changes
 #   sdk_swift_changed — Swift SDK jobs (swift build/test)
 #
 # crates/relay-node/ selects none of these, because Relay node CI covers it on its own
-# paths. The exception is protocol.rs, which selects node_changed.
+# paths. The exceptions are protocol.rs, which selects node_changed, and the
+# generated contract/CoreContract.swift, which selects sdk_swift_changed.
 #
 # When the change scope is unknown (API failure, truncated file list,
 # unexpected event) every output is true — fail open, never silently skip.
@@ -84,8 +85,12 @@ jobs:
             if (files.length === 0) unknownScope = true;
 
             const isCi = (file) => file.startsWith('.github/');
+            // The Swift SDK's CoreContractTests compile the generated bridge
+            // contract through a symlink, so a contract change selects them.
             const isSwift = (file) =>
-              file.startsWith('packages/sdk-swift/') || file === 'Package.swift';
+              file.startsWith('packages/sdk-swift/') ||
+              file === 'Package.swift' ||
+              file === 'crates/relay-node/contract/CoreContract.swift';
             // Agent implementations and their tests are part of the Node test
             // surface. Other AgentWorkforce records remain inert metadata.
             const isAgentRuntime = (file) =>
