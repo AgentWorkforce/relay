@@ -1,11 +1,21 @@
 import assert from 'node:assert/strict';
 import { lstat, readlink, realpath } from 'node:fs/promises';
 import path from 'node:path';
-import { runBoundedProcess } from '../../../../scripts/pr-proof/process-runner.mjs';
+import { runBoundedProcess } from '../../../../scripts/verify-features/process-runner.mjs';
 
 export const CASE_PATH = 'tests/relayflows/cases/2100-copilot-native-mcp-route';
 const TARGET_INPUTS = ['crates/relay-node', 'rust-toolchain', 'rust-toolchain.toml'];
-const HARNESS_INPUTS = [CASE_PATH, 'scripts/pr-proof/process-runner.mjs'];
+const HARNESS_INPUTS = [
+  CASE_PATH,
+  'scripts/verify-features/process-runner.mjs',
+  'scripts/verify-features/case-contract.mjs',
+];
+
+/** Base discrimination needs distinct revisions; corpus head checks intentionally do not. */
+export function assertArmIdentity(arm, baseSha, headSha) {
+  assert(['base', 'head'].includes(arm), 'Unknown proof arm.');
+  if (arm === 'base') assert.notEqual(baseSha, headSha, 'Base and head must differ for a base arm.');
+}
 
 /** Keep provider credentials, loaders and Relay overrides out of every child. */
 export function childEnv() {

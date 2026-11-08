@@ -17,7 +17,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { assertProofInputs, CASE_PATH, childEnv, externalPath, run } from './guards.mjs';
+import { assertArmIdentity, assertProofInputs, CASE_PATH, childEnv, externalPath, run } from './guards.mjs';
 import { processIsRunning } from './process-probe.mjs';
 import { createReceipt } from './receipt.mjs';
 
@@ -65,14 +65,19 @@ async function fixture() {
   await put(target, 'crates/relay-node/src/lib.rs', '// consumed production source fixture\n');
   await put(target, 'crates/relay-node/Cargo.lock', '# consumed lock fixture\n');
   await put(target, '.gitignore', '*.ignored.rs\n');
-  for (const name of ['run.mjs', 'guards.mjs', 'receipt.mjs', 'fixture.rs']) {
+  for (const name of ['run.mjs', 'guards.mjs', 'receipt.mjs', 'fixture.rs', 'case.json']) {
     await mkdir(path.join(harness, CASE_PATH), { recursive: true });
     await copyFile(path.join(caseDir, name), path.join(harness, CASE_PATH, name));
   }
   await put(
     harness,
-    'scripts/pr-proof/process-runner.mjs',
-    await readFile(path.join(rootDir, 'scripts/pr-proof/process-runner.mjs'))
+    'scripts/verify-features/process-runner.mjs',
+    await readFile(path.join(rootDir, 'scripts/verify-features/process-runner.mjs'))
+  );
+  await put(
+    harness,
+    'scripts/verify-features/case-contract.mjs',
+    await readFile(path.join(rootDir, 'scripts/verify-features/case-contract.mjs'))
   );
   for (const root of [target, harness]) {
     git(root, 'add', '.');
@@ -154,7 +159,8 @@ for (const phase of ['before', 'after']) {
     ['harness', `${CASE_PATH}/fixture.rs`, false],
     ['harness', `${CASE_PATH}/run.mjs`, true],
     ['harness', `${CASE_PATH}/untracked-helper.mjs`, false],
-    ['harness', 'scripts/pr-proof/process-runner.mjs', false],
+    ['harness', 'scripts/verify-features/process-runner.mjs', false],
+    ['harness', 'scripts/verify-features/case-contract.mjs', false],
   ]) {
     test(`refuses ${stage ? 'staged' : 'modified/untracked'} ${location} ${file} ${phase}`, async () => {
       const f = await fixture();
@@ -580,5 +586,41 @@ test('a fresh handle-bound receipt writes only its reserved regular file', async
     assert.deepEqual(JSON.parse(await readFile(result, 'utf8')), { receiptUnitOnly: true });
   } finally {
     await f.dispose();
+  }
+});
+
+test('head-only corpus identities are accepted without weakening base discrimination', () => {
+  const same = '1'.repeat(40),
+    other = '2'.repeat(40);
+  assert.doesNotThrow(() => assertArmIdentity('head', same, same));
+  assert.doesNotThrow(() => assertArmIdentity('head', same, other));
+  assert.doesNotThrow(() => assertArmIdentity('base', same, other));
+  assert.throws(() => assertArmIdentity('base', same, same), /must differ/);
+  assert.throws(() => assertArmIdentity('unknown', same, other), /Unknown proof arm/);
+});
+
+test('case manifest and observations use the current verify-features contract', async () => {
+  const { validateCaseManifest, validateObservation } = await import(
+    '../../../../scripts/verify-features/case-contract.mjs'
+  );
+  const manifest = validateCaseManifest(JSON.parse(await readFile(path.join(caseDir, 'case.json'), 'utf8')), {
+    caseId: '2100-copilot-native-mcp-route',
+    kind: 'bugfix',
+  });
+  for (const arm of ['base', 'head']) {
+    const expected = manifest.expected[arm];
+    const observation = {
+      version: 1,
+      caseId: manifest.id,
+      arm,
+      ...expected,
+      details: 'synthetic schema validation only; not a route observation',
+    };
+    assert.deepEqual(validateObservation(observation, { caseId: manifest.id, arm, expected }), observation);
+    assert.throws(
+      () =>
+        validateObservation({ ...observation, signature: 'wrong' }, { caseId: manifest.id, arm, expected }),
+      /Invalid case observation/
+    );
   }
 });

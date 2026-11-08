@@ -23,12 +23,12 @@ route must return `409/attestation_unavailable` in both arms as a router control
 The Rust program contains no arm-dependent expectations. Node accepts only the
 complete closed response matrix, and errors are never converted to bug data.
 
-The wrapper supplies all standard proof variables. For a local run, set those
+The verify-features wrapper supplies the existing case variables. Its head-only corpus run sets base and head to the same current SHA; that is accepted only for the head arm. A base arm still requires distinct revisions. Manifests and observations are validated through `scripts/verify-features/case-contract.mjs`, which is included in the consumed harness inputs. For a local run, set those
 variables to the exact base/head checkouts and commit IDs. An optional
 `RELAY_PR_PROOF_CARGO_TARGET_DIR` lets the two local builds reuse one dedicated
 Cargo target directory outside both the target and harness checkouts. The runner resolves existing and dangling symlink ancestors before creating scratch/build output, refusing a destination inside either checkout. Without it, all build output and consumer storage stay
 in one temporary directory that the runner removes. Both child duration and
-output are bounded through the trusted `scripts/pr-proof/process-runner.mjs` process-tree runner, so Cargo/compiler descendants are terminated on timeout. The runner verifies checkout identities and rejects dirty consumed target crate or head-harness inputs before and after compilation/runtime. Tracked, staged, untracked and ignored source additions are checked; assume-unchanged and skip-worktree index flags on consumed files are refused even if Git status hides the dirty bytes; unrelated wrapper staging of `.relayflow/pr-proof-input.json` is allowed. The result path also stays outside both checkouts.
+output are bounded through the trusted `scripts/verify-features/process-runner.mjs` process-tree runner, so Cargo/compiler descendants are terminated on timeout. The runner verifies checkout identities and rejects dirty consumed target crate or head-harness inputs before and after compilation/runtime. Tracked, staged, untracked and ignored source additions are checked; assume-unchanged and skip-worktree index flags on consumed files are refused even if Git status hides the dirty bytes; unrelated wrapper staging of `.relayflow/pr-proof-input.json` is allowed. The result path also stays outside both checkouts.
 
 This proves the public routing fix. It does not claim that private account
 attestation, hosted MCP delivery, Copilot wake or session upload has completed
