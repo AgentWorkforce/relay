@@ -83,6 +83,7 @@ jobs:
             "@agent-relay/cli-surface@$VERSION" \
             "@agent-relay/cloud@$VERSION" \
             "@agent-relay/config@$VERSION" \
+            "@agent-relay/core-bridge@$VERSION" \
             "@agent-relay/sdk@$VERSION" \
             "@agent-relay/session@$VERSION" \
             "@agent-relay/utils@$VERSION"
@@ -257,6 +258,7 @@ jobs:
             "@agent-relay/cli-surface@$VERSION" \
             "@agent-relay/cloud@$VERSION" \
             "@agent-relay/config@$VERSION" \
+            "@agent-relay/core-bridge@$VERSION" \
             "@agent-relay/sdk@$VERSION" \
             "@agent-relay/session@$VERSION" \
             "@agent-relay/utils@$VERSION"
@@ -322,6 +324,7 @@ jobs:
             "@agent-relay/cli-surface@$VERSION" \
             "@agent-relay/cloud@$VERSION" \
             "@agent-relay/config@$VERSION" \
+            "@agent-relay/core-bridge@$VERSION" \
             "@agent-relay/sdk@$VERSION" \
             "@agent-relay/session@$VERSION" \
             "@agent-relay/utils@$VERSION"
