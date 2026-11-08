@@ -111,7 +111,12 @@ copied from the core's contract. Each helper:
   idempotency keys at least 16 characters, a task that is non-empty and at most
   64 KiB, an absolute directory with no NUL) and throws `CoreBridgeError`
   `invalid_params` naming the field, never its value;
-- sends exactly the contract's keys, since the core refuses unknown fields.
+- sends exactly the contract's keys, since the core refuses unknown fields;
+- returns the invocation with `released` read strictly: `true` only when the
+  core reported the provider released the agent, `false` when absent (an
+  older core) or anything else. It is never derived from `status`, so a
+  `completed` release is not by itself a confirmed one. `isReleaseConfirmed`
+  makes that check on any reply.
 
 Each helper accepts per-call timeout and cancellation options. `spawn.invoke`
 and `spawn.release` default to a six-minute timeout because verified startup

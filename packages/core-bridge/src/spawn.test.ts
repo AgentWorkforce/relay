@@ -3,11 +3,13 @@ import { describe, expect, it } from 'vitest';
 import type { CoreClient, HelloResult } from './client.js';
 import { CoreBridgeError, CoreRpcError } from './errors.js';
 import {
+  isReleaseConfirmed,
   newIdempotencyKey,
   spawnInvoke,
   spawnRelease,
   spawnStatus,
   spawnTargets,
+  type SpawnControlInvocation,
   type SpawnInvokeParams,
   type SpawnReleaseParams,
 } from './spawn.js';
@@ -196,7 +198,7 @@ describe('spawn helpers', () => {
           }, 20);
         }),
     } as CoreClient;
-    await expect(spawnInvoke(client, invoke)).resolves.toEqual({ id: 'inv_slow' });
+    await expect(spawnInvoke(client, invoke)).resolves.toEqual({ id: 'inv_slow', released: false });
   });
 
   it('refuse short idempotency keys locally', async () => {
@@ -260,5 +262,74 @@ describe('spawn helpers', () => {
     const a = newIdempotencyKey();
     expect(a).toMatch(/^[0-9a-f]{32}$/);
     expect(newIdempotencyKey()).not.toBe(a);
+  });
+
+  describe('released', () => {
+    const receipt = (fields: Record<string, unknown>) => ({
+      id: 'inv_release',
+      agent_id: null,
+      status: 'completed',
+      node_id: 'node_1',
+      name: 'worker-1',
+      spawned: false,
+      ready: false,
+      task_unconfirmed: false,
+      error_code: null,
+      ...fields,
+    });
+    const fixtures: Array<[string, Record<string, unknown>, boolean]> = [
+      ['true', receipt({ released: true }), true],
+      ['false', receipt({ released: false }), false],
+      ['absent, though completed', receipt({}), false],
+      ['null', receipt({ released: null }), false],
+      ['the string "true"', receipt({ released: 'true' }), false],
+      ['1', receipt({ released: 1 }), false],
+      [
+        'a failed release',
+        receipt({ status: 'failed', error_code: 'release_failed', released: false }),
+        false,
+      ],
+      [
+        'a failed release without the field',
+        receipt({ status: 'failed', error_code: 'release_failed' }),
+        false,
+      ],
+    ];
+    const replying = (reply: unknown) =>
+      ({ ...fakeClient().client, call: async () => structuredClone(reply) }) as unknown as CoreClient;
+    const calls = (client: CoreClient) => [
+      spawnInvoke(client, invoke),
+      spawnStatus(client, { caller_name: 'lead', action: 'release', invocation_id: 'inv_release' }),
+      spawnRelease(client, release),
+    ];
+
+    it.each(fixtures)('is %s → %s on invoke, status and release', async (_label, reply, expected) => {
+      for (const answer of await Promise.all(calls(replying(reply)))) {
+        expect(answer.released).toBe(expected);
+        expect(typeof answer.released).toBe('boolean');
+        // Nothing else in the reply changes.
+        expect({ ...answer, released: reply.released }).toEqual(reply);
+      }
+    });
+
+    it.each(fixtures)(
+      'confirms a release that is %s only on released === true',
+      (_label, reply, expected) => {
+        expect(isReleaseConfirmed(reply)).toBe(expected);
+        expect(isReleaseConfirmed(reply)).toBe(reply.released === true);
+      }
+    );
+
+    it('never confirms from status alone, nor a missing invocation', () => {
+      const completed: SpawnControlInvocation = {
+        ...(receipt({}) as SpawnControlInvocation),
+        status: 'completed',
+        released: false,
+      };
+      expect(isReleaseConfirmed(completed)).toBe(false);
+      expect(isReleaseConfirmed({})).toBe(false);
+      expect(isReleaseConfirmed(null)).toBe(false);
+      expect(isReleaseConfirmed(undefined)).toBe(false);
+    });
   });
 });

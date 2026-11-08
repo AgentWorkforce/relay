@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - New package `@agent-relay/core-bridge`: the Node client for the local Agent Relay core's bridge (connect, typed errors, events, and typed `spawn.*` helpers), extracted from the CLI. Replies over 16 MiB now close the connection and requests over 1 MiB are refused before they are sent.
+- `@agent-relay/core-bridge` reads the `released` flag of every spawn-control reply strictly: when an older core omits it or sends `null` or a non-boolean value, the reply carries `released: false`, and `isReleaseConfirmed(invocation)` is true only for a literal `true`, so a `completed` release is not by itself a confirmed one.
 
 ### Changed
 

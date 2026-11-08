@@ -125,7 +125,29 @@ export interface SpawnControlInvocation {
   spawned: boolean;
   ready: boolean;
   task_unconfirmed: boolean;
+  /**
+   * True only when the provider reported the agent released. Never derived
+   * from `status`: a `completed` release without it is not a confirmed one.
+   * An older core that does not send it reads as `false`.
+   */
+  released: boolean;
   error_code: SpawnErrorCode | null;
+}
+
+/**
+ * Whether a release is confirmed: only when the core reported
+ * `released === true`. A `completed` status, a missing field or any other
+ * value (the string `"true"` included) is not a confirmed release.
+ * @param invocation - A spawn control invocation, or a raw reply.
+ * @returns True only for an invocation whose `released` is exactly `true`.
+ */
+export function isReleaseConfirmed(invocation: { readonly released?: unknown } | null | undefined): boolean {
+  return invocation?.released === true;
+}
+
+/** A reply as the core sent it, with `released` read strictly. */
+function invocationOf(reply: SpawnControlInvocation): SpawnControlInvocation {
+  return { ...reply, released: isReleaseConfirmed(reply) };
 }
 
 /**
@@ -265,10 +287,12 @@ export async function spawnInvoke(
   ) {
     throw invalid('directory', 'must be an absolute path');
   }
-  return client.call<SpawnControlInvocation>(
-    'spawn.invoke',
-    pick(params, SPAWN_INVOKE_KEYS),
-    spawnActionOptions(options)
+  return invocationOf(
+    await client.call<SpawnControlInvocation>(
+      'spawn.invoke',
+      pick(params, SPAWN_INVOKE_KEYS),
+      spawnActionOptions(options)
+    )
   );
 }
 
@@ -290,7 +314,9 @@ export async function spawnStatus(
   segment(params, 'invocation_id');
   if (params.action !== 'spawn' && params.action !== 'release')
     throw invalid('action', 'must be "spawn" or "release"');
-  return client.call<SpawnControlInvocation>('spawn.status', pick(params, SPAWN_STATUS_KEYS), options);
+  return invocationOf(
+    await client.call<SpawnControlInvocation>('spawn.status', pick(params, SPAWN_STATUS_KEYS), options)
+  );
 }
 
 /**
@@ -312,10 +338,12 @@ export async function spawnRelease(
     segment(params, field);
   callerSecret(params);
   key(params, 'idempotency_key');
-  return client.call<SpawnControlInvocation>(
-    'spawn.release',
-    pick(params, SPAWN_RELEASE_KEYS),
-    spawnActionOptions(options)
+  return invocationOf(
+    await client.call<SpawnControlInvocation>(
+      'spawn.release',
+      pick(params, SPAWN_RELEASE_KEYS),
+      spawnActionOptions(options)
+    )
   );
 }
 
