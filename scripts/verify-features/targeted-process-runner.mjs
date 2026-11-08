@@ -1,4 +1,4 @@
-import { runBoundedProcess } from '../pr-proof/process-runner.mjs';
+import { runBoundedProcess } from './process-runner.mjs';
 
 const DEFAULT_TERMINATION_GRACE_MS = 2_000;
 
