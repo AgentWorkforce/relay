@@ -142,7 +142,11 @@ pub struct SpawnControlInvocation {
     pub name: Option<String>,
     pub spawned: bool,
     pub ready: bool,
-    /// Explicit proof that a completed release removed the exact agent.
+    /// True only when the provider reported the agent released: its output's
+    /// `released` is exactly the JSON boolean `true`. Older cores did not send
+    /// this field, so an absent value decodes as false; it is never inferred
+    /// from `status`.
+    #[serde(default)]
     pub released: bool,
     pub task_unconfirmed: bool,
     /// A bounded machine code, never provider error text or arbitrary output.
@@ -201,5 +205,19 @@ mod tests {
         let debug = format!("{status:?}");
         assert!(debug.contains("caller_secret: None"), "{debug}");
         assert!(!debug.contains("redacted"), "{debug}");
+    }
+
+    #[test]
+    fn an_older_spawn_receipt_without_release_proof_defaults_to_false() {
+        let receipt: SpawnControlInvocation = serde_json::from_value(serde_json::json!({
+            "id": "invocation-1",
+            "status": "completed",
+            "spawned": false,
+            "ready": false,
+            "task_unconfirmed": false
+        }))
+        .unwrap();
+
+        assert!(!receipt.released);
     }
 }

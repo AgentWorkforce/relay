@@ -577,7 +577,7 @@ public struct Agents: Codable, Equatable, Hashable, Sendable {
     /// newest first.
     public let archived: [ArchivedAgent]
 
-    public init(agents: [LocalAgent], archived: [ArchivedAgent]) {
+    public init(agents: [LocalAgent], archived: [ArchivedAgent] = []) {
         self.agents = agents
         self.archived = archived
     }
@@ -590,7 +590,7 @@ public struct Agents: Codable, Equatable, Hashable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.agents = try c.decode([LocalAgent].self, forKey: .agents)
-        self.archived = try c.decode([ArchivedAgent].self, forKey: .archived)
+        self.archived = try c.decodeIfPresent([ArchivedAgent].self, forKey: .archived) ?? []
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -4956,13 +4956,16 @@ public struct SpawnControlInvocation: Codable, Equatable, Hashable, Sendable {
     public let name: String?
     public let nodeId: String?
     public let ready: Bool
-    /// Explicit proof that a completed release removed the exact agent.
+    /// True only when the provider reported the agent released: its output's
+    /// `released` is exactly the JSON boolean `true`. Older cores did not send
+    /// this field, so an absent value decodes as false; it is never inferred
+    /// from `status`.
     public let released: Bool
     public let spawned: Bool
     public let status: String
     public let taskUnconfirmed: Bool
 
-    public init(agentId: String? = nil, errorCode: String? = nil, id: String, name: String? = nil, nodeId: String? = nil, ready: Bool, released: Bool, spawned: Bool, status: String, taskUnconfirmed: Bool) {
+    public init(agentId: String? = nil, errorCode: String? = nil, id: String, name: String? = nil, nodeId: String? = nil, ready: Bool, released: Bool = false, spawned: Bool, status: String, taskUnconfirmed: Bool) {
         self.agentId = agentId
         self.errorCode = errorCode
         self.id = id
@@ -4996,7 +4999,7 @@ public struct SpawnControlInvocation: Codable, Equatable, Hashable, Sendable {
         self.name = try c.decodeIfPresent(String.self, forKey: .name)
         self.nodeId = try c.decodeIfPresent(String.self, forKey: .nodeId)
         self.ready = try c.decode(Bool.self, forKey: .ready)
-        self.released = try c.decode(Bool.self, forKey: .released)
+        self.released = try c.decodeIfPresent(Bool.self, forKey: .released) ?? false
         self.spawned = try c.decode(Bool.self, forKey: .spawned)
         self.status = try c.decode(String.self, forKey: .status)
         self.taskUnconfirmed = try c.decode(Bool.self, forKey: .taskUnconfirmed)

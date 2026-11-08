@@ -470,8 +470,9 @@ fn swift_type(ty: &Ty) -> String {
 /// A field's Swift type, and the default it reads as when absent.
 fn swift_field(field: &Field) -> (String, Option<String>) {
     match (&field.ty, field.required, &field.default) {
-        (Ty::Nullable(_), _, _) | (_, true, _) => (swift_type(&field.ty), None),
-        (_, false, Some(default)) => (swift_type(&field.ty), Some(swift_literal(default))),
+        (Ty::Nullable(_), _, _) => (swift_type(&field.ty), None),
+        (_, _, Some(default)) => (swift_type(&field.ty), Some(swift_literal(default))),
+        (_, true, None) => (swift_type(&field.ty), None),
         (_, false, None) => (format!("{}?", swift_type(&field.ty)), None),
     }
 }
@@ -1112,6 +1113,17 @@ mod tests {
             checked_in == generated,
             "{CONTRACT_PATH} is stale; run {REGENERATE}"
         );
+    }
+
+    #[test]
+    fn an_older_spawn_receipt_defaults_missing_release_proof_to_false() {
+        let generated = Contract::collect(&[]).swift();
+        assert!(generated.contains(
+            "public init(agentId: String? = nil, errorCode: String? = nil, id: String, name: String? = nil, nodeId: String? = nil, ready: Bool, released: Bool = false, spawned: Bool, status: String, taskUnconfirmed: Bool)"
+        ));
+        assert!(generated.contains(
+            "self.released = try c.decodeIfPresent(Bool.self, forKey: .released) ?? false"
+        ));
     }
 
     /// A core of another version than the app can send a value the app's
