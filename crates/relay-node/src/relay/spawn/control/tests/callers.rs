@@ -1178,3 +1178,94 @@ async fn a_session_connection_that_turned_external_is_refused_before_its_side_ef
     }
     assert!(relaycast.untouched());
 }
+
+/// A spawn whose record failed, then the same request (same idempotency key)
+/// again once the node lists as `node`: the retry must get the original
+/// receipt without Relaycast being asked anything, and the plugin records it.
+async fn a_retry_after_a_failed_record_returns_the_kept_receipt(node: Value) {
+    let relaycast = Relaycast::new();
+    let stub = Stub::new(service(true));
+    let (home, core) = core_with(Some(stub.clone()), &relaycast.base);
+    let directory = tempfile::tempdir().unwrap();
+    let directory = directory.path().to_str().unwrap().to_string();
+    let name = crate::relay::spawn::node_name(&core.machine_prefix);
+    let failure = RpcError::new(ErrorKind::StoreFailed, "the receipt ledger is unavailable");
+    stub.fail_record(Some(failure.clone()));
+    let served = relaycast.serve(vec![
+        json!([{"id":"node_local","name": name,"live":true,"handlers_live":true,"active_agents":0,"reserved_agents":0,"max_agents":4,"capabilities":["spawn:codex"]}]),
+        json!({"id":"invocation_new","status":"pending"}),
+    ]);
+    let error = bound(
+        &core,
+        "spawn.invoke",
+        invoke_params(&core, "codex", &directory),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error, failure);
+    let requests = served.join().unwrap();
+    assert!(requests[1].starts_with("POST /v1/actions/spawn/invoke "));
+
+    // The node is no longer usable; the retry is answered from the kept
+    // receipt. The listing is served in case the core asks for it; a
+    // sentinel request then frees the server thread.
+    stub.fail_record(None);
+    let mut listed = node;
+    listed["name"] = Value::String(name);
+    let served = relaycast.serve(vec![json!([listed]), json!({})]);
+    let answer = bound(
+        &core,
+        "spawn.invoke",
+        invoke_params(&core, "codex", &directory),
+    )
+    .await;
+    let mut sentinel =
+        std::net::TcpStream::connect(relaycast.base.trim_start_matches("http://")).unwrap();
+    write!(sentinel, "GET /sentinel HTTP/1.1\r\nHost: test\r\n\r\n").unwrap();
+    let mut second =
+        std::net::TcpStream::connect(relaycast.base.trim_start_matches("http://")).unwrap();
+    write!(second, "GET /sentinel HTTP/1.1\r\nHost: test\r\n\r\n").unwrap();
+    let requests = served.join().unwrap();
+    let answer = answer.unwrap();
+    assert_eq!(answer["id"], "invocation_new");
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.starts_with("GET /sentinel ")),
+        "{requests:?}"
+    );
+    assert_eq!(stub.recorded().last().unwrap().as_ref().unwrap(), &answer);
+    assert_eq!(stub.log().last().unwrap(), "record:invoke:ok");
+    // It was kept on disk, so a restart does not lose it.
+    let kept = home.path().join("app-data").join("spawn-control-receipts");
+    assert_eq!(std::fs::read_dir(&kept).unwrap().count(), 1);
+
+    // Another idempotency key is another request: nothing kept answers it.
+    let mut other = invoke_params(&core, "codex", &directory);
+    other["idempotency_key"] = json!("spawn-test-20261107-0002");
+    let served = relaycast.serve(vec![json!([listed_offline()])]);
+    let error = bound(&core, "spawn.invoke", other).await.unwrap_err();
+    assert_eq!(error.data.kind, ErrorKind::Refused);
+    served.join().unwrap();
+}
+
+fn listed_offline() -> Value {
+    json!({"id":"node_local","name":"someone-else","live":false,"handlers_live":false,"active_agents":0,"reserved_agents":0,"max_agents":4,"capabilities":["spawn:codex"]})
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retry_with_the_same_idempotency_key_returns_the_receipt_after_the_node_went_offline() {
+    a_retry_after_a_failed_record_returns_the_kept_receipt(
+        json!({"id":"node_local","live":false,"handlers_live":false,"active_agents":0,"reserved_agents":0,"max_agents":4,"capabilities":["spawn:codex"]}),
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retry_with_the_same_idempotency_key_returns_the_receipt_after_the_node_lost_its_handlers(
+) {
+    a_retry_after_a_failed_record_returns_the_kept_receipt(
+        json!({"id":"node_local","live":true,"handlers_live":false,"active_agents":0,"reserved_agents":0,"max_agents":4,"capabilities":["spawn:codex"]}),
+    )
+    .await;
+}

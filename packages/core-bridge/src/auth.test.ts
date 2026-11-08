@@ -1,5 +1,6 @@
 import { createHash, createHmac } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -334,6 +335,32 @@ describe.skipIf(process.platform === 'win32')('readCallerCredential (POSIX)', ()
     expect(credential.authenticatorFor(challenge)).toBe(base.authenticator);
     await chmod(file, 0o400);
     expect((await readCallerCredential(file)).callerId).toBe(base.caller_id);
+  });
+
+  it('reports a missing file, or a path through a file, unchanged and without a caller error', async () => {
+    await rm(file);
+    await expect(readCallerCredential(file)).rejects.toMatchObject({ code: 'ENOENT' });
+    await writeFile(file, contents, { mode: 0o600 });
+    await expect(readCallerCredential(path.join(file, 'caller.json'))).rejects.toMatchObject({
+      code: 'ENOTDIR',
+    });
+  });
+
+  it('refuses a symlink in place of a valid 0600 file and a dangling one', async () => {
+    const real = path.join(dir, 'real.json');
+    await writeFile(real, contents, { mode: 0o600 });
+    await rm(file);
+    await symlink(real, file);
+    await unsafe(file);
+    await rm(file);
+    await symlink(path.join(dir, 'absent.json'), file);
+    await unsafe(file);
+  });
+
+  it('refuses a FIFO without blocking on it', async () => {
+    await rm(file);
+    execFileSync('mkfifo', ['-m', '600', file]);
+    await unsafe(file);
   });
 
   it('refuses a file other users can read or write', async () => {

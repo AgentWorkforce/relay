@@ -278,6 +278,20 @@ impl Caller {
     where
         F: std::future::Future<Output = Result<SpawnControlInvocation, RpcError>>,
     {
+        self.admitted_keeping(call, run, |_| {}).await
+    }
+
+    /// [`Caller::admitted`], handing a receipt the plugin could not record
+    /// to `unrecorded`, to keep it for the retry.
+    async fn admitted_keeping<F>(
+        &self,
+        call: SpawnCall<'_>,
+        run: F,
+        unrecorded: impl FnOnce(&SpawnControlInvocation),
+    ) -> Result<SpawnControlInvocation, RpcError>
+    where
+        F: std::future::Future<Output = Result<SpawnControlInvocation, RpcError>>,
+    {
         let (caller, plugin) = match self {
             Caller::Session { recheck, .. } => {
                 if let Some(plugin) = recheck {
@@ -296,7 +310,10 @@ impl Caller {
         let permit = plugin.admit(caller, &call)?;
         let outcome = run.await;
         match (plugin.record(permit, &outcome), outcome) {
-            (Err(error), Ok(_)) => Err(error),
+            (Err(error), Ok(receipt)) => {
+                unrecorded(&receipt);
+                Err(error)
+            }
             (_, outcome) => outcome,
         }
     }
@@ -521,8 +538,27 @@ async fn invoke(
         workspace: &workspace,
         request: SpawnRequest::Invoke(&params),
     };
+    // A receipt whose record failed is kept for this caller and key; the
+    // same request again returns it before the node's liveness is checked,
+    // since the invocation was already accepted and may not be sent again
+    // once the node went offline or lost its handlers.
+    let folder = &core.config.app_data_dir;
+    let external = caller.external().map(|external| external.agent_id.as_str());
+    let run = async {
+        let kept = external.and_then(|caller_id| {
+            claims::unrecorded_receipt(folder, &workspace, caller_id, &params)
+        });
+        match kept {
+            Some(receipt) => Ok(receipt),
+            None => invoke_as(&caller, &workspace, harness, &params).await,
+        }
+    };
     caller
-        .admitted(call, invoke_as(&caller, &workspace, harness, &params))
+        .admitted_keeping(call, run, |receipt| {
+            if let Some(caller_id) = external {
+                claims::keep_unrecorded_receipt(folder, &workspace, caller_id, &params, receipt);
+            }
+        })
         .await
 }
 

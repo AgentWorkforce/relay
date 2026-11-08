@@ -114,3 +114,72 @@ fn save_verification(folder: &Path, name: &str, identity: &Value) -> Result<(), 
         Err(_) => Err(store_failed()),
     }
 }
+
+/// Where an invoke receipt the plugin could not record waits, for this
+/// exact caller and idempotency key, and the request it answers.
+fn unrecorded_slot(
+    folder: &Path,
+    workspace: &Workspace,
+    caller_id: &str,
+    params: &SpawnInvokeParams,
+) -> (std::path::PathBuf, String, Value) {
+    let scope = json!([
+        workspace.base_url,
+        workspace.key.expose(),
+        caller_id,
+        params.idempotency_key
+    ]);
+    let digest = format!("{:x}", Sha256::digest(scope.to_string().as_bytes()));
+    let request = json!([
+        params.node_id,
+        params.node_name,
+        params.name,
+        params.harness,
+        params.task,
+        params.directory
+    ]);
+    let request = format!("{:x}", Sha256::digest(request.to_string().as_bytes()));
+    (
+        folder.join("spawn-control-receipts"),
+        format!("{digest}.json"),
+        Value::String(request),
+    )
+}
+
+/// Keeps the receipt of a successful `spawn.invoke` whose plugin record
+/// failed, so the same request again (same caller, idempotency key and
+/// parameters) gets it back even when the node is no longer live and the
+/// invocation could not be sent again. Saved the way release claims are
+/// (owner-private, never clobbered), so a restart keeps it; a slot that
+/// cannot be saved leaves the retry to replay the POST, as before.
+pub(super) fn keep_unrecorded_receipt(
+    folder: &Path,
+    workspace: &Workspace,
+    caller_id: &str,
+    params: &SpawnInvokeParams,
+    receipt: &SpawnControlInvocation,
+) {
+    let _writing = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+    let (folder, name, request) = unrecorded_slot(folder, workspace, caller_id, params);
+    let Ok(bytes) = serde_json::to_vec(&json!({"request": request, "receipt": receipt})) else {
+        return;
+    };
+    let _ = storage::persist(&folder, &name, &bytes);
+}
+
+/// The receipt [`keep_unrecorded_receipt`] kept for this exact request, if
+/// any. A slot for the same key but other parameters is not this request's.
+pub(super) fn unrecorded_receipt(
+    folder: &Path,
+    workspace: &Workspace,
+    caller_id: &str,
+    params: &SpawnInvokeParams,
+) -> Option<SpawnControlInvocation> {
+    let (folder, name, request) = unrecorded_slot(folder, workspace, caller_id, params);
+    let bytes = storage::read(&folder, &name).ok()??;
+    let saved: Value = serde_json::from_slice(&bytes).ok()?;
+    if saved["request"] != request {
+        return None;
+    }
+    serde_json::from_value(saved["receipt"].clone()).ok()
+}

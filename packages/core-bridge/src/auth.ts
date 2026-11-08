@@ -20,6 +20,7 @@
 import { createHash, createHmac } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { lstat, open, realpath, stat } from 'node:fs/promises';
+import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { inspect } from 'node:util';
 
@@ -385,48 +386,57 @@ export async function readCallerCredential(file: string): Promise<CallerCredenti
   if (typeof file !== 'string' || !path.isAbsolute(file) || file.includes('\0')) {
     throw unsafe(String(file), 'the path must be absolute');
   }
-  const link = await lstat(file);
-  if (link.isSymbolicLink()) throw unsafe(file, 'it is a symbolic link');
-  if (!link.isFile()) throw unsafe(file, 'it is not a regular file');
-  if (link.size > MAX_CALLER_FILE_BYTES) throw unsafe(file, 'it is larger than 64 KiB');
-
+  // Open once and check the open descriptor, not the path, so nothing can
+  // swap the file between a check and the read. On macOS and Linux
+  // O_NOFOLLOW refuses a symlink in place of the file (ELOOP) and O_NONBLOCK
+  // keeps a FIFO from blocking the open; Windows has neither flag.
+  const posix = process.platform !== 'win32';
   let flags = fsConstants.O_RDONLY;
-  if (process.platform === 'win32') {
-    // Windows gap: Node exposes no access-list API, so the DACL and owner are
-    // not verified here. The file lives in the user's profile, whose access
-    // list admits only that user, SYSTEM and administrators. What can be
-    // checked is: an absolute path that is not a reparse point.
-    // Paths compare case-insensitively, as NTFS resolves them.
-    if ((await realpath(file)).toLowerCase() !== path.resolve(file).toLowerCase()) {
-      throw unsafe(file, 'it resolves through a link');
-    }
-  } else {
-    if (typeof process.getuid === 'function' && link.uid !== process.getuid()) {
-      throw unsafe(file, 'it is not owned by this user');
-    }
-    if ((link.mode & 0o077) !== 0)
-      throw unsafe(file, 'it is readable or writable by other users (it must be 0600)');
-    const parent = await stat(path.dirname(file));
-    if ((parent.mode & 0o022) !== 0 && (parent.mode & 0o1000) === 0) {
-      throw unsafe(file, 'its directory is writable by other users');
-    }
-    flags |= fsConstants.O_NOFOLLOW;
+  if (posix) {
+    if (typeof fsConstants.O_NOFOLLOW === 'number') flags |= fsConstants.O_NOFOLLOW;
+    if (typeof fsConstants.O_NONBLOCK === 'number') flags |= fsConstants.O_NONBLOCK;
   }
-
-  const handle = await open(file, flags);
+  let handle: FileHandle;
+  try {
+    handle = await open(file, flags);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'ELOOP') throw unsafe(file, 'it is a symbolic link');
+    if (code === 'EISDIR') throw unsafe(file, 'it is not a regular file');
+    // ENOENT and ENOTDIR pass through unchanged, as a missing file always has.
+    throw error;
+  }
   let text: string;
   try {
     const opened = await handle.stat();
-    if (!opened.isFile() || opened.ino !== link.ino || opened.dev !== link.dev) {
-      throw unsafe(file, 'it changed while being opened');
-    }
+    if (!opened.isFile()) throw unsafe(file, 'it is not a regular file');
     if (opened.size > MAX_CALLER_FILE_BYTES) throw unsafe(file, 'it is larger than 64 KiB');
-    if (process.platform !== 'win32') {
+    if (!posix) {
+      // Windows gap: Node exposes no access-list API, so the DACL and owner
+      // are not verified here. The file lives in the user's profile, whose
+      // access list admits only that user, SYSTEM and administrators. What
+      // can be checked is: an absolute path that is not a reparse point.
+      // The path is examined after the open and must name the file that was
+      // opened; it is never used to read. Paths compare case-insensitively,
+      // as NTFS resolves them.
+      const link = await lstat(file);
+      if (link.isSymbolicLink()) throw unsafe(file, 'it is a symbolic link');
+      if (link.ino !== opened.ino || link.dev !== opened.dev) {
+        throw unsafe(file, 'it changed while being opened');
+      }
+      if ((await realpath(file)).toLowerCase() !== path.resolve(file).toLowerCase()) {
+        throw unsafe(file, 'it resolves through a link');
+      }
+    } else {
       if (typeof process.getuid === 'function' && opened.uid !== process.getuid()) {
         throw unsafe(file, 'it is not owned by this user');
       }
       if ((opened.mode & 0o077) !== 0)
         throw unsafe(file, 'it is readable or writable by other users (it must be 0600)');
+      const parent = await stat(path.dirname(file));
+      if ((parent.mode & 0o022) !== 0 && (parent.mode & 0o1000) === 0) {
+        throw unsafe(file, 'its directory is writable by other users');
+      }
     }
     const buffer = Buffer.alloc(MAX_CALLER_FILE_BYTES + 1);
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
