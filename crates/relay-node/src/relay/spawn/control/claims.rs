@@ -33,6 +33,7 @@ pub(super) fn release(
     let digest = format!("{:x}", Sha256::digest(scope.to_string().as_bytes()));
     let folder = folder.join("spawn-control-releases");
     let name = format!("{digest}.json");
+    let verified_name = format!("{digest}.verified.json");
     let identity = json!([
         params.node_id,
         params.node_name,
@@ -55,8 +56,14 @@ pub(super) fn release(
             if previous_identity != identity {
                 return Err(refused());
             }
-            if ownership != Ownership::Unrestricted && !previous_owner_verified {
+            if ownership == Ownership::ClaimOnly
+                && !previous_owner_verified
+                && !verified(&folder, &verified_name, &identity)?
+            {
                 return Err(not_owner());
+            }
+            if ownership == Ownership::Verified && !previous_owner_verified {
+                save_verification(&folder, &verified_name, &identity)?;
             }
             return Ok(());
         }
@@ -78,4 +85,32 @@ pub(super) fn release(
     };
     let bytes = serde_json::to_vec(&claim).map_err(|_| store_failed())?;
     storage::persist(&folder, &name, &bytes).map_err(|_| store_failed())
+}
+
+fn verified(folder: &Path, name: &str, identity: &Value) -> Result<bool, RpcError> {
+    match storage::read(folder, name) {
+        Ok(Some(bytes)) => serde_json::from_slice::<Value>(&bytes)
+            .map(|saved| saved == *identity)
+            .map_err(|_| malformed()),
+        Ok(None) => Ok(false),
+        Err(_) => Err(refused()),
+    }
+}
+
+fn save_verification(folder: &Path, name: &str, identity: &Value) -> Result<(), RpcError> {
+    if verified(folder, name, identity)? {
+        return Ok(());
+    }
+    let store_failed = || {
+        RpcError::new(
+            ErrorKind::StoreFailed,
+            "The native release ownership proof could not be saved.",
+        )
+    };
+    let bytes = serde_json::to_vec(identity).map_err(|_| store_failed())?;
+    match storage::persist(folder, name, &bytes) {
+        Ok(()) => Ok(()),
+        Err(_) if verified(folder, name, identity).unwrap_or(false) => Ok(()),
+        Err(_) => Err(store_failed()),
+    }
 }

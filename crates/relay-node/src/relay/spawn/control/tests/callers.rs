@@ -424,6 +424,50 @@ async fn an_old_unrestricted_claim_cannot_bypass_a_new_owns_only_policy() {
     assert!(relaycast.untouched());
 }
 
+#[test]
+fn fresh_owner_proof_upgrades_an_unrestricted_claim_for_later_retries() {
+    let home = tempfile::tempdir().unwrap();
+    let workspace = selected_workspace();
+    let params: SpawnReleaseParams = serde_json::from_value(release_params(None)).unwrap();
+    claims::release(
+        home.path(),
+        &workspace,
+        "agent_service",
+        &params,
+        true,
+        claims::Ownership::Unrestricted,
+    )
+    .unwrap();
+    claims::release(
+        home.path(),
+        &workspace,
+        "agent_service",
+        &params,
+        true,
+        claims::Ownership::Verified,
+    )
+    .unwrap();
+    // The local registration may be gone on a later retry. The saved proof
+    // still applies only to this exact caller, idempotency key and identity.
+    claims::release(
+        home.path(),
+        &workspace,
+        "agent_service",
+        &params,
+        false,
+        claims::Ownership::ClaimOnly,
+    )
+    .unwrap();
+    assert!(home
+        .path()
+        .join("spawn-control-releases")
+        .join(format!(
+            "{}.verified.json",
+            claim_digest(&workspace, "agent_service")
+        ))
+        .is_file());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_owns_only_caller_cannot_release_an_agent_another_requester_started() {
     let relaycast = Relaycast::new();
