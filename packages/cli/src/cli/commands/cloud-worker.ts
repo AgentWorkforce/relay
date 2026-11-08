@@ -333,21 +333,25 @@ async function startDaemon(input: {
   const logPath = path.join(stateDir, `${input.worker.workerId}.log`);
   const logFd = fs.openSync(logPath, 'a');
   let child: ChildProcess;
-  const args = [
-    process.argv[1] ?? 'agent-relay',
-    'cloud',
-    'worker',
-    'start',
-    '--worker-id',
-    input.worker.workerId,
-    '--base-url',
-    input.worker.baseUrl,
-    '--foreground-child',
-    ...(input.options.once ? ['--once'] : []),
-  ];
+  const launch = resolveAgentRelayCliChildCommand({
+    execPath: process.execPath,
+    cliEntrypoint: input.deps.resolveAgentRelayCliEntrypoint(),
+    args: [
+      'cloud',
+      'worker',
+      'start',
+      '--worker-id',
+      input.worker.workerId,
+      '--base-url',
+      input.worker.baseUrl,
+      '--foreground-child',
+      ...(input.options.once ? ['--once'] : []),
+    ],
+    cwd: input.deps.cwd(),
+  });
 
   try {
-    child = input.deps.spawnProcess(process.execPath, args, {
+    child = input.deps.spawnProcess(launch.command, launch.args, {
       detached: true,
       stdio: ['ignore', logFd, logFd],
       env: input.deps.env,

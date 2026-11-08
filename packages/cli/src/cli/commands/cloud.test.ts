@@ -73,7 +73,7 @@ import {
 import { track } from '../telemetry/index.js';
 
 import { buildCloudSyncPatchExcludeArgs, registerCloudCommands, type CloudDependencies } from './cloud.js';
-import { createDefaultAssignmentRunner } from './cloud-worker.js';
+import { createDefaultAssignmentRunner, registerCloudWorkerCommands } from './cloud-worker.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -342,6 +342,60 @@ describe('registerCloudCommands', () => {
         executeAssignment: expect.any(Function),
       })
     );
+  });
+
+  it('re-enters the standalone executable directly for a worker daemon', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-worker-daemon-'));
+    const worker = {
+      baseUrl: 'https://cloud.test',
+      workerId: 'wrk_1',
+      workerToken: 'ocl_wrk_secret',
+      name: 'demo',
+      heartbeatIntervalMs: 30_000,
+      registeredAt: '2026-06-13T00:00:00.000Z',
+      updatedAt: '2026-06-13T00:00:00.000Z',
+    };
+    cloudMocks.resolveCloudWorkerRecord.mockReturnValueOnce(worker);
+    const child = new EventEmitter() as EventEmitter & { pid: number; unref: ReturnType<typeof vi.fn> };
+    child.pid = 4242;
+    child.unref = vi.fn();
+    const spawnProcess = vi.fn(() => child) as never;
+    const program = new Command();
+    program.exitOverride();
+    registerCloudWorkerCommands(program, {
+      log: vi.fn(),
+      error: vi.fn(),
+      exit: vi.fn() as never,
+      env: { AGENT_RELAY_HOME: tmpHome },
+      spawnProcess,
+      now: () => new Date('2026-06-13T00:00:00.000Z'),
+      cwd: () => '/checkout',
+      fetchImpl: vi.fn() as never,
+      resolveAgentRelayCliEntrypoint: () => '/$bunfs/root/packages/cli/dist/cli/index.js',
+    });
+
+    try {
+      await program.parseAsync(['worker', 'start', '--daemon', '--once'], { from: 'user' });
+
+      expect(spawnProcess).toHaveBeenCalledWith(
+        process.execPath,
+        [
+          'cloud',
+          'worker',
+          'start',
+          '--worker-id',
+          'wrk_1',
+          '--base-url',
+          'https://cloud.test',
+          '--foreground-child',
+          '--once',
+        ],
+        expect.objectContaining({ detached: true })
+      );
+      expect(child.unref).toHaveBeenCalledOnce();
+    } finally {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
   });
 
   it('materializes Cloud assignments into relayflows args and child env without persisting secrets', async () => {
