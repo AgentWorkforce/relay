@@ -543,7 +543,10 @@ describe('fileCleanupJournal', () => {
     // assertions below) instead of hanging the run.
     const realMkdir = fs.mkdirSync;
     let attempts = 0;
-    const mkdirSpy = vi.spyOn(fs, 'mkdirSync').mockImplementation(((target: any, options: any) => {
+    const mkdirSpy = vi.spyOn(fs, 'mkdirSync').mockImplementation(((
+      target: Parameters<typeof fs.mkdirSync>[0],
+      options?: Parameters<typeof fs.mkdirSync>[1]
+    ) => {
       if (target === lockDir && ++attempts === 10_000) fs.chmodSync(dir, 0o700);
       return realMkdir(target, options);
     }) as typeof fs.mkdirSync);
@@ -658,7 +661,10 @@ describe('fileCleanupJournal', () => {
       }
     };
     let triggered = false;
-    const readSpy = vi.spyOn(fs, 'readFileSync').mockImplementation(((file: any, options: any) => {
+    const readSpy = vi.spyOn(fs, 'readFileSync').mockImplementation(((
+      file: Parameters<typeof fs.readFileSync>[0],
+      options?: Parameters<typeof fs.readFileSync>[1]
+    ) => {
       const result = realRead(file, options);
       if (file === ownerFile && !triggered) {
         triggered = true;
@@ -673,7 +679,10 @@ describe('fileCleanupJournal', () => {
       }
       return result;
     }) as typeof fs.readFileSync);
-    const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation(((from: any, to: any) => {
+    const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation(((
+      from: Parameters<typeof fs.renameSync>[0],
+      to: Parameters<typeof fs.renameSync>[1]
+    ) => {
       if (from === lockDir && freshToken !== undefined && tokenAt() === freshToken) {
         movedFresh.push(String(to));
       }
