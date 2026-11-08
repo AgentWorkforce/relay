@@ -40,6 +40,7 @@ import {
   type RelayfileClientOptions,
 } from '@relayfile/client';
 import { resolveBaseUrl, resolveWorkspaceKey, resolveWorkspaceTransport } from '../lib/sdk-client.js';
+import { describeError } from '../lib/describe-error.js';
 
 // Re-export the version gate so existing tests importing it from this module
 // (and any callers) keep working after it moved to the published client package.
@@ -1005,7 +1006,7 @@ function startLeaseRenewal(
       })
       .catch((err) => {
         if (stopped) return;
-        failed = err instanceof Error ? err.message : String(err);
+        failed = describeError(err);
         deps.error(
           'Warning: could not renew the lifecycle lease; aborting before any further external mutation.'
         );
@@ -1060,9 +1061,9 @@ async function tryRecordCleanup(
     return true;
   } catch (journalErr) {
     deps.error(
-      `Warning: could not clean up a ${describeCleanupKind(entry.kind)} for ${context} AND could not record it for retry (${
-        journalErr instanceof Error ? journalErr.message : String(journalErr)
-      }).`
+      `Warning: could not clean up a ${describeCleanupKind(entry.kind)} for ${context} AND could not record it for retry (${describeError(
+        journalErr
+      )}).`
     );
     return false;
   }

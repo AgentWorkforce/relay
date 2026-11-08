@@ -25,13 +25,22 @@
 //! - otherwise the credential's binding in `relaycast-origins.json`;
 //! - otherwise `https://cast.agentrelay.com`, where unbound keys belong.
 //!
+//! A build made for its own site ([`links::is_site_build`]) never sends a
+//! key to Agent Relay's public gateways on its own: an unbound key (no
+//! recorded server, no `RELAY_BASE_URL`; an `ar_ws_`/`ar_ag_` key is not
+//! presumed armadillo's) is an error naming the bindings file and the site,
+//! and a persisted route must name the site's own Relaycast origin (what its
+//! sign-in recorded) whatever its kind.
+//!
 //! Whenever a credential is about to be used the bindings file must parse:
 //! a malformed one fails closed.
 
 use super::origin_binding::{self, OriginBindings};
 use super::{
-    is_workspace_key, Secret, Workspace, WorkspaceSource, ARMADILLO_ORIGIN, DEFAULT_BASE_URL,
+    is_workspace_key, validated_base_url, Secret, Workspace, WorkspaceSource, ARMADILLO_ORIGIN,
+    DEFAULT_BASE_URL,
 };
+use crate::relay::links;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
@@ -99,6 +108,20 @@ struct Selection {
     project: Option<ProjectSession>,
 }
 
+/// The build resolving a CLI key: the site it was made for and, in a site
+/// build, that site's own Relaycast origin when its sign-in recorded one.
+#[derive(Clone, Copy, Debug)]
+struct Build<'a> {
+    site: &'a str,
+    site_relaycast: Option<&'a str>,
+}
+
+impl Build<'_> {
+    fn is_site(&self) -> bool {
+        links::is_site_build_for(self.site)
+    }
+}
+
 /// The CLI's workspace for this machine: `Ok(None)` when the CLI selects
 /// none, `Err` with a printable reason (never key material) when its files
 /// or settings forbid using the one it selects.
@@ -106,10 +129,27 @@ pub fn resolve(
     env: &dyn Fn(&str) -> Option<String>,
     relay_home: &Path,
 ) -> Result<Option<Workspace>, String> {
+    resolve_for_site(env, relay_home, links::built_in_site_url(), None)
+}
+
+/// [`resolve`] for a build whose built-in site is `site`. In a site build
+/// `site_relaycast` is the site's own Relaycast origin (the one its
+/// sign-in recorded), the only one a persisted route may name; the default
+/// build ignores it.
+pub fn resolve_for_site(
+    env: &dyn Fn(&str) -> Option<String>,
+    relay_home: &Path,
+    site: &str,
+    site_relaycast: Option<&str>,
+) -> Result<Option<Workspace>, String> {
     let Some(selection) = select(env, relay_home)? else {
         return Ok(None);
     };
-    transport(selection, env, relay_home).map(Some)
+    let build = Build {
+        site,
+        site_relaycast,
+    };
+    transport(selection, env, relay_home, build).map(Some)
 }
 
 fn select(
@@ -153,6 +193,7 @@ fn transport(
     selection: Selection,
     env: &dyn Fn(&str) -> Option<String>,
     relay_home: &Path,
+    build: Build<'_>,
 ) -> Result<Workspace, String> {
     let project = selection.project.as_ref();
     let credential = project
@@ -164,20 +205,41 @@ fn transport(
             selection.source.describe()
         ));
     }
-    let bindings = origin_binding::read_bindings(&origin_binding::bindings_path(relay_home))?;
-    let base_url = match persisted_route_origin(project)? {
+    let bindings_path = origin_binding::bindings_path(relay_home);
+    let bindings = origin_binding::read_bindings(&bindings_path)?;
+    let base_url = match persisted_route_origin(project, build)? {
         Some(persisted) => {
             // A derived destination never moves a binding.
-            accept_derived_destination(&bindings, &credential, &persisted)?;
+            accept_derived_destination(&bindings, &credential, &persisted, build)?;
             persisted
         }
-        None => match env(BASE_URL_ENV) {
-            Some(requested) => origin_binding::configured_base_url(&requested)
-                .map_err(|reason| format!("{BASE_URL_ENV} {reason}."))?,
-            None => None,
+        None => {
+            let requested = match env(BASE_URL_ENV) {
+                Some(requested) => origin_binding::configured_base_url(&requested)
+                    .map_err(|reason| format!("{BASE_URL_ENV} {reason}."))?,
+                None => None,
+            };
+            let chosen = requested.or_else(|| {
+                bindings
+                    .bound_for_site(&credential, build.site)
+                    .map(str::to_string)
+            });
+            match chosen {
+                Some(base_url) => base_url,
+                None if build.is_site() => {
+                    return Err(format!(
+                        "The workspace key from {} has no recorded server in {} and \
+                     {BASE_URL_ENV} is not set. This build is for {}, so it will not \
+                     send the key to Agent Relay's public gateways; record the key's \
+                     server with the agent-relay CLI or set {BASE_URL_ENV}.",
+                        selection.source.describe(),
+                        bindings_path.display(),
+                        build.site
+                    ))
+                }
+                None => DEFAULT_BASE_URL.to_string(),
+            }
         }
-        .or_else(|| bindings.bound(&credential).map(str::to_string))
-        .unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
     };
     Ok(Workspace {
         key: Secret::new(credential),
@@ -190,8 +252,14 @@ fn transport(
 }
 
 /// `validatePersistedRelaycastBaseUrl`: no route is `None`; a route must be
-/// complete and name the gateway its kind belongs to, bare https.
-fn persisted_route_origin(project: Option<&ProjectSession>) -> Result<Option<String>, String> {
+/// complete and name the gateway its kind belongs to, bare https. In a site
+/// build the hosted gateways never count: every kind must name the site's
+/// own Relaycast origin, as a bare origin by the rules its sign-in used
+/// ([`validated_base_url`]), so a loopback origin with a port counts there.
+fn persisted_route_origin(
+    project: Option<&ProjectSession>,
+    build: Build<'_>,
+) -> Result<Option<String>, String> {
     let Some(project) = project else {
         return Ok(None);
     };
@@ -213,26 +281,55 @@ fn persisted_route_origin(project: Option<&ProjectSession>) -> Result<Option<Str
         Route::Canonical => &[CANONICAL_RELAYCAST_ORIGIN, ARMADILLO_ORIGIN],
         Route::Agent37Isolated => &[AGENT37_RELAYCAST_ORIGIN],
     };
-    let untrusted = || "The persisted Relaycast workspace route is not trusted.".to_string();
+    let untrusted = || {
+        if !build.is_site() {
+            return "The persisted Relaycast workspace route is not trusted.".to_string();
+        }
+        let own = match build.site_relaycast {
+            Some(origin) => format!("only its own Relaycast origin {origin} counts"),
+            None => {
+                "only its own Relaycast origin counts, and its sign-in has named none".to_string()
+            }
+        };
+        format!(
+            "The persisted Relaycast workspace route is not trusted: this build is for {}, \
+             and {own}.",
+            build.site
+        )
+    };
     let parsed = url::Url::parse(base_url)
         .map_err(|_| "The persisted Relaycast workspace route is invalid.".to_string())?;
-    if parsed.scheme() != "https"
-        || !parsed.username().is_empty()
-        || parsed.password().is_some()
-        || parsed.port().is_some()
-        || parsed.query().is_some()
-        || parsed.fragment().is_some()
-        || !(parsed.path().is_empty() || parsed.path() == "/")
-        || !expected.contains(&parsed.origin().ascii_serialization().as_str())
-    {
-        return Err(untrusted());
-    }
+    let origin = if build.is_site() {
+        // The site's origin came through `validated_base_url` at sign-in;
+        // normalize both sides the same way so the comparison is like for
+        // like (lowercase, default port dropped, loopback http and ports
+        // allowed only where the sign-in allowed them).
+        let origin = validated_base_url(base_url).ok_or_else(untrusted)?;
+        let own = build.site_relaycast.and_then(validated_base_url);
+        if own.as_deref() != Some(origin.as_str()) {
+            return Err(untrusted());
+        }
+        origin
+    } else {
+        if parsed.scheme() != "https"
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+            || parsed.port().is_some()
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+            || !(parsed.path().is_empty() || parsed.path() == "/")
+            || !expected.contains(&parsed.origin().ascii_serialization().as_str())
+        {
+            return Err(untrusted());
+        }
+        parsed.origin().ascii_serialization()
+    };
     if route == Route::Agent37Isolated && project.relaycast_api_key.is_none() {
         return Err(
             "The persisted isolated Relaycast credential is unavailable or mismatched.".into(),
         );
     }
-    Ok(Some(parsed.origin().ascii_serialization()))
+    Ok(Some(origin))
 }
 
 /// `acceptDerivedDestination`, without the write: a bound credential may go
@@ -241,8 +338,9 @@ fn accept_derived_destination(
     bindings: &OriginBindings,
     credential: &str,
     destination: &str,
+    build: Build<'_>,
 ) -> Result<(), String> {
-    let Some(bound) = bindings.bound(credential) else {
+    let Some(bound) = bindings.bound_for_site(credential, build.site) else {
         return Ok(());
     };
     let bound_origin = origin_binding::origin_of(bound).unwrap_or_else(|| bound.to_string());

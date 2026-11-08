@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Production implementation of the verify-features primary Slack step. Keeping
-# this executable outside the workflow template lets the PR proof run the exact
+# this executable outside the workflow template lets a RelayFlow case run the exact
 # delivery-to-receipt branch instead of inferring it from source text.
 
 set -uo pipefail

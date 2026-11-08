@@ -22,6 +22,14 @@
 //! `workspaces.json`), resolution fails closed with that reason instead of
 //! falling back to the account's workspace.
 //!
+//! A build made for its own site (`AGENT_RELAY_SITE_URL`,
+//! [`links::is_site_build`]) uses only that site's values and never falls
+//! back to Agent Relay's public gateways: the account's workspace must carry
+//! the Relaycast origin the site's workspace resolve answered
+//! (`RELAYCAST_URL` is ignored), a CLI key needs a recorded server or
+//! `RELAY_BASE_URL`, and a persisted CLI route must name the site's own
+//! Relaycast origin. Each is otherwise an error naming the site.
+//!
 //! The first source exists only with the `relay-cli` feature: a build without
 //! it reads the Cloud sign-in alone, whatever the CLI's files or environment say.
 
@@ -31,11 +39,13 @@ pub mod cli;
 pub mod origin_binding;
 
 use crate::relay::app_store::CloudWorkspace;
+use crate::relay::links;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// Where a key with no recorded server goes, and the Cloud sign-in's fallback.
+/// Where a key with no recorded server goes, and the Cloud sign-in's fallback,
+/// in the default build only (a site build has neither fallback).
 /// New hosted workspaces live on armadillo, but their keys are bound to it: an
 /// unbound key predates that default, so this must not move with it.
 pub const DEFAULT_BASE_URL: &str = "https://cast.agentrelay.com";
@@ -110,51 +120,134 @@ impl WorkspaceSource {
     }
 }
 
-/// The daemon's workspace: the CLI's when the CLI selects one, else the
-/// Cloud sign-in's (see the module docs). `Ok(None)` when neither names one;
-/// `Err` with a printable reason when the CLI's selection may not be used.
-/// Without `relay-cli` only the Cloud sign-in counts.
-#[cfg(not(feature = "relay-cli"))]
-pub fn resolve(
-    cloud: Option<&CloudWorkspace>,
-    env: &dyn Fn(&str) -> Option<String>,
-    _home: &Path,
-) -> Result<Option<Workspace>, String> {
-    Ok(resolve_cloud(cloud, env))
+/// Why a source's workspace may not be used: printable, never key material.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// The `agent-relay` CLI's selection.
+    Cli(String),
+    /// The Cloud sign-in's workspace (only a site build refuses it).
+    Cloud(String),
+}
+
+impl Refusal {
+    pub fn reason(&self) -> &str {
+        match self {
+            Refusal::Cli(reason) | Refusal::Cloud(reason) => reason,
+        }
+    }
+
+    pub fn into_reason(self) -> String {
+        match self {
+            Refusal::Cli(reason) | Refusal::Cloud(reason) => reason,
+        }
+    }
+
+    /// The activity line that reports it.
+    pub fn activity(&self) -> String {
+        match self {
+            Refusal::Cli(reason) => format!("Not using the agent-relay CLI's workspace: {reason}"),
+            Refusal::Cloud(reason) => {
+                format!("Not using your Agent Relay account's workspace: {reason}")
+            }
+        }
+    }
 }
 
 /// The daemon's workspace: the CLI's when the CLI selects one, else the
 /// Cloud sign-in's (see the module docs). `Ok(None)` when neither names one;
-/// `Err` with a printable reason when the CLI's selection may not be used.
-#[cfg(feature = "relay-cli")]
+/// `Err` with a printable reason when the selected one may not be used.
+/// Without `relay-cli` only the Cloud sign-in counts.
 pub fn resolve(
     cloud: Option<&CloudWorkspace>,
     env: &dyn Fn(&str) -> Option<String>,
     home: &Path,
 ) -> Result<Option<Workspace>, String> {
-    match cli::resolve(env, &relay_home(env, home))? {
+    resolve_for_site(cloud, env, home, links::built_in_site_url()).map_err(Refusal::into_reason)
+}
+
+/// [`resolve`] for a build whose built-in site is `site`
+/// ([`links::built_in_site_url`]), saying which source was refused.
+#[cfg(not(feature = "relay-cli"))]
+pub fn resolve_for_site(
+    cloud: Option<&CloudWorkspace>,
+    env: &dyn Fn(&str) -> Option<String>,
+    _home: &Path,
+    site: &str,
+) -> Result<Option<Workspace>, Refusal> {
+    resolve_cloud_for_site(cloud, env, site).map_err(Refusal::Cloud)
+}
+
+/// [`resolve`] for a build whose built-in site is `site`
+/// ([`links::built_in_site_url`]), saying which source was refused.
+#[cfg(feature = "relay-cli")]
+pub fn resolve_for_site(
+    cloud: Option<&CloudWorkspace>,
+    env: &dyn Fn(&str) -> Option<String>,
+    home: &Path,
+    site: &str,
+) -> Result<Option<Workspace>, Refusal> {
+    // In a site build the site's own Relaycast origin is the one its
+    // sign-in recorded (what its workspace resolve answered).
+    let site_relaycast = cloud.and_then(|cloud| validated_base_url(&cloud.base_url));
+    match cli::resolve_for_site(env, &relay_home(env, home), site, site_relaycast.as_deref())
+        .map_err(Refusal::Cli)?
+    {
         Some(workspace) => Ok(Some(workspace)),
-        None => Ok(resolve_cloud(cloud, env)),
+        None => resolve_cloud_for_site(cloud, env, site).map_err(Refusal::Cloud),
     }
 }
 
-/// The account's workspace, at its own origin unless `RELAYCAST_URL`
-/// overrides it; `None` when signed out or its key is not a workspace key.
+/// The account's workspace, at its own origin; `Ok(None)` when signed out
+/// or its key is not a workspace key.
+///
+/// In the default build `RELAYCAST_URL` overrides that origin when it is a
+/// bare https origin, and a missing or invalid one falls back to
+/// [`DEFAULT_BASE_URL`]. A site build ([`links::is_site_build`]) uses only
+/// what its site's workspace resolve recorded: `RELAYCAST_URL` is ignored,
+/// and a missing or invalid origin is an `Err` naming the site, never the
+/// public gateway.
 pub fn resolve_cloud(
     cloud: Option<&CloudWorkspace>,
     env: &dyn Fn(&str) -> Option<String>,
-) -> Option<Workspace> {
-    let cloud = cloud.filter(|cloud| is_workspace_key(cloud.key.expose()))?;
-    let base_url = env("RELAYCAST_URL")
-        .and_then(|value| validated_base_url(&value))
-        .or_else(|| validated_base_url(&cloud.base_url))
-        .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
-    Some(Workspace {
+) -> Result<Option<Workspace>, String> {
+    resolve_cloud_for_site(cloud, env, links::built_in_site_url())
+}
+
+/// [`resolve_cloud`] for a build whose built-in site is `site`.
+pub fn resolve_cloud_for_site(
+    cloud: Option<&CloudWorkspace>,
+    env: &dyn Fn(&str) -> Option<String>,
+    site: &str,
+) -> Result<Option<Workspace>, String> {
+    let Some(cloud) = cloud.filter(|cloud| is_workspace_key(cloud.key.expose())) else {
+        return Ok(None);
+    };
+    let base_url = if links::is_site_build_for(site) {
+        validated_base_url(&cloud.base_url).ok_or_else(|| {
+            let what = if cloud.base_url.trim().is_empty() {
+                "no relaycastUrl"
+            } else {
+                "no valid relaycastUrl (it must be a bare https origin)"
+            };
+            format!(
+                "This build is for {site}, and {site}'s workspace resolve named {what}. \
+                 It will not fall back to Agent Relay's public gateway, and RELAYCAST_URL \
+                 is ignored in this build; sign in again once {site} answers with its own \
+                 Relaycast URL."
+            )
+        })?
+    } else {
+        env("RELAYCAST_URL")
+            .and_then(|value| validated_base_url(&value))
+            .or_else(|| validated_base_url(&cloud.base_url))
+            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string())
+    };
+    Ok(Some(Workspace {
         key: cloud.key.clone(),
         base_url,
         workspace_id: cloud.workspace_id.clone(),
         source: WorkspaceSource::Cloud,
-    })
+    }))
 }
 
 /// `$AGENT_RELAY_HOME`, else `~/.agentworkforce/relay`: the `agent-relay`
@@ -225,12 +318,30 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    use crate::relay::links::DEFAULT_SITE_URL;
+
+    /// A build made for its own site.
+    const SITE: &str = "https://relay.corp.test";
+
+    /// The default build's Cloud source, which never refuses.
     fn resolve_with(env: &[(&str, &str)], cloud: Option<CloudWorkspace>) -> Option<Workspace> {
+        resolve_cloud_at(DEFAULT_SITE_URL, env, cloud).expect("the default build never refuses")
+    }
+
+    fn resolve_cloud_at(
+        site: &str,
+        env: &[(&str, &str)],
+        cloud: Option<CloudWorkspace>,
+    ) -> Result<Option<Workspace>, String> {
         let env: HashMap<String, String> = env
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        resolve_cloud(cloud.as_ref(), &move |key: &str| env.get(key).cloned())
+        resolve_cloud_for_site(
+            cloud.as_ref(),
+            &move |key: &str| env.get(key).cloned(),
+            site,
+        )
     }
 
     fn account(key: &str, base_url: &str) -> CloudWorkspace {
@@ -259,12 +370,23 @@ mod tests {
         assert!(resolve_with(&[], Some(account("at_live_agenttoken", DEFAULT_BASE_URL))).is_none());
     }
 
-    /// `resolve` over a fresh home whose CLI state `setup` writes.
+    /// `resolve` in the default build over a fresh home whose CLI state
+    /// `setup` writes.
     fn combined(
         env: &[(&str, &str)],
         cloud: Option<CloudWorkspace>,
         setup: impl FnOnce(&Path),
     ) -> Result<Option<Workspace>, String> {
+        combined_at(DEFAULT_SITE_URL, env, cloud, setup).map_err(Refusal::into_reason)
+    }
+
+    /// `resolve_for_site` for a build whose site is `site`.
+    fn combined_at(
+        site: &str,
+        env: &[(&str, &str)],
+        cloud: Option<CloudWorkspace>,
+        setup: impl FnOnce(&Path),
+    ) -> Result<Option<Workspace>, Refusal> {
         let home = tempfile::tempdir().unwrap();
         let relay = home.path().join(".agentworkforce/relay");
         std::fs::create_dir_all(&relay).unwrap();
@@ -273,10 +395,11 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        resolve(
+        resolve_for_site(
             cloud.as_ref(),
             &move |key: &str| env.get(key).cloned(),
             home.path(),
+            site,
         )
     }
 
@@ -443,6 +566,134 @@ mod tests {
                 .base_url,
             DEFAULT_BASE_URL
         );
+    }
+
+    #[test]
+    fn a_site_build_uses_only_the_origin_its_site_resolved() {
+        // The site's own origin is used as is.
+        let found = resolve_cloud_at(
+            SITE,
+            &[],
+            Some(account("rk_live_account00", "https://cast.relay.corp.test")),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(found.base_url, "https://cast.relay.corp.test");
+        assert!(found.source.is_cloud());
+        // Signed out, or holding no workspace key, is still no workspace.
+        assert_eq!(resolve_cloud_at(SITE, &[], None), Ok(None));
+        assert_eq!(
+            resolve_cloud_at(SITE, &[], Some(account("at_live_agenttoken", ""))),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn a_site_build_refuses_a_missing_or_invalid_origin_instead_of_the_public_gateway() {
+        for (base_url, what) in [
+            ("", "named no relaycastUrl"),
+            ("   ", "named no relaycastUrl"),
+            ("ftp://x.com", "no valid relaycastUrl"),
+            ("http://cast.relay.corp.test", "no valid relaycastUrl"),
+            (
+                "https://u:secret@cast.relay.corp.test",
+                "no valid relaycastUrl",
+            ),
+        ] {
+            // The default build falls back exactly as before.
+            assert_eq!(
+                resolve_with(&[], Some(account("rk_live_account00", base_url)))
+                    .unwrap()
+                    .base_url,
+                DEFAULT_BASE_URL,
+                "{base_url:?}"
+            );
+            let error = resolve_cloud_at(SITE, &[], Some(account("rk_live_account00", base_url)))
+                .unwrap_err();
+            assert!(error.contains(SITE), "{error}");
+            assert!(error.contains(what), "{base_url:?}: {error}");
+            assert!(error.contains("RELAYCAST_URL is ignored"), "{error}");
+            assert!(!error.contains(DEFAULT_BASE_URL), "{error}");
+            assert!(!error.contains("secret"), "{error}");
+            assert!(!error.contains("rk_live"), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_site_build_ignores_relaycast_url() {
+        let env = [("RELAYCAST_URL", "https://relay.example.com")];
+        let cloud = || Some(account("rk_live_account00", "https://cast.relay.corp.test"));
+        // The default build honours it.
+        assert_eq!(
+            resolve_with(&env, cloud()).unwrap().base_url,
+            "https://relay.example.com"
+        );
+        // A site build keeps its site's origin, and RELAYCAST_URL cannot
+        // stand in for a missing one either.
+        assert_eq!(
+            resolve_cloud_at(SITE, &env, cloud())
+                .unwrap()
+                .unwrap()
+                .base_url,
+            "https://cast.relay.corp.test"
+        );
+        let error =
+            resolve_cloud_at(SITE, &env, Some(account("rk_live_account00", ""))).unwrap_err();
+        assert!(error.contains("RELAYCAST_URL is ignored"), "{error}");
+    }
+
+    #[test]
+    fn a_refused_account_workspace_is_reported_as_the_account_s() {
+        let refusal =
+            combined_at(SITE, &[], Some(account("rk_live_account00", "")), |_| {}).unwrap_err();
+        assert!(matches!(refusal, Refusal::Cloud(_)), "{refusal:?}");
+        assert!(refusal.reason().contains(SITE), "{refusal:?}");
+        assert!(
+            refusal
+                .activity()
+                .starts_with("Not using your Agent Relay account's workspace: "),
+            "{refusal:?}"
+        );
+        // The default build's resolve keeps its old shape.
+        assert_eq!(
+            combined(&[], Some(account("rk_live_account00", "")), |_| {})
+                .unwrap()
+                .unwrap()
+                .base_url,
+            DEFAULT_BASE_URL
+        );
+    }
+
+    #[cfg(feature = "relay-cli")]
+    #[test]
+    fn a_site_build_refuses_an_unbound_cli_key_before_the_account() {
+        let refusal = combined_at(
+            SITE,
+            &[],
+            Some(account("rk_live_account00", "https://cast.relay.corp.test")),
+            |relay| store(relay, "rk_live_cli_hosted"),
+        )
+        .unwrap_err();
+        assert!(matches!(refusal, Refusal::Cli(_)), "{refusal:?}");
+        assert!(
+            refusal.reason().contains("relaycast-origins.json"),
+            "{refusal:?}"
+        );
+        assert!(refusal.reason().contains(SITE), "{refusal:?}");
+        assert!(
+            refusal
+                .activity()
+                .starts_with("Not using the agent-relay CLI's workspace: "),
+            "{refusal:?}"
+        );
+        // A bound CLI key is used as before.
+        let found = combined_at(SITE, &[], None, |relay| {
+            store(relay, "rk_live_cli_local0");
+            bind(relay, "rk_live_cli_local0", "http://127.0.0.1:8787");
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(found.base_url, "http://127.0.0.1:8787");
     }
 
     // Ported from test_only_bare_https_origins_carry_credentials (Linux) and

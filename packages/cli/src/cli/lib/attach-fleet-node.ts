@@ -23,6 +23,7 @@ import {
 import type { AttachMode } from './attach-mode.js';
 import { collectWithRetry } from './collect-with-retry.js';
 import { resolveWorkspaceTransport } from './sdk-client.js';
+import { describeError } from './describe-error.js';
 
 const MAX_BUFFERED_BYTES = 1024 * 1024;
 const MAX_WEBSOCKET_CLOSE_REASON_BYTES = 123;
@@ -485,7 +486,7 @@ export async function startFleetNodeAttachProxy(
             ? (parsedPayload as FleetSessionResponse)
             : {};
       } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
+        const detail = describeError(error);
         lastSessionError = new TerminalSessionAttemptError(
           timedOut ? 'request exceeded its deadline' : detail,
           timedOut ? 'control_plane_timeout' : 'control_plane_unavailable',

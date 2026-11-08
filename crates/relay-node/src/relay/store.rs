@@ -1706,10 +1706,15 @@ impl Legacy {
         if let (true, Some(key), None) = (sign_in, &self.workspace_key, &store.cloud) {
             store.cloud = Some(CloudWorkspace {
                 key: Secret::new(key.clone()),
-                base_url: self
-                    .workspace_base_url
-                    .clone()
-                    .unwrap_or_else(|| DEFAULT_BASE_URL.into()),
+                // A site build records no public gateway it was never
+                // told about; resolving then says the origin is missing.
+                base_url: self.workspace_base_url.clone().unwrap_or_else(|| {
+                    if crate::relay::links::is_site_build() {
+                        String::new()
+                    } else {
+                        DEFAULT_BASE_URL.into()
+                    }
+                }),
                 ..CloudWorkspace::default()
             });
         }
