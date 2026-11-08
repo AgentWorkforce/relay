@@ -1398,18 +1398,11 @@ exit 0
 
   // ── Phase 10b: RelayFlow proof-case regression corpus ────────────────────
   //
-  // Every merged feature/bug-fix PR leaves behind a case under
-  // tests/relayflows/cases/ that discriminates the bug: a `base` arm that
-  // reproduces it and a `head` arm that does not. Those cases are the sharpest
-  // regression assets this repo has — each one is a real end-to-end
-  // reproduction someone already paid to build and get right.
-  //
-  // They were also, until this tier, run exactly once each. The PR-proof
-  // dispatcher selects only the single case a PR declares, and
-  // `scripts/pr-proof/prepare.mjs` hard-fails a PR that changes any other case
-  // ("A PR must change exactly its one declared RelayFlow case"), so a later PR
-  // cannot re-run an earlier proof even in principle. Reintroduce a fixed bug
-  // and nothing notices.
+  // Feature/bug-fix PRs leave behind cases under tests/relayflows/cases/ that
+  // discriminate the bug: a `base` arm that reproduces it and a `head` arm
+  // that does not. Those cases are the sharpest regression assets this repo
+  // has — each one is a real end-to-end reproduction someone already paid to
+  // build and get right. Reintroduce a fixed bug and only a re-run notices.
   //
   // This tier re-runs the corpus head-only against the current checkout and
   // requires each case to still report its `head` signature. A case that now
@@ -1480,12 +1473,12 @@ for case_dir in "$CASE_ROOT"/*/; do
   manifest="$case_dir/case.json"
   [ -f "$manifest" ] || continue
 
-  # Validate through the SAME validator the proof gate uses rather than a
-  # hand-rolled shell reading of the manifest. contract.mjs already enforces the
+  # Validate through the shared case contract rather than a hand-rolled shell
+  # reading of the manifest. case-contract.mjs already enforces the
   # id, version, kind, requirements, timeout bounds, the node|bash executable
   # allowlist, and that the script stays under the case directory. Duplicating
   # any of that here would drift from it; a copied or malformed case would then
-  # be scored by weaker rules than the gate applies.
+  # be scored by weaker rules than the targeted runner applies.
   #
   # Emits, newline separated: timeoutSeconds, expected head signature,
   # needs-broker flag, then each runner.command element.
@@ -1495,7 +1488,7 @@ for case_dir in "$CASE_ROOT"/*/; do
   meta_err="${ARTIFACTS}/corpus-$case_id.meta.err"
   rm -f "$meta_file" "$meta_err"
   node --input-type=module -e "
-import { validateCaseManifest, BROKER_RUNTIME_REQUIREMENT } from './scripts/pr-proof/contract.mjs';
+import { validateCaseManifest, BROKER_RUNTIME_REQUIREMENT } from './scripts/verify-features/case-contract.mjs';
 import fs from 'node:fs';
 const id = process.argv[1];
 try {
