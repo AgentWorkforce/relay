@@ -541,6 +541,65 @@ describe('registerCloudCommands', () => {
     }
   });
 
+  it('supplies explicit empty input to TypeScript Cloud worker flows', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-worker-typescript-'));
+    const spawnProcess = vi.fn((_command: string, _args: string[]) => {
+      const child = new EventEmitter() as EventEmitter & { killed: boolean; kill: () => boolean };
+      child.killed = false;
+      child.kill = () => true;
+      queueMicrotask(() => child.emit('exit', 0, null));
+      return child;
+    }) as never;
+    const runner = createDefaultAssignmentRunner({
+      log: vi.fn(),
+      error: vi.fn(),
+      exit: vi.fn() as never,
+      env: { AGENT_RELAY_HOME: tmpHome },
+      spawnProcess,
+      now: () => new Date('2026-06-13T00:00:00.000Z'),
+      cwd: () => '/checkout',
+      fetchImpl: vi.fn() as never,
+      resolveAgentRelayCliEntrypoint: () => 'packages/cli/dist/cli/index.js',
+    });
+
+    try {
+      await runner({
+        assignment: { runId: 'run_typescript' } as never,
+        payload: {
+          runId: 'run_typescript',
+          workspaceId: 'rw_1',
+          relayWorkspaceId: 'rw_relay',
+          relaycastApiKey: 'rk_live_secret',
+          relayfileUrl: 'https://relayfile.test',
+          relayfileToken: 'relayfile_secret',
+          workflow: 'export default async function flow() {}\n',
+          fileType: 'ts',
+          sourceFileType: 'ts',
+          workflowFileName: 'review.flow.ts',
+        },
+        worker: {
+          baseUrl: 'https://cloud.test',
+          workerId: 'wrk_1',
+          workerToken: 'ocl_wrk_secret',
+          name: 'demo',
+          heartbeatIntervalMs: 30_000,
+          registeredAt: '2026-06-13T00:00:00.000Z',
+          updatedAt: '2026-06-13T00:00:00.000Z',
+        },
+        signal: new AbortController().signal,
+      });
+
+      const workflowPath = path.join(tmpHome, 'cloud-workers', 'runs', 'run_typescript', 'review.flow.ts');
+      expect(spawnProcess).toHaveBeenCalledWith(
+        process.execPath,
+        ['/checkout/packages/cli/dist/cli/index.js', 'flows', 'run', workflowPath, '--input', '{}'],
+        expect.objectContaining({ cwd: path.dirname(workflowPath) })
+      );
+    } finally {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
   it('prints the canonical cloud session as JSON without interactive login', async () => {
     const { program, deps } = createHarness();
     vi.mocked(ensureCloudSession).mockResolvedValueOnce({

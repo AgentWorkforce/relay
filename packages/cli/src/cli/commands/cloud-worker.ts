@@ -19,6 +19,7 @@ import {
 } from '@agent-relay/cloud';
 
 import { defaultExit } from '../lib/exit.js';
+import { resolveAgentRelayCliChildCommand } from '../lib/agent-relay-cli-reentry.js';
 import {
   isCliCredentialsPayload,
   cliLoginHome,
@@ -104,11 +105,7 @@ function buildWorkerRuntimeEnv(
   };
 }
 
-function relayflowsArgs(
-  agentRelayCli: string,
-  workflowPath: string,
-  payload: WorkerWorkflowPayload
-): string[] {
+function relayflowsArgs(workflowPath: string, payload: WorkerWorkflowPayload): string[] {
   const unsupportedSelectors = [
     payload.resumeRunId ? 'resumeRunId' : undefined,
     payload.startFrom ? 'startFrom' : undefined,
@@ -121,7 +118,7 @@ function relayflowsArgs(
     );
   }
 
-  return [agentRelayCli, 'flows', 'run', workflowPath];
+  return ['flows', 'run', workflowPath, ...(payload.fileType === 'ts' ? ['--input', '{}'] : [])];
 }
 
 async function runChild(input: {
@@ -254,10 +251,15 @@ export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): Ex
         });
       }
 
-      const agentRelayCli = deps.resolveAgentRelayCliEntrypoint();
+      const agentRelayCli = resolveAgentRelayCliChildCommand({
+        execPath: process.execPath,
+        cliEntrypoint: deps.resolveAgentRelayCliEntrypoint(),
+        args: relayflowsArgs(workflowPath, payload),
+        cwd: deps.cwd(),
+      });
       const result = await runChild({
-        command: process.execPath,
-        args: relayflowsArgs(agentRelayCli, workflowPath, payload),
+        command: agentRelayCli.command,
+        args: agentRelayCli.args,
         cwd: runDir,
         env: buildWorkerRuntimeEnv(payload, deps, materialized?.env),
         deps,

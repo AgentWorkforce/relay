@@ -5,7 +5,7 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Major]
 
 ### Changed
 
@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `relay integration subscribe --spawn` (with `--spawn-arg`, `--cwd`, `--task` and `--broker-connection`) is removed; subscribe an agent that already exists.
 - `relay status` reports the workspace and Cloud login only, without a local broker line. `relay update` on a standalone install updates and checks only the CLI, and `install.sh` installs the CLI without the broker; a broker binary an earlier release installed is left in place and not run.
 - New versions of `@agent-relay/harness-driver`, `@agent-relay/harnesses`, `@agent-relay/fleet`, `@agent-relay/evals` and `@agent-relay/broker-<platform>` are no longer published; the last published versions stay on npm.
+
+### Breaking Changes
+
+- Relay no longer executes Relayflows v1 workflows or state-bearing Cloud worker assignments.
+
+### Migration Guidance
+
+- Migrate workflow files and invocations to `agent-relay flows run`; use the hosted v2 runner for resume until the Cloud worker protocol carries hosted v2 state.
 
 ### Fixed
 

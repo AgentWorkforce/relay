@@ -149,11 +149,11 @@ describe('registerLocalWorkflowCommands', () => {
   });
 
   it.each([
-    ['YAML', 'workflow.yaml', 'version: "0.1.0"\nname: local-test\nsteps: []\n'],
-    ['YML', 'workflow.yml', 'version: "0.1.0"\nname: local-test\nsteps: []\n'],
-    ['TypeScript', 'workflow.ts', 'console.log("workflow");\n'],
-    ['TSX', 'workflow.tsx', 'console.log("workflow");\n'],
-  ])('delegates %s workflow runs to the relayflows CLI', async (_label, fileName, contents) => {
+    ['YAML', 'workflow.yaml', 'version: "0.1.0"\nname: local-test\nsteps: []\n', false],
+    ['YML', 'workflow.yml', 'version: "0.1.0"\nname: local-test\nsteps: []\n', false],
+    ['TypeScript', 'workflow.ts', 'console.log("workflow");\n', true],
+    ['TSX', 'workflow.tsx', 'console.log("workflow");\n', true],
+  ])('delegates %s workflow runs to the relayflows CLI', async (_label, fileName, contents, needsInput) => {
     const spawnProcess = vi.fn(() => ({
       pid: 4242,
       unref: vi.fn(),
@@ -175,7 +175,13 @@ describe('registerLocalWorkflowCommands', () => {
     );
     const record = JSON.parse(fs.readFileSync(metadataPath, 'utf-8')) as Record<string, unknown>;
     expect(record.command).toBe(process.execPath);
-    expect(record.args).toEqual([agentRelayCliPath, 'flows', 'run', workflowPath]);
+    expect(record.args).toEqual([
+      agentRelayCliPath,
+      'flows',
+      'run',
+      workflowPath,
+      ...(needsInput ? ['--input', '{}'] : []),
+    ]);
     expect(record.status).toBe('running');
   });
 });

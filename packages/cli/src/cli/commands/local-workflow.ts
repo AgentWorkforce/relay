@@ -6,6 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { Command, InvalidArgumentError } from 'commander';
 
 import { defaultExit } from '../lib/exit.js';
+import { resolveAgentRelayCliChildCommand } from '../lib/agent-relay-cli-reentry.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
 import { track } from '../telemetry/index.js';
 import { applyV1LocalWorkflowDeprecations } from './cloud-v1-deprecations.js';
@@ -274,10 +275,12 @@ async function resolveLocalWorkflowCommand(
   deps: LocalWorkflowDependencies
 ): Promise<{ command: string; args: string[] }> {
   if (fileType === 'yaml' || fileType === 'ts') {
-    return {
-      command: process.execPath,
-      args: [deps.resolveAgentRelayCliEntrypoint(), 'flows', 'run', workflowPath],
-    };
+    return resolveAgentRelayCliChildCommand({
+      execPath: process.execPath,
+      cliEntrypoint: deps.resolveAgentRelayCliEntrypoint(),
+      args: ['flows', 'run', workflowPath, ...(fileType === 'ts' ? ['--input', '{}'] : [])],
+      cwd: deps.cwd(),
+    });
   }
 
   if (fileType === 'js') {
