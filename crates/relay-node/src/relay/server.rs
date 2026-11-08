@@ -170,6 +170,11 @@ async fn connection(
     }
     drop(lines);
     finish_writer(writer, CLOSE_FLUSH).await;
+    if let (Some(spawn_callers), Some(connection_id)) =
+        (&core.plugins.spawn_callers, context.connection_id)
+    {
+        spawn_callers.connection_closed(connection_id);
+    }
     for extension in &core.plugins.extensions {
         extension.connection_closed(&context);
     }

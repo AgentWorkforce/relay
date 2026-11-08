@@ -135,6 +135,13 @@ pub enum RefusalReason {
     /// No such caller, or its secret does not match; the two read alike so
     /// a name cannot be probed.
     ServiceUnknown,
+    /// The caller is known but has not authenticated this bridge connection.
+    ServiceUnbound,
+    /// The connection proved an older authority generation; rotation or a
+    /// policy change invalidated it before this operation.
+    ServiceStale,
+    /// The caller was deleted or explicitly revoked after it authenticated.
+    ServiceRevoked,
     /// The caller is turned off.
     ServiceDisabled,
     /// The caller's credential expired; rotate it.

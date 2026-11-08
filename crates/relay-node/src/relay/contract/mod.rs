@@ -132,6 +132,8 @@ methods! {
     SessionsManagedLaunch = "sessions.managed.launch", Always, ManagedLaunchParams => ManagedSessionStarted;
     SessionsExistingRegister = "sessions.existing.register", Always, ExistingRegisterParams => ManagedSessionStarted;
     SpawnTargets = "spawn.targets", Always, NoParams => spawn_control::SpawnTargets;
+    SpawnCallerChallenge = "spawn.caller.challenge", Always, spawn_control::SpawnCallerChallengeParams => spawn_control::SpawnCallerChallenge;
+    SpawnCallerAuthenticate = "spawn.caller.authenticate", Always, spawn_control::SpawnCallerAuthenticateParams => spawn_control::SpawnCallerAuthenticated;
     SpawnInvoke = "spawn.invoke", Always, spawn_control::SpawnInvokeParams => spawn_control::SpawnControlInvocation;
     SpawnInvocation = "spawn.status", Always, spawn_control::SpawnInvocationParams => spawn_control::SpawnControlInvocation;
     SpawnRelease = "spawn.release", Always, spawn_control::SpawnReleaseParams => spawn_control::SpawnControlInvocation;

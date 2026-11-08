@@ -101,9 +101,13 @@ strings) and `undefined` otherwise. `CoreCallError` is a deprecated alias of
 
 ## Native spawn controls
 
-`spawnTargets`, `spawnInvoke`, `spawnStatus` and `spawnRelease` wrap
-`spawn.targets`, `spawn.invoke`, `spawn.status` and `spawn.release` with types
-copied from the core's contract. Each helper:
+`spawnCallerAuthenticate`, `spawnTargets`, `spawnInvoke`, `spawnStatus` and
+`spawnRelease` wrap the core's fixed `spawn.*` contract.
+`spawnCallerAuthenticate` first obtains a fresh one-use challenge bound by the
+core to the exact bridge connection, then sends HMAC-SHA256 of that opaque,
+domain-separated challenge. The reusable service-caller secret is only the
+local HMAC key and never enters a request, reply or error. The operation
+helpers:
 
 - throws `CoreRpcError` with kind `method_not_found` before sending anything
   when `hello.methods` lacks the method;
@@ -125,11 +129,14 @@ default; callers can still select a shorter bound explicitly.
 
 The core stays authoritative. Rules a caller must know:
 
-- `caller_name` must be an active local registration of this core with a stored
-  token. The core uses that registration; no token crosses the bridge.
-- A service caller instead passes `caller_secret`, which the core's spawn caller
-  plugin checks; a core without that plugin refuses it. Leave it out for a
-  session caller.
+- A session `caller_name` must be an active local registration of this core
+  with a stored token. The core uses that registration; no token crosses the
+  bridge.
+- A service caller calls `spawnCallerAuthenticate(client, callerName, secret)`
+  once per greeted connection before any control. A known external name that
+  is unbound, stale, disabled, expired or revoked fails closed and never falls
+  through to a same-named session registration. Rotation and revocation are
+  rechecked on every operation; reconnecting requires a fresh proof.
 - `spawn.invoke` targets only this computer's own spawn node, which must be
   live, have `handlers_live`, not be stale, and advertise `spawn:<harness>`.
 - Persist idempotency keys (`newIdempotencyKey()` makes one) and reuse them on
@@ -159,6 +166,7 @@ bump is a semver-major release of this package.
   only the current user, refuses remote clients and holds the name exclusively,
   but unlike the Rust clients this package cannot verify that the pipe's
   _server_ runs as the current user without native code.
-- The only credential that crosses this client is an optional `caller_secret`,
-  and it never logs params or replies (a spawn task can hold user text, and a
-  spawn param can hold that secret).
+- No reusable service-caller secret, Relaycast token or Desktop account
+  credential crosses the bridge. Service authentication sends only a one-use
+  HMAC authenticator for the server challenge. This client never logs params or
+  replies (a spawn task can hold user text).

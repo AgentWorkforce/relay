@@ -7,8 +7,10 @@ use crate::relay::paths::CorePaths;
 use crate::relay::push::PushTiming;
 use crate::relay::server;
 use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 const SECRET: &str = "stub-caller-secret";
@@ -94,14 +96,32 @@ struct Stub {
     caller: Result<ExternalCaller, RpcError>,
     admit: Option<RpcError>,
     log: Mutex<Vec<String>>,
+    challenges: Mutex<HashMap<(u64, String), String>>,
+    bound: Mutex<HashMap<u64, u64>>,
+    consumed: Mutex<HashSet<String>>,
+    next_challenge: AtomicU64,
+    generation: AtomicU64,
 }
 
 impl Stub {
     fn new(caller: ExternalCaller) -> Arc<Stub> {
+        Self::with(Ok(caller), None)
+    }
+
+    fn with(caller: Result<ExternalCaller, RpcError>, admit: Option<RpcError>) -> Arc<Stub> {
+        let generation = caller
+            .as_ref()
+            .map(|caller| caller.authority_generation)
+            .unwrap_or(1);
         Arc::new(Stub {
-            caller: Ok(caller),
-            admit: None,
+            caller,
+            admit,
             log: Mutex::new(Vec::new()),
+            challenges: Mutex::new(HashMap::new()),
+            bound: Mutex::new(HashMap::from([(1, generation)])),
+            consumed: Mutex::new(HashSet::new()),
+            next_challenge: AtomicU64::new(1),
+            generation: AtomicU64::new(generation),
         })
     }
 
@@ -111,32 +131,118 @@ impl Stub {
 }
 
 impl SpawnCallers for Stub {
-    fn resolve(
+    fn challenge(
         &self,
         _workspace: &Workspace,
+        connection_id: u64,
         name: &str,
-        secret: &Secret,
-    ) -> Result<ExternalCaller, RpcError> {
-        self.log.lock().unwrap().push(format!("resolve:{name}"));
-        if secret.expose() != SECRET {
+    ) -> Result<SpawnCallerChallenge, RpcError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("challenge:{name}:{connection_id}"));
+        if name != "flows-test" || self.caller.is_err() {
             return Err(RpcError::refused_because(
                 RefusalReason::ServiceUnknown,
                 "unknown",
             ));
         }
-        self.caller.clone()
+        let sequence = self.next_challenge.fetch_add(1, Ordering::Relaxed);
+        let challenge = format!("agent-relay/spawn-caller/v1:{sequence:043}");
+        self.challenges
+            .lock()
+            .unwrap()
+            .insert((connection_id, name.into()), challenge.clone());
+        Ok(SpawnCallerChallenge {
+            challenge,
+            expires_at_ms: 1_800_000_000_000,
+        })
+    }
+
+    fn authenticate(
+        &self,
+        _workspace: &Workspace,
+        connection_id: u64,
+        params: &SpawnCallerAuthenticateParams,
+    ) -> Result<SpawnCallerAuthenticated, RpcError> {
+        self.log.lock().unwrap().push(format!(
+            "authenticate:{}:{connection_id}",
+            params.caller_name
+        ));
+        let expected = self
+            .challenges
+            .lock()
+            .unwrap()
+            .remove(&(connection_id, params.caller_name.clone()));
+        if expected.as_deref() != Some(&params.challenge)
+            || params.authenticator != "a".repeat(64)
+            || !self
+                .consumed
+                .lock()
+                .unwrap()
+                .insert(params.challenge.clone())
+        {
+            return Err(RpcError::refused_because(
+                RefusalReason::ServiceUnknown,
+                "unknown",
+            ));
+        }
+        self.bound
+            .lock()
+            .unwrap()
+            .insert(connection_id, self.generation.load(Ordering::SeqCst));
+        Ok(SpawnCallerAuthenticated {
+            caller_name: params.caller_name.clone(),
+        })
+    }
+
+    fn resolve(
+        &self,
+        _workspace: &Workspace,
+        connection_id: Option<u64>,
+        name: &str,
+    ) -> SpawnCallerResolution {
+        self.log.lock().unwrap().push(format!("resolve:{name}"));
+        if name != "flows-test" {
+            return SpawnCallerResolution::NotExternal;
+        }
+        let caller = match self.caller.clone() {
+            Ok(caller) => caller,
+            Err(error) => return SpawnCallerResolution::Refused(error),
+        };
+        let generation = self.generation.load(Ordering::SeqCst);
+        match connection_id.and_then(|id| self.bound.lock().unwrap().get(&id).copied()) {
+            Some(bound) if bound == generation => {
+                SpawnCallerResolution::BoundExternal(ExternalCaller {
+                    authority_generation: generation,
+                    ..caller
+                })
+            }
+            Some(_) => SpawnCallerResolution::Refused(RpcError::refused_because(
+                RefusalReason::ServiceStale,
+                "stale",
+            )),
+            None => SpawnCallerResolution::Refused(RpcError::refused_because(
+                RefusalReason::ServiceUnbound,
+                "unbound",
+            )),
+        }
     }
 
     fn admit(&self, caller: &ExternalCaller, call: &SpawnCall<'_>) -> Result<Permit, RpcError> {
-        let (method, secret) = match call.request {
-            SpawnRequest::Invoke(p) => ("invoke", p.caller_secret.is_some()),
-            SpawnRequest::Status(p) => ("status", p.caller_secret.is_some()),
-            SpawnRequest::Release(p) => ("release", p.caller_secret.is_some()),
+        let method = match call.request {
+            SpawnRequest::Invoke(_) => "invoke",
+            SpawnRequest::Status(_) => "status",
+            SpawnRequest::Release(_) => "release",
         };
-        assert!(!secret, "the secret never reaches admission");
+        assert_eq!(
+            caller.authority_generation,
+            self.generation.load(Ordering::SeqCst),
+            "authority is rechecked before admission"
+        );
         self.log.lock().unwrap().push(format!(
-            "admit:{method}:{}:{:?}",
-            caller.agent_id, call.peer_pid
+            "admit:{method}:{}:{:?}:{:?}",
+            caller.agent_id, call.peer_pid, call.connection_id
         ));
         match &self.admit {
             Some(error) => Err(error.clone()),
@@ -155,6 +261,18 @@ impl SpawnCallers for Stub {
             .unwrap()
             .push(format!("record:{method}:{}", outcome.trim_matches('"')));
     }
+
+    fn connection_closed(&self, connection_id: u64) {
+        self.bound.lock().unwrap().remove(&connection_id);
+        self.challenges
+            .lock()
+            .unwrap()
+            .retain(|(id, _), _| *id != connection_id);
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("closed:{connection_id}"));
+    }
 }
 
 fn service(owns_only: bool) -> ExternalCaller {
@@ -162,6 +280,7 @@ fn service(owns_only: bool) -> ExternalCaller {
         agent_id: "agent_service".into(),
         name: "flows-test".into(),
         token: Secret::new("service-agent-token"),
+        authority_generation: 1,
         harnesses: None,
         directory_roots: None,
         owns_only,
@@ -227,8 +346,8 @@ fn seed_worker(core: &Core, base: &str, requester: Option<&str>, missing_since: 
 fn release_params(secret: Option<&str>) -> Value {
     let mut params = json!({"caller_name":"test-caller","node_id":"node_local","node_name":"test-desktop","name":"test-worker","expected_agent_id":"agent_worker","idempotency_key": IDEMPOTENCY});
     if let Some(secret) = secret {
+        let _ = secret;
         params["caller_name"] = json!("flows-test");
-        params["caller_secret"] = json!(secret);
     }
     params
 }
@@ -237,14 +356,25 @@ fn status_params(secret: Option<&str>) -> Value {
     let mut params =
         json!({"caller_name":"test-caller","action":"release","invocation_id":"invocation_9"});
     if let Some(secret) = secret {
+        let _ = secret;
         params["caller_name"] = json!("flows-test");
-        params["caller_secret"] = json!(secret);
     }
     params
 }
 
 fn invoke_params(core: &Core, harness: &str, directory: &str) -> Value {
-    json!({"caller_name":"flows-test","caller_secret": SECRET,"node_id":"node_local","node_name": crate::relay::spawn::node_name(&core.machine_prefix),"name":"test-new-worker","harness": harness,"task":"do the thing","directory": directory,"idempotency_key":"spawn-test-20261107-0001"})
+    json!({"caller_name":"flows-test","node_id":"node_local","node_name": crate::relay::spawn::node_name(&core.machine_prefix),"name":"test-new-worker","harness": harness,"task":"do the thing","directory": directory,"idempotency_key":"spawn-test-20261107-0001"})
+}
+
+fn external_context() -> CallContext {
+    CallContext {
+        peer_pid: None,
+        connection_id: Some(1),
+    }
+}
+
+async fn external_call(core: &Arc<Core>, method: &str, params: Value) -> Result<Value, RpcError> {
+    server::call_from(core, &external_context(), method, params).await
 }
 
 fn released() -> Value {
@@ -260,7 +390,7 @@ fn reason(error: &RpcError) -> Option<RefusalReason> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_core_without_spawn_callers_refuses_any_caller_secret() {
+async fn old_secret_bearing_spawn_requests_fail_closed_as_invalid_params() {
     let relaycast = Relaycast::new();
     let (_home, core) = core_with(None, &relaycast.base);
     seed(&core, &relaycast.base, Some("agent_caller"));
@@ -268,37 +398,161 @@ async fn a_core_without_spawn_callers_refuses_any_caller_secret() {
     let mut invoke = invoke_params(&core, "claude", directory.to_str().unwrap());
     // Even a session caller's own name, with a secret, is not a session call.
     invoke["caller_name"] = json!("test-caller");
+    invoke["caller_secret"] = json!(SECRET);
     let mut status = status_params(Some(SECRET));
     status["caller_name"] = json!("test-caller");
+    status["caller_secret"] = json!(SECRET);
+    let mut release = release_params(Some(SECRET));
+    release["caller_secret"] = json!(SECRET);
     for (method, params) in [
         ("spawn.invoke", invoke),
         ("spawn.status", status),
-        ("spawn.release", release_params(Some(SECRET))),
+        ("spawn.release", release),
     ] {
         let error = server::call(&core, method, params).await.unwrap_err();
-        assert_eq!(error.data.kind, ErrorKind::Refused, "{method}");
+        assert_eq!(error.data.kind, ErrorKind::InvalidParams, "{method}");
         assert_eq!(reason(&error), None, "{method}");
         assert!(relaycast.untouched(), "{method}");
     }
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_empty_or_whitespace_external_caller_secret_is_refused_before_plugin_resolution() {
+async fn any_legacy_caller_secret_is_rejected_before_plugin_resolution() {
     let relaycast = Relaycast::new();
     let stub = Stub::new(service(true));
     let (_home, core) = core_with(Some(stub.clone()), &relaycast.base);
     seed(&core, &relaycast.base, Some("agent_caller"));
-    for secret in ["", " \t\r\n"] {
+    for secret in ["", " \t\r\n", SECRET] {
         let mut invoke = invoke_params(&core, "claude", std::env::temp_dir().to_str().unwrap());
         invoke["caller_secret"] = json!(secret);
 
         let error = server::call(&core, "spawn.invoke", invoke)
             .await
             .unwrap_err();
-        assert_eq!(error.data.kind, ErrorKind::Refused, "{secret:?}");
+        assert_eq!(error.data.kind, ErrorKind::InvalidParams, "{secret:?}");
         assert!(stub.log().is_empty(), "{secret:?}");
         assert!(relaycast.untouched(), "{secret:?}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn service_caller_proof_is_single_use_connection_bound_and_generation_checked() {
+    let relaycast = Relaycast::new();
+    let stub = Stub::new(service(true));
+    stub.bound.lock().unwrap().clear();
+    let (_home, core) = core_with(Some(stub.clone()), &relaycast.base);
+    let first = CallContext {
+        peer_pid: Some(700),
+        connection_id: Some(41),
+    };
+    let second = CallContext {
+        peer_pid: Some(700),
+        connection_id: Some(42),
+    };
+    let workspace = core.workspace().unwrap();
+
+    let unbound = match caller_in(&core, &workspace, &first, "flows-test") {
+        Err(error) => error,
+        Ok(_) => panic!("an unbound external caller fell through"),
+    };
+    assert_eq!(unbound.data.reason, Some(RefusalReason::ServiceUnbound));
+
+    let challenge = server::call_from(
+        &core,
+        &first,
+        "spawn.caller.challenge",
+        json!({"caller_name":"flows-test"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        challenge
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>(),
+        ["challenge", "expires_at_ms"]
+    );
+    let message = challenge["challenge"].as_str().unwrap().to_string();
+    let proof = json!({
+        "caller_name":"flows-test",
+        "challenge":message,
+        "authenticator":"a".repeat(64),
+    });
+
+    // Neither a different connection nor a caller-name substitution can use
+    // the challenge, and those failures do not consume the rightful proof.
+    let cross = server::call_from(&core, &second, "spawn.caller.authenticate", proof.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(cross.data.reason, Some(RefusalReason::ServiceUnknown));
+    let mut substituted = proof.clone();
+    substituted["caller_name"] = json!("other-caller");
+    assert!(
+        server::call_from(&core, &first, "spawn.caller.authenticate", substituted,)
+            .await
+            .is_err()
+    );
+    let authenticated =
+        server::call_from(&core, &first, "spawn.caller.authenticate", proof.clone())
+            .await
+            .unwrap();
+    assert_eq!(authenticated, json!({"caller_name":"flows-test"}));
+    assert!(
+        server::call_from(&core, &first, "spawn.caller.authenticate", proof,)
+            .await
+            .is_err()
+    );
+
+    assert!(matches!(
+        caller_in(&core, &workspace, &first, "flows-test").unwrap(),
+        Caller::External { caller, .. } if caller.authority_generation == 1
+    ));
+    let other = match caller_in(&core, &workspace, &second, "flows-test") {
+        Err(error) => error,
+        Ok(_) => panic!("a binding crossed bridge connections"),
+    };
+    assert_eq!(other.data.reason, Some(RefusalReason::ServiceUnbound));
+
+    // Rotation makes an already-bound connection stale before its next
+    // operation. A fresh proof binds the new generation exactly once even
+    // when two submissions race.
+    stub.generation.store(2, Ordering::SeqCst);
+    let stale = match caller_in(&core, &workspace, &first, "flows-test") {
+        Err(error) => error,
+        Ok(_) => panic!("a stale generation acted"),
+    };
+    assert_eq!(stale.data.reason, Some(RefusalReason::ServiceStale));
+    let challenge = server::call_from(
+        &core,
+        &first,
+        "spawn.caller.challenge",
+        json!({"caller_name":"flows-test"}),
+    )
+    .await
+    .unwrap();
+    let proof = json!({
+        "caller_name":"flows-test",
+        "challenge":challenge["challenge"],
+        "authenticator":"a".repeat(64),
+    });
+    let (left, right) = tokio::join!(
+        server::call_from(&core, &first, "spawn.caller.authenticate", proof.clone()),
+        server::call_from(&core, &first, "spawn.caller.authenticate", proof),
+    );
+    assert_eq!(usize::from(left.is_ok()) + usize::from(right.is_ok()), 1);
+    assert!(matches!(
+        caller_in(&core, &workspace, &first, "flows-test").unwrap(),
+        Caller::External { caller, .. } if caller.authority_generation == 2
+    ));
+
+    stub.connection_closed(41);
+    let closed = match caller_in(&core, &workspace, &first, "flows-test") {
+        Err(error) => error,
+        Ok(_) => panic!("a closed connection retained its binding"),
+    };
+    assert_eq!(closed.data.reason, Some(RefusalReason::ServiceUnbound));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -309,7 +563,7 @@ async fn session_callers_are_unchanged_when_a_plugin_is_present() {
     seed(&core, &relaycast.base, Some("agent_other"));
     let workspace = core.workspace().unwrap();
     // The registration rules of `only_an_active_exact_workspace_registration_can_act`.
-    let session = |name: &str| caller_in(&core, &workspace, name, None);
+    let session = |name: &str| caller_in(&core, &workspace, &CallContext::default(), name);
     assert!(matches!(
         session("test-caller").unwrap(),
         Caller::Session { ref agent_id, ref token }
@@ -326,7 +580,7 @@ async fn session_callers_are_unchanged_when_a_plugin_is_present() {
             ..workspace.clone()
         },
     ] {
-        assert!(caller_in(&core, &wrong, "test-caller", None).is_err());
+        assert!(caller_in(&core, &wrong, &CallContext::default(), "test-caller").is_err());
     }
     // Status and release by the session caller take today's path: its own
     // token, no plugin call, and no owner check on a worker another
@@ -347,7 +601,11 @@ async fn session_callers_are_unchanged_when_a_plugin_is_present() {
     for request in &requests {
         assert!(request.contains("test-agent-secret"));
     }
-    assert!(stub.log().is_empty(), "{:?}", stub.log());
+    assert!(
+        stub.log().iter().all(|line| line.starts_with("resolve:")),
+        "{:?}",
+        stub.log()
+    );
     core.store
         .update(|store| store.registrations[0].archived_at = Some("2026-11-07T01:00:00Z".into()))
         .unwrap();
@@ -404,7 +662,7 @@ async fn an_external_caller_uses_its_own_token_and_agent_id_for_release_claims()
         stub.log(),
         [
             "resolve:flows-test",
-            "admit:release:agent_service:Some(42)",
+            "admit:release:agent_service:Some(42):Some(1)",
             "record:release:ok"
         ]
     );
@@ -426,7 +684,7 @@ async fn an_old_unrestricted_claim_cannot_bypass_a_new_owns_only_policy() {
         claims::Ownership::Unrestricted,
     )
     .unwrap();
-    let error = server::call(&core, "spawn.release", release_params(Some(SECRET)))
+    let error = external_call(&core, "spawn.release", release_params(Some(SECRET)))
         .await
         .unwrap_err();
     assert_eq!(error.data.kind, ErrorKind::Refused);
@@ -489,7 +747,7 @@ async fn an_owns_only_caller_cannot_release_an_agent_another_requester_started()
     assert!(core
         .store
         .read(|store| release_target(store, &workspace, &params)));
-    let error = server::call(&core, "spawn.release", release_params(Some(SECRET)))
+    let error = external_call(&core, "spawn.release", release_params(Some(SECRET)))
         .await
         .unwrap_err();
     assert_eq!(error.data.kind, ErrorKind::Refused);
@@ -500,7 +758,7 @@ async fn an_owns_only_caller_cannot_release_an_agent_another_requester_started()
         stub.log(),
         [
             "resolve:flows-test",
-            "admit:release:agent_service:None",
+            "admit:release:agent_service:None:Some(1)",
             "record:release:refused"
         ]
     );
@@ -510,7 +768,7 @@ async fn an_owns_only_caller_cannot_release_an_agent_another_requester_started()
     let served = relaycast.serve(vec![
         json!({"caller_name":"someone","caller_id":"agent_other"}),
     ]);
-    let error = server::call(&core, "spawn.release", release_params(Some(SECRET)))
+    let error = external_call(&core, "spawn.release", release_params(Some(SECRET)))
         .await
         .unwrap_err();
     assert_eq!(reason(&error), Some(RefusalReason::NotOwner));
@@ -537,7 +795,7 @@ async fn an_owns_only_caller_revalidates_a_missing_requester_before_release() {
         json!({"caller_name":"flows-test","caller_id":"agent_service"}),
         released(),
     ]);
-    server::call(&core, "spawn.release", release_params(Some(SECRET)))
+    external_call(&core, "spawn.release", release_params(Some(SECRET)))
         .await
         .unwrap();
     let requests = served.join().unwrap();
@@ -560,7 +818,6 @@ fn an_owns_only_caller_releases_its_crashed_worker() {
     store.registrations.push(worker);
     let params = |name: &str, agent: &str, node: &str| SpawnReleaseParams {
         caller_name: "flows-test".into(),
-        caller_secret: None,
         node_id: node.into(),
         node_name: "test-desktop".into(),
         name: name.into(),
@@ -608,7 +865,7 @@ async fn an_owns_only_caller_releases_its_own_worker_end_to_end() {
         Some("2026-11-07T01:00:00Z"),
     );
     let served = relaycast.serve(vec![released()]);
-    server::call(&core, "spawn.release", release_params(Some(SECRET)))
+    external_call(&core, "spawn.release", release_params(Some(SECRET)))
         .await
         .unwrap();
     assert!(served.join().unwrap()[0].contains("service-agent-token"));
@@ -631,6 +888,9 @@ fn refusal_reasons_serialize_and_old_errors_omit_reason() {
     assert_eq!(future.reason, Some(RefusalReason::Other));
     for (reason, wire) in [
         (RefusalReason::ServiceUnknown, "service_unknown"),
+        (RefusalReason::ServiceUnbound, "service_unbound"),
+        (RefusalReason::ServiceStale, "service_stale"),
+        (RefusalReason::ServiceRevoked, "service_revoked"),
         (RefusalReason::ServiceDisabled, "service_disabled"),
         (RefusalReason::ServiceExpired, "service_expired"),
         (RefusalReason::WorkspaceMismatch, "workspace_mismatch"),
@@ -656,26 +916,29 @@ fn refusal_reasons_serialize_and_old_errors_omit_reason() {
 }
 
 #[test]
-fn caller_secret_is_optional_under_deny_unknown_fields() {
+fn caller_secret_is_not_part_of_any_spawn_params() {
     let session: SpawnReleaseParams = serde_json::from_value(release_params(None)).unwrap();
-    assert_eq!(session.caller_secret, None);
     assert!(serde_json::to_value(&session)
         .unwrap()
         .get("caller_secret")
         .is_none());
-    let external: SpawnReleaseParams =
-        serde_json::from_value(release_params(Some(SECRET))).unwrap();
-    assert_eq!(external.caller_secret.as_deref(), Some(SECRET));
-    let status: SpawnInvocationParams =
-        serde_json::from_value(status_params(Some(SECRET))).unwrap();
-    assert_eq!(status.caller_secret.as_deref(), Some(SECRET));
     let invoke = json!({"caller_name":"test-caller","node_id":"n","node_name":"d","name":"w","harness":"claude","task":"t","directory":"/tmp","idempotency_key":"spawn-test-20261107-0001"});
-    let parsed: SpawnInvokeParams = serde_json::from_value(invoke.clone()).unwrap();
-    assert_eq!(parsed.caller_secret, None);
+    let _: SpawnInvokeParams = serde_json::from_value(invoke.clone()).unwrap();
+    for mut old in [
+        invoke,
+        status_params(Some(SECRET)),
+        release_params(Some(SECRET)),
+    ] {
+        old["caller_secret"] = json!(SECRET);
+        assert!(serde_json::from_value::<SpawnInvokeParams>(old.clone()).is_err());
+        assert!(serde_json::from_value::<SpawnInvocationParams>(old.clone()).is_err());
+        assert!(serde_json::from_value::<SpawnReleaseParams>(old).is_err());
+    }
+    let invoke = json!({"caller_name":"test-caller","node_id":"n","node_name":"d","name":"w","harness":"claude","task":"t","directory":"/tmp","idempotency_key":"spawn-test-20261107-0001"});
     let mut unknown = invoke;
     unknown["caller_token"] = json!("x");
     assert!(serde_json::from_value::<SpawnInvokeParams>(unknown).is_err());
-    let mut unknown = release_params(Some(SECRET));
+    let mut unknown = release_params(None);
     unknown["secret"] = json!("x");
     assert!(serde_json::from_value::<SpawnReleaseParams>(unknown).is_err());
 }
@@ -689,14 +952,10 @@ async fn service_refusals_keep_their_reason_and_send_nothing() {
         RefusalReason::ServiceExpired,
         RefusalReason::WorkspaceMismatch,
     ] {
-        let stub = Arc::new(Stub {
-            caller: Err(RpcError::refused_because(reason, "refused")),
-            admit: None,
-            log: Mutex::new(Vec::new()),
-        });
+        let stub = Stub::with(Err(RpcError::refused_because(reason, "refused")), None);
         let (_home, core) = core_with(Some(stub.clone()), &relaycast.base);
         seed(&core, &relaycast.base, Some("agent_service"));
-        let error = server::call(&core, "spawn.release", release_params(Some(SECRET)))
+        let error = external_call(&core, "spawn.release", release_params(Some(SECRET)))
             .await
             .unwrap_err();
         assert_eq!(error.data.kind, ErrorKind::Refused);
@@ -707,10 +966,11 @@ async fn service_refusals_keep_their_reason_and_send_nothing() {
     // A wrong secret is the plugin's to refuse, like an unknown name.
     let stub = Stub::new(service(true));
     let (_home, core) = core_with(Some(stub.clone()), &relaycast.base);
-    let error = server::call(&core, "spawn.status", status_params(Some("wrong-secret")))
+    stub.bound.lock().unwrap().clear();
+    let error = external_call(&core, "spawn.status", status_params(Some("wrong-secret")))
         .await
         .unwrap_err();
-    assert_eq!(error.data.reason, Some(RefusalReason::ServiceUnknown));
+    assert_eq!(error.data.reason, Some(RefusalReason::ServiceUnbound));
     assert!(relaycast.untouched());
 }
 
@@ -737,7 +997,7 @@ async fn an_external_caller_is_held_to_its_harnesses_and_folders() {
             inside.join("missing").to_str().unwrap().to_string(),
         ),
     ] {
-        let error = server::call(
+        let error = external_call(
             &core,
             "spawn.invoke",
             invoke_params(&core, harness, &directory),
@@ -758,7 +1018,7 @@ async fn an_external_caller_is_held_to_its_harnesses_and_folders() {
         json!([{"id":"node_local","name": node,"live":true,"handlers_live":true,"active_agents":0,"reserved_agents":0,"max_agents":4,"capabilities":["spawn:codex"]}]),
         json!({"id":"invocation_new","status":"pending"}),
     ]);
-    let answer = server::call(
+    let answer = external_call(
         &core,
         "spawn.invoke",
         invoke_params(&core, "codex", inside.to_str().unwrap()),
@@ -819,7 +1079,7 @@ async fn a_scoped_spawn_forwards_the_checked_path_after_a_symlink_swap() {
         }
         requests
     });
-    server::call(
+    external_call(
         &core,
         "spawn.invoke",
         invoke_params(&core, "codex", selected.to_str().unwrap()),
@@ -835,18 +1095,17 @@ async fn a_scoped_spawn_forwards_the_checked_path_after_a_symlink_swap() {
 #[tokio::test(flavor = "multi_thread")]
 async fn admit_failure_prevents_the_relaycast_request() {
     let relaycast = Relaycast::new();
-    let stub = Arc::new(Stub {
-        caller: Ok(service(true)),
-        admit: Some(RpcError::new(ErrorKind::RateLimited, "slow down")),
-        log: Mutex::new(Vec::new()),
-    });
+    let stub = Stub::with(
+        Ok(service(true)),
+        Some(RpcError::new(ErrorKind::RateLimited, "slow down")),
+    );
     let (_home, core) = core_with(Some(stub.clone()), &relaycast.base);
     seed(&core, &relaycast.base, Some("agent_service"));
     for (method, params) in [
         ("spawn.status", status_params(Some(SECRET))),
         ("spawn.release", release_params(Some(SECRET))),
     ] {
-        let error = server::call(&core, method, params).await.unwrap_err();
+        let error = external_call(&core, method, params).await.unwrap_err();
         assert_eq!(error.data.kind, ErrorKind::RateLimited);
         assert!(relaycast.untouched());
     }
@@ -873,12 +1132,12 @@ async fn record_runs_for_success_and_refusal() {
         .await
         .unwrap();
     assert!(served.join().unwrap()[0].contains("service-agent-token"));
-    server::call(&core, "spawn.release", release_params(Some(SECRET)))
+    external_call(&core, "spawn.release", release_params(Some(SECRET)))
         .await
         .unwrap_err();
     // A reply Relaycast sent that this core cannot read is recorded too.
     let served = relaycast.serve(vec![json!({"id":"invocation_other","status":"running"})]);
-    let error = server::call(&core, "spawn.status", status_params(Some(SECRET)))
+    let error = external_call(&core, "spawn.status", status_params(Some(SECRET)))
         .await
         .unwrap_err();
     assert_eq!(error.data.kind, ErrorKind::Internal);
@@ -887,13 +1146,13 @@ async fn record_runs_for_success_and_refusal() {
         stub.log(),
         [
             "resolve:flows-test",
-            "admit:status:agent_service:Some(7)",
+            "admit:status:agent_service:Some(7):Some(1)",
             "record:status:ok",
             "resolve:flows-test",
-            "admit:release:agent_service:None",
+            "admit:release:agent_service:None:Some(1)",
             "record:release:refused",
             "resolve:flows-test",
-            "admit:status:agent_service:None",
+            "admit:status:agent_service:None:Some(1)",
             "record:status:internal",
         ]
     );

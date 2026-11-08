@@ -4,16 +4,10 @@ use std::fmt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-// `Debug` is written by hand (below) so `caller_secret` never prints.
-#[derive(Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SpawnInvokeParams {
     pub caller_name: String,
-    /// A secret that names a caller the core's spawn caller plugin
-    /// vouches for instead of a session registration; absent for a session
-    /// caller. A core without the plugin refuses it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub caller_secret: Option<String>,
     pub node_id: String,
     pub node_name: String,
     pub name: String,
@@ -23,16 +17,10 @@ pub struct SpawnInvokeParams {
     pub idempotency_key: String,
 }
 
-// `Debug` is written by hand (below) so `caller_secret` never prints.
-#[derive(Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SpawnInvocationParams {
     pub caller_name: String,
-    /// A secret that names a caller the core's spawn caller plugin
-    /// vouches for instead of a session registration; absent for a session
-    /// caller. A core without the plugin refuses it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub caller_secret: Option<String>,
     pub action: SpawnControlAction,
     pub invocation_id: String,
 }
@@ -44,16 +32,10 @@ pub enum SpawnControlAction {
     Release,
 }
 
-// `Debug` is written by hand (below) so `caller_secret` never prints.
-#[derive(Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SpawnReleaseParams {
     pub caller_name: String,
-    /// A secret that names a caller the core's spawn caller plugin
-    /// vouches for instead of a session registration; absent for a session
-    /// caller. A core without the plugin refuses it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub caller_secret: Option<String>,
     pub node_id: String,
     pub node_name: String,
     pub name: String,
@@ -61,57 +43,51 @@ pub struct SpawnReleaseParams {
     pub idempotency_key: String,
 }
 
-/// Shows whether a `caller_secret` was given, never its value.
-struct RedactedSecret<'a>(&'a Option<String>);
-
-impl fmt::Debug for RedactedSecret<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {
-            Some(_) => f.write_str("\"<redacted>\""),
-            None => f.write_str("None"),
-        }
-    }
+/// Starts a one-use proof for a service caller on this exact bridge
+/// connection. The server binds the returned challenge to the connection,
+/// active workspace and caller; the connection id never enters this wire.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SpawnCallerChallengeParams {
+    pub caller_name: String,
 }
 
-impl fmt::Debug for SpawnInvokeParams {
+/// An opaque, fresh, domain-separated message to authenticate. The client
+/// computes HMAC-SHA256 with its service-caller secret over the UTF-8 bytes of
+/// `challenge` and sends the lowercase hexadecimal result once.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct SpawnCallerChallenge {
+    pub challenge: String,
+    /// Unix time in milliseconds. The server still owns expiry and consumes
+    /// a challenge atomically, so this is informational for the client.
+    pub expires_at_ms: u64,
+}
+
+/// Completes a one-use service-caller proof on the same connection that
+/// requested it. `authenticator` is never a reusable credential.
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SpawnCallerAuthenticateParams {
+    pub caller_name: String,
+    pub challenge: String,
+    pub authenticator: String,
+}
+
+impl fmt::Debug for SpawnCallerAuthenticateParams {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SpawnInvokeParams")
+        f.debug_struct("SpawnCallerAuthenticateParams")
             .field("caller_name", &self.caller_name)
-            .field("caller_secret", &RedactedSecret(&self.caller_secret))
-            .field("node_id", &self.node_id)
-            .field("node_name", &self.node_name)
-            .field("name", &self.name)
-            .field("harness", &self.harness)
-            .field("task", &self.task)
-            .field("directory", &self.directory)
-            .field("idempotency_key", &self.idempotency_key)
+            .field("challenge", &"<redacted>")
+            .field("authenticator", &"<redacted>")
             .finish()
     }
 }
 
-impl fmt::Debug for SpawnInvocationParams {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SpawnInvocationParams")
-            .field("caller_name", &self.caller_name)
-            .field("caller_secret", &RedactedSecret(&self.caller_secret))
-            .field("action", &self.action)
-            .field("invocation_id", &self.invocation_id)
-            .finish()
-    }
-}
-
-impl fmt::Debug for SpawnReleaseParams {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SpawnReleaseParams")
-            .field("caller_name", &self.caller_name)
-            .field("caller_secret", &RedactedSecret(&self.caller_secret))
-            .field("node_id", &self.node_id)
-            .field("node_name", &self.node_name)
-            .field("name", &self.name)
-            .field("expected_agent_id", &self.expected_agent_id)
-            .field("idempotency_key", &self.idempotency_key)
-            .finish()
-    }
+/// Confirms only which caller is now bound. It exposes no connection id,
+/// authority generation, secret, token or reusable capability.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct SpawnCallerAuthenticated {
+    pub caller_name: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -168,54 +144,18 @@ where
 mod tests {
     use super::*;
 
-    const SECRET: &str = "svc-secret-value-7f3a9c";
-
     #[test]
-    fn debug_never_prints_the_caller_secret() {
-        let invoke: SpawnInvokeParams = serde_json::from_value(serde_json::json!({
-            "caller_name": "flows", "caller_secret": SECRET, "node_id": "n", "node_name": "d",
-            "name": "w", "harness": "claude", "task": "t", "directory": "/tmp",
-            "idempotency_key": "spawn-test-20261107-0001"
-        }))
-        .unwrap();
-        let status: SpawnInvocationParams = serde_json::from_value(serde_json::json!({
-            "caller_name": "flows", "caller_secret": SECRET, "action": "spawn", "invocation_id": "i"
-        }))
-        .unwrap();
-        let release: SpawnReleaseParams = serde_json::from_value(serde_json::json!({
-            "caller_name": "flows", "caller_secret": SECRET, "node_id": "n", "node_name": "d",
-            "name": "w", "expected_agent_id": "a", "idempotency_key": "spawn-test-20261107-0001"
-        }))
-        .unwrap();
-        for debug in [
-            format!("{invoke:?}"),
-            format!("{status:?}"),
-            format!("{release:?}"),
-            format!("{invoke:#?}"),
-            format!("{status:#?}"),
-            format!("{release:#?}"),
-        ] {
-            assert!(!debug.contains(SECRET), "{debug}");
-            assert!(debug.contains("redacted"), "{debug}");
-        }
-        assert!(format!("{invoke:?}").contains(r#"caller_secret: "<redacted>""#));
-        // The other fields still print, and the wire value is untouched.
-        assert!(format!("{release:?}").contains(r#"expected_agent_id: "a""#));
-        assert_eq!(
-            serde_json::to_value(&status).unwrap()["caller_secret"],
-            serde_json::json!(SECRET)
-        );
-    }
-
-    #[test]
-    fn debug_shows_an_absent_caller_secret_as_none() {
-        let status: SpawnInvocationParams = serde_json::from_value(serde_json::json!({
-            "caller_name": "lead", "action": "release", "invocation_id": "i"
-        }))
-        .unwrap();
-        let debug = format!("{status:?}");
-        assert!(debug.contains("caller_secret: None"), "{debug}");
-        assert!(!debug.contains("redacted"), "{debug}");
+    fn debug_never_prints_a_challenge_or_authenticator() {
+        let params = SpawnCallerAuthenticateParams {
+            caller_name: "flows".into(),
+            challenge: "agent-relay/spawn-caller/v1:challenge-value".into(),
+            authenticator: "authenticator-value".into(),
+        };
+        let debug = format!("{params:?}");
+        assert!(!debug.contains("challenge-value"), "{debug}");
+        assert!(!debug.contains("authenticator-value"), "{debug}");
+        assert!(debug.contains("flows"), "{debug}");
+        assert!(debug.contains("redacted"), "{debug}");
     }
 
     fn invocation(released: Option<serde_json::Value>) -> SpawnControlInvocation {

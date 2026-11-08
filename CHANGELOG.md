@@ -32,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `agent-relay-node` has an optional `SpawnCallers` plugin hook: `spawn.invoke`, `spawn.status` and `spawn.release` accept an optional `caller_secret` that the plugin resolves to an external caller, admits and records, and extension methods now receive the caller's process id. Spawn control refusals carry an optional typed `reason` (such as `not_owner` or `outside_scope`) while `kind` stays `refused`. Without the plugin the core behaves as before and refuses any `caller_secret`.
+- `agent-relay-node` has an optional `SpawnCallers` plugin hook. A service caller proves its reusable secret once per bridge connection with a fresh one-use HMAC challenge; the secret itself never crosses the bridge, and `spawn.invoke`, `spawn.status` and `spawn.release` recheck the bound authority generation before admission. Known-but-unbound, stale, disabled, expired and revoked callers fail closed instead of falling through to a same-named session. Extension methods receive the caller's kernel-reported process id and server-issued connection id, and connection teardown invalidates caller bindings. Spawn control refusals carry an optional typed `reason` while `kind` stays `refused`.
 
 ### Fixed
 

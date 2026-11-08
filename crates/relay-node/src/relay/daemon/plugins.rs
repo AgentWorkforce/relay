@@ -6,6 +6,7 @@ use crate::relay::client::WorkspaceInfo;
 use crate::relay::cloud_session::{CloudAccess, SignedOut};
 use crate::relay::connect::{CloudJoinClient, ConnectJoinClient};
 use crate::relay::contract::spawn_control::{
+    SpawnCallerAuthenticateParams, SpawnCallerAuthenticated, SpawnCallerChallenge,
     SpawnControlInvocation, SpawnInvocationParams, SpawnInvokeParams, SpawnReleaseParams,
 };
 use crate::relay::contract::{self, MethodSpec};
@@ -104,30 +105,62 @@ pub trait SessionPolicy: Send + Sync + 'static {
 }
 
 /// Callers of the native spawn controls (`spawn.invoke`, `spawn.status`,
-/// `spawn.release`) that are not session registrations: a request that
-/// carries `caller_secret` is answered through this plugin, one without it
-/// exactly as without the plugin. A core without one refuses every
-/// `caller_secret`. An unsupported internal seam, like [`SessionPolicy`].
+/// `spawn.release`) that are not session registrations. They authenticate
+/// once per bridge connection through a one-use challenge; their reusable
+/// secret never enters the bridge wire. An unsupported internal seam, like
+/// [`SessionPolicy`].
 ///
 /// The core never stores, lists or provisions such callers; the plugin owns
 /// their records, limits and audit.
 pub trait SpawnCallers: Send + Sync + 'static {
-    /// The caller `name` and `secret` name in `workspace`, or a typed
-    /// refusal (`RpcError::refused_because`). Called before any Relaycast
-    /// request.
+    /// Starts a fresh, short-lived proof for `name`, bound internally to this
+    /// exact server-issued `connection_id`, caller and workspace.
+    fn challenge(
+        &self,
+        workspace: &Workspace,
+        connection_id: u64,
+        name: &str,
+    ) -> Result<SpawnCallerChallenge, RpcError>;
+    /// Atomically consumes and verifies a challenge on the same connection.
+    /// Reuse, expiry, substitution and concurrent double-submit are refused.
+    fn authenticate(
+        &self,
+        workspace: &Workspace,
+        connection_id: u64,
+        params: &SpawnCallerAuthenticateParams,
+    ) -> Result<SpawnCallerAuthenticated, RpcError>;
+    /// Resolves the caller on every operation. A known external name that is
+    /// unbound, stale, disabled, expired or revoked must return `Refused` and
+    /// never fall through to a same-named session registration.
     fn resolve(
         &self,
         workspace: &Workspace,
+        connection_id: Option<u64>,
         name: &str,
-        secret: &Secret,
-    ) -> Result<ExternalCaller, RpcError>;
+    ) -> SpawnCallerResolution;
     /// Admits `call` before its Relaycast request (rate, live-agent cap,
     /// ledger), or refuses it, in which case nothing is sent. The permit
     /// comes back to [`SpawnCallers::record`]; a call that is dropped before
-    /// it finishes drops the permit instead.
+    /// it finishes drops the permit instead. Implementations must recheck
+    /// `caller.authority_generation` immediately before returning a permit so
+    /// rotation, disable or revocation wins before any downstream side effect.
     fn admit(&self, caller: &ExternalCaller, call: &SpawnCall<'_>) -> Result<Permit, RpcError>;
     /// What became of an admitted call, success or refusal (audit, ledger).
     fn record(&self, permit: Permit, outcome: &Result<SpawnControlInvocation, RpcError>);
+    /// Invalidates the binding and every outstanding challenge for this
+    /// connection. Implementations coordinate this with their inbox/lease
+    /// ownership before returning.
+    fn connection_closed(&self, connection_id: u64);
+}
+
+/// The required tri-state lookup for a spawn-control name. `Refused` is
+/// deliberately a value instead of an optional miss so a registered external
+/// name cannot fall through to a same-named legacy session caller.
+#[derive(Debug)]
+pub enum SpawnCallerResolution {
+    NotExternal,
+    BoundExternal(ExternalCaller),
+    Refused(RpcError),
 }
 
 /// A caller [`SpawnCallers::resolve`] vouches for: a Relaycast agent whose
@@ -137,6 +170,10 @@ pub struct ExternalCaller {
     /// Its immutable Relaycast agent id; release claims are keyed by it.
     pub agent_id: String,
     pub name: String,
+    /// The authority version this binding proved. `resolve` and `admit`
+    /// recheck it on every operation so rotation, disable or revocation takes
+    /// effect before the next side effect.
+    pub authority_generation: u64,
     /// Its Relaycast agent token, sent to Relaycast and nowhere else.
     pub token: Secret,
     /// The harnesses it may spawn; `None` leaves only the node's own check.
@@ -155,6 +192,9 @@ pub struct ExternalCaller {
 pub struct SpawnCall<'a> {
     /// The bridge client's process, when the platform reports it.
     pub peer_pid: Option<i32>,
+    /// The exact server-issued connection identity. It is internal provenance,
+    /// never accepted from client params or forwarded to Relaycast.
+    pub connection_id: Option<u64>,
     pub workspace: &'a Workspace,
     pub request: SpawnRequest<'a>,
 }
@@ -249,8 +289,7 @@ pub struct Plugins {
     pub account: Option<Arc<dyn AccountPlugin>>,
     /// Which sessions may join the relay, be asked to, and publish activity.
     pub session_policy: Option<Arc<dyn SessionPolicy>>,
-    /// Native spawn control callers that are not session registrations;
-    /// without it every `caller_secret` is refused.
+    /// Native spawn control callers that are not session registrations.
     pub spawn_callers: Option<Arc<dyn SpawnCallers>>,
     /// Messages for Conductor's Codex chats that Agent Relay's Codex Stop
     /// hook collects (`POST /codex/stop-hook`); none without the hook.
@@ -441,6 +480,54 @@ mod tests {
         }
     }
 
+    /// Records the connection teardown hook that owns caller bindings.
+    struct CallerWitness {
+        closed: Arc<std::sync::Mutex<Vec<u64>>>,
+    }
+
+    impl SpawnCallers for CallerWitness {
+        fn challenge(
+            &self,
+            _workspace: &Workspace,
+            _connection_id: u64,
+            _name: &str,
+        ) -> Result<SpawnCallerChallenge, RpcError> {
+            Err(RpcError::new(ErrorKind::Internal, "unused in this test"))
+        }
+
+        fn authenticate(
+            &self,
+            _workspace: &Workspace,
+            _connection_id: u64,
+            _params: &SpawnCallerAuthenticateParams,
+        ) -> Result<SpawnCallerAuthenticated, RpcError> {
+            Err(RpcError::new(ErrorKind::Internal, "unused in this test"))
+        }
+
+        fn resolve(
+            &self,
+            _workspace: &Workspace,
+            _connection_id: Option<u64>,
+            _name: &str,
+        ) -> SpawnCallerResolution {
+            SpawnCallerResolution::NotExternal
+        }
+
+        fn admit(
+            &self,
+            _caller: &ExternalCaller,
+            _call: &SpawnCall<'_>,
+        ) -> Result<Permit, RpcError> {
+            Err(RpcError::new(ErrorKind::Internal, "unused in this test"))
+        }
+
+        fn record(&self, _permit: Permit, _outcome: &Result<SpawnControlInvocation, RpcError>) {}
+
+        fn connection_closed(&self, connection_id: u64) {
+            self.closed.lock().unwrap().push(connection_id);
+        }
+    }
+
     #[tokio::test]
     async fn peer_pid_reaches_extensions() {
         use crate::relay::protocol::BRIDGE_VERSION;
@@ -463,13 +550,30 @@ mod tests {
             .expect("ordinary disconnects notify extensions before server shutdown");
         }
 
+        async fn wait_for_caller_closed(closed: &Arc<std::sync::Mutex<Vec<u64>>>, expected: usize) {
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    if closed.lock().unwrap().len() == expected {
+                        return;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("ordinary disconnects invalidate caller bindings before server shutdown");
+        }
+
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let closed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let caller_closed = Arc::new(std::sync::Mutex::new(Vec::new()));
         let (home, core) = test_core_with_plugins(Plugins {
             extensions: vec![Arc::new(Witness {
                 calls: seen.clone(),
                 closed: closed.clone(),
             })],
+            spawn_callers: Some(Arc::new(CallerWitness {
+                closed: caller_closed.clone(),
+            })),
             ..Plugins::default()
         });
         let socket = home.path().join("peer.sock");
@@ -519,6 +623,7 @@ mod tests {
         drop(lines_one);
         drop(write_one);
         wait_for_closed(&closed, 1).await;
+        wait_for_caller_closed(&caller_closed, 1).await;
         assert_eq!(
             *closed.lock().unwrap(),
             [CallContext {
@@ -526,10 +631,12 @@ mod tests {
                 connection_id: Some(1),
             }]
         );
+        assert_eq!(*caller_closed.lock().unwrap(), [1]);
 
         drop(lines_two);
         drop(write_two);
         wait_for_closed(&closed, 2).await;
+        wait_for_caller_closed(&caller_closed, 2).await;
         assert_eq!(
             *closed.lock().unwrap(),
             [
@@ -543,6 +650,7 @@ mod tests {
                 },
             ]
         );
+        assert_eq!(*caller_closed.lock().unwrap(), [1, 2]);
 
         stop.send(true).unwrap();
         server.await.unwrap();

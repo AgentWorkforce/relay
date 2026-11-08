@@ -3,7 +3,7 @@
 use crate::relay::contract::spawn_control::*;
 use crate::relay::contract::{answer, method};
 use crate::relay::daemon::{
-    CallContext, Core, ExternalCaller, SpawnCall, SpawnCallers, SpawnRequest,
+    CallContext, Core, ExternalCaller, SpawnCall, SpawnCallerResolution, SpawnCallers, SpawnRequest,
 };
 use crate::relay::diagnostic_http::HttpClient;
 use crate::relay::protocol::{ErrorKind, RefusalReason, RpcError};
@@ -25,6 +25,18 @@ pub(crate) async fn call(
         method::SpawnTargets::NAME => Some(
             answer::<method::SpawnTargets, _>(raw, |_| async {
                 targets(&workspace_http(core)?).await
+            })
+            .await,
+        ),
+        method::SpawnCallerChallenge::NAME => Some(
+            answer::<method::SpawnCallerChallenge, _>(raw, |params| async {
+                caller_challenge(core, context, params).await
+            })
+            .await,
+        ),
+        method::SpawnCallerAuthenticate::NAME => Some(
+            answer::<method::SpawnCallerAuthenticate, _>(raw, |params| async {
+                caller_authenticate(core, context, params).await
             })
             .await,
         ),
@@ -150,7 +162,7 @@ fn workspace_http(core: &Core) -> Result<HttpClient, RpcError> {
 }
 
 /// Who calls a native spawn control: a session registration, named alone,
-/// or a caller the [`SpawnCallers`] plugin vouches for by name and secret.
+/// or a caller the [`SpawnCallers`] plugin bound to this connection.
 enum Caller {
     Session {
         agent_id: String,
@@ -205,38 +217,88 @@ impl Caller {
     }
 }
 
-/// The caller `name` names: with no `secret`, exactly as before the plugin
-/// existed (an active registration in `workspace` and its token); with one,
-/// whoever the [`SpawnCallers`] plugin resolves, and a refusal without it.
+async fn caller_challenge(
+    core: &Core,
+    context: &CallContext,
+    params: SpawnCallerChallengeParams,
+) -> Result<SpawnCallerChallenge, RpcError> {
+    segment(&params.caller_name)?;
+    let workspace = workspace(core)?;
+    let connection_id = context.connection_id.ok_or_else(refused)?;
+    let plugin = core.plugins.spawn_callers.clone().ok_or_else(refused)?;
+    let challenge = plugin.challenge(&workspace, connection_id, &params.caller_name)?;
+    const PREFIX: &str = "agent-relay/spawn-caller/v1:";
+    let Some(nonce) = challenge.challenge.strip_prefix(PREFIX) else {
+        return Err(malformed());
+    };
+    if nonce.len() != 43
+        || !nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(malformed());
+    }
+    Ok(challenge)
+}
+
+async fn caller_authenticate(
+    core: &Core,
+    context: &CallContext,
+    params: SpawnCallerAuthenticateParams,
+) -> Result<SpawnCallerAuthenticated, RpcError> {
+    segment(&params.caller_name)?;
+    if params.challenge.is_empty()
+        || params.challenge.len() > 512
+        || params.authenticator.len() != 64
+        || !params
+            .authenticator
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(invalid());
+    }
+    let workspace = workspace(core)?;
+    let connection_id = context.connection_id.ok_or_else(refused)?;
+    let plugin = core.plugins.spawn_callers.clone().ok_or_else(refused)?;
+    plugin.authenticate(&workspace, connection_id, &params)
+}
+
+/// Resolves an external caller first on every request. Only an explicit
+/// `NotExternal` falls through to the legacy active-session lookup; a known
+/// but unbound, stale, disabled, expired or revoked external caller is refused.
 fn caller_in(
     core: &Core,
     workspace: &Workspace,
+    context: &CallContext,
     name: &str,
-    secret: Option<String>,
 ) -> Result<Caller, RpcError> {
-    let Some(secret) = secret else {
-        let (agent_id, token) = core.store.read(|store| {
-            let token = caller_token(store, workspace, name)?;
-            let agent_id = store
-                .registrations
-                .iter()
-                .find(|r| r.name == name && active(r, workspace))
-                .map(|r| r.agent_id.clone())
-                .ok_or_else(refused)?;
-            Ok::<_, RpcError>((agent_id, token))
-        })?;
-        return Ok(Caller::Session { agent_id, token });
-    };
-    if secret.trim().is_empty() {
-        return Err(refused());
-    }
     segment(name)?;
-    let plugin = core.plugins.spawn_callers.clone().ok_or_else(refused)?;
-    let caller = plugin.resolve(workspace, name, &Secret::new(secret))?;
-    if caller.token.expose().is_empty() || segment(&caller.agent_id).is_err() {
-        return Err(refused());
+    if let Some(plugin) = core.plugins.spawn_callers.clone() {
+        match plugin.resolve(workspace, context.connection_id, name) {
+            SpawnCallerResolution::BoundExternal(caller) => {
+                if caller.token.expose().is_empty()
+                    || segment(&caller.agent_id).is_err()
+                    || caller.name != name
+                {
+                    return Err(refused());
+                }
+                return Ok(Caller::External { caller, plugin });
+            }
+            SpawnCallerResolution::Refused(error) => return Err(error),
+            SpawnCallerResolution::NotExternal => {}
+        }
     }
-    Ok(Caller::External { caller, plugin })
+    let (agent_id, token) = core.store.read(|store| {
+        let token = caller_token(store, workspace, name)?;
+        let agent_id = store
+            .registrations
+            .iter()
+            .find(|r| r.name == name && active(r, workspace))
+            .map(|r| r.agent_id.clone())
+            .ok_or_else(refused)?;
+        Ok::<_, RpcError>((agent_id, token))
+    })?;
+    Ok(Caller::Session { agent_id, token })
 }
 
 /// The directory an external caller may launch in. Restricted paths are
@@ -388,9 +450,8 @@ fn error_code(data: &Value) -> Option<String> {
 async fn invoke(
     core: &Core,
     context: &CallContext,
-    mut params: SpawnInvokeParams,
+    params: SpawnInvokeParams,
 ) -> Result<SpawnControlInvocation, RpcError> {
-    let secret = params.caller_secret.take();
     for value in [&params.node_id, &params.node_name, &params.name] {
         segment(value)?;
     }
@@ -420,9 +481,10 @@ async fn invoke(
     {
         return Err(invalid());
     }
-    let caller = caller_in(core, &workspace, &params.caller_name, secret)?;
+    let caller = caller_in(core, &workspace, context, &params.caller_name)?;
     let call = SpawnCall {
         peer_pid: context.peer_pid,
+        connection_id: context.connection_id,
         workspace: &workspace,
         request: SpawnRequest::Invoke(&params),
     };
@@ -473,14 +535,14 @@ async fn invoke_as(
 async fn invocation(
     core: &Core,
     context: &CallContext,
-    mut params: SpawnInvocationParams,
+    params: SpawnInvocationParams,
 ) -> Result<SpawnControlInvocation, RpcError> {
-    let secret = params.caller_secret.take();
     segment(&params.invocation_id)?;
     let workspace = workspace(core)?;
-    let caller = caller_in(core, &workspace, &params.caller_name, secret)?;
+    let caller = caller_in(core, &workspace, context, &params.caller_name)?;
     let call = SpawnCall {
         peer_pid: context.peer_pid,
+        connection_id: context.connection_id,
         workspace: &workspace,
         request: SpawnRequest::Status(&params),
     };
@@ -594,9 +656,8 @@ fn release_targets<'a>(
 async fn release(
     core: &Core,
     context: &CallContext,
-    mut params: SpawnReleaseParams,
+    params: SpawnReleaseParams,
 ) -> Result<SpawnControlInvocation, RpcError> {
-    let secret = params.caller_secret.take();
     for value in [
         &params.node_id,
         &params.node_name,
@@ -607,9 +668,10 @@ async fn release(
     }
     key(&params.idempotency_key)?;
     let workspace = workspace(core)?;
-    let caller = caller_in(core, &workspace, &params.caller_name, secret)?;
+    let caller = caller_in(core, &workspace, context, &params.caller_name)?;
     let call = SpawnCall {
         peer_pid: context.peer_pid,
+        connection_id: context.connection_id,
         workspace: &workspace,
         request: SpawnRequest::Release(&params),
     };

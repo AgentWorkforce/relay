@@ -46,6 +46,9 @@ export interface PlanLimit {
  */
 export const REFUSAL_REASONS = [
   'service_unknown',
+  'service_unbound',
+  'service_stale',
+  'service_revoked',
   'service_disabled',
   'service_expired',
   'workspace_mismatch',

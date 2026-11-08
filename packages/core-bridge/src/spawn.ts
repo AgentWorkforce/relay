@@ -1,11 +1,13 @@
 /**
  * Typed helpers for the core's native spawn controls (`spawn.*`), copied from
  * `crates/relay-node/src/relay/contract/spawn_control.rs`. The contract carries
- * no token, URL or header: the core uses the caller's own stored registration.
+ * no token, URL or header. Session callers use the core's stored registration;
+ * service callers prove their secret once per connection without sending it.
  *
  * Server rules a caller must know:
- * - `caller_name` must be an active local registration of this core that has
- *   a stored token; the core never returns that token.
+ * - A session `caller_name` must be an active local registration with a stored
+ *   token. A service caller must first use `spawnCallerAuthenticate`; the core
+ *   rechecks its bound authority on every operation.
  * - `spawn.invoke` targets only this computer's own spawn node, which must be
  *   live, have `handlers_live`, not be stale, and advertise `spawn:<harness>`.
  * - Idempotency keys must be persisted by the caller and reused on retry.
@@ -16,7 +18,7 @@
  * `CoreBridgeError` with code `invalid_params`, to save a round trip; the
  * core stays authoritative.
  */
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import type { CallOptions, CoreClient } from './client.js';
@@ -44,12 +46,6 @@ export interface SpawnTargets {
 /** The params of `spawn.invoke`; the core refuses any other key. */
 export interface SpawnInvokeParams {
   caller_name: string;
-  /**
-   * A secret naming a service caller the core's spawn caller plugin vouches
-   * for instead of a session registration; omit it for a session caller. A
-   * core without the plugin refuses it.
-   */
-  caller_secret?: string;
   node_id: string;
   node_name: string;
   name: string;
@@ -65,12 +61,6 @@ export type SpawnControlAction = 'spawn' | 'release';
 /** The params of `spawn.status`; the core refuses any other key. */
 export interface SpawnStatusParams {
   caller_name: string;
-  /**
-   * A secret naming a service caller the core's spawn caller plugin vouches
-   * for instead of a session registration; omit it for a session caller. A
-   * core without the plugin refuses it.
-   */
-  caller_secret?: string;
   action: SpawnControlAction;
   invocation_id: string;
 }
@@ -78,17 +68,22 @@ export interface SpawnStatusParams {
 /** The params of `spawn.release`; the core refuses any other key. */
 export interface SpawnReleaseParams {
   caller_name: string;
-  /**
-   * A secret naming a service caller the core's spawn caller plugin vouches
-   * for instead of a session registration; omit it for a session caller. A
-   * core without the plugin refuses it.
-   */
-  caller_secret?: string;
   node_id: string;
   node_name: string;
   name: string;
   expected_agent_id: string;
   idempotency_key: string;
+}
+
+/** A fresh one-use challenge bound by the core to this exact connection. */
+export interface SpawnCallerChallenge {
+  challenge: string;
+  expires_at_ms: number;
+}
+
+/** Confirmation that this connection is bound, with no reusable credential. */
+export interface SpawnCallerAuthenticated {
+  caller_name: string;
 }
 
 /** Every invocation status the core passes through (`spawn/control.rs`). */
@@ -156,7 +151,6 @@ function invocationOf(reply: SpawnControlInvocation): SpawnControlInvocation {
  */
 export const SPAWN_INVOKE_KEYS = [
   'caller_name',
-  'caller_secret',
   'node_id',
   'node_name',
   'name',
@@ -167,13 +161,11 @@ export const SPAWN_INVOKE_KEYS = [
 ] as const satisfies readonly (keyof SpawnInvokeParams)[];
 export const SPAWN_STATUS_KEYS = [
   'caller_name',
-  'caller_secret',
   'action',
   'invocation_id',
 ] as const satisfies readonly (keyof SpawnStatusParams)[];
 export const SPAWN_RELEASE_KEYS = [
   'caller_name',
-  'caller_secret',
   'node_id',
   'node_name',
   'name',
@@ -214,14 +206,6 @@ function pick<K extends string>(params: object, keys: readonly K[]): Partial<Rec
   return out;
 }
 
-function callerSecret(params: object): void {
-  const value = (params as Record<string, unknown>).caller_secret;
-  // Names the field only: the value is a credential.
-  if (value !== undefined && (typeof value !== 'string' || value.trim().length === 0)) {
-    throw invalid('caller_secret', 'must be a non-empty string when given');
-  }
-}
-
 function requireMethod(client: CoreClient, method: string): void {
   if (!client.hello.methods.includes(method)) {
     throw new CoreRpcError(`This Agent Relay core does not offer ${method}; update the core.`, {
@@ -230,6 +214,58 @@ function requireMethod(client: CoreClient, method: string): void {
       retryable: false,
     });
   }
+}
+
+const SPAWN_CALLER_CHALLENGE = /^agent-relay\/spawn-caller\/v1:[A-Za-z0-9_-]{43}$/;
+
+/**
+ * Proves a service-caller secret once and binds it to this exact greeted core
+ * connection. The secret itself is used only as the local HMAC key and never
+ * appears in bridge params, replies or errors.
+ */
+export async function spawnCallerAuthenticate(
+  client: CoreClient,
+  callerName: string,
+  secret: string,
+  options?: CallOptions
+): Promise<SpawnCallerAuthenticated> {
+  requireMethod(client, 'spawn.caller.challenge');
+  requireMethod(client, 'spawn.caller.authenticate');
+  segment({ caller_name: callerName }, 'caller_name');
+  if (typeof secret !== 'string' || secret.trim().length === 0) {
+    throw invalid('service caller secret', 'must be a non-empty string');
+  }
+  const rawChallenge = await client.call<unknown>(
+    'spawn.caller.challenge',
+    { caller_name: callerName },
+    options
+  );
+  const challenge = rawChallenge as Partial<SpawnCallerChallenge> | null;
+  if (
+    challenge === null ||
+    typeof challenge !== 'object' ||
+    typeof challenge.challenge !== 'string' ||
+    !SPAWN_CALLER_CHALLENGE.test(challenge.challenge) ||
+    typeof challenge.expires_at_ms !== 'number' ||
+    !Number.isSafeInteger(challenge.expires_at_ms) ||
+    challenge.expires_at_ms < 0
+  ) {
+    throw new CoreBridgeError('invalid_reply', 'Agent Relay core returned an invalid caller challenge.');
+  }
+  const authenticator = createHmac('sha256', secret).update(challenge.challenge, 'utf8').digest('hex');
+  const authenticated = await client.call<unknown>(
+    'spawn.caller.authenticate',
+    { caller_name: callerName, challenge: challenge.challenge, authenticator },
+    options
+  );
+  if (
+    authenticated === null ||
+    typeof authenticated !== 'object' ||
+    (authenticated as Partial<SpawnCallerAuthenticated>).caller_name !== callerName
+  ) {
+    throw new CoreBridgeError('invalid_reply', 'Agent Relay core returned an invalid caller binding.');
+  }
+  return authenticated as SpawnCallerAuthenticated;
 }
 
 /**
@@ -269,7 +305,6 @@ export async function spawnInvoke(
 ): Promise<SpawnControlInvocation> {
   requireMethod(client, 'spawn.invoke');
   for (const field of ['caller_name', 'node_id', 'node_name', 'name']) segment(params, field);
-  callerSecret(params);
   key(params, 'idempotency_key');
   if (typeof params.harness !== 'string' || params.harness.length === 0)
     throw invalid('harness', 'must be named');
@@ -310,7 +345,6 @@ export async function spawnStatus(
 ): Promise<SpawnControlInvocation> {
   requireMethod(client, 'spawn.status');
   segment(params, 'caller_name');
-  callerSecret(params);
   segment(params, 'invocation_id');
   if (params.action !== 'spawn' && params.action !== 'release')
     throw invalid('action', 'must be "spawn" or "release"');
@@ -336,7 +370,6 @@ export async function spawnRelease(
   requireMethod(client, 'spawn.release');
   for (const field of ['caller_name', 'node_id', 'node_name', 'name', 'expected_agent_id'])
     segment(params, field);
-  callerSecret(params);
   key(params, 'idempotency_key');
   return invocationOf(
     await client.call<SpawnControlInvocation>(

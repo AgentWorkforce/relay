@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { createHmac } from 'node:crypto';
 
 import type { CoreClient, HelloResult } from './client.js';
 import { CoreBridgeError, CoreRpcError } from './errors.js';
 import {
   isReleaseConfirmed,
   newIdempotencyKey,
+  spawnCallerAuthenticate,
   spawnInvoke,
   spawnRelease,
   spawnStatus,
@@ -14,7 +16,17 @@ import {
   type SpawnReleaseParams,
 } from './spawn.js';
 
-const ALL_METHODS = ['hello', 'spawn.targets', 'spawn.invoke', 'spawn.status', 'spawn.release'];
+const ALL_METHODS = [
+  'hello',
+  'spawn.targets',
+  'spawn.caller.challenge',
+  'spawn.caller.authenticate',
+  'spawn.invoke',
+  'spawn.status',
+  'spawn.release',
+];
+
+const CHALLENGE = `agent-relay/spawn-caller/v1:${'a'.repeat(43)}`;
 
 /** A client double that records calls instead of speaking to a core. */
 function fakeClient(methods: string[] = ALL_METHODS) {
@@ -28,6 +40,12 @@ function fakeClient(methods: string[] = ALL_METHODS) {
     call: async (method: string, params?: unknown, opts?: unknown) => {
       calls.push({ method, params });
       options.push(opts);
+      if (method === 'spawn.caller.challenge') {
+        return { challenge: CHALLENGE, expires_at_ms: 1_800_000_000_000 };
+      }
+      if (method === 'spawn.caller.authenticate') {
+        return { caller_name: (params as { caller_name: string }).caller_name };
+      }
       return { id: 'inv_1' };
     },
   } as unknown as CoreClient;
@@ -93,48 +111,40 @@ describe('spawn helpers', () => {
     ]);
   });
 
-  it('keep caller_secret through the key filter on every spawn control', async () => {
+  it('proves a service caller once without sending its reusable secret', async () => {
     const { client, calls } = fakeClient();
-    const caller_secret = 'svc_secret_value';
-    await spawnInvoke(client, { ...invoke, caller_secret });
-    await spawnStatus(client, {
-      caller_name: 'lead',
-      caller_secret,
-      action: 'spawn',
-      invocation_id: 'inv_1',
+    const secret = 'svc_secret_value';
+    await expect(spawnCallerAuthenticate(client, 'flows-test', secret)).resolves.toEqual({
+      caller_name: 'flows-test',
     });
-    await spawnRelease(client, { ...release, caller_secret });
-    expect(calls.map((c) => (c.params as Record<string, unknown>).caller_secret)).toEqual([
-      caller_secret,
-      caller_secret,
-      caller_secret,
+    const authenticator = createHmac('sha256', secret).update(CHALLENGE, 'utf8').digest('hex');
+    expect(calls).toEqual([
+      { method: 'spawn.caller.challenge', params: { caller_name: 'flows-test' } },
+      {
+        method: 'spawn.caller.authenticate',
+        params: { caller_name: 'flows-test', challenge: CHALLENGE, authenticator },
+      },
     ]);
-    expect(Object.keys(calls[0].params as object)).toEqual([
-      'caller_name',
-      'caller_secret',
-      'node_id',
-      'node_name',
-      'name',
-      'harness',
-      'task',
-      'directory',
-      'idempotency_key',
-    ]);
-    expect(Object.keys(calls[1].params as object)).toEqual([
-      'caller_name',
-      'caller_secret',
-      'action',
-      'invocation_id',
-    ]);
-    expect(Object.keys(calls[2].params as object)).toEqual([
-      'caller_name',
-      'caller_secret',
-      'node_id',
-      'node_name',
-      'name',
-      'expected_agent_id',
-      'idempotency_key',
-    ]);
+    expect(JSON.stringify(calls)).not.toContain(secret);
+  });
+
+  it('refuses a malformed challenge before computing or sending a proof', async () => {
+    const { client: fixture, calls } = fakeClient();
+    const client = {
+      ...fixture,
+      call: async (method: string, params?: unknown) => {
+        calls.push({ method, params });
+        return method === 'spawn.caller.challenge'
+          ? { challenge: 'predictable', expires_at_ms: 1_800_000_000_000 }
+          : { caller_name: 'flows-test' };
+      },
+    } as CoreClient;
+    const error = await spawnCallerAuthenticate(client, 'flows-test', 'svc_secret_value').catch(
+      (caught: unknown) => caught
+    );
+    expect(error).toBeInstanceOf(CoreBridgeError);
+    expect(error).toMatchObject({ code: 'invalid_reply' });
+    expect(calls).toEqual([{ method: 'spawn.caller.challenge', params: { caller_name: 'flows-test' } }]);
   });
 
   it('give slow spawn actions a long default while preserving per-call controls', async () => {
@@ -157,27 +167,13 @@ describe('spawn helpers', () => {
     ]);
   });
 
-  it('refuse an empty, whitespace-only or non-string caller_secret without echoing it', async () => {
+  it('refuse an empty or non-string local service caller secret without sending it', async () => {
     const { client, calls } = fakeClient();
-    const error = await invalidParams(spawnInvoke(client, { ...invoke, caller_secret: '' }));
-    expect(error.message).toBe(
-      'Native spawn input is invalid: caller_secret must be a non-empty string when given.'
-    );
-    await invalidParams(
-      spawnStatus(client, {
-        caller_name: 'lead',
-        caller_secret: 42 as never,
-        action: 'spawn',
-        invocation_id: 'inv_1',
-      })
-    );
-    await invalidParams(spawnRelease(client, { ...release, caller_secret: null as never }));
-    for (const caller_secret of [' ', '\t', '\r\n']) {
-      await invalidParams(spawnInvoke(client, { ...invoke, caller_secret }));
-      await invalidParams(
-        spawnStatus(client, { caller_name: 'lead', caller_secret, action: 'spawn', invocation_id: 'inv_1' })
+    for (const secret of ['', ' ', '\t', '\r\n', 42 as never, null as never]) {
+      const error = await invalidParams(spawnCallerAuthenticate(client, 'flows-test', secret));
+      expect(error.message).toBe(
+        'Native spawn input is invalid: service caller secret must be a non-empty string.'
       );
-      await invalidParams(spawnRelease(client, { ...release, caller_secret }));
     }
     expect(calls).toEqual([]);
   });
@@ -247,6 +243,7 @@ describe('spawn helpers', () => {
     const { client, calls } = fakeClient(['hello']);
     for (const call of [
       spawnTargets(client),
+      spawnCallerAuthenticate(client, 'flows-test', 'secret'),
       spawnInvoke(client, invoke),
       spawnStatus(client, { caller_name: 'lead', action: 'release', invocation_id: 'inv_1' }),
       spawnRelease(client, release),
