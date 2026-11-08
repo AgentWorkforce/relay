@@ -101,7 +101,8 @@ export interface AgentRelayAgent {
   readonly capabilities: RelayMessaging['commands'];
   readonly nodes: RelayMessaging['nodes'];
   readonly triggers: RelayMessaging['triggers'];
-  readonly workspace: RelayWorkspace;
+  /** Agent-scoped clients can inspect their workspace; mutations require the parent workspace client. */
+  readonly workspace: Pick<RelayWorkspace, 'info'>;
   readonly files: RelayMessaging['files'];
   registerAction<TInput, TOutput>(
     def: RegisterActionInput<TInput, TOutput>
@@ -190,8 +191,13 @@ export class AgentRelay implements AgentRelayAgent {
         onError: (error) =>
           this.reportError(error, { source: 'listener', operation: 'connect', selector: 'events.connect' }),
       });
-      if (messagingOptions.agentToken) {
+      if (this.messaging.events.scope === 'agent') {
         this.eventFanIn.addSource(this.messaging.events);
+        // Injected clients may belong to a different identity than a token
+        // option. Only cache a transport we constructed from this exact token.
+        if (messagingOptions.agentToken && !messaging && !messagingOptions.agentClient) {
+          this.clientsByToken.set(messagingOptions.agentToken, this.messaging);
+        }
       }
     }
     if (onError) {

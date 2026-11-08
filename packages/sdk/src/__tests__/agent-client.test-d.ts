@@ -6,6 +6,7 @@ import {
   type RelayAgentClient,
   type RelayMessage,
   type RelayMessageReaction,
+  type RelayWorkspace,
   type ZodLikeSchema,
 } from '../index.js';
 import type { ActionCompletedEvent, RelayMessageEvent, TypedActionHandle } from '../listeners.js';
@@ -60,6 +61,23 @@ describe('registered and reconnected agent client types', () => {
           expectTypeOf(event).toEqualTypeOf<RelayMessageEvent<'dm.received'>>();
         })
       ).toEqualTypeOf<() => void>();
+    }
+  });
+
+  it('exposes workspace mutations only on the parent workspace client', async () => {
+    expectTypeOf(relay.workspace).toEqualTypeOf<RelayWorkspace>();
+    const registered = await relay.workspace.register({ name: 'worker' });
+    const reconnected = await relay.workspace.reconnect({ apiToken: 'type-test-token' });
+    expectTypeOf(relay.workspace.release).toEqualTypeOf<RelayWorkspace['release']>();
+
+    for (const client of [registered, reconnected]) {
+      expectTypeOf(client.workspace.info()).toEqualTypeOf<ReturnType<RelayWorkspace['info']>>();
+      // @ts-expect-error Agent-scoped clients cannot register another agent.
+      client.workspace.register({ name: 'another-worker' });
+      // @ts-expect-error Reconnecting an agent requires the parent workspace client.
+      client.workspace.reconnect({ apiToken: 'another-type-test-token' });
+      // @ts-expect-error Releasing an agent requires the parent workspace client.
+      client.workspace.release({ name: 'worker' });
     }
   });
 

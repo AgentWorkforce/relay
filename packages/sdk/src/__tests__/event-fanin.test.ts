@@ -320,9 +320,11 @@ describe('AgentRelay listener fan-in', () => {
 
   it('an agent-token client uses its own transport without a missing-source warning', () => {
     const events = createFakeEventsSurface();
+    const messaging = createFakeMessaging(events.surface);
+    Object.assign(messaging.events, { scope: 'agent' });
     const onError = vi.fn();
     const relay = new AgentRelay({
-      messaging: createFakeMessaging(events.surface),
+      messaging,
       agentToken: 'at_test_listener',
       onError,
     });
@@ -333,6 +335,80 @@ describe('AgentRelay listener fan-in', () => {
     expect(events.surface.connect).toHaveBeenCalledTimes(1);
     events.emit(messageCreated('m-agent'));
     expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not classify an injected workspace transport by an unrelated token option', () => {
+    const events = createFakeEventsSurface();
+    Object.assign(events.surface, { scope: 'workspace' });
+    const onError = vi.fn();
+    const relay = new AgentRelay({
+      messaging: createFakeMessaging(events.surface),
+      agentToken: 'at_test_listener',
+      onError,
+    });
+    relay.addListener('message.created', vi.fn());
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(String(onError.mock.calls[0][0])).toContain('no registered agent');
+  });
+
+  it('reuses the root agent transport when resolving the same sender token', async () => {
+    const connect = vi.fn();
+    const send = vi.fn(async () => ({ id: 'sent', text: 'hello', agent_id: 'listener' }));
+    const createAgentMessaging = vi.fn();
+    const relay = new AgentRelay({
+      relaycast: { as: () => ({ connect, send, on: { any: () => () => {} } }) } as never,
+      agentToken: 'at_test_listener',
+      createAgentMessaging,
+    });
+    relay.addListener('message.created', vi.fn());
+    await relay.messages.send({
+      to: '#general',
+      text: 'hello',
+      from: { name: 'listener', token: 'at_test_listener' },
+    });
+    expect(createAgentMessaging).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(connect).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not associate an injected agent transport with an unrelated token option', async () => {
+    const events = createFakeEventsSurface();
+    Object.assign(events.surface, { scope: 'agent' });
+    const messagingA = createFakeMessaging(events.surface);
+    const sendA = vi.fn();
+    Object.assign(messagingA.messages, { send: sendA });
+    const messagingB = createFakeMessaging(createFakeEventsSurface().surface);
+    const sendB = vi.fn(async () => ({ messageId: 'sent-b', text: 'hello' }));
+    Object.assign(messagingB.messages, { send: sendB });
+    const createAgentMessaging = vi.fn(() => messagingB);
+    const relay = new AgentRelay({
+      messaging: messagingA,
+      agentToken: 'at_fixture_B',
+      createAgentMessaging,
+    });
+    relay.addListener('message.created', vi.fn());
+    await relay.messages.send({
+      to: '#general',
+      text: 'hello',
+      from: { name: 'B', token: 'at_fixture_B' },
+    });
+    expect(createAgentMessaging).toHaveBeenCalledWith('at_fixture_B');
+    expect(sendB).toHaveBeenCalledTimes(1);
+    expect(sendA).not.toHaveBeenCalled();
+  });
+
+  it('uses an injected agent client without requiring a duplicate token option', () => {
+    const connect = vi.fn();
+    const onError = vi.fn();
+    const relay = new AgentRelay({
+      workspaceKey: 'workspace-fixture',
+      relaycast: {} as never,
+      agentClient: { connect, on: { any: vi.fn(() => () => {}) } } as never,
+      onError,
+    });
+    relay.addListener('message.created', vi.fn());
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
   });
 
   it('a message fanned to two registered agents surfaces once', async () => {

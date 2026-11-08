@@ -32,7 +32,11 @@ function createRelay() {
     agents: { register: vi.fn() },
   } as unknown as RelayMessaging;
   const actions = new ActionRegistry();
-  const relay = new AgentRelay({ messaging, actions, agentToken: 'at_test_listener' });
+  const relay = new AgentRelay({
+    messaging: { ...messaging, events: { ...messaging.events, scope: 'agent' } },
+    actions,
+    agentToken: 'at_test_listener',
+  });
   return { relay, bus, actions };
 }
 

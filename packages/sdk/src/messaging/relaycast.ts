@@ -251,6 +251,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     this.agentClient =
       options.agentClient ??
       (options.agentToken ? this.relaycast.as?.(options.agentToken, options.agentClientOptions) : undefined);
+    this.events.scope = this.agentClient ? 'agent' : 'workspace';
     this.selfNodeName = options.selfNodeName;
     this.placementTtlMs = options.placementTtlMs ?? 60 * 60 * 1000;
     this.placementSandboxOnly = options.placementSandboxOnly ?? false;
@@ -575,6 +576,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
   };
 
   readonly events = {
+    scope: 'workspace' as 'agent' | 'workspace',
     connect: (): void => {
       if (this.eventUnsubscribe) return;
       const forward = (event: unknown): void => this.emitEvent(normalizeMessagingEvent(event));

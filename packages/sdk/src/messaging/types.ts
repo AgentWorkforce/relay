@@ -950,6 +950,8 @@ export type RelayMessagingEventMap = {
 };
 
 export interface RelayMessagingEventsSurface {
+  /** Credential scope of this transport, when known by the adapter. */
+  readonly scope?: 'agent' | 'workspace';
   connect(): void;
   disconnect(): Promise<void>;
   subscribe(channels: string[]): void;
