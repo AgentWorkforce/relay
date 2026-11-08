@@ -1,5 +1,6 @@
 import { RelayError } from '@relaycast/sdk';
 
+import type { AgentRelayAgent } from './agent-relay.js';
 import type {
   RelayMessaging,
   RelayMessage,
@@ -163,13 +164,7 @@ export interface RelayClientReactInput {
  * and status/tool predicate builders alongside a messaging surface scoped to
  * that agent.
  */
-export interface RelayAgentClient extends RelayAgentHandle {
-  readonly agents: RelayMessaging['agents'];
-  readonly channels: RelayMessaging['channels'];
-  readonly messages: EnrichedMessages;
-  readonly threads: RelayMessaging['threads'];
-  readonly inbox: RelayMessaging['inbox'];
-  readonly files: RelayMessaging['files'];
+export interface RelayAgentClient extends RelayAgentHandle, AgentRelayAgent {
   sendMessage(input: RelaySendMessageInput): Promise<RelayMessage>;
   reply(input: RelayReplyInput): Promise<RelayMessage>;
   react(input: RelayClientReactInput): Promise<RelayMessageReaction>;

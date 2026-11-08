@@ -15,8 +15,8 @@ export interface EventFanInOptions {
   /** Maximum number of tracked dedupe keys before the oldest are evicted. */
   dedupeCapacity?: number;
   /**
-   * How long after `connect()` to wait for a registered-agent source before
-   * reporting that the stream has nothing real to connect to.
+   * @deprecated Missing-source diagnostics are now synchronous. A value of
+   * zero or less still disables the diagnostic for compatibility.
    */
   noSourceWarningMs?: number;
   /** Receives source connect/subscribe failures and the no-source warning. */
@@ -47,7 +47,6 @@ export interface RelayEventFanIn extends RelayMessagingEventsSurface {
 
 const DEFAULT_DEDUPE_WINDOW_MS = 30_000;
 const DEFAULT_DEDUPE_CAPACITY = 2048;
-const DEFAULT_NO_SOURCE_WARNING_MS = 10_000;
 
 /**
  * Derive a cross-source identity for an event, or `null` for events that must
@@ -113,7 +112,7 @@ export function createEventFanIn(
 ): RelayEventFanIn {
   const dedupeWindowMs = options.dedupeWindowMs ?? DEFAULT_DEDUPE_WINDOW_MS;
   const dedupeCapacity = options.dedupeCapacity ?? DEFAULT_DEDUPE_CAPACITY;
-  const noSourceWarningMs = options.noSourceWarningMs ?? DEFAULT_NO_SOURCE_WARNING_MS;
+  const reportMissingSource = options.noSourceWarningMs === undefined || options.noSourceWarningMs > 0;
   const now = options.now ?? (() => Date.now());
 
   const handlers = new Map<string, Set<(event: RelayMessagingEvent) => void | Promise<void>>>();
@@ -128,7 +127,7 @@ export function createEventFanIn(
   let connectRequested = false;
   let fallbackForwarding: (() => void) | undefined;
   let fallbackConnected = false;
-  let noSourceTimer: ReturnType<typeof setTimeout> | undefined;
+  let noSourceReported = false;
 
   const report = (error: unknown): void => {
     if (options.onError) {
@@ -183,29 +182,19 @@ export function createEventFanIn(
     emitLocal(event);
   };
 
-  const clearNoSourceTimer = (): void => {
-    if (noSourceTimer !== undefined) {
-      clearTimeout(noSourceTimer);
-      noSourceTimer = undefined;
-    }
-  };
-
-  const scheduleNoSourceWarning = (): void => {
-    if (noSourceTimer !== undefined || noSourceWarningMs <= 0) return;
-    noSourceTimer = setTimeout(() => {
-      noSourceTimer = undefined;
-      if (!connectRequested || sources.length > 0) return;
-      report(
-        new Error(
-          'Listening for relay events, but no registered agent is connected. ' +
-            "Relaycast delivers events over each agent's node transport, and the " +
-            'workspace-key stream cannot receive them. Register an agent first ' +
-            '(`relay.workspace.register(...)` / `workspace.reconnect(...)`) so the ' +
-            'listener has a live connection to stream through.'
-        )
-      );
-    }, noSourceWarningMs);
-    (noSourceTimer as { unref?: () => void }).unref?.();
+  const warnMissingSource = (): void => {
+    if (noSourceReported || !reportMissingSource || sources.length > 0) return;
+    noSourceReported = true;
+    report(
+      new Error(
+        'Listening for relay events, but no registered agent is connected. ' +
+          "Relaycast delivers events over each agent's node transport, and the " +
+          'workspace-key stream cannot receive them. Register or reconnect an agent ' +
+          '(`relay.workspace.register(...)` / `workspace.reconnect(...)`) and join ' +
+          'the channel you expect events from (`agent.channels.join(...)`). ' +
+          'For workspace-wide observation, construct the client with an observerToken instead.'
+      )
+    );
   };
 
   const attachSourceForwarding = (source: RelayMessagingEventsSurface): void => {
@@ -282,7 +271,6 @@ export function createEventFanIn(
       attachSourceForwarding(source);
       if (connectRequested) {
         connectSource(source);
-        clearNoSourceTimer();
         // The agent transport is the real event stream; stop the workspace
         // fallback so it does not sit in a doomed reconnect loop.
         detachFallback();
@@ -302,12 +290,12 @@ export function createEventFanIn(
         return;
       }
       attachFallback();
-      scheduleNoSourceWarning();
+      warnMissingSource();
     },
 
     disconnect: async () => {
       connectRequested = false;
-      clearNoSourceTimer();
+      noSourceReported = false;
       detachFallback();
       // Stop forwarding first so a source another owner reconnects later
       // cannot feed listeners that were explicitly disconnected.

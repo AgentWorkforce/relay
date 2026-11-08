@@ -215,21 +215,29 @@ describe('createEventFanIn', () => {
       vi.useRealTimers();
     });
 
-    it('reports when connect() has no agent source within the window', () => {
+    it('reports missing sources immediately and only once per connection', async () => {
       const onError = vi.fn();
       const fanIn = createEventFanIn(undefined, { onError, noSourceWarningMs: 1000 });
       fanIn.connect();
-
-      vi.advanceTimersByTime(1001);
       expect(onError).toHaveBeenCalledTimes(1);
       expect(String(onError.mock.calls[0][0])).toContain('no registered agent');
+      expect(String(onError.mock.calls[0][0])).toContain('join');
+      expect(String(onError.mock.calls[0][0])).toContain('channel');
+
+      fanIn.connect();
+      vi.advanceTimersByTime(10_000);
+      expect(onError).toHaveBeenCalledTimes(1);
+
+      await fanIn.disconnect();
+      fanIn.connect();
+      expect(onError).toHaveBeenCalledTimes(2);
     });
 
-    it('stays silent when an agent source arrives in time', () => {
+    it('stays silent when an agent source is registered before connecting', () => {
       const onError = vi.fn();
       const fanIn = createEventFanIn(undefined, { onError, noSourceWarningMs: 1000 });
-      fanIn.connect();
       fanIn.addSource(createFakeEventsSurface().surface);
+      fanIn.connect();
 
       vi.advanceTimersByTime(1001);
       expect(onError).not.toHaveBeenCalled();
@@ -257,16 +265,18 @@ describe('AgentRelay listener fan-in', () => {
     const workspaceEvents = createFakeEventsSurface();
     const agentEvents = new Map<string, ReturnType<typeof createFakeEventsSurface>>();
     const messaging = createFakeMessaging(workspaceEvents.surface);
+    const onError = vi.fn();
     const relay = new AgentRelay({
       messaging,
       actions: new ActionRegistry(),
+      onError,
       createAgentMessaging: (token) => {
         const bus = createFakeEventsSurface();
         agentEvents.set(token, bus);
         return createFakeMessaging(bus.surface);
       },
     });
-    return { relay, workspaceEvents, agentEvents };
+    return { relay, workspaceEvents, agentEvents, onError };
   }
 
   it('relay.addListener receives channel messages via an agent registered first', async () => {
@@ -285,15 +295,43 @@ describe('AgentRelay listener fan-in', () => {
   });
 
   it('relay.addListener attached before register streams once the agent arrives', async () => {
-    const { relay, agentEvents } = createHarness();
+    const { relay, agentEvents, onError } = createHarness();
     const handler = vi.fn();
     relay.addListener('message.created', handler);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0][1]).toEqual({
+      source: 'listener',
+      operation: 'connect',
+      selector: 'events.connect',
+    });
+    const diagnostic = String(onError.mock.calls[0][0]);
+    expect(diagnostic).toContain('workspace.register');
+    expect(diagnostic).toContain('workspace.reconnect');
+    expect(diagnostic).toContain('agent.channels.join');
 
     await relay.workspace.register({ name: 'late' });
     const bus = agentEvents.get('tok-late')!;
     expect(bus.surface.connect).toHaveBeenCalled();
 
     bus.emit(messageCreated('m1'));
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('an agent-token client uses its own transport without a missing-source warning', () => {
+    const events = createFakeEventsSurface();
+    const onError = vi.fn();
+    const relay = new AgentRelay({
+      messaging: createFakeMessaging(events.surface),
+      agentToken: 'at_test_listener',
+      onError,
+    });
+    const handler = vi.fn();
+    relay.addListener('message.created', handler);
+
+    expect(onError).not.toHaveBeenCalled();
+    expect(events.surface.connect).toHaveBeenCalledTimes(1);
+    events.emit(messageCreated('m-agent'));
     expect(handler).toHaveBeenCalledTimes(1);
   });
 
