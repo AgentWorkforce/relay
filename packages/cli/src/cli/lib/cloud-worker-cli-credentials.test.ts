@@ -298,7 +298,7 @@ describe('cloud worker CLI logins', () => {
         now: () => new Date(),
         cwd: () => home,
         fetchImpl: cp.fetchImpl,
-        resolveRelayflowsCliEntrypoint: () => '/opt/relayflows/dist/cli.js',
+        resolveAgentRelayCliEntrypoint: () => '/opt/agent-relay/dist/cli/index.js',
       });
       const result = await runner({
         assignment: { runId: 'run_1' } as never,
@@ -309,7 +309,7 @@ describe('cloud worker CLI logins', () => {
           relaycastApiKey: 'rk',
           relayfileUrl: '',
           relayfileToken: '',
-          workflow: 'version: "1.0"\n',
+          workflow: 'version: "0.1.0"\nname: cloud-worker-test\nsteps: []\n',
           fileType: 'yaml',
           sourceFileType: 'yaml',
           workflowFileName: 'workflow.yaml',
@@ -426,7 +426,7 @@ describe('cloud worker CLI logins', () => {
         now: () => new Date(),
         cwd: () => home,
         fetchImpl: cp.fetchImpl,
-        resolveRelayflowsCliEntrypoint: () => '/opt/relayflows/dist/cli.js',
+        resolveAgentRelayCliEntrypoint: () => '/opt/agent-relay/dist/cli/index.js',
       });
       await expect(
         runner({
@@ -438,7 +438,7 @@ describe('cloud worker CLI logins', () => {
             relaycastApiKey: 'rk',
             relayfileUrl: '',
             relayfileToken: '',
-            workflow: 'version: "1.0"\n',
+            workflow: 'version: "0.1.0"\nname: cloud-worker-test\nsteps: []\n',
             fileType: 'yaml',
             sourceFileType: 'yaml',
             workflowFileName: 'workflow.yaml',

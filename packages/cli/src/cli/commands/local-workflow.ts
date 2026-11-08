@@ -3,10 +3,14 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { spawn as spawnProcess, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { createRequire } from 'node:module';
 import { Command, InvalidArgumentError } from 'commander';
 
 import { defaultExit } from '../lib/exit.js';
+import {
+  buildRelayflowsRunArgs,
+  resolveAgentRelayCliChildCommand,
+  resolveAgentRelayScriptInterpreter,
+} from '../lib/agent-relay-cli-reentry.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
 import { track } from '../telemetry/index.js';
 import { applyV1LocalWorkflowDeprecations } from './cloud-v1-deprecations.js';
@@ -47,7 +51,7 @@ export interface LocalWorkflowDependencies {
   cwd: () => string;
   env: NodeJS.ProcessEnv;
   spawnProcess: typeof spawnProcess;
-  resolveRelayflowsCliEntrypoint: () => string;
+  resolveAgentRelayCliEntrypoint: () => string;
   randomRunId: () => string;
   now: () => Date;
   sleep: (ms: number) => Promise<void>;
@@ -60,14 +64,12 @@ export interface LocalWorkflowDependencies {
 
 const RUN_ID_RE = /^local_[A-Za-z0-9][A-Za-z0-9_-]{0,80}$/;
 const TERMINAL_STATUSES = new Set<LocalWorkflowRunStatus>(['completed', 'failed']);
-const nodeRequire = createRequire(import.meta.url);
-
 function withDefaults(overrides: Partial<LocalWorkflowDependencies> = {}): LocalWorkflowDependencies {
   return {
     cwd: () => process.cwd(),
     env: process.env,
     spawnProcess,
-    resolveRelayflowsCliEntrypoint: () => nodeRequire.resolve('@relayflows/cli'),
+    resolveAgentRelayCliEntrypoint: () => process.argv[1] ?? 'agent-relay',
     randomRunId: () =>
       `local_${new Date().toISOString().replace(/[-:.TZ]/g, '')}_${randomBytes(4).toString('hex')}`,
     now: () => new Date(),
@@ -277,11 +279,22 @@ async function resolveLocalWorkflowCommand(
   deps: LocalWorkflowDependencies
 ): Promise<{ command: string; args: string[] }> {
   if (fileType === 'yaml' || fileType === 'ts') {
-    return { command: process.execPath, args: [deps.resolveRelayflowsCliEntrypoint(), 'run', workflowPath] };
+    return resolveAgentRelayCliChildCommand({
+      execPath: process.execPath,
+      cliEntrypoint: deps.resolveAgentRelayCliEntrypoint(),
+      args: buildRelayflowsRunArgs(workflowPath, fileType),
+      cwd: deps.cwd(),
+    });
   }
 
   if (fileType === 'js') {
-    return { command: process.execPath, args: [workflowPath] };
+    return {
+      command: resolveAgentRelayScriptInterpreter({
+        execPath: process.execPath,
+        cliEntrypoint: deps.resolveAgentRelayCliEntrypoint(),
+      }),
+      args: [workflowPath],
+    };
   }
 
   return { command: deps.env.SHELL?.trim() || '/bin/sh', args: [workflowPath] };
@@ -358,7 +371,11 @@ async function runLocalWorkflow(
   const logFd = fs.openSync(logPath, 'a');
   let monitor: ChildProcess;
   try {
-    monitor = deps.spawnProcess(process.execPath, [runnerPath], {
+    const scriptInterpreter = resolveAgentRelayScriptInterpreter({
+      execPath: process.execPath,
+      cliEntrypoint: deps.resolveAgentRelayCliEntrypoint(),
+    });
+    monitor = deps.spawnProcess(scriptInterpreter, [runnerPath], {
       cwd,
       detached: true,
       stdio: ['ignore', logFd, logFd],
