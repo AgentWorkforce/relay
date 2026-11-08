@@ -89,6 +89,68 @@ describe('spawn helpers', () => {
     ]);
   });
 
+  it('keep caller_secret through the key filter on every spawn control', async () => {
+    const { client, calls } = fakeClient();
+    const caller_secret = 'svc_secret_value';
+    await spawnInvoke(client, { ...invoke, caller_secret });
+    await spawnStatus(client, {
+      caller_name: 'lead',
+      caller_secret,
+      action: 'spawn',
+      invocation_id: 'inv_1',
+    });
+    await spawnRelease(client, { ...release, caller_secret });
+    expect(calls.map((c) => (c.params as Record<string, unknown>).caller_secret)).toEqual([
+      caller_secret,
+      caller_secret,
+      caller_secret,
+    ]);
+    expect(Object.keys(calls[0].params as object)).toEqual([
+      'caller_name',
+      'caller_secret',
+      'node_id',
+      'node_name',
+      'name',
+      'harness',
+      'task',
+      'directory',
+      'idempotency_key',
+    ]);
+    expect(Object.keys(calls[1].params as object)).toEqual([
+      'caller_name',
+      'caller_secret',
+      'action',
+      'invocation_id',
+    ]);
+    expect(Object.keys(calls[2].params as object)).toEqual([
+      'caller_name',
+      'caller_secret',
+      'node_id',
+      'node_name',
+      'name',
+      'expected_agent_id',
+      'idempotency_key',
+    ]);
+  });
+
+  it('refuse an empty or non-string caller_secret without echoing it', async () => {
+    const { client, calls } = fakeClient();
+    const error = await invalidParams(spawnInvoke(client, { ...invoke, caller_secret: '' }));
+    expect(error.message).toBe(
+      'Native spawn input is invalid: caller_secret must be a non-empty string when given.'
+    );
+    await invalidParams(
+      spawnStatus(client, {
+        caller_name: 'lead',
+        caller_secret: 42 as never,
+        action: 'spawn',
+        invocation_id: 'inv_1',
+      })
+    );
+    await invalidParams(spawnRelease(client, { ...release, caller_secret: null as never }));
+    expect(calls).toEqual([]);
+  });
+
   it('refuse short idempotency keys locally', async () => {
     const { client, calls } = fakeClient();
     const error = await invalidParams(spawnInvoke(client, { ...invoke, idempotency_key: 'short_key' }));

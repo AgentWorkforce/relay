@@ -113,6 +113,9 @@ The core stays authoritative. Rules a caller must know:
 
 - `caller_name` must be an active local registration of this core with a stored
   token. The core uses that registration; no token crosses the bridge.
+- A service caller instead passes `caller_secret`, which the core's spawn caller
+  plugin checks; a core without that plugin refuses it. Leave it out for a
+  session caller.
 - `spawn.invoke` targets only this computer's own spawn node, which must be
   live, have `handlers_live`, not be stale, and advertise `spawn:<harness>`.
 - Persist idempotency keys (`newIdempotencyKey()` makes one) and reuse them on
@@ -142,5 +145,6 @@ bump is a semver-major release of this package.
   only the current user, refuses remote clients and holds the name exclusively,
   but unlike the Rust clients this package cannot verify that the pipe's
   _server_ runs as the current user without native code.
-- No credential crosses this client, and it never logs params or replies (a
-  spawn task can hold user text).
+- The only credential that crosses this client is an optional `caller_secret`,
+  and it never logs params or replies (a spawn task can hold user text, and a
+  spawn param can hold that secret).

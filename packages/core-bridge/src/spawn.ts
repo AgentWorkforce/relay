@@ -44,6 +44,12 @@ export interface SpawnTargets {
 /** The params of `spawn.invoke`; the core refuses any other key. */
 export interface SpawnInvokeParams {
   caller_name: string;
+  /**
+   * A secret naming a service caller the core's spawn caller plugin vouches
+   * for instead of a session registration; omit it for a session caller. A
+   * core without the plugin refuses it.
+   */
+  caller_secret?: string;
   node_id: string;
   node_name: string;
   name: string;
@@ -59,6 +65,12 @@ export type SpawnControlAction = 'spawn' | 'release';
 /** The params of `spawn.status`; the core refuses any other key. */
 export interface SpawnStatusParams {
   caller_name: string;
+  /**
+   * A secret naming a service caller the core's spawn caller plugin vouches
+   * for instead of a session registration; omit it for a session caller. A
+   * core without the plugin refuses it.
+   */
+  caller_secret?: string;
   action: SpawnControlAction;
   invocation_id: string;
 }
@@ -66,6 +78,12 @@ export interface SpawnStatusParams {
 /** The params of `spawn.release`; the core refuses any other key. */
 export interface SpawnReleaseParams {
   caller_name: string;
+  /**
+   * A secret naming a service caller the core's spawn caller plugin vouches
+   * for instead of a session registration; omit it for a session caller. A
+   * core without the plugin refuses it.
+   */
+  caller_secret?: string;
   node_id: string;
   node_name: string;
   name: string;
@@ -110,9 +128,13 @@ export interface SpawnControlInvocation {
   error_code: SpawnErrorCode | null;
 }
 
-/** The exact keys each params struct has, in the Rust field order. */
+/**
+ * The exact keys each params struct has, in the Rust field order. Optional
+ * keys left undefined are not sent.
+ */
 export const SPAWN_INVOKE_KEYS = [
   'caller_name',
+  'caller_secret',
   'node_id',
   'node_name',
   'name',
@@ -123,11 +145,13 @@ export const SPAWN_INVOKE_KEYS = [
 ] as const satisfies readonly (keyof SpawnInvokeParams)[];
 export const SPAWN_STATUS_KEYS = [
   'caller_name',
+  'caller_secret',
   'action',
   'invocation_id',
 ] as const satisfies readonly (keyof SpawnStatusParams)[];
 export const SPAWN_RELEASE_KEYS = [
   'caller_name',
+  'caller_secret',
   'node_id',
   'node_name',
   'name',
@@ -158,10 +182,21 @@ function key(params: object, field: string): void {
   }
 }
 
-function pick<K extends string>(params: object, keys: readonly K[]): Record<K, unknown> {
-  const out = {} as Record<K, unknown>;
-  for (const k of keys) out[k] = (params as Record<string, unknown>)[k];
+function pick<K extends string>(params: object, keys: readonly K[]): Partial<Record<K, unknown>> {
+  const out: Partial<Record<K, unknown>> = {};
+  for (const k of keys) {
+    const value = (params as Record<string, unknown>)[k];
+    if (value !== undefined) out[k] = value;
+  }
   return out;
+}
+
+function callerSecret(params: object): void {
+  const value = (params as Record<string, unknown>).caller_secret;
+  // Names the field only: the value is a credential.
+  if (value !== undefined && (typeof value !== 'string' || value.length === 0)) {
+    throw invalid('caller_secret', 'must be a non-empty string when given');
+  }
 }
 
 function requireMethod(client: CoreClient, method: string): void {
@@ -198,6 +233,7 @@ export async function spawnInvoke(
 ): Promise<SpawnControlInvocation> {
   requireMethod(client, 'spawn.invoke');
   for (const field of ['caller_name', 'node_id', 'node_name', 'name']) segment(params, field);
+  callerSecret(params);
   key(params, 'idempotency_key');
   if (typeof params.harness !== 'string' || params.harness.length === 0)
     throw invalid('harness', 'must be named');
@@ -225,6 +261,7 @@ export async function spawnStatus(
 ): Promise<SpawnControlInvocation> {
   requireMethod(client, 'spawn.status');
   segment(params, 'caller_name');
+  callerSecret(params);
   segment(params, 'invocation_id');
   if (params.action !== 'spawn' && params.action !== 'release')
     throw invalid('action', 'must be "spawn" or "release"');
@@ -239,6 +276,7 @@ export async function spawnRelease(
   requireMethod(client, 'spawn.release');
   for (const field of ['caller_name', 'node_id', 'node_name', 'name', 'expected_agent_id'])
     segment(params, field);
+  callerSecret(params);
   key(params, 'idempotency_key');
   return client.call<SpawnControlInvocation>('spawn.release', pick(params, SPAWN_RELEASE_KEYS));
 }

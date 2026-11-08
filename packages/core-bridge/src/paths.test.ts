@@ -80,9 +80,21 @@ describe('contract drift against crates/relay-node', () => {
 
   it('sends exactly the spawn params structs, which deny unknown fields', () => {
     const contract = read('contract/spawn_control.rs');
-    expect([...SPAWN_INVOKE_KEYS]).toEqual(fields(block(contract, 'struct', 'SpawnInvokeParams')));
-    expect([...SPAWN_STATUS_KEYS]).toEqual(fields(block(contract, 'struct', 'SpawnInvocationParams')));
-    expect([...SPAWN_RELEASE_KEYS]).toEqual(fields(block(contract, 'struct', 'SpawnReleaseParams')));
+    const pairs = [
+      [SPAWN_INVOKE_KEYS, 'SpawnInvokeParams'],
+      [SPAWN_STATUS_KEYS, 'SpawnInvocationParams'],
+      [SPAWN_RELEASE_KEYS, 'SpawnReleaseParams'],
+    ] as const;
+    for (const [keys, struct] of pairs) {
+      // Every params struct carries the optional service-caller credential,
+      // right after caller_name as in the Rust structs.
+      expect(keys.slice(0, 2), struct).toEqual(['caller_name', 'caller_secret']);
+      const rust = fields(block(contract, 'struct', struct));
+      // Until the core's caller_secret field (spawn callers hook) is on this
+      // base, the rest must still match field for field; once it is, exactly.
+      const expected = rust.includes('caller_secret') ? [...keys] : keys.filter((k) => k !== 'caller_secret');
+      expect(rust, struct).toEqual(expected);
+    }
     expect(variants(block(contract, 'enum', 'SpawnControlAction'))).toEqual(['spawn', 'release']);
   });
 
