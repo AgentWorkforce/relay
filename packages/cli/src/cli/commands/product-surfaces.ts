@@ -124,7 +124,7 @@ export const SURFACE_PACKAGES: Readonly<Record<string, SurfacePackage>> = {
   '@relayfile/sdk/relay-cli': { name: '@relayfile/sdk', range: '^0.10.77' },
   // Match the npm pin: GitLab setup checks and repository-backed approval
   // resume, with support for Relay 15.1 through 17 peers.
-  '@relayflows/sdk/relay-cli': { name: '@relayflows/sdk', range: '2.0.65' },
+  '@relayflows/sdk/relay-cli': { name: '@relayflows/sdk', range: '2.0.66' },
   'ai-hist/relay-cli': {
     name: 'ai-hist',
     range: '^0.18.1',
