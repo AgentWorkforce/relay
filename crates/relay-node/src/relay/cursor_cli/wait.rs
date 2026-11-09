@@ -22,13 +22,13 @@
 //! - it is its conversation's newest waiting hook, which
 //!   `<inbox>/waiting/<id>.wait` names, and waits after the conversation's
 //!   current turn, which `<id>.turn` names: `beforeSubmitPrompt` writes it
-//!   as every turn starts (in the CLI a follow-up's turn runs none, and its
-//!   `stop` writes it: `followup_turn_seen`), and every run of Agent Relay's
-//!   hook first retires
-//!   a waiting hook when either belongs to another turn (`turn_seen`). A
-//!   `stop` hook of an older turn run late neither claims nor waits, and
-//!   while `<id>.turn` is missing, corrupt or of another version, no hook
-//!   does, until the next turn starts;
+//!   as a turn starts (a turn that runs none is named by its `stop`: a CLI
+//!   follow-up's by `followup_turn_seen`, and one Cursor started itself in
+//!   the editor by `untracked_turn_seen`), and every run of Agent Relay's
+//!   hook first retires a waiting hook when either belongs to another turn
+//!   (`turn_seen`). A `stop` hook of an older turn run late neither claims
+//!   nor waits, and while `<id>.turn` is missing, corrupt or of another
+//!   version, no hook does, until the next turn starts;
 //! - that holder still runs the conversation: the editor's record still
 //!   gives it to that host and a hook of it ran within `editor::IDLE`, or
 //!   that `cursor-agent` still holds its store open; and this build's
@@ -155,9 +155,12 @@ fn replace(config: &CursorConfig, path: &Path, bytes: &[u8]) -> bool {
 /// The format of `<id>.turn`. A file of any other version reads as no turn.
 const TURN_VERSION: u32 = 1;
 
-/// The turn a conversation started last, as `<id>.turn` holds it. Only
-/// `beforeSubmitPrompt` names it: Cursor runs that as every turn starts, a
-/// `stop` follow-up's included, before the turn's other hooks.
+/// The turn a conversation started last, as `<id>.turn` holds it.
+/// `beforeSubmitPrompt` names it: Cursor runs that before a turn's other
+/// hooks, in the editor a `stop` follow-up's turn included, but not for a
+/// turn the editor starts itself, such as the one telling the agent a
+/// background task finished, nor for a CLI follow-up's turn. Such a turn's
+/// `stop` names it (`untracked_turn_seen`, `followup_turn_seen`).
 #[derive(Serialize, Deserialize)]
 struct CurrentTurn {
     version: u32,
@@ -265,8 +268,9 @@ pub fn turn_seen(config: &CursorConfig, payload: &Value) {
 /// such a turn, so its `stop` is the first hook to name it: a follow-up's
 /// `stop` (`loop_count` above 0) of a turn that is neither the current one
 /// nor an earlier one is that newer turn. Only for a hook proved to run
-/// under the `cursor-agent` holding the conversation: the editor names
-/// every turn as it starts.
+/// under the `cursor-agent` holding the conversation: the editor names a
+/// follow-up's turn as it starts (`untracked_turn_seen` covers the turns
+/// it does not).
 pub fn followup_turn_seen(config: &CursorConfig, payload: &Value) {
     let (Some(session), Some(generation)) = (payload_session(payload), generation(payload)) else {
         return;
@@ -283,6 +287,42 @@ pub fn followup_turn_seen(config: &CursorConfig, payload: &Value) {
                 || turn.earlier.iter().any(|earlier| earlier == generation)
         });
         if !known {
+            start_turn(config, session, Some(generation));
+        }
+    });
+}
+
+/// How long before a `stop` hook `started` a turn named in `<id>.turn`
+/// still keeps that hook from naming its own (`untracked_turn_seen`).
+const NAMED_BEFORE: Duration = Duration::from_secs(2);
+
+/// Notes the turn a completed `stop` payload ends as the conversation's
+/// current one when `<id>.turn` names another turn, and knows this one
+/// neither as that nor as an earlier one: Cursor started it without
+/// `beforeSubmitPrompt` (`CurrentTurn`), so without this its `stop` would
+/// not wait and the idle chat would take no message until its person typed.
+/// A turn named after the hook `started`, or within `NAMED_BEFORE` before,
+/// may be newer than the one it ends, and one that cannot be read may be
+/// anything: either is left as it is. Only for a hook proved to run under
+/// the window holding the conversation.
+pub fn untracked_turn_seen(config: &CursorConfig, payload: &Value, started: SystemTime) {
+    let (Some(session), Some(generation), true) = (
+        payload_session(payload),
+        generation(payload),
+        waits_after(payload),
+    ) else {
+        return;
+    };
+    locked(config, session, || {
+        let Some(turn) = read_turn(config, session) else {
+            return;
+        };
+        let known = turn.generation == generation
+            || turn.earlier.iter().any(|earlier| earlier == generation);
+        let named_before = std::fs::metadata(turn_file(config, session))
+            .and_then(|metadata| metadata.modified())
+            .is_ok_and(|named| named + NAMED_BEFORE <= started);
+        if !known && named_before {
             start_turn(config, session, Some(generation));
         }
     });

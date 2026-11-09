@@ -583,6 +583,124 @@ fn an_unknown_current_turn_takes_nothing_until_the_next_turn_starts() {
     }
 }
 
+fn age(path: &Path, seconds: u64) {
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(SystemTime::now() - Duration::from_secs(seconds))
+        .unwrap();
+}
+
+#[test]
+fn a_turn_cursor_started_itself_waits_after_its_stop() {
+    // gen-1's prompt started a turn a minute ago; then Cursor started gen-2
+    // itself (a background task finished), running no `beforeSubmitPrompt`.
+    let (_temp, config, table) = editor();
+    age(&turn_file(&config, SESSION), 60);
+    let flags = Flags::new();
+    // A hook outside the window names nothing.
+    table.insert(800, shell(600, &[]));
+    assert_eq!(
+        run(&config, &table, &flags, 800, &stop("gen-2"), Some(LONG)),
+        (false, vec![])
+    );
+    assert_eq!(current_turn(&config, SESSION).as_deref(), Some("gen-1"));
+    std::thread::scope(|scope| {
+        let older = scope.spawn(|| park(&config, &table, &flags, HOOK, &stop("gen-1"), LONG, true));
+        eventually("gen-1's hook waits", || parked(&config));
+        let hook = scope.spawn(|| {
+            run(
+                &config,
+                &table,
+                &flags,
+                HOOK + 1,
+                &stop("gen-2"),
+                Some(LONG),
+            )
+        });
+        assert_eq!(older.join().unwrap(), (Ended::Retired, vec![]));
+        eventually("gen-2's hook waits", || {
+            read(&config, SESSION).is_some_and(|waiter| waiter.pid == HOOK + 1) && parked(&config)
+        });
+        message(&config, &table, "m-1", "ping");
+        assert_eq!(
+            hook.join().unwrap(),
+            (true, vec![json!({"followup_message": "ping"})])
+        );
+    });
+    let turn = read_turn(&config, SESSION).unwrap();
+    assert_eq!(turn.generation, "gen-2");
+    assert_eq!(turn.earlier, vec!["gen-1".to_string()]);
+    // gen-1's stop run late is of an earlier turn: it names nothing and
+    // does not wait.
+    place(&config, "m-2", "pong");
+    assert_eq!(
+        run(
+            &config,
+            &table,
+            &flags,
+            HOOK + 2,
+            &stop("gen-1"),
+            Some(LONG)
+        ),
+        (false, vec![])
+    );
+    assert_eq!(current_turn(&config, SESSION).as_deref(), Some("gen-2"));
+    assert_eq!(staged(&config), 1);
+}
+
+#[test]
+fn a_stop_leaves_a_turn_named_since_its_hook_started_or_just_before() {
+    // gen-2's prompt is named while the `stop` hook of gen-x, a turn Cursor
+    // started itself, is still starting: gen-2 may be the newer turn.
+    let (_temp, config, table) = editor();
+    age(&turn_file(&config, SESSION), 60);
+    let flags = Flags::new();
+    let started = SystemTime::now();
+    start(&config, "gen-2");
+    untracked_turn_seen(&config, &stop("gen-x"), started);
+    assert_eq!(current_turn(&config, SESSION).as_deref(), Some("gen-2"));
+    // A hook starting just after gen-2 was named leaves it too, and neither
+    // waits: the message stays for gen-2's own hooks.
+    place(&config, "m-1", "ping");
+    assert_eq!(
+        run(&config, &table, &flags, HOOK, &stop("gen-x"), Some(LONG)),
+        (false, vec![])
+    );
+    assert_eq!(current_turn(&config, SESSION).as_deref(), Some("gen-2"));
+    assert_eq!(staged(&config), 1);
+    assert!(!waiting(&config));
+}
+
+#[test]
+fn a_stop_never_replaces_a_current_turn_that_cannot_be_read() {
+    let later = json!({"version": TURN_VERSION + 1, "generation": "gen-1"}).to_string();
+    for contents in ["{\"version\": 1, \"gen", later.as_str()] {
+        let (_temp, config, table) = editor();
+        std::fs::write(turn_file(&config, SESSION), contents).unwrap();
+        age(&turn_file(&config, SESSION), 60);
+        place(&config, "m-1", "ping");
+        assert_eq!(
+            run(
+                &config,
+                &table,
+                &Flags::new(),
+                HOOK,
+                &stop("gen-2"),
+                Some(LONG)
+            ),
+            (false, vec![]),
+            "{contents}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(turn_file(&config, SESSION)).unwrap(),
+            contents
+        );
+        assert_eq!(staged(&config), 1, "{contents}");
+    }
+}
+
 #[test]
 fn a_waiting_hook_whose_current_turn_became_unknown_takes_nothing() {
     let (_temp, config, table) = editor();
