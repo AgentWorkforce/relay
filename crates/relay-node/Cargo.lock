@@ -28,6 +28,7 @@ dependencies = [
  "nix",
  "portable-pty",
  "relaycast",
+ "reqwest",
  "ring",
  "rusqlite",
  "rustls",
@@ -1316,8 +1317,7 @@ dependencies = [
 [[package]]
 name = "relaycast"
 version = "10.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44f855556ba9e0bac1312333f867c0929fe7fe5004469f1be057b625fff7b23a"
+source = "git+https://github.com/AgentWorkforce/relaycast.git?rev=a7433eb24ab42d1106bf6a52edb956051a370cc5#a7433eb24ab42d1106bf6a52edb956051a370cc5"
 dependencies = [
  "futures-util",
  "reqwest",

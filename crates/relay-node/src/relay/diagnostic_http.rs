@@ -12,7 +12,7 @@ impl HttpClient {
     pub fn new(options: ClientOptions) -> relaycast::Result<Self> {
         let credential = super::workspace::Secret::new(options.api_key.clone());
         Ok(Self {
-            inner: relaycast::HttpClient::new(options)?,
+            inner: super::sdk_http::client(options)?,
             credential,
         })
     }
@@ -22,6 +22,7 @@ impl HttpClient {
         query: Option<&[(&str, &str)]>,
         options: Option<RequestOptions>,
     ) -> relaycast::Result<T> {
+        super::sdk_http::environment_is_safe()?;
         super::request_log::observe(
             "GET",
             &format!("{}{}", self.inner.base_url(), path),
@@ -37,6 +38,7 @@ impl HttpClient {
         body: Option<impl Serialize>,
         options: Option<RequestOptions>,
     ) -> relaycast::Result<T> {
+        super::sdk_http::environment_is_safe()?;
         super::request_log::observe(
             "POST",
             &format!("{}{}", self.inner.base_url(), path),
@@ -51,6 +53,7 @@ impl HttpClient {
         path: &str,
         options: Option<RequestOptions>,
     ) -> relaycast::Result<()> {
+        super::sdk_http::environment_is_safe()?;
         super::request_log::observe(
             "DELETE",
             &format!("{}{}", self.inner.base_url(), path),

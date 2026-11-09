@@ -88,6 +88,7 @@ pub(crate) mod detach;
 pub mod devin;
 pub mod devin_cloud;
 pub mod diagnostic_http;
+pub mod sdk_http;
 pub mod diagnostics;
 pub mod existing_session;
 pub mod files;
