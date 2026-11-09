@@ -1109,8 +1109,10 @@ async fn a_scoped_spawn_forwards_the_checked_path_after_a_symlink_swap() {
 
     let relaycast = Relaycast::new();
     let allowed = tempfile::tempdir().unwrap();
+    let checked_target = allowed.path().join("checked-target");
+    std::fs::create_dir(&checked_target).unwrap();
     let checked = allowed.path().join("checked");
-    std::fs::create_dir(&checked).unwrap();
+    symlink(&checked_target, &checked).unwrap();
     let outside = tempfile::tempdir().unwrap();
     let selected = allowed.path().join("selected");
     symlink(&checked, &selected).unwrap();
@@ -1147,6 +1149,7 @@ async fn a_scoped_spawn_forwards_the_checked_path_after_a_symlink_swap() {
     .unwrap();
     let requests = served.join().unwrap();
     let body = request_body(&requests[0]);
+    let checked = std::fs::canonicalize(&checked).unwrap();
     assert_eq!(body["input"]["worker_cwd"], checked.to_str().unwrap());
     assert_eq!(
         body["input"]["logical_request"]["directory"],
