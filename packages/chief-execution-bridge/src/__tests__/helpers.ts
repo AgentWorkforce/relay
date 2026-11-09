@@ -2,7 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ExecutionBridge } from '../bridge.js';
-import { configSchema, type BridgeConfig } from '../config.js';
+import { configSchema, relayWorkspaceOf, type BridgeConfig } from '../config.js';
 import {
   RelayError,
   type NodePort,
@@ -23,7 +23,7 @@ export const WORKER = 'agent-worker';
 
 /** The fields a fixture can vary without desynchronising its evidence and digests. */
 type AssignmentOverrides = Partial<
-  Pick<Assignment, 'taskId' | 'repository' | 'acceptance' | 'reservationMicros' | 'action'>
+  Pick<Assignment, 'taskId' | 'repository' | 'acceptance' | 'reservationMicros' | 'action' | 'workspaceId'>
 > & { summary?: string };
 
 export function makeAssignment(overrides: AssignmentOverrides = {}): {
@@ -33,12 +33,13 @@ export function makeAssignment(overrides: AssignmentOverrides = {}): {
   const { summary, ...fields } = overrides;
   const taskId = fields.taskId ?? 'task-1';
   const repository = fields.repository ?? 'acme/app';
+  const workspaceId = fields.workspaceId ?? 'ws-1';
   const evidence = {
     sourceId: 'source',
     sessionId: 'session',
     version: 'v1',
     organizationId: 'org-1',
-    workspaceId: 'ws-1',
+    workspaceId,
     projectId: 'project-1',
     repository,
     workKey: 'work-1',
@@ -289,6 +290,7 @@ export async function makeHarness(configOverrides: Record<string, unknown> = {})
   const clock = { now: T0 + 1000 };
   const logs: Harness['logs'] = [];
   const config = makeConfig(configOverrides);
+  relay.identityValue.workspaceId = relayWorkspaceOf(config);
   const build = (store: BridgeStore) =>
     new ExecutionBridge({
       config,
