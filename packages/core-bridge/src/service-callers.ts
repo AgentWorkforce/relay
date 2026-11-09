@@ -8,6 +8,7 @@
  */
 import type { CallOptions, CoreClient } from './client.js';
 import { CoreBridgeError, CoreRpcError } from './errors.js';
+import type { CallerFileDescriptor } from './auth.js';
 
 export const SERVICE_CALLER_IDENTITY_METHOD = 'spawn_callers.identity';
 export const SERVICE_CALLER_INBOX_OPEN_METHOD = 'spawn_callers.inbox.open';
@@ -38,6 +39,29 @@ export interface CallerIdentity {
   base_url: string;
   workspace_id: string;
   relaycast_workspace_id: string;
+}
+
+/**
+ * Refuses when Desktop's bound identity is not the identity covered by the
+ * caller file. The local node is intentionally not compared: it is returned
+ * only by Desktop and selects the spawn target after this check.
+ */
+export function assertServiceCallerIdentity(
+  descriptor: CallerFileDescriptor,
+  identity: CallerIdentity
+): void {
+  if (
+    descriptor.publisher.id !== identity.publisher.id ||
+    descriptor.publisher.name !== identity.publisher.name ||
+    descriptor.workspace.base_url !== identity.base_url ||
+    descriptor.workspace.workspace_id !== identity.workspace_id ||
+    descriptor.workspace.relaycast_workspace_id !== identity.relaycast_workspace_id
+  ) {
+    throw new CoreBridgeError(
+      'caller_identity_mismatch',
+      'The authenticated service caller does not match caller.json; rotate it in Agent Relay Desktop.'
+    );
+  }
 }
 
 export interface InboxOpened {

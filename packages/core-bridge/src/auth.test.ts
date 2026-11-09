@@ -18,11 +18,20 @@ import {
   authenticate,
   callerTranscript,
   readCallerCredential,
+  readCallerDescriptor,
   type CallerChallenge,
   type CallerTranscriptInput,
 } from './auth.js';
 import type { CoreClient, HelloResult } from './client.js';
 import { CoreBridgeError, CoreRpcError } from './errors.js';
+import {
+  SERVICE_CALLER_DISCONNECT_METHOD,
+  SERVICE_CALLER_INBOX_ACK_METHOD,
+  SERVICE_CALLER_INBOX_CLOSE_METHOD,
+  SERVICE_CALLER_INBOX_FAIL_METHOD,
+  SERVICE_CALLER_INBOX_NEXT_METHOD,
+  SERVICE_CALLER_INBOX_OPEN_METHOD,
+} from './service-callers.js';
 
 interface Vectors {
   version: number;
@@ -58,10 +67,32 @@ const document = (fields: Record<string, unknown> = {}) => ({
     authenticate: CALLER_AUTHENTICATE_METHOD,
   },
   caller_id: base.caller_id,
+  caller_name: 'flows-runner',
+  publisher: { id: 'agent_1', name: 'flows-runner' },
   secret: base.secret,
-  workspace: { site_url: base.site_url, workspace_id: base.workspace_id },
+  workspace: {
+    site_url: base.site_url,
+    base_url: 'https://relay.example',
+    workspace_id: base.workspace_id,
+    relaycast_workspace_id: 'rcws_1',
+  },
   account: { user_id: base.user_id },
+  created_at: '2026-11-09T00:00:00Z',
+  expires_at: '2027-11-09T00:00:00Z',
   harnesses: ['claude'],
+  directory_scope: ['/tmp/project'],
+  owns_only: true,
+  socket: '/tmp/core.sock',
+  inbox: {
+    transport: 'core-bridge',
+    open: SERVICE_CALLER_INBOX_OPEN_METHOD,
+    next: SERVICE_CALLER_INBOX_NEXT_METHOD,
+    ack: SERVICE_CALLER_INBOX_ACK_METHOD,
+    fail: SERVICE_CALLER_INBOX_FAIL_METHOD,
+    close: SERVICE_CALLER_INBOX_CLOSE_METHOD,
+    disconnect: SERVICE_CALLER_DISCONNECT_METHOD,
+  },
+  desktop_version: '2026.11.2',
   ...fields,
 });
 
@@ -213,14 +244,33 @@ describe('CallerCredential', () => {
         },
       }),
       document({ auth: undefined }),
+      document({ extra: true }),
       document({ caller_id: 'sc_0123456789ABCDEF' }),
       document({ caller_id: 'sc_0123456789abcdef0' }),
       document({ caller_id: 'xx_0123456789abcdef' }),
       document({ secret: 'rsc_short' }),
       document({ secret: undefined }),
+      document({ caller_name: 'bad name' }),
+      document({ publisher: { id: 'agent_1', name: 'other' } }),
+      document({ publisher: { id: 'agent_1', name: 'flows-runner', extra: true } }),
       document({ workspace: { site_url: '', workspace_id: 'ws' } }),
       document({ workspace: undefined }),
       document({ account: { user_id: 7 } }),
+      document({ created_at: 'yesterday' }),
+      document({ rotated_at: null }),
+      document({ rotated_at: '2025-11-09T00:00:00Z' }),
+      document({ expires_at: 7 }),
+      document({ expires_at: '2025-11-09T00:00:00Z' }),
+      document({ harnesses: [] }),
+      document({ harnesses: ['claude', 'claude'] }),
+      document({ harnesses: ['bad harness'] }),
+      document({ directory_scope: ['relative'] }),
+      document({ directory_scope: ['/tmp/a', '/tmp/a'] }),
+      document({ owns_only: 'true' }),
+      document({ socket: 'relative.sock' }),
+      document({ inbox: { ...document().inbox, fail: 'spawn_callers.inbox.other' } }),
+      document({ inbox: { ...document().inbox, extra: true } }),
+      document({ desktop_version: '' }),
       [],
       null,
     ];
@@ -371,6 +421,46 @@ describe.skipIf(process.platform === 'win32')('readCallerCredential (POSIX)', ()
     expect(credential.authenticatorFor(challenge)).toBe(base.authenticator);
     await chmod(file, 0o400);
     expect((await readCallerCredential(file)).callerId).toBe(base.caller_id);
+  });
+
+  it('returns the complete checked descriptor from the same secure read without its secret', async () => {
+    await writeFile(file, JSON.stringify(document({ rotated_at: '2026-11-09T01:00:00Z' })), { mode: 0o600 });
+    const descriptor = await readCallerDescriptor(file);
+    expect(descriptor).toMatchObject({
+      schema: CALLER_FILE_SCHEMA,
+      schemaVersion: 2,
+      callerId: base.caller_id,
+      callerName: 'flows-runner',
+      publisher: { id: 'agent_1', name: 'flows-runner' },
+      workspace: {
+        site_url: base.site_url,
+        base_url: 'https://relay.example',
+        workspace_id: base.workspace_id,
+        relaycast_workspace_id: 'rcws_1',
+      },
+      account: { user_id: base.user_id },
+      createdAt: '2026-11-09T00:00:00Z',
+      rotatedAt: '2026-11-09T01:00:00Z',
+      expiresAt: '2027-11-09T00:00:00Z',
+      harnesses: ['claude'],
+      directoryScope: ['/tmp/project'],
+      ownsOnly: true,
+      socket: '/tmp/core.sock',
+      desktopVersion: '2026.11.2',
+    });
+    expect(descriptor.inbox).toEqual(document().inbox);
+    expect(descriptor.credential.callerId).toBe(base.caller_id);
+    expect(descriptor.credential.authenticatorFor(challenge)).toBe(base.authenticator);
+    const printed = JSON.stringify(descriptor);
+    expect(printed).not.toContain(base.secret);
+    expect(printed).not.toContain(base.key_hex);
+    expect(printed).toContain('[redacted]');
+    expect(Object.isFrozen(descriptor)).toBe(true);
+    expect(Object.isFrozen(descriptor.credential)).toBe(true);
+    expect(Object.isFrozen(descriptor.publisher)).toBe(true);
+    expect(Object.isFrozen(descriptor.workspace)).toBe(true);
+    expect(Object.isFrozen(descriptor.harnesses)).toBe(true);
+    expect(Object.isFrozen(descriptor.directoryScope)).toBe(true);
   });
 
   it('reports a missing file, or a path through a file, unchanged and without a caller error', async () => {
