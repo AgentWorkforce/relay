@@ -7,3 +7,5 @@ Decision: default stays disabled; propagate one public start flag through foregr
 Validation plan: actual command/queue/assignment boundaries with injected fetch and process dependencies; exact YAML/TS arguments, default-off, daemon, parked failure and state-bearing refusal. No worker enrollment, provider calls or deployment.
 
 Trail CLI is unavailable in this environment; this tracked record captures the delegated decision directly.
+
+Review follow-up: SDK2.0.65 attaches a YAML agent worker but its authored TypeScript path also attaches LLM execution. Narrow generic capability wording. Control may supply ordinary `.ts` filenames, so normalize only the materialized TypeScript filename to `.flow.ts`, retaining source bytes and directory; validate against the actual published SDK path classifier.

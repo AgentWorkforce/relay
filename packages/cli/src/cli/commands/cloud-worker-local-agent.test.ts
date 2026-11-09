@@ -3,6 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
+import { fileURLToPath } from 'node:url';
+import { runInNewContext } from 'node:vm';
+import ts from 'typescript';
 import { Command } from 'commander';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { upsertCloudWorkerRecord, type WorkerWorkflowPayload } from '@agent-relay/cloud';
@@ -35,7 +38,7 @@ const payload: WorkerWorkflowPayload = {
   workflowFileName: 'workflow.yaml',
 };
 
-function harness(exitCode = 0) {
+function harness(exitCode = 0, workflow = payload) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'worker-local-agent-'));
   directories.push(home);
   const statuses: Array<{ phase: string }> = [];
@@ -57,8 +60,8 @@ function harness(exitCode = 0) {
     if (url.pathname.endsWith('/queue')) {
       const assignment = {
         id: 'fixture-assignment',
-        runId: payload.runId,
-        workflowRef: { type: 'inline', value: JSON.stringify(payload) },
+        runId: workflow.runId,
+        workflowRef: { type: 'inline', value: JSON.stringify(workflow) },
       };
       return new Response(`event: assignment\ndata: ${JSON.stringify(assignment)}\n\n`, {
         headers: { 'Content-Type': 'text/event-stream' },
@@ -94,6 +97,75 @@ afterEach(() => {
 });
 
 describe('cloud worker local execution opt-in', () => {
+  it.each(['ordinary.ts', 'authored.flow.ts'])(
+    'materializes %s through the actual pinned SDK authored-path contract',
+    async (fileName) => {
+      // Execute the installed SDK's literal pure classifier, not a copied
+      // predicate or a fake SDK. This control does not run a daemon/provider.
+      const sdkDist = path.dirname(fileURLToPath(import.meta.resolve('@relayflows/sdk')));
+      const sdk = JSON.parse(fs.readFileSync(path.join(sdkDist, '..', 'package.json'), 'utf8')) as {
+        version: string;
+      };
+      const cli = JSON.parse(fs.readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')) as {
+        dependencies: Record<string, string>;
+      };
+      expect(sdk.version).toBe(cli.dependencies['@relayflows/sdk']);
+      const source = fs.readFileSync(path.join(sdkDist, 'direct-input.js'), 'utf8');
+      const module = ts.createSourceFile(
+        'direct-input.js',
+        source,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.JS
+      );
+      const declaration = module.statements.find(
+        (statement) => ts.isFunctionDeclaration(statement) && statement.name?.text === 'isAuthoredFlowPath'
+      );
+      expect(declaration).toBeDefined();
+      const classifier = runInNewContext(
+        `(${declaration!.getText(module).replace(/^export\s+/, '')})`,
+        Object.create(null),
+        { timeout: 1000 }
+      ) as (name: string) => boolean;
+      expect(classifier('/run/ordinary.ts')).toBe(false);
+
+      const body = "export default { name: 'fixture' };\n";
+      const h = harness(0, {
+        ...payload,
+        fileType: 'ts',
+        sourceFileType: 'ts',
+        workflowFileName: fileName,
+        workflow: body,
+      });
+      h.deps.env.AGENT_RELAY_WORKER_KEEP_RUN_DIR = '1';
+      await h.program.parseAsync([
+        'node',
+        'relay',
+        'cloud',
+        'worker',
+        'start',
+        '--once',
+        '--local-agent',
+        '--base-url',
+        worker.baseUrl,
+      ]);
+      const args = h.spawnProcess.mock.calls[0]![1] as string[];
+      const workflowPath = args[3]!;
+      const expected = path.join(
+        h.deps.env.AGENT_RELAY_HOME!,
+        'cloud-workers',
+        'runs',
+        payload.runId,
+        fileName.replace(/(?:\.flow)?\.ts$/, '') + '.flow.ts'
+      );
+      expect(workflowPath).toBe(expected);
+      expect(classifier(workflowPath)).toBe(true);
+      expect(fs.readFileSync(workflowPath, 'utf8')).toBe(body);
+      expect(args.slice(4)).toEqual(['--input', '{}', '--local-agent']);
+      expect(h.statuses.map((status) => status.phase)).toEqual(['running', 'completed']);
+    }
+  );
+
   it.each([false, true])(
     'threads localAgent=%s through the real queue loop and assignment runner',
     async (localAgent) => {

@@ -239,7 +239,12 @@ export function createDefaultAssignmentRunner(
       await fsp.chmod(runDir, 0o700).catch(() => undefined);
       await materializeCodeMounts({ worker, payload, runDir, deps, signal });
 
-      const workflowPath = path.join(runDir, safeFileName(payload.workflowFileName));
+      const suppliedName = safeFileName(payload.workflowFileName);
+      // The supported authored-flow SDK entrypoint recognizes *.flow.ts.
+      // Control can supply an ordinary *.ts name; preserve its directory/body.
+      const workflowName =
+        payload.fileType === 'ts' ? `${suppliedName.replace(/(?:\.flow)?\.ts$/i, '')}.flow.ts` : suppliedName;
+      const workflowPath = path.join(runDir, workflowName);
       await writeSecretFile(workflowPath, payload.workflow);
 
       if (cliCredentials) {
@@ -454,7 +459,7 @@ export function registerCloudWorkerCommands(
     .option('--once', 'Process one assignment, then exit', false)
     .option(
       '--local-agent',
-      'Attach local Relayflows agent and LLM workers; provider setup is separate',
+      'Attach the supported local Relayflows agent worker; provider setup is separate',
       false
     )
     .addOption(new Option('--foreground-child', 'Internal flag used by --daemon').hideHelp().default(false))
