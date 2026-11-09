@@ -16,10 +16,10 @@
 //! - **Delivery** stages a file in Agent Relay's own inbox for the session.
 //!   Agent Relay's hooks in `~/.cursor/hooks.json` hand it to the session
 //!   at its next tool call (`postToolUse` → `additional_context`) or when
-//!   its turn ends (`stop` → `followup_message`, a new user turn). A CLI
-//!   session idle at its prompt runs no hook, so its messages wait for its
-//!   person. An editor conversation's `stop` hook waits after a completed
-//!   turn instead, and answers the next message staged for it (`wait`).
+//!   its turn ends (`stop` → `followup_message`, a new user turn). A
+//!   conversation idle at its prompt runs no hook, so its `stop` hook waits
+//!   after a completed turn instead, and answers the next message staged
+//!   for it (`wait`).
 //! - **Settlement** claims a message before the hook prints it and
 //!   tombstones it once the answer is written. A claim the hook never
 //!   finished is settled by Cursor's transcript, which records a `stop`
@@ -427,7 +427,7 @@ const HOOK_ANCESTRY: usize = 8;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HookCaller {
     /// The one `cursor-agent` holding the session's store.
-    Cli,
+    Cli { agent: i32 },
     /// A Cursor window's extension host (`editor`), which runs the
     /// conversation the payload names.
     Editor { host: i32 },
@@ -459,7 +459,7 @@ pub fn hook_caller(
         if process.uid == uid && is_cursor_process(table, pid) {
             let holder = held(config, table, uid, session_id).is_some_and(|held| held.pid == pid);
             if holder {
-                return Some(HookCaller::Cli);
+                return Some(HookCaller::Cli { agent: pid });
             }
             if !editor::is_editor_worker(table, pid) {
                 return None;
@@ -524,11 +524,10 @@ pub fn record_editor_hook(
 /// Then, only under the caller `hook_caller` proves, it hands the
 /// conversation's staged messages over through `write`, which says whether
 /// the answer was written in full: claims are tombstoned once it was and
-/// put back if not. With `watch` (the `stop` entry's `--wait`) an editor
-/// conversation's completed turn waits for its next message (`wait::wait`).
-/// A Cursor CLI session answers at once, and keeps Cursor's own limit of
-/// follow-ups in a row (`wait::CURSOR_LOOP_LIMIT`), which that entry lifts.
-/// `true` once it answered.
+/// put back if not. With `watch` (the `stop` entry's `--wait`) a completed
+/// turn, in the editor or a Cursor CLI session, waits for its next message
+/// (`wait::wait`); a CLI follow-up's turn is named by its `stop`
+/// (`wait::followup_turn_seen`). `true` once it answered.
 pub fn run_hook(
     config: &CursorConfig,
     table: &dyn ProcessTable,
@@ -547,26 +546,24 @@ pub fn run_hook(
         }
         return false;
     }
-    match hook_caller(config, table, pid, session) {
-        None => false,
-        Some(HookCaller::Cli) => {
-            let looped = payload["hook_event_name"] == "stop"
-                && payload["loop_count"]
-                    .as_u64()
-                    .is_some_and(|count| count >= wait::CURSOR_LOOP_LIMIT);
-            !(watch.is_some() && looped) && answer_now(config, payload, write)
+    let holder = match hook_caller(config, table, pid, session) {
+        None => return false,
+        Some(HookCaller::Cli { agent }) => {
+            wait::followup_turn_seen(config, payload);
+            wait::Holder::Cli { agent }
         }
         Some(HookCaller::Editor { host }) => {
             if !record_editor_hook(config, table, pid, host, payload) {
                 return false;
             }
-            match watch {
-                Some(watch) if wait::waits_after(payload) => {
-                    wait::wait(config, table, host, payload, watch, write) == wait::Ended::Answered
-                }
-                _ => answer_now(config, payload, write),
-            }
+            wait::Holder::Editor { host }
         }
+    };
+    match watch {
+        Some(watch) if wait::waits_after(payload) => {
+            wait::wait(config, table, holder, payload, watch, write) == wait::Ended::Answered
+        }
+        _ => answer_now(config, payload, write),
     }
 }
 

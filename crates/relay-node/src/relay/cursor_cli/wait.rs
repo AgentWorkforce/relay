@@ -1,31 +1,38 @@
-//! The Cursor editor's `stop` hook waiting at the end of a turn, so a
-//! message for a conversation that has finished its turn wakes it.
+//! Cursor's `stop` hook waiting at the end of a turn, so a message for a
+//! conversation that has finished its turn wakes it, in the Cursor editor
+//! and in an interactive Cursor CLI session alike.
 //!
-//! An editor conversation idle in its window runs no hook until its person
-//! starts a turn. So Agent Relay's `stop` entry (`cursor-hook --wait`)
-//! does not answer at once when a completed turn has nothing pending. Cursor
-//! has already marked the turn completed, so the chat is idle and its person
-//! can type; the hook stays until a message is staged for the conversation
-//! and answers it as `followup_message`, which Cursor submits as the next
-//! user turn. When that turn ends Cursor runs the hook again. Cursor CLI
-//! sessions run the same entry and answer at once (`super::run_hook`).
+//! A conversation idle in its window or at its CLI prompt runs no hook
+//! until its person starts a turn. So Agent Relay's `stop` entry
+//! (`cursor-hook --wait`) does not answer at once when a completed turn has
+//! nothing pending. Cursor has already marked the turn completed, so the
+//! chat is idle and its person can type; the hook stays until a message is
+//! staged for the conversation and answers it as `followup_message`, which
+//! Cursor submits as the next user turn. When that turn ends Cursor runs
+//! the hook again. `cursor-agent -p` runs no `stop` hook, so nothing waits
+//! there.
 //!
-//! Cursor drops a follow-up once a newer turn owns the chat, and nobody
-//! reads the answer of a hook whose window reloaded. So a waiting hook takes
-//! a message only while
-//! - its parent is still the process that started it, under the window's
-//!   extension host, which still runs with the same pid and start time;
+//! A follow-up a hook of an older turn gives once a newer turn owns the
+//! chat starts a turn nobody asked for, and nobody reads the answer of a
+//! hook whose window reloaded or whose `cursor-agent` quit. So a waiting
+//! hook takes a message only while
+//! - its parent is still the process that started it, under the
+//!   conversation's holder (`Holder`), which still runs with the same pid
+//!   and start time;
 //! - it is its conversation's newest waiting hook, which
 //!   `<inbox>/waiting/<id>.wait` names, and waits after the conversation's
 //!   current turn, which `<id>.turn` names: `beforeSubmitPrompt` writes it
-//!   as every turn starts, and every run of Agent Relay's hook first retires
+//!   as every turn starts (in the CLI a follow-up's turn runs none, and its
+//!   `stop` writes it: `followup_turn_seen`), and every run of Agent Relay's
+//!   hook first retires
 //!   a waiting hook when either belongs to another turn (`turn_seen`). A
 //!   `stop` hook of an older turn run late neither claims nor waits, and
 //!   while `<id>.turn` is missing, corrupt or of another version, no hook
 //!   does, until the next turn starts;
-//! - the conversation's record still gives it to that host and a hook of
-//!   it ran within `editor::IDLE`, and this build's waiting entry is still
-//!   in `~/.cursor/hooks.json`.
+//! - that holder still runs the conversation: the editor's record still
+//!   gives it to that host and a hook of it ran within `editor::IDLE`, or
+//!   that `cursor-agent` still holds its store open; and this build's
+//!   waiting entry is still in `~/.cursor/hooks.json`.
 //!
 //! It checks again, claims and answers under one lock per conversation,
 //! which taking over and retiring take too, so a message is claimed by one
@@ -63,11 +70,6 @@ pub const POLL: Duration = Duration::from_secs(1);
 
 /// How many polls apart it reads `hooks.json` again.
 const SETTINGS_EVERY: u32 = 15;
-
-/// Cursor's limit on `stop` follow-ups in a row for an entry that sets
-/// none. The waiting entry sets none (`loop_limit: null`); a Cursor CLI
-/// session, which answers at once, keeps this one.
-pub(super) const CURSOR_LOOP_LIMIT: u64 = 5;
 
 const WAITING_DIR: &str = "waiting";
 
@@ -258,6 +260,34 @@ pub fn turn_seen(config: &CursorConfig, payload: &Value) {
     });
 }
 
+/// Notes the Cursor CLI turn a `stop` follow-up started as the
+/// conversation's current one. The CLI runs no `beforeSubmitPrompt` for
+/// such a turn, so its `stop` is the first hook to name it: a follow-up's
+/// `stop` (`loop_count` above 0) of a turn that is neither the current one
+/// nor an earlier one is that newer turn. Only for a hook proved to run
+/// under the `cursor-agent` holding the conversation: the editor names
+/// every turn as it starts.
+pub fn followup_turn_seen(config: &CursorConfig, payload: &Value) {
+    let (Some(session), Some(generation)) = (payload_session(payload), generation(payload)) else {
+        return;
+    };
+    let followup = payload["loop_count"]
+        .as_u64()
+        .is_some_and(|count| count > 0);
+    if payload["hook_event_name"] != "stop" || !followup {
+        return;
+    }
+    locked(config, session, || {
+        let known = read_turn(config, session).is_some_and(|turn| {
+            turn.generation == generation
+                || turn.earlier.iter().any(|earlier| earlier == generation)
+        });
+        if !known {
+            start_turn(config, session, Some(generation));
+        }
+    });
+}
+
 /// Whether `payload` is a turn a hook waits after: a `stop` whose turn
 /// completed, with the turn's id.
 pub fn waits_after(payload: &Value) -> bool {
@@ -294,13 +324,14 @@ pub enum Ended {
     Answered,
     /// The wait ran out.
     TimedOut,
-    /// Its parent or the window's extension host is gone: the window
-    /// reloaded or closed.
+    /// Its parent or the conversation's holder is gone: the window
+    /// reloaded or closed, or the `cursor-agent` quit.
     Orphaned,
     /// A newer waiting hook or a hook of a newer turn took over.
     Retired,
-    /// The record no longer gives the conversation to that host, or no
-    /// hook of it ran within `editor::IDLE`.
+    /// The holder no longer runs the conversation: the record no longer
+    /// gives it to that host, or no hook of it ran within `editor::IDLE`,
+    /// or the `cursor-agent` no longer holds its store.
     Moved,
     /// This build's waiting entry left `hooks.json`.
     Removed,
@@ -311,20 +342,38 @@ pub enum Ended {
     Failed,
 }
 
+/// What runs the conversation a waiting hook waits in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Holder {
+    /// A Cursor window's extension host.
+    Editor { host: i32 },
+    /// The `cursor-agent` holding the conversation's store.
+    Cli { agent: i32 },
+}
+
+impl Holder {
+    fn pid(self) -> i32 {
+        match self {
+            Holder::Editor { host } => host,
+            Holder::Cli { agent } => agent,
+        }
+    }
+}
+
 /// Answers the completed turn of the `stop` payload `payload`, whose hook
-/// runs under the extension host `host`, through `write`, which says
-/// whether the answer was written in full. It answers at once when
-/// messages are pending, otherwise as soon as one is staged while this
-/// hook may still take it (module docs).
+/// runs under `holder`, through `write`, which says whether the answer was
+/// written in full. It answers at once when messages are pending,
+/// otherwise as soon as one is staged while this hook may still take it
+/// (module docs).
 pub fn wait(
     config: &CursorConfig,
     table: &dyn ProcessTable,
-    host: i32,
+    holder: Holder,
     payload: &Value,
     watch: &Watch<'_>,
     write: &mut dyn FnMut(&Value) -> bool,
 ) -> Ended {
-    let waiting = match Waiting::new(config, table, host, payload, watch.pid) {
+    let waiting = match Waiting::new(config, table, holder, payload, watch.pid) {
         Ok(waiting) => waiting,
         Err(ended) => return ended,
     };
@@ -375,7 +424,7 @@ fn answer(
     })
 }
 
-/// One waiting hook: what it waits after, and the window it waits in.
+/// One waiting hook: what it waits after, and the holder it waits under.
 struct Waiting<'a> {
     config: &'a CursorConfig,
     table: &'a dyn ProcessTable,
@@ -383,6 +432,7 @@ struct Waiting<'a> {
     me: Waiter,
     /// The hook's parent when it started.
     parent: i32,
+    holder: Holder,
     host: i32,
     host_start: u64,
 }
@@ -391,10 +441,11 @@ impl<'a> Waiting<'a> {
     fn new(
         config: &'a CursorConfig,
         table: &'a dyn ProcessTable,
-        host: i32,
+        holder: Holder,
         payload: &'a Value,
         pid: i32,
     ) -> Result<Waiting<'a>, Ended> {
+        let host = holder.pid();
         let (Some(session), Some(generation), true) = (
             payload_session(payload),
             generation(payload),
@@ -420,6 +471,7 @@ impl<'a> Waiting<'a> {
                 generation: generation.to_string(),
             },
             parent,
+            holder,
             host,
             host_start,
         })
@@ -464,19 +516,30 @@ impl<'a> Waiting<'a> {
             .or_else(|| (!self.mine() || self.stale()).then_some(Ended::Retired))
     }
 
-    /// Whether its window no longer holds the conversation, and how.
+    /// Whether its holder no longer runs the conversation, and how.
     fn lost(&self) -> Option<Ended> {
         if !self.alive() {
             Some(Ended::Orphaned)
-        } else if !editor::holds(self.config, self.session, self.host, self.host_start) {
+        } else if !self.holds() {
             Some(Ended::Moved)
         } else {
             None
         }
     }
 
-    /// Whether its parent and the window's extension host are the ones it
-    /// started under, the one still under the other.
+    fn holds(&self) -> bool {
+        match self.holder {
+            Holder::Editor { .. } => {
+                editor::holds(self.config, self.session, self.host, self.host_start)
+            }
+            Holder::Cli { agent } => {
+                super::held_session(self.config, self.table, agent).as_deref() == Some(self.session)
+            }
+        }
+    }
+
+    /// Whether its parent and its holder are the ones it started under, the
+    /// one still under the other.
     fn alive(&self) -> bool {
         self.table
             .process(self.me.pid)

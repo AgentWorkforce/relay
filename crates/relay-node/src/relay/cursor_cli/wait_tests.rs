@@ -125,10 +125,17 @@ fn park(
     let claiming = |claim: &mut dyn FnMut() -> Option<Ended>| flags.claiming(claim);
     let watch = watching(pid, wait, &stopping, &installed, &claiming);
     let mut written = Vec::new();
-    let ended = super::wait(config, table, HOST_PID, payload, &watch, &mut |output| {
-        written.push(output.clone());
-        writes
-    });
+    let ended = super::wait(
+        config,
+        table,
+        Holder::Editor { host: HOST_PID },
+        payload,
+        &watch,
+        &mut |output| {
+            written.push(output.clone());
+            writes
+        },
+    );
     (ended, written)
 }
 
@@ -343,7 +350,7 @@ fn a_newer_hook_answering_at_once_retires_the_older_one_first() {
             let ended = super::wait(
                 &config,
                 &table,
-                HOST_PID,
+                Holder::Editor { host: HOST_PID },
                 &stop("gen-1"),
                 &watch,
                 &mut |output| {
@@ -872,7 +879,7 @@ fn what_is_pending_is_left_when_the_window_went_away_before_the_claim() {
         let ended = super::wait(
             &config,
             &table,
-            HOST_PID,
+            Holder::Editor { host: HOST_PID },
             &stop("gen-1"),
             &watch,
             &mut |output| {

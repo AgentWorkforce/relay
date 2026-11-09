@@ -43,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `POST /copilot/mcp` no longer returns an unknown-route error during native Copilot initialization: it uses Desktop's managed transport when available and otherwise reports the transport as unavailable.
 - `agent-relay-node` built for its own site (`AGENT_RELAY_SITE_URL`) no longer falls back to Agent Relay's public gateways: a sign-in whose site named no valid Relaycast URL, or a CLI workspace key with no recorded server or `RELAY_BASE_URL`, is refused with a reason naming the site, and `RELAYCAST_URL` is ignored in such a build.
 - `agent-relay-node` lists Codex sessions and delivers messages to them promptly when Codex's thread database is large.
+- Relay messages now wake an idle interactive Cursor CLI (`cursor-agent`) session within seconds, as they already did for Cursor editor chats, instead of waiting for its next tool call or prompt. This keeps working after several automatic follow-ups in a row.
 
 ## [17.2.1] - 2026-11-07
 

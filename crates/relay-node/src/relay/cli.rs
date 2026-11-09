@@ -368,8 +368,9 @@ pub fn devin_hook(development: bool) -> Result<()> {
 /// window's extension host (which it records as running that
 /// conversation), claims that session's staged messages and prints them:
 /// `additional_context` after a tool call, `followup_message` when the turn
-/// completes. With `--wait` (the `stop` entry) an editor conversation's
-/// completed turn with nothing pending waits for its next message instead
+/// completes. With `--wait` (the `stop` entry) a completed turn with
+/// nothing pending, in the editor or a CLI session, waits for its next
+/// message instead
 /// (`cursor_cli::wait`). A claim is tombstoned once the answer is written
 /// and put back if it is not (`cursor_cli::run_hook`). Anything else exits 0
 /// with `cursor_cli::no_answer`'s output (`{}`, or `{"continue":true}` for
