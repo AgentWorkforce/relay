@@ -12,7 +12,7 @@ impl HttpClient {
     pub fn new(options: ClientOptions) -> relaycast::Result<Self> {
         let credential = super::workspace::Secret::new(options.api_key.clone());
         Ok(Self {
-            inner: relaycast::HttpClient::new(options)?,
+            inner: super::sdk_http::client(options)?,
             credential,
         })
     }
@@ -27,7 +27,10 @@ impl HttpClient {
             &format!("{}{}", self.inner.base_url(), path),
             serde_json::to_value(query).unwrap_or(Value::Null),
             self.credential.expose(),
-            self.inner.get(path, query, options),
+            async {
+                super::sdk_http::environment_is_safe()?;
+                self.inner.get(path, query, options).await
+            },
         )
         .await
     }
@@ -42,7 +45,10 @@ impl HttpClient {
             &format!("{}{}", self.inner.base_url(), path),
             serde_json::to_value(&body).unwrap_or(Value::Null),
             self.credential.expose(),
-            self.inner.post(path, body, options),
+            async {
+                super::sdk_http::environment_is_safe()?;
+                self.inner.post(path, body, options).await
+            },
         )
         .await
     }
@@ -56,7 +62,10 @@ impl HttpClient {
             &format!("{}{}", self.inner.base_url(), path),
             Value::Null,
             self.credential.expose(),
-            self.inner.delete(path, options),
+            async {
+                super::sdk_http::environment_is_safe()?;
+                self.inner.delete(path, options).await
+            },
         )
         .await
     }
