@@ -292,6 +292,7 @@ pub fn plugins_with_options(
             },
             config.app_data_dir.clone(),
         )
+        .with_state_dir(config.app_data_dir.clone())
         .with_probe_alias(probe_alias),
     );
     if !development {

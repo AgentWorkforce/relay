@@ -97,6 +97,6 @@ mod tests {
         assert_ne!(first[first.len() - 3], second[second.len() - 3]);
         assert!(!first[first.len() - 3].contains("--"));
         assert!(second[second.len() - 3].contains("muse-spawn-mcp\",\"--dev"));
-        assert!(third[third.len() - 3].contains("muse-spawn-mcp\",\"--profile\",\"devaws"));
+        assert!(third[third.len() - 3].contains("muse-spawn-mcp\",\"--profile=devaws"));
     }
 }

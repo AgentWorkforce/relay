@@ -157,6 +157,6 @@ fn binding_is_the_current_helper_with_no_caller_identity_or_credentials() {
             &Build::Profile("devaws".into()),
             Harness::Devin
         )["args"],
-        json!(["devin-spawn-mcp", "--profile", "devaws"])
+        json!(["devin-spawn-mcp", "--profile=devaws"])
     );
 }

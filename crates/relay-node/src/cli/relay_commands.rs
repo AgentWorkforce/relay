@@ -228,8 +228,10 @@ pub enum RelayCommands {
         #[arg(long)]
         socket: Option<PathBuf>,
         /// Ask the profile build with this id (the part of its bundle id
-        /// after com.agentrelay.desktop.) instead of Agent Relay.
-        #[arg(long, conflicts_with_all = ["socket", "dev"])]
+        /// after com.agentrelay.desktop.) instead of Agent Relay. A profile
+        /// build's hook names both, `--profile=<id> --socket <socket>`: the
+        /// id is the hook's owner (`hook_owner`) and the socket is asked.
+        #[arg(long, conflicts_with = "dev")]
         profile: Option<String>,
     },
     /// Agent Relay's Devin lifecycle hook, which Devin runs at each session
@@ -272,8 +274,10 @@ pub enum RelayCommands {
         #[arg(long)]
         socket: Option<PathBuf>,
         /// Ask the profile build with this id (the part of its bundle id
-        /// after com.agentrelay.desktop.) instead of Agent Relay.
-        #[arg(long, conflicts_with_all = ["socket", "dev"])]
+        /// after com.agentrelay.desktop.) instead of Agent Relay. A profile
+        /// build's hook names both, `--profile=<id> --socket <socket>`: the
+        /// id is the hook's owner (`hook_owner`) and the socket is asked.
+        #[arg(long, conflicts_with = "dev")]
         profile: Option<String>,
     },
     /// Print Agent Relay's settings, as the app's Settings shows them, or

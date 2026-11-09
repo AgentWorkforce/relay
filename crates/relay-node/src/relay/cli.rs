@@ -1018,7 +1018,7 @@ mod tests {
             .to_string();
         assert_eq!(
             other,
-            "Agent Relay is not running: its session socket pointer relay-socket is missing. Another build has a pointer: Agent Relay Dev (--dev), the devaws profile build of Agent Relay (--profile devaws). Pass that build's flag to go through it."
+            "Agent Relay is not running: its session socket pointer relay-socket is missing. Another build has a pointer: Agent Relay Dev (--dev), the devaws profile build of Agent Relay (--profile=devaws). Pass that build's flag to go through it."
         );
     }
 }

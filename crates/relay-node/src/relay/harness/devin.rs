@@ -382,7 +382,9 @@ impl SpawnFacet for DevinAdapter {
                 arguments.push("--full-access".into());
             }
             if let Build::Profile(id) = &self.build {
-                arguments.extend(["--profile".into(), id.clone()]);
+                // One word, so an id starting with `-` is never read
+                // as an option.
+                arguments.push(format!("--profile={id}"));
             }
             let mut environment = self.environment.clone();
             environment.insert(MARKER.into(), launch.session_id.clone());

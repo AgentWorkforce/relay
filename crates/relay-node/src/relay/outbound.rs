@@ -2254,6 +2254,32 @@ mod tests {
             Build::profile_id("com.agentrelay.desktop.DevAWS"),
             Build::profile_id("com.agentrelay.desktop.DEVAWS")
         );
+        // Only a name with the `com.agentrelay.desktop.` prefix keeps its
+        // readable id: a bare `foo` (a valid id on its own) is hashed, so it
+        // never shares `com.agentrelay.desktop.foo`'s pointer or socket.
+        let prefixed = Build::of(&support.join("com.agentrelay.desktop.foo"));
+        let bare = Build::of(&support.join("foo"));
+        assert_eq!(prefixed, Build::Profile("foo".into()));
+        let Build::Profile(bare_id) = &bare else {
+            panic!("foo is a profile build");
+        };
+        assert!(bare_id.starts_with('_') && bare_id.len() == 13, "{bare_id}");
+        assert_ne!(prefixed, bare);
+        assert_ne!(prefixed.pointer_name(), bare.pointer_name());
+        assert_ne!(
+            socket_for(
+                true,
+                &runtime,
+                &support.join("com.agentrelay.desktop.foo"),
+                1000
+            ),
+            socket_for(true, &runtime, &support.join("foo"), 1000)
+        );
+        // A hyphen-leading id is a valid profile id too.
+        assert_eq!(
+            Build::of(&support.join("com.agentrelay.desktop.-acme")),
+            Build::Profile("-acme".into())
+        );
         // Only Agent Relay's own data directory is Agent Relay.
         assert_eq!(
             Build::of(Path::new("/x/com.agentrelay.desktop.")),

@@ -99,16 +99,18 @@ impl Build {
 
     /// A profile build's id: its data directory name without the
     /// `com.agentrelay.desktop.` prefix (`com.agentrelay.desktop.devaws` is
-    /// `devaws`) when that is lower-case letters, digits and `-`, at most
-    /// 40 characters and not `dev`; otherwise `_` and the first 12 hex
-    /// digits of the whole name's SHA-256. A written id never has `_`, so
-    /// the two forms cannot name the same build.
+    /// `devaws`) when it has that prefix and the rest is lower-case
+    /// letters, digits and `-`, at most 40 characters and not `dev`;
+    /// otherwise `_` and the first 12 hex digits of the whole name's
+    /// SHA-256. A name without the prefix is always hashed, even one the
+    /// grammar would accept, so `foo` and `com.agentrelay.desktop.foo` are
+    /// different builds. A written id never has `_`, so the two forms cannot
+    /// name the same build.
     pub fn profile_id(name: &str) -> String {
         let rest = name
             .strip_prefix(crate::relay::app_store::APP_ID)
-            .and_then(|rest| rest.strip_prefix('.'))
-            .unwrap_or(name);
-        if valid_profile_id(rest) {
+            .and_then(|rest| rest.strip_prefix('.'));
+        if let Some(rest) = rest.filter(|rest| valid_profile_id(rest)) {
             return rest.to_string();
         }
         use sha2::{Digest, Sha256};
@@ -161,7 +163,7 @@ impl Build {
         match self {
             Build::Production => "neither --dev nor --profile".into(),
             Build::Development => "--dev".into(),
-            Build::Profile(id) => format!("--profile {id}"),
+            Build::Profile(id) => format!("--profile={id}"),
         }
     }
 

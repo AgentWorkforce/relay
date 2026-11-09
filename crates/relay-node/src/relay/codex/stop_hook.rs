@@ -240,16 +240,19 @@ impl CodexStopHookSettings {
 
     /// The names the sandbox rules may have, in order: `agent-relay.rules`,
     /// then `agent-relay-2.rules` and on when a file of the person's holds
-    /// the name (`agent-relay-dev…` for Agent Relay Dev).
+    /// the name (`agent-relay-dev…` for Agent Relay Dev). A profile build
+    /// has its own, `agent-relay.<id>.rules` then `agent-relay.<id>.2.rules`
+    /// and on: an id has no `.`, so no build's names are another's, and a
+    /// build rewrites or removes only rules files under its own names.
     fn rules_files(&self) -> Vec<PathBuf> {
-        let stem = if self.development() {
-            "agent-relay-dev"
-        } else {
-            "agent-relay"
+        let (stem, separator) = match crate::relay::hook_owner::owner(&self.command).0 {
+            crate::relay::hook_owner::Owner::Development => ("agent-relay-dev".to_string(), '-'),
+            crate::relay::hook_owner::Owner::Profile(id) => (format!("agent-relay.{id}"), '.'),
+            _ => ("agent-relay".to_string(), '-'),
         };
         let folder = self.codex_home.join("rules");
         std::iter::once(folder.join(format!("{stem}.rules")))
-            .chain((2..=RULES_NAMES).map(|n| folder.join(format!("{stem}-{n}.rules"))))
+            .chain((2..=RULES_NAMES).map(|n| folder.join(format!("{stem}{separator}{n}.rules"))))
             .collect()
     }
 
@@ -356,7 +359,10 @@ impl CodexStopHookSettings {
             match std::fs::remove_file(&path) {
                 Ok(()) => removed = true,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(_) => return Err("~/.codex/rules/agent-relay.rules cannot be removed.".into()),
+                Err(_) => {
+                    let name = path.file_name().unwrap_or_default().to_string_lossy();
+                    return Err(format!("~/.codex/rules/{name} cannot be removed."));
+                }
             }
         }
         if removed {
@@ -458,8 +464,9 @@ impl CodexStopHookSettings {
     }
 
     /// Whether `command` is this build's hook, in any version: Agent Relay,
-    /// Agent Relay Dev (`--dev`) and each profile build (`--socket <its
-    /// session socket>`) have their own (`hook_owner`). Every unmarked hook
+    /// Agent Relay Dev (`--dev`) and each profile build (`--profile=<id>
+    /// --socket <its session socket>`, matched by its id) have their own
+    /// (`hook_owner`). Every unmarked hook
     /// is Agent Relay's slot, so one a profile build released before the
     /// marker wrote is taken back by Agent Relay and never by a profile.
     fn is_ours(&self, command: &str) -> bool {
@@ -659,11 +666,24 @@ impl CodexStopHookSettings {
         }
     }
 
-    /// At core start: an installed hook is brought up to date (a moved or
-    /// updated app runs a different executable) and trusted again. With the
-    /// hook off, a link left for its rules goes.
+    /// This build's own On/Off choice for the hook, kept in its data folder
+    /// (`hook_owner::Desired`).
+    fn desired(&self) -> crate::relay::hook_owner::Desired {
+        crate::relay::hook_owner::Desired::new(self.state_dir.as_deref(), SETTING, &self.command)
+    }
+
+    /// Whether the hook is wanted on: the choice last made, or, before one
+    /// was recorded, whether its entries are there.
+    fn wanted(&self) -> bool {
+        self.desired().or_present(|| self.hook_enabled())
+    }
+
+    /// At core start: a hook that is on is brought up to date (a moved or
+    /// updated app runs a different executable) and trusted again, and put
+    /// back when another process took its entries out. With the hook off, a
+    /// link left for its rules goes.
     pub fn refresh(&self) {
-        let enabled = self.applies() && self.hook_enabled();
+        let enabled = self.applies() && self.wanted();
         if !enabled {
             self.release_alias();
         }
@@ -697,23 +717,30 @@ impl crate::relay::agents::SettingsExtension for CodexStopHookSettings {
         } else {
             self.remove()
         };
+        // Off is kept even when taking the entries out failed; On only once
+        // the hook is in, so a failed install is not retried every tick.
+        if !enabled || outcome.is_ok() {
+            self.desired().save(enabled);
+        }
         self.inbox.set_ready(enabled && outcome.is_ok());
         self.checked.store(true, Ordering::SeqCst);
         Some(outcome)
     }
 
-    /// A hook this build installed that is no longer current for every
-    /// event (another build rewrote or took out one copy) is installed
-    /// again. Writes and trusts nothing while it is current or off, so it
-    /// is cheap enough for every rediscovery tick.
+    /// A hook this build has on that is no longer current for every event
+    /// (another build rewrote or took out one copy, or another process
+    /// took out every entry) is installed again; one turned off stays off.
+    /// Writes and trusts nothing while it is current or off, so it is cheap
+    /// enough for every rediscovery tick.
     fn reclaim(&self) {
-        if self.applies() && self.hook_enabled() && !self.current() {
+        if self.applies() && self.wanted() && !self.current() {
             self.refresh();
         }
     }
 
     fn default_on(&self) -> Vec<&'static str> {
-        if self.applies() && !self.hook_enabled() {
+        // A choice already made is not a default to apply.
+        if self.applies() && self.desired().load().is_none() && !self.hook_enabled() {
             vec![SETTING]
         } else {
             Vec::new()
@@ -1876,6 +1903,135 @@ mod tests {
             SettingsExtension::reclaim(&settings);
             assert!(!settings.hook_enabled());
         }
+    }
+
+    /// Each build of [`build_commands`] with sandbox rules naming its own
+    /// probe and socket, and its own data folder, in one Codex home.
+    fn builds_with_rules(home: &Path) -> Vec<CodexStopHookSettings> {
+        build_commands()
+            .into_iter()
+            .enumerate()
+            .map(|(i, command)| {
+                settings_for(home, command)
+                    .with_sandbox_rules(SandboxRules {
+                        probe: PathBuf::from(format!("/Apps/build-{i}/probe")),
+                        socket: PathBuf::from(format!("/run/build-{i}/relay.sock")),
+                    })
+                    .with_state_dir(home.join(format!("app-data-{i}")))
+            })
+            .collect()
+    }
+
+    /// The rules files each build has, by name and content.
+    fn rules_of(settings: &CodexStopHookSettings) -> Vec<(PathBuf, String)> {
+        settings
+            .rules_files()
+            .into_iter()
+            .filter_map(|path| Some((path.clone(), std::fs::read_to_string(&path).ok()?)))
+            .collect()
+    }
+
+    // Agent Relay, Agent Relay Dev and two profile builds share
+    // ~/.codex/rules: each writes and removes only its own rules, whatever
+    // order they are turned on and off in.
+    #[test]
+    fn each_build_keeps_its_own_sandbox_rules() {
+        for (on, off) in [([0, 1, 2, 3], [2, 0, 3, 1]), ([3, 2, 1, 0], [0, 3, 1, 2])] {
+            let home = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+            let builds = builds_with_rules(home.path());
+            let mut enabled = vec![false; builds.len()];
+            let mut written: Vec<Vec<(PathBuf, String)>> = vec![Vec::new(); builds.len()];
+            let check = |enabled: &[bool], written: &[Vec<(PathBuf, String)>]| {
+                for (i, build) in builds.iter().enumerate() {
+                    if enabled[i] {
+                        assert_eq!(rules_of(build), written[i], "build {i}");
+                    } else {
+                        assert!(rules_of(build).is_empty(), "build {i}");
+                    }
+                }
+            };
+            for i in on {
+                assert_eq!(builds[i].set(SETTING, &json!(true)), Some(Ok(())));
+                enabled[i] = true;
+                written[i] = rules_of(&builds[i]);
+                assert_eq!(written[i].len(), 1, "build {i}");
+                assert!(written[i][0].1.starts_with(RULES_HEADER), "build {i}");
+                assert!(
+                    written[i][0].1.contains(&format!("build-{i}")),
+                    "build {i}: {}",
+                    written[i][0].1
+                );
+                check(&enabled, &written);
+            }
+            let names: std::collections::HashSet<_> =
+                written.iter().map(|rules| rules[0].0.clone()).collect();
+            assert_eq!(names.len(), builds.len(), "{names:?}");
+            for i in off {
+                assert_eq!(builds[i].set(SETTING, &json!(false)), Some(Ok(())));
+                enabled[i] = false;
+                check(&enabled, &written);
+            }
+            assert!(!home.path().join(".codex/rules").exists());
+        }
+    }
+
+    // Another process took every entry out of hooks.json: the build that
+    // has the hook on puts it back on the next reclaim (and at the next
+    // start), and a build whose hook was turned off leaves it off.
+    #[test]
+    fn a_hook_taken_out_comes_back_and_one_turned_off_stays_off() {
+        for (i, command) in build_commands().into_iter().enumerate() {
+            let home = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+            let app_data = home.path().join("app-data");
+            let settings =
+                settings_for(home.path(), command.clone()).with_state_dir(app_data.clone());
+            assert_eq!(settings.default_on(), vec![SETTING], "build {i}");
+            assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+            assert!(settings.default_on().is_empty(), "build {i}");
+
+            write_every_event(home.path(), &[]);
+            assert!(!settings.hook_enabled());
+            SettingsExtension::reclaim(&settings);
+            for event in EVENTS {
+                assert_eq!(
+                    event_commands(home.path(), event),
+                    std::slice::from_ref(&command),
+                    "{i} {event}"
+                );
+            }
+            write_every_event(home.path(), &[]);
+            let restarted =
+                settings_for(home.path(), command.clone()).with_state_dir(app_data.clone());
+            restarted.refresh();
+            assert!(restarted.current(), "build {i}");
+
+            assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+            SettingsExtension::reclaim(&settings);
+            restarted.refresh();
+            assert!(!settings.hook_enabled(), "build {i}");
+            assert!(
+                settings.default_on().is_empty(),
+                "an Off is not a default to turn on"
+            );
+        }
+    }
+
+    // A hook installed before the choice was kept is on: once lost, it
+    // comes back.
+    #[test]
+    fn a_hook_installed_before_the_choice_was_kept_comes_back() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+        let command = build_commands()[2].clone();
+        write_every_event(home.path(), std::slice::from_ref(&command));
+        let settings =
+            settings_for(home.path(), command.clone()).with_state_dir(home.path().join("app-data"));
+        SettingsExtension::reclaim(&settings);
+        write_every_event(home.path(), &[]);
+        SettingsExtension::reclaim(&settings);
+        assert!(settings.current());
     }
 
     // A profile build released before the marker wrote an unmarked hook:

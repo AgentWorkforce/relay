@@ -17,7 +17,7 @@ pub(crate) enum Harness {
     Muse,
 }
 /// The MCP server for a spawned session of `harness`, sending through
-/// `build`'s own pointer (`--dev`, `--profile <id>`, or neither for Agent
+/// `build`'s own pointer (`--dev`, `--profile=<id>`, or neither for Agent
 /// Relay), never another build's.
 pub(crate) fn definition(helper: &Path, alias: &str, build: &Build, harness: Harness) -> Value {
     let command = match harness {
@@ -28,7 +28,8 @@ pub(crate) fn definition(helper: &Path, alias: &str, build: &Build, harness: Har
     match build {
         Build::Production => {}
         Build::Development => arguments.push("--dev".into()),
-        Build::Profile(id) => arguments.extend(["--profile".into(), id.clone()]),
+        // One word, so an id starting with `-` is never read as an option.
+        Build::Profile(id) => arguments.push(format!("--profile={id}")),
     }
     json!({"name":alias,"command":helper,"args":arguments,"env":[]})
 }
