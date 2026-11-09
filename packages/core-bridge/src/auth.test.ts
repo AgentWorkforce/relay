@@ -185,14 +185,35 @@ describe('CallerCredential', () => {
       document({ schema: 'agent-relay-service-caller/1' }),
       document({ schema: 'agent-relay-service-caller/3' }),
       document({ auth: CALLER_AUTH_SCHEME }),
-      document({ auth: { scheme: 'challenge-hmac-sha256/v2',
-        challenge: CALLER_CHALLENGE_METHOD, authenticate: CALLER_AUTHENTICATE_METHOD } }),
-      document({ auth: { scheme: CALLER_AUTH_SCHEME,
-        challenge: 'spawn_callers.wrong', authenticate: CALLER_AUTHENTICATE_METHOD } }),
-      document({ auth: { scheme: CALLER_AUTH_SCHEME,
-        challenge: CALLER_CHALLENGE_METHOD, authenticate: 'spawn_callers.wrong' } }),
-      document({ auth: { scheme: CALLER_AUTH_SCHEME,
-        challenge: CALLER_CHALLENGE_METHOD, authenticate: CALLER_AUTHENTICATE_METHOD, extra: true } }),
+      document({
+        auth: {
+          scheme: 'challenge-hmac-sha256/v2',
+          challenge: CALLER_CHALLENGE_METHOD,
+          authenticate: CALLER_AUTHENTICATE_METHOD,
+        },
+      }),
+      document({
+        auth: {
+          scheme: CALLER_AUTH_SCHEME,
+          challenge: 'spawn_callers.wrong',
+          authenticate: CALLER_AUTHENTICATE_METHOD,
+        },
+      }),
+      document({
+        auth: {
+          scheme: CALLER_AUTH_SCHEME,
+          challenge: CALLER_CHALLENGE_METHOD,
+          authenticate: 'spawn_callers.wrong',
+        },
+      }),
+      document({
+        auth: {
+          scheme: CALLER_AUTH_SCHEME,
+          challenge: CALLER_CHALLENGE_METHOD,
+          authenticate: CALLER_AUTHENTICATE_METHOD,
+          extra: true,
+        },
+      }),
       document({ auth: undefined }),
       document({ caller_id: 'sc_0123456789ABCDEF' }),
       document({ caller_id: 'sc_0123456789abcdef0' }),
