@@ -13,12 +13,14 @@ import {
   CALLER_AUTH_SCHEME,
   CALLER_CHALLENGE_METHOD,
   CALLER_FILE_SCHEMA,
+  CALLER_FILE_SCHEMAS,
   REQUIRED_SERVICE_CALLER_METHODS,
   CallerCredential,
   authenticate,
   callerTranscript,
   readCallerCredential,
   readCallerDescriptor,
+  requireServiceCallerMethods,
   type CallerChallenge,
   type CallerTranscriptInput,
 } from './auth.js';
@@ -213,14 +215,21 @@ describe('CallerCredential', () => {
     expect(Object.values(credential)).not.toContain(base.secret);
   });
 
-  it('accepts only schema 2 with the exact Desktop challenge-auth route', () => {
-    expect(CallerCredential.fromDocument(document()).callerId).toBe(base.caller_id);
-    expect(CALLER_FILE_SCHEMA).toBe('agent-relay-service-caller/2');
-    const bad = [
+  it('preserves credential-only schema 1 and legacy schema 2 compatibility', () => {
+    const compatible = [
       document({ schema: 'agent-relay-service-caller/1', auth: undefined }),
       document({ schema: 'agent-relay-service-caller/1' }),
-      document({ schema: 'agent-relay-service-caller/3' }),
       document({ auth: CALLER_AUTH_SCHEME }),
+      document({ caller_name: 'legacy value outside descriptor grammar', extra: true }),
+      document(),
+    ];
+    for (const doc of compatible) {
+      expect(CallerCredential.fromDocument(doc).callerId).toBe(base.caller_id);
+    }
+    expect(CALLER_FILE_SCHEMAS).toEqual(['agent-relay-service-caller/1', 'agent-relay-service-caller/2']);
+    expect(CALLER_FILE_SCHEMA).toBe('agent-relay-service-caller/2');
+    const bad = [
+      document({ schema: 'agent-relay-service-caller/3' }),
       document({
         auth: {
           scheme: 'challenge-hmac-sha256/v2',
@@ -251,33 +260,14 @@ describe('CallerCredential', () => {
         },
       }),
       document({ auth: undefined }),
-      document({ extra: true }),
       document({ caller_id: 'sc_0123456789ABCDEF' }),
       document({ caller_id: 'sc_0123456789abcdef0' }),
       document({ caller_id: 'xx_0123456789abcdef' }),
       document({ secret: 'rsc_short' }),
       document({ secret: undefined }),
-      document({ caller_name: 'bad name' }),
-      document({ publisher: { id: 'agent_1', name: 'other' } }),
-      document({ publisher: { id: 'agent_1', name: 'flows-runner', extra: true } }),
       document({ workspace: { site_url: '', workspace_id: 'ws' } }),
       document({ workspace: undefined }),
       document({ account: { user_id: 7 } }),
-      document({ created_at: 'yesterday' }),
-      document({ rotated_at: null }),
-      document({ rotated_at: '2025-11-09T00:00:00Z' }),
-      document({ expires_at: 7 }),
-      document({ expires_at: '2025-11-09T00:00:00Z' }),
-      document({ harnesses: [] }),
-      document({ harnesses: ['claude', 'claude'] }),
-      document({ harnesses: ['bad harness'] }),
-      document({ directory_scope: ['relative'] }),
-      document({ directory_scope: ['/tmp/a', '/tmp/a'] }),
-      document({ owns_only: 'true' }),
-      document({ socket: 'relative.sock' }),
-      document({ inbox: { ...document().inbox, fail: 'spawn_callers.inbox.other' } }),
-      document({ inbox: { ...document().inbox, extra: true } }),
-      document({ desktop_version: '' }),
       [],
       null,
     ];
@@ -321,11 +311,14 @@ function fakeClient(
 describe('authenticate', () => {
   const credential = CallerCredential.fromDocument(document());
 
-  it('sends only the caller id, then the authenticator, and returns the bound caller', async () => {
-    const { client, calls } = fakeClient({
-      'spawn_callers.challenge': challenge,
-      'spawn_callers.authenticate': BOUND,
-    });
+  it('sends only the caller id, then the authenticator, and requires only those two methods', async () => {
+    const { client, calls } = fakeClient(
+      {
+        'spawn_callers.challenge': challenge,
+        'spawn_callers.authenticate': BOUND,
+      },
+      ['hello', CALLER_CHALLENGE_METHOD, CALLER_AUTHENTICATE_METHOD]
+    );
     const signal = new AbortController().signal;
     await expect(authenticate(client, credential, { timeoutMs: 5_000, signal })).resolves.toEqual(BOUND);
     expect(calls).toEqual([
@@ -391,11 +384,31 @@ describe('authenticate', () => {
     }
   });
 
-  it('rejects every incomplete service-caller method set before sending anything', async () => {
+  it('rejects a missing authentication method before sending anything', async () => {
+    for (const missing of [CALLER_CHALLENGE_METHOD, CALLER_AUTHENTICATE_METHOD]) {
+      const methods = [CALLER_CHALLENGE_METHOD, CALLER_AUTHENTICATE_METHOD].filter(
+        (method) => method !== missing
+      );
+      const { client, calls } = fakeClient({}, ['hello', ...methods]);
+      const error = await authenticate(client, credential).catch((e: unknown) => e);
+      expect(error, missing).toBeInstanceOf(CoreRpcError);
+      expect((error as CoreRpcError).kind, missing).toBe('method_not_found');
+      expect((error as Error).message, missing).toContain(missing);
+      expect(calls, missing).toEqual([]);
+    }
+  });
+
+  it('checks the complete service-caller method set only when explicitly requested', () => {
     for (const missing of REQUIRED_SERVICE_CALLER_METHODS) {
       const methods = ['hello', ...REQUIRED_SERVICE_CALLER_METHODS.filter((method) => method !== missing)];
       const { client, calls } = fakeClient({}, methods);
-      const error = await authenticate(client, credential).catch((e: unknown) => e);
+      const error = (() => {
+        try {
+          requireServiceCallerMethods(client);
+        } catch (caught) {
+          return caught;
+        }
+      })();
       expect(error, missing).toBeInstanceOf(CoreRpcError);
       expect((error as CoreRpcError).kind, missing).toBe('method_not_found');
       expect((error as Error).message, missing).toContain(missing);
@@ -432,6 +445,17 @@ describe.skipIf(process.platform === 'win32')('readCallerCredential (POSIX)', ()
     expect(credential.authenticatorFor(challenge)).toBe(base.authenticator);
     await chmod(file, 0o400);
     expect((await readCallerCredential(file)).callerId).toBe(base.caller_id);
+  });
+
+  it('reads legacy credentials but keeps complete descriptors strict to schema 2', async () => {
+    for (const legacy of [
+      document({ schema: 'agent-relay-service-caller/1', auth: undefined }),
+      document({ auth: CALLER_AUTH_SCHEME }),
+    ]) {
+      await writeFile(file, JSON.stringify(legacy), { mode: 0o600 });
+      await expect(readCallerCredential(file)).resolves.toMatchObject({ callerId: base.caller_id });
+      await expect(readCallerDescriptor(file)).rejects.toMatchObject({ code: 'caller_file_invalid' });
+    }
   });
 
   it('returns the complete checked descriptor from the same secure read without its secret', async () => {
