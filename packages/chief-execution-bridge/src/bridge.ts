@@ -219,7 +219,9 @@ export class ExecutionBridge {
       return;
     }
     this.store.bindAgent(task.taskId, message.agentId);
-    if (this.now() - (task.invokingAt ?? task.createdAt) > this.config.limits.maxRuntimeMs) {
+    // Judged by when Relay recorded it, so a result sent on time survives a slow poll.
+    const sentAt = Math.min(message.sentAt ?? Infinity, this.now());
+    if (sentAt - (task.invokingAt ?? task.createdAt) > this.config.limits.maxRuntimeMs) {
       this.log('late_result_ignored', { taskId: task.taskId });
       return;
     }
@@ -297,7 +299,8 @@ export class ExecutionBridge {
     if (task.state === 'invoking') {
       // Only a crash or an unknown outcome leaves this state. The same key cannot launch twice
       // while Relaycast still holds it; beyond that the outcome is unknown and is not retried.
-      if (now - startedAt >= INVOKE_REPLAY_WINDOW_MS) {
+      const replayExpired = () => this.now() - startedAt >= INVOKE_REPLAY_WINDOW_MS;
+      if (replayExpired()) {
         this.fail(task, 'execution_outcome_unknown');
         return;
       }
@@ -306,6 +309,11 @@ export class ExecutionBridge {
       const refusal = await this.preflight();
       if (refusal && refusal !== CAPACITY_REFUSAL) {
         this.log('node_not_ready', { taskId: task.taskId, code: refusal });
+        return;
+      }
+      // The preflight itself can cross the window.
+      if (replayExpired()) {
+        this.fail(task, 'execution_outcome_unknown');
         return;
       }
       await this.invoke(task);

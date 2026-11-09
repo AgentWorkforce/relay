@@ -37,6 +37,7 @@ const MESSAGES_SCHEMA = envelope(
       agent_name: z.string().min(1),
       text: z.string(),
       metadata: z.record(z.string(), z.unknown()).optional(),
+      created_at: z.string().optional(),
     })
   )
 );
@@ -188,6 +189,7 @@ export class RelayHttpClient implements RelayPort {
       agentName: m.agent_name,
       text: m.text,
       metadata: m.metadata,
+      sentAt: m.created_at && !Number.isNaN(Date.parse(m.created_at)) ? Date.parse(m.created_at) : undefined,
     }));
   }
 

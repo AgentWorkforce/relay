@@ -104,12 +104,18 @@ export class FakeRelay implements RelayPort {
     return String(this.seq);
   }
 
-  deliver(peer: string, peerName: string, text: string, metadata?: Record<string, unknown>): string {
+  deliver(
+    peer: string,
+    peerName: string,
+    text: string,
+    metadata?: Record<string, unknown>,
+    sentAt?: number
+  ): string {
     const conversationId = `dm-${peer}`;
     const conversation = this.conversationsById.get(conversationId) ?? { peer, messages: [] };
     this.conversationsById.set(conversationId, conversation);
     const id = this.nextId();
-    conversation.messages.push({ id, agentId: peer, agentName: peerName, text, metadata });
+    conversation.messages.push({ id, agentId: peer, agentName: peerName, text, metadata, sentAt });
     return id;
   }
 

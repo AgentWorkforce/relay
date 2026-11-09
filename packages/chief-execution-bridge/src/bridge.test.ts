@@ -1,10 +1,10 @@
 import { existsSync, statSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { ExecutionBridge } from '../bridge.js';
-import { configSchema } from '../config.js';
-import { RelayError } from '../ports.js';
-import { hash } from '../protocol.js';
-import { BridgeStore } from '../store.js';
+import { ExecutionBridge } from './bridge.js';
+import { configSchema } from './config.js';
+import { RelayError } from './ports.js';
+import { hash } from './protocol.js';
+import { BridgeStore } from './store.js';
 import {
   agentNameOf,
   CHIEF,
@@ -16,7 +16,7 @@ import {
   T0,
   WORKER,
   type Harness,
-} from './helpers.js';
+} from './__tests__/helpers.js';
 
 const FIVE_MIN = 300_000;
 
@@ -572,6 +572,31 @@ describe('review regressions', () => {
     await h.bridge.tick();
     expect(h.relay.states()).toEqual(['1:accepted', '2:running', '3:failed']);
     expect(h.store.task('task-1')?.reason).toBe('runtime_exceeded');
+  });
+
+  it('honours a result sent on time but read after the limit', async () => {
+    const h = await makeHarness();
+    await assignAndStart(h);
+    const sentAt = h.clock.now + 1_799_000;
+    h.clock.now += 1_800_010;
+    h.relay.deliver('agent-spawned', agentNameOf(h), 'CHIEF_RESULT: completed', undefined, sentAt);
+    await h.bridge.tick();
+    expect(h.relay.states()).toEqual(['1:accepted', '2:running', '3:completed']);
+  });
+
+  it('does not repeat an invoke when its preflight crosses the replay window', async () => {
+    const h = await makeHarness({ limits: { ...limits, maxRuntimeMs: 7_200_000 } });
+    h.relay.loseNextInvokeResponse = true;
+    await assignAndStart(h);
+    const calls = h.relay.invokeCalls;
+    h.clock.now += 3_599_999;
+    h.node.onPreflight = () => {
+      h.clock.now += 2;
+      return undefined;
+    };
+    await h.bridge.tick();
+    expect(h.relay.invokeCalls).toBe(calls);
+    expect(h.store.task('task-1')).toMatchObject({ state: 'failed', reason: 'execution_outcome_unknown' });
   });
 
   it('keeps retrying a refused stop and holds the slot', async () => {

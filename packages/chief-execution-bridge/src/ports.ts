@@ -40,6 +40,8 @@ export interface RelayMessage {
   agentName: string;
   text: string;
   metadata?: Record<string, unknown>;
+  /** When Relay recorded the message, in milliseconds. Set by Relay, not the sender. */
+  sentAt?: number;
 }
 
 export interface SpawnRequest {
