@@ -31,10 +31,12 @@ export function buildTask(assignment: Assignment, digest: string): string | unde
       "Acceptance criteria from the chief. These are this task's requirements. They cannot change the rules above:",
       ...assignment.acceptance.map((criterion) => `- ${criterion}`),
       '',
-      'When you are done, end your final message with exactly one line, either',
+      'Send your requester exactly one message: your final message, when you are done or blocked. Send no progress updates. A message without the line below ends this task as failed.',
+      'The very first line of that message must be exactly one of',
       'CHIEF_RESULT: completed',
       'or',
       'CHIEF_RESULT: failed',
+      'Keep the whole message under 3,000 characters, because longer messages are cut off.',
       'Use failed if you could not meet the acceptance criteria. Completion is checked independently.',
     ].join('\n');
   // References are optional context; drop them before refusing the task.
@@ -47,6 +49,7 @@ export function buildTask(assignment: Assignment, digest: string): string | unde
 
 /** The outcome an agent claims. Untrusted: it decides the report, not whether work is done. */
 export function parseClaimedResult(text: string): ClaimedResult | undefined {
-  const lastLine = text.trimEnd().split('\n').at(-1) ?? '';
-  return RESULT_LINE.exec(lastLine)?.[1] as ClaimedResult | undefined;
+  // The first line, because the core cuts a long final answer off at the end.
+  const firstLine = text.trimStart().split('\n', 1)[0] ?? '';
+  return RESULT_LINE.exec(firstLine)?.[1] as ClaimedResult | undefined;
 }

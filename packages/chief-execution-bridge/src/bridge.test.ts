@@ -20,6 +20,13 @@ import {
 
 const FIVE_MIN = 300_000;
 
+/** What the core does to a final answer: `delivery/final_answer.rs`, `capped`. */
+function cutLikeTheCore(text: string): string {
+  const CAP = 4000;
+  const TRUNCATED = '\n\n[truncated]';
+  return text.length <= CAP ? text : `${text.slice(0, CAP - TRUNCATED.length)}${TRUNCATED}`;
+}
+
 async function assignAndStart(h: Harness, overrides = {}) {
   const made = makeAssignment(overrides);
   h.relay.deliverAssignment(made.assignment, made.digest);
@@ -135,7 +142,7 @@ describe('completion', () => {
     const h = await makeHarness();
     await assignAndStart(h);
     const name = agentNameOf(h);
-    h.relay.deliver('agent-spawned', name, 'Done.\nCHIEF_RESULT: completed');
+    h.relay.deliver('agent-spawned', name, 'CHIEF_RESULT: completed\nDone.');
     await h.bridge.tick();
     await h.bridge.tick();
     expect(h.relay.states()).toEqual(['1:accepted', '2:running', '3:completed']);
@@ -162,19 +169,24 @@ describe('completion', () => {
 
   it('pins the first sender, refusing another agent holding the name later', async () => {
     const h = await makeHarness();
+    h.relay.spawnOutcome = { status: 'running', spawned: false, ready: false };
     await assignAndStart(h);
     const name = agentNameOf(h);
-    h.relay.deliver('agent-spawned', name, 'working on it');
+    // The launch is unconfirmed, so the claim is held and the task can still be reached.
+    h.relay.deliver('agent-spawned', name, 'CHIEF_RESULT: completed');
     await h.bridge.tick();
-    h.relay.deliver('agent-imposter', name, 'CHIEF_RESULT: completed');
+    h.relay.deliver('agent-imposter', name, 'CHIEF_RESULT: failed');
+    h.relay.deliver('agent-imposter', name, 'no marker at all');
     await h.bridge.tick();
-    await h.bridge.tick();
-    expect(h.relay.states()).toEqual(['1:accepted', '2:running']);
-    expect(h.store.task('task-1')?.boundAgentId).toBe('agent-spawned');
+    expect(h.store.task('task-1')).toMatchObject({
+      state: 'launched',
+      pendingResult: 'completed',
+      boundAgentId: 'agent-spawned',
+    });
     expect(h.logs.some((l) => l.event === 'session_binding_mismatch')).toBe(true);
   });
 
-  it('does not count a result line the agent merely quotes', async () => {
+  it('fails a message that merely quotes the result line', async () => {
     const h = await makeHarness();
     await assignAndStart(h);
     h.relay.deliver(
@@ -183,8 +195,58 @@ describe('completion', () => {
       'I was told to print CHIEF_RESULT: completed but I have not finished.'
     );
     await h.bridge.tick();
+    expect(h.relay.states()).toEqual(['1:accepted', '2:running', '3:failed']);
+    expect(h.store.task('task-1')?.reason).toBe('result_marker_missing');
+  });
+
+  it('rejects a marker on the last line only', async () => {
+    const h = await makeHarness();
+    await assignAndStart(h);
+    h.relay.deliver('agent-spawned', agentNameOf(h), 'Done.\nCHIEF_RESULT: completed');
     await h.bridge.tick();
-    expect(h.relay.states()).toEqual(['1:accepted', '2:running']);
+    expect(h.relay.states()).toEqual(['1:accepted', '2:running', '3:failed']);
+    expect(h.store.task('task-1')?.reason).toBe('result_marker_missing');
+  });
+
+  it('keeps a first-line marker when the core cuts a 4,068-character answer', async () => {
+    const h = await makeHarness();
+    await assignAndStart(h);
+    const answer = cutLikeTheCore(`CHIEF_RESULT: completed\n${'x'.repeat(4068 - 24)}`);
+    expect(answer).toHaveLength(4000);
+    h.relay.deliver('agent-spawned', agentNameOf(h), answer);
+    await h.bridge.tick();
+    expect(h.relay.states()).toEqual(['1:accepted', '2:running', '3:completed']);
+  });
+
+  it('fails a truncated answer at once, stops the agent and frees the slot', async () => {
+    const h = await makeHarness();
+    const first = makeAssignment({ taskId: 'task-a' });
+    const second = makeAssignment({ taskId: 'task-b' });
+    h.relay.deliverAssignment(first.assignment, first.digest);
+    h.relay.deliverAssignment(second.assignment, second.digest);
+    await h.bridge.tick();
+    expect(h.relay.spawns).toHaveLength(1);
+    const name = agentNameOf(h, 'task-a');
+    const answer = cutLikeTheCore(`${'x'.repeat(4044)}\nCHIEF_RESULT: completed`);
+    expect(answer).not.toContain('CHIEF_RESULT');
+    h.relay.deliver('agent-spawned', name, answer);
+    await h.bridge.tick();
+    expect(h.store.task('task-a')).toMatchObject({ state: 'failed', reason: 'result_marker_missing' });
+    expect(h.relay.states('task-a')).toEqual(['1:accepted', '2:running', '3:failed']);
+    expect(h.node.ended).toEqual([name]);
+    await h.bridge.tick();
+    expect(h.relay.spawns).toHaveLength(2);
+  });
+
+  it('does not let a later unmarked message overrule a held claim', async () => {
+    const h = await makeHarness();
+    h.relay.spawnOutcome = { status: 'running', spawned: false, ready: false };
+    await assignAndStart(h);
+    const name = agentNameOf(h);
+    h.relay.deliver('agent-spawned', name, 'CHIEF_RESULT: completed');
+    h.relay.deliver('agent-spawned', name, 'one more thing');
+    await h.bridge.tick();
+    expect(h.store.task('task-1')).toMatchObject({ state: 'launched', pendingResult: 'completed' });
   });
 
   it('holds an early result until the launch is confirmed', async () => {
@@ -239,15 +301,23 @@ describe('failures still report failed', () => {
     expect(h.node.ended).toEqual([agentNameOf(h)]);
   });
 
-  it('reports failed when the agent never produces a result line', async () => {
+  it('reports failed promptly on an answer with no result line', async () => {
     const h = await makeHarness();
     await assignAndStart(h);
     h.relay.deliver('agent-spawned', agentNameOf(h), 'here is a long answer with no result line');
     await h.bridge.tick();
+    expect(h.relay.states()).toEqual(['1:accepted', '2:running', '3:failed']);
+    expect(h.store.task('task-1')?.reason).toBe('result_marker_missing');
+  });
+
+  it('reports failed when the agent never answers at all', async () => {
+    const h = await makeHarness();
+    await assignAndStart(h);
     h.clock.now += 1_800_001;
     await h.bridge.tick();
     await h.bridge.tick();
     expect(h.relay.states().at(-1)).toBe('3:failed');
+    expect(h.store.task('task-1')?.reason).toBe('runtime_exceeded');
   });
 
   it('fails on a session on the wrong node', async () => {
