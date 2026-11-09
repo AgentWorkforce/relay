@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `agent-relay cloud worker register` accepts exactly one of `--token`, `--token-file` or `--token-stdin`, so enrollment can read a projected Secret file or pipe without putting the credential in process arguments. File and stdin inputs are limited to 16 KiB; interactive stdin is refused.
+- `agent-relay-node register --socket <socket>` lets a native session register itself from Codex's sandbox using a narrow command rule, preserving the core's process identity, ownership and self-registration checks.
 - New package `@agent-relay/core-bridge`: the Node client for the local Agent Relay core's bridge (connect, typed errors, events, and typed `spawn.*` helpers), extracted from the CLI. Replies over 16 MiB now close the connection and requests over 1 MiB are refused before they are sent.
 - `@agent-relay/core-bridge` reads the `released` flag of every spawn-control reply strictly: when an older core omits it or sends `null` or a non-boolean value, the reply carries `released: false`, and `isReleaseConfirmed(invocation)` is true only for a literal `true`, so a `completed` release is not by itself a confirmed one.
 
@@ -39,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `diagnostic_http::RequestOptions` lets embedding applications construct the core HTTP transport's request options directly, keeping idempotency keys compatible across Relaycast SDK versions.
 - Relaycast workspace verification and agent HTTP requests use the operating system trust store, preserving that transport when credentials change and refusing credential-bearing redirects.
 
 - `agent-relay-node` authenticates Cloud sign-in/session HTTPS requests with the operating system trust store, matching its WebSocket connections, so sites using an installed organizational CA can sign in without certificate exceptions.

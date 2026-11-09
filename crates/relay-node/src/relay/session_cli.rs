@@ -1,5 +1,5 @@
 //! The probe's self-limiting session-socket commands: `send`,
-//! `agents`, `whoami`, `read`, `fetch-attachment`,
+//! `agents`, `whoami`, `register`, `read`, `fetch-attachment`,
 //! `connect-send` and `subscribe-channel`.
 //!
 //! Codex's execpolicy rules match a command by its leading words only, so
@@ -44,6 +44,12 @@ pub enum SessionCommand {
     Agents,
     /// `whoami`: `GET /whoami`.
     Whoami,
+    /// `register`: `POST /register`, identifying only the calling process.
+    Register {
+        name: Option<String>,
+        description: Option<String>,
+        mcp: Option<String>,
+    },
     /// `read <ref>`: `GET /messages?ref=<ref>`.
     Read { message_ref: String },
     /// `fetch-attachment <file-id>`: `POST /attachments/fetch`.
@@ -73,10 +79,11 @@ impl SessionRequest {
 
 /// The subcommands Codex's sandbox rules allow (`SandboxRules`), each only
 /// on this core's own session socket.
-pub const ALLOWED_SUBCOMMANDS: [&str; 7] = [
+pub const ALLOWED_SUBCOMMANDS: [&str; 8] = [
     "send",
     "agents",
     "whoami",
+    "register",
     "read",
     "fetch-attachment",
     "connect-send",
@@ -127,6 +134,7 @@ impl SessionCommand {
             SessionCommand::Send { .. } => "send",
             SessionCommand::Agents => "agents",
             SessionCommand::Whoami => "whoami",
+            SessionCommand::Register { .. } => "register",
             SessionCommand::Read { .. } => "read",
             SessionCommand::FetchAttachment { .. } => "fetch-attachment",
             SessionCommand::ConnectSend { .. } => "connect-send",
@@ -160,6 +168,13 @@ impl SessionCommand {
                 method: "GET",
                 path: "/whoami".into(),
             }),
+            SessionCommand::Register { .. } => {
+                self.typed_body()?;
+                Ok(SessionRequest {
+                    method: "POST",
+                    path: "/register".into(),
+                })
+            }
             SessionCommand::Read { message_ref } => {
                 if message_ref.len() != 12 || !message_ref.bytes().all(|b| b.is_ascii_hexdigit()) {
                     return Err(refuse(
@@ -205,6 +220,44 @@ impl SessionCommand {
         }
     }
 
+    /// A body constructed solely from this command's typed fields. No
+    /// caller-supplied JSON, session id, target or process id is accepted:
+    /// the server identifies the session from the kernel peer PID and UID.
+    pub fn typed_body(&self) -> Result<Option<Vec<u8>>> {
+        let SessionCommand::Register {
+            name,
+            description,
+            mcp,
+        } = self
+        else {
+            return Ok(None);
+        };
+        let mut fields = serde_json::Map::new();
+        if let Some(name) = name {
+            if crate::relay::agents::normalize_name(name).is_none() {
+                return Err(refuse(
+                    "Use 2–48 lowercase letters, digits and single dashes for --name.",
+                ));
+            }
+            fields.insert("name".into(), name.clone().into());
+        }
+        if let Some(description) = description {
+            if description.len() > 4096 || description.contains('\0') {
+                return Err(refuse(
+                    "--description takes at most 4096 bytes, without NUL characters.",
+                ));
+            }
+            fields.insert("description".into(), description.clone().into());
+        }
+        if let Some(mcp) = mcp {
+            if !crate::relay::hosted_mcp::valid_declaration(mcp) {
+                return Err(refuse("--mcp takes agent-relay-sessions or none."));
+            }
+            fields.insert("mcp".into(), mcp.clone().into());
+        }
+        Ok(Some(serde_json::to_vec(&fields)?))
+    }
+
     /// The arguments after `--socket <socket>`, as this command is typed.
     fn arguments(&self) -> Vec<&str> {
         match self {
@@ -227,6 +280,23 @@ impl SessionCommand {
                 parts
             }
             SessionCommand::Agents | SessionCommand::Whoami => Vec::new(),
+            SessionCommand::Register {
+                name,
+                description,
+                mcp,
+            } => {
+                let mut parts = Vec::new();
+                if let Some(name) = name {
+                    parts.extend(["--name", name.as_str()]);
+                }
+                if let Some(description) = description {
+                    parts.extend(["--description", description.as_str()]);
+                }
+                if let Some(mcp) = mcp {
+                    parts.extend(["--mcp", mcp.as_str()]);
+                }
+                parts
+            }
             SessionCommand::Read { message_ref } => vec![message_ref.as_str()],
             SessionCommand::FetchAttachment { file_id } => vec![file_id.as_str()],
             SessionCommand::ConnectSend { to } => match to {
@@ -340,7 +410,7 @@ pub fn run(socket: &Path, command: &SessionCommand, body: Option<&str>) -> Resul
             std::io::stdin().read_to_end(&mut body)?;
             body
         }
-        None => Vec::new(),
+        None => command.typed_body()?.unwrap_or_default(),
     };
     let timeout = match command {
         SessionCommand::FetchAttachment { .. } => {
@@ -361,6 +431,73 @@ mod tests {
             reply_to: None,
             thread: None,
         }
+    }
+
+    #[test]
+    fn registration_builds_only_typed_json_and_escapes_description() {
+        let description = "Review \"release\"\nwith --path /settings and {\"target\":\"other\"}";
+        let command = SessionCommand::Register {
+            name: Some("Review-Bot".into()),
+            description: Some(description.into()),
+            mcp: Some("none".into()),
+        };
+        assert_eq!(
+            command.request().unwrap(),
+            SessionRequest {
+                method: "POST",
+                path: "/register".into()
+            }
+        );
+        assert!(
+            !command.sends_body(),
+            "registration never reads arbitrary JSON from stdin"
+        );
+        let body: serde_json::Value =
+            serde_json::from_slice(&command.typed_body().unwrap().unwrap()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({"name":"Review-Bot", "description":description, "mcp":"none"})
+        );
+        let empty = SessionCommand::Register {
+            name: None,
+            description: None,
+            mcp: None,
+        };
+        assert_eq!(empty.typed_body().unwrap().unwrap(), b"{}");
+        assert!(run(
+            Path::new("/does-not-exist"),
+            &command,
+            Some("{\"target\":\"other\"}")
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("no --body"));
+    }
+
+    #[test]
+    fn registration_refuses_invalid_fields_before_socket_access() {
+        for name in ["", "a", "bad name", "a--b", "../register", "x&target=other"] {
+            let command = SessionCommand::Register {
+                name: Some(name.into()),
+                description: None,
+                mcp: None,
+            };
+            assert!(command.request().is_err(), "{name:?}");
+        }
+        for description in ["x".repeat(4097), "a\0b".into()] {
+            let command = SessionCommand::Register {
+                name: None,
+                description: Some(description),
+                mcp: None,
+            };
+            assert!(command.request().is_err());
+        }
+        let command = SessionCommand::Register {
+            name: None,
+            description: None,
+            mcp: Some("other-server".into()),
+        };
+        assert!(command.request().is_err());
     }
 
     #[test]
@@ -407,6 +544,15 @@ mod tests {
             ),
             (SessionCommand::Agents, "GET", "/agents"),
             (SessionCommand::Whoami, "GET", "/whoami"),
+            (
+                SessionCommand::Register {
+                    name: None,
+                    description: None,
+                    mcp: None,
+                },
+                "POST",
+                "/register",
+            ),
             (
                 SessionCommand::Read {
                     message_ref: "0123456789ab".into(),

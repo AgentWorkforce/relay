@@ -1,5 +1,8 @@
 //! Observes the SDK boundary without changing its authentication or retry policy.
-use relaycast::{ClientOptions, RequestOptions};
+use relaycast::ClientOptions;
+// Keep options on the same SDK version as this transport. An embedding app
+// may also use a registry SDK, whose RequestOptions is a different Rust type.
+pub use relaycast::RequestOptions;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 

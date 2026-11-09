@@ -231,7 +231,14 @@ export class ExecutionBridge {
     }
     // The text is model-authored: it selects the report state and nothing else.
     const claimed = parseClaimedResult(message.text);
-    if (claimed) this.store.setPendingResult(task.taskId, claimed);
+    if (claimed) {
+      this.store.setPendingResult(task.taskId, claimed);
+      return;
+    }
+    // Sending to the requester uses up the agent's automatic answer, so nothing better follows.
+    // This can claim no more than `failed`, which the agent could already claim, and the first
+    // claim still wins.
+    if (!task.pendingResult) this.fail(task, 'result_marker_missing');
   }
 
   private async advance(): Promise<void> {
