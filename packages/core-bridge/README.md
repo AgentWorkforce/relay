@@ -150,6 +150,47 @@ The core stays authoritative. Rules a caller must know:
 - `spawn.status` fills in `agent_id`, `name` and `node_id` only for spawns made on
   this core.
 
+## Service-caller result inbox
+
+After `authenticate` binds a connection, the service-caller helpers use the
+connection as the caller and send no `caller_name` or `caller_secret`:
+
+```ts
+const identity = await serviceCallerIdentity(client);
+const { iterator_id } = await serviceCallerInboxOpen(client, invocationId);
+const { delivery } = await serviceCallerInboxNext(client, iterator_id);
+
+if (delivery?.text !== undefined) {
+  await writeResultToJournal(delivery.text);
+  await serviceCallerInboxAck(client, delivery.item_id);
+} else if (delivery?.failure) {
+  await writeFailureToJournal(delivery.failure);
+  await serviceCallerInboxFail(client, delivery.item_id);
+}
+
+await serviceCallerInboxClose(client, iterator_id);
+await serviceCallerDisconnect(client);
+```
+
+`serviceCallerInboxOpen` binds one iterator to one invocation. `inbox.next`
+long-polls for at most 30 seconds; its helper gives the bridge call five extra
+seconds by default and preserves an explicit call timeout or abort signal. Use
+an independent authenticated connection for each concurrently waiting inbox,
+because the core answers one connection's calls in order.
+
+The settlement helpers hard-code the only metadata Desktop accepts:
+`{"relayflows_result":"journaled"}` for ack and
+`{"relayflows_result":"rejected"}` for fail. Journal the terminal result or
+failure before settling it. An ack of a failure delivery is refused by the
+core. Close every iterator before `serviceCallerDisconnect`; disconnect fails
+while an iterator is still open. Closing the bridge connection also closes its
+iterators and releases their unsettled delivery leases.
+
+Every helper feature-detects its method, validates its input without echoing
+values, and refuses malformed replies. Settlement replies must match the item,
+action and terminal state requested; delivery replies must contain exactly one
+of `text` or a typed failure.
+
 ## Versioning
 
 `BRIDGE_VERSION` is the wire contract. The core changes it only when something

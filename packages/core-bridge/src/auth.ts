@@ -232,10 +232,12 @@ export class CallerCredential {
       throw bad('auth is not one this reader knows');
     }
     const route = auth as Record<string, unknown>;
-    if (Object.keys(route).sort().join(',') !== 'authenticate,challenge,scheme'
-      || route.scheme !== CALLER_AUTH_SCHEME
-      || route.challenge !== CALLER_CHALLENGE_METHOD
-      || route.authenticate !== CALLER_AUTHENTICATE_METHOD) {
+    if (
+      Object.keys(route).sort().join(',') !== 'authenticate,challenge,scheme' ||
+      route.scheme !== CALLER_AUTH_SCHEME ||
+      route.challenge !== CALLER_CHALLENGE_METHOD ||
+      route.authenticate !== CALLER_AUTHENTICATE_METHOD
+    ) {
       throw bad('auth is not one this reader knows');
     }
     if (typeof doc.caller_id !== 'string' || !CALLER_ID.test(doc.caller_id)) {
