@@ -220,16 +220,51 @@ mod tests {
         listener.set_nonblocking(true).unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let http = super::super::diagnostic_http::HttpClient::new(
-            ClientOptions::new("test-only").with_base_url(origin),
+            ClientOptions::new("test-only").with_base_url(&origin),
         )
         .unwrap();
         std::env::set_var("SSL_CERT_DIR", "not-a-root-directory");
-        assert!(http.get::<Value>("/one", None, None).await.is_err());
         assert!(http
-            .post::<Value>("/two", Some(serde_json::json!({})), None)
+            .get::<Value>("/one", Some(&[("api_key", "test-only")]), None)
+            .await
+            .is_err());
+        assert!(http
+            .post::<Value>(
+                "/two",
+                Some(serde_json::json!({"credential":"test-only"})),
+                None
+            )
             .await
             .is_err());
         assert!(http.delete("/three", None).await.is_err());
+        let entries: Vec<_> = super::super::request_log::snapshot()
+            .entries
+            .into_iter()
+            .filter(|entry| entry.endpoint.starts_with(&origin))
+            .collect();
+        assert_eq!(
+            entries.len(),
+            3,
+            "each refused verb must finish a diagnostic entry"
+        );
+        for (method, path) in [("GET", "/one"), ("POST", "/two"), ("DELETE", "/three")] {
+            let entry = entries
+                .iter()
+                .find(|entry| entry.method == method && entry.endpoint == format!("{origin}{path}"))
+                .unwrap();
+            assert!(entry.failed);
+            assert_eq!(
+                entry.status, None,
+                "no HTTP status exists without a request"
+            );
+            assert!(entry.duration_ms.is_some());
+            assert!(entry
+                .response
+                .contains("Platform certificate file overrides"));
+            assert!(!entry.request.contains("test-only"));
+            assert!(!entry.response.contains("test-only"));
+            assert!(!entry.response.contains("not-a-root-directory"));
+        }
         assert_eq!(
             listener.accept().unwrap_err().kind(),
             std::io::ErrorKind::WouldBlock

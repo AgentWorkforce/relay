@@ -22,13 +22,15 @@ impl HttpClient {
         query: Option<&[(&str, &str)]>,
         options: Option<RequestOptions>,
     ) -> relaycast::Result<T> {
-        super::sdk_http::environment_is_safe()?;
         super::request_log::observe(
             "GET",
             &format!("{}{}", self.inner.base_url(), path),
             serde_json::to_value(query).unwrap_or(Value::Null),
             self.credential.expose(),
-            self.inner.get(path, query, options),
+            async {
+                super::sdk_http::environment_is_safe()?;
+                self.inner.get(path, query, options).await
+            },
         )
         .await
     }
@@ -38,13 +40,15 @@ impl HttpClient {
         body: Option<impl Serialize>,
         options: Option<RequestOptions>,
     ) -> relaycast::Result<T> {
-        super::sdk_http::environment_is_safe()?;
         super::request_log::observe(
             "POST",
             &format!("{}{}", self.inner.base_url(), path),
             serde_json::to_value(&body).unwrap_or(Value::Null),
             self.credential.expose(),
-            self.inner.post(path, body, options),
+            async {
+                super::sdk_http::environment_is_safe()?;
+                self.inner.post(path, body, options).await
+            },
         )
         .await
     }
@@ -53,13 +57,15 @@ impl HttpClient {
         path: &str,
         options: Option<RequestOptions>,
     ) -> relaycast::Result<()> {
-        super::sdk_http::environment_is_safe()?;
         super::request_log::observe(
             "DELETE",
             &format!("{}{}", self.inner.base_url(), path),
             Value::Null,
             self.credential.expose(),
-            self.inner.delete(path, options),
+            async {
+                super::sdk_http::environment_is_safe()?;
+                self.inner.delete(path, options).await
+            },
         )
         .await
     }
