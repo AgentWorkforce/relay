@@ -8,8 +8,35 @@ use std::net::TcpListener;
 use std::thread;
 use std::time::Duration;
 
-#[tokio::test]
-async fn an_embedding_app_can_keep_the_idempotency_key_with_transport_owned_options() {
+#[test]
+fn an_embedding_app_can_keep_the_idempotency_key_with_transport_owned_options() {
+    const CHILD: &str = "RELAY_PUBLIC_OPTIONS_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "an_embedding_app_can_keep_the_idempotency_key_with_transport_owned_options",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env_remove("SSL_CERT_FILE")
+            .env_remove("SSL_CERT_DIR")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "child failed: {}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(verify_public_options());
+}
+
+async fn verify_public_options() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let server = thread::spawn(move || {
