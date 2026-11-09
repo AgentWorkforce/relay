@@ -1,0 +1,37 @@
+{
+  "id": "compact_5i27osq4bzgf",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-11-09T18:06:24.382Z",
+  "sourceTrajectories": [
+    "traj_djk9aowzxq8y"
+  ],
+  "dateRange": {
+    "start": "2026-11-09T17:22:20.740Z",
+    "end": "2026-11-09T18:06:16.524Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "api",
+      "decisions": [
+        {
+          "question": "Resolve enrollment input before calling the existing registration API",
+          "chosen": "Resolve enrollment input before calling the existing registration API",
+          "reasoning": "Choose exactly one legacy, regular-file or non-interactive stdin source. Bound UTF-8 input to 16 KiB, follow projected Secret symlinks but bind reads to a checked descriptor, and emit fixed errors without paths or token values. Keep runtime enrollment, storage and transport behavior in the existing cloud API.",
+          "fromTrajectory": "traj_djk9aowzxq8y"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}
