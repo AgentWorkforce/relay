@@ -78,6 +78,19 @@ reports no identity to confirm that a named node is its own.
 
 A per-spawn isolation profile in `relay-node` would replace the attestation.
 
+## Security
+
+- **The node and the bridge share a user, so a spawned agent can reach the worker token.**
+  The core socket admits only the same user, so the bridge and the node run under one uid.
+  A spawned agent with shell access as that user could read the worker token from the
+  bridge process and impersonate the worker on Relay. Full access off narrows this but
+  does not close it. A forged report is still only a claim, which the chief's independent
+  verification must check.
+- **Keep the worker token out of the node service's environment.** Harnesses inherit that
+  environment, so a token placed there reaches every spawned agent.
+- **Block instance metadata for the service user.** A spawned agent runs as that user and
+  must not be able to obtain the host's cloud credentials.
+
 ## Running
 
 ```sh
