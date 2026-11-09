@@ -525,7 +525,9 @@ pub fn record_editor_hook(
 /// conversation's staged messages over through `write`, which says whether
 /// the answer was written in full: claims are tombstoned once it was and
 /// put back if not. With `watch` (the `stop` entry's `--wait`) an editor
-/// conversation's completed turn waits for its next message (`wait::wait`).
+/// conversation's completed turn waits for its next message (`wait::wait`),
+/// once a turn Cursor started without `beforeSubmitPrompt` is named
+/// (`wait::untracked_turn_seen`).
 /// A Cursor CLI session answers at once, and keeps Cursor's own limit of
 /// follow-ups in a row (`wait::CURSOR_LOOP_LIMIT`), which that entry lifts.
 /// `true` once it answered.
@@ -537,6 +539,7 @@ pub fn run_hook(
     watch: Option<&wait::Watch<'_>>,
     write: &mut dyn FnMut(&Value) -> bool,
 ) -> bool {
+    let started = std::time::SystemTime::now();
     wait::turn_seen(config, payload);
     let Some(session) = payload_session(payload) else {
         return false;
@@ -562,6 +565,7 @@ pub fn run_hook(
             }
             match watch {
                 Some(watch) if wait::waits_after(payload) => {
+                    wait::untracked_turn_seen(config, payload, started);
                     wait::wait(config, table, host, payload, watch, write) == wait::Ended::Answered
                 }
                 _ => answer_now(config, payload, write),
@@ -599,9 +603,11 @@ fn answer_now(
 
 /// The caller a tool process `pid` of the editor's agent is, once the walk
 /// up from it reaches the extension host `host` of this user's: the
-/// conversation its `CURSOR_CONVERSATION_ID` names, when a hook of that
-/// conversation already recorded it live under this host, or nobody. A
-/// tool's environment alone never puts a conversation on a host.
+/// conversation its `CURSOR_CONVERSATION_ID` names, claimed for this host
+/// (`editor::claim`), or nobody. A tool naming its conversation vouches for
+/// it as a hook it ran itself would, so a new conversation's first tool
+/// call can put it on the relay before Cursor writes the transcript a hook
+/// that names none needs.
 pub fn editor_caller(
     config: &CursorConfig,
     table: &dyn ProcessTable,
@@ -611,13 +617,7 @@ pub fn editor_caller(
     if !platform::SUPPORTED || !editor::is_editor_host(table, host) {
         return None;
     }
-    let uid = crate::relay::peer::current_uid();
     let session_id = editor::tool_conversation(table, pid, host)?;
-    let owned = editor::live(config, table, uid, &session_id)
-        .is_some_and(|session| session.host_pid == host);
-    if !owned {
-        return None;
-    }
     let workspace = table
         .cwd(pid)
         .map(|path| path.to_string_lossy().into_owned());

@@ -52,6 +52,16 @@ impl LocalInjector {
             | SessionKind::OpenCodeOpen
             | SessionKind::GrokOpen
             | SessionKind::Grok => true,
+            // So are a Cursor editor conversation's tools, by
+            // `CURSOR_CONVERSATION_ID`. A Cursor CLI session's are named by
+            // the `cursor-agent` holding it, which curl reaches as well.
+            SessionKind::CursorCli => cursor_cli::held(
+                &self.config.cursor,
+                &*self.table,
+                self.config.uid,
+                &target.id,
+            )
+            .is_none(),
             _ => false,
         }
     }
