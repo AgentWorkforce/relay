@@ -1,4 +1,4 @@
-//! The TLS client configuration every WebSocket the core opens shares.
+//! The platform TLS client configuration shared by HTTP and WebSocket clients.
 //!
 //! Trust comes from the platform's root certificates. Reading them walks the
 //! keychain and evaluates each certificate's trust settings on macOS, so they
@@ -36,8 +36,27 @@ const PARTIAL_REFRESH_AFTER: Duration = Duration::from_secs(60);
 
 /// The connector for a `wss://` (or plain `ws://`) connect.
 pub fn connector() -> Connector {
+    Connector::Rustls(client_config())
+}
+
+/// Strict platform trust shared by HTTP and WebSocket clients. Certificate
+/// chains and hostnames retain rustls's normal verification.
+pub fn client_config() -> Arc<rustls::ClientConfig> {
     static SHARED: Shared = Shared::new();
-    Connector::Rustls(SHARED.config(native_roots))
+    SHARED.config(native_roots)
+}
+
+/// Authenticated HTTP must use the platform store, never a file override.
+pub fn platform_root_environment_is_safe() -> bool {
+    platform_root_environment_is_safe_with(|name| std::env::var_os(name))
+}
+
+fn platform_root_environment_is_safe_with(
+    get: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> bool {
+    ["SSL_CERT_FILE", "SSL_CERT_DIR"]
+        .iter()
+        .all(|name| get(name).is_none_or(|value| value.is_empty()))
 }
 
 /// The platform's roots, and whether they were all read: a load error or a
@@ -132,6 +151,17 @@ mod tests {
         Roots {
             store: rustls::RootCertStore::empty(),
             complete: true,
+        }
+    }
+
+    #[test]
+    fn file_root_overrides_are_refused_without_reading_them() {
+        assert!(platform_root_environment_is_safe_with(|_| None));
+        assert!(platform_root_environment_is_safe_with(|_| Some("".into())));
+        for name in ["SSL_CERT_FILE", "SSL_CERT_DIR"] {
+            assert!(!platform_root_environment_is_safe_with(|key| {
+                (key == name).then(|| "unused-test-root-path".into())
+            }));
         }
     }
 
