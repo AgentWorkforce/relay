@@ -101,6 +101,11 @@ jobs:
             echo "::error::The isolated test process inherited a file trust override. Its value has not been printed or changed."
             exit 1
           fi
+          # Cargo's Linux libgit2 initialization probes OpenSSL root paths and
+          # injects SSL_CERT_* into test children even when this shell is clean.
+          # Clean only Cargo's test-executable boundary. Negative child tests
+          # start their binary directly and retain their explicit overrides.
+          export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER='env -u SSL_CERT_FILE -u SSL_CERT_DIR'
           cargo test --locked --lib relay::cloud_http::tests::tls_diagnostic_ -- --nocapture
           cargo test --locked -- --test-threads=4
 
@@ -149,6 +154,9 @@ jobs:
             echo "::error::The isolated test process inherited a file trust override. Its value has not been printed or changed."
             exit 1
           fi
+          # Preserve production refusal while removing Cargo's Linux-only
+          # OpenSSL probe variables from the isolated test executable.
+          export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER='env -u SSL_CERT_FILE -u SSL_CERT_DIR'
           cargo test --locked --no-default-features --lib relay::cloud_http::tests::tls_diagnostic_ -- --nocapture
           cargo test --locked --no-default-features -- --test-threads=4
 
