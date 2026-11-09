@@ -34,6 +34,8 @@ export {
 } from './errors.js';
 export {
   CALLER_AUTH_SCHEME,
+  CALLER_AUTHENTICATE_METHOD,
+  CALLER_CHALLENGE_METHOD,
   CALLER_CHALLENGE_TTL_MS,
   CALLER_FILE_SCHEMA,
   CALLER_TRANSCRIPT_DOMAIN,
@@ -44,11 +46,18 @@ export {
   authenticate,
   callerTranscript,
   readCallerCredential,
+  readCallerDescriptor,
   requireServiceCallerMethods,
   type CallerAuthenticateParams,
+  type CallerAuthRoute,
   type CallerBound,
   type CallerChallenge,
   type CallerChallengeParams,
+  type CallerFileAccount,
+  type CallerFileDescriptor,
+  type CallerFilePublisher,
+  type CallerFileWorkspace,
+  type CallerInboxRoute,
   type CallerTranscriptInput,
 } from './auth.js';
 export {
@@ -81,6 +90,7 @@ export {
   SERVICE_CALLER_INBOX_FAIL_METHOD,
   SERVICE_CALLER_INBOX_NEXT_METHOD,
   SERVICE_CALLER_INBOX_OPEN_METHOD,
+  assertServiceCallerIdentity,
   serviceCallerDisconnect,
   serviceCallerIdentity,
   serviceCallerInboxAck,

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { CallOptions, CoreClient, HelloResult } from './client.js';
 import { CoreBridgeError, CoreRpcError } from './errors.js';
+import type { CallerFileDescriptor } from './auth.js';
 import {
   INBOX_NEXT_CALL_GRACE_MS,
   MAX_INBOX_NEXT_TIMEOUT_MS,
@@ -12,6 +13,7 @@ import {
   SERVICE_CALLER_INBOX_FAIL_METHOD,
   SERVICE_CALLER_INBOX_NEXT_METHOD,
   SERVICE_CALLER_INBOX_OPEN_METHOD,
+  assertServiceCallerIdentity,
   serviceCallerDisconnect,
   serviceCallerIdentity,
   serviceCallerInboxAck,
@@ -38,6 +40,15 @@ const identity = {
   workspace_id: 'ws_1',
   relaycast_workspace_id: 'rcws_1',
 };
+
+const descriptorIdentity = {
+  publisher: identity.publisher,
+  workspace: {
+    base_url: identity.base_url,
+    workspace_id: identity.workspace_id,
+    relaycast_workspace_id: identity.relaycast_workspace_id,
+  },
+} as CallerFileDescriptor;
 
 const textDelivery = {
   item_id: 'item_1',
@@ -113,6 +124,29 @@ async function bridgeError(promise: Promise<unknown>, code: string): Promise<Cor
 }
 
 describe('service-caller helpers', () => {
+  it('pins the authenticated publisher and workspace to caller.json before spawn', () => {
+    expect(() => assertServiceCallerIdentity(descriptorIdentity, identity)).not.toThrow();
+    for (const mismatch of [
+      { ...identity, publisher: { ...identity.publisher, id: 'agent_other' } },
+      { ...identity, publisher: { ...identity.publisher, name: 'other' } },
+      { ...identity, base_url: 'https://other.example' },
+      { ...identity, workspace_id: 'ws_other' },
+      { ...identity, relaycast_workspace_id: 'rcws_other' },
+    ]) {
+      const error = (() => {
+        try {
+          assertServiceCallerIdentity(descriptorIdentity, mismatch);
+        } catch (value) {
+          return value;
+        }
+      })();
+      expect(error).toBeInstanceOf(CoreBridgeError);
+      expect(error).toMatchObject({ code: 'caller_identity_mismatch' });
+      expect((error as Error).message).not.toContain('agent_other');
+      expect((error as Error).message).not.toContain('ws_other');
+    }
+  });
+
   it('send only the bound schema-v2 params and exact settlement metadata', async () => {
     const { client, calls } = fakeClient();
     const signal = new AbortController().signal;
