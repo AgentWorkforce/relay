@@ -9,3 +9,7 @@ Validation plan: actual command/queue/assignment boundaries with injected fetch 
 Trail CLI is unavailable in this environment; this tracked record captures the delegated decision directly.
 
 Review follow-up: SDK2.0.65 attaches a YAML agent worker but its authored TypeScript path also attaches LLM execution. Narrow generic capability wording. Control may supply ordinary `.ts` filenames, so normalize only the materialized TypeScript filename to `.flow.ts`, retaining source bytes and directory; validate against the actual published SDK path classifier.
+
+Main-forward: preserve the released 18.0.0 history and keep this pending feature under Unreleased Minor. Both feature modules, their tests and the worker documentation remain byte-identical to the reviewed predecessor. The real lock-pinned SDK 2.0.66 tarball integrity was verified; its actual authored-path classifier passed the materialization controls. All 25 selected tests and strict selected TypeScript checks pass on the composed tree. No provider, registration, publication or runtime operation is claimed.
+
+Review passes: adversarial pass rechecked default-off, daemon propagation, safe materialization, state-bearing refusal and nonzero failure handling; contextual pass compared all five feature files and retained main’s release/package changes. Both are source-only clearance.

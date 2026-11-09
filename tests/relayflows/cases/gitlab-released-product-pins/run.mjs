@@ -234,7 +234,7 @@ try {
     metadataFile &&
     filePatch !== null &&
     Number(filePatch[1]) >= 77 &&
-    versions.flows === '2.0.65' &&
+    versions.flows === '2.0.66' &&
     refusals.selection &&
     refusals.ingress;
   const observation = {

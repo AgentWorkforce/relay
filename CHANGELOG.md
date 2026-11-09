@@ -5,12 +5,17 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Major]
+## [Unreleased - Minor]
 
 ### Added
 
 - `agent-relay cloud worker start --local-agent` opts into the supported Relayflows local worker, including daemon starts. TypeScript assignments use the SDK’s authored `.flow.ts` entrypoint.
 
+## [18.0.0] - 2026-11-09
+
+### Added
+
+- `agent-relay-node register --socket <socket>` lets a native session register itself from Codex's sandbox using a narrow command rule, preserving the core's process identity, ownership and self-registration checks.
 - New package `@agent-relay/core-bridge`: the Node client for the local Agent Relay core's bridge (connect, typed errors, events, and typed `spawn.*` helpers), extracted from the CLI. Replies over 16 MiB now close the connection and requests over 1 MiB are refused before they are sent.
 - `@agent-relay/core-bridge` reads the `released` flag of every spawn-control reply strictly: when an older core omits it or sends `null` or a non-boolean value, the reply carries `released: false`, and `isReleaseConfirmed(invocation)` is true only for a literal `true`, so a `completed` release is not by itself a confirmed one.
 
