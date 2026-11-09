@@ -15,19 +15,20 @@ const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 
 const envelope = <T extends z.ZodType>(data: T) => z.object({ ok: z.literal(true), data });
 
-const identitySchema = envelope(
+const IDENTITY_SCHEMA = envelope(
   z.object({ id: z.string().min(1), workspace_id: z.string().min(1), address: z.string().optional() })
 );
-const conversationsSchema = envelope(
+const CONVERSATIONS_SCHEMA = envelope(
   z.array(
     z.object({
       id: z.string().min(1),
       type: z.enum(['1:1', 'group']),
       participants: z.array(z.object({ agent_id: z.string().min(1) })),
+      last_message: z.object({ id: z.string().min(1) }).nullish(),
     })
   )
 );
-const messagesSchema = envelope(
+const MESSAGES_SCHEMA = envelope(
   z.array(
     z.object({
       id: z.string().regex(/^\d{19}$/),
@@ -38,18 +39,18 @@ const messagesSchema = envelope(
     })
   )
 );
-const receiptSchema = envelope(
+const RECEIPT_SCHEMA = envelope(
   z.object({
     invocation_id: z.string().min(1).optional(),
     id: z.string().min(1).optional(),
-    status: z.enum(['pending', 'dispatched', 'running', 'completed', 'failed']),
+    status: z.enum(['pending', 'dispatched', 'invoked', 'running', 'completed', 'failed', 'denied']),
     dispatched_node_id: z.string().nullish(),
     handler_node_id: z.string().nullish(),
     output: z.unknown().optional(),
   })
 );
 
-function toReceipt(raw: z.infer<typeof receiptSchema>['data']): SpawnReceipt {
+function toReceipt(raw: z.infer<typeof RECEIPT_SCHEMA>['data']): SpawnReceipt {
   const id = raw.invocation_id ?? raw.id;
   if (!id) throw new RelayError('relay_response_invalid', true);
   const output = (typeof raw.output === 'object' && raw.output !== null ? raw.output : {}) as Record<
@@ -59,7 +60,7 @@ function toReceipt(raw: z.infer<typeof receiptSchema>['data']): SpawnReceipt {
   const warning = output.warning as { code?: unknown } | string | undefined;
   return {
     id,
-    status: raw.status,
+    status: raw.status === 'denied' ? 'failed' : raw.status,
     nodeId: raw.dispatched_node_id ?? raw.handler_node_id ?? undefined,
     name: typeof output.name === 'string' ? output.name : undefined,
     // Exactly true, as the core reads them.
@@ -135,13 +136,18 @@ export class RelayHttpClient implements RelayPort {
   }
 
   async identity(): Promise<RelayIdentity> {
-    const { data } = this.parse(identitySchema, await this.request('/v1/agent'));
+    const { data } = this.parse(IDENTITY_SCHEMA, await this.request('/v1/agent'));
     return { agentId: data.id, workspaceId: data.workspace_id, address: data.address };
   }
 
   async conversations(): Promise<RelayConversation[]> {
-    const { data } = this.parse(conversationsSchema, await this.request('/v1/dm/conversations?limit=100'));
-    return data.map((c) => ({ id: c.id, type: c.type, participants: c.participants.map((p) => p.agent_id) }));
+    const { data } = this.parse(CONVERSATIONS_SCHEMA, await this.request('/v1/dm/conversations'));
+    return data.map((c) => ({
+      id: c.id,
+      type: c.type,
+      participants: c.participants.map((p) => p.agent_id),
+      lastMessageId: c.last_message?.id,
+    }));
   }
 
   async messages(
@@ -154,7 +160,7 @@ export class RelayHttpClient implements RelayPort {
       ...(page.before ? { before: page.before } : {}),
     });
     const { data } = this.parse(
-      messagesSchema,
+      MESSAGES_SCHEMA,
       await this.request(`/v1/dm/${encodeURIComponent(conversationId)}/messages?${query}`)
     );
     return data.map((m) => ({
@@ -189,12 +195,12 @@ export class RelayHttpClient implements RelayPort {
         },
       },
     });
-    return toReceipt(this.parse(receiptSchema, result).data);
+    return toReceipt(this.parse(RECEIPT_SCHEMA, result).data);
   }
 
   async invocation(id: string): Promise<SpawnReceipt> {
     const result = await this.request(`/v1/actions/spawn/invocations/${encodeURIComponent(id)}`);
-    const receipt = toReceipt(this.parse(receiptSchema, result).data);
+    const receipt = toReceipt(this.parse(RECEIPT_SCHEMA, result).data);
     if (receipt.id !== id) throw new RelayError('relay_response_invalid', true);
     return receipt;
   }

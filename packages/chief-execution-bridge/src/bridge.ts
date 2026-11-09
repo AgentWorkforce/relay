@@ -14,7 +14,11 @@ import {
 import type { BridgeStore, TaskRow } from './store.js';
 
 const PAGE_SIZE = 100;
-const MAX_BACKLOG = 1000;
+/** Messages handled per conversation per pass. The cursor advances, so a backlog drains. */
+const MAX_BATCH = 1000;
+/** Pages walked per conversation per pass; beyond this the conversation reports an error. */
+const MAX_PAGES = 200;
+const CAPACITY_REFUSAL = 'node_at_capacity';
 /** Well inside Relaycast's 24-hour idempotency record, so a repeat cannot launch again. */
 const INVOKE_REPLAY_WINDOW_MS = 3_600_000;
 /** A launch can still be under way this long after the invoke, so not-found is not yet proof. */
@@ -85,8 +89,9 @@ export class ExecutionBridge {
       chiefId: chief.chiefId,
       node: node.id,
     });
+    // A restart with its own agents filling the node must still collect their results.
     const refusal = await this.node.preflight(harness, node);
-    if (refusal) throw new Error(`bridge_refused:${refusal}`);
+    if (refusal && refusal !== CAPACITY_REFUSAL) throw new Error(`bridge_refused:${refusal}`);
     this.identity = identity;
     this.log('bridge_started');
   }
@@ -115,34 +120,44 @@ export class ExecutionBridge {
     );
     const chief = direct.find((c) => c.participants.includes(this.config.chief.agentId));
     if (chief) this.store.pinChiefConversation(chief.id);
-    // The listing is capped and newest-first, and every spawn adds a conversation, so
-    // the chief's would age out of it. Its pinned ID is always read.
-    const ids = new Set(direct.map((c) => c.id));
+    // Every spawn adds a conversation, so skip the ones with nothing new. The chief's
+    // is read first and by its pinned ID, so no other conversation can hold it up.
     const pinned = this.store.chiefConversation();
-    if (pinned) ids.add(pinned);
-    for (const id of ids) {
-      const messages = await this.readNewMessages(id, this.store.cursor(id));
-      for (const message of messages) {
-        this.onMessage(message, identity);
-        // Only after the message's effects are durable.
-        this.store.advanceCursor(id, message.id);
+    const unread = direct
+      .filter((c) => {
+        const cursor = this.store.cursor(c.id);
+        return !c.lastMessageId || !cursor || c.lastMessageId > cursor;
+      })
+      .map((c) => c.id);
+    for (const id of new Set([...(pinned ? [pinned] : []), ...unread])) {
+      try {
+        const messages = await this.readNewMessages(id, this.store.cursor(id));
+        for (const message of messages) {
+          this.onMessage(message, identity);
+          // Only after the message's effects are durable.
+          this.store.advanceCursor(id, message.id);
+        }
+      } catch (error) {
+        if (!(error instanceof RelayError)) throw error;
+        this.log('conversation_unavailable', { code: error.code });
       }
     }
   }
 
   private async readNewMessages(conversationId: string, cursor: string | undefined): Promise<RelayMessage[]> {
-    const messages: RelayMessage[] = [];
+    // Pages run newest to oldest. Keep the oldest batch; later passes reach the rest.
+    let messages: RelayMessage[] = [];
     let before: string | undefined;
-    for (;;) {
+    for (let pages = 0; ; pages += 1) {
+      if (pages >= MAX_PAGES) throw new RelayError('relay_backlog_limit', true);
       const page = await this.relay.messages(conversationId, { after: cursor, before, limit: PAGE_SIZE });
-      messages.push(...page);
-      if (messages.length > MAX_BACKLOG) throw new RelayError('relay_backlog_limit', true);
+      messages = [...messages, ...page].sort((a, b) => a.id.localeCompare(b.id)).slice(0, MAX_BATCH);
       if (page.length < PAGE_SIZE) break;
       const oldest = page.map((m) => m.id).sort()[0];
       if (!oldest || oldest === before) throw new RelayError('relay_page_invalid', true);
       before = oldest;
     }
-    return messages.sort((a, b) => a.id.localeCompare(b.id));
+    return messages;
   }
 
   private onMessage(message: RelayMessage, identity: RelayIdentity): void {
@@ -204,6 +219,10 @@ export class ExecutionBridge {
       return;
     }
     this.store.bindAgent(task.taskId, message.agentId);
+    if (this.now() - (task.invokingAt ?? task.createdAt) > this.config.limits.maxRuntimeMs) {
+      this.log('late_result_ignored', { taskId: task.taskId });
+      return;
+    }
     // The text is model-authored: it selects the report state and nothing else.
     const claimed = parseClaimedResult(message.text);
     if (claimed) this.store.setPendingResult(task.taskId, claimed);
@@ -220,28 +239,43 @@ export class ExecutionBridge {
         else queued.push(task);
         continue;
       }
-      await this.advanceStarted(task, now, maxRuntimeMs);
+      try {
+        await this.advanceStarted(task, now, maxRuntimeMs);
+      } catch (error) {
+        if (!(error instanceof RelayError)) throw error;
+        this.log('invocation_unavailable', { taskId: task.taskId, code: error.code });
+      }
     }
-    const running = this.store.activeTasks().filter((t) => t.state !== 'queued');
-    const busy = new Set(running.map((t) => t.repository));
-    let active = running.length;
-    let checked = false;
+    // A finished task keeps its slot and repository until its agent has actually stopped.
+    const occupying = [
+      ...this.store.activeTasks().filter((t) => t.state !== 'queued'),
+      ...this.store.stopPending(),
+    ];
+    const busy = new Set(occupying.map((t) => t.repository));
+    let active = occupying.length;
     for (const task of queued) {
       if (active >= maxConcurrent) break;
       if (busy.has(task.repository)) continue;
-      if (!checked) {
-        const refusal = await this.node.preflight(this.config.harness, this.config.node);
-        if (refusal) {
-          this.log('node_not_ready', { code: refusal });
-          return;
-        }
-        checked = true;
+      const refusal = await this.preflight();
+      if (refusal) {
+        this.log('node_not_ready', { code: refusal });
+        return;
       }
-      if (!this.store.markInvoking(task.taskId, now)) continue;
+      // Earlier spawns in this pass can take a while.
+      const invokingAt = this.now();
+      if (invokingAt - task.createdAt > maxQueuedMs) {
+        this.fail(task, 'queue_timeout');
+        continue;
+      }
+      if (!this.store.markInvoking(task.taskId, invokingAt)) continue;
       active += 1;
       busy.add(task.repository);
-      await this.invoke({ ...task, state: 'invoking', invokingAt: now });
+      await this.invoke({ ...task, state: 'invoking', invokingAt });
     }
+  }
+
+  private preflight(): Promise<string | undefined> {
+    return this.node.preflight(this.config.harness, this.config.node);
   }
 
   private async advanceStarted(task: TaskRow, now: number, maxRuntimeMs: number): Promise<void> {
@@ -257,8 +291,18 @@ export class ExecutionBridge {
     if (task.state === 'invoking') {
       // Only a crash or an unknown outcome leaves this state. The same key cannot launch twice
       // while Relaycast still holds it; beyond that the outcome is unknown and is not retried.
-      if (now - startedAt >= INVOKE_REPLAY_WINDOW_MS) this.fail(task, 'execution_outcome_unknown');
-      else await this.invoke(task);
+      if (now - startedAt >= INVOKE_REPLAY_WINDOW_MS) {
+        this.fail(task, 'execution_outcome_unknown');
+        return;
+      }
+      // A repeat may start the agent if the first attempt never arrived, so access is
+      // rechecked. Capacity is not: the first attempt may be what filled the node.
+      const refusal = await this.preflight();
+      if (refusal && refusal !== CAPACITY_REFUSAL) {
+        this.log('node_not_ready', { taskId: task.taskId, code: refusal });
+        return;
+      }
+      await this.invoke(task);
       return;
     }
     if (task.state === 'launched' && task.invocationId) {
@@ -334,7 +378,21 @@ export class ExecutionBridge {
     this.log('task_finished', { taskId: task.taskId, state: 'failed', reason });
   }
 
-  /** Ends every spawned agent whose task is over, so a finished task holds no capacity. */
+  /** Whether a not-found from the node proves that no agent will appear for this task. */
+  private async launchSettled(task: TaskRow, now: number): Promise<boolean> {
+    if (task.runningAt !== undefined) return true;
+    const graceOver = now - (task.invokingAt ?? now) > STOP_GRACE_MS;
+    if (!task.invocationId) return graceOver;
+    try {
+      const receipt = await this.relay.invocation(task.invocationId);
+      return receipt.status === 'completed' || receipt.status === 'failed';
+    } catch (error) {
+      if (!(error instanceof RelayError)) throw error;
+      return !error.retryable && graceOver;
+    }
+  }
+
+  /** Ends every spawned agent whose task is over. Its slot stays held until this succeeds. */
   private async stopFinished(): Promise<void> {
     const now = this.now();
     for (const task of this.store.stopPending()) {
@@ -346,8 +404,9 @@ export class ExecutionBridge {
         continue;
       }
       if (outcome === 'refused') this.log('agent_stop_refused', { taskId: task.taskId });
-      const launchSettled = task.runningAt !== undefined || now - (task.invokingAt ?? now) > STOP_GRACE_MS;
-      if (outcome !== 'not_found' || launchSettled) this.store.clearStop(task.taskId);
+      if (outcome === 'ended' || (outcome === 'not_found' && (await this.launchSettled(task, now)))) {
+        this.store.clearStop(task.taskId);
+      }
     }
   }
 

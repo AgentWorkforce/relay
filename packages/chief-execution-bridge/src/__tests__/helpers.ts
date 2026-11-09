@@ -83,6 +83,11 @@ export class FakeRelay implements RelayPort {
   loseNextInvokeResponse = false;
   spawnOutcome: Partial<SpawnReceipt> = {};
   conversationListLimit = 100;
+  invokeCalls = 0;
+  readConversations: string[] = [];
+  unavailableConversations = new Set<string>();
+  unavailableInvocations = new Set<string>();
+  reportLastMessage = false;
   extraConversations: RelayConversation[] = [];
 
   async identity(): Promise<RelayIdentity> {
@@ -129,6 +134,7 @@ export class FakeRelay implements RelayPort {
       id,
       type: '1:1',
       participants: [WORKER, c.peer],
+      ...(this.reportLastMessage ? { lastMessageId: c.messages.at(-1)?.id } : {}),
     }));
     // Newest first, as Relaycast lists them.
     return [...this.extraConversations, ...real.reverse()].slice(0, this.conversationListLimit);
@@ -138,6 +144,8 @@ export class FakeRelay implements RelayPort {
     conversationId: string,
     page: { after?: string; before?: string; limit: number }
   ): Promise<RelayMessage[]> {
+    this.readConversations.push(conversationId);
+    if (this.unavailableConversations.has(conversationId)) throw new RelayError('relay_http_503', true);
     const all = this.conversationsById.get(conversationId)?.messages ?? [];
     return all
       .filter((m) => (!page.after || m.id > page.after) && (!page.before || m.id < page.before))
@@ -169,6 +177,7 @@ export class FakeRelay implements RelayPort {
   }
 
   async invokeSpawn(request: SpawnRequest): Promise<SpawnReceipt> {
+    this.invokeCalls += 1;
     if (this.invokeFailure) throw this.invokeFailure;
     const existing = [...this.invocations.values()].find((r) => r.id === `inv-${request.idempotencyKey}`);
     if (!existing) this.spawns.push(request);
@@ -191,6 +200,7 @@ export class FakeRelay implements RelayPort {
   }
 
   async invocation(id: string): Promise<SpawnReceipt> {
+    if (this.unavailableInvocations.has(id)) throw new RelayError('relay_http_503', true);
     const receipt = this.invocations.get(id);
     if (!receipt) throw new RelayError('relay_http_404', false);
     return receipt;
@@ -199,12 +209,14 @@ export class FakeRelay implements RelayPort {
 
 export class FakeNode implements NodePort {
   refusal: string | undefined;
+  /** When set, decides each preflight in turn instead of `refusal`. */
+  onPreflight: (() => string | undefined) | undefined;
   readonly ended: string[] = [];
   endOutcome: 'ended' | 'not_found' | 'refused' = 'ended';
   endThrows = false;
 
   async preflight(): Promise<string | undefined> {
-    return this.refusal;
+    return this.onPreflight ? this.onPreflight() : this.refusal;
   }
 
   async endAgent(name: string): Promise<'ended' | 'not_found' | 'refused'> {

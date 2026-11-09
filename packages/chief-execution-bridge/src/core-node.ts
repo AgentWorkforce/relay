@@ -39,13 +39,16 @@ export class CoreNode implements NodePort {
         if (settings.accept_spawns !== true) return 'spawns_not_accepted';
         // Anything but an explicit false counts as full access.
         if (settings[`spawn_full_access_${harness}`] !== false) return 'full_access_enabled';
-        if (settings.spawn_requester_approvals === true) return 'requester_approvals_enabled';
+        if (settings.spawn_requester_approvals !== false) return 'requester_approvals_enabled';
         const { targets } = await spawnTargets(client);
         const target = targets.find((t) => t.id === node.id && t.name === node.name);
         if (!target) return 'node_not_found';
         if (!target.live || !target.handlers_live || target.stale) return 'node_not_live';
         if (!target.capabilities.includes(`spawn:${harness}`)) return 'harness_not_available';
-        if (target.active_agents + target.reserved_agents >= target.max_agents) return 'node_at_capacity';
+        // Zero means the node has no limit.
+        if (target.max_agents > 0 && target.active_agents + target.reserved_agents >= target.max_agents) {
+          return 'node_at_capacity';
+        }
         return undefined;
       });
     } catch {

@@ -1,4 +1,4 @@
-import { statSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { ExecutionBridge } from '../bridge.js';
 import { configSchema } from '../config.js';
@@ -550,5 +550,216 @@ describe('long-running conversation history', () => {
     h.relay.deliverAssignment(next.assignment, next.digest);
     await h.bridge.tick();
     expect(h.relay.spawns).toHaveLength(2);
+  });
+});
+
+describe('review regressions', () => {
+  const limits = {
+    maxConcurrent: 2,
+    maxReservationMicros: 5000,
+    budgetMicros: 100_000,
+    maxRuntimeMs: 1_800_000,
+    maxQueuedMs: 900_000,
+  };
+
+  it('reports failed for a result sent after the runtime limit', async () => {
+    const h = await makeHarness();
+    await assignAndStart(h);
+    h.clock.now += 1_800_001;
+    h.relay.deliver('agent-spawned', agentNameOf(h), 'CHIEF_RESULT: completed');
+    await h.bridge.tick();
+    expect(h.relay.states()).toEqual(['1:accepted', '2:running', '3:failed']);
+    expect(h.store.task('task-1')?.reason).toBe('runtime_exceeded');
+  });
+
+  it('keeps retrying a refused stop and holds the slot', async () => {
+    const h = await makeHarness();
+    await assignAndStart(h);
+    h.node.endOutcome = 'refused';
+    h.relay.deliver('agent-spawned', agentNameOf(h), 'CHIEF_RESULT: failed');
+    await h.bridge.tick();
+    await h.bridge.tick();
+    expect(h.store.stopPending()).toHaveLength(1);
+    expect(h.node.ended.length).toBeGreaterThan(1);
+  });
+
+  it('holds the repository until the finished agent has stopped', async () => {
+    const h = await makeHarness();
+    const first = makeAssignment({ taskId: 'task-a' });
+    const second = makeAssignment({ taskId: 'task-b' });
+    h.relay.deliverAssignment(first.assignment, first.digest);
+    h.relay.deliverAssignment(second.assignment, second.digest);
+    await h.bridge.tick();
+    h.node.endThrows = true;
+    h.relay.deliver('agent-spawned', agentNameOf(h, 'task-a'), 'CHIEF_RESULT: completed');
+    await h.bridge.tick();
+    await h.bridge.tick();
+    expect(h.relay.spawns).toHaveLength(1);
+    h.node.endThrows = false;
+    await h.bridge.tick();
+    await h.bridge.tick();
+    expect(h.relay.spawns).toHaveLength(2);
+  });
+
+  it('holds the concurrency slot until the finished agent has stopped', async () => {
+    const h = await makeHarness({ limits: { ...limits, maxConcurrent: 1 } });
+    await assignAndStart(h);
+    h.node.endThrows = true;
+    h.relay.deliver('agent-spawned', agentNameOf(h), 'CHIEF_RESULT: completed');
+    await h.bridge.tick();
+    const next = makeAssignment({ taskId: 'task-2', repository: 'acme/other' });
+    h.relay.deliverAssignment(next.assignment, next.digest);
+    await h.bridge.tick();
+    expect(h.relay.spawns).toHaveLength(1);
+  });
+
+  it('prechecks the node for every spawn in one pass', async () => {
+    const h = await makeHarness();
+    const first = makeAssignment({ taskId: 'task-a' });
+    const second = makeAssignment({ taskId: 'task-b', repository: 'acme/other' });
+    h.relay.deliverAssignment(first.assignment, first.digest);
+    h.relay.deliverAssignment(second.assignment, second.digest);
+    let calls = 0;
+    h.node.onPreflight = () => (++calls === 2 ? 'node_at_capacity' : undefined);
+    await h.bridge.tick();
+    expect(h.relay.spawns).toHaveLength(1);
+    expect(h.store.task('task-b')?.state).toBe('queued');
+  });
+
+  it('rechecks access before repeating an uncertain invoke', async () => {
+    const h = await makeHarness();
+    h.relay.loseNextInvokeResponse = true;
+    await assignAndStart(h);
+    const before = h.relay.invokeCalls;
+    h.node.refusal = 'full_access_enabled';
+    await h.bridge.tick();
+    expect(h.relay.invokeCalls).toBe(before);
+    expect(h.store.task('task-1')?.state).toBe('invoking');
+  });
+
+  it('repeats an uncertain invoke when the only refusal is capacity', async () => {
+    const h = await makeHarness();
+    h.relay.loseNextInvokeResponse = true;
+    await assignAndStart(h);
+    h.node.refusal = 'node_at_capacity';
+    await h.bridge.tick();
+    expect(h.store.task('task-1')?.state).toBe('running');
+    expect(h.relay.spawns).toHaveLength(1);
+  });
+
+  it('times a task out if an earlier spawn in the pass used up its queue time', async () => {
+    const h = await makeHarness();
+    const first = makeAssignment({ taskId: 'task-a' });
+    const second = makeAssignment({ taskId: 'task-b', repository: 'acme/other' });
+    h.relay.deliverAssignment(first.assignment, first.digest);
+    h.relay.deliverAssignment(second.assignment, second.digest);
+    let calls = 0;
+    h.node.onPreflight = () => {
+      if (++calls === 2) h.clock.now += 900_001;
+      return undefined;
+    };
+    await h.bridge.tick();
+    expect(h.relay.spawns).toHaveLength(1);
+    expect(h.store.task('task-b')?.reason).toBe('queue_timeout');
+  });
+
+  it('measures runtime from the invoke, not the start of the pass', async () => {
+    const h = await makeHarness();
+    h.node.onPreflight = () => {
+      h.clock.now += 1000;
+      return undefined;
+    };
+    await assignAndStart(h);
+    expect(h.store.task('task-1')?.invokingAt).toBe(h.clock.now);
+  });
+
+  it('keeps advancing other tasks when one lookup fails', async () => {
+    const h = await makeHarness();
+    h.relay.spawnOutcome = { status: 'running', spawned: false, ready: false };
+    const first = makeAssignment({ taskId: 'task-a' });
+    const second = makeAssignment({ taskId: 'task-b', repository: 'acme/other' });
+    h.relay.deliverAssignment(first.assignment, first.digest);
+    h.relay.deliverAssignment(second.assignment, second.digest);
+    await h.bridge.tick();
+    const a = h.store.task('task-a')?.invocationId as string;
+    const b = h.store.task('task-b')?.invocationId as string;
+    h.relay.unavailableInvocations.add(a);
+    h.relay.invocations.set(b, {
+      id: b,
+      status: 'completed',
+      nodeId: 'node-1',
+      name: agentNameOf(h, 'task-b'),
+      spawned: true,
+      ready: true,
+      taskUnconfirmed: false,
+    });
+    await h.bridge.tick();
+    expect(h.store.task('task-b')?.state).toBe('running');
+    expect(h.store.task('task-a')?.state).toBe('launched');
+  });
+
+  it('keeps a stop owed past the grace period while the launch is unsettled', async () => {
+    const h = await makeHarness({ limits: { ...limits, maxRuntimeMs: 60_000 } });
+    h.relay.spawnOutcome = { status: 'dispatched', spawned: false, ready: false };
+    await assignAndStart(h);
+    h.node.endOutcome = 'not_found';
+    h.clock.now += 700_000;
+    await h.bridge.tick();
+    await h.bridge.tick();
+    expect(h.store.stopPending()).toHaveLength(1);
+    const id = h.store.task('task-1')?.invocationId as string;
+    h.relay.invocations.set(id, {
+      id,
+      status: 'failed',
+      spawned: false,
+      ready: false,
+      taskUnconfirmed: false,
+    });
+    await h.bridge.tick();
+    expect(h.store.stopPending()).toHaveLength(0);
+  });
+
+  it('drains a backlog over the batch size and then reaches a later assignment', async () => {
+    const h = await makeHarness();
+    for (let i = 0; i < 1100; i += 1) h.relay.deliver(CHIEF, 'chief', `noise ${i}`);
+    const made = makeAssignment();
+    h.relay.deliverAssignment(made.assignment, made.digest);
+    await h.bridge.tick();
+    expect(h.relay.spawns).toHaveLength(0);
+    await h.bridge.tick();
+    expect(h.relay.spawns).toHaveLength(1);
+  });
+
+  it('reads the chief first and survives another conversation failing', async () => {
+    const h = await makeHarness();
+    h.relay.deliver('agent-noisy', 'noisy', 'hello');
+    h.relay.unavailableConversations.add('dm-agent-noisy');
+    await assignAndStart(h);
+    expect(h.relay.spawns).toHaveLength(1);
+  });
+
+  it('does not read a conversation with nothing new', async () => {
+    const h = await makeHarness();
+    h.relay.reportLastMessage = true;
+    h.relay.deliver('agent-old', 'old', 'hello');
+    await h.bridge.tick();
+    h.relay.readConversations.length = 0;
+    await h.bridge.tick();
+    expect(h.relay.readConversations).not.toContain('dm-agent-old');
+  });
+
+  it('starts when its own agents have filled the node', async () => {
+    const h = await makeHarness();
+    h.node.refusal = 'node_at_capacity';
+    await expect(h.reopen()).resolves.toBeUndefined();
+  });
+
+  it('keeps the ledger sidecars private', async () => {
+    const h = await makeHarness();
+    await assignAndStart(h);
+    for (const suffix of ['-wal', '-shm']) {
+      expect(existsSync(h.path + suffix)).toBe(true);
+      expect(statSync(h.path + suffix).mode & 0o077).toBe(0);
+    }
   });
 });

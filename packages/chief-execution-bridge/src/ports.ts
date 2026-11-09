@@ -21,6 +21,8 @@ export interface RelayConversation {
   id: string;
   type: '1:1' | 'group';
   participants: string[];
+  /** The newest message's ID, when Relay reports it. */
+  lastMessageId?: string;
 }
 
 /** One stored message. `agentId` and `agentName` are recorded by Relay from the sender's token. */
@@ -43,7 +45,7 @@ export interface SpawnRequest {
 
 export interface SpawnReceipt {
   id: string;
-  status: 'pending' | 'dispatched' | 'running' | 'completed' | 'failed';
+  status: 'pending' | 'dispatched' | 'invoked' | 'running' | 'completed' | 'failed';
   nodeId?: string;
   name?: string;
   spawned: boolean;

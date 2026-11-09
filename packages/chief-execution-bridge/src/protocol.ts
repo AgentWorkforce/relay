@@ -7,34 +7,34 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
-const id = z.string().trim().min(1).max(200);
-const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
-const repo = z
+const ID = z.string().trim().min(1).max(200);
+const COUNT = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const REPOSITORY = z
   .string()
   .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)
   .transform((s) => s.toLowerCase());
 
-export const actionSchema = z.enum(['investigate', 'coordinate', 'unblock']);
-export type Action = z.infer<typeof actionSchema>;
+export const ACTION_SCHEMA = z.enum(['investigate', 'coordinate', 'unblock']);
+export type Action = z.infer<typeof ACTION_SCHEMA>;
 
-const evidenceSchema = z.strictObject({
-  sourceId: id,
-  sessionId: id,
-  version: id,
-  organizationId: id,
-  workspaceId: id,
-  projectId: id,
-  repository: repo,
-  workKey: id,
-  resourceKeys: z.array(id).min(1).max(100),
-  observedAt: count,
+const EVIDENCE_SCHEMA = z.strictObject({
+  sourceId: ID,
+  sessionId: ID,
+  version: ID,
+  organizationId: ID,
+  workspaceId: ID,
+  projectId: ID,
+  repository: REPOSITORY,
+  workKey: ID,
+  resourceKeys: z.array(ID).min(1).max(100),
+  observedAt: COUNT,
   summary: z.string().min(1).max(16_000),
   references: z.array(z.string().url().max(2000)).max(20),
 });
 
-const digest = z.string().regex(/^[a-f0-9]{64}$/);
+const DIGEST = z.string().regex(/^[a-f0-9]{64}$/);
 
-const assignmentSchema = z.strictObject({
+const ASSIGNMENT_SCHEMA = z.strictObject({
   protocol: z.literal('relay-chief.assignment.v1'),
   taskId: z.string().min(1).max(200),
   chiefId: z.string().min(1),
@@ -44,21 +44,21 @@ const assignmentSchema = z.strictObject({
   repository: z.string().min(1),
   workKey: z.string().min(1),
   resourceKeys: z.array(z.string().min(1)).min(1).max(100),
-  action: actionSchema,
+  action: ACTION_SCHEMA,
   worker: z.strictObject({
     agentId: z.string().min(1),
     address: z.string().min(1),
-    actions: z.array(actionSchema).min(1),
+    actions: z.array(ACTION_SCHEMA).min(1),
   }),
   policyVersion: z.string().min(1),
   configurationRevision: z.number().int().positive(),
-  policyDigest: digest,
+  policyDigest: DIGEST,
   reservationMicros: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  evidenceDigest: digest,
-  evidence: evidenceSchema,
+  evidenceDigest: DIGEST,
+  evidence: EVIDENCE_SCHEMA,
   acceptance: z.array(z.string().min(1).max(2000)).min(1).max(20),
 });
-export type Assignment = z.infer<typeof assignmentSchema>;
+export type Assignment = z.infer<typeof ASSIGNMENT_SCHEMA>;
 
 export type ReportState = 'accepted' | 'running' | 'completed' | 'failed';
 
@@ -71,6 +71,11 @@ export interface WorkerReport {
   artifactRefs: string[];
 }
 
+/**
+ * Serializes a value with sorted keys, leaving out undefined fields.
+ * @param value The value to serialize.
+ * @returns The canonical JSON text every digest is computed over.
+ */
 export function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
   if (value !== null && typeof value === 'object') {
@@ -83,6 +88,10 @@ export function canonical(value: unknown): string {
   return JSON.stringify(value) ?? 'null';
 }
 
+/**
+ * @param value The value to digest.
+ * @returns The SHA-256 hex digest of its canonical form.
+ */
 export function hash(value: unknown): string {
   return createHash('sha256').update(canonical(value)).digest('hex');
 }
@@ -106,13 +115,23 @@ export interface AssignmentPolicy {
   maxEvidenceAgeMs: number;
 }
 
+/**
+ * Validates an assignment against authenticated delivery identity and this worker's policy.
+ * Parsing lowercases repository names and trims evidence identifiers before the digest check.
+ * @param delivery Identity read from Relay for this delivery.
+ * @param raw The delivered message metadata.
+ * @param policy What this worker accepts.
+ * @param now The current time in milliseconds.
+ * @returns The parsed assignment and its digest.
+ * @throws `worker_assignment_invalid` or `worker_assignment_not_authorized`.
+ */
 export function readAssignment(
   delivery: AuthenticatedDelivery,
   raw: unknown,
   policy: AssignmentPolicy,
   now = Date.now()
 ): { assignment: Assignment; digest: string } {
-  const parsed = z.object({ chief_assignment: assignmentSchema, assignment_digest: digest }).safeParse(raw);
+  const parsed = z.object({ chief_assignment: ASSIGNMENT_SCHEMA, assignment_digest: DIGEST }).safeParse(raw);
   if (!parsed.success) throw new Error('worker_assignment_invalid');
   const assignment = parsed.data.chief_assignment;
   const assignmentDigest = parsed.data.assignment_digest;

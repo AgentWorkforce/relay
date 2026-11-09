@@ -92,6 +92,32 @@ describe('RelayHttpClient over loopback HTTP', () => {
     });
   });
 
+  it('accepts the in-flight invoked status and maps denied to failed', async () => {
+    let status = 'invoked';
+    const origin = await serve((_req, res) => json(res, 200, { ok: true, data: { id: 'inv1', status } }));
+    const client = new RelayHttpClient(origin, TOKEN);
+    await expect(client.invocation('inv1')).resolves.toMatchObject({ status: 'invoked' });
+    status = 'denied';
+    await expect(client.invocation('inv1')).resolves.toMatchObject({ status: 'failed' });
+  });
+
+  it('lists every conversation and reads the last message ID', async () => {
+    let url: string | undefined;
+    const origin = await serve((req, res) => {
+      url = req.url;
+      json(res, 200, {
+        ok: true,
+        data: [
+          { id: 'c1', type: '1:1', participants: [{ agent_id: 'a' }], last_message: { id: '5' } },
+          { id: 'c2', type: '1:1', participants: [], last_message: null },
+        ],
+      });
+    });
+    const listed = await new RelayHttpClient(origin, TOKEN).conversations();
+    expect(url).toBe('/v1/dm/conversations');
+    expect(listed.map((c) => c.lastMessageId)).toEqual(['5', undefined]);
+  });
+
   it('refuses a receipt for a different invocation', async () => {
     const origin = await serve((_req, res) =>
       json(res, 200, { ok: true, data: { id: 'inv2', status: 'running' } })
@@ -229,10 +255,23 @@ describe('CoreNode preflight against a fake core', () => {
     ['offline', goodSettings, [{ ...goodTarget, live: false }], 'node_not_live'],
     ['stale', goodSettings, [{ ...goodTarget, stale: true }], 'node_not_live'],
     ['no harness', goodSettings, [{ ...goodTarget, capabilities: ['spawn:codex'] }], 'harness_not_available'],
+    [
+      'requester approvals unreported',
+      { accept_spawns: true, spawn_full_access_claude: false },
+      [goodTarget],
+      'requester_approvals_enabled',
+    ],
     ['full', goodSettings, [{ ...goodTarget, active_agents: 1, reserved_agents: 1 }], 'node_at_capacity'],
   ])('refuses: %s', async (_label, settings, targets, code) => {
     const core = new CoreNode({ connect: fakeCore(settings, targets as object[]) });
     await expect(core.preflight('claude', node)).resolves.toBe(code);
+  });
+
+  it('treats max_agents 0 as no limit', async () => {
+    const core = new CoreNode({
+      connect: fakeCore(goodSettings, [{ ...goodTarget, max_agents: 0, active_agents: 9 }]),
+    });
+    await expect(core.preflight('claude', node)).resolves.toBeUndefined();
   });
 
   it('fails closed when the core cannot be reached', async () => {
