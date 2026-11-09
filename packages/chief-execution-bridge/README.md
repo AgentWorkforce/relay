@@ -18,7 +18,7 @@ dedicated `agent-relay-node`. Each pass:
 1. **Reads DMs** with the worker's token. Sender and recipient come from Relay, and the
    workspace from configuration once the token has matched it, never the body. Only a
    message with `chief_assignment` metadata that passes `readAssignment` can start work. A spawned agent's own messages are read only for its
-   `CHIEF_RESULT` line. Any other DM is ignored, and a refused assignment is quarantined
+   `CHIEF_RESULT` first line. Any other DM is ignored, and a refused assignment is quarantined
    as a hash, keeping the newest 10,000.
 2. **Claims the task.** The task ID, digest and `accepted` report are written in one
    transaction before any native call. A replay is a no-op; the same task with a
@@ -38,13 +38,19 @@ protocol changes.
 ## Completion is a claim
 
 Native spawn status only says the agent launched. The only end-of-work signal is the
-agent's own final message, so the bridge asks for a last line of `CHIEF_RESULT: completed`
-or `CHIEF_RESULT: failed`.
+agent's own final message, so the bridge asks for a first line of `CHIEF_RESULT: completed`
+or `CHIEF_RESULT: failed`, and a message under 3,000 characters. It must be the first line
+because the core cuts a final answer off at 4,000 characters.
 
 That line is model-authored and untrusted. It selects the report state and nothing else;
 identity comes from delivery metadata, and the chief's independent verification decides
-whether work is done. No result line by the deadline is reported as `failed`, and a message
-without one is otherwise ignored.
+whether work is done. A marker anywhere but the first non-empty line does not count.
+
+The agent is told to send one message. The core carries a final answer and a message the
+agent sends itself the same way, so the bridge cannot tell them apart: any message from the
+bound agent without a marker fails the task at once (`result_marker_missing` in the ledger
+and log), and the agent is stopped. No message at all by the deadline fails with
+`runtime_exceeded`. A failed report carries no reason; the reason stays in the ledger and log.
 
 ## Requirements
 

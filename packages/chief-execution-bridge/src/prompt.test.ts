@@ -52,10 +52,21 @@ describe('agent task text', () => {
   });
 });
 
+describe('result instructions', () => {
+  it('asks for a first-line marker and a message under the core cut', () => {
+    const { assignment, digest } = makeAssignment();
+    const task = buildTask(assignment, digest) as string;
+    expect(task).toContain('The very first line of that message must be exactly one of');
+    expect(task).toContain('under 3,000 characters');
+    expect(task).not.toMatch(/end your final message/);
+  });
+});
+
 describe('claimed result', () => {
   it.each([
     ['CHIEF_RESULT: completed', 'completed'],
-    ['notes\nCHIEF_RESULT: failed\n', 'failed'],
+    ['CHIEF_RESULT: failed\nnotes', 'failed'],
+    ['\n\n  CHIEF_RESULT: completed\r\nnotes', 'completed'],
   ])('reads %j', (text, expected) => {
     expect(parseClaimedResult(text)).toBe(expected);
   });
@@ -63,8 +74,10 @@ describe('claimed result', () => {
   it.each([
     'completed',
     'CHIEF_RESULT: done',
-    'CHIEF_RESULT: completed\nand then more',
+    'notes\nCHIEF_RESULT: completed',
+    'notes\nCHIEF_RESULT: completed\nand then more',
     'say CHIEF_RESULT: completed',
+    '> CHIEF_RESULT: completed',
   ])('refuses %j', (text) => {
     expect(parseClaimedResult(text)).toBeUndefined();
   });
