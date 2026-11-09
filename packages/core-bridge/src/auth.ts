@@ -35,12 +35,16 @@ export const CALLER_TRANSCRIPT_DOMAIN = 'agent-relay/service-caller/v1';
 export const CALLER_CHALLENGE_TTL_MS = 30_000;
 /** The `caller.json` `auth` value naming this transcript. */
 export const CALLER_AUTH_SCHEME = 'challenge-hmac-sha256/v1';
+/** The exact challenge method named by a schema-v2 caller handoff. */
+export const CALLER_CHALLENGE_METHOD = 'spawn_callers.challenge';
+/** The exact authenticate method named by a schema-v2 caller handoff. */
+export const CALLER_AUTHENTICATE_METHOD = 'spawn_callers.authenticate';
 /** The only `caller.json` schema this challenge-auth client accepts. */
 export const CALLER_FILE_SCHEMA = 'agent-relay-service-caller/2';
 /** The feature methods a service-caller connection requires end to end. */
 export const REQUIRED_SERVICE_CALLER_METHODS = [
-  'spawn_callers.challenge',
-  'spawn_callers.authenticate',
+  CALLER_CHALLENGE_METHOD,
+  CALLER_AUTHENTICATE_METHOD,
   'spawn.targets',
   'spawn.invoke',
   'spawn.status',
@@ -223,7 +227,17 @@ export class CallerCredential {
       throw bad('it must be an object');
     const doc = document as Record<string, unknown>;
     if (doc.schema !== CALLER_FILE_SCHEMA) throw bad('schema is not one this reader knows');
-    if (doc.auth !== CALLER_AUTH_SCHEME) throw bad('auth is not one this reader knows');
+    const auth = doc.auth;
+    if (typeof auth !== 'object' || auth === null || Array.isArray(auth)) {
+      throw bad('auth is not one this reader knows');
+    }
+    const route = auth as Record<string, unknown>;
+    if (Object.keys(route).sort().join(',') !== 'authenticate,challenge,scheme'
+      || route.scheme !== CALLER_AUTH_SCHEME
+      || route.challenge !== CALLER_CHALLENGE_METHOD
+      || route.authenticate !== CALLER_AUTHENTICATE_METHOD) {
+      throw bad('auth is not one this reader knows');
+    }
     if (typeof doc.caller_id !== 'string' || !CALLER_ID.test(doc.caller_id)) {
       throw bad('caller_id must be "sc_" and 16 lowercase hex characters');
     }

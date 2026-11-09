@@ -9,6 +9,9 @@ import { inspect } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  CALLER_AUTHENTICATE_METHOD,
+  CALLER_AUTH_SCHEME,
+  CALLER_CHALLENGE_METHOD,
   CALLER_FILE_SCHEMA,
   REQUIRED_SERVICE_CALLER_METHODS,
   CallerCredential,
@@ -49,7 +52,11 @@ const base = vectors.base;
 
 const document = (fields: Record<string, unknown> = {}) => ({
   schema: 'agent-relay-service-caller/2',
-  auth: 'challenge-hmac-sha256/v1',
+  auth: {
+    scheme: CALLER_AUTH_SCHEME,
+    challenge: CALLER_CHALLENGE_METHOD,
+    authenticate: CALLER_AUTHENTICATE_METHOD,
+  },
   caller_id: base.caller_id,
   secret: base.secret,
   workspace: { site_url: base.site_url, workspace_id: base.workspace_id },
@@ -170,14 +177,22 @@ describe('CallerCredential', () => {
     expect(Object.values(credential)).not.toContain(base.secret);
   });
 
-  it('accepts only schema 2 with mandatory challenge auth', () => {
+  it('accepts only schema 2 with the exact Desktop challenge-auth route', () => {
     expect(CallerCredential.fromDocument(document()).callerId).toBe(base.caller_id);
     expect(CALLER_FILE_SCHEMA).toBe('agent-relay-service-caller/2');
     const bad = [
       document({ schema: 'agent-relay-service-caller/1', auth: undefined }),
       document({ schema: 'agent-relay-service-caller/1' }),
       document({ schema: 'agent-relay-service-caller/3' }),
-      document({ auth: 'challenge-hmac-sha256/v2' }),
+      document({ auth: CALLER_AUTH_SCHEME }),
+      document({ auth: { scheme: 'challenge-hmac-sha256/v2',
+        challenge: CALLER_CHALLENGE_METHOD, authenticate: CALLER_AUTHENTICATE_METHOD } }),
+      document({ auth: { scheme: CALLER_AUTH_SCHEME,
+        challenge: 'spawn_callers.wrong', authenticate: CALLER_AUTHENTICATE_METHOD } }),
+      document({ auth: { scheme: CALLER_AUTH_SCHEME,
+        challenge: CALLER_CHALLENGE_METHOD, authenticate: 'spawn_callers.wrong' } }),
+      document({ auth: { scheme: CALLER_AUTH_SCHEME,
+        challenge: CALLER_CHALLENGE_METHOD, authenticate: CALLER_AUTHENTICATE_METHOD, extra: true } }),
       document({ auth: undefined }),
       document({ caller_id: 'sc_0123456789ABCDEF' }),
       document({ caller_id: 'sc_0123456789abcdef0' }),
