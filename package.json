@@ -79,6 +79,7 @@
   "homepage": "https://github.com/AgentWorkforce/relay#readme",
   "devDependencies": {
     "@agent-assistant/telemetry": "^0.4.35",
+    "@agent-relay/harness-driver": "17.2.1",
     "@agentworkforce/runtime": "^4.1.23",
     "@eslint/js": "^10.0.1",
     "@relaycast/sdk": "^8.0.7",
