@@ -17,6 +17,7 @@ pub mod host {
         _runtime: &Path,
         _launch_id: &str,
         _full_access: bool,
+        _build: &crate::relay::outbound::Build,
     ) -> anyhow::Result<()> {
         anyhow::bail!(crate::relay::existing_session::platform::unavailable(
             super::DESCRIPTOR.label
