@@ -15,9 +15,9 @@ only; compatibility with relay-chief and the local core's API was checked separa
 The bridge runs as its own process, holding the worker's Relay identity, next to a
 dedicated `agent-relay-node`. Each pass:
 
-1. **Reads DMs** with the worker's token. Sender, workspace and recipient come from
-   Relay, never the body. Only a message with `chief_assignment` metadata that passes
-   `readAssignment` can start work. A spawned agent's own messages are read only for its
+1. **Reads DMs** with the worker's token. Sender and recipient come from Relay, and the
+   workspace from configuration once the token has matched it, never the body. Only a
+   message with `chief_assignment` metadata that passes `readAssignment` can start work. A spawned agent's own messages are read only for its
    `CHIEF_RESULT` line. Any other DM is ignored, and a refused assignment is quarantined
    as a hash, keeping the newest 10,000.
 2. **Claims the task.** The task ID, digest and `accepted` report are written in one
@@ -86,6 +86,10 @@ A per-spawn isolation profile in `relay-node` would replace the attestation.
   bridge process and impersonate the worker on Relay. Full access off narrows this but
   does not close it. A forged report is still only a claim, which the chief's independent
   verification must check.
+- **A spawned agent can also reach a workspace-level key.** The dedicated node needs an
+  `rk_` workspace key in a file under the service user (`workspaces.json`), and spawned
+  agents run as that user. An agent with shell access could read that key, which reaches
+  further than the worker token.
 - **Keep the worker token out of the node service's environment.** Harnesses inherit that
   environment, so a token placed there reaches every spawned agent.
 - **Block instance metadata for the service user.** A spawned agent runs as that user and
@@ -97,7 +101,9 @@ A per-spawn isolation profile in `relay-node` would replace the attestation.
 CHIEF_BRIDGE_RELAY_TOKEN=... chief-execution-bridge /etc/chief-bridge/config.json
 ```
 
-See `configSchema` in `src/config.ts`. The token is read from the environment and is never
+See `configSchema` in `src/config.ts`. `workspaceId` is Control's workspace, the one
+assignments carry. Set `relayWorkspaceId` when Relay's workspace differs; the token must
+report that one, and it defaults to `workspaceId`. The token is read from the environment and is never
 stored or logged. Logs carry event names, codes, task IDs, states, reasons and report
 sequences; message text and tokens are not logged. There is one writer per ledger.
 It does not use the Flows runtime, so Flows' missing linux-arm64 build does not apply.

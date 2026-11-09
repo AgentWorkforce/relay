@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { BridgeConfig } from './config.js';
+import { relayWorkspaceOf, type BridgeConfig } from './config.js';
 import { buildTask, parseClaimedResult } from './prompt.js';
 import { hash, readAssignment, type AssignmentPolicy } from './protocol.js';
 import {
@@ -76,7 +76,8 @@ export class ExecutionBridge {
   async start(): Promise<void> {
     const identity = await this.relay.identity();
     const { worker, workspaceId, chief, harness, node } = this.config;
-    if (identity.agentId !== worker.agentId || identity.workspaceId !== workspaceId) {
+    const relayWorkspaceId = relayWorkspaceOf(this.config);
+    if (identity.agentId !== worker.agentId || identity.workspaceId !== relayWorkspaceId) {
       throw new Error('bridge_refused:identity_mismatch');
     }
     if (identity.address !== undefined && identity.address !== worker.address) {
@@ -85,6 +86,8 @@ export class ExecutionBridge {
     this.store.pinBinding({
       workerAgentId: worker.agentId,
       workspaceId,
+      // Left out when equal, so a ledger written before this field keeps its binding.
+      relayWorkspaceId: relayWorkspaceId === workspaceId ? undefined : relayWorkspaceId,
       chiefAgentId: chief.agentId,
       chiefId: chief.chiefId,
       node: node.id,
@@ -181,7 +184,8 @@ export class ExecutionBridge {
     try {
       read = readAssignment(
         {
-          workspaceId: identity.workspaceId,
+          // Control's workspace. Relay's own was matched against the token in start().
+          workspaceId: this.config.workspaceId,
           senderAgentId: message.agentId,
           recipientAgentId: identity.agentId,
           recipientAddress: this.config.worker.address,

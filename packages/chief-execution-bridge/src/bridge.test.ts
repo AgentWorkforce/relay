@@ -542,6 +542,81 @@ describe('startup refusals', () => {
   });
 });
 
+describe('separate Relay and Control workspaces', () => {
+  const CONTROL = '8969308f-eda4-4d3e-a09a-4128eee7eea2';
+  const RELAY = '245411583121604608';
+  const ids = { workspaceId: CONTROL, relayWorkspaceId: RELAY };
+
+  it("runs an assignment carrying Control's workspace under a token from Relay's", async () => {
+    const h = await makeHarness(ids);
+    await assignAndStart(h, { workspaceId: CONTROL });
+    expect(h.store.quarantined()).toEqual([]);
+    expect(h.relay.spawns).toHaveLength(1);
+    expect(h.relay.states()).toEqual(['1:accepted', '2:running']);
+  });
+
+  it('refuses an assignment for another Control workspace', async () => {
+    const h = await makeHarness(ids);
+    await assignAndStart(h, { workspaceId: 'another-control-workspace' });
+    expect(h.relay.spawns).toHaveLength(0);
+    expect(h.store.quarantined()).toMatchObject([{ code: 'worker_assignment_not_authorized' }]);
+  });
+
+  it("refuses an assignment that carries Relay's workspace instead", async () => {
+    const h = await makeHarness(ids);
+    await assignAndStart(h, { workspaceId: RELAY });
+    expect(h.relay.spawns).toHaveLength(0);
+    expect(h.store.quarantined()).toMatchObject([{ code: 'worker_assignment_not_authorized' }]);
+  });
+
+  it.each([
+    ['another Relay workspace', '245411583121604609'],
+    ["Control's workspace", CONTROL],
+  ])('refuses a token from %s', async (_label, workspaceId) => {
+    const relay = new FakeRelay();
+    relay.identityValue = { agentId: WORKER, workspaceId };
+    const bridge = new ExecutionBridge({
+      config: makeConfig(ids),
+      store: new BridgeStore(':memory:'),
+      relay,
+      node: new FakeNode(),
+    });
+    await expect(bridge.start()).rejects.toThrow('bridge_refused:identity_mismatch');
+  });
+
+  it("defaults Relay's workspace to workspaceId", async () => {
+    const h = await makeHarness();
+    await assignAndStart(h);
+    expect(h.relay.spawns).toHaveLength(1);
+  });
+
+  it("pins Relay's workspace in the ledger binding", async () => {
+    const h = await makeHarness(ids);
+    h.store.close();
+    const relay = new FakeRelay();
+    relay.identityValue = { agentId: WORKER, workspaceId: '245411583121604609' };
+    const moved = new ExecutionBridge({
+      config: makeConfig({ ...ids, relayWorkspaceId: '245411583121604609' }),
+      store: new BridgeStore(h.path),
+      relay,
+      node: new FakeNode(),
+    });
+    await expect(moved.start()).rejects.toThrow('bridge_binding_mismatch');
+  });
+
+  it('keeps an existing binding when the Relay workspace equals workspaceId', async () => {
+    const h = await makeHarness();
+    h.store.close();
+    const same = new ExecutionBridge({
+      config: makeConfig({ relayWorkspaceId: 'ws-1' }),
+      store: new BridgeStore(h.path),
+      relay: new FakeRelay(),
+      node: new FakeNode(),
+    });
+    await expect(same.start()).resolves.toBeUndefined();
+  });
+});
+
 describe('long-running conversation history', () => {
   it('still hears the chief after its conversation ages out of the capped listing', async () => {
     const h = await makeHarness();

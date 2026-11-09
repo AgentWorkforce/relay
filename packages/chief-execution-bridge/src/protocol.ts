@@ -96,7 +96,10 @@ export function hash(value: unknown): string {
   return createHash('sha256').update(canonical(value)).digest('hex');
 }
 
-/** Identity read from Relay for this delivery, never from the message body. */
+/**
+ * Identity for this delivery, never from the message body. Agents come from Relay. The
+ * workspace is Control's, from configuration, once the token's Relay workspace has matched.
+ */
 export interface AuthenticatedDelivery {
   workspaceId: string;
   senderAgentId: string;

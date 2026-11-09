@@ -13,7 +13,10 @@ const HOUR_MS = 3_600_000;
 export const configSchema = z
   .strictObject({
     relayOrigin: z.string().url(),
+    /** Control's workspace: the one assignments carry. */
     workspaceId: NAME,
+    /** Relay names workspaces separately from Control. Omitted when both use one identifier. */
+    relayWorkspaceId: NAME.optional(),
     worker: z.strictObject({ agentId: NAME, address: z.string().regex(/^[^\s@]+@[^\s@]+$/) }),
     chief: z.strictObject({
       agentId: NAME,
@@ -71,3 +74,11 @@ export const configSchema = z
   });
 
 export type BridgeConfig = z.infer<typeof configSchema>;
+
+/**
+ * @param config The workspace identifiers from the configuration.
+ * @returns The workspace Relay must report for the worker's token.
+ */
+export function relayWorkspaceOf(config: Pick<BridgeConfig, 'workspaceId' | 'relayWorkspaceId'>): string {
+  return config.relayWorkspaceId ?? config.workspaceId;
+}
