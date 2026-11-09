@@ -325,7 +325,10 @@ pub fn socket_command(
         || (cfg!(target_os = "macos")
             && matches!(
                 kind,
-                SessionKind::Codex | SessionKind::OpenCodeOpen | SessionKind::GrokOpen
+                SessionKind::Codex
+                    | SessionKind::OpenCodeOpen
+                    | SessionKind::GrokOpen
+                    | SessionKind::CursorCli
             )
             && needs_probe);
     // Claude Code's permission rules from Agent Relay allow the probe's
@@ -527,5 +530,29 @@ mod tests {
             "curl -s -X DELETE --unix-socket /run/user/1000/agent-relay/relay.sock \
              'http://relay/channels/subscribe?channel=a%20b'"
         );
+    }
+
+    // A Cursor editor conversation's tools are named by
+    // `CURSOR_CONVERSATION_ID`, which Apple's curl hides; a Cursor CLI
+    // session's by the `cursor-agent` holding it, which curl reaches too.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_cursor_editor_channel_commands_use_the_probe_client() {
+        let socket = PathBuf::from("/tmp/relay.sock");
+        let reply =
+            channel_reply_command(&socket, "swarm", "123", SessionKind::CursorCli, true).unwrap();
+        assert!(reply.contains(" send --socket /tmp/relay.sock "), "{reply}");
+        assert!(reply.contains("swarm") && reply.contains("123"), "{reply}");
+        assert!(!reply.contains("curl"), "{reply}");
+        for join in [true, false] {
+            let command =
+                channel_subscription_command(&socket, "swarm", join, SessionKind::CursorCli, true)
+                    .unwrap();
+            assert!(command.contains(" subscribe-channel "), "{command}");
+            assert!(!command.contains("curl"), "{command}");
+        }
+        let cli =
+            channel_reply_command(&socket, "swarm", "123", SessionKind::CursorCli, false).unwrap();
+        assert!(cli.starts_with("curl "), "{cli}");
     }
 }

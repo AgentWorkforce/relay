@@ -887,13 +887,80 @@ fn the_turn_a_cursor_cli_follow_up_starts_waits_for_the_next_message() {
     // The CLI runs no `beforeSubmitPrompt` for the follow-up's turn gen-2:
     // its `stop` is the first hook to name it.
     wake(&|| cli_turn_stop(&config, &table, 502, "gen-2", 1), "m-2");
-    // A late `stop` of gen-1 neither takes gen-2's place nor waits.
+    std::thread::scope(|scope| {
+        let hook = scope.spawn(|| cli_turn_stop(&config, &table, 502, "gen-3", 1));
+        eventually("the hook waits", || cli_waiting(&config));
+        // A late `stop` of gen-2, while gen-3's hook waits, neither takes
+        // gen-3's place nor waits.
+        let started = std::time::Instant::now();
+        assert_eq!(
+            cli_turn_stop(&config, &table, 501, "gen-2", 1),
+            (false, vec![])
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+        send(&config, &table, uid(), SESSION, "m-3", "m-3");
+        assert_eq!(
+            hook.join().unwrap(),
+            (true, vec![json!({"followup_message": "m-3"})])
+        );
+    });
+}
+
+#[test]
+fn a_follow_ups_stop_run_after_a_newer_prompt_leaves_that_prompts_turn() {
+    let (_temp, config, table) = world();
+    for pid in 501..=503 {
+        table.insert(pid, shell(400));
+    }
+    // gen-1's hook wakes the session: the follow-up starts gen-2.
+    std::thread::scope(|scope| {
+        let hook = scope.spawn(|| cli_stop(&config, &table, 501, 0));
+        eventually("the hook waits", || cli_waiting(&config));
+        send(&config, &table, uid(), SESSION, "m-1", "m-1");
+        assert_eq!(
+            hook.join().unwrap(),
+            (true, vec![json!({"followup_message": "m-1"})])
+        );
+    });
+    // Its person submits gen-3 before gen-2's `stop` hook runs.
+    let prompt = json!({
+        "hook_event_name": "beforeSubmitPrompt",
+        "conversation_id": SESSION,
+        "generation_id": "gen-3",
+    });
+    assert!(!run_hook(&config, &table, 503, &prompt, None, &mut |_| {
+        true
+    }));
+    send(&config, &table, uid(), SESSION, "m-2", "m-2");
+    // gen-2's `stop` then neither takes gen-3's place nor waits.
     let started = std::time::Instant::now();
     assert_eq!(
-        cli_turn_stop(&config, &table, 501, "gen-1", 1),
+        cli_turn_stop(&config, &table, 502, "gen-2", 1),
         (false, vec![])
     );
     assert!(started.elapsed() < Duration::from_secs(5));
+    assert_eq!(pending(&config, SESSION).len(), 1);
+    // gen-3's own `stop` takes the message.
+    assert_eq!(
+        cli_turn_stop(&config, &table, 503, "gen-3", 0),
+        (true, vec![json!({"followup_message": "m-2"})])
+    );
+}
+
+#[test]
+fn a_cursor_cli_hook_takes_nothing_once_a_second_agent_resumes_its_conversation() {
+    let (_temp, config, table) = world();
+    table.insert(501, shell(400));
+    std::thread::scope(|scope| {
+        let hook = scope.spawn(|| cli_stop(&config, &table, 501, 0));
+        eventually("the hook waits", || cli_waiting(&config));
+        // `cursor-agent --resume` in another terminal holds the same store.
+        table.insert(401, cursor_process(1, vec![store(&config, SESSION)]));
+        place(&config, &format!("{SESSION}.m-1.msg"), "ping");
+        assert_eq!(hook.join().unwrap(), (false, vec![]));
+    });
+    assert!(!cli_waiting(&config));
+    assert_eq!(pending(&config, SESSION).len(), 1);
 }
 
 #[test]

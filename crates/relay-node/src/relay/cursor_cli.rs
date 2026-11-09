@@ -526,9 +526,8 @@ pub fn record_editor_hook(
 /// the answer was written in full: claims are tombstoned once it was and
 /// put back if not. With `watch` (the `stop` entry's `--wait`) a completed
 /// turn, in the editor or a Cursor CLI session, waits for its next message
-/// (`wait::wait`); a turn that ran no `beforeSubmitPrompt` is named by its
-/// `stop` first, a CLI follow-up's (`wait::followup_turn_seen`) or one the
-/// editor started itself (`wait::untracked_turn_seen`). `true` once it
+/// (`wait::wait`), once its `stop` noted the turn ended, and named it when
+/// it ran no `beforeSubmitPrompt` (`wait::stop_seen`). `true` once it
 /// answered.
 pub fn run_hook(
     config: &CursorConfig,
@@ -538,7 +537,6 @@ pub fn run_hook(
     watch: Option<&wait::Watch<'_>>,
     write: &mut dyn FnMut(&Value) -> bool,
 ) -> bool {
-    let started = std::time::SystemTime::now();
     wait::turn_seen(config, payload);
     let Some(session) = payload_session(payload) else {
         return false;
@@ -551,20 +549,15 @@ pub fn run_hook(
     }
     let holder = match hook_caller(config, table, pid, session) {
         None => return false,
-        Some(HookCaller::Cli { agent }) => {
-            wait::followup_turn_seen(config, payload);
-            wait::Holder::Cli { agent }
-        }
+        Some(HookCaller::Cli { agent }) => wait::Holder::Cli { agent },
         Some(HookCaller::Editor { host }) => {
             if !record_editor_hook(config, table, pid, host, payload) {
                 return false;
             }
-            if watch.is_some() {
-                wait::untracked_turn_seen(config, payload, started);
-            }
             wait::Holder::Editor { host }
         }
     };
+    wait::stop_seen(config, payload);
     match watch {
         Some(watch) if wait::waits_after(payload) => {
             wait::wait(config, table, holder, payload, watch, write) == wait::Ended::Answered

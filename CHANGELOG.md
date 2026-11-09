@@ -44,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay-node` built for its own site (`AGENT_RELAY_SITE_URL`) no longer falls back to Agent Relay's public gateways: a sign-in whose site named no valid Relaycast URL, or a CLI workspace key with no recorded server or `RELAY_BASE_URL`, is refused with a reason naming the site, and `RELAYCAST_URL` is ignored in such a build.
 - `agent-relay-node` lists Codex sessions and delivers messages to them promptly when Codex's thread database is large.
 - Relay messages now wake an idle interactive Cursor CLI (`cursor-agent`) session within seconds, as they already did for Cursor editor chats, instead of waiting for its next tool call or prompt. This keeps working after several automatic follow-ups in a row.
-- Relay messages to agents in the Cursor editor and Cursor CLI say to reply through the session socket (with `agent-relay-probe` in the Cursor editor on macOS, where `curl` cannot reply), never through hosted MCP tools, which cannot send as a Cursor chat.
+- Relay messages, channel posts and Relay Connect messages to agents in the Cursor editor and Cursor CLI say to reply through the session socket (with `agent-relay-probe` in the Cursor editor on macOS, where `curl` cannot reply), never through hosted MCP tools, which cannot send as a Cursor chat.
 - A Cursor editor chat can put itself on the relay during its first turn, before Cursor has written its transcript.
 - An idle Cursor editor chat is woken by Relay messages after a turn Cursor started itself, such as one reporting that a background task finished.
 

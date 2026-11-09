@@ -22,17 +22,17 @@
 //! - it is its conversation's newest waiting hook, which
 //!   `<inbox>/waiting/<id>.wait` names, and waits after the conversation's
 //!   current turn, which `<id>.turn` names: `beforeSubmitPrompt` writes it
-//!   as a turn starts (a turn that runs none is named by its `stop`: a CLI
-//!   follow-up's by `followup_turn_seen`, and one Cursor started itself in
-//!   the editor by `untracked_turn_seen`), and every run of Agent Relay's
-//!   hook first retires a waiting hook when either belongs to another turn
-//!   (`turn_seen`). A `stop` hook of an older turn run late neither claims
-//!   nor waits, and while `<id>.turn` is missing, corrupt or of another
-//!   version, no hook does, until the next turn starts;
+//!   as a turn starts (a turn that runs none, a CLI follow-up's or one the
+//!   editor started itself, is named by its `stop` once the turn before it
+//!   ended: `stop_seen`), and every run of Agent Relay's hook first retires
+//!   a waiting hook when either belongs to another turn (`turn_seen`). A
+//!   `stop` hook of an older turn run late neither claims nor waits, and
+//!   while `<id>.turn` is missing, corrupt or of another version, no hook
+//!   does, until the next turn starts;
 //! - that holder still runs the conversation: the editor's record still
 //!   gives it to that host and a hook of it ran within `editor::IDLE`, or
-//!   that `cursor-agent` still holds its store open; and this build's
-//!   waiting entry is still in `~/.cursor/hooks.json`.
+//!   that `cursor-agent` is still the one process holding its store open;
+//!   and this build's waiting entry is still in `~/.cursor/hooks.json`.
 //!
 //! It checks again, claims and answers under one lock per conversation,
 //! which taking over and retiring take too, so a message is claimed by one
@@ -160,11 +160,16 @@ const TURN_VERSION: u32 = 1;
 /// hooks, in the editor a `stop` follow-up's turn included, but not for a
 /// turn the editor starts itself, such as the one telling the agent a
 /// background task finished, nor for a CLI follow-up's turn. Such a turn's
-/// `stop` names it (`untracked_turn_seen`, `followup_turn_seen`).
+/// `stop` names it (`stop_seen`).
 #[derive(Serialize, Deserialize)]
 struct CurrentTurn {
     version: u32,
     generation: String,
+    /// Whether its `stop` ran. Cursor starts a turn only once the one
+    /// before it ended, so a turn not named yet whose `stop` runs after
+    /// this is newer (`stop_seen`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    ended: bool,
     /// The turns before it, oldest first (`EARLIER_TURNS`): a hook of one
     /// is late, where a hook of an id not here may be a newer turn's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -191,11 +196,20 @@ fn read_turn(config: &CursorConfig, session: &str) -> Option<CurrentTurn> {
     (turn.version == TURN_VERSION).then_some(turn)
 }
 
-/// Names `generation`, when there is one, the turn that just started.
-/// When it cannot be written the current turn is forgotten instead, so an
-/// older one is never taken for the newest.
-fn start_turn(config: &CursorConfig, session: &str, generation: Option<&str>) -> Option<String> {
-    let path = turn_file(config, session);
+fn write_turn(config: &CursorConfig, session: &str, turn: &CurrentTurn) -> bool {
+    serde_json::to_vec(turn).is_ok_and(|bytes| replace(config, &turn_file(config, session), &bytes))
+}
+
+/// Names `generation`, when there is one, the turn that just started, or
+/// with `ended` the one whose `stop` just ran. When it cannot be written
+/// the current turn is forgotten instead, so an older one is never taken
+/// for the newest.
+fn start_turn(
+    config: &CursorConfig,
+    session: &str,
+    generation: Option<&str>,
+    ended: bool,
+) -> Option<String> {
     let mut earlier = Vec::new();
     if let Some(turn) = read_turn(config, session) {
         earlier = turn.earlier;
@@ -205,15 +219,16 @@ fn start_turn(config: &CursorConfig, session: &str, generation: Option<&str>) ->
         earlier.drain(..earlier.len().saturating_sub(EARLIER_TURNS));
     }
     let written = generation.filter(|generation| {
-        serde_json::to_vec(&CurrentTurn {
+        let turn = CurrentTurn {
             version: TURN_VERSION,
             generation: generation.to_string(),
+            ended,
             earlier: earlier.clone(),
-        })
-        .is_ok_and(|bytes| replace(config, &path, &bytes))
+        };
+        write_turn(config, session, &turn)
     });
     if written.is_none() {
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(turn_file(config, session));
     }
     written.map(str::to_string)
 }
@@ -245,7 +260,7 @@ pub fn turn_seen(config: &CursorConfig, payload: &Value) {
     let generation = generation(payload);
     locked(config, session, || {
         let current = if starts {
-            start_turn(config, session, generation)
+            start_turn(config, session, generation, false)
         } else {
             current_turn(config, session)
         };
@@ -263,67 +278,40 @@ pub fn turn_seen(config: &CursorConfig, payload: &Value) {
     });
 }
 
-/// Notes the Cursor CLI turn a `stop` follow-up started as the
-/// conversation's current one. The CLI runs no `beforeSubmitPrompt` for
-/// such a turn, so its `stop` is the first hook to name it: a follow-up's
-/// `stop` (`loop_count` above 0) of a turn that is neither the current one
-/// nor an earlier one is that newer turn. Only for a hook proved to run
-/// under the `cursor-agent` holding the conversation: the editor names a
-/// follow-up's turn as it starts (`untracked_turn_seen` covers the turns
-/// it does not).
-pub fn followup_turn_seen(config: &CursorConfig, payload: &Value) {
+/// Notes that the turn whose `stop` `payload` is has ended (`CurrentTurn`).
+/// A turn `<id>.turn` knows neither as the current one nor as an earlier
+/// one ran no `beforeSubmitPrompt`: a CLI follow-up's, or one the editor
+/// started itself. It becomes the current turn once the current one has
+/// ended, as Cursor started it after that; without this its `stop` would
+/// not wait and the idle chat would take no message until its person
+/// typed. A current turn that has not ended may be newer than the one this
+/// `stop` ends (its prompt submitted before this hook ran), and one that
+/// cannot be read may be anything: either is left as it is. Only for a
+/// hook proved to run under the conversation's holder.
+pub fn stop_seen(config: &CursorConfig, payload: &Value) {
     let (Some(session), Some(generation)) = (payload_session(payload), generation(payload)) else {
         return;
     };
-    let followup = payload["loop_count"]
-        .as_u64()
-        .is_some_and(|count| count > 0);
-    if payload["hook_event_name"] != "stop" || !followup {
+    if payload["hook_event_name"] != "stop" {
         return;
     }
-    locked(config, session, || {
-        let known = read_turn(config, session).is_some_and(|turn| {
-            turn.generation == generation
-                || turn.earlier.iter().any(|earlier| earlier == generation)
-        });
-        if !known {
-            start_turn(config, session, Some(generation));
-        }
-    });
-}
-
-/// How long before a `stop` hook `started` a turn named in `<id>.turn`
-/// still keeps that hook from naming its own (`untracked_turn_seen`).
-const NAMED_BEFORE: Duration = Duration::from_secs(2);
-
-/// Notes the turn a completed `stop` payload ends as the conversation's
-/// current one when `<id>.turn` names another turn, and knows this one
-/// neither as that nor as an earlier one: Cursor started it without
-/// `beforeSubmitPrompt` (`CurrentTurn`), so without this its `stop` would
-/// not wait and the idle chat would take no message until its person typed.
-/// A turn named after the hook `started`, or within `NAMED_BEFORE` before,
-/// may be newer than the one it ends, and one that cannot be read may be
-/// anything: either is left as it is. Only for a hook proved to run under
-/// the window holding the conversation.
-pub fn untracked_turn_seen(config: &CursorConfig, payload: &Value, started: SystemTime) {
-    let (Some(session), Some(generation), true) = (
-        payload_session(payload),
-        generation(payload),
-        waits_after(payload),
-    ) else {
-        return;
-    };
     locked(config, session, || {
         let Some(turn) = read_turn(config, session) else {
             return;
         };
-        let known = turn.generation == generation
-            || turn.earlier.iter().any(|earlier| earlier == generation);
-        let named_before = std::fs::metadata(turn_file(config, session))
-            .and_then(|metadata| metadata.modified())
-            .is_ok_and(|named| named + NAMED_BEFORE <= started);
-        if !known && named_before {
-            start_turn(config, session, Some(generation));
+        if turn.generation == generation {
+            if !turn.ended {
+                let _ = write_turn(
+                    config,
+                    session,
+                    &CurrentTurn {
+                        ended: true,
+                        ..turn
+                    },
+                );
+            }
+        } else if turn.ended && !turn.earlier.iter().any(|earlier| earlier == generation) {
+            start_turn(config, session, Some(generation), true);
         }
     });
 }
@@ -371,7 +359,8 @@ pub enum Ended {
     Retired,
     /// The holder no longer runs the conversation: the record no longer
     /// gives it to that host, or no hook of it ran within `editor::IDLE`,
-    /// or the `cursor-agent` no longer holds its store.
+    /// or the `cursor-agent` no longer holds its store or another one holds
+    /// it too.
     Moved,
     /// This build's waiting entry left `hooks.json`.
     Removed,
@@ -424,6 +413,7 @@ pub fn wait(
     let first = locked(config, waiting.session, || {
         interrupted(watch)
             .or_else(|| waiting.lost())
+            .or_else(|| waiting.shared())
             .or_else(|| waiting.stale().then_some(Ended::Retired))
             .or_else(|| {
                 (watch.claiming)(&mut || {
@@ -537,6 +527,7 @@ impl<'a> Waiting<'a> {
             if !pending(self.config, self.session).is_empty() {
                 let taken = locked(self.config, self.session, || {
                     self.gone()
+                        .or_else(|| self.shared())
                         .or_else(|| (watch.claiming)(&mut || answer(self.config, payload, write)))
                 });
                 match taken {
@@ -576,6 +567,20 @@ impl<'a> Waiting<'a> {
                 super::held_session(self.config, self.table, agent).as_deref() == Some(self.session)
             }
         }
+    }
+
+    /// Whether a second `cursor-agent` resumed its CLI conversation beside
+    /// its own, which leaves whose turn a hook ends unknowable, so a hook
+    /// starting now takes nothing either (`super::hook_caller`). Checked only
+    /// as it claims, since it reads every process.
+    fn shared(&self) -> Option<Ended> {
+        let Holder::Cli { agent } = self.holder else {
+            return None;
+        };
+        let uid = crate::relay::peer::current_uid();
+        let alone = super::held(self.config, self.table, uid, self.session)
+            .is_some_and(|held| held.pid == agent);
+        (!alone).then_some(Ended::Moved)
     }
 
     /// Whether its parent and its holder are the ones it started under, the
