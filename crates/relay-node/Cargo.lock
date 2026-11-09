@@ -1316,11 +1316,14 @@ dependencies = [
 
 [[package]]
 name = "relaycast"
-version = "10.0.0"
-source = "git+https://github.com/AgentWorkforce/relaycast.git?rev=a7433eb24ab42d1106bf6a52edb956051a370cc5#a7433eb24ab42d1106bf6a52edb956051a370cc5"
+version = "12.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2946232673151ae6ae51b165e5da9df0597f2d7f8f4882d642cbe2c24d97419f"
 dependencies = [
  "futures-util",
  "reqwest",
+ "rustls",
+ "rustls-native-certs",
  "serde",
  "serde_json",
  "sha2",
