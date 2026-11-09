@@ -3076,6 +3076,84 @@ async fn whoami_names_the_caller_registered_or_not() {
 }
 
 #[tokio::test]
+async fn typed_registration_keeps_peer_identity_and_self_registration_guards() {
+    use agent_relay_node::relay::session_cli::SessionCommand;
+    let h = Harness::start().await;
+    let command = SessionCommand::Register {
+        name: Some("review-bot".into()),
+        description: Some("Reviews releases".into()),
+        mcp: Some("none".into()),
+    };
+    let request = command.request().unwrap();
+    let body: Value = serde_json::from_slice(&command.typed_body().unwrap().unwrap()).unwrap();
+    assert_eq!(
+        code(
+            h.call(OUTSIDE, request.method, &request.path, body.clone())
+                .await
+        ),
+        (403, "not_a_relay_session".into())
+    );
+    assert_eq!(
+        code(
+            h.call_as(
+                IN_CODEX,
+                h.me + 1,
+                request.method,
+                &request.path,
+                body.clone()
+            )
+            .await
+        ),
+        (403, "not_this_user".into())
+    );
+    *h.sessions.2.lock().unwrap() = Ok(vec![Target::new(SessionKind::Codex, CODEX)]);
+    assert_eq!(
+        code(
+            h.call(IN_CODEX, request.method, &request.path, body.clone())
+                .await
+        ),
+        (403, "not_a_relay_session".into())
+    );
+    *h.sessions.2.lock().unwrap() = Ok(Vec::new());
+    h.core
+        .set_settings(&serde_json::from_value(json!({"allow_self_registration": false})).unwrap())
+        .unwrap();
+    assert_eq!(
+        code(
+            h.call(IN_CODEX, request.method, &request.path, body.clone())
+                .await
+        ),
+        (403, "not_allowed".into())
+    );
+    assert!(h.fake.calls("POST", "/v1/agents").is_empty());
+    h.core
+        .set_settings(&serde_json::from_value(json!({"allow_self_registration": true})).unwrap())
+        .unwrap();
+    let registered = h
+        .call(IN_CODEX, request.method, &request.path, body.clone())
+        .await
+        .unwrap();
+    assert_eq!(registered["session_id"], CODEX);
+    assert_eq!(registered["name"], "review-bot");
+    let repeated = h
+        .call(IN_CODEX, request.method, &request.path, body)
+        .await
+        .unwrap();
+    assert_eq!(repeated["already_registered"], true);
+    assert_eq!(h.fake.calls("POST", "/v1/agents").len(), 1);
+    for key in ["target", "pid", "uid", "native_thread_id", "session_id"] {
+        assert_eq!(
+            code(
+                h.call(IN_CLAUDE, "POST", "/register", json!({key: "other"}))
+                    .await
+            ),
+            (400, "invalid_request".into())
+        );
+    }
+    h.stop().await;
+}
+
+#[tokio::test]
 async fn a_session_registers_itself_once() {
     let h = Harness::start().await;
     let first = h

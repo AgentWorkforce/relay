@@ -1239,6 +1239,28 @@ mod tests {
             (on(&["agents", "--socket", "SOCK"]), true),
             (on(&["whoami", "--socket", "SOCK"]), true),
             (
+                on(&[
+                    "register",
+                    "--socket",
+                    "SOCK",
+                    "--name",
+                    "review-bot",
+                    "--mcp",
+                    "none",
+                ]),
+                true,
+            ),
+            (
+                on(&[
+                    "register",
+                    "--socket",
+                    "/tmp/other.sock",
+                    "--name",
+                    "review-bot",
+                ]),
+                false,
+            ),
+            (
                 on(&["subscribe-channel", "--socket", "SOCK", "swarm", "--remove"]),
                 true,
             ),
@@ -1298,8 +1320,8 @@ mod tests {
 
     // The same check with Codex's own policy engine, when Codex is
     // installed (`codex execpolicy check`, verified with Codex 0.163): the
-    // rules allow the self-limiting commands and nothing that reaches a
-    // setting or registration route.
+    // rules allow the self-limiting commands, including typed registration,
+    // while generic requests and commands on another socket stay unallowed.
     #[test]
     fn codex_itself_allows_only_the_self_limiting_commands() {
         let Ok(codex) = which_codex() else {

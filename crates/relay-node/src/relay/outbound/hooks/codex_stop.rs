@@ -32,11 +32,14 @@ const JOIN_POLL: Duration = Duration::from_millis(250);
 mod affinity;
 
 fn registration_context(socket: &std::path::Path) -> Option<Value> {
-    let command = super::super::probe_socket_command_with_body(
+    let command = super::super::hints::probe_session_command(
         socket,
-        "POST",
-        "/register",
-        r#"{"name":"NAME","mcp":"agent-relay-sessions"}"#,
+        &crate::relay::session_cli::SessionCommand::Register {
+            name: Some("NAME".into()),
+            description: None,
+            mcp: Some(crate::relay::hosted_mcp::SERVER_NAME.into()),
+        },
+        None,
     )?;
     let whoami = super::super::hints::probe_session_command(
         socket,
@@ -46,7 +49,7 @@ fn registration_context(socket: &std::path::Path) -> Option<Value> {
     Some(json!({"hookSpecificOutput": {
         "hookEventName": "PostToolUse",
         "additionalContext": format!(
-            "This Codex chat is not registered with Agent Relay Desktop. Hosted Relay tools cannot join or send as this chat until its desktop identity is registered. If the person asks to join or register, use their chosen name; if they have not authorized joining, ask first and do not register automatically. First check {whoami}; if already registered, use that identity. Otherwise replace NAME in {command} with the approved name and run it from this chat's own terminal. The absolute helper path works without a CLI on PATH. This registers only this chat and includes its conversation in the workspace's uploads; it does not change other sessions' sharing. After successful registration, retry hosted join_relay without name or description: the name comes from the verified desktop identity. Normal command approval still applies. Never run this from a separate terminal or substitute another chat ID."
+            "This Codex chat is not registered with Agent Relay Desktop. Hosted Relay tools cannot join or send as this chat until its desktop identity is registered. If the person asks to join or register, use their chosen name; if they have not authorized joining, ask first and do not register automatically. First check {whoami}; if already registered, use that identity. Otherwise replace NAME in {command} with the approved name and run it from this chat's own terminal. The absolute helper path works without a CLI on PATH. This registers only this chat and includes its conversation in the workspace's uploads; it does not change other sessions' sharing. After successful registration, retry hosted join_relay without name or description: the name comes from the verified desktop identity. If hosted linking is unavailable or refused, keep this locally registered identity and use the local session commands; never join under a new hosted name or use another identity as a fallback. Normal command approval still applies. Never run this from a separate terminal or substitute another chat ID."
         )
     }}))
 }
@@ -360,11 +363,15 @@ mod tests {
         let context = answer["hookSpecificOutput"]["additionalContext"]
             .as_str()
             .unwrap();
-        assert!(context.contains("socket-request"));
-        assert!(context.contains("--path /register"));
+        assert!(!context.contains("socket-request"));
+        assert!(context.contains(" register --socket "));
+        assert!(context.contains("--name NAME --mcp agent-relay-sessions"));
         assert!(context.contains("NAME"));
         assert!(context.contains("ask first"));
         assert!(context.contains("retry hosted join_relay without name"));
+        assert!(context
+            .contains("keep this locally registered identity and use the local session commands"));
+        assert!(context.contains("never join under a new hosted name"));
         assert!(outbound
             .core
             .store
