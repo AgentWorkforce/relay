@@ -10,15 +10,16 @@ use std::time::Duration;
 
 #[test]
 fn an_embedding_app_can_keep_the_idempotency_key_with_transport_owned_options() {
-    const CHILD: &str = "RELAY_PUBLIC_OPTIONS_TEST_CHILD";
-    if std::env::var_os(CHILD).is_none() {
+    if ["SSL_CERT_FILE", "SSL_CERT_DIR"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+    {
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "an_embedding_app_can_keep_the_idempotency_key_with_transport_owned_options",
                 "--nocapture",
             ])
-            .env(CHILD, "1")
             .env_remove("SSL_CERT_FILE")
             .env_remove("SSL_CERT_DIR")
             .output()
