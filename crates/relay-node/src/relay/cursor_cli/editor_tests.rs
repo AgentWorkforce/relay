@@ -312,6 +312,9 @@ fn a_conversation_a_cursor_agent_holds_elsewhere_is_never_the_editors() {
         hook_caller(&config, &table, 700, OTHER),
         Some(HookCaller::Editor { host: HOST_PID })
     );
+    // Nor does a tool naming it take it.
+    table.insert(701, shell(HOST_PID, &[(CONVERSATION_VAR, SESSION)]));
+    assert_eq!(editor_caller(&config, &table, 701, HOST_PID), None);
 }
 
 #[test]
@@ -804,25 +807,23 @@ fn a_tool_of_the_editors_agent_is_the_conversation_its_environment_names() {
     // probe (702) → zsh (701) → extension host
     table.insert(701, shell(HOST_PID, &[]));
     table.insert(702, shell(701, &[(CONVERSATION_VAR, SESSION)]));
-    // The variable alone puts no conversation on this window.
-    assert_eq!(editor_caller(&config, &table, 702, HOST_PID), None);
+    // A new conversation's first turn: Cursor has written no transcript
+    // yet, so a hook naming no conversation may not take it up, but its
+    // tool naming it puts it on this window, and its hooks are then the
+    // window's.
+    std::fs::remove_file(own_transcript(&config, SESSION)).unwrap();
+    assert_eq!(hook_caller(&config, &table, HOST_PID, SESSION), None);
     assert!(!running(&config, &table, uid(), SESSION));
-    // Once a hook of the conversation ran here, its tools are it.
-    record_editor_hook(
-        &config,
-        &table,
-        HOST_PID,
-        HOST_PID,
-        &json!({
-            "hook_event_name": "postToolUse",
-            "conversation_id": SESSION,
-        }),
-    );
     assert_eq!(
         editor_caller(&config, &table, 702, HOST_PID).as_deref(),
         Some(SESSION)
     );
-    // A payload without folders left none; the tool's directory fills in.
+    assert!(running(&config, &table, uid(), SESSION));
+    assert_eq!(
+        hook_caller(&config, &table, HOST_PID, SESSION),
+        Some(HookCaller::Editor { host: HOST_PID })
+    );
+    // No hook named the window's folders; the tool's directory fills in.
     assert_eq!(
         live(&config, &table, uid(), SESSION).and_then(|row| row.workspace),
         Some("/work/api".to_string())
@@ -872,6 +873,13 @@ fn a_tool_of_the_editors_agent_is_the_conversation_its_environment_names() {
     assert_eq!(editor_caller(&config, &table, 703, HOST_PID), None);
     table.insert(704, shell(HOST_PID, &[(CONVERSATION_VAR, "../etc")]));
     assert_eq!(editor_caller(&config, &table, 704, HOST_PID), None);
+    // A process along the way whose environment cannot be read may be
+    // hiding another conversation: its tool claims nothing.
+    table.insert(707, shell(HOST_PID, &[]));
+    table.insert(708, shell(707, &[(CONVERSATION_VAR, OTHER)]));
+    table.unreadable_environment.lock().unwrap().insert(707);
+    assert_eq!(editor_caller(&config, &table, 708, HOST_PID), None);
+    assert!(!running(&config, &table, uid(), OTHER));
     // And never under anything but an extension host.
     assert_eq!(editor_caller(&config, &table, 702, 701), None);
 }

@@ -26,12 +26,15 @@ pub(super) fn connect_reply_line(
     let socket = socket.to_str()?;
     let request_path = format!("/connect/send?to={}", query_encode(sender));
     // macOS hides the environment of /usr/bin/curl from KERN_PROCARGS2.
-    // Use the probe executable so an app-server command keeps its thread ID.
+    // Use the probe executable so an app-server command keeps its thread ID,
+    // and a Cursor editor tool its `CURSOR_CONVERSATION_ID`.
     // On Windows the socket is a named pipe curl cannot reach, so every
     // session gets the probe client.
     // Claude Code's permission rules from Agent Relay allow the probe's
     // client (`outbound::prefers_probe_client`); curl only when it is unknown.
-    let required = cfg!(windows) || (kind == SessionKind::Codex && probe_client(needs_probe));
+    let required = cfg!(windows)
+        || (matches!(kind, SessionKind::Codex | SessionKind::CursorCli)
+            && probe_client(needs_probe));
     if required || crate::relay::outbound::prefers_probe_client(kind) {
         let reply = crate::relay::session_cli::SessionCommand::ConnectSend {
             to: Some(sender.to_string()),

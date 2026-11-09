@@ -279,7 +279,40 @@ mod tests {
         )
     }
 
+    fn certificate_rejection(error: &ureq::Error) -> Option<rustls::CertificateError> {
+        let mut current: Option<&(dyn Error + 'static)> = Some(error);
+        while let Some(error) = current {
+            if let Some(rustls::Error::InvalidCertificate(cause)) =
+                error.downcast_ref::<rustls::Error>()
+            {
+                return Some(cause.clone());
+            }
+            current = error
+                .downcast_ref::<std::io::Error>()
+                .and_then(std::io::Error::get_ref)
+                .map(|inner| inner as &(dyn Error + 'static))
+                .or_else(|| error.source());
+        }
+        None
+    }
+
+    #[test]
+    fn a_transport_timeout_is_not_certificate_rejection() {
+        let timeout = ureq::Error::from(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "synthetic transport timeout",
+        ));
+        assert!(is_timeout(&timeout));
+        assert_eq!(certificate_rejection(&timeout), None);
+    }
+
     fn tls_server() -> (std::net::SocketAddr, thread::JoinHandle<bool>) {
+        tls_server_waiting(Duration::from_secs(3))
+    }
+
+    fn tls_server_waiting(
+        accept_timeout: Duration,
+    ) -> (std::net::SocketAddr, thread::JoinHandle<bool>) {
         let cert = rustls::pki_types::CertificateDer::from(
             include_bytes!("../../tests/fixtures/platform-tls/localhost.der").to_vec(),
         );
@@ -294,8 +327,22 @@ mod tests {
         );
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
         let server = thread::spawn(move || {
-            let (tcp, _) = listener.accept().unwrap();
+            let deadline = std::time::Instant::now() + accept_timeout;
+            let tcp = loop {
+                match listener.accept() {
+                    Ok((tcp, _)) => break tcp,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if std::time::Instant::now() >= deadline {
+                            return false;
+                        }
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => return false,
+                }
+            };
+            tcp.set_nonblocking(false).unwrap();
             tcp.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
             tcp.set_write_timeout(Some(Duration::from_secs(3))).unwrap();
             let session = rustls::ServerConnection::new(config).unwrap();
@@ -313,6 +360,43 @@ mod tests {
     }
 
     #[test]
+    fn tls_diagnostic_default_sdk_client_preserves_root_environment() {
+        let names = ["SSL_CERT_FILE", "SSL_CERT_DIR"];
+        let before = names.map(std::env::var_os);
+        let _client = relaycast::RelayCast::new(
+            relaycast::RelayCastOptions::new("rk_synthetic_diagnostic")
+                .with_base_url("http://127.0.0.1:1"),
+        )
+        .unwrap();
+        let after = names.map(std::env::var_os);
+        for (index, name) in names.iter().enumerate() {
+            eprintln!(
+                "TLS default SDK client {name} before_present={} after_present={}",
+                before[index]
+                    .as_ref()
+                    .is_some_and(|value| !value.is_empty()),
+                after[index].as_ref().is_some_and(|value| !value.is_empty())
+            );
+        }
+        assert!(
+            before == after,
+            "constructing the default SDK HTTP client changed file-root environment"
+        );
+    }
+
+    #[test]
+    fn tls_diagnostic_server_finishes_when_refusal_precedes_connection() {
+        for name in ["SSL_CERT_FILE", "SSL_CERT_DIR"] {
+            eprintln!(
+                "TLS test process {name} present={}",
+                std::env::var_os(name).is_some_and(|value| !value.is_empty())
+            );
+        }
+        let (_address, server) = tls_server_waiting(Duration::from_millis(50));
+        assert!(!server.join().unwrap());
+    }
+
+    #[test]
     fn verified_tls_matches_host_and_refuses_wrong_host_or_untrusted_ca() {
         let (address, server) = tls_server();
         let answer = http_agent(Duration::from_secs(3), test_tls())
@@ -323,25 +407,38 @@ mod tests {
         assert!(server.join().unwrap());
 
         let (address, server) = tls_server();
-        assert!(http_agent(Duration::from_secs(3), test_tls())
+        let rejected = http_agent(Duration::from_secs(3), test_tls())
             .get(&format!("https://127.0.0.1:{}/", address.port()))
             .call()
-            .is_err());
+            .unwrap_err();
+        assert!(
+            matches!(
+                certificate_rejection(&rejected),
+                Some(
+                    rustls::CertificateError::NotValidForName
+                        | rustls::CertificateError::NotValidForNameContext { .. }
+                )
+            ),
+            "expected hostname certificate rejection: {rejected:?}"
+        );
         assert!(
             !server.join().unwrap(),
             "wrong hostname must send no HTTP request"
         );
 
         let (address, server) = tls_server();
-        assert!(send_raw_blocking(
-            "GET",
-            &format!("https://localhost:{}/", address.port()),
-            None,
-            &[],
-            None,
-            Duration::from_secs(3)
+        let rejected = http_agent(
+            Duration::from_secs(3),
+            super::super::websocket_tls::client_config(),
         )
-        .is_err());
+        .get(&format!("https://localhost:{}/", address.port()))
+        .call()
+        .unwrap_err();
+        assert_eq!(
+            certificate_rejection(&rejected),
+            Some(rustls::CertificateError::UnknownIssuer),
+            "expected untrusted certificate rejection: {rejected:?}"
+        );
         assert!(
             !server.join().unwrap(),
             "an untrusted CA must send no HTTP request"
@@ -407,15 +504,18 @@ mod tests {
         let _websocket = super::super::websocket_tls::connector();
         std::env::remove_var("SSL_CERT_FILE");
         let (address, server) = tls_server();
-        assert!(send_raw_blocking(
-            "GET",
-            &format!("https://localhost:{}/", address.port()),
-            None,
-            &[],
-            None,
-            Duration::from_secs(3)
+        let rejected = http_agent(
+            Duration::from_secs(3),
+            super::super::websocket_tls::client_config(),
         )
-        .is_err());
+        .get(&format!("https://localhost:{}/", address.port()))
+        .call()
+        .unwrap_err();
+        assert_eq!(
+            certificate_rejection(&rejected),
+            Some(rustls::CertificateError::UnknownIssuer),
+            "expected untrusted certificate rejection: {rejected:?}"
+        );
         assert!(
             !server.join().unwrap(),
             "a WebSocket must not seed file-derived trust for HTTP"
