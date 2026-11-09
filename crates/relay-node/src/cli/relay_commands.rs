@@ -220,8 +220,9 @@ pub enum RelayCommands {
         /// Read Agent Relay Dev's inbox instead of Agent Relay's.
         #[arg(long)]
         dev: bool,
-        /// At the end of a Cursor editor conversation's completed turn,
-        /// wait for its next message instead of answering at once.
+        /// At the end of a Cursor editor conversation's or CLI session's
+        /// completed turn, wait for its next message instead of answering at
+        /// once.
         #[arg(long)]
         wait: bool,
     },

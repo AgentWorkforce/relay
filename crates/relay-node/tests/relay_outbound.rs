@@ -4482,6 +4482,40 @@ async fn the_mcp_a_session_declares_picks_its_reply_instructions() {
 }
 
 #[tokio::test]
+async fn a_cursor_session_is_handed_the_socket_whatever_it_declares() {
+    use agent_relay_node::relay::hosted_mcp::McpAccess;
+    let h = Harness::start().await;
+    let chat = session(
+        SessionKind::CursorCli,
+        "b72f559d-7023-4a67-944f-57f923f54ba7",
+        "/Users/me/Projects/api",
+    );
+    h.sessions.0.lock().unwrap().push(chat.clone());
+    h.sessions.call_from(4600, chat.clone());
+    // Cloud's hosted MCP acts as no Cursor chat's desktop identity, so the
+    // tools a Cursor session can see would send as nobody.
+    let declared = h
+        .register(
+            4600,
+            json!({"name": "cursor-api", "mcp": "agent-relay-sessions"}),
+        )
+        .await;
+    assert_eq!(declared["mcp"], "agent-relay-sessions");
+    assert_eq!(h.core.relay_mcp_access(&chat.target), McpAccess::SocketOnly);
+    h.fake.seed_agent("alice", "agent", json!({}));
+    *h.injector.hint.lock().unwrap() = Some("[reply: probe send]".into());
+    let (delivery, _) = h.fake.send_dm("alice", "cursor-api", "ping");
+    eventually("delivered", || {
+        h.fake.delivery_state(&delivery).map(|d| d.state).as_deref() == Some("acked")
+    })
+    .await;
+    let text = &h.injector.injected()[0].text;
+    assert!(text.contains("[reply: probe send]"), "{text}");
+    assert!(!text.contains("send_relay_message"), "{text}");
+    h.stop().await;
+}
+
+#[tokio::test]
 async fn a_connect_guest_only_ever_gets_socket_commands() {
     use agent_relay_node::relay::hosted_mcp::McpAccess;
     let h = Harness::start().await;
