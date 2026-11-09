@@ -92,6 +92,16 @@ jobs:
           export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
           export HOME="$RUNNER_TEMP/relay-node-home"
           mkdir -p "$HOME"
+          # Report presence only, never certificate paths or environment values.
+          trust_override=false
+          for name in SSL_CERT_FILE SSL_CERT_DIR; do
+            if [ -n "${!name:-}" ]; then echo "$name=present"; trust_override=true; else echo "$name=absent"; fi
+          done
+          if [ "$trust_override" = true ]; then
+            echo "::error::The isolated test process inherited a file trust override. Its value has not been printed or changed."
+            exit 1
+          fi
+          cargo test --locked --lib relay::cloud_http::tests::tls_diagnostic_ -- --nocapture
           cargo test --locked -- --test-threads=4
 
   library:
@@ -130,6 +140,16 @@ jobs:
           export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
           export HOME="$RUNNER_TEMP/relay-node-home"
           mkdir -p "$HOME"
+          # Report presence only, never certificate paths or environment values.
+          trust_override=false
+          for name in SSL_CERT_FILE SSL_CERT_DIR; do
+            if [ -n "${!name:-}" ]; then echo "$name=present"; trust_override=true; else echo "$name=absent"; fi
+          done
+          if [ "$trust_override" = true ]; then
+            echo "::error::The isolated test process inherited a file trust override. Its value has not been printed or changed."
+            exit 1
+          fi
+          cargo test --locked --no-default-features --lib relay::cloud_http::tests::tls_diagnostic_ -- --nocapture
           cargo test --locked --no-default-features -- --test-threads=4
 
   macos:
@@ -153,6 +173,16 @@ jobs:
           export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
           export HOME="$RUNNER_TEMP/relay-node-home"
           mkdir -p "$HOME"
+          # Report presence only, never certificate paths or environment values.
+          trust_override=false
+          for name in SSL_CERT_FILE SSL_CERT_DIR; do
+            if [ -n "${!name:-}" ]; then echo "$name=present"; trust_override=true; else echo "$name=absent"; fi
+          done
+          if [ "$trust_override" = true ]; then
+            echo "::error::The isolated test process inherited a file trust override. Its value has not been printed or changed."
+            exit 1
+          fi
+          cargo test --locked --lib relay::cloud_http::tests::tls_diagnostic_ -- --nocapture
           cargo test --locked -- --test-threads=4
 
   harness-live:

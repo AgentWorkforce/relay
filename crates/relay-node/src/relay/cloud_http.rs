@@ -280,6 +280,12 @@ mod tests {
     }
 
     fn tls_server() -> (std::net::SocketAddr, thread::JoinHandle<bool>) {
+        tls_server_waiting(Duration::from_secs(3))
+    }
+
+    fn tls_server_waiting(
+        accept_timeout: Duration,
+    ) -> (std::net::SocketAddr, thread::JoinHandle<bool>) {
         let cert = rustls::pki_types::CertificateDer::from(
             include_bytes!("../../tests/fixtures/platform-tls/localhost.der").to_vec(),
         );
@@ -294,8 +300,22 @@ mod tests {
         );
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
         let server = thread::spawn(move || {
-            let (tcp, _) = listener.accept().unwrap();
+            let deadline = std::time::Instant::now() + accept_timeout;
+            let tcp = loop {
+                match listener.accept() {
+                    Ok((tcp, _)) => break tcp,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if std::time::Instant::now() >= deadline {
+                            return false;
+                        }
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => return false,
+                }
+            };
+            tcp.set_nonblocking(false).unwrap();
             tcp.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
             tcp.set_write_timeout(Some(Duration::from_secs(3))).unwrap();
             let session = rustls::ServerConnection::new(config).unwrap();
@@ -310,6 +330,45 @@ mod tests {
             true
         });
         (address, server)
+    }
+
+    #[test]
+    fn tls_diagnostic_default_sdk_client_preserves_root_environment() {
+        let names = ["SSL_CERT_FILE", "SSL_CERT_DIR"];
+        let before = names.map(std::env::var_os);
+        let _client = relaycast::RelayCast::new(
+            relaycast::RelayCastOptions::new("rk_synthetic_diagnostic")
+                .with_base_url("http://127.0.0.1:1"),
+        )
+        .unwrap();
+        let after = names.map(std::env::var_os);
+        for (index, name) in names.iter().enumerate() {
+            eprintln!(
+                "TLS default SDK client {name} before_present={} after_present={}",
+                before[index]
+                    .as_ref()
+                    .is_some_and(|value| !value.is_empty()),
+                after[index].as_ref().is_some_and(|value| !value.is_empty())
+            );
+        }
+        assert!(
+            before == after,
+            "constructing the default SDK HTTP client changed file-root environment"
+        );
+    }
+
+    #[test]
+    fn tls_diagnostic_server_finishes_when_refusal_precedes_connection() {
+        for name in ["SSL_CERT_FILE", "SSL_CERT_DIR"] {
+            eprintln!(
+                "TLS test process {name} present={}",
+                std::env::var_os(name).is_some_and(|value| !value.is_empty())
+            );
+        }
+        let (_address, server) = tls_server_waiting(Duration::from_millis(50));
+        let started = std::time::Instant::now();
+        assert!(!server.join().unwrap());
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]
