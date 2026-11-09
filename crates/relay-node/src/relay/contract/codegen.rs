@@ -257,8 +257,13 @@ fn fields(schema: &Value) -> Vec<Field> {
     let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
         return Vec::new();
     };
+    // Sorted by wire name, so the output does not depend on the map's order
+    // (serde_json's `preserve_order` feature, enabled anywhere in a build,
+    // changes it).
+    let mut properties: Vec<(&String, &Value)> = properties.iter().collect();
+    properties.sort_by(|a, b| a.0.cmp(b.0));
     properties
-        .iter()
+        .into_iter()
         .map(|(wire, property)| {
             let field = Field {
                 wire: wire.clone(),
@@ -340,8 +345,10 @@ fn def(name: &str, schema: &Value) -> Def {
                 variant["properties"]
                     .as_object()
                     .and_then(|properties| {
-                        properties
-                            .iter()
+                        // The first tag by wire name, whatever the map's order.
+                        let mut tags: Vec<(&String, &Value)> = properties.iter().collect();
+                        tags.sort_by(|a, b| a.0.cmp(b.0));
+                        tags.into_iter()
                             .find_map(|(key, p)| text(p, "const").map(|c| (key.clone(), c)))
                     })
                     .unwrap_or_else(|| panic!("{name}: a variant without a tag: {variant}"))
@@ -1174,6 +1181,46 @@ mod tests {
             );
         }
         assert!(contract.open("Topic") && contract.open("AccountAction"));
+    }
+
+    /// Properties arrive in the schema's map order, which serde_json's
+    /// `preserve_order` feature changes; the output lists them by wire name.
+    #[test]
+    fn fields_and_init_parameters_are_sorted_by_wire_name() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "zeta": {"type": "string"},
+                "alpha": {"type": "integer", "format": "int64"},
+                "mid": {"type": "boolean"}
+            },
+            "required": ["zeta", "alpha", "mid"]
+        });
+        let Def::Struct { fields, .. } = def("Sample", &schema) else {
+            panic!("Sample is a struct");
+        };
+        let wires: Vec<&str> = fields.iter().map(|f| f.wire.as_str()).collect();
+        assert_eq!(wires, ["alpha", "mid", "zeta"]);
+        let mut out = String::new();
+        swift_struct(&mut out, "Sample", &None, &fields);
+        assert!(
+            out.contains("public init(alpha: Int64, mid: Bool, zeta: String)"),
+            "{out}"
+        );
+        let lets: Vec<usize> = ["alpha", "mid", "zeta"]
+            .iter()
+            .map(|n| out.find(&format!("public let {n}:")).unwrap())
+            .collect();
+        assert!(lets.windows(2).all(|w| w[0] < w[1]), "{out}");
+        let keys = out.find("enum CodingKeys").map(|_| {
+            ["alpha", "mid", "zeta"]
+                .iter()
+                .map(|n| out.find(&format!("case {n}")).unwrap())
+                .collect::<Vec<_>>()
+        });
+        if let Some(keys) = keys {
+            assert!(keys.windows(2).all(|w| w[0] < w[1]), "{out}");
+        }
     }
 
     #[test]
