@@ -15,8 +15,8 @@ import {
   type CloudWorkerDependencies,
 } from './cloud-worker.js';
 
-const directories: string[] = [];
-const worker = {
+const DIRECTORIES: string[] = [];
+const WORKER = {
   baseUrl: 'https://control.example.test',
   workerId: 'fixture-worker',
   workerToken: 'fixture-worker-token',
@@ -25,7 +25,7 @@ const worker = {
   registeredAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
 };
-const payload: WorkerWorkflowPayload = {
+const PAYLOAD: WorkerWorkflowPayload = {
   runId: 'fixture-run',
   workspaceId: 'fixture-workspace',
   relayWorkspaceId: 'fixture-relay',
@@ -38,9 +38,9 @@ const payload: WorkerWorkflowPayload = {
   workflowFileName: 'workflow.yaml',
 };
 
-function harness(exitCode = 0, workflow = payload) {
+function harness(exitCode = 0, workflow = PAYLOAD) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'worker-local-agent-'));
-  directories.push(home);
+  DIRECTORIES.push(home);
   const statuses: Array<{ phase: string }> = [];
   const spawnProcess = vi.fn((..._args: unknown[]) => {
     const child = Object.assign(new EventEmitter(), {
@@ -54,8 +54,8 @@ function harness(exitCode = 0, workflow = payload) {
   });
   const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
-    expect(url.origin).toBe(worker.baseUrl);
-    expect(new Headers(init?.headers).get('authorization')).toBe('Bearer ' + worker.workerToken);
+    expect(url.origin).toBe(WORKER.baseUrl);
+    expect(new Headers(init?.headers).get('authorization')).toBe('Bearer ' + WORKER.workerToken);
     if (url.pathname.endsWith('/heartbeat')) return Response.json({ nextHeartbeatMs: 1 });
     if (url.pathname.endsWith('/queue')) {
       const assignment = {
@@ -86,14 +86,14 @@ function harness(exitCode = 0, workflow = payload) {
     resolveAgentRelayCliEntrypoint: () => '/opt/relay/dist/cli/index.js',
     stdin: Readable.from([]),
   };
-  upsertCloudWorkerRecord(worker, deps.env);
+  upsertCloudWorkerRecord(WORKER, deps.env);
   const program = new Command().exitOverride();
   registerCloudWorkerCommands(program.command('cloud'), deps);
   return { program, deps, spawnProcess, fetchImpl, statuses };
 }
 
 afterEach(() => {
-  for (const dir of directories.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  for (const dir of DIRECTORIES.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
 describe('cloud worker local execution opt-in', () => {
@@ -131,7 +131,7 @@ describe('cloud worker local execution opt-in', () => {
 
       const body = "export default { name: 'fixture' };\n";
       const h = harness(0, {
-        ...payload,
+        ...PAYLOAD,
         fileType: 'ts',
         sourceFileType: 'ts',
         workflowFileName: fileName,
@@ -147,7 +147,7 @@ describe('cloud worker local execution opt-in', () => {
         '--once',
         '--local-agent',
         '--base-url',
-        worker.baseUrl,
+        WORKER.baseUrl,
       ]);
       const args = h.spawnProcess.mock.calls[0]![1] as string[];
       const workflowPath = args[3]!;
@@ -155,7 +155,7 @@ describe('cloud worker local execution opt-in', () => {
         h.deps.env.AGENT_RELAY_HOME!,
         'cloud-workers',
         'runs',
-        payload.runId,
+        PAYLOAD.runId,
         fileName.replace(/(?:\.flow)?\.ts$/, '') + '.flow.ts'
       );
       expect(workflowPath).toBe(expected);
@@ -178,7 +178,7 @@ describe('cloud worker local execution opt-in', () => {
         'start',
         '--once',
         '--base-url',
-        worker.baseUrl,
+        WORKER.baseUrl,
         ...(localAgent ? ['--local-agent'] : []),
       ]);
       expect(h.spawnProcess).toHaveBeenCalledOnce();
@@ -188,11 +188,11 @@ describe('cloud worker local execution opt-in', () => {
         '/opt/relay/dist/cli/index.js',
         'flows',
         'run',
-        path.join(h.deps.env.AGENT_RELAY_HOME!, 'cloud-workers', 'runs', payload.runId, 'workflow.yaml'),
+        path.join(h.deps.env.AGENT_RELAY_HOME!, 'cloud-workers', 'runs', PAYLOAD.runId, 'workflow.yaml'),
         ...(localAgent ? ['--local-agent'] : []),
       ]);
       expect(options).toEqual(
-        expect.objectContaining({ env: expect.objectContaining({ RELAYFILE_TOKEN: payload.relayfileToken }) })
+        expect.objectContaining({ env: expect.objectContaining({ RELAYFILE_TOKEN: PAYLOAD.relayfileToken }) })
       );
       expect(h.statuses.map((s) => s.phase)).toEqual(['running', 'completed']);
       expect(h.fetchImpl.mock.calls.every(([input]) => !String(input).includes('/register'))).toBe(true);
@@ -211,7 +211,7 @@ describe('cloud worker local execution opt-in', () => {
         'start',
         '--once',
         '--base-url',
-        worker.baseUrl,
+        WORKER.baseUrl,
         ...(localAgent ? ['--local-agent'] : []),
       ]);
       expect(h.statuses.map((s) => s.phase)).toEqual(['running', 'failed']);
@@ -230,7 +230,7 @@ describe('cloud worker local execution opt-in', () => {
       '--daemon',
       '--once',
       '--base-url',
-      worker.baseUrl,
+      WORKER.baseUrl,
       ...(localAgent ? ['--local-agent'] : []),
     ]);
     expect(h.spawnProcess).toHaveBeenCalledWith(
@@ -241,9 +241,9 @@ describe('cloud worker local execution opt-in', () => {
         'worker',
         'start',
         '--worker-id',
-        worker.workerId,
+        WORKER.workerId,
         '--base-url',
-        worker.baseUrl,
+        WORKER.baseUrl,
         '--foreground-child',
         '--once',
         ...(localAgent ? ['--local-agent'] : []),
@@ -258,9 +258,9 @@ describe('cloud worker local execution opt-in', () => {
     const runner = createDefaultAssignmentRunner(h.deps, { localAgent: true });
     await expect(
       runner({
-        assignment: { runId: payload.runId } as never,
-        payload: { ...payload, resumeRunId: 'previous' },
-        worker,
+        assignment: { runId: PAYLOAD.runId } as never,
+        payload: { ...PAYLOAD, resumeRunId: 'previous' },
+        worker: WORKER,
         signal: new AbortController().signal,
       })
     ).rejects.toThrow('state-bearing');
