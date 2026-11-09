@@ -62,6 +62,14 @@ fn platform_root_environment_is_safe_with(
 /// The platform's roots, and whether they were all read: a load error or a
 /// certificate that would not parse is logged, once per read.
 fn native_roots() -> Roots {
+    // The cache is shared with WebSockets. Refuse here too, so a WebSocket
+    // cannot seed it from an override that HTTP no longer sees after removal.
+    if !platform_root_environment_is_safe() {
+        return Roots {
+            complete: false,
+            store: rustls::RootCertStore::empty(),
+        };
+    }
     let loaded = rustls_native_certs::load_native_certs();
     for error in &loaded.errors {
         crate::relay::diagnostics::write(format_args!(

@@ -388,6 +388,54 @@ mod tests {
         }
     }
 
+    #[test]
+    fn websocket_root_override_child_cannot_contaminate_later_http() {
+        if std::env::var("RELAY_TLS_CACHE_CHILD").as_deref() != Ok("1") {
+            return;
+        }
+        use base64::Engine;
+        let directory = tempfile::tempdir().unwrap();
+        let ca = directory.path().join("throwaway-test-ca.pem");
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode(include_bytes!("../../tests/fixtures/platform-tls/ca.der"));
+        std::fs::write(
+            &ca,
+            format!("-----BEGIN CERTIFICATE-----\n{encoded}\n-----END CERTIFICATE-----\n"),
+        )
+        .unwrap();
+        std::env::set_var("SSL_CERT_FILE", &ca);
+        let _websocket = super::super::websocket_tls::connector();
+        std::env::remove_var("SSL_CERT_FILE");
+        let (address, server) = tls_server();
+        assert!(send_raw_blocking(
+            "GET",
+            &format!("https://localhost:{}/", address.port()),
+            None,
+            &[],
+            None,
+            Duration::from_secs(3)
+        )
+        .is_err());
+        assert!(
+            !server.join().unwrap(),
+            "a WebSocket must not seed file-derived trust for HTTP"
+        );
+    }
+
+    #[test]
+    fn shared_cache_never_retains_file_selected_roots() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "relay::cloud_http::tests::websocket_root_override_child_cannot_contaminate_later_http"])
+            .env_remove("SSL_CERT_FILE").env_remove("SSL_CERT_DIR")
+            .env("RELAY_TLS_CACHE_CHILD", "1").output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    }
+
     /// An operator can qualify the production client against an existing
     /// OS-trusted HTTPS health endpoint. No root file or credential is read.
     #[test]
