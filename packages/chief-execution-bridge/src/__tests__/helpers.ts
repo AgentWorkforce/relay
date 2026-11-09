@@ -21,7 +21,12 @@ export const T0 = 1_800_000_000_000;
 export const CHIEF = 'agent-chief';
 export const WORKER = 'agent-worker';
 
-export function makeAssignment(overrides: Partial<Assignment> & { summary?: string } = {}): {
+/** The fields a fixture can vary without desynchronising its evidence and digests. */
+type AssignmentOverrides = Partial<
+  Pick<Assignment, 'taskId' | 'repository' | 'acceptance' | 'reservationMicros' | 'action'>
+> & { summary?: string };
+
+export function makeAssignment(overrides: AssignmentOverrides = {}): {
   assignment: Assignment;
   digest: string;
 } {
@@ -211,7 +216,10 @@ export class FakeNode implements NodePort {
   refusal: string | undefined;
   /** When set, decides each preflight in turn instead of `refusal`. */
   onPreflight: (() => string | undefined) | undefined;
+  /** Agents actually stopped. */
   readonly ended: string[] = [];
+  /** Every stop asked of the node, whatever its outcome. */
+  readonly endAttempts: string[] = [];
   endOutcome: 'ended' | 'not_found' | 'refused' = 'ended';
   endThrows = false;
 
@@ -221,7 +229,8 @@ export class FakeNode implements NodePort {
 
   async endAgent(name: string): Promise<'ended' | 'not_found' | 'refused'> {
     if (this.endThrows) throw new Error('core_unavailable');
-    this.ended.push(name);
+    this.endAttempts.push(name);
+    if (this.endOutcome === 'ended') this.ended.push(name);
     return this.endOutcome;
   }
 }

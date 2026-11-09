@@ -31,7 +31,8 @@ const CONVERSATIONS_SCHEMA = envelope(
 const MESSAGES_SCHEMA = envelope(
   z.array(
     z.object({
-      id: z.string().regex(/^\d{19}$/),
+      // Snowflakes are decimal text of varying length: 18 digits until 2032.
+      id: z.string().regex(/^\d{1,20}$/),
       agent_id: z.string().min(1),
       agent_name: z.string().min(1),
       text: z.string(),
@@ -115,18 +116,36 @@ export class RelayHttpClient implements RelayPort {
         response.status === 429;
       throw new RelayError(`relay_http_${response.status}`, retryable);
     }
-    let text: string;
-    try {
-      text = await response.text();
-    } catch {
-      throw new RelayError('relay_transport_failed', true);
-    }
-    if (Buffer.byteLength(text) > MAX_RESPONSE_BYTES) throw new RelayError('relay_response_too_large', true);
+    const text = await this.readBounded(response);
     try {
       return JSON.parse(text) as unknown;
     } catch {
       throw new RelayError('relay_response_invalid', true);
     }
+  }
+
+  /** Stops reading as soon as the body passes the limit, so it is never fully buffered. */
+  private async readBounded(response: Response): Promise<string> {
+    if (!response.body) return '';
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > MAX_RESPONSE_BYTES) {
+          await reader.cancel().catch(() => undefined);
+          throw new RelayError('relay_response_too_large', true);
+        }
+        chunks.push(value);
+      }
+    } catch (error) {
+      if (error instanceof RelayError) throw error;
+      throw new RelayError('relay_transport_failed', true);
+    }
+    return Buffer.concat(chunks).toString();
   }
 
   private parse<T extends z.ZodType>(schema: T, value: unknown): z.infer<T> {

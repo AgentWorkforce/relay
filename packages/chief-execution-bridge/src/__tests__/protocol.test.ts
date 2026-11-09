@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildTask, MAX_TASK_BYTES, parseClaimedResult } from '../prompt.js';
 import { hash, readAssignment, type Assignment } from '../protocol.js';
+import { BridgeStore } from '../store.js';
 import golden from './golden.json' with { type: 'json' };
 import { makeAssignment } from './helpers.js';
 
@@ -37,14 +38,17 @@ describe('agreement with relay-chief', () => {
   });
 
   it('produces a report in the shape relay-chief parses', () => {
-    expect(golden.report).toEqual({
-      protocol: 'relay-chief.report.v1',
-      taskId: assignment.taskId,
-      assignmentDigest: golden.digest,
-      sequence: 1,
-      state: 'accepted',
-      artifactRefs: [],
+    const store = new BridgeStore(':memory:');
+    store.claim({
+      assignment,
+      digest: golden.digest,
+      agentName: 'agent',
+      invocationKey: 'key',
+      budgetMicros: 1_000_000,
+      now: golden.now,
     });
+    expect(store.dueReports(golden.now).map((due) => due.report)).toEqual([golden.report]);
+    store.close();
   });
 });
 
@@ -65,6 +69,13 @@ describe('agent task text', () => {
     expect(task.indexOf(attack)).toBeGreaterThan(start);
     expect(task.indexOf(attack)).toBeLessThan(task.indexOf(close, start));
     expect(attack).not.toContain(fence);
+  });
+
+  it('states acceptance criteria as requirements, outside the untrusted fence', () => {
+    const { assignment, digest } = makeAssignment({ acceptance: ['The test passes'] });
+    const task = buildTask(assignment, digest) as string;
+    expect(task).not.toContain('kind="acceptance"');
+    expect(task).toMatch(/Acceptance criteria from the chief[^\n]*requirements[^\n]*\n- The test passes/);
   });
 
   it('withholds deployment, IAM and secret authority', () => {

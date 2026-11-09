@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import { CoreNode } from '../core-node.js';
-import { RelayError } from '../ports.js';
+import { exitCode, RelayError } from '../ports.js';
 import { RelayHttpClient } from '../relay-http.js';
 
 const TOKEN = 'at_live_secret_value';
@@ -186,6 +186,60 @@ describe('RelayHttpClient over loopback HTTP', () => {
     expect(hits).toBe(1);
   });
 
+  it("accepts Relaycast's variable-length snowflake message IDs", async () => {
+    const origin = await serve((_req, res) =>
+      json(res, 200, {
+        ok: true,
+        data: [{ id: '245678901234567890', agent_id: 'a', agent_name: 'n', text: 't' }],
+      })
+    );
+    await expect(new RelayHttpClient(origin, TOKEN).messages('c1', { limit: 1 })).resolves.toMatchObject([
+      { id: '245678901234567890' },
+    ]);
+  });
+
+  it('refuses a message ID that is not a snowflake', async () => {
+    const origin = await serve((_req, res) =>
+      json(res, 200, { ok: true, data: [{ id: 'dm_1', agent_id: 'a', agent_name: 'n', text: 't' }] })
+    );
+    await expect(new RelayHttpClient(origin, TOKEN).messages('c1', { limit: 1 })).rejects.toMatchObject({
+      code: 'relay_response_invalid',
+    });
+  });
+
+  it('stops reading a response as soon as it passes the size limit', async () => {
+    let cancelled = false;
+    let pulled = 0;
+    const chunk = new Uint8Array(1024 * 1024);
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        controller.enqueue(chunk);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const fetchImpl = (async () => new Response(body, { status: 200 })) as unknown as typeof fetch;
+    await expect(
+      new RelayHttpClient('https://relay.example', TOKEN, fetchImpl).identity()
+    ).rejects.toMatchObject({ code: 'relay_response_too_large', retryable: true });
+    expect(cancelled).toBe(true);
+    expect(pulled).toBeLessThanOrEqual(6);
+  });
+
+  it('reports a body that fails partway as a transport failure', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error('reset'));
+      },
+    });
+    const fetchImpl = (async () => new Response(body, { status: 200 })) as unknown as typeof fetch;
+    await expect(
+      new RelayHttpClient('https://relay.example', TOKEN, fetchImpl).identity()
+    ).rejects.toMatchObject({ code: 'relay_transport_failed' });
+  });
+
   it('refuses a malformed success', async () => {
     const origin = await serve((_req, res) => json(res, 200, { ok: true, data: { nope: 1 } }));
     await expect(new RelayHttpClient(origin, TOKEN).identity()).rejects.toMatchObject({
@@ -195,6 +249,16 @@ describe('RelayHttpClient over loopback HTTP', () => {
 
   it('refuses an empty token', () => {
     expect(() => new RelayHttpClient('https://relay.example', ' ')).toThrow('relay_token_missing');
+  });
+});
+
+describe('process exit code', () => {
+  it('keeps a machine-readable code, digits included', () => {
+    expect(exitCode(new RelayError('relay_http_403', false))).toBe('relay_http_403');
+  });
+
+  it.each([new Error('Unexpected token < in JSON'), 'not an error'])('hides %s', (error) => {
+    expect(exitCode(error)).toBe('bridge_failed');
   });
 });
 

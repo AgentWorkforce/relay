@@ -32,6 +32,8 @@ export type ClaimOutcome = 'claimed' | 'over_budget' | 'duplicate' | 'conflict';
 
 const REPORT_RETRY_BASE_MS = 5000;
 const REPORT_RETRY_MAX_MS = 300_000;
+/** Rows kept in `quarantine`, newest first. Any peer can DM the worker, so it must be bounded. */
+const QUARANTINE_MAX_ROWS = 10_000;
 
 /**
  * The bridge's durable record. A task row and its first report are written in one
@@ -39,8 +41,10 @@ const REPORT_RETRY_MAX_MS = 300_000;
  */
 export class BridgeStore {
   private readonly db: DatabaseSync;
+  private readonly maxQuarantineRows: number;
 
-  constructor(path: string) {
+  constructor(path: string, options: { maxQuarantineRows?: number } = {}) {
+    this.maxQuarantineRows = options.maxQuarantineRows ?? QUARANTINE_MAX_ROWS;
     this.db = new DatabaseSync(path);
     if (path !== ':memory:') chmodSync(path, 0o600);
     this.db.exec(`
@@ -347,7 +351,7 @@ export class BridgeStore {
     return row?.conversation_id;
   }
 
-  /** Stores a digest of a refused payload, never its contents. */
+  /** Stores a digest of a refused payload, never its contents, keeping only the newest rows. */
   quarantine(messageId: string, code: string, payload: unknown, senderAgentId: string, now: number): void {
     this.db
       .prepare(
@@ -355,6 +359,12 @@ export class BridgeStore {
          VALUES (?, ?, ?, ?, ?)`
       )
       .run(messageId, code, hash(payload), senderAgentId, now);
+    this.db
+      .prepare(
+        `DELETE FROM quarantine WHERE message_id IN
+           (SELECT message_id FROM quarantine ORDER BY at DESC, message_id DESC LIMIT -1 OFFSET ?)`
+      )
+      .run(this.maxQuarantineRows);
   }
 
   quarantined(): Array<{ messageId: string; code: string }> {

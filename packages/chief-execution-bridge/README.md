@@ -6,8 +6,9 @@ spawn, and reports `accepted`, `running`, `completed` or `failed` back to the ch
 
 Private and unpublished. Licence and distribution follow relay-chief's open decision.
 
-**Not qualified for customers.** Everything here has been verified against fakes only.
-See [What has been verified](#what-has-been-verified).
+**Not qualified for customers.** The bridge's behaviour has been verified against fakes
+only; compatibility with relay-chief and the local core's API was checked separately. See
+[What has been verified](#what-has-been-verified).
 
 ## How it works
 
@@ -16,8 +17,9 @@ dedicated `agent-relay-node`. Each pass:
 
 1. **Reads DMs** with the worker's token. Sender, workspace and recipient come from
    Relay, never the body. Only a message with `chief_assignment` metadata that passes
-   `readAssignment` goes further. Any other DM is ignored, and a refused assignment is
-   quarantined as a hash.
+   `readAssignment` can start work. A spawned agent's own messages are read only for its
+   `CHIEF_RESULT` line. Any other DM is ignored, and a refused assignment is quarantined
+   as a hash, keeping the newest 10,000.
 2. **Claims the task.** The task ID, digest and `accepted` report are written in one
    transaction before any native call. A replay is a no-op; the same task with a
    different digest is refused.
@@ -46,19 +48,19 @@ without one is otherwise ignored.
 
 ## Requirements
 
-| Requirement                                        | Status                                                                                                                                                                                                                                 |
-| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sender and recipient from authenticated Relay data | Enforced. The recipient address is the configured one, checked against `/v1/agent` when Relay returns it                                                                                                                               |
-| Durable dedupe before native execution             | Enforced                                                                                                                                                                                                                               |
-| Generic DM never becomes native input              | Enforced                                                                                                                                                                                                                               |
-| Reports with increasing sequences; safe retry      | Enforced                                                                                                                                                                                                                               |
-| Failed or timed-out agent reports `failed`         | Enforced, including a report owed across a restart                                                                                                                                                                                     |
-| Session binding                                    | Enforced as above. The agent ID is trust-on-first-use, since an agent token cannot read it from Relaycast                                                                                                                              |
-| Resource limits                                    | Enforced: concurrency, one task per repository, wall-clock runtime, queue time, node capacity. A finished task holds its slot until its agent has stopped, so a stop the node refuses (such as a taken-over session) needs an operator |
-| Spending limits                                    | **Partly.** Per-task and lifetime _reservation_ caps only. **Real provider spend is not metered or enforced**: a spawn has no budget parameter                                                                                         |
-| Allowlisted agent environment                      | **Unmet on any node not set up as below.** `spawn.invoke` has no environment parameter and spawned harnesses inherit the core's environment and the person's MCP servers                                                               |
-| Evidence is data, not instructions                 | Evidence is fenced and labelled in the prompt. This reduces injection risk and does not remove it                                                                                                                                      |
-| No deployment, IAM or secret authority             | Stated in the prompt and never granted by the bridge; the actual boundary is what the node's account can reach                                                                                                                         |
+| Requirement                                        | Status                                                                                                                                                                                                                                                                                                                                                                        |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sender and recipient from authenticated Relay data | Enforced. The recipient address is the configured one, checked against `/v1/agent` when Relay returns it                                                                                                                                                                                                                                                                      |
+| Durable dedupe before native execution             | Enforced                                                                                                                                                                                                                                                                                                                                                                      |
+| Generic DM never becomes native input              | Enforced                                                                                                                                                                                                                                                                                                                                                                      |
+| Reports with increasing sequences; safe retry      | Enforced                                                                                                                                                                                                                                                                                                                                                                      |
+| Failed or timed-out agent reports `failed`         | Enforced, including a report owed across a restart                                                                                                                                                                                                                                                                                                                            |
+| Session binding                                    | Enforced as above. The agent ID is trust-on-first-use, since an agent token cannot read it from Relaycast                                                                                                                                                                                                                                                                     |
+| Resource limits                                    | Enforced while the bridge runs: concurrency, one task per repository, wall-clock runtime, queue time, node capacity. A finished task holds its slot until its agent has stopped, so a stop the node refuses (such as a taken-over session) needs an operator. Nothing stops an agent while the bridge is down; a deadline passed during downtime is applied at the next start |
+| Spending limits                                    | **Partly.** Per-task and lifetime _reservation_ caps only. **Real provider spend is not metered or enforced**: a spawn has no budget parameter                                                                                                                                                                                                                                |
+| Allowlisted agent environment                      | **Unmet on any node not set up as below.** `spawn.invoke` has no environment parameter and spawned harnesses inherit the core's environment and the person's MCP servers                                                                                                                                                                                                      |
+| Evidence is data, not instructions                 | Evidence is fenced and labelled in the prompt. This reduces injection risk and does not remove it                                                                                                                                                                                                                                                                             |
+| No deployment, IAM or secret authority             | Stated in the prompt and never granted by the bridge; the actual boundary is what the node's account can reach                                                                                                                                                                                                                                                                |
 
 ## Node requirements
 
@@ -70,6 +72,8 @@ off for the harness.
 or the bridge will not start. That is an operator attestation, which the bridge cannot
 verify. It does check, at startup and before each spawn, that full access is off, spawns
 are accepted, requester approvals are off, and the pinned node is live with capacity.
+`node` must be this core's own node: preflight reads this core's settings, and the core
+reports no identity to confirm that a named node is its own.
 **Reply with final answer** must stay on for the agent; without it a task can only time out.
 
 A per-spawn isolation profile in `relay-node` would replace the attestation.
@@ -81,7 +85,8 @@ CHIEF_BRIDGE_RELAY_TOKEN=... chief-execution-bridge /etc/chief-bridge/config.jso
 ```
 
 See `configSchema` in `src/config.ts`. The token is read from the environment and is never
-stored or logged. Logs carry event names and codes only. There is one writer per ledger.
+stored or logged. Logs carry event names, codes, task IDs, states, reasons and report
+sequences; message text and tokens are not logged. There is one writer per ledger.
 It does not use the Flows runtime, so Flows' missing linux-arm64 build does not apply.
 
 ## What has been verified

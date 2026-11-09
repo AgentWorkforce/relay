@@ -10,6 +10,14 @@ export class RelayError extends Error {
   }
 }
 
+/**
+ * @param error Whatever ended the process.
+ * @returns The error's own machine-readable code, or `bridge_failed` for anything that could quote a response.
+ */
+export function exitCode(error: unknown): string {
+  return error instanceof Error && /^[a-z0-9_:]+$/.test(error.message) ? error.message : 'bridge_failed';
+}
+
 export interface RelayIdentity {
   agentId: string;
   workspaceId: string;

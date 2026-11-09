@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { ExecutionBridge } from '../bridge.js';
 import { configSchema } from '../config.js';
 import { RelayError } from '../ports.js';
+import { hash } from '../protocol.js';
 import { BridgeStore } from '../store.js';
 import {
   agentNameOf,
@@ -44,8 +45,10 @@ describe('assignment intake', () => {
     const h = await makeHarness();
     const made = makeAssignment();
     h.relay.deliverAssignment(made.assignment, made.digest);
-    h.store.close();
-    await expect(h.bridge.tick()).rejects.toThrow();
+    h.store.claim = () => {
+      throw new Error('ledger unavailable');
+    };
+    await expect(h.bridge.tick()).rejects.toThrow('ledger unavailable');
     expect(h.relay.spawns).toHaveLength(0);
     expect(h.relay.deliveredReports()).toHaveLength(0);
   });
@@ -110,8 +113,7 @@ describe('deduplication', () => {
     const h = await makeHarness();
     await assignAndStart(h);
     await h.reopen();
-    // Replay under a fresh message ID, which is what a lost cursor looks like.
-    h.relay.replayLast(CHIEF);
+    h.store.advanceCursor(`dm-${CHIEF}`, '');
     await h.bridge.tick();
     expect(h.relay.spawns).toHaveLength(1);
   });
@@ -580,7 +582,8 @@ describe('review regressions', () => {
     await h.bridge.tick();
     await h.bridge.tick();
     expect(h.store.stopPending()).toHaveLength(1);
-    expect(h.node.ended.length).toBeGreaterThan(1);
+    expect(h.node.endAttempts.length).toBeGreaterThan(1);
+    expect(h.node.ended).toEqual([]);
   });
 
   it('holds the repository until the finished agent has stopped', async () => {
@@ -696,6 +699,40 @@ describe('review regressions', () => {
     await h.bridge.tick();
     expect(h.store.task('task-b')?.state).toBe('running');
     expect(h.store.task('task-a')?.state).toBe('launched');
+  });
+
+  it('fails an unspawnable task without owing a stop or holding its repository', async () => {
+    const h = await makeHarness();
+    const oversized = makeAssignment({
+      taskId: 'task-big',
+      acceptance: Array.from({ length: 20 }, () => 'é'.repeat(2000)),
+      summary: 'é'.repeat(16_000),
+    });
+    const next = makeAssignment({ taskId: 'task-next' });
+    h.relay.deliverAssignment(oversized.assignment, oversized.digest);
+    h.relay.deliverAssignment(next.assignment, next.digest);
+    await h.bridge.tick();
+    expect(h.store.task('task-big')).toMatchObject({ state: 'failed', reason: 'task_too_large' });
+    expect(h.store.stopPending()).toHaveLength(0);
+    expect(h.node.endAttempts).toEqual([]);
+    expect(h.relay.spawns.map((s) => s.name)).toEqual([agentNameOf(h, 'task-next')]);
+  });
+
+  it('refuses an action the assignment says this worker cannot do', async () => {
+    const h = await makeHarness();
+    const { assignment } = makeAssignment();
+    const unblock = { ...assignment, action: 'unblock' as const };
+    h.relay.deliverAssignment(unblock, hash(unblock));
+    await h.bridge.tick();
+    expect(h.relay.spawns).toHaveLength(0);
+    expect(h.store.quarantined()).toMatchObject([{ code: 'worker_assignment_not_authorized' }]);
+  });
+
+  it('keeps only the newest quarantine rows', () => {
+    const store = new BridgeStore(':memory:', { maxQuarantineRows: 2 });
+    for (const id of ['1', '2', '3']) store.quarantine(id, 'worker_assignment_invalid', {}, 'x', T0);
+    expect(store.quarantined().map((q) => q.messageId)).toEqual(['2', '3']);
+    store.close();
   });
 
   it('keeps a stop owed past the grace period while the launch is unsettled', async () => {

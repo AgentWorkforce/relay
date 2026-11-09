@@ -147,6 +147,8 @@ export function readAssignment(
     assignment.projectId !== policy.projectId ||
     !policy.repositories.includes(assignment.repository) ||
     !policy.actions.includes(assignment.action) ||
+    // Stricter than relay-chief, which only offers an action to a worker that declares it.
+    !assignment.worker.actions.includes(assignment.action) ||
     assignment.reservationMicros > policy.maxReservationMicros ||
     assignment.evidence.observedAt > now ||
     now - assignment.evidence.observedAt > policy.maxEvidenceAgeMs ||

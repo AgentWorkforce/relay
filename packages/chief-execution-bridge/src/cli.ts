@@ -4,6 +4,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { ExecutionBridge } from './bridge.js';
 import { configSchema } from './config.js';
 import { CoreNode } from './core-node.js';
+import { exitCode } from './ports.js';
 import { RelayHttpClient } from './relay-http.js';
 import { BridgeStore } from './store.js';
 
@@ -40,8 +41,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  // Codes only: an arbitrary error could quote a response.
-  const code = error instanceof Error && /^[a-z_:]+$/.test(error.message) ? error.message : 'bridge_failed';
-  console.error(JSON.stringify({ event: 'bridge_exit', code }));
+  console.error(JSON.stringify({ event: 'bridge_exit', code: exitCode(error) }));
   process.exit(1);
 });

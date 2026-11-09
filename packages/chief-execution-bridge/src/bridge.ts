@@ -254,7 +254,13 @@ export class ExecutionBridge {
     const busy = new Set(occupying.map((t) => t.repository));
     let active = occupying.length;
     for (const task of queued) {
-      if (active >= maxConcurrent) break;
+      // Fails here, while nothing was launched, so no stop is owed and no slot is held.
+      const input = this.spawnInput(task);
+      if ('refused' in input) {
+        this.fail(task, input.refused);
+        continue;
+      }
+      if (active >= maxConcurrent) continue;
       if (busy.has(task.repository)) continue;
       const refusal = await this.preflight();
       if (refusal) {
@@ -310,13 +316,21 @@ export class ExecutionBridge {
     }
   }
 
-  private async invoke(task: TaskRow): Promise<void> {
+  /** The spawn's folder and first message, or why this task can never be spawned. */
+  private spawnInput(task: TaskRow): { directory: string; prompt: string } | { refused: string } {
     const directory = this.config.repositories[task.repository];
+    if (!directory) return { refused: 'repository_not_configured' };
     const prompt = buildTask(task.assignment, task.digest);
-    if (!directory || !prompt) {
-      this.fail(task, directory ? 'task_too_large' : 'repository_not_configured');
+    return prompt ? { directory, prompt } : { refused: 'task_too_large' };
+  }
+
+  private async invoke(task: TaskRow): Promise<void> {
+    const input = this.spawnInput(task);
+    if ('refused' in input) {
+      this.fail(task, input.refused);
       return;
     }
+    const { directory, prompt } = input;
     let receipt: SpawnReceipt;
     try {
       receipt = await this.relay.invokeSpawn({
