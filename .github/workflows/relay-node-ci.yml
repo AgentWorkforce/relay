@@ -66,6 +66,21 @@ jobs:
         run: scripts/generate-contract.sh
       - name: Fail on drift
         run: git diff --exit-code -- contract/CoreContract.swift
+      # Any crate in a dependent build (relay-desktop's, for one) can turn on
+      # serde_json's preserve_order, which changes the order the registry's
+      # schema maps iterate in. The contract must come out the same either
+      # way, and the codegen tests must hold under that order too (without
+      # it, maps iterate sorted and an unsorted-order bug cannot show). The
+      # feature adds indexmap to the lockfile, so these steps run unlocked
+      # and put Cargo.lock back afterwards.
+      - name: Regenerate the contract with serde_json preserve_order
+        run: |
+          cargo run --quiet --features serde_json/preserve_order --bin relay-contract-codegen
+          git diff --exit-code -- contract/CoreContract.swift
+      - name: Test the codegen with serde_json preserve_order
+        run: |
+          cargo test --features serde_json/preserve_order --lib contract::
+          git checkout -- Cargo.lock
 
   linux:
     name: Linux x64 build + test
