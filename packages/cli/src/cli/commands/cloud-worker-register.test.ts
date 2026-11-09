@@ -3,18 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { Command } from 'commander';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-const register = vi.hoisted(() => vi.fn());
-vi.mock('@agent-relay/cloud', () => ({
-  registerCloudWorker: register,
-  cloudWorkerStateDir: vi.fn(),
-  downloadCloudWorkerAssignmentStorage: vi.fn(),
-  resolveCloudWorkerRecord: vi.fn(),
-  runCloudWorkerLoop: vi.fn(),
-  upsertCloudWorkerRecord: vi.fn(),
-}));
-vi.mock('../telemetry/index.js', () => ({ shutdown: vi.fn() }));
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { registerCloudWorkerCommands } from './cloud-worker.js';
 import { MAX_WORKER_ENROLLMENT_TOKEN_BYTES } from '../lib/cloud-worker-enrollment-token.js';
@@ -32,18 +21,25 @@ function harness(stdin: Readable & { isTTY?: boolean } = Readable.from([])) {
   const cloud = program.command('cloud');
   const log = vi.fn();
   const error = vi.fn();
-  const fetchImpl = vi.fn();
-  registerCloudWorkerCommands(cloud, { stdin, log, error, fetchImpl });
-  return { program, log, error, fetchImpl };
-}
-beforeEach(() => {
-  register.mockReset();
-  register.mockResolvedValue({
-    workerId: 'fixture-worker',
-    workerToken: 'fixture-private-worker-token',
-    name: 'fixture',
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'worker-register-home-'));
+  directories.push(home);
+  const fetchImpl = vi.fn<typeof fetch>(
+    async () =>
+      new Response(
+        JSON.stringify({
+          workerId: 'fixture-worker',
+          workerToken: 'fixture-private-worker-token',
+          heartbeatIntervalMs: 30_000,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+  );
+  const exit = vi.fn((code: number): never => {
+    throw new Error(`exit:${code}`);
   });
-});
+  registerCloudWorkerCommands(cloud, { stdin, log, error, fetchImpl, exit, env: { AGENT_RELAY_HOME: home } });
+  return { program, log, error, fetchImpl, home, exit };
+}
 afterEach(() => {
   for (const dir of directories.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -53,7 +49,7 @@ describe('cloud worker register token sources', () => {
     'passes %s input only through the official registration API',
     async (source) => {
       const token = 'fixture-private-enrollment-token';
-      const { program, log, error, fetchImpl } = harness(Readable.from([token + '\n']));
+      const { program, log, error, fetchImpl, home } = harness(Readable.from([token + '\n']));
       const args =
         source === 'legacy'
           ? ['--token', token]
@@ -68,16 +64,22 @@ describe('cloud worker register token sources', () => {
         'register',
         '--name',
         'fixture',
+        '--base-url',
+        'https://control.example.com',
         '--json',
         ...args,
       ]);
-      expect(register).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({ enrollmentToken: token, name: 'fixture', fetchImpl })
-      );
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      const [url, request] = fetchImpl.mock.calls[0];
+      expect(String(url)).toBe('https://control.example.com/api/v1/workers/register');
+      expect(request?.method).toBe('POST');
+      expect(JSON.parse(String(request?.body))).toMatchObject({ enrollmentToken: token, name: 'fixture' });
       const output = JSON.stringify([...log.mock.calls, ...error.mock.calls]);
       expect(output).not.toContain(token);
       expect(output).not.toContain('fixture-private-worker-token');
-      expect(fetchImpl).not.toHaveBeenCalled();
+      const stored = fs.readFileSync(path.join(home, 'cloud-workers.json'), 'utf8');
+      expect(stored).toContain('fixture-private-worker-token');
+      expect(stored).not.toContain(token);
     }
   );
 
@@ -92,10 +94,20 @@ describe('cloud worker register token sources', () => {
     ].map((args) => ({ args }))
   )('refuses invalid selection/input before registration: $args', async ({ args }) => {
     const { program, log, error, fetchImpl } = harness();
-    await expect(
-      program.parseAsync(['node', 'relay', 'cloud', 'worker', 'register', '--name', 'fixture', ...args])
-    ).rejects.toThrow(/^worker_enrollment_token_/);
-    expect(register).not.toHaveBeenCalled();
+    const attempt = program.parseAsync([
+      'node',
+      'relay',
+      'cloud',
+      'worker',
+      'register',
+      '--name',
+      'fixture',
+      ...args,
+    ]);
+    await expect(attempt).rejects.toThrow(/^worker_enrollment_token_/);
+    if (args.length === 0) {
+      await expect(attempt).rejects.toThrow('choose exactly one of --token, --token-file or --token-stdin');
+    }
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(log).not.toHaveBeenCalled();
     expect(error).not.toHaveBeenCalled();
@@ -116,7 +128,6 @@ describe('cloud worker register token sources', () => {
         file('x'.repeat(MAX_WORKER_ENROLLMENT_TOKEN_BYTES + 1)),
       ])
     ).rejects.toThrow(/^worker_enrollment_token_too_large$/);
-    expect(register).not.toHaveBeenCalled();
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -134,7 +145,6 @@ describe('cloud worker register token sources', () => {
         '--token-stdin',
       ])
     ).rejects.toThrow(/^worker_enrollment_token_stdin_tty_refused$/);
-    expect(register).not.toHaveBeenCalled();
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

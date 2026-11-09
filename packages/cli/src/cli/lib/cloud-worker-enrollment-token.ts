@@ -15,7 +15,9 @@ export type WorkerEnrollmentTokenStream = Readable & { isTTY?: boolean };
 class EnrollmentTokenInputError extends Error {}
 
 function refuse(code: string): never {
-  throw new EnrollmentTokenInputError(`worker_enrollment_${code}`);
+  const guidance =
+    code === 'token_source_required' ? ': choose exactly one of --token, --token-file or --token-stdin' : '';
+  throw new EnrollmentTokenInputError(`worker_enrollment_${code}${guidance}`);
 }
 
 function decodeToken(bytes: Uint8Array): string {

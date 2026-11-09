@@ -65,7 +65,7 @@ describe('worker enrollment token input', () => {
     const read = vi.fn();
     const stdin = new Readable({ read });
     await expect(readWorkerEnrollmentToken(options, stdin)).rejects.toThrow(
-      /^worker_enrollment_token_source_required$/
+      /^worker_enrollment_token_source_required:.*--token, --token-file or --token-stdin$/
     );
     expect(read).not.toHaveBeenCalled();
     stdin.destroy();
