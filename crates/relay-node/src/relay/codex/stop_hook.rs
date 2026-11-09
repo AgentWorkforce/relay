@@ -192,11 +192,23 @@ impl CodexStopHookSettings {
 
     /// The shell command for `executable`, with `--dev` for Agent Relay Dev.
     pub fn command_for(executable: &Path, development: bool) -> String {
-        let mut command = format!("{} {SUBCOMMAND}", quoted_program(executable));
-        if development {
-            command.push_str(" --dev");
-        }
-        command
+        let build = if development {
+            crate::relay::outbound::Build::Development
+        } else {
+            crate::relay::outbound::Build::Production
+        };
+        Self::command_for_build(executable, &build, Path::new(""))
+    }
+
+    /// The shell command for `executable` in `build`, which serves the
+    /// session socket `socket`: a profile build's names that socket
+    /// (`hook_owner`).
+    pub fn command_for_build(
+        executable: &Path,
+        build: &crate::relay::outbound::Build,
+        socket: &Path,
+    ) -> String {
+        crate::relay::hook_owner::command(&quoted_program(executable), SUBCOMMAND, build, socket)
     }
 
     #[cfg(test)]
@@ -445,11 +457,15 @@ impl CodexStopHookSettings {
         (value, changed)
     }
 
-    /// Whether `command` is this build's hook, in any version: Agent Relay
-    /// and Agent Relay Dev (`--dev`) each have their own.
+    /// Whether `command` is this build's hook, in any version: Agent Relay,
+    /// Agent Relay Dev (`--dev`) and each profile build (`--socket <its
+    /// session socket>`) have their own (`hook_owner`). Every unmarked hook
+    /// is Agent Relay's slot, so one a profile build released before the
+    /// marker wrote is taken back by Agent Relay and never by a profile.
     fn is_ours(&self, command: &str) -> bool {
-        let development = |command: &str| command.trim_end().ends_with(" --dev");
-        command.contains(SUBCOMMAND) && development(command) == development(&self.command)
+        crate::relay::hook_owner::same_build(command, &self.command, |body| {
+            body.contains(SUBCOMMAND)
+        })
     }
 
     fn our_commands<'a>(&self, groups: &'a [Value]) -> Vec<&'a str> {
@@ -490,6 +506,18 @@ impl CodexStopHookSettings {
                 value["hooks"][*event]
                     .as_array()
                     .is_some_and(|groups| !self.our_commands(groups).is_empty())
+            })
+        })
+    }
+
+    /// Whether every event holds this build's current hook, once.
+    fn current(&self) -> bool {
+        let entry = self.entry();
+        self.read().is_ok_and(|value| {
+            EVENTS.iter().all(|event| {
+                value["hooks"][*event].as_array().is_some_and(|groups| {
+                    groups.contains(&entry) && self.our_commands(groups).len() == 1
+                })
             })
         })
     }
@@ -672,6 +700,16 @@ impl crate::relay::agents::SettingsExtension for CodexStopHookSettings {
         self.inbox.set_ready(enabled && outcome.is_ok());
         self.checked.store(true, Ordering::SeqCst);
         Some(outcome)
+    }
+
+    /// A hook this build installed that is no longer current for every
+    /// event (another build rewrote or took out one copy) is installed
+    /// again. Writes and trusts nothing while it is current or off, so it
+    /// is cheap enough for every rediscovery tick.
+    fn reclaim(&self) {
+        if self.applies() && self.hook_enabled() && !self.current() {
+            self.refresh();
+        }
     }
 
     fn default_on(&self) -> Vec<&'static str> {
@@ -1709,6 +1747,166 @@ mod tests {
             commands(&read()),
             ["notify.sh", "'/Dev/probe' codex-stop-hook --dev"]
         );
+    }
+
+    fn settings_for(home: &Path, command: String) -> CodexStopHookSettings {
+        CodexStopHookSettings::new(
+            home.join(".codex"),
+            command,
+            None,
+            Arc::new(StopHookInbox::default()),
+        )
+        .with_trust(|_, _| Ok(()))
+        .with_untrust(|_, _, edit| edit())
+    }
+
+    fn build_commands() -> Vec<String> {
+        use crate::relay::outbound::Build;
+        [
+            (
+                Build::Production,
+                "/Apps/Agent Relay.app/probe",
+                "/run/agent-relay/relay.sock",
+            ),
+            (
+                Build::Development,
+                "/Apps/Agent Relay Dev.app/probe",
+                "/run/agent-relay-dev/relay.sock",
+            ),
+            (
+                Build::Profile("devaws".into()),
+                "/Apps/Agent Relay Dev.app/Agent Relay Dev Helper",
+                "/run/agent-relay-devaws/relay.sock",
+            ),
+            (
+                Build::Profile("acme".into()),
+                "/Apps/Acme.app/probe",
+                "/run/agent-relay-acme/relay.sock",
+            ),
+        ]
+        .iter()
+        .map(|(build, exe, socket)| {
+            CodexStopHookSettings::command_for_build(Path::new(exe), build, Path::new(socket))
+        })
+        .collect()
+    }
+
+    fn event_commands(home: &Path, event: &str) -> Vec<String> {
+        let value: Value =
+            serde_json::from_slice(&std::fs::read(home.join(".codex/hooks.json")).unwrap())
+                .unwrap();
+        value["hooks"][event]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|group| group["hooks"].as_array().unwrap().clone())
+            .map(|hook| hook["command"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn write_every_event(home: &Path, commands: &[String]) {
+        let hooks: Vec<Value> = commands
+            .iter()
+            .map(|c| json!({"hooks": [{"type": "command", "command": c, "timeout": 10}]}))
+            .collect();
+        let value = json!({"hooks": {"Stop": hooks, "PostToolUse": hooks, "SessionStart": hooks}});
+        std::fs::write(home.join(".codex/hooks.json"), value.to_string()).unwrap();
+    }
+
+    // Agent Relay, Agent Relay Dev and two profile builds share
+    // ~/.codex/hooks.json: each installs, reclaims and removes only its own.
+    #[test]
+    fn each_build_installs_reclaims_and_removes_only_its_own_hook() {
+        let commands = build_commands();
+        for (i, ours) in commands.iter().enumerate() {
+            let home = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+            let others: Vec<String> = commands
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, c)| c.clone())
+                .collect();
+            write_every_event(home.path(), &others);
+            let settings = settings_for(home.path(), ours.clone());
+            assert_eq!(settings.get()[SETTING], false, "{ours}");
+            assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+            let mut expected = others.clone();
+            expected.push(ours.clone());
+            for event in EVENTS {
+                assert_eq!(
+                    event_commands(home.path(), event),
+                    expected,
+                    "{ours} {event}"
+                );
+            }
+            assert!(settings.current());
+
+            // Another build took this build's copy out of one event: the
+            // tick's reclaim puts it back and leaves the others.
+            let path = home.path().join(".codex/hooks.json");
+            let mut value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            value["hooks"]["SessionStart"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|group| group["hooks"][0]["command"] != json!(ours));
+            std::fs::write(&path, value.to_string()).unwrap();
+            assert!(!settings.current());
+            SettingsExtension::reclaim(&settings);
+            for event in EVENTS {
+                assert_eq!(
+                    event_commands(home.path(), event),
+                    expected,
+                    "{ours} {event}"
+                );
+            }
+            // Current: a reclaim writes nothing.
+            let bytes = std::fs::read(home.path().join(".codex/hooks.json")).unwrap();
+            SettingsExtension::reclaim(&settings);
+            assert_eq!(
+                std::fs::read(home.path().join(".codex/hooks.json")).unwrap(),
+                bytes
+            );
+
+            assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+            for event in EVENTS {
+                assert_eq!(event_commands(home.path(), event), others, "{ours} {event}");
+            }
+            // Off: a reclaim installs nothing.
+            SettingsExtension::reclaim(&settings);
+            assert!(!settings.hook_enabled());
+        }
+    }
+
+    // A profile build released before the marker wrote an unmarked hook:
+    // Agent Relay's reclaim replaces it with its own; a profile build's
+    // leaves it.
+    #[test]
+    fn only_agent_relay_reclaims_a_legacy_unmarked_hook() {
+        let commands = build_commands();
+        let legacy = "'/Applications/Agent Relay Dev.app/Contents/Helpers/Agent Relay Dev Helper' codex-stop-hook".to_string();
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+        write_every_event(home.path(), &[legacy.clone()]);
+        let profile = settings_for(home.path(), commands[2].clone());
+        let bytes = std::fs::read(home.path().join(".codex/hooks.json")).unwrap();
+        SettingsExtension::reclaim(&profile);
+        assert_eq!(
+            std::fs::read(home.path().join(".codex/hooks.json")).unwrap(),
+            bytes
+        );
+        assert!(!profile.hook_enabled());
+
+        let agent_relay = settings_for(home.path(), commands[0].clone());
+        assert!(agent_relay.hook_enabled());
+        SettingsExtension::reclaim(&agent_relay);
+        for event in EVENTS {
+            assert_eq!(
+                event_commands(home.path(), event),
+                [commands[0].clone()],
+                "{event}"
+            );
+        }
     }
 
     #[test]

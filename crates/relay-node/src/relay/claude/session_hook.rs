@@ -175,14 +175,28 @@ impl ClaudeSessionHookSettings {
 
     /// The shell command for `executable`, with `--dev` for Agent Relay Dev.
     pub fn command_for(executable: &Path, development: bool) -> String {
-        let mut command = format!(
-            "{} {SUBCOMMAND}",
-            crate::relay::outbound::shell_quote(&executable.to_string_lossy())
-        );
-        if development {
-            command.push_str(" --dev");
-        }
-        command
+        let build = if development {
+            crate::relay::outbound::Build::Development
+        } else {
+            crate::relay::outbound::Build::Production
+        };
+        Self::command_for_build(executable, &build, Path::new(""))
+    }
+
+    /// The shell command for `executable` in `build`, which serves the
+    /// session socket `socket`: a profile build's names that socket
+    /// (`hook_owner`).
+    pub fn command_for_build(
+        executable: &Path,
+        build: &crate::relay::outbound::Build,
+        socket: &Path,
+    ) -> String {
+        crate::relay::hook_owner::command(
+            &crate::relay::outbound::shell_quote(&executable.to_string_lossy()),
+            SUBCOMMAND,
+            build,
+            socket,
+        )
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, ()> {
@@ -307,13 +321,18 @@ impl ClaudeSessionHookSettings {
         Value::Object(object)
     }
 
-    /// This build's hook, in any version of the executable. Agent Relay and
-    /// Agent Relay Dev (`--dev`) each keep their own.
+    /// This build's hook, in any version of the executable: Agent Relay,
+    /// Agent Relay Dev (`--dev`) and each profile build (`--socket <its
+    /// session socket>`) keep their own (`hook_owner`). Agent Relay's slot is
+    /// every unmarked hook, so it takes back one a profile build released
+    /// before the marker wrote in its place (a legacy "Agent Relay Dev
+    /// Helper" hook, say) as a displaced copy of its own, at `refresh`; a
+    /// profile build never matches it, nor a hook naming another build's
+    /// socket.
     fn is_ours(&self, command: &str) -> bool {
-        let dev = |command: &str| command.trim_end().ends_with(" --dev");
-        let body = command.trim();
-        let body = body.strip_suffix(" --dev").unwrap_or(body).trim_end();
-        body.ends_with(SUBCOMMAND) && dev(command) == dev(&self.command)
+        crate::relay::hook_owner::same_build(command, &self.command, |body| {
+            body.ends_with(SUBCOMMAND)
+        })
     }
 
     fn our_commands<'a>(&self, groups: &'a [Value]) -> Vec<&'a str> {
@@ -626,6 +645,13 @@ impl ClaudeSessionHookSettings {
 }
 
 impl SettingsExtension for ClaudeSessionHookSettings {
+    /// [`Self::refresh`]: a displaced copy of this build's hook (a legacy
+    /// unmarked one, for Agent Relay) is rewritten; it writes only files
+    /// that change, and never another build's hook.
+    fn reclaim(&self) {
+        self.refresh();
+    }
+
     fn default_on(&self) -> Vec<&'static str> {
         // Only shared logins count: with none there is nowhere to install
         // (the edit would fail every pass), and a stale copy on a login no
@@ -1158,6 +1184,186 @@ mod tests {
         let removed = read(&root.path().join(".claude/settings.json"));
         let left = command(&removed);
         assert_eq!(left, vec!["echo theirs", dev.as_str()]);
+    }
+
+    use crate::relay::outbound::Build;
+
+    /// The four builds of the coexisting-build incident, each with its own
+    /// executable and session socket.
+    fn builds() -> Vec<(Build, &'static str, &'static str)> {
+        vec![
+            (
+                Build::Production,
+                "/Apps/Agent Relay.app/probe",
+                "/run/agent-relay/relay.sock",
+            ),
+            (
+                Build::Development,
+                "/Apps/Agent Relay Dev.app/probe",
+                "/run/agent-relay-dev/relay.sock",
+            ),
+            (
+                Build::Profile("devaws".into()),
+                "/Apps/Agent Relay Dev.app/Agent Relay Dev Helper",
+                "/Users/a/Library/Application Support/com.agentrelay.desktop.devaws/run/relay.sock",
+            ),
+            (
+                Build::Profile("acme".into()),
+                "/Apps/Acme Relay.app/probe",
+                "/run/agent-relay-acme/relay.sock",
+            ),
+        ]
+    }
+
+    fn hooks_for(
+        root: &Path,
+        build: &Build,
+        executable: &str,
+        socket: &str,
+    ) -> ClaudeSessionHookSettings {
+        let config = ClaudeConfig {
+            home: root.join(".claude"),
+            executable: None,
+            app_sessions: None,
+            dirs: ClaudeDirs::default(),
+        };
+        ClaudeSessionHookSettings::new(
+            &config,
+            ClaudeSessionHookSettings::command_for_build(
+                Path::new(executable),
+                build,
+                Path::new(socket),
+            ),
+        )
+    }
+
+    fn write_hooks(path: &Path, commands: &[String]) {
+        let hooks: Vec<Value> = commands
+            .iter()
+            .map(|c| json!({"type": "command", "command": c}))
+            .collect();
+        std::fs::write(
+            path,
+            serde_json::to_vec_pretty(&json!({"hooks": {"SessionStart": [{"hooks": hooks}]}}))
+                .unwrap(),
+        )
+        .unwrap();
+    }
+
+    // Install, refresh and remove for each of Agent Relay, Agent Relay Dev
+    // and two profile builds, with every other build's hook in the file: a
+    // build touches only its own.
+    #[test]
+    fn each_build_installs_refreshes_and_removes_only_its_own_hook() {
+        let builds = builds();
+        let older = |build: &Build, socket: &str| {
+            ClaudeSessionHookSettings::command_for_build(
+                Path::new("/old/probe"),
+                build,
+                Path::new(socket),
+            )
+        };
+        for (i, (build, executable, socket)) in builds.iter().enumerate() {
+            let root = tempfile::tempdir().unwrap();
+            login(root.path(), ".claude");
+            let path = root.path().join(".claude/settings.json");
+            let others: Vec<String> = builds
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, (b, e, s))| {
+                    ClaudeSessionHookSettings::command_for_build(Path::new(e), b, Path::new(s))
+                })
+                .collect();
+            let hooks = hooks_for(root.path(), build, executable, socket);
+            let ours = hooks.command.clone();
+
+            // Install beside the others.
+            write_hooks(&path, &others);
+            assert_eq!(hooks.get()[SETTING], false, "{build:?}");
+            assert_eq!(hooks.set(SETTING, &json!(true)), Some(Ok(())));
+            let mut expected = others.clone();
+            expected.push(ours.clone());
+            assert_eq!(command(&read(&path)), expected, "{build:?}");
+
+            // Refresh replaces an older copy of its own, nothing else.
+            let mut stale = others.clone();
+            stale.insert(1, older(build, socket));
+            write_hooks(&path, &stale);
+            assert_eq!(hooks.get()[SETTING], true, "{build:?}");
+            hooks.refresh();
+            assert_eq!(command(&read(&path)), expected, "{build:?}");
+            hooks.refresh();
+            assert_eq!(command(&read(&path)), expected, "{build:?}");
+
+            // Remove takes only its own.
+            assert_eq!(hooks.set(SETTING, &json!(false)), Some(Ok(())));
+            assert_eq!(command(&read(&path)), others, "{build:?}");
+            // With only the others there, a refresh changes nothing.
+            let bytes = std::fs::read(&path).unwrap();
+            hooks.refresh();
+            assert_eq!(std::fs::read(&path).unwrap(), bytes, "{build:?}");
+        }
+    }
+
+    // The incident: a profile build released before the marker wrote an
+    // unmarked hook in Agent Relay's place. Agent Relay's refresh (on setup
+    // and on the tick) takes its slot back; the profile build never touches
+    // it, and a hook naming another profile build's socket stays.
+    #[test]
+    fn agent_relay_reclaims_a_legacy_unmarked_hook_and_a_profile_build_does_not() {
+        let builds = builds();
+        let legacy = format!(
+            "'/Applications/Agent Relay Dev.app/Contents/Helpers/Agent Relay Dev Helper' {SUBCOMMAND}"
+        );
+        let (acme, acme_exe, acme_socket) = &builds[3];
+        let acme_hook = ClaudeSessionHookSettings::command_for_build(
+            Path::new(acme_exe),
+            acme,
+            Path::new(acme_socket),
+        );
+        let root = tempfile::tempdir().unwrap();
+        login(root.path(), ".claude");
+        let path = root.path().join(".claude/settings.json");
+        write_hooks(&path, &[legacy.clone(), acme_hook.clone()]);
+
+        let (devaws, devaws_exe, devaws_socket) = &builds[2];
+        let profile = hooks_for(root.path(), devaws, devaws_exe, devaws_socket);
+        assert_eq!(profile.get()[SETTING], false);
+        let bytes = std::fs::read(&path).unwrap();
+        SettingsExtension::reclaim(&profile);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            bytes,
+            "a profile build leaves Agent Relay's slot"
+        );
+
+        let (production, exe, socket) = &builds[0];
+        let agent_relay = hooks_for(root.path(), production, exe, socket);
+        assert_eq!(
+            agent_relay.get()[SETTING],
+            true,
+            "the unmarked hook is Agent Relay's slot"
+        );
+        SettingsExtension::reclaim(&agent_relay);
+        assert_eq!(
+            command(&read(&path)),
+            vec![acme_hook.clone(), agent_relay.command.clone()]
+        );
+        // The profile build installing its own leaves Agent Relay's and
+        // the other profile build's.
+        assert_eq!(profile.set(SETTING, &json!(true)), Some(Ok(())));
+        assert_eq!(
+            command(&read(&path)),
+            vec![
+                acme_hook,
+                agent_relay.command.clone(),
+                profile.command.clone()
+            ]
+        );
+        assert!(profile
+            .command
+            .ends_with(&format!(" {SUBCOMMAND} --socket '{devaws_socket}'")));
     }
 
     #[test]

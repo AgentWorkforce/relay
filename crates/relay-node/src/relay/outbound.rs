@@ -81,7 +81,7 @@ pub use session_routes::SESSION_ROUTES;
 pub(crate) use socket_path::is_development;
 #[cfg(test)]
 use socket_path::socket_for;
-pub use socket_path::{default_socket, pointer_path};
+pub use socket_path::{default_socket, pointer_directory, pointer_path, Build};
 
 pub const SOCKET_NAME: &str = "relay.sock";
 /// The largest request body.
@@ -145,17 +145,86 @@ pub struct RelaySend {
     pub agent_led_defaults_at_start: bool,
 }
 
-/// The socket path a session is told to use, once the socket serves.
+/// The socket path a session is told to use, once the socket serves, and
+/// this build's pointer to it.
 #[derive(Clone, Default)]
-pub struct ServingPath(Arc<Mutex<Option<PathBuf>>>);
+pub struct ServingPath(Arc<Mutex<Serving>>);
+
+#[derive(Default)]
+struct Serving {
+    path: Option<PathBuf>,
+    /// This build's own pointer file and the identity of the copy this
+    /// core last wrote (`None` when it could not be written).
+    pointer: Option<(PathBuf, Option<Identity>)>,
+}
+
+/// What [`ServingPath::reclaim_pointer`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reclaimed {
+    /// The socket is not serving, so there is no pointer to keep.
+    NotServing,
+    /// The pointer already names this core's socket.
+    Current,
+    /// The pointer was missing or named another socket and was rewritten.
+    Rewritten,
+    /// The pointer needed rewriting and could not be written.
+    Failed,
+}
 
 impl ServingPath {
     pub fn get(&self) -> Option<PathBuf> {
-        self.0.lock().unwrap().clone()
+        self.0.lock().unwrap().path.clone()
     }
 
     fn set(&self, path: Option<PathBuf>) {
-        *self.0.lock().unwrap() = path;
+        let mut serving = self.0.lock().unwrap();
+        serving.path = path;
+        if serving.path.is_none() {
+            serving.pointer = None;
+        }
+    }
+
+    fn start(&self, path: &Path, pointer: &Path, identity: Option<Identity>) {
+        let mut serving = self.0.lock().unwrap();
+        serving.path = Some(path.to_path_buf());
+        serving.pointer = Some((pointer.to_path_buf(), identity));
+    }
+
+    fn pointer_identity(&self) -> Option<Identity> {
+        self.0
+            .lock()
+            .unwrap()
+            .pointer
+            .as_ref()
+            .and_then(|(_, identity)| *identity)
+    }
+
+    /// Rewrites this build's own pointer when it no longer names the socket
+    /// this core serves: another process (an older copy of this build, or a
+    /// build that wrote the wrong pointer before builds had their own)
+    /// replaced or removed it. Only this build's pointer file is ever
+    /// written; another build's pointer is never read or touched.
+    pub fn reclaim_pointer(&self) -> Reclaimed {
+        let mut serving = self.0.lock().unwrap();
+        let Serving {
+            path: Some(socket),
+            pointer: Some((pointer, identity)),
+        } = &mut *serving
+        else {
+            return Reclaimed::NotServing;
+        };
+        let names_ours = fs::read_to_string(&*pointer)
+            .is_ok_and(|text| text.trim() == socket.display().to_string());
+        if names_ours {
+            return Reclaimed::Current;
+        }
+        match write_pointer(pointer, socket) {
+            Ok(written) => {
+                *identity = Some(written);
+                Reclaimed::Rewritten
+            }
+            Err(_) => Reclaimed::Failed,
+        }
     }
 }
 
@@ -1808,7 +1877,8 @@ pub struct RelaySocket {
     path: PathBuf,
     pointer: PathBuf,
     socket_identity: Identity,
-    pointer_identity: Option<Identity>,
+    /// Kept in `serving`, which a reclaim updates when it rewrites the
+    /// pointer.
     serving: ServingPath,
     stopping: tokio::sync::watch::Sender<bool>,
     task: Option<tokio::task::JoinHandle<()>>,
@@ -1887,14 +1957,13 @@ impl RelaySocket {
         // even when ~/.agentworkforce cannot be written.
         let pointer_identity = write_pointer(pointer, path).ok();
         drop(lock);
-        serving.set(Some(path.to_path_buf()));
+        serving.start(path, pointer, pointer_identity);
         let (stopping, stop) = tokio::sync::watch::channel(false);
         let task = Some(tokio::spawn(accept_loop(listener, outbound, stop)));
         Ok(RelaySocket {
             path: path.to_path_buf(),
             pointer: pointer.to_path_buf(),
             socket_identity,
-            pointer_identity,
             serving,
             stopping,
             task,
@@ -1920,9 +1989,10 @@ impl Drop for RelaySocket {
         if let Some(task) = &self.task {
             task.abort();
         }
+        let pointer_identity = self.serving.pointer_identity();
         self.serving.set(None);
         remove_socket(&self.path, self.socket_identity);
-        if let Some(identity) = self.pointer_identity {
+        if let Some(identity) = pointer_identity {
             remove_pointer(&self.pointer, &self.path, identity);
         }
     }
@@ -2113,6 +2183,137 @@ mod tests {
             ),
             PathBuf::from("/run/user/1000/agent-relay-dev/relay.sock")
         );
+    }
+
+    // The coexisting-build incident: a profile build (`build-app.sh
+    // --coexist`, data directory `com.agentrelay.desktop.devaws`) wrote
+    // Agent Relay's `relay-socket`. Each build names its own pointer, socket
+    // directory and probe from its data directory.
+    #[test]
+    fn each_build_names_its_own_pointer_and_socket_directory() {
+        let home = Path::new("/home/a");
+        let support = Path::new("/Users/a/Library/Application Support");
+        let cases = [
+            (
+                "com.agentrelay.desktop",
+                Build::Production,
+                "relay-socket",
+                "agent-relay",
+            ),
+            (
+                "com.agentrelay.desktop.dev",
+                Build::Development,
+                "relay-socket.dev",
+                "agent-relay-dev",
+            ),
+            (
+                "com.agentrelay.desktop.devaws",
+                Build::Profile("devaws".into()),
+                "relay-socket.devaws",
+                "agent-relay-devaws",
+            ),
+            (
+                "com.agentrelay.desktop.acme-2",
+                Build::Profile("acme-2".into()),
+                "relay-socket.acme-2",
+                "agent-relay-acme-2",
+            ),
+        ];
+        let runtime = |key: &str| (key == "XDG_RUNTIME_DIR").then(|| "/run/user/1000".to_string());
+        for (name, build, pointer, directory) in cases {
+            let app = support.join(name);
+            assert_eq!(Build::of(&app), build, "{name}");
+            assert_eq!(
+                pointer_path(home, &app),
+                PathBuf::from(format!("/home/a/.agentworkforce/desktop/{pointer}"))
+            );
+            assert_eq!(Build::of_pointer(pointer), Some(build.clone()));
+            assert_eq!(
+                socket_for(true, &runtime, &app, 1000),
+                PathBuf::from(format!("/run/user/1000/{directory}/relay.sock"))
+            );
+        }
+        // A name the id grammar cannot carry (upper case, `_`, dots) is
+        // hashed; the hash is stable, distinct and accepted by `--profile`.
+        for name in [
+            "com.agentrelay.desktop.DevAWS",
+            "com.example.relay",
+            "app-data_2",
+        ] {
+            let Build::Profile(id) = Build::of(&support.join(name)) else {
+                panic!("{name} is a profile build");
+            };
+            assert!(id.starts_with('_') && id.len() == 13, "{id}");
+            assert_eq!(Build::profile_id(name), id);
+            assert_eq!(
+                Build::named(false, Some(&id)),
+                Ok(Build::Profile(id.clone()))
+            );
+        }
+        assert_ne!(
+            Build::profile_id("com.agentrelay.desktop.DevAWS"),
+            Build::profile_id("com.agentrelay.desktop.DEVAWS")
+        );
+        // Only Agent Relay's own data directory is Agent Relay.
+        assert_eq!(
+            Build::of(Path::new("/x/com.agentrelay.desktop.")),
+            Build::Profile(Build::profile_id("com.agentrelay.desktop."))
+        );
+        assert_eq!(Build::of_pointer(".relay-socket.abc123"), None);
+        assert_eq!(Build::of_pointer("relay-socket.Bad"), None);
+        assert_eq!(
+            Build::named(true, Some("devaws")),
+            Err("Pass --dev or --profile, not both.")
+        );
+        assert!(Build::named(false, Some("../x")).is_err());
+        assert!(Build::named(false, Some("dev")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_build_reclaims_only_its_own_pointer() {
+        let home = tempfile::tempdir().unwrap();
+        let directory = pointer_directory(home.path());
+        let ours = directory.join("relay-socket.devaws");
+        let production = directory.join("relay-socket");
+        let socket = home.path().join("devaws/run/relay.sock");
+        let serving = ServingPath::default();
+        assert_eq!(serving.reclaim_pointer(), Reclaimed::NotServing);
+
+        let identity = write_pointer(&ours, &socket).unwrap();
+        serving.start(&socket, &ours, Some(identity));
+        // Agent Relay's pointer, naming its own socket, is never read or
+        // written by the profile build.
+        fs::write(&production, "/run/user/1000/agent-relay/relay.sock\n").unwrap();
+        assert_eq!(serving.reclaim_pointer(), Reclaimed::Current);
+
+        // Hijacked: another process wrote a different socket into it.
+        fs::write(&ours, "/tmp/elsewhere/relay.sock\n").unwrap();
+        assert_eq!(serving.reclaim_pointer(), Reclaimed::Rewritten);
+        assert_eq!(
+            fs::read_to_string(&ours).unwrap().trim(),
+            socket.display().to_string()
+        );
+        // Removed: written back.
+        fs::remove_file(&ours).unwrap();
+        assert_eq!(serving.reclaim_pointer(), Reclaimed::Rewritten);
+        assert_eq!(serving.reclaim_pointer(), Reclaimed::Current);
+        assert_eq!(
+            fs::read_to_string(&production).unwrap(),
+            "/run/user/1000/agent-relay/relay.sock\n"
+        );
+        // The rewritten copy is the one this core removes when it stops.
+        let rewritten = serving.pointer_identity().unwrap();
+        assert_eq!(
+            rewritten,
+            Identity::of(&fs::symlink_metadata(&ours).unwrap())
+        );
+        remove_pointer(&ours, &socket, rewritten);
+        assert!(!ours.exists());
+        assert!(production.exists());
+
+        serving.set(None);
+        assert_eq!(serving.reclaim_pointer(), Reclaimed::NotServing);
     }
 
     // OutboundTests.testHintPercentEncodesRecipientAndShellQuotesArguments,

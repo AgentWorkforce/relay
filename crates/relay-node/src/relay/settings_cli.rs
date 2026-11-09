@@ -6,6 +6,7 @@
 
 use crate::relay::cli::{pointed_socket, socket_exchange, SOCKET_TIMEOUT};
 use crate::relay::daemon::SafeError;
+use crate::relay::outbound::Build;
 use crate::relay::paths;
 use anyhow::Result;
 use serde_json::{Map, Value};
@@ -13,10 +14,10 @@ use std::path::Path;
 
 /// Prints every setting, or with `changes` (`key=value` each) changes them
 /// and prints what changed.
-pub fn settings(socket: Option<&Path>, development: bool, changes: &[String]) -> Result<()> {
+pub fn settings(socket: Option<&Path>, build: &Build, changes: &[String]) -> Result<()> {
     let socket = match socket {
         Some(socket) => socket.to_path_buf(),
-        None => pointed_socket(&paths::home()?, development)?,
+        None => pointed_socket(&paths::home()?, build)?,
     };
     if changes.is_empty() {
         return socket_exchange(&socket, "GET", "/settings", b"", SOCKET_TIMEOUT);

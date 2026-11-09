@@ -134,7 +134,7 @@ fn binding_is_the_current_helper_with_no_caller_identity_or_credentials() {
     let production = definition(
         Path::new("/trusted/helper"),
         "fresh-alias",
-        false,
+        &Build::Production,
         Harness::Devin,
     );
     assert_eq!(
@@ -145,9 +145,18 @@ fn binding_is_the_current_helper_with_no_caller_identity_or_credentials() {
         definition(
             Path::new("/trusted/helper"),
             "fresh-alias",
-            true,
+            &Build::Development,
             Harness::Devin
         )["args"],
         json!(["devin-spawn-mcp", "--dev"])
+    );
+    assert_eq!(
+        definition(
+            Path::new("/trusted/helper"),
+            "fresh-alias",
+            &Build::Profile("devaws".into()),
+            Harness::Devin
+        )["args"],
+        json!(["devin-spawn-mcp", "--profile", "devaws"])
     );
 }

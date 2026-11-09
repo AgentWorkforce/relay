@@ -72,7 +72,13 @@ pub fn plugins_with_options(
     install_pi_at_start: bool,
     sources: crate::relay::session_sources::SessionSources,
 ) -> Plugins {
-    let development = is_development(config);
+    let build = outbound::Build::of(&config.app_data_dir);
+    let development = build.is_development();
+    // Agent Relay itself: the one build that owns the integrations whose
+    // files or inboxes every build would share (Pi, OMP, Grok, OpenCode,
+    // Devin, Cursor, OpenClaw, Hermes, the other Claude logins). Agent
+    // Relay Dev and profile builds leave them to it.
+    let production = build == outbound::Build::Production;
     let clients = profile;
     let client_home = clients
         .as_ref()
@@ -91,6 +97,9 @@ pub fn plugins_with_options(
     if clients.as_ref().is_some_and(|clients| !clients.safe) {
         return Plugins::default();
     }
+    // Pi's and OMP's extension is one file every build would share, so a
+    // profile build never writes it, not even at start.
+    let install_pi_at_start = install_pi_at_start && !matches!(build, outbound::Build::Profile(_));
     let pi_setup = Arc::new(crate::relay::pi::setup::PiSetup::new(
         &local.pi,
         install_pi_at_start,
@@ -127,7 +136,7 @@ pub fn plugins_with_options(
     let settings = Arc::new(ClaudeSettings::new(&local.claude));
     // Other Claude logins (`~/.claude-<name>`) follow this one's direct
     // delivery; one added since the last start is brought in line here.
-    if !development {
+    if production {
         let settings = settings.clone();
         let _ = std::thread::Builder::new()
             .name("claude-logins".into())
@@ -143,7 +152,7 @@ pub fn plugins_with_options(
     local.sources = sources;
     // The person's OpenClaw Gateway, reached on loopback; on unless
     // `AGENT_RELAY_ENABLE_OPENCLAW=0`, and listed only while it answers.
-    local.openclaw = (!development && env("AGENT_RELAY_ENABLE_OPENCLAW").as_deref() != Some("0"))
+    local.openclaw = (production && env("AGENT_RELAY_ENABLE_OPENCLAW").as_deref() != Some("0"))
         .then(|| {
             crate::relay::openclaw::OpenClawConfig::new(
                 client_env,
@@ -154,7 +163,7 @@ pub fn plugins_with_options(
     // The person's Hermes, through its loopback API; on unless
     // `AGENT_RELAY_ENABLE_HERMES=0`, and listed only while the API answers.
     local.hermes =
-        (!development && env("AGENT_RELAY_ENABLE_HERMES").as_deref() != Some("0")).then(|| {
+        (production && env("AGENT_RELAY_ENABLE_HERMES").as_deref() != Some("0")).then(|| {
             crate::relay::hermes::HermesConfig::new(client_env, client_home, &config.app_data_dir)
         });
     let trusted_senders = crate::relay::trusted::TrustedSenders::new(&config.app_data_dir);
@@ -186,7 +195,7 @@ pub fn plugins_with_options(
             development,
         ),
     ));
-    {
+    if !matches!(build, outbound::Build::Profile(_)) {
         let cursor_settings = cursor_settings.clone();
         let _ = std::thread::Builder::new()
             .name("cursor-hooks".into())
@@ -200,7 +209,7 @@ pub fn plugins_with_options(
     }
     // OpenCode processes started from now on load this build's plugin. A
     // copy that cannot be rewritten keeps working as the older version.
-    if !development {
+    if production {
         let _ = opencode_settings.refresh_plugin();
     }
     local.opencode_open_journal = local.opencode_open.then(|| {
@@ -233,12 +242,16 @@ pub fn plugins_with_options(
         probe.clone(),
         &config.home,
         &config.app_data_dir,
-        development,
+        &build,
     );
     let stop_hook_settings = Arc::new(
         codex::stop_hook::CodexStopHookSettings::new(
             local.codex.home.clone(),
-            codex::stop_hook::CodexStopHookSettings::command_for(&probe, development),
+            codex::stop_hook::CodexStopHookSettings::command_for_build(
+                &probe,
+                &build,
+                &relay_send_socket,
+            ),
             local.codex.executable.clone(),
             stop_hook_inbox.clone(),
         )
@@ -266,7 +279,11 @@ pub fn plugins_with_options(
     let session_hook_settings = Arc::new(
         claude::session_hook::ClaudeSessionHookSettings::new(
             &local.claude,
-            claude::session_hook::ClaudeSessionHookSettings::command_for(&probe, development),
+            claude::session_hook::ClaudeSessionHookSettings::command_for_build(
+                &probe,
+                &build,
+                &relay_send_socket,
+            ),
         )
         .with_permission_rules(
             claude::session_hook::PermissionRules {
@@ -341,6 +358,10 @@ pub fn plugins_with_options(
             let mut extensions: Vec<Arc<dyn crate::relay::agents::SettingsExtension>> =
                 if development {
                     vec![settings.clone()]
+                } else if !production {
+                    // A profile build's own hooks, marked with its session
+                    // socket (`hook_owner`); nothing every build shares.
+                    vec![settings.clone(), stop_hook_settings, session_hook_settings]
                 } else {
                     vec![
                         settings.clone(),
@@ -391,7 +412,7 @@ mod tests {
         Config {
             paths: CorePaths::for_socket(home.join("core.sock")).unwrap(),
             home: home.to_path_buf(),
-            app_data_dir: home.join("app-data"),
+            app_data_dir: home.join(crate::relay::app_store::APP_ID),
             env: [
                 ("AGENT_RELAY_ENABLE_OPENCLAW", "0"),
                 ("AGENT_RELAY_ENABLE_HERMES", "0"),
@@ -424,5 +445,26 @@ mod tests {
 
         plugins_with(&config(home.path()), None);
         assert!(agent_dir.join("extensions/agent-relay.js").is_file());
+    }
+
+    // A profile build (`build-app.sh --coexist`) shares the person's agent
+    // folders with Agent Relay, so it installs only the hooks that carry its
+    // own marker (Codex, Claude Code) and leaves Pi's single shared file to
+    // Agent Relay.
+    #[test]
+    fn a_profile_build_leaves_the_shared_single_file_integrations_alone() {
+        let home = tempfile::tempdir().unwrap();
+        let agent_dir = home.path().join(".pi/agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let mut profile = config(home.path());
+        profile.app_data_dir = home.path().join("com.agentrelay.desktop.devaws");
+        let plugins = plugins_with(&profile, None);
+        assert!(!agent_dir.join("extensions").exists());
+        let keys: Vec<String> = plugins
+            .settings
+            .iter()
+            .flat_map(|s| s.get().keys().cloned().collect::<Vec<_>>())
+            .collect();
+        assert!(!keys.iter().any(|k| k == "pi_extension"), "{keys:?}");
     }
 }

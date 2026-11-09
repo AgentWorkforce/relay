@@ -1,6 +1,7 @@
 //! Per-launch MCP configuration. It is supplied by the owner, never a peer's
 //! message or a project alias. The shell sandbox and approval mode stay intact.
 use crate::relay::harness::relay_mcp;
+use crate::relay::outbound::Build;
 use std::path::Path;
 
 pub(super) fn arguments(
@@ -8,10 +9,10 @@ pub(super) fn arguments(
     full_access: bool,
     helper: &Path,
     launch_id: &str,
-    development: bool,
+    build: &Build,
 ) -> Vec<String> {
     let alias = format!("agent-relay-private-{}", launch_id.replace('-', ""));
-    let mut server = relay_mcp::definition(helper, &alias, development, relay_mcp::Harness::Muse);
+    let mut server = relay_mcp::definition(helper, &alias, build, relay_mcp::Harness::Muse);
     // Muse's per-run config uses snake_case JSONL framing (MSP's wire
     // spelling differs). Both fields were validated with the installed CLI.
     if let Some(object) = server.as_object_mut() {
@@ -44,7 +45,7 @@ mod tests {
             false,
             Path::new("/trusted/helper"),
             "11111111-1111-4111-8111-111111111111",
-            false,
+            &Build::Production,
         );
         assert!(!args.iter().any(
             |arg| ["--yolo", "--disable-sandbox", "--disable-approval"].contains(&arg.as_str())
@@ -77,16 +78,25 @@ mod tests {
             false,
             Path::new("/helper"),
             "11111111-1111-4111-8111-111111111111",
-            false,
+            &Build::Production,
         );
         let second = arguments(
             "task",
             false,
             Path::new("/helper"),
             "22222222-2222-4222-8222-222222222222",
-            true,
+            &Build::Development,
+        );
+        let third = arguments(
+            "task",
+            false,
+            Path::new("/helper"),
+            "33333333-3333-4333-8333-333333333333",
+            &Build::Profile("devaws".into()),
         );
         assert_ne!(first[first.len() - 3], second[second.len() - 3]);
+        assert!(!first[first.len() - 3].contains("--"));
         assert!(second[second.len() - 3].contains("muse-spawn-mcp\",\"--dev"));
+        assert!(third[third.len() - 3].contains("muse-spawn-mcp\",\"--profile\",\"devaws"));
     }
 }
