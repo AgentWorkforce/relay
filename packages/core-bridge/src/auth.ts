@@ -48,8 +48,14 @@ export const CALLER_AUTH_SCHEME = 'challenge-hmac-sha256/v1';
 export const CALLER_CHALLENGE_METHOD = 'spawn_callers.challenge';
 /** The exact authenticate method named by a schema-v2 caller handoff. */
 export const CALLER_AUTHENTICATE_METHOD = 'spawn_callers.authenticate';
-/** The only `caller.json` schema this challenge-auth client accepts. */
-export const CALLER_FILE_SCHEMA = 'agent-relay-service-caller/2';
+/**
+ * The `caller.json` schemas the credential-only reader accepts.
+ * @deprecated Schema 1 is retained for 18.0 API compatibility. New callers
+ * must use {@link CALLER_FILE_SCHEMA} and {@link readCallerDescriptor}.
+ */
+export const CALLER_FILE_SCHEMAS = ['agent-relay-service-caller/1', 'agent-relay-service-caller/2'] as const;
+/** The strict schema required by the complete service-caller descriptor. */
+export const CALLER_FILE_SCHEMA = CALLER_FILE_SCHEMAS[1];
 /** The feature methods a service-caller connection requires end to end. */
 export const REQUIRED_SERVICE_CALLER_METHODS = [
   CALLER_CHALLENGE_METHOD,
@@ -227,6 +233,14 @@ interface ParsedCallerDocument {
   desktopVersion: string;
 }
 
+interface ParsedCallerCredential {
+  callerId: string;
+  secret: string;
+  siteUrl: string;
+  workspaceId: string;
+  userId: string;
+}
+
 function invalid(code: string, message: string): CoreBridgeError {
   return new CoreBridgeError(code, message);
 }
@@ -319,6 +333,57 @@ function uniqueStrings(value: unknown, name: string, check: (item: string) => bo
     items.push(item);
   }
   return items;
+}
+
+function currentAuthRoute(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const auth = value as Record<string, unknown>;
+  return (
+    Object.keys(auth).sort().join(',') === 'authenticate,challenge,scheme' &&
+    auth.scheme === CALLER_AUTH_SCHEME &&
+    auth.challenge === CALLER_CHALLENGE_METHOD &&
+    auth.authenticate === CALLER_AUTHENTICATE_METHOD
+  );
+}
+
+/**
+ * Preserves the public 18.0 credential-only contract. Schema 1 had no auth
+ * field, and the first schema-2 writer used the scheme string; current
+ * Desktop writes the explicit route object. Descriptor parsing below remains
+ * strict and accepts only the complete current schema.
+ */
+function parseCallerCredential(document: unknown): ParsedCallerCredential {
+  if (typeof document !== 'object' || document === null || Array.isArray(document)) {
+    throw callerFileBad('it must be an object');
+  }
+  const doc = document as Record<string, unknown>;
+  if (!(CALLER_FILE_SCHEMAS as readonly unknown[]).includes(doc.schema)) {
+    throw callerFileBad('schema is not one this reader knows');
+  }
+  if (doc.schema === CALLER_FILE_SCHEMA && doc.auth !== CALLER_AUTH_SCHEME && !currentAuthRoute(doc.auth)) {
+    throw callerFileBad('auth is not one this reader knows');
+  }
+  if (typeof doc.caller_id !== 'string' || !CALLER_ID.test(doc.caller_id)) {
+    throw callerFileBad('caller_id must be "sc_" and 16 lowercase hex characters');
+  }
+  if (typeof doc.secret !== 'string' || !SECRET.test(doc.secret)) {
+    throw callerFileBad('secret is malformed');
+  }
+  const workspace =
+    typeof doc.workspace === 'object' && doc.workspace !== null && !Array.isArray(doc.workspace)
+      ? (doc.workspace as Record<string, unknown>)
+      : undefined;
+  const account =
+    typeof doc.account === 'object' && doc.account !== null && !Array.isArray(doc.account)
+      ? (doc.account as Record<string, unknown>)
+      : undefined;
+  return {
+    callerId: doc.caller_id,
+    secret: doc.secret,
+    siteUrl: fileText(workspace?.site_url, 'workspace.site_url', 2048),
+    workspaceId: fileText(workspace?.workspace_id, 'workspace.workspace_id', 256),
+    userId: fileText(account?.user_id, 'account.user_id', 256),
+  };
 }
 
 function parseCallerDocument(document: unknown): ParsedCallerDocument {
@@ -515,15 +580,9 @@ export class CallerCredential {
    * have the `caller.json` shape. The message never contains the secret.
    */
   static fromDocument(document: unknown): CallerCredential {
-    const parsed = parseCallerDocument(document);
+    const parsed = parseCallerCredential(document);
     const key = createHash('sha256').update(parsed.secret, 'utf8').digest();
-    return new CallerCredential(
-      key,
-      parsed.callerId,
-      parsed.workspace.site_url,
-      parsed.workspace.workspace_id,
-      parsed.account.user_id
-    );
+    return new CallerCredential(key, parsed.callerId, parsed.siteUrl, parsed.workspaceId, parsed.userId);
   }
 
   /**
@@ -640,9 +699,8 @@ function checkBound(bound: CallerBound, callerId: string): CallerBound {
   };
 }
 
-/** Refuses a core that cannot provide the complete service-caller lifecycle. */
-export function requireServiceCallerMethods(client: Pick<CoreClient, 'hello'>): void {
-  for (const method of REQUIRED_SERVICE_CALLER_METHODS) {
+function requireMethods(client: Pick<CoreClient, 'hello'>, methods: readonly string[]): void {
+  for (const method of methods) {
     if (client.hello.methods.includes(method)) continue;
     throw new CoreRpcError(`This Agent Relay core does not offer ${method}; update Agent Relay Desktop.`, {
       rpcCode: -32601,
@@ -650,6 +708,11 @@ export function requireServiceCallerMethods(client: Pick<CoreClient, 'hello'>): 
       retryable: false,
     });
   }
+}
+
+/** Refuses a core that cannot provide the complete service-caller lifecycle. */
+export function requireServiceCallerMethods(client: Pick<CoreClient, 'hello'>): void {
+  requireMethods(client, REQUIRED_SERVICE_CALLER_METHODS);
 }
 
 /**
@@ -669,7 +732,7 @@ export async function authenticate(
   credential: CallerCredential,
   options?: CallOptions
 ): Promise<CallerBound> {
-  requireServiceCallerMethods(client);
+  requireMethods(client, [CALLER_CHALLENGE_METHOD, CALLER_AUTHENTICATE_METHOD]);
   const challengeParams: CallerChallengeParams = { caller_id: credential.callerId };
   const challenge = await client.call<CallerChallenge>('spawn_callers.challenge', challengeParams, options);
   const params: CallerAuthenticateParams = {
@@ -794,5 +857,5 @@ export async function readCallerDescriptor(file: string): Promise<CallerFileDesc
  * publisher, workspace, scope or inbox route from the same checked read.
  */
 export async function readCallerCredential(file: string): Promise<CallerCredential> {
-  return (await readCallerDescriptor(file)).credential;
+  return CallerCredential.fromDocument(await readCallerDocument(file));
 }
