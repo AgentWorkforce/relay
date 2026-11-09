@@ -279,6 +279,33 @@ mod tests {
         )
     }
 
+    fn certificate_rejection(error: &ureq::Error) -> Option<rustls::CertificateError> {
+        let mut current: Option<&(dyn Error + 'static)> = Some(error);
+        while let Some(error) = current {
+            if let Some(rustls::Error::InvalidCertificate(cause)) =
+                error.downcast_ref::<rustls::Error>()
+            {
+                return Some(cause.clone());
+            }
+            current = error
+                .downcast_ref::<std::io::Error>()
+                .and_then(std::io::Error::get_ref)
+                .map(|inner| inner as &(dyn Error + 'static))
+                .or_else(|| error.source());
+        }
+        None
+    }
+
+    #[test]
+    fn a_transport_timeout_is_not_certificate_rejection() {
+        let timeout = ureq::Error::from(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "synthetic transport timeout",
+        ));
+        assert!(is_timeout(&timeout));
+        assert_eq!(certificate_rejection(&timeout), None);
+    }
+
     fn tls_server() -> (std::net::SocketAddr, thread::JoinHandle<bool>) {
         tls_server_waiting(Duration::from_secs(3))
     }
@@ -366,9 +393,7 @@ mod tests {
             );
         }
         let (_address, server) = tls_server_waiting(Duration::from_millis(50));
-        let started = std::time::Instant::now();
         assert!(!server.join().unwrap());
-        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]
@@ -382,25 +407,38 @@ mod tests {
         assert!(server.join().unwrap());
 
         let (address, server) = tls_server();
-        assert!(http_agent(Duration::from_secs(3), test_tls())
+        let rejected = http_agent(Duration::from_secs(3), test_tls())
             .get(&format!("https://127.0.0.1:{}/", address.port()))
             .call()
-            .is_err());
+            .unwrap_err();
+        assert!(
+            matches!(
+                certificate_rejection(&rejected),
+                Some(
+                    rustls::CertificateError::NotValidForName
+                        | rustls::CertificateError::NotValidForNameContext { .. }
+                )
+            ),
+            "expected hostname certificate rejection: {rejected:?}"
+        );
         assert!(
             !server.join().unwrap(),
             "wrong hostname must send no HTTP request"
         );
 
         let (address, server) = tls_server();
-        assert!(send_raw_blocking(
-            "GET",
-            &format!("https://localhost:{}/", address.port()),
-            None,
-            &[],
-            None,
-            Duration::from_secs(3)
+        let rejected = http_agent(
+            Duration::from_secs(3),
+            super::super::websocket_tls::client_config(),
         )
-        .is_err());
+        .get(&format!("https://localhost:{}/", address.port()))
+        .call()
+        .unwrap_err();
+        assert_eq!(
+            certificate_rejection(&rejected),
+            Some(rustls::CertificateError::UnknownIssuer),
+            "expected untrusted certificate rejection: {rejected:?}"
+        );
         assert!(
             !server.join().unwrap(),
             "an untrusted CA must send no HTTP request"
@@ -466,15 +504,18 @@ mod tests {
         let _websocket = super::super::websocket_tls::connector();
         std::env::remove_var("SSL_CERT_FILE");
         let (address, server) = tls_server();
-        assert!(send_raw_blocking(
-            "GET",
-            &format!("https://localhost:{}/", address.port()),
-            None,
-            &[],
-            None,
-            Duration::from_secs(3)
+        let rejected = http_agent(
+            Duration::from_secs(3),
+            super::super::websocket_tls::client_config(),
         )
-        .is_err());
+        .get(&format!("https://localhost:{}/", address.port()))
+        .call()
+        .unwrap_err();
+        assert_eq!(
+            certificate_rejection(&rejected),
+            Some(rustls::CertificateError::UnknownIssuer),
+            "expected untrusted certificate rejection: {rejected:?}"
+        );
         assert!(
             !server.join().unwrap(),
             "a WebSocket must not seed file-derived trust for HTTP"

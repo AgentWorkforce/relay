@@ -46,7 +46,7 @@ pub fn client_config() -> Arc<rustls::ClientConfig> {
     SHARED.config(native_roots)
 }
 
-/// Authenticated HTTP must use the platform store, never a file override.
+/// The Rust core uses platform trust, never a file-selected root store.
 pub fn platform_root_environment_is_safe() -> bool {
     platform_root_environment_is_safe_with(|name| std::env::var_os(name))
 }
@@ -65,23 +65,37 @@ fn native_roots() -> Roots {
     // The cache is shared with WebSockets. Refuse here too, so a WebSocket
     // cannot seed it from an override that HTTP no longer sees after removal.
     if !platform_root_environment_is_safe() {
+        crate::relay::diagnostics::write(format_args!(
+            "relay: file-selected TLS roots are unsupported; unset SSL_CERT_FILE and SSL_CERT_DIR and install the CA in the operating system trust store"
+        ));
         return Roots {
             complete: false,
             store: rustls::RootCertStore::empty(),
         };
     }
-    let loaded = rustls_native_certs::load_native_certs();
+    roots_from_native(rustls_native_certs::load_native_certs(), |message| {
+        crate::relay::diagnostics::write(format_args!("{message}"));
+    })
+}
+
+fn roots_from_native(
+    loaded: rustls_native_certs::CertificateResult,
+    mut report: impl FnMut(String),
+) -> Roots {
     for error in &loaded.errors {
-        crate::relay::diagnostics::write(format_args!(
+        report(format!(
             "relay: could not read a platform root certificate store: {error}"
         ));
     }
     let mut store = rustls::RootCertStore::empty();
     let (_, unparsable) = store.add_parsable_certificates(loaded.certs);
     if unparsable > 0 {
-        crate::relay::diagnostics::write(format_args!(
+        report(format!(
             "relay: skipped {unparsable} platform root certificates that would not parse"
         ));
+    }
+    if store.is_empty() {
+        report("relay: the operating system TLS trust store contains no usable root certificates; install system CA certificates or the site's CA in that store; no bundled or file-root fallback is used".into());
     }
     Roots {
         complete: loaded.errors.is_empty() && unparsable == 0,
@@ -160,6 +174,28 @@ mod tests {
             store: rustls::RootCertStore::empty(),
             complete: true,
         }
+    }
+
+    #[test]
+    fn an_empty_native_store_is_diagnosed_without_fallback_roots() {
+        let mut messages = Vec::new();
+        let roots = roots_from_native(Default::default(), |message| messages.push(message));
+        assert!(roots.store.is_empty());
+        assert!(messages
+            .iter()
+            .any(|message| message.contains("no usable root certificates")));
+        assert!(messages
+            .iter()
+            .any(|message| message.contains("no bundled or file-root fallback")));
+
+        let mut loaded = rustls_native_certs::CertificateResult::default();
+        loaded.certs.push(rustls::pki_types::CertificateDer::from(
+            include_bytes!("../../tests/fixtures/platform-tls/ca.der").to_vec(),
+        ));
+        messages.clear();
+        let roots = roots_from_native(loaded, |message| messages.push(message));
+        assert_eq!(roots.store.len(), 1);
+        assert!(messages.is_empty());
     }
 
     #[test]
