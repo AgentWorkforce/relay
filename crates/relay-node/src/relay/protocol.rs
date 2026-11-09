@@ -119,6 +119,39 @@ pub struct ErrorData {
     /// is, when Relaycast's refusal said. Absent on every other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_limit: Option<PlanLimitExceeded>,
+    /// With `refused`: why, when the refusal has a typed reason. Absent on
+    /// every other kind and on refusals without one, so a client that does
+    /// not know the field reads the error as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<RefusalReason>,
+}
+
+/// Why a native spawn control refused its caller. `kind` stays `refused`;
+/// this only says which rule refused it. None of them is retryable.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(extend("x-fallback" = "other"))]
+pub enum RefusalReason {
+    /// No such caller, or its secret does not match; the two read alike so
+    /// a name cannot be probed.
+    ServiceUnknown,
+    /// The caller is turned off.
+    ServiceDisabled,
+    /// The caller's credential expired; rotate it.
+    ServiceExpired,
+    /// The caller belongs to another workspace than the active one, or the
+    /// active one has no workspace id.
+    WorkspaceMismatch,
+    /// The invocation or agent was not started by this caller.
+    NotOwner,
+    /// The harness or folder is outside the caller's limits.
+    OutsideScope,
+    /// A management call from a spawned or session process tree, or from a
+    /// client whose process could not be read.
+    ManagementPeer,
+    /// A reason this build does not know.
+    #[serde(other)]
+    Other,
 }
 
 /// Every error a method can return.
@@ -203,8 +236,17 @@ impl RpcError {
                 kind,
                 retryable: kind.retryable(),
                 plan_limit: None,
+                reason: None,
             },
         }
+    }
+
+    /// A refusal with a typed reason (`data.reason`); `kind` stays
+    /// `refused`, so clients that do not know the reason read it as before.
+    pub fn refused_because(reason: RefusalReason, message: impl Into<String>) -> RpcError {
+        let mut error = RpcError::new(ErrorKind::Refused, message);
+        error.data.reason = Some(reason);
+        error
     }
 
     /// A plan cap reached, with Relaycast's counters when it sent them.

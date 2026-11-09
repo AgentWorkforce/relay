@@ -45,7 +45,7 @@ function createHarness(overrides: Partial<LocalWorkflowDependencies> = {}) {
       errors.push(args.join(' '));
     },
     exit,
-    resolveRelayflowsCliEntrypoint: () => path.join(tmpRoot, 'relayflows-cli.js'),
+    resolveAgentRelayCliEntrypoint: () => path.join(tmpRoot, 'agent-relay-cli.js'),
     ...overrides,
   };
 
@@ -148,19 +148,47 @@ describe('registerLocalWorkflowCommands', () => {
     expect(logs).toContain('Local workflow ran in this checkout; no patch sync is required.');
   });
 
+  it('uses Node for JavaScript workflow and monitor scripts in the compiled Bun executable', async () => {
+    const spawnProcess = vi.fn(() => ({
+      pid: 4242,
+      unref: vi.fn(),
+    })) as unknown as LocalWorkflowDependencies['spawnProcess'];
+    const { program, tmpRoot } = createHarness({
+      spawnProcess,
+      resolveAgentRelayCliEntrypoint: () => '/$bunfs/root/packages/cli/dist/cli/index.js',
+    });
+    const workflowPath = path.join(tmpRoot, 'workflow.js');
+    fs.writeFileSync(workflowPath, 'console.log("workflow");\n', 'utf-8');
+
+    await program.parseAsync(['run', 'workflow.js'], { from: 'user' });
+
+    const runDir = path.join(tmpRoot, '.agentworkforce', 'relay', 'local-runs', 'local_test123');
+    const record = JSON.parse(fs.readFileSync(path.join(runDir, 'run.json'), 'utf-8')) as Record<
+      string,
+      unknown
+    >;
+    expect(record.command).toBe('node');
+    expect(record.args).toEqual([workflowPath]);
+    expect(spawnProcess).toHaveBeenCalledWith(
+      'node',
+      [path.join(runDir, 'monitor.mjs')],
+      expect.objectContaining({ cwd: tmpRoot, detached: true })
+    );
+  });
+
   it.each([
-    ['YAML', 'workflow.yaml', 'version: "1.0"\n'],
-    ['YML', 'workflow.yml', 'version: "1.0"\n'],
-    ['TypeScript', 'workflow.ts', 'console.log("workflow");\n'],
-    ['TSX', 'workflow.tsx', 'console.log("workflow");\n'],
-  ])('delegates %s workflow runs to the relayflows CLI', async (_label, fileName, contents) => {
+    ['YAML', 'workflow.yaml', 'version: "0.1.0"\nname: local-test\nsteps: []\n', false],
+    ['YML', 'workflow.yml', 'version: "0.1.0"\nname: local-test\nsteps: []\n', false],
+    ['TypeScript', 'workflow.ts', 'console.log("workflow");\n', true],
+    ['TSX', 'workflow.tsx', 'console.log("workflow");\n', true],
+  ])('delegates %s workflow runs to the relayflows CLI', async (_label, fileName, contents, needsInput) => {
     const spawnProcess = vi.fn(() => ({
       pid: 4242,
       unref: vi.fn(),
     })) as unknown as LocalWorkflowDependencies['spawnProcess'];
     const { program, tmpRoot } = createHarness({ spawnProcess });
     const workflowPath = path.join(tmpRoot, fileName);
-    const relayflowsCliPath = path.join(tmpRoot, 'relayflows-cli.js');
+    const agentRelayCliPath = path.join(tmpRoot, 'agent-relay-cli.js');
     fs.writeFileSync(workflowPath, contents, 'utf-8');
 
     await program.parseAsync(['run', fileName], { from: 'user' });
@@ -175,7 +203,13 @@ describe('registerLocalWorkflowCommands', () => {
     );
     const record = JSON.parse(fs.readFileSync(metadataPath, 'utf-8')) as Record<string, unknown>;
     expect(record.command).toBe(process.execPath);
-    expect(record.args).toEqual([relayflowsCliPath, 'run', workflowPath]);
+    expect(record.args).toEqual([
+      agentRelayCliPath,
+      'flows',
+      'run',
+      workflowPath,
+      ...(needsInput ? ['--input', '{}'] : []),
+    ]);
     expect(record.status).toBe('running');
   });
 });

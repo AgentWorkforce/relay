@@ -11,9 +11,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Factory Droid managed messaging reports unavailable while inherited MCP startup isolation remains unverified; it refuses to launch providers and leaves history collection available.
 
+## [18.0.0] - 2026-11-09
+
+### Added
+
+- `agent-relay-node register --socket <socket>` lets a native session register itself from Codex's sandbox using a narrow command rule, preserving the core's process identity, ownership and self-registration checks.
+- New package `@agent-relay/core-bridge`: the Node client for the local Agent Relay core's bridge (connect, typed errors, events, and typed `spawn.*` helpers), extracted from the CLI. Replies over 16 MiB now close the connection and requests over 1 MiB are refused before they are sent.
+- `@agent-relay/core-bridge` reads the `released` flag of every spawn-control reply strictly: when an older core omits it or sends `null` or a non-boolean value, the reply carries `released: false`, and `isReleaseConfirmed(invocation)` is true only for a literal `true`, so a `completed` release is not by itself a confirmed one.
+
+### Changed
+
+- `agent-relay node workflow run` now runs workflows on v2; use `agent-relay flows run` for the supported command. Cloud workers reject state-bearing assignments until hosted v2 run state is available.
+- The local Rust broker (`agent-relay-broker`) is retired: the CLI no longer installs, starts or talks to it, and no new broker binaries are released. Run `relay init` (or `agent-relay init`) to set up and start the Agent Relay core, which delivers messages and spawns, lists and releases agents through the Agent Relay MCP spawn tools or the desktop app; `relay init --hosted` uses the hosted service instead.
+- `relay node up`, `down`, `status`, `metrics`, `deadletters`, `redeliver` and `relay node tail` now print a removal notice pointing to `relay init`, as do `relay node agent spawn`, `new`, `list`, `release`, `set-model`, `attach` and `message flush|hold|auto`. The deprecated `relay local` alias keeps only `run`, `logs` and `sync`.
+- `relay fleet status` is removed, and `relay fleet spawn` no longer spawns on this machine: pass `--node`, `--auto-place` or `--sandbox`. `relay fleet spawn --sandbox` no longer prints an `attachCommand`, and the JSON of `relay fleet agent list` no longer has `localNode`.
+- `relay integration subscribe --spawn` (with `--spawn-arg`, `--cwd`, `--task` and `--broker-connection`) is removed; subscribe an agent that already exists.
+- `relay status` reports the workspace and Cloud login only, without a local broker line. `relay update` on a standalone install updates and checks only the CLI, and `install.sh` installs the CLI without the broker; a broker binary an earlier release installed is left in place and not run.
+- New versions of `@agent-relay/harness-driver`, `@agent-relay/harnesses`, `@agent-relay/fleet`, `@agent-relay/evals` and `@agent-relay/broker-<platform>` are no longer published; the last published versions stay on npm.
+
+### Breaking Changes
+
+- Relay no longer executes Relayflows v1 workflows or state-bearing Cloud worker assignments.
+
+### Migration Guidance
+
+- Migrate workflow files and invocations to `agent-relay flows run`; use the hosted v2 runner for resume until the Cloud worker protocol carries hosted v2 state.
+- The Rust core's Cloud sign-in/session HTTPS requests and secure WebSocket clients use operating-system trust only. Install private CAs in that store, install system CA certificates on minimal hosts, and unset `SSL_CERT_FILE`/`SSL_CERT_DIR`; file-selected or bundled-root fallbacks are not used. Attachment transfers use separate HTTP clients and are not covered by this change.
+
+### Added
+
+- `agent-relay-node` has an optional `SpawnCallers` plugin hook: the plugin says whether a bridge connection is bound to a service caller, admits each `spawn.invoke`, `spawn.status` and `spawn.release` that caller makes, and records its outcome; a call's receipt is returned only after the plugin recorded it, and extension methods now receive the caller's process id. Spawn control refusals carry an optional typed `reason` (such as `not_owner` or `outside_scope`) while `kind` stays `refused`. No spawn control takes a credential: `caller_secret` is refused (`legacy_credential_refused`), a bound connection names no caller, and an unbound one without `caller_name` is refused `caller_unbound`. Without the plugin the core behaves as before for session callers.
+- `@agent-relay/core-bridge` authenticates service callers: `readCallerCredential(path)` reads `caller.json` (refusing, on macOS and Linux, a file that is not 0600 and owned by you; on Windows it checks path and link only), and `authenticate(client, credential)` binds the connection by challenge and HMAC, so the secret never crosses the bridge. The spawn helpers refuse a `caller_secret` locally, make `caller_name` optional, and take an `actionTimeoutMs` option for `spawn.invoke` and `spawn.release` (default six minutes, `DEFAULT_SPAWN_ACTION_TIMEOUT_MS`), separate from the 15-second call deadline.
+
 ### Fixed
 
+- `diagnostic_http::RequestOptions` lets embedding applications construct the core HTTP transport's request options directly, keeping idempotency keys compatible across Relaycast SDK versions.
+- Relaycast workspace verification and agent HTTP requests use the operating system trust store, preserving that transport when credentials change and refusing credential-bearing redirects.
+
+- `agent-relay-node` authenticates Cloud sign-in/session HTTPS requests with the operating system trust store, matching its WebSocket connections, so sites using an installed organizational CA can sign in without certificate exceptions.
+- Spawn release receipts preserve the provider's exact `released` proof, and newer desktop clients safely treat that field as false when an older core omits it or sends `null` or a non-boolean value.
+- Muse courier sessions used for incoming Relay messages no longer appear in session history or uploads; their delivery receipts and replies remain recorded on the target session.
+- `agent-relay-node` tells extensions a bridge connection closed as soon as its client disconnects or closes its sending side, even while one of its calls (such as a long poll) is still waiting, instead of when that call returns, so extensions can wake the waiting call. In-flight calls now always run to completion, so an effect a call admitted (such as a Relaycast channel created by `agents.webhook.create`) is recorded even if the client disconnects. A half-closed client still gets the in-flight answer and the answers to requests it queued behind it, in order; queued extension calls fail with an error without running; nothing is written once a write to the client failed. A client that sends 32 further requests (or 1 MiB of them) during one call is answered up to those and then disconnected with an error, instead of no longer being read.
+- `POST /copilot/mcp` no longer returns an unknown-route error during native Copilot initialization: it uses Desktop's managed transport when available and otherwise reports the transport as unavailable.
 - `agent-relay-node` built for its own site (`AGENT_RELAY_SITE_URL`) no longer falls back to Agent Relay's public gateways: a sign-in whose site named no valid Relaycast URL, or a CLI workspace key with no recorded server or `RELAY_BASE_URL`, is refused with a reason naming the site, and `RELAYCAST_URL` is ignored in such a build.
+- `agent-relay-node` lists Codex sessions and delivers messages to them promptly when Codex's thread database is large.
+- Relay messages now wake an idle interactive Cursor CLI (`cursor-agent`) session within seconds, as they already did for Cursor editor chats, instead of waiting for its next tool call or prompt. This keeps working after several automatic follow-ups in a row.
+- Relay messages, channel posts and Relay Connect messages to agents in the Cursor editor and Cursor CLI say to reply through the session socket (with `agent-relay-probe` in the Cursor editor on macOS, where `curl` cannot reply), never through hosted MCP tools, which cannot send as a Cursor chat.
+- A Cursor editor chat can put itself on the relay during its first turn, before Cursor has written its transcript.
+- An idle Cursor editor chat is woken by Relay messages after a turn Cursor started itself, such as one reporting that a background task finished.
 
 ## [17.2.1] - 2026-11-07
 

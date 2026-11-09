@@ -1687,18 +1687,34 @@ impl Core {
                         let probe = match needs_probe {
                             Some(known) => known,
                             None => {
-                                let known = session.target.kind == SessionKind::Codex && {
-                                    let thread = session.target.id.clone();
-                                    let processes = self.plugins.processes.clone();
-                                    tokio::task::spawn_blocking(move || {
-                                        needs_probe_reply_client(
-                                            processes.as_ref(),
-                                            current_uid(),
-                                            &thread,
-                                        )
-                                    })
-                                    .await
-                                    .unwrap_or(false)
+                                let known = match session.target.kind {
+                                    SessionKind::Codex => {
+                                        let thread = session.target.id.clone();
+                                        let processes = self.plugins.processes.clone();
+                                        tokio::task::spawn_blocking(move || {
+                                            needs_probe_reply_client(
+                                                processes.as_ref(),
+                                                current_uid(),
+                                                &thread,
+                                            )
+                                        })
+                                        .await
+                                        .unwrap_or(false)
+                                    }
+                                    // A Cursor editor conversation, as its
+                                    // other reply commands do.
+                                    SessionKind::CursorCli => {
+                                        let target = session.target.clone();
+                                        let injector = self.plugins.injector.clone();
+                                        tokio::task::spawn_blocking(move || {
+                                            injector
+                                                .relay_socket(&target)
+                                                .is_some_and(|(_, probe)| probe)
+                                        })
+                                        .await
+                                        .unwrap_or(false)
+                                    }
+                                    _ => false,
                                 };
                                 *needs_probe.insert(known)
                             }
@@ -2119,6 +2135,34 @@ mod tests {
         )
         .unwrap();
         assert!(direct_cli.contains("[reply: curl -s --unix-socket"));
+    }
+
+    // A Cursor editor conversation's tools are named by
+    // `CURSOR_CONVERSATION_ID`, which Apple's curl hides; a Cursor CLI
+    // session's by the `cursor-agent` holding it, which curl reaches too.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_cursor_editor_reply_uses_probe() {
+        let editor = connect_reply_line(
+            Path::new("/tmp/run.sock"),
+            "host",
+            SessionKind::CursorCli,
+            true,
+        )
+        .unwrap();
+        assert!(
+            editor.contains(" connect-send --socket /tmp/run.sock --to host "),
+            "{editor}"
+        );
+        assert!(!editor.contains("curl"), "{editor}");
+        let cli = connect_reply_line(
+            Path::new("/tmp/run.sock"),
+            "host",
+            SessionKind::CursorCli,
+            false,
+        )
+        .unwrap();
+        assert!(cli.contains("[reply: curl -s --unix-socket"), "{cli}");
     }
 
     #[test]

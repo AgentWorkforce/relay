@@ -155,6 +155,23 @@ pub enum RelayCommands {
         #[arg(long)]
         socket: PathBuf,
     },
+    /// Put only the calling native session on the relay (`POST /register`).
+    /// The core identifies it from this process; its self-registration
+    /// setting and ownership checks still apply.
+    Register {
+        /// The session socket, as the hint names it.
+        #[arg(long)]
+        socket: PathBuf,
+        /// Optional relay name; otherwise use the session's suggested name.
+        #[arg(long)]
+        name: Option<String>,
+        /// Optional description (at most 4096 bytes).
+        #[arg(long)]
+        description: Option<String>,
+        /// Hosted MCP availability, without changing the session identity.
+        #[arg(long, value_parser = ["agent-relay-sessions", "none"])]
+        mcp: Option<String>,
+    },
     /// Fetch an attachment the calling session was sent but did not get in
     /// time (`POST /attachments/fetch`).
     FetchAttachment {
@@ -238,8 +255,9 @@ pub enum RelayCommands {
         /// Read Agent Relay Dev's inbox instead of Agent Relay's.
         #[arg(long)]
         dev: bool,
-        /// At the end of a Cursor editor conversation's completed turn,
-        /// wait for its next message instead of answering at once.
+        /// At the end of a Cursor editor conversation's or CLI session's
+        /// completed turn, wait for its next message instead of answering at
+        /// once.
         #[arg(long)]
         wait: bool,
     },
@@ -287,7 +305,7 @@ pub enum RelayCommands {
 
 /// The self-limiting session command `command` is, with the socket it
 /// names and its `--body`: what `run` sends for `send`, `agents`,
-/// `whoami`, `read --socket`, `fetch-attachment`, `connect-send` and
+/// `whoami`, `register`, `read --socket`, `fetch-attachment`, `connect-send` and
 /// `subscribe-channel`. `None` for every
 /// other command.
 pub fn session_command(
@@ -321,6 +339,20 @@ pub fn session_command(
         }
         RelayCommands::Agents { socket } => (socket.as_path(), SessionCommand::Agents, None),
         RelayCommands::Whoami { socket } => (socket.as_path(), SessionCommand::Whoami, None),
+        RelayCommands::Register {
+            socket,
+            name,
+            description,
+            mcp,
+        } => (
+            socket.as_path(),
+            SessionCommand::Register {
+                name: name.clone(),
+                description: description.clone(),
+                mcp: mcp.clone(),
+            },
+            None,
+        ),
         RelayCommands::SubscribeChannel {
             socket,
             channel,
@@ -371,6 +403,7 @@ pub fn run(command: RelayCommands) -> Result<()> {
         RelayCommands::Send { .. }
         | RelayCommands::Agents { .. }
         | RelayCommands::Whoami { .. }
+        | RelayCommands::Register { .. }
         | RelayCommands::SubscribeChannel { .. }
         | RelayCommands::FetchAttachment { .. }
         | RelayCommands::ConnectSend { .. } => Err(user_error(

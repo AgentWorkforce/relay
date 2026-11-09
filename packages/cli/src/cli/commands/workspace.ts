@@ -301,7 +301,7 @@ export function registerWorkspaceCommands(
 
   group
     .command('rebind')
-    .description("Pin this project's broker to a stored workspace")
+    .description('Pin this project to a stored workspace')
     .argument('<name>', 'Stored workspace name')
     .action(async (name: string) => {
       await runSdk(deps, async () => {
@@ -316,9 +316,7 @@ export function registerWorkspaceCommands(
           );
         }
         pinProjectWorkspaceSession({ workspaceKey: workspace.key });
-        deps.log(
-          `Rebound this project's broker to workspace "${workspaceName}". Restart the broker to apply it.`
-        );
+        deps.log(`Rebound this project to workspace "${workspaceName}".`);
       });
     });
 }

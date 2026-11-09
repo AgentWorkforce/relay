@@ -11,8 +11,6 @@ import {
   digestInstalledClosureTree,
   digestInstalledPackageTree,
   privateNpmInvocation,
-  sourceBrokerBuildPlan,
-  sourceBrokerToolchainPlan,
   validateCandidateInstallAttestation,
   validateCandidateLockfile,
   verifyCandidateInstall,
@@ -25,16 +23,12 @@ function fixture() {
     'agent-relay',
     '@agent-relay/cloud',
     '@agent-relay/config',
-    '@agent-relay/fleet',
-    '@agent-relay/harness-driver',
-    '@agent-relay/harnesses',
     '@agent-relay/sdk',
     '@agent-relay/session',
     '@agent-relay/utils',
-    '@agent-relay/broker-linux-x64',
   ];
   return {
-    version: 4,
+    version: 5,
     kind: 'relay-candidate-clean-install',
     sourceSha: 'a'.repeat(40),
     sourceDirty: false,
@@ -43,12 +37,8 @@ function fixture() {
     arch: 'x64',
     cliRelativePath: 'node_modules/agent-relay/dist/cli/index.js',
     cliSha256: 'b'.repeat(64),
-    brokerRelativePath: 'node_modules/@agent-relay/broker-linux-x64/bin/agent-relay-broker',
-    brokerSha256: 'f'.repeat(64),
-    brokerBytes: 100,
-    brokerMode: '755',
     npmVersion: '10.9.7',
-    installStrategy: 'omit-optional-with-direct-platform-broker',
+    installStrategy: 'omit-optional',
     lockfileFile: 'candidate-package-lock.json',
     lockfileSha256: '1'.repeat(64),
     lockfileBytes: 100,
@@ -69,51 +59,6 @@ function fixture() {
 }
 
 describe('Relay candidate clean-install attestation', () => {
-  it('stages portable static musl brokers for Linux source qualification', () => {
-    const linuxPlan = sourceBrokerBuildPlan('linux', 'x64');
-    expect(linuxPlan).toEqual({
-      cargoArgs: [
-        'build',
-        '--locked',
-        '--release',
-        '--bin',
-        'agent-relay-broker',
-        '--target',
-        'x86_64-unknown-linux-musl',
-      ],
-      built: path.join('target', 'x86_64-unknown-linux-musl', 'release', 'agent-relay-broker'),
-      env: { RUSTFLAGS: '-C target-feature=+crt-static' },
-      target: 'x86_64-unknown-linux-musl',
-    });
-    expect(sourceBrokerBuildPlan('linux', 'arm64')).toMatchObject({
-      cargoArgs: expect.arrayContaining(['--target', 'aarch64-unknown-linux-musl']),
-      built: path.join('target', 'aarch64-unknown-linux-musl', 'release', 'agent-relay-broker'),
-      env: { RUSTFLAGS: '-C target-feature=+crt-static' },
-    });
-    expect(
-      sourceBrokerToolchainPlan(linuxPlan, {
-        muslGccAvailable: false,
-        aptGetAvailable: true,
-        sudoAvailable: true,
-      })
-    ).toEqual([
-      { command: 'rustup', args: ['target', 'add', 'x86_64-unknown-linux-musl'] },
-      { command: 'sudo', args: ['apt-get', 'update'] },
-      { command: 'sudo', args: ['apt-get', 'install', '-y', 'musl-tools'] },
-    ]);
-    expect(
-      sourceBrokerToolchainPlan(sourceBrokerBuildPlan('darwin', 'arm64'), {
-        muslGccAvailable: false,
-      })
-    ).toEqual([]);
-    expect(() =>
-      sourceBrokerToolchainPlan(linuxPlan, {
-        muslGccAvailable: false,
-        aptGetAvailable: false,
-      })
-    ).toThrow(/apt-get/);
-  });
-
   it('fails closed outside Linux where directory-handle-bound I/O is unavailable', () => {
     expect(() => assertSupportedCandidateOutputPlatform('win32')).toThrow(/supported only on Linux/);
     expect(() => assertSupportedCandidateOutputPlatform('darwin')).toThrow(/supported only on Linux/);
@@ -123,19 +68,12 @@ describe('Relay candidate clean-install attestation', () => {
     );
   });
 
-  it('makes the candidate output parent private in producer and hydration workflows', async () => {
-    const [producer, hydration] = await Promise.all([
-      readFile('.github/workflows/relay-package-qualification.yml', 'utf8'),
-      readFile('.github/workflows/relay-cleanroom-qualification-consumer.yml', 'utf8'),
-    ]);
-    for (const workflow of [producer, hydration]) {
-      expect(workflow).toContain('chmod 700 "$RUNNER_TEMP"');
-      expect(workflow.indexOf('chmod 700 "$RUNNER_TEMP"')).toBeLessThan(
-        workflow.indexOf('relay-candidate-install.mjs')
-      );
-    }
-    expect(hydration).toContain('mkdir -p relay-verifier/.workflow-artifacts/verify-fleet-daytona');
-    expect(hydration).toContain('chmod -R u+w relay-verifier/.workflow-artifacts');
+  it('makes the candidate output parent private in the producer workflow', async () => {
+    const producer = await readFile('.github/workflows/relay-package-qualification.yml', 'utf8');
+    expect(producer).toContain('chmod 700 "$RUNNER_TEMP"');
+    expect(producer.indexOf('chmod 700 "$RUNNER_TEMP"')).toBeLessThan(
+      producer.indexOf('relay-candidate-install.mjs')
+    );
   });
 
   it('runs npm from the parent descriptor on Linux without using --prefix', () => {
@@ -276,10 +214,6 @@ describe('Relay candidate clean-install attestation', () => {
     substituted.packages[0]!.name = '@agent-relay/not-the-cli';
     expect(() => validateCandidateInstallAttestation(substituted)).toThrow('missing agent-relay');
 
-    const wrongPlatform = fixture();
-    wrongPlatform.packages.at(-1)!.name = '@agent-relay/broker-darwin-arm64';
-    expect(() => validateCandidateInstallAttestation(wrongPlatform)).toThrow('platform broker');
-
     expect(() => validateCandidateInstallAttestation(fixture(), { cliSha256: 'e'.repeat(64) })).toThrow(
       'CLI digest'
     );
@@ -338,7 +272,6 @@ describe('Relay candidate clean-install attestation', () => {
 
         const input = fixture();
         const cliExecutionMarker = path.join(root, 'candidate-cli-executed');
-        const brokerExecutionMarker = path.join(root, 'candidate-broker-executed');
         const cliEntrypoint = path.join(root, 'install', ...input.cliRelativePath.split('/'));
         const cli =
           `import { writeFileSync } from 'node:fs';\n` +
@@ -362,18 +295,6 @@ describe('Relay candidate clean-install attestation', () => {
             writeFile(path.join(installedPackageDir, 'package.json'), packageJson),
             writeFile(path.join(installedPackageDir, 'runtime.js'), runtime),
           ]);
-          if (entry.name === '@agent-relay/broker-linux-x64') {
-            const broker = path.join(installedPackageDir, 'bin', 'agent-relay-broker');
-            await mkdir(path.dirname(broker), { recursive: true });
-            await writeFile(
-              broker,
-              `#!/bin/sh\nprintf 'executed' > ${JSON.stringify(brokerExecutionMarker)}\nprintf 'agent-relay-broker ${input.packageVersion}\\n'\n`
-            );
-            await chmod(broker, 0o755);
-            const brokerBytes = await readFile(broker);
-            input.brokerSha256 = sha256(brokerBytes);
-            input.brokerBytes = brokerBytes.length;
-          }
           entry.tarballSha256 = sha256(tarball);
           entry.installedPackageJsonSha256 = sha256(packageJson);
           const tree = await digestInstalledPackageTree(installedPackageDir);
@@ -429,32 +350,22 @@ describe('Relay candidate clean-install attestation', () => {
         input.lockfileBytes = Buffer.byteLength(lockfile);
 
         const attestationPath = path.join(root, 'candidate-install-attestation.json');
-        const broker = path.join(root, 'install', ...input.brokerRelativePath.split('/'));
-        const brokerPackage = input.packages.find((entry) => entry.name === '@agent-relay/broker-linux-x64')!;
-        const syncBrokerAttestation = async () => {
-          const bytes = await readFile(broker);
-          const tree = await digestInstalledPackageTree(path.dirname(path.dirname(broker)));
-          input.brokerSha256 = sha256(bytes);
-          input.brokerBytes = bytes.length;
-          brokerPackage.installedTreeSha256 = tree.sha256;
-          brokerPackage.installedTreeFileCount = tree.fileCount;
-          brokerPackage.installedTreeBytes = tree.bytes;
+        const syncAttestation = async () => {
           const closure = await digestInstalledClosureTree(path.join(root, 'install', 'node_modules'));
           input.closureTreeSha256 = closure.sha256;
           input.closureEntryCount = closure.entryCount;
           input.closureBytes = closure.bytes;
           await writeFile(attestationPath, `${JSON.stringify(input, null, 2)}\n`, { mode: 0o600 });
         };
-        await syncBrokerAttestation();
+        await syncAttestation();
 
-        // Hydration accepts only verified bytes as data. These marker-bearing
-        // candidate executables prove structural verification does not invoke
-        // either candidate entrypoint before Fleet qualification.
+        // Hydration accepts only verified bytes as data. The marker-bearing
+        // candidate CLI proves structural verification does not invoke the
+        // candidate entrypoint before Fleet qualification.
         await expect(
           verifyCandidateInstall(attestationPath, { sourceSha: input.sourceSha, executeCandidate: false })
         ).resolves.toMatchObject({ attestation: input });
         await expect(readFile(cliExecutionMarker)).rejects.toThrow();
-        await expect(readFile(brokerExecutionMarker)).rejects.toThrow();
         await expect(
           verifyCandidateInstall(attestationPath, { sourceSha: 'b'.repeat(40), executeCandidate: false })
         ).rejects.toThrow('source SHA does not match');
@@ -469,7 +380,6 @@ describe('Relay candidate clean-install attestation', () => {
           verifyCandidateInstall(attestationPath, { sourceSha: input.sourceSha, executeCandidate: true })
         ).resolves.toMatchObject({ attestation: input });
         await expect(readFile(cliExecutionMarker, 'utf8')).resolves.toBe('executed');
-        await expect(readFile(brokerExecutionMarker, 'utf8')).resolves.toBe('executed');
 
         const substitutedTransitive = path.join(root, 'install', 'node_modules', 'substituted-transitive');
         await mkdir(substitutedTransitive);
@@ -491,28 +401,6 @@ describe('Relay candidate clean-install attestation', () => {
           'escaping symbolic link'
         );
         await rm(escapingLink);
-
-        await chmod(broker, 0o644);
-        await syncBrokerAttestation();
-        await expect(verifyCandidateInstall(attestationPath, { executeCandidate: true })).rejects.toThrow(
-          'broker mode is not exactly 0755'
-        );
-        await chmod(broker, 0o755);
-        await syncBrokerAttestation();
-
-        await writeFile(broker, "#!/bin/sh\nprintf 'agent-relay-broker 0.0.0-wrong\\n'\n");
-        await chmod(broker, 0o755);
-        await syncBrokerAttestation();
-        await expect(verifyCandidateInstall(attestationPath, { executeCandidate: true })).rejects.toThrow(
-          'broker reported a different version'
-        );
-
-        await writeFile(broker, `#!/bin/sh\nprintf 'agent-relay-broker ${input.packageVersion}\\n'\n`);
-        await chmod(broker, 0o755);
-        await syncBrokerAttestation();
-        await expect(
-          verifyCandidateInstall(attestationPath, { executeCandidate: true })
-        ).resolves.toBeTruthy();
 
         const nonEntrypoint = path.join(
           root,

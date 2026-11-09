@@ -1,0 +1,52 @@
+{
+  "id": "traj_process_bound_register",
+  "version": 1,
+  "task": {
+    "title": "Add typed process-bound registration for sandboxed native sessions"
+  },
+  "status": "completed",
+  "startedAt": "2026-11-09T17:50:34.125302Z",
+  "agents": [
+    {
+      "name": "codex",
+      "role": "delegate",
+      "joinedAt": "2026-11-09T17:50:34.125302Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_typed_registration",
+      "title": "Typed local registration",
+      "agentName": "codex",
+      "startedAt": "2026-11-09T17:50:34.125302Z",
+      "events": [
+        {
+          "ts": 1794246634125,
+          "type": "decision",
+          "content": "Add a fixed POST /register session command and narrow Codex prefix rule; leave generic socket-request unallowed.",
+          "raw": {
+            "question": "How should a sandboxed native chat register safely?",
+            "chosen": "Typed register with name, description and existing MCP availability enum only.",
+            "alternatives": [
+              "Allow raw socket-request",
+              "Accept a supplied native session identifier"
+            ],
+            "reasoning": "The server already binds registration to kernel peer PID/UID, discovers the native chat, and enforces self-registration and ownership policy. Arbitrary method/path or identity arguments would bypass the intended command boundary."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1794247533984,
+          "type": "reflection",
+          "content": "Typed registration, JSON/argument scope, actual Codex policy engine, startup guidance, server self-registration and kernel-peer socket tests passed. Tests use isolated temporary state and fake services; no live chat was registered.",
+          "raw": {
+            "confidence": 0.93,
+            "tooling": "Trail executable was unavailable; recorded this trajectory directly using the repository format."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "completedAt": "2026-11-09T18:05:33.961442Z"
+}

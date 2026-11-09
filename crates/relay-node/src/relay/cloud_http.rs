@@ -117,6 +117,14 @@ fn transport_cause(error: &ureq::Transport) -> &'static str {
     }
 }
 
+fn http_agent(timeout: Duration, tls: std::sync::Arc<rustls::ClientConfig>) -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .tls_config(tls)
+        .redirects(0)
+        .timeout(timeout)
+        .build()
+}
+
 /// Sends one request with `headers` and a raw body. Blocking.
 pub fn send_raw_blocking(
     method: &str,
@@ -136,10 +144,10 @@ pub fn send_raw_blocking(
         if !sendable(url) {
             return Err(RawError::Unreachable("unsendable_url"));
         }
-        let agent = ureq::AgentBuilder::new()
-            .redirects(0)
-            .timeout(timeout)
-            .build();
+        if !super::websocket_tls::platform_root_environment_is_safe() {
+            return Err(RawError::Unreachable("tls_roots"));
+        }
+        let agent = http_agent(timeout, super::websocket_tls::client_config());
         let mut request = agent
             .request(method, url)
             .set("Accept", "application/json")
@@ -256,6 +264,290 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
+
+    fn test_tls() -> std::sync::Arc<rustls::ClientConfig> {
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(rustls::pki_types::CertificateDer::from(
+                include_bytes!("../../tests/fixtures/platform-tls/ca.der").to_vec(),
+            ))
+            .unwrap();
+        std::sync::Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        )
+    }
+
+    fn certificate_rejection(error: &ureq::Error) -> Option<rustls::CertificateError> {
+        let mut current: Option<&(dyn Error + 'static)> = Some(error);
+        while let Some(error) = current {
+            if let Some(rustls::Error::InvalidCertificate(cause)) =
+                error.downcast_ref::<rustls::Error>()
+            {
+                return Some(cause.clone());
+            }
+            current = error
+                .downcast_ref::<std::io::Error>()
+                .and_then(std::io::Error::get_ref)
+                .map(|inner| inner as &(dyn Error + 'static))
+                .or_else(|| error.source());
+        }
+        None
+    }
+
+    #[test]
+    fn a_transport_timeout_is_not_certificate_rejection() {
+        let timeout = ureq::Error::from(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "synthetic transport timeout",
+        ));
+        assert!(is_timeout(&timeout));
+        assert_eq!(certificate_rejection(&timeout), None);
+    }
+
+    fn tls_server() -> (std::net::SocketAddr, thread::JoinHandle<bool>) {
+        tls_server_waiting(Duration::from_secs(3))
+    }
+
+    fn tls_server_waiting(
+        accept_timeout: Duration,
+    ) -> (std::net::SocketAddr, thread::JoinHandle<bool>) {
+        let cert = rustls::pki_types::CertificateDer::from(
+            include_bytes!("../../tests/fixtures/platform-tls/localhost.der").to_vec(),
+        );
+        let key = rustls::pki_types::PrivatePkcs8KeyDer::from(
+            include_bytes!("../../tests/fixtures/platform-tls/localhost-key.der").to_vec(),
+        );
+        let config = std::sync::Arc::new(
+            rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(vec![cert], key.into())
+                .unwrap(),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let server = thread::spawn(move || {
+            let deadline = std::time::Instant::now() + accept_timeout;
+            let tcp = loop {
+                match listener.accept() {
+                    Ok((tcp, _)) => break tcp,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if std::time::Instant::now() >= deadline {
+                            return false;
+                        }
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => return false,
+                }
+            };
+            tcp.set_nonblocking(false).unwrap();
+            tcp.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            tcp.set_write_timeout(Some(Duration::from_secs(3))).unwrap();
+            let session = rustls::ServerConnection::new(config).unwrap();
+            let mut stream = rustls::StreamOwned::new(session, tcp);
+            let mut bytes = [0; 4096];
+            if !matches!(stream.read(&mut bytes), Ok(n) if n > 0) {
+                return false;
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                .unwrap();
+            true
+        });
+        (address, server)
+    }
+
+    #[test]
+    fn tls_diagnostic_default_sdk_client_preserves_root_environment() {
+        let names = ["SSL_CERT_FILE", "SSL_CERT_DIR"];
+        let before = names.map(std::env::var_os);
+        let _client = relaycast::RelayCast::new(
+            relaycast::RelayCastOptions::new("rk_synthetic_diagnostic")
+                .with_base_url("http://127.0.0.1:1"),
+        )
+        .unwrap();
+        let after = names.map(std::env::var_os);
+        for (index, name) in names.iter().enumerate() {
+            eprintln!(
+                "TLS default SDK client {name} before_present={} after_present={}",
+                before[index]
+                    .as_ref()
+                    .is_some_and(|value| !value.is_empty()),
+                after[index].as_ref().is_some_and(|value| !value.is_empty())
+            );
+        }
+        assert!(
+            before == after,
+            "constructing the default SDK HTTP client changed file-root environment"
+        );
+    }
+
+    #[test]
+    fn tls_diagnostic_server_finishes_when_refusal_precedes_connection() {
+        for name in ["SSL_CERT_FILE", "SSL_CERT_DIR"] {
+            eprintln!(
+                "TLS test process {name} present={}",
+                std::env::var_os(name).is_some_and(|value| !value.is_empty())
+            );
+        }
+        let (_address, server) = tls_server_waiting(Duration::from_millis(50));
+        assert!(!server.join().unwrap());
+    }
+
+    #[test]
+    fn verified_tls_matches_host_and_refuses_wrong_host_or_untrusted_ca() {
+        let (address, server) = tls_server();
+        let answer = http_agent(Duration::from_secs(3), test_tls())
+            .get(&format!("https://localhost:{}/", address.port()))
+            .call()
+            .unwrap();
+        assert_eq!(answer.status(), 200);
+        assert!(server.join().unwrap());
+
+        let (address, server) = tls_server();
+        let rejected = http_agent(Duration::from_secs(3), test_tls())
+            .get(&format!("https://127.0.0.1:{}/", address.port()))
+            .call()
+            .unwrap_err();
+        assert!(
+            matches!(
+                certificate_rejection(&rejected),
+                Some(
+                    rustls::CertificateError::NotValidForName
+                        | rustls::CertificateError::NotValidForNameContext { .. }
+                )
+            ),
+            "expected hostname certificate rejection: {rejected:?}"
+        );
+        assert!(
+            !server.join().unwrap(),
+            "wrong hostname must send no HTTP request"
+        );
+
+        let (address, server) = tls_server();
+        let rejected = http_agent(
+            Duration::from_secs(3),
+            super::super::websocket_tls::client_config(),
+        )
+        .get(&format!("https://localhost:{}/", address.port()))
+        .call()
+        .unwrap_err();
+        assert_eq!(
+            certificate_rejection(&rejected),
+            Some(rustls::CertificateError::UnknownIssuer),
+            "expected untrusted certificate rejection: {rejected:?}"
+        );
+        assert!(
+            !server.join().unwrap(),
+            "an untrusted CA must send no HTTP request"
+        );
+    }
+
+    #[test]
+    fn root_override_child_refuses_before_connect() {
+        if std::env::var("RELAY_TLS_ENV_CHILD").as_deref() != Ok("1") {
+            return;
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let result = send_raw_blocking(
+            "GET",
+            &format!("http://{}/", listener.local_addr().unwrap()),
+            Some("synthetic-test-bearer"),
+            &[],
+            None,
+            Duration::from_secs(1),
+        );
+        assert!(matches!(result, Err(RawError::Unreachable("tls_roots"))));
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn file_trust_overrides_refuse_before_credentials_or_connection() {
+        for name in ["SSL_CERT_FILE", "SSL_CERT_DIR"] {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "relay::cloud_http::tests::root_override_child_refuses_before_connect",
+                ])
+                .env("RELAY_TLS_ENV_CHILD", "1")
+                .env(name, "unused-root-override")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+    }
+
+    #[test]
+    fn websocket_root_override_child_cannot_contaminate_later_http() {
+        if std::env::var("RELAY_TLS_CACHE_CHILD").as_deref() != Ok("1") {
+            return;
+        }
+        use base64::Engine;
+        let directory = tempfile::tempdir().unwrap();
+        let ca = directory.path().join("throwaway-test-ca.pem");
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode(include_bytes!("../../tests/fixtures/platform-tls/ca.der"));
+        std::fs::write(
+            &ca,
+            format!("-----BEGIN CERTIFICATE-----\n{encoded}\n-----END CERTIFICATE-----\n"),
+        )
+        .unwrap();
+        std::env::set_var("SSL_CERT_FILE", &ca);
+        let _websocket = super::super::websocket_tls::connector();
+        std::env::remove_var("SSL_CERT_FILE");
+        let (address, server) = tls_server();
+        let rejected = http_agent(
+            Duration::from_secs(3),
+            super::super::websocket_tls::client_config(),
+        )
+        .get(&format!("https://localhost:{}/", address.port()))
+        .call()
+        .unwrap_err();
+        assert_eq!(
+            certificate_rejection(&rejected),
+            Some(rustls::CertificateError::UnknownIssuer),
+            "expected untrusted certificate rejection: {rejected:?}"
+        );
+        assert!(
+            !server.join().unwrap(),
+            "a WebSocket must not seed file-derived trust for HTTP"
+        );
+    }
+
+    #[test]
+    fn shared_cache_never_retains_file_selected_roots() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "relay::cloud_http::tests::websocket_root_override_child_cannot_contaminate_later_http"])
+            .env_remove("SSL_CERT_FILE").env_remove("SSL_CERT_DIR")
+            .env("RELAY_TLS_CACHE_CHILD", "1").output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    }
+
+    /// An operator can qualify the production client against an existing
+    /// OS-trusted HTTPS health endpoint. No root file or credential is read.
+    #[test]
+    #[ignore = "requires an explicitly selected HTTPS endpoint trusted by the local OS"]
+    fn operating_system_trust_reaches_selected_https_health_endpoint() {
+        let url =
+            std::env::var("RELAY_TLS_OS_PROBE_URL").expect("explicit HTTPS health URL required");
+        assert!(url.starts_with("https://"));
+        let response =
+            send_raw_blocking("GET", &url, None, &[], None, Duration::from_secs(15)).unwrap();
+        assert_eq!(response.status, 200);
+    }
 
     #[test]
     fn only_https_or_loopback_http_carries_credentials() {

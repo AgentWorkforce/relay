@@ -138,6 +138,7 @@ mod sandbox_rule_reach_tests {
             ),
             "agents" => (&[("GET", "/agents")], &[]),
             "whoami" => (&[("GET", "/whoami")], &[]),
+            "register" => (&[("POST", "/register")], &[]),
             "read" => (&[("GET", "/messages")], &["ref"]),
             "fetch-attachment" => (&[("POST", "/attachments/fetch")], &["file_id"]),
             "connect-send" => (&[("POST", "/connect/send")], &["to"]),
@@ -189,6 +190,63 @@ mod sandbox_rule_reach_tests {
         "--remove",
         "swarm",
     ];
+
+    #[test]
+    fn typed_registration_allows_no_identity_or_raw_request_overrides() {
+        let mut command = Cli::command();
+        let prefix = ["probe", "register", "--socket", "/s/relay.sock"];
+        let args: Vec<String> = prefix
+            .into_iter()
+            .chain(["--name", "review-bot", "--description", "Reviews releases"])
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            reach(&mut command, &args),
+            Some(("/s/relay.sock".into(), "POST", "/register".into()))
+        );
+        for mcp in ["none", "agent-relay-sessions"] {
+            let args: Vec<String> = prefix
+                .into_iter()
+                .chain(["--mcp", mcp])
+                .map(str::to_string)
+                .collect();
+            assert_eq!(
+                reach(&mut command, &args),
+                Some(("/s/relay.sock".into(), "POST", "/register".into()))
+            );
+        }
+        for flag in [
+            "--target",
+            "--pid",
+            "--uid",
+            "--session-id",
+            "--native-thread-id",
+            "--method",
+            "--path",
+            "--body",
+            "--socket",
+            "--mcp", // an unknown declaration is refused
+        ] {
+            let args: Vec<String> = prefix
+                .into_iter()
+                .chain([flag, "other"])
+                .map(str::to_string)
+                .collect();
+            assert!(reach(&mut command, &args).is_none(), "{flag}");
+        }
+        let rules = SandboxRules {
+            probe: "probe".into(),
+            socket: "/s/relay.sock".into(),
+        };
+        assert!(rules
+            .patterns()
+            .iter()
+            .any(|p| p == &prefix.map(str::to_string)));
+        assert!(!rules
+            .patterns()
+            .iter()
+            .any(|p| p.iter().any(|word| word == "socket-request")));
+    }
 
     /// What `argv` would send if it ran: `None` when the probe refuses it
     /// before opening the socket, else the socket, method and path.
@@ -300,7 +358,7 @@ mod sandbox_rule_reach_tests {
             ("POST", "/webhooks"),
             ("DELETE", "/webhooks"),
             ("POST", "/claude/attestation"),
-            ("POST", "/register"),
+            ("POST", "/copilot/mcp"),
             ("DELETE", "/register"),
         ] {
             assert!(

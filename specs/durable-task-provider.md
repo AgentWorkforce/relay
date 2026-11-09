@@ -1,5 +1,9 @@
 # Durable broker task provider
 
+> This provider ran inside the local broker, which has been removed together
+> with `agent-relay node up`. The spec is kept as a record of the contract; it
+> no longer describes a feature you can enable.
+
 This provider depends on the task invocation engine contract in
 [Relaycast #436](https://github.com/AgentWorkforce/relaycast/pull/436).
 Deploy that engine contract before enabling this broker feature. The existing

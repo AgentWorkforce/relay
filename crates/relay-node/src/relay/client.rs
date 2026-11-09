@@ -14,17 +14,21 @@ use crate::relay::workspace::{Secret, Workspace};
 use relaycast::types::{
     CreateChannelRequest, CreateWebhookRequest, EventSubscription, FailDeliveryRequest, Webhook,
 };
-use relaycast::{AgentClient, DmOptions, RelayCast, RelayCastOptions, RelayError};
+use relaycast::{AgentClient, ClientOptions, DmOptions, RelayCast, RelayError};
 use serde_json::{Map, Value};
 
 /// A workspace-key client for `base_url`.
 pub fn workspace_client(base_url: &str, key: &Secret) -> relaycast::Result<RelayCast> {
-    RelayCast::new(RelayCastOptions::new(key.expose()).with_base_url(base_url))
+    RelayCast::from_client(super::sdk_http::client(
+        ClientOptions::new(key.expose()).with_base_url(base_url),
+    )?)
 }
 
 /// An agent-token client for `base_url`.
 pub fn agent_client(base_url: &str, token: &Secret) -> relaycast::Result<AgentClient> {
-    AgentClient::new(token.expose(), Some(base_url.to_string()))
+    Ok(AgentClient::from_client(super::sdk_http::client(
+        ClientOptions::new(token.expose()).with_base_url(base_url),
+    )?))
 }
 
 /// The workspace a key belongs to, as Relaycast reports it.

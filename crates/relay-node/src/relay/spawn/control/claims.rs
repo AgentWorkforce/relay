@@ -1,12 +1,19 @@
 //! Credential-free release claims preserve exact identity after the local registration is gone.
 use super::*;
-use crate::platform::fs::{owned_by_current_user, private_dir, private_to_owner, sync_dir};
 use sha2::{Digest, Sha256};
-use std::io::Write;
 use std::path::Path;
 use std::sync::Mutex;
 
+mod storage;
+
 static WRITING: Mutex<()> = Mutex::new(());
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Ownership {
+    Unrestricted,
+    Verified,
+    ClaimOnly,
+}
 
 pub(super) fn release(
     folder: &Path,
@@ -14,6 +21,7 @@ pub(super) fn release(
     caller_id: &str,
     params: &SpawnReleaseParams,
     exact: bool,
+    ownership: Ownership,
 ) -> Result<(), RpcError> {
     let _writing = WRITING.lock().unwrap_or_else(|e| e.into_inner());
     let scope = json!([
@@ -24,71 +32,154 @@ pub(super) fn release(
     ]);
     let digest = format!("{:x}", Sha256::digest(scope.to_string().as_bytes()));
     let folder = folder.join("spawn-control-releases");
-    private(&folder, true)?;
-    let path = folder.join(format!("{digest}.json"));
-    private(&path, false)?;
+    let name = format!("{digest}.json");
+    let verified_name = format!("{digest}.verified.json");
     let identity = json!([
         params.node_id,
         params.node_name,
         params.name,
         params.expected_agent_id
     ]);
-    match std::fs::read(&path) {
-        Ok(bytes) => {
+    match storage::read(&folder, &name) {
+        Ok(Some(bytes)) => {
             let previous: Value = serde_json::from_slice(&bytes).map_err(|_| malformed())?;
-            return if previous == identity {
-                Ok(())
-            } else {
-                Err(refused())
+            let (previous_identity, previous_owner_verified) = match previous.as_object() {
+                Some(previous) => (
+                    previous.get("identity").cloned().unwrap_or(Value::Null),
+                    previous
+                        .get("owner_verified")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                ),
+                None => (previous, false),
             };
+            if previous_identity != identity {
+                return Err(refused());
+            }
+            if ownership == Ownership::ClaimOnly
+                && !previous_owner_verified
+                && !verified(&folder, &verified_name, &identity)?
+            {
+                return Err(not_owner());
+            }
+            if ownership == Ownership::Verified && !previous_owner_verified {
+                save_verification(&folder, &verified_name, &identity)?;
+            }
+            return Ok(());
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Ok(None) => {}
         Err(_) => return Err(refused()),
     }
     if !exact {
         return Err(refused());
     }
-    let persist = || -> std::io::Result<()> {
-        std::fs::create_dir_all(folder.parent().unwrap_or(Path::new("/nonexistent")))?;
-        match private_dir(&mut std::fs::DirBuilder::new()).create(&folder) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(e),
-        }
-        private(&folder, true).map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "private release claim directory required",
-            )
-        })?;
-        let mut temporary = tempfile::NamedTempFile::new_in(&folder)?;
-        temporary.write_all(&serde_json::to_vec(&identity)?)?;
-        temporary.as_file().sync_all()?;
-        temporary.persist_noclobber(path).map_err(|e| e.error)?;
-        sync_dir(&folder)
-    };
-    persist().map_err(|_| {
+    let claim = json!({
+        "identity": identity,
+        "owner_verified": ownership == Ownership::Verified,
+    });
+    let store_failed = || {
         RpcError::new(
             ErrorKind::StoreFailed,
             "The native release identity could not be saved.",
         )
-    })
+    };
+    let bytes = serde_json::to_vec(&claim).map_err(|_| store_failed())?;
+    storage::persist(&folder, &name, &bytes).map_err(|_| store_failed())
 }
 
-fn private(path: &Path, directory: bool) -> Result<(), RpcError> {
-    match std::fs::symlink_metadata(path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Ok(metadata)
-            if owned_by_current_user(&metadata)
-                && private_to_owner(&metadata, 0o077)
-                && (if directory {
-                    metadata.is_dir()
-                } else {
-                    metadata.is_file()
-                }) =>
-        {
-            Ok(())
-        }
-        _ => Err(refused()),
+fn verified(folder: &Path, name: &str, identity: &Value) -> Result<bool, RpcError> {
+    match storage::read(folder, name) {
+        Ok(Some(bytes)) => serde_json::from_slice::<Value>(&bytes)
+            .map(|saved| saved == *identity)
+            .map_err(|_| malformed()),
+        Ok(None) => Ok(false),
+        Err(_) => Err(refused()),
     }
+}
+
+fn save_verification(folder: &Path, name: &str, identity: &Value) -> Result<(), RpcError> {
+    if verified(folder, name, identity)? {
+        return Ok(());
+    }
+    let store_failed = || {
+        RpcError::new(
+            ErrorKind::StoreFailed,
+            "The native release ownership proof could not be saved.",
+        )
+    };
+    let bytes = serde_json::to_vec(identity).map_err(|_| store_failed())?;
+    match storage::persist(folder, name, &bytes) {
+        Ok(()) => Ok(()),
+        Err(_) if verified(folder, name, identity).unwrap_or(false) => Ok(()),
+        Err(_) => Err(store_failed()),
+    }
+}
+
+/// Where an invoke receipt the plugin could not record waits, for this
+/// exact caller and idempotency key, and the request it answers.
+fn unrecorded_slot(
+    folder: &Path,
+    workspace: &Workspace,
+    caller_id: &str,
+    params: &SpawnInvokeParams,
+) -> (std::path::PathBuf, String, Value) {
+    let scope = json!([
+        workspace.base_url,
+        workspace.key.expose(),
+        caller_id,
+        params.idempotency_key
+    ]);
+    let digest = format!("{:x}", Sha256::digest(scope.to_string().as_bytes()));
+    let request = json!([
+        params.node_id,
+        params.node_name,
+        params.name,
+        params.harness,
+        params.task,
+        params.directory
+    ]);
+    let request = format!("{:x}", Sha256::digest(request.to_string().as_bytes()));
+    (
+        folder.join("spawn-control-receipts"),
+        format!("{digest}.json"),
+        Value::String(request),
+    )
+}
+
+/// Keeps the receipt of a successful `spawn.invoke` whose plugin record
+/// failed, so the same request again (same caller, idempotency key and
+/// parameters) gets it back even when the node is no longer live and the
+/// invocation could not be sent again. Saved the way release claims are
+/// (owner-private, never clobbered), so a restart keeps it; a slot that
+/// cannot be saved leaves the retry to replay the POST, as before.
+pub(super) fn keep_unrecorded_receipt(
+    folder: &Path,
+    workspace: &Workspace,
+    caller_id: &str,
+    params: &SpawnInvokeParams,
+    receipt: &SpawnControlInvocation,
+) {
+    let _writing = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+    let (folder, name, request) = unrecorded_slot(folder, workspace, caller_id, params);
+    let Ok(bytes) = serde_json::to_vec(&json!({"request": request, "receipt": receipt})) else {
+        return;
+    };
+    let _ = storage::persist(&folder, &name, &bytes);
+}
+
+/// The receipt [`keep_unrecorded_receipt`] kept for this exact request, if
+/// any. A slot for the same key but other parameters is not this request's.
+pub(super) fn unrecorded_receipt(
+    folder: &Path,
+    workspace: &Workspace,
+    caller_id: &str,
+    params: &SpawnInvokeParams,
+) -> Option<SpawnControlInvocation> {
+    let (folder, name, request) = unrecorded_slot(folder, workspace, caller_id, params);
+    let bytes = storage::read(&folder, &name).ok()??;
+    let saved: Value = serde_json::from_slice(&bytes).ok()?;
+    if saved["request"] != request {
+        return None;
+    }
+    serde_json::from_value(saved["receipt"].clone()).ok()
 }

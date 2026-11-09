@@ -1,5 +1,5 @@
 //! The session-socket routes Agent Relay's own agent hooks ask: the Codex
-//! stop hook, native Copilot lifecycle hooks and Claude Code attestation hook.
+//! stop hook, native Copilot hooks and MCP transport, and Claude attestation.
 use super::{payload, Outbound, OutboundError, Purpose, Request};
 use serde_json::Value;
 
@@ -17,6 +17,13 @@ impl Outbound {
             if let Some(answer) = account.session_route(self, pid, uid, request) {
                 return answer.await;
             }
+        }
+        if request.path == "/copilot/mcp" {
+            return Err(OutboundError::new(
+                409,
+                "copilot_dispatch_unavailable",
+                "This core does not provide the managed Copilot MCP transport.",
+            ));
         }
         if request.path == "/claude/attestation" {
             return Err(OutboundError::new(

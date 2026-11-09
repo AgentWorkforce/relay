@@ -4,11 +4,16 @@
 //!
 //! A connection's requests are answered in the order they arrive; a client
 //! that wants a slow call (`workspace.verify`) not to delay others opens a
-//! second connection. Every connection must `hello` first.
+//! second connection. Every connection must `hello` first. A connection
+//! that ends mid-call (the client hangs up, sends too much, or the core
+//! stops) has its extensions told at once; no call is ever cancelled, and its
+//! answer, and those to requests read ahead, still go to a client that can
+//! read them. Extension methods read ahead fail without running once their
+//! extensions were told.
 
 use crate::relay::contract::connection::{HelloResult, Stopping, Subscribed, Unsubscribed};
 use crate::relay::contract::{self, answer, method};
-use crate::relay::daemon::Core;
+use crate::relay::daemon::{CallContext, Core};
 use crate::relay::peer::current_uid;
 use crate::relay::protocol::{
     ErrorKind, Event, Request, Response, RpcError, Topic, BRIDGE_VERSION, MAX_FRAME_BYTES,
@@ -19,8 +24,14 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{broadcast, mpsc, watch};
+
+mod closed;
+mod frames;
+
+use closed::Closed;
+use frames::{Frame, Frames, HungUp};
 
 /// Accepts connections until shutdown. Another user's connection is closed
 /// without a reply.
@@ -30,6 +41,7 @@ pub async fn accept_loop(
     mut stop: watch::Receiver<bool>,
 ) {
     let mut connections = tokio::task::JoinSet::new();
+    let mut next_connection_id = 1u64;
     loop {
         let accepted = tokio::select! {
             accepted = listener.accept() => accepted,
@@ -45,7 +57,17 @@ pub async fn accept_loop(
         };
         match stream.peer_credentials() {
             Ok(peer) if peer.uid == current_uid() => {
-                connections.spawn(connection(stream, core.clone(), core.shutdown_requested()));
+                let context = CallContext {
+                    peer_pid: peer.pid,
+                    connection_id: Some(next_connection_id),
+                };
+                next_connection_id = next_connection_id.wrapping_add(1).max(1);
+                connections.spawn(connection(
+                    stream,
+                    core.clone(),
+                    core.shutdown_requested(),
+                    context,
+                ));
             }
             _ => drop(stream),
         }
@@ -61,15 +83,27 @@ const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 /// requests and its events lag (then resync with a fresh snapshot).
 const OUTGOING_LINES: usize = 32;
 
-/// How long a stopping daemon gives a connection to flush the shutdown event.
-const SHUTDOWN_FLUSH: Duration = Duration::from_millis(500);
+/// How long a closing connection gives its background tasks to flush. At
+/// daemon shutdown this includes the shutdown event; after EOF it includes
+/// replies already queued for the client.
+const CLOSE_FLUSH: Duration = Duration::from_millis(500);
 
 struct Session {
     greeted: bool,
     topics: Arc<Mutex<HashSet<Topic>>>,
+    /// The client, as the kernel reported it at connect.
+    context: CallContext,
+    /// Extensions were told this connection closed: requests still being
+    /// answered must not reach them.
+    closed: bool,
 }
 
-async fn connection(stream: CoreStream, core: Arc<Core>, mut stop: watch::Receiver<bool>) {
+async fn connection(
+    stream: CoreStream,
+    core: Arc<Core>,
+    mut stop: watch::Receiver<bool>,
+    context: CallContext,
+) {
     let (read, mut write) = stream.into_split();
     let (lines, mut outgoing) = mpsc::channel::<String>(OUTGOING_LINES);
     let writer = tokio::spawn(async move {
@@ -85,6 +119,8 @@ async fn connection(stream: CoreStream, core: Arc<Core>, mut stop: watch::Receiv
     let session = Session {
         greeted: false,
         topics: Arc::new(Mutex::new(HashSet::new())),
+        context,
+        closed: false,
     };
     // Subscribed from the start so nothing published after a `subscribe`
     // reply can be missed; the topic set filters what is forwarded.
@@ -98,65 +134,162 @@ async fn connection(stream: CoreStream, core: Arc<Core>, mut stop: watch::Receiv
         lines.clone(),
     ));
 
-    let mut reader = BufReader::new(read);
+    let mut frames = Frames::new(read, MAX_FRAME_BYTES);
+    let mut closed = Closed::new(core.clone(), context);
     let mut session = session;
     loop {
-        let mut line = Vec::new();
-        let mut limited = (&mut reader).take(MAX_FRAME_BYTES as u64 + 1);
-        let read = tokio::select! {
-            read = limited.read_until(b'\n', &mut line) => read,
+        let frame = tokio::select! {
+            frame = frames.next() => frame,
             _ = stop.wait_for(|stop| *stop) => break,
+            // The writer ends only when a write failed: the client is gone.
+            () = lines.closed() => break,
         };
-        match read {
-            Ok(0) | Err(_) => break,
-            Ok(_) if line.strip_suffix(b"\n").unwrap_or(&line).len() > MAX_FRAME_BYTES => {
-                let error = RpcError::new(ErrorKind::InvalidRequest, "The request is too large.");
-                let _ = lines.try_send(to_line(&Response::err(Value::Null, error)));
+        let line = match frame {
+            Frame::Line(line) => line,
+            Frame::End => break,
+            Frame::TooLarge => {
+                let _ = lines.try_send(too_large());
                 break;
             }
-            Ok(_) => {}
-        }
-        if line.iter().all(u8::is_ascii_whitespace) {
-            continue;
-        }
-        let response = handle_line(&core, &mut session, &line).await;
+        };
+        // Requests stay one at a time: lines that arrive meanwhile are only
+        // read ahead, to see the connection end while the call is in flight.
+        let (response, ending) = {
+            let mut handling = std::pin::pin!(handle_line(&core, &mut session, &line));
+            let ending = tokio::select! {
+                biased;
+                response = &mut handling => Ok(response),
+                reason = frames.hung_up() => Err(Ending::Read(reason)),
+                () = lines.closed() => Err(Ending::Gone),
+                _ = stop.wait_for(|stop| *stop) => Err(Ending::Stopping),
+            };
+            match ending {
+                Ok(response) => (response, None),
+                Err(ending) => {
+                    // Extensions hear now rather than when the call returns
+                    // (a long poll waits up to its timeout), and may use
+                    // that to wake it. The call is never cancelled, so an
+                    // effect it admitted is still recorded.
+                    closed.fire();
+                    (handling.await, Some(ending))
+                }
+            }
+        };
         if session.greeted {
             let _ = greeted_tx.send(true);
         }
-        if let Some(response) = response {
-            // A client that does not read its responses stops being read.
-            let sent = tokio::select! {
-                // The reply to `daemon.shutdown` itself still goes out.
-                biased;
-                sent = lines.send(to_line(&response)) => sent.is_ok(),
-                _ = stop.wait_for(|stop| *stop) => false,
+        if ending.is_some() {
+            session.closed = true;
+        }
+        // With the writer gone the answer has nowhere to go. A read EOF is
+        // not that: a client may close only its sending side and still read.
+        if matches!(ending, Some(Ending::Gone)) || lines.is_closed() {
+            break;
+        }
+        if !answer_line(&lines, &mut stop, response).await {
+            break;
+        }
+        let Some(ending) = ending else {
+            continue;
+        };
+        // The connection ends: what was read ahead is still answered, in
+        // order, while the client can read; extension methods among it fail
+        // without running, as their extension was told the connection closed.
+        while let Some(line) = frames.take_queued() {
+            let response = {
+                let mut handling = std::pin::pin!(handle_line(&core, &mut session, &line));
+                tokio::select! {
+                    biased;
+                    response = &mut handling => Some(response),
+                    () = lines.closed() => {
+                        let _ = handling.await;
+                        None
+                    }
+                }
             };
-            if !sent {
+            let Some(response) = response else {
+                break;
+            };
+            if !answer_line(&lines, &mut stop, response).await {
                 break;
             }
         }
+        let error = match ending {
+            Ending::Read(HungUp::Overflow) => Some(Response::err(
+                Value::Null,
+                RpcError::new(
+                    ErrorKind::InvalidRequest,
+                    "Too many requests were sent before the previous one was answered.",
+                ),
+            )),
+            Ending::Read(HungUp::TooLarge) => Some(Response::err(
+                Value::Null,
+                RpcError::new(ErrorKind::InvalidRequest, TOO_LARGE),
+            )),
+            Ending::Read(HungUp::Eof) | Ending::Stopping | Ending::Gone => None,
+        };
+        let _ = answer_line(&lines, &mut stop, error).await;
+        break;
     }
     let stopping = *stop.borrow();
     // After shutdown, the forwarder delivers the shutdown event and ends; a
     // client that is not reading gets no longer than the flush allows.
     let mut forwarder = forwarder;
     if !stopping
-        || tokio::time::timeout(SHUTDOWN_FLUSH, &mut forwarder)
+        || tokio::time::timeout(CLOSE_FLUSH, &mut forwarder)
             .await
             .is_err()
     {
         forwarder.abort();
     }
     drop(lines);
-    let mut writer = writer;
-    if stopping {
-        if tokio::time::timeout(SHUTDOWN_FLUSH, &mut writer)
-            .await
-            .is_err()
-        {
-            writer.abort();
-        }
-    } else {
+    finish_writer(writer, CLOSE_FLUSH).await;
+    closed.fire();
+}
+
+/// What ended a connection while one of its calls was in flight.
+enum Ending {
+    /// Reading the client ended: it hung up, sent too much, or sent a line
+    /// over the limit.
+    Read(HungUp),
+    /// The core is stopping.
+    Stopping,
+    /// A write failed: the client is gone and nothing more can reach it.
+    Gone,
+}
+
+/// The error for a request over [`MAX_FRAME_BYTES`].
+const TOO_LARGE: &str = "The request is too large.";
+
+fn too_large() -> String {
+    let error = RpcError::new(ErrorKind::InvalidRequest, TOO_LARGE);
+    to_line(&Response::err(Value::Null, error))
+}
+
+/// Queues `response` for the client, if there is one. A client that does not
+/// read its responses stops being read, unless the core is stopping; then
+/// what does not fit is dropped. False when the connection should end.
+async fn answer_line(
+    lines: &mpsc::Sender<String>,
+    stop: &mut watch::Receiver<bool>,
+    response: Option<Response>,
+) -> bool {
+    let Some(response) = response else {
+        return true;
+    };
+    tokio::select! {
+        // The reply to `daemon.shutdown` itself still goes out.
+        biased;
+        sent = lines.send(to_line(&response)) => sent.is_ok(),
+        _ = stop.wait_for(|stop| *stop) => false,
+    }
+}
+
+/// Flushes replies already queued for a closing connection without letting a
+/// client that stopped reading postpone extension cleanup indefinitely.
+async fn finish_writer(mut writer: tokio::task::JoinHandle<()>, limit: Duration) {
+    if tokio::time::timeout(limit, &mut writer).await.is_err() {
+        writer.abort();
         let _ = writer.await;
     }
 }
@@ -298,6 +431,12 @@ async fn dispatch(
             "Agent Relay core is stopping.",
         ));
     }
+    if session.closed && is_extension_method(core, name) {
+        return Err(RpcError::new(
+            ErrorKind::InvalidRequest,
+            "The connection is closing; this request was not run.",
+        ));
+    }
     match name {
         method::Subscribe::NAME => {
             answer::<method::Subscribe, _>(raw, |request| async move {
@@ -322,7 +461,7 @@ async fn dispatch(
             })
             .await
         }
-        _ => call(core, name, raw).await,
+        _ => call_from(core, &session.context, name, raw).await,
     }
 }
 
@@ -335,8 +474,18 @@ fn sorted(topics: &HashSet<Topic>) -> Vec<Topic> {
 /// Answers a method that needs no connection state: everything but
 /// `hello`, `subscribe`, `unsubscribe` and `daemon.shutdown`. The core's own
 /// modules (the relay-send socket's setup routes) call methods through this
-/// too, so they act exactly as a client's request would.
+/// too, so they act exactly as a client's request would, from no peer.
 pub async fn call(core: &Arc<Core>, name: &str, raw: Value) -> Result<Value, RpcError> {
+    call_from(core, &CallContext::default(), name, raw).await
+}
+
+/// [`call`] for the client `context` describes.
+pub async fn call_from(
+    core: &Arc<Core>,
+    context: &CallContext,
+    name: &str,
+    raw: Value,
+) -> Result<Value, RpcError> {
     if *core.shutdown_requested().borrow() {
         return Err(RpcError::new(
             ErrorKind::ShuttingDown,
@@ -368,9 +517,9 @@ pub async fn call(core: &Arc<Core>, name: &str, raw: Value) -> Result<Value, Rpc
         _ => {
             let answer = match methods::call(core, name, raw.clone()).await {
                 Some(answer) => Some(answer),
-                None => match local_methods::call(core, name, raw.clone()).await {
+                None => match local_methods::call_from(core, context, name, raw.clone()).await {
                     Some(answer) => Some(answer),
-                    None => extension_call(core, name, raw).await,
+                    None => extension_call(core, context, name, raw).await,
                 },
             };
             answer.unwrap_or_else(|| Err(no_such_method()))
@@ -414,9 +563,19 @@ fn needs_account(core: &Core, name: &str) -> bool {
         .any(|availability| availability == contract::Availability::Account)
 }
 
+/// Whether an extension registers `name`. Their names never repeat a core
+/// method's, so such a call can only be answered by an extension.
+fn is_extension_method(core: &Core, name: &str) -> bool {
+    core.plugins
+        .extensions
+        .iter()
+        .any(|extension| extension.specs().iter().any(|spec| spec.name == name))
+}
+
 /// The first extension that answers `name`.
 async fn extension_call(
     core: &Arc<Core>,
+    context: &CallContext,
     name: &str,
     raw: Value,
 ) -> Option<Result<Value, RpcError>> {
@@ -424,7 +583,7 @@ async fn extension_call(
         if !extension.specs().iter().any(|spec| spec.name == name) {
             continue;
         }
-        if let Some(answer) = extension.call(core, name, raw.clone()).await {
+        if let Some(answer) = extension.call(core, context, name, raw.clone()).await {
             return Some(answer);
         }
     }
@@ -434,3 +593,6 @@ async fn extension_call(
 fn to_line(response: &Response) -> String {
     serde_json::to_string(response).unwrap()
 }
+
+#[cfg(test)]
+mod tests;

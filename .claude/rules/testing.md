@@ -66,7 +66,7 @@ function createHarness(overrides?: Partial<Dependencies>) {
 ## File Organization
 
 - Test files are co-located with source: `foo.ts` -> `foo.test.ts`
-- Integration tests in `tests/integration/`
+- Repository-level fixture tests in `tests/fixtures/`
 - Run all tests: `npx vitest`
 
 ## Assertions

@@ -6,14 +6,12 @@ import { Command } from 'commander';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { registerFleetCommands } from './fleet.js';
-import { registerLocalAgentCommands } from './local-agent.js';
 import { registerMessageCommands } from './message.js';
 import {
   resolveWorkspaceSelection,
   resolveWorkspaceTransport,
   persistWorkspaceRelaycastTarget,
 } from '../lib/sdk-client.js';
-import { resolveFleetAttachTarget } from '../lib/fleet-attach-target.js';
 import { readProjectWorkspaceSession, writeProjectWorkspaceKey } from '../lib/project-workspace-key.js';
 
 const TARGET = {
@@ -36,7 +34,7 @@ afterEach(() => {
 });
 
 describe('fleet CLI lifecycle routing', () => {
-  it('reuses the persisted Cloud target across spawn, attach, message, list, and release without --base-url', async () => {
+  it('reuses the persisted Cloud target across spawn, message, list, and release without --base-url', async () => {
     projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-fleet-lifecycle-project-'));
     relayHome = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-fleet-lifecycle-home-'));
     vi.stubEnv('AGENT_RELAY_PROJECT', projectRoot);
@@ -50,7 +48,6 @@ describe('fleet CLI lifecycle routing', () => {
     const nodeName = 'retained-sandbox-node';
     const workerName = 'unique-retained-worker';
     const transportCalls: { workspaceKey: string; baseUrl?: string }[] = [];
-    const attachNode = vi.fn(async () => 0);
     const release = vi.fn(async () => ({ name: workerName, released: true, deleted: false }));
     const direct = vi.fn(async (input: unknown) => ({ id: 'message-1', ...(input as object) }));
     const nodesList = vi.fn(async () => [
@@ -164,34 +161,6 @@ describe('fleet CLI lifecycle routing', () => {
       error: vi.fn(),
     });
 
-    const node = program.command('node');
-    registerLocalAgentCommands(node, {
-      cwd: () => projectRoot,
-      env: process.env,
-      attachNode,
-      resolveFleetAttachTarget: (name) =>
-        resolveFleetAttachTarget(
-          name,
-          () => workspaceClient as never,
-          () => resolveWorkspaceTransport(),
-          () => resolveWorkspaceSelection({ projectRoot })
-        ),
-      attach: vi.fn(async () => 0),
-      attachRemote: vi.fn(async () => 0),
-      connect: vi.fn() as never,
-      connectLocal: vi.fn() as never,
-      readConnectionFile: vi.fn(),
-      getDefaultStateDir: () => dataDir,
-      fetch: globalThis.fetch,
-      redeemJoinTicket: vi.fn() as never,
-      persistWorkspaceSession: vi.fn() as never,
-      log: vi.fn(),
-      error: vi.fn(),
-      exit: vi.fn(() => {
-        throw new Error('__exit__');
-      }) as never,
-      now: () => new Date('2026-01-01T00:00:00Z'),
-    });
     registerMessageCommands(program, {
       createAgentRelay,
       createWorkspaceRelay,
@@ -235,18 +204,10 @@ describe('fleet CLI lifecycle routing', () => {
       TARGET.relaycastApiKey
     );
 
-    await program.parseAsync(['node', 'agent', 'attach', workerName, '--mode', 'view'], { from: 'user' });
     await program.parseAsync(['message', 'dm', 'send', workerName, 'hello'], { from: 'user' });
     await program.parseAsync(['fleet', 'agent', 'list'], { from: 'user' });
     await program.parseAsync(['fleet', 'release', workerName], { from: 'user' });
 
-    expect(attachNode).toHaveBeenCalledWith(workerName, 'view', 'node-1', {
-      baseUrl: TARGET.baseUrl,
-      workspaceKey: undefined,
-      json: undefined,
-      reasoning: undefined,
-      diagnostics: undefined,
-    });
     expect(direct).toHaveBeenCalledWith({ to: workerName, text: 'hello' });
     expect(nodesList).toHaveBeenCalled();
     expect(release).toHaveBeenCalledWith(expect.objectContaining({ name: workerName, deleteAgent: false }));

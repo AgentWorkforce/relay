@@ -71,7 +71,6 @@ if (!runnerPath.startsWith(`${harnessDir}${path.sep}`)) {
 
 /** The generators under proof, as public entry points relative to the checkout. */
 const GENERATORS = [
-  ['flows/verify/fleet-daytona.spec.ts', {}],
   ['flows/verify/cleanroom.spec.ts', { VERIFY_CLEANROOM_PROFILE: 'smoke' }],
   ['flows/diagnose/orchestration.spec.ts', {}],
   ['flows/audit/feature-manifest.spec.ts', {}],

@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "description": "Shared release receipt vectors. Each case is a Relaycast release-exact reply (the data the core reads) and the exact spawn.release answer the core returns and hands its SpawnCallers plugin to record; confirmed is whether a client reads the release as confirmed. Read by crates/relay-node (spawn/control/tests.rs) and packages/core-bridge (spawn.test.ts).",
+  "cases": [
+    {
+      "name": "completed and released",
+      "relaycast": {
+        "invocation_id": "invocation_release_1",
+        "status": "completed",
+        "dispatched_node_id": "node_local",
+        "output": { "released": true, "name": "worker_1", "spawned": false, "ready": false },
+        "error": null
+      },
+      "receipt": {
+        "id": "invocation_release_1",
+        "agent_id": null,
+        "status": "completed",
+        "node_id": "node_local",
+        "name": "worker_1",
+        "spawned": false,
+        "ready": false,
+        "released": true,
+        "task_unconfirmed": false,
+        "error_code": null
+      },
+      "confirmed": true
+    },
+    {
+      "name": "completed without proof of release",
+      "relaycast": {
+        "id": "invocation_release_2",
+        "status": "completed",
+        "handler_node_id": "node_local",
+        "output": { "released": "true", "name": "worker_2" }
+      },
+      "receipt": {
+        "id": "invocation_release_2",
+        "agent_id": null,
+        "status": "completed",
+        "node_id": "node_local",
+        "name": "worker_2",
+        "spawned": false,
+        "ready": false,
+        "released": false,
+        "task_unconfirmed": false,
+        "error_code": null
+      },
+      "confirmed": false
+    },
+    {
+      "name": "failed on an identity mismatch, free text dropped",
+      "relaycast": {
+        "invocation_id": "invocation_release_3",
+        "status": "failed",
+        "output": { "released": false },
+        "error": "release_identity_mismatch: expected agent_x but found agent_y at /home/someone"
+      },
+      "receipt": {
+        "id": "invocation_release_3",
+        "agent_id": null,
+        "status": "failed",
+        "node_id": null,
+        "name": null,
+        "spawned": false,
+        "ready": false,
+        "released": false,
+        "task_unconfirmed": false,
+        "error_code": "release_identity_mismatch"
+      },
+      "confirmed": false
+    },
+    {
+      "name": "failed with a structured code only",
+      "relaycast": {
+        "invocation_id": "invocation_release_4",
+        "status": "failed",
+        "error": "provider said no",
+        "error_details": { "code": "release_failed", "message": "do not forward" }
+      },
+      "receipt": {
+        "id": "invocation_release_4",
+        "agent_id": null,
+        "status": "failed",
+        "node_id": null,
+        "name": null,
+        "spawned": false,
+        "ready": false,
+        "released": false,
+        "task_unconfirmed": false,
+        "error_code": "release_failed"
+      },
+      "confirmed": false
+    },
+    {
+      "name": "pending, not yet released",
+      "relaycast": {
+        "invocation_id": "invocation_release_5",
+        "status": "pending",
+        "dispatched_node_id": "node/../escape"
+      },
+      "receipt": {
+        "id": "invocation_release_5",
+        "agent_id": null,
+        "status": "pending",
+        "node_id": null,
+        "name": null,
+        "spawned": false,
+        "ready": false,
+        "released": false,
+        "task_unconfirmed": false,
+        "error_code": null
+      },
+      "confirmed": false
+    }
+  ]
+}

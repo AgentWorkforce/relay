@@ -428,11 +428,10 @@ The run PASSES only if every check that CAN run in this environment passes.
 | Tier | Scope                                          | Environment needed        |
 |------|------------------------------------------------|---------------------------|
 | V1   | CLI health and command discovery               | isolated CLI              |
-| V2   | Broker lifecycle, dead letters, node agents     | local broker              |
 | V3   | Channels, messages, threads, reactions, inbox   | workspace + 1 agent token |
 | V4   | Cross-agent DMs, invites, read receipts, files  | workspace + 2 agents      |
 | V5   | Cloud, fleet, integrations, skills, reflex      | authenticated cloud       |
-| V6   | Managed agents, harnesses, PTY, SDK            | provider CLI credentials  |
+| V6   | SDK packages                                   | isolated CLI              |
 | CP   | Critical paths 1-6 from critical-paths.md       | mixed                     |
 
 Failure contract:
@@ -469,25 +468,12 @@ fi
 echo "=== Setup: ${RUN_ID} ===" | tee "$LOG"
 echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "$LOG"
 
-relay node up --background 2>&1 | tee -a "$LOG" || true
-
-BROKER_READY=0
-for i in $(seq 1 30); do
-  if relay node status 2>&1 | grep -i "running" >/dev/null; then
-    BROKER_READY=1
-    break
-  fi
-  sleep 1
-done
-
-relay status 2>&1 | tee -a "$LOG"
-
-if [ "$BROKER_READY" -eq 1 ]; then
+if relay status 2>&1 | tee -a "$LOG"; then
   echo "SETUP_OK" >> "$LOG"
   exit 0
 fi
 
-echo "SETUP_FAIL: broker did not become ready within 30 seconds" >> "$LOG"
+echo "SETUP_FAIL: relay status did not run" >> "$LOG"
 exit 1
 `,
   });
@@ -618,7 +604,7 @@ echo "=== Capability probe ===" | tee "$LOG"
 
 if ! grep -q '^VERIFY_PROVENANCE_VALID=1$' "$ARTIFACTS/provenance.env" 2>/dev/null; then
   echo "  ABORT  capability probes not run: CLI provenance is invalid" | tee -a "$LOG"
-  for _name in broker workspace cloud gh git_repo jq slack provider_claude provider_codex provider_opencode provider_gemini provider_any; do
+  for _name in workspace cloud gh git_repo jq slack provider_claude provider_codex provider_opencode provider_gemini provider_any; do
     echo "$_name=0" >> "$CAPS"
   done
   cat "$CAPS"
@@ -664,7 +650,6 @@ probe() {
   fi
 }
 
-probe broker        'relay node status 2>&1 | grep -i running >/dev/null'
 probe workspace     'relay workspace active'
 probe cloud         'relay cloud whoami'
 probe gh            'gh auth status'
@@ -719,8 +704,6 @@ for group in node cloud fleet workspace agent channel message integration capabi
   run_check "group discovery: $group" "relay $group --help" "Usage"
 done
 
-run_check "node subcommands"          "relay node --help"          "up"
-run_check "node agent subcommands"    "relay node agent --help"    "spawn"
 run_check "node workflow subcommands" "relay node workflow --help" "run"
 run_check "message dm subcommands"    "relay message dm --help"    "send"
 run_check "message inbox subcommands" "relay message inbox --help" "check"
@@ -731,53 +714,11 @@ exit 0
 `,
   });
 
-  // ── Phase 5: Tier 2 — broker lifecycle and node agents ───────────────────
-
-  wf.step('tier2-broker', {
-    type: 'deterministic',
-    dependsOn: ['tier1-cli-health'],
-    captureOutput: true,
-    failOnError: false,
-    command: String.raw`
-set -uo pipefail
-
-TIER="tier2"
-LOG="${ARTIFACTS}/tier2.log"
-${PRELUDE}
-
-echo "=== Tier 2: Broker Lifecycle and Node Agents ===" | tee "$LOG"
-if abort_for_invalid_provenance; then finish_tier; exit 0; fi
-
-run_check "node status shows running" "relay node status"        "running"
-run_check "node metrics"             "relay node metrics"        "."
-run_check "node deadletters"         "relay node deadletters"    "."
-run_check "node deadletters --json"  "relay node deadletters --json" "."
-run_check "node agent list"          "relay node agent list"     "."
-run_check "fleet status"             "relay fleet status"        "."
-
-# 'relay node tail' streams until interrupted; bound it and accept a timeout
-# kill as success. Without the bound this step hangs until the run times out.
-# Only a clean exit (0) or the timeout's own kill (124/137) counts. The old
-# "-le 124" also accepted exit 1, so a removed or broken 'node tail' still
-# scored PASS — precisely the false green this file exists to prevent.
-run_check "node tail (bounded)" \
-  "timeout 5 relay node tail >/dev/null 2>&1; _rc=\$?; case \$_rc in 0|124|137) echo tail-ok ;; *) echo \"tail-failed rc=\$_rc\" ;; esac" "tail-ok"
-
-# Redeliver against an empty queue is a no-op, so this exercises the command
-# path without mutating real delivery state.
-run_check "node redeliver --all (empty queue)" \
-  "relay node redeliver --all 2>&1 || true" "."
-
-finish_tier
-exit 0
-`,
-  });
-
   // ── Phase 6: Tier 3 — channels, messages, threads, reactions, inbox ──────
 
   wf.step('tier3-messaging', {
     type: 'deterministic',
-    dependsOn: ['tier2-broker'],
+    dependsOn: ['tier1-cli-health'],
     captureOutput: true,
     failOnError: false,
     command: String.raw`
@@ -1071,7 +1012,7 @@ exit 0
 `,
   });
 
-  // ── Phase 9: Tier 6 — managed agents, harnesses, PTY, SDK ────────────────
+  // ── Phase 9: Tier 6 — SDK packages ───────────────────────────────────────
 
   wf.step('tier6-harnesses', {
     type: 'deterministic',
@@ -1085,51 +1026,8 @@ TIER="tier6"
 LOG="${ARTIFACTS}/tier6.log"
 ${PRELUDE}
 
-echo "=== Tier 6: Managed Agents, Harnesses, PTY, SDK ===" | tee "$LOG"
+echo "=== Tier 6: SDK Packages ===" | tee "$LOG"
 if abort_for_invalid_provenance; then finish_tier; exit 0; fi
-
-# Discovery works without credentials and catches a removed subcommand.
-run_check "node agent spawn --help"   "relay node agent spawn --help"   "Usage"
-run_check "node agent release --help" "relay node agent release --help" "Usage"
-run_check "node agent attach --help"  "relay node agent attach --help"  "Usage"
-run_check "node agent set-model --help" "relay node agent set-model --help" "Usage"
-run_check "node agent new --help"     "relay node agent new --help"     "Usage"
-run_check "node agent message hold --help" "relay node agent message hold --help" "Usage"
-
-PROVIDER=""
-for candidate in claude codex opencode gemini; do
-  if command -v "$candidate" >/dev/null 2>&1; then
-    PROVIDER="$candidate"
-    break
-  fi
-done
-
-if [ -z "$PROVIDER" ]; then
-  echo "  No provider CLI on PATH — managed-agent lifecycle is a stated SKIP." | tee -a "$LOG"
-  for remaining in "node agent spawn" "node agent list shows worker" \
-    "node agent message hold" "node agent message auto" "node agent release"; do
-    skip_check "$remaining" "no provider CLI (claude/codex/opencode/gemini) on PATH"
-  done
-else
-  echo "  Using provider: $PROVIDER" | tee -a "$LOG"
-  WORKER="vf-worker-${SUFFIX}"
-  if relay node agent spawn "$PROVIDER" --name "$WORKER" \
-      --task 'Reply verify-ok and exit' --spawn-mode task-exit --exit-after-task >/dev/null 2>&1; then
-    echo "  PASS  node agent spawn" | tee -a "$LOG"
-    record "$TIER" "node agent spawn" pass ""
-    run_check "node agent list shows worker" "relay node agent list" "$WORKER"
-    run_check "node agent message hold" "relay node agent message hold '$WORKER'" "."
-    run_check "node agent message auto" "relay node agent message auto '$WORKER'" "."
-    run_check "node agent release"      "relay node agent release '$WORKER'"      "."
-  else
-    record "$TIER" "node agent spawn" fail "spawn of provider $PROVIDER exited non-zero"
-    echo "  FAIL  node agent spawn ($PROVIDER)" | tee -a "$LOG"
-    for remaining in "node agent list shows worker" "node agent message hold" \
-      "node agent message auto" "node agent release"; do
-      skip_check "$remaining" "spawn failed"
-    done
-  fi
-fi
 
 # SDK: presence of the package manifest only. A full SDK round trip belongs in
 # the SDK package's own tests, not in a CLI feature sweep.
@@ -1164,35 +1062,14 @@ ${PRELUDE}
 echo "=== Critical Paths (see .agentworkforce/features/critical-paths.md) ===" | tee "$LOG"
 if abort_for_invalid_provenance; then finish_tier; exit 0; fi
 
-# ── CP1: local broker lifecycle ──────────────────────────────────────────
-# Uses an isolated state dir so bringing the broker down cannot disturb the
-# broker the remaining paths depend on.
-echo "-- CP1: Local Broker Lifecycle --" | tee -a "$LOG"
-CP1_STATE="${ARTIFACTS}/cp1-state"
-mkdir -p "$CP1_STATE"
-CP1=0
-relay node up --background --no-spawn --state-dir "$CP1_STATE" >/dev/null 2>&1 || true
-sleep 2
-relay node status --state-dir "$CP1_STATE" 2>&1 | grep -i running >/dev/null && CP1=$((CP1 + 1))
-relay node metrics >/dev/null 2>&1 && CP1=$((CP1 + 1))
-relay node deadletters --json >/dev/null 2>&1 && CP1=$((CP1 + 1))
-relay node down --state-dir "$CP1_STATE" >/dev/null 2>&1 || true
-sleep 2
-# "grep -v" succeeds when ANY line lacks the pattern, so a multi-line status
-# that still says running satisfied it. Negate the match over the whole output.
-if ! relay node status --state-dir "$CP1_STATE" 2>&1 | grep -i running >/dev/null; then
-  CP1=$((CP1 + 1))
-fi
-if [ "$CP1" -ge 4 ]; then
-  echo "  PASS  CP1 ($CP1/4)" | tee -a "$LOG"
-  record "$TIER" "CP1 broker lifecycle" pass ""
-else
-  echo "  FAIL  CP1 ($CP1/4)" | tee -a "$LOG"
-  record "$TIER" "CP1 broker lifecycle" fail "only $CP1 of 4 lifecycle assertions held"
-fi
+# ── CP1/CP2: relay init and delivery into a running session ─────────────
+# Both need real agent tools and the Agent Relay core; the core lane
+# (tests/relayflows/core) proves them. Recorded as stated skips here.
+skip_check "CP1 relay init for your tools" "covered by the core lane (tests/relayflows/core/init-parity.mjs)"
+skip_check "CP2 message reaches a running session" "covered by the core lane (tests/relayflows/core/delivery.mjs)"
 
-# ── CP2: cross-agent channel message ────────────────────────────────────
-echo "-- CP2: Cross-Agent Channel Message --" | tee -a "$LOG"
+# ── CP3: cross-agent channel message ────────────────────────────────────
+echo "-- CP3: Cross-Agent Channel Message --" | tee -a "$LOG"
 CP2_A="cp2a-${SUFFIX}"
 CP2_B="cp2b-${SUFFIX}"
 CP2_CH="cp2-ch-${SUFFIX}"
@@ -1204,42 +1081,18 @@ if [ -n "$TOKEN_2A" ] && [ -n "$TOKEN_2B" ]; then
   RELAY_AGENT_TOKEN="$TOKEN_2A" relay channel invite "$CP2_CH" "$CP2_B" >/dev/null 2>&1 || true
   RELAY_AGENT_TOKEN="$TOKEN_2A" relay message post "$CP2_CH" "$CP2_MSG" >/dev/null 2>&1 || true
   if RELAY_AGENT_TOKEN="$TOKEN_2B" relay message list "$CP2_CH" --limit 10 2>&1 | grep "$CP2_MSG" >/dev/null; then
-    echo "  PASS  CP2 (B read A's exact text)" | tee -a "$LOG"
-    record "$TIER" "CP2 cross-agent channel message" pass ""
+    echo "  PASS  CP3 (B read A's exact text)" | tee -a "$LOG"
+    record "$TIER" "CP3 cross-agent channel message" pass ""
   else
-    echo "  FAIL  CP2 (B did not see A's text)" | tee -a "$LOG"
-    record "$TIER" "CP2 cross-agent channel message" fail "agent B could not read the message agent A posted to $CP2_CH"
+    echo "  FAIL  CP3 (B did not see A's text)" | tee -a "$LOG"
+    record "$TIER" "CP3 cross-agent channel message" fail "agent B could not read the message agent A posted to $CP2_CH"
   fi
   RELAY_AGENT_TOKEN="$TOKEN_2A" relay channel archive "$CP2_CH" >/dev/null 2>&1 || true
 else
-  skip_check "CP2 cross-agent channel message" "could not register two agents"
+  skip_check "CP3 cross-agent channel message" "could not register two agents"
 fi
 relay agent remove "$CP2_A" 2>/dev/null || true
 relay agent remove "$CP2_B" 2>/dev/null || true
-
-# ── CP3: managed local agent ────────────────────────────────────────────
-echo "-- CP3: Managed Local Agent --" | tee -a "$LOG"
-CP3_PROVIDER=""
-for candidate in claude codex opencode gemini; do
-  command -v "$candidate" >/dev/null 2>&1 && CP3_PROVIDER="$candidate" && break
-done
-if [ -z "$CP3_PROVIDER" ]; then
-  skip_check "CP3 managed local agent" "no provider CLI on PATH; provider cost makes this a pre-provisioned check"
-else
-  CP3_WORKER="cp3-${SUFFIX}"
-  if relay node agent spawn "$CP3_PROVIDER" --name "$CP3_WORKER" \
-      --task 'Reply critical-ok' --spawn-mode task-exit --exit-after-task >/dev/null 2>&1 \
-      && relay node agent list 2>&1 | grep "$CP3_WORKER" >/dev/null; then
-    relay node agent message hold "$CP3_WORKER" >/dev/null 2>&1 || true
-    relay node agent message auto "$CP3_WORKER" >/dev/null 2>&1 || true
-    relay node agent release "$CP3_WORKER" >/dev/null 2>&1 || true
-    echo "  PASS  CP3" | tee -a "$LOG"
-    record "$TIER" "CP3 managed local agent" pass ""
-  else
-    echo "  FAIL  CP3" | tee -a "$LOG"
-    record "$TIER" "CP3 managed local agent" fail "spawn or list did not show worker $CP3_WORKER with provider $CP3_PROVIDER"
-  fi
-fi
 
 # ── CP4: MCP stdio round trip ───────────────────────────────────────────
 # A real JSON-RPC handshake. The old version only ran 'relay mcp --help',
@@ -1446,27 +1299,11 @@ if [ -z "$HEAD_SHA" ]; then
   exit 0
 fi
 
-# The broker cases need a broker binary built from THIS checkout. A leftover
-# binary under target/ is worse than none: the case would run green against an
-# OLD broker and report a head signature that says nothing about this commit.
-#
-# Provenance is established by age. If any broker source, Cargo.toml or
-# Cargo.lock is newer than the binary, the binary predates the tree and is
-# refused. This is deliberately conservative: on a fresh checkout every file
-# carries checkout time, so a cached target/ is rejected and the cases skip
-# with that cause rather than producing a false result.
+# The case contract still accepts a legacy broker-runtime requirement, but
+# the Rust broker was retired and no current case declares it. A case that
+# does is recorded as a stated skip rather than run against nothing.
 BROKER_BIN=""
-BROKER_SKIP_REASON="no broker binary is built in this checkout"
-for candidate in "target/release/agent-relay-broker" "target/debug/agent-relay-broker"; do
-  [ -x "$candidate" ] || continue
-  newer_source=$(find crates Cargo.toml Cargo.lock -newer "$candidate" -type f -print 2>/dev/null | head -n 1 || true)
-  if [ -n "$newer_source" ]; then
-    BROKER_SKIP_REASON="broker binary $candidate is older than $newer_source, so it was not built from this checkout"
-    continue
-  fi
-  BROKER_BIN="$PWD/$candidate"
-  break
-done
+BROKER_SKIP_REASON="the Rust broker was retired, so no broker binary is built"
 
 for case_dir in "$CASE_ROOT"/*/; do
   case_id=$(basename "$case_dir")
@@ -1658,7 +1495,6 @@ const ledgerPath = artifacts + '/checks.jsonl';
 const EXPECTED_TIERS = [
   'provenance',
   'tier1',
-  'tier2',
   'tier3',
   'tier4',
   'tier5',

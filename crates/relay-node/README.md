@@ -56,6 +56,22 @@ contract), `call`, the harness hooks and `connect`. The account methods
 answer `method_not_found`, and the core uses the workspace the `agent-relay`
 CLI selects (`src/relay/workspace/cli.rs`), with no sign-in needed.
 
+## Register the calling session
+
+After the person authorizes joining, a native chat can use the exact probe and
+session socket provided by its core:
+
+```sh
+agent-relay-node register --socket /path/to/relay.sock --name review-bot --description 'Reviews releases'
+```
+
+The core identifies the native chat from the connecting process, not a supplied
+session ID. Its self-registration setting and ownership checks still apply.
+`--mcp agent-relay-sessions` or `--mcp none` optionally declares whether that
+chat has the hosted session tools. Registration takes no raw JSON or stdin.
+Codex's generated allow rule permits this typed command only on the core's own
+socket; generic `socket-request` remains outside those rules.
+
 ## Claude mobile continuation
 
 On macOS and Linux, Claude Code terminal sessions can receive the verified owner's
