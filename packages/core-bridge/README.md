@@ -137,6 +137,12 @@ The core stays authoritative. Rules a caller must know:
   await spawnInvoke(client, { node_id, node_name, name, harness, task, directory, idempotency_key });
   ```
 
+  The credential file must use schema `agent-relay-service-caller/2` and auth
+  `challenge-hmac-sha256/v1`; schema 1 static-secret files are refused.
+  `authenticate` also requires the complete service-caller method set before
+  sending a challenge. Consumers that select a local service-caller path can
+  call `requireServiceCallerMethods(client)` for the same fail-closed check.
+
   `authenticate` answers a single-use challenge with
   `HMAC-SHA256(SHA-256(secret), transcript)`. A connection binds once; three
   failed attempts lock it (`auth_locked`), so open a new connection.

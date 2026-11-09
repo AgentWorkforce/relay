@@ -35,8 +35,24 @@ export const CALLER_TRANSCRIPT_DOMAIN = 'agent-relay/service-caller/v1';
 export const CALLER_CHALLENGE_TTL_MS = 30_000;
 /** The `caller.json` `auth` value naming this transcript. */
 export const CALLER_AUTH_SCHEME = 'challenge-hmac-sha256/v1';
-/** The `caller.json` schemas this reader accepts. */
-export const CALLER_FILE_SCHEMAS = ['agent-relay-service-caller/1', 'agent-relay-service-caller/2'] as const;
+/** The only `caller.json` schema this challenge-auth client accepts. */
+export const CALLER_FILE_SCHEMA = 'agent-relay-service-caller/2';
+/** The feature methods a service-caller connection requires end to end. */
+export const REQUIRED_SERVICE_CALLER_METHODS = [
+  'spawn_callers.challenge',
+  'spawn_callers.authenticate',
+  'spawn.targets',
+  'spawn.invoke',
+  'spawn.status',
+  'spawn.release',
+  'spawn_callers.identity',
+  'spawn_callers.inbox.open',
+  'spawn_callers.inbox.next',
+  'spawn_callers.inbox.ack',
+  'spawn_callers.inbox.fail',
+  'spawn_callers.inbox.close',
+  'spawn_callers.disconnect',
+] as const;
 /** The largest `caller.json` this reader opens, in bytes. */
 export const MAX_CALLER_FILE_BYTES = 64 * 1024;
 
@@ -206,10 +222,8 @@ export class CallerCredential {
     if (typeof document !== 'object' || document === null || Array.isArray(document))
       throw bad('it must be an object');
     const doc = document as Record<string, unknown>;
-    if (!(CALLER_FILE_SCHEMAS as readonly unknown[]).includes(doc.schema))
-      throw bad('schema is not one this reader knows');
-    if (doc.schema !== CALLER_FILE_SCHEMAS[0] && doc.auth !== CALLER_AUTH_SCHEME)
-      throw bad('auth is not one this reader knows');
+    if (doc.schema !== CALLER_FILE_SCHEMA) throw bad('schema is not one this reader knows');
+    if (doc.auth !== CALLER_AUTH_SCHEME) throw bad('auth is not one this reader knows');
     if (typeof doc.caller_id !== 'string' || !CALLER_ID.test(doc.caller_id)) {
       throw bad('caller_id must be "sc_" and 16 lowercase hex characters');
     }
@@ -319,8 +333,10 @@ function checkBound(bound: CallerBound, callerId: string): CallerBound {
   };
 }
 
-function requireMethod(client: CoreClient, method: string): void {
-  if (!client.hello.methods.includes(method)) {
+/** Refuses a core that cannot provide the complete service-caller lifecycle. */
+export function requireServiceCallerMethods(client: Pick<CoreClient, 'hello'>): void {
+  for (const method of REQUIRED_SERVICE_CALLER_METHODS) {
+    if (client.hello.methods.includes(method)) continue;
     throw new CoreRpcError(`This Agent Relay core does not offer ${method}; update Agent Relay Desktop.`, {
       rpcCode: -32601,
       kind: 'method_not_found',
@@ -346,8 +362,7 @@ export async function authenticate(
   credential: CallerCredential,
   options?: CallOptions
 ): Promise<CallerBound> {
-  requireMethod(client, 'spawn_callers.challenge');
-  requireMethod(client, 'spawn_callers.authenticate');
+  requireServiceCallerMethods(client);
   const challengeParams: CallerChallengeParams = { caller_id: credential.callerId };
   const challenge = await client.call<CallerChallenge>('spawn_callers.challenge', challengeParams, options);
   const params: CallerAuthenticateParams = {
