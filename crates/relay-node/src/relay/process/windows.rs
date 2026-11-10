@@ -1,7 +1,14 @@
 //! The process table on Windows.
 //!
-//! - **pid, parent, start**: the kernel (`K32EnumProcesses`,
-//!   `GetProcessTimes`) and sysinfo's parent pid. Windows never reparents:
+//! - **pid, parent, start**: `OpenProcess` plus `NtQueryInformationProcess`
+//!   and its exit status for a process this one can open (an exited process
+//!   that another handle keeps open is not a process: `process` is `None`);
+//!   for one it cannot open (another account's, an elevated one), the
+//!   kernel's whole process list (`NtQuerySystemInformation`), read at most
+//!   once per `TABLE_TTL` and shared by every pid. Never a sysinfo refresh
+//!   per pid: on Windows sysinfo snapshots every process and thread of the
+//!   computer to refresh one, which made a scan that asks about every pid
+//!   cost the process count times that snapshot. Windows never reparents:
 //!   a parent that exited leaves its pid free for reuse, so a "parent" that
 //!   started after its child is a stranger and is reported as no parent
 //!   (0), which ends every ancestry walk there.
@@ -11,22 +18,34 @@
 //!   no one.
 //! - **executable**: `QueryFullProcessImageNameW`, the kernel's image path.
 //! - **arguments, environment, folder**: sysinfo, which reads them from the
-//!   process's PEB (this user's processes only).
-//! - **open files**: the system handle table, each of the process's handles
-//!   duplicated into this one; only disk files are named (`GetFileType`
-//!   first, so a pipe, whose name query can block, is never asked), and
-//!   their creation time is read from the duplicated handle, so a path
-//!   replaced since cannot change it. The walk runs on a thread of its own
-//!   and is abandoned after `OPEN_FILES_TIMEOUT`.
+//!   process's PEB (this user's processes only), for every process in one
+//!   refresh per `TABLE_TTL`. They can be up to `TABLE_TTL` old (a folder may
+//!   lag a `cd` by that much). An entry answers only for a process that was
+//!   created before the entry was read and still holds its pid (this one
+//!   keeps a handle to it meanwhile, so the pid cannot be reused); any other
+//!   pid (newer than the table, or reused since) is read afresh, the whole
+//!   table again when it is 250 ms old, else that pid alone, so a process
+//!   that has just started is always read exactly.
+//! - **open files**: the system handle table, read on every call, each of the
+//!   process's handles duplicated into this one; only disk files are named
+//!   (`GetFileType` first, so a pipe, whose name query can block, is never
+//!   asked), and their creation time is read from the duplicated handle, so a
+//!   path replaced since cannot change it. The walk runs on a thread of its
+//!   own and is abandoned after `OPEN_FILES_TIMEOUT`.
 //! - **TCP listeners**: `GetExtendedTcpTable`.
 //! - **terminal**: see `has_terminal`.
+//! - **zombie**: an exited process whose object another handle keeps:
+//!   `process` is `None`, `zombie` is true and `process_gone` is false.
 
 use super::*;
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::os::windows::ffi::OsStringExt;
 use std::sync::{mpsc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+use windows_sys::Wdk::System::SystemInformation::NtQuerySystemInformation;
+use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessBasicInformation};
 use windows_sys::Win32::Foundation::{
     CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, FILETIME, HANDLE,
 };
@@ -51,6 +70,9 @@ const OPEN_FILES_TIMEOUT: Duration = Duration::from_secs(5);
 /// `GetExitCodeProcess`'s answer for a process that has not exited.
 const STILL_ACTIVE: u32 = windows_sys::Win32::Foundation::STILL_ACTIVE as u32;
 
+/// `OpenProcess`'s error for a process this one may not open.
+const ERROR_ACCESS_DENIED: i32 = windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED as i32;
+
 /// `OpenProcess`'s error for a pid no process has.
 const ERROR_INVALID_PARAMETER: i32 = windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER as i32;
 
@@ -58,11 +80,57 @@ const ERROR_INVALID_PARAMETER: i32 = windows_sys::Win32::Foundation::ERROR_INVAL
 /// Unix epoch.
 const FILETIME_UNIX_EPOCH: u64 = 116_444_736_000_000_000;
 
-/// The sysinfo table, kept between reads so each read refreshes only the
-/// process it asks about.
+/// The exit status a running process reports.
+const STATUS_PENDING: i32 = 0x103;
+
+/// `SystemProcessInformation`, the kernel's list of every process.
+const SYSTEM_PROCESS_INFORMATION: i32 = 5;
+
+/// How long a whole-computer table (processes, their facts) answers before
+/// it is read again.
+const TABLE_TTL: Duration = Duration::from_secs(1);
+
+/// How old the facts table must be for a pid it misses to rebuild it, rather
+/// than read that pid alone (bounds the per-pid reads under process churn).
+const REBUILD_AFTER_MISS: Duration = Duration::from_millis(250);
+
+type KernelList = HashMap<u32, (u32, Option<u64>)>;
+
+/// What sysinfo reads from a process's PEB.
+#[derive(Clone, Default)]
+struct Facts {
+    /// Wall-clock microseconds since the Unix epoch taken just before the
+    /// sysinfo refresh that read this entry.
+    read_at: u64,
+    arguments: Vec<String>,
+    environment: Option<Vec<String>>,
+    cwd: Option<PathBuf>,
+}
+
+/// The whole-computer tables, each rebuilt at most once per `TABLE_TTL`:
+/// `kernel`, parent and start of every process; `facts`, their arguments,
+/// environments and folders.
 #[derive(Default)]
 pub struct Cache {
-    system: Mutex<Option<System>>,
+    kernel: Mutex<Option<(Instant, KernelList)>>,
+    facts: Mutex<Option<(Instant, HashMap<u32, Facts>)>>,
+}
+
+/// `read` of the table in `slot`, rebuilt first when missing or stale. A
+/// failed rebuild leaves the slot empty, so the next call tries again.
+fn with_table<T, R>(
+    slot: &Mutex<Option<(Instant, T)>>,
+    build: impl FnOnce() -> Option<T>,
+    read: impl FnOnce(&T) -> R,
+) -> Option<R> {
+    let mut slot = slot.lock().unwrap_or_else(|error| error.into_inner());
+    if slot
+        .as_ref()
+        .is_none_or(|(taken, _)| taken.elapsed() >= TABLE_TTL)
+    {
+        *slot = build().map(|table| (Instant::now(), table));
+    }
+    slot.as_ref().map(|(_, table)| read(table))
 }
 
 /// A handle this module opened, closed on drop.
@@ -70,9 +138,17 @@ struct Owned(HANDLE);
 
 impl Owned {
     fn process(pid: u32, access: u32) -> Option<Owned> {
+        Owned::open(pid, access).ok()
+    }
+
+    /// Like `process`, with the Windows error code of a failed open.
+    fn open(pid: u32, access: u32) -> Result<Owned, i32> {
         // SAFETY: plain integers in; the handle is checked before use.
         let handle = unsafe { OpenProcess(access, 0, pid) };
-        (!handle.is_null()).then_some(Owned(handle))
+        if handle.is_null() {
+            return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
+        }
+        Ok(Owned(handle))
     }
 }
 
@@ -96,7 +172,12 @@ fn empty_filetime() -> FILETIME {
 
 /// When `pid` was created, in microseconds since the Unix epoch.
 fn creation_micros(pid: u32) -> Option<u64> {
-    let process = Owned::process(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
+    creation_micros_of(&Owned::process(pid, PROCESS_QUERY_LIMITED_INFORMATION)?)
+}
+
+/// When the process `process` opens was created, in microseconds since the
+/// Unix epoch.
+fn creation_micros_of(process: &Owned) -> Option<u64> {
     let (mut created, mut exited, mut kernel, mut user) = (
         empty_filetime(),
         empty_filetime(),
@@ -112,6 +193,129 @@ fn creation_micros(pid: u32) -> Option<u64> {
     filetime_ticks(&created)
         .checked_sub(FILETIME_UNIX_EPOCH)
         .map(|ticks| ticks / 10)
+}
+
+/// `PROCESS_BASIC_INFORMATION`, declared here so its PEB pointer, never
+/// read, needs no `Win32_System_Kernel` feature.
+#[repr(C)]
+#[allow(dead_code)]
+struct BasicInformation {
+    exit_status: i32,
+    peb: *mut std::ffi::c_void,
+    affinity_mask: usize,
+    base_priority: i32,
+    unique_process_id: usize,
+    inherited_from_unique_process_id: usize,
+}
+
+/// What the kernel records of the process `process` opens: its exit status
+/// and the pid its creator had (possibly reused since: `process` checks
+/// start times).
+fn basic_information(process: &Owned) -> Option<BasicInformation> {
+    // SAFETY: plain integers and null pointers; every field is overwritten
+    // by the kernel on success and unread on failure.
+    let mut info: BasicInformation = unsafe { std::mem::zeroed() };
+    // SAFETY: a live process handle and an out buffer of the stated size.
+    let status = unsafe {
+        NtQueryInformationProcess(
+            process.0,
+            ProcessBasicInformation,
+            (&mut info as *mut BasicInformation).cast(),
+            std::mem::size_of::<BasicInformation>() as u32,
+            std::ptr::null_mut(),
+        )
+    };
+    (status >= 0).then_some(info)
+}
+
+/// The leading fields of `SYSTEM_PROCESS_INFORMATION`'s image name.
+#[repr(C)]
+#[allow(dead_code)]
+struct UnicodeString {
+    length: u16,
+    maximum_length: u16,
+    buffer: *mut u16,
+}
+
+/// The leading fields of `SYSTEM_PROCESS_INFORMATION`, which is all that is
+/// read; the entry is longer, `next_entry_offset` leads to the next one.
+#[repr(C)]
+#[allow(dead_code)]
+struct ProcessEntry {
+    next_entry_offset: u32,
+    number_of_threads: u32,
+    working_set_private_size: i64,
+    hard_fault_count: u32,
+    number_of_threads_high_watermark: u32,
+    cycle_time: u64,
+    create_time: i64,
+    user_time: i64,
+    kernel_time: i64,
+    image_name: UnicodeString,
+    base_priority: i32,
+    unique_process_id: usize,
+    inherited_from_unique_process_id: usize,
+}
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::offset_of!(ProcessEntry, inherited_from_unique_process_id) == 88);
+
+/// The largest process list read; past it the read gives up.
+const MAX_PROCESS_LIST: usize = 64 << 20;
+
+/// Every process of the computer: pid to its parent pid and creation time
+/// (microseconds since the Unix epoch), in one kernel call.
+fn kernel_process_list() -> Option<KernelList> {
+    let mut size: usize = 1 << 20;
+    loop {
+        let mut buffer = vec![0u64; size / 8];
+        let mut needed = 0u32;
+        // SAFETY: the buffer holds `size` bytes, aligned for the list.
+        let status = unsafe {
+            NtQuerySystemInformation(
+                SYSTEM_PROCESS_INFORMATION,
+                buffer.as_mut_ptr().cast(),
+                (buffer.len() * 8) as u32,
+                &mut needed,
+            )
+        };
+        if status == STATUS_INFO_LENGTH_MISMATCH {
+            size = (size * 2).max(needed as usize + (256 << 10));
+            if size > MAX_PROCESS_LIST {
+                return None;
+            }
+            continue;
+        }
+        if status < 0 {
+            return None;
+        }
+        let byte_len = buffer.len() * 8;
+        let base = buffer.as_ptr() as *const u8;
+        let mut list = KernelList::new();
+        let mut offset = 0usize;
+        while offset + std::mem::size_of::<ProcessEntry>() <= byte_len {
+            // SAFETY: the entry lies inside the buffer the kernel filled
+            // (checked above); the read makes no alignment assumption.
+            let entry =
+                unsafe { std::ptr::read_unaligned(base.add(offset) as *const ProcessEntry) };
+            if let (Ok(pid), Ok(parent)) = (
+                u32::try_from(entry.unique_process_id),
+                u32::try_from(entry.inherited_from_unique_process_id),
+            ) {
+                if pid != 0 {
+                    let created = (entry.create_time as u64)
+                        .checked_sub(FILETIME_UNIX_EPOCH)
+                        .map(|ticks| ticks / 10);
+                    list.insert(pid, (parent, created));
+                }
+            }
+            if entry.next_entry_offset == 0 {
+                break;
+            }
+            offset += entry.next_entry_offset as usize;
+        }
+        return Some(list);
+    }
 }
 
 fn lossy<S: AsRef<OsStr> + ?Sized>(value: &S) -> String {
@@ -215,7 +419,7 @@ fn handles_of(pid: u32) -> Vec<usize> {
         let mut needed = 0u32;
         // SAFETY: the buffer holds `size` bytes, aligned for the table.
         let status = unsafe {
-            windows_sys::Wdk::System::SystemInformation::NtQuerySystemInformation(
+            NtQuerySystemInformation(
                 SYSTEM_EXTENDED_HANDLE_INFORMATION,
                 buffer.as_mut_ptr().cast(),
                 (buffer.len() * 8) as u32,
@@ -324,47 +528,156 @@ fn listener_table(family: u16) -> Option<Vec<u64>> {
     None
 }
 
+/// What sysinfo read of one process, as `Facts` stamped `read_at`; `None`
+/// for a process without a start time (sysinfo lists it but read nothing).
+fn facts_of(process: &sysinfo::Process, read_at: u64) -> Option<Facts> {
+    (process.start_time() != 0).then(|| Facts {
+        read_at,
+        arguments: process.cmd().iter().map(lossy).collect(),
+        environment: (!process.environ().is_empty())
+            .then(|| process.environ().iter().map(lossy).collect()),
+        cwd: process.cwd().map(Path::to_path_buf),
+    })
+}
+
+/// Now, in microseconds since the Unix epoch, the clock `creation_micros`
+/// uses.
+fn now_micros() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| u64::try_from(elapsed.as_micros()).ok())
+        .unwrap_or(0)
+}
+
+fn facts_kind() -> ProcessRefreshKind {
+    ProcessRefreshKind::nothing()
+        .with_cmd(UpdateKind::Always)
+        .with_environ(UpdateKind::Always)
+        .with_cwd(UpdateKind::Always)
+}
+
+/// The facts of every process, from one sysinfo refresh. The `System` is
+/// dropped before returning: it holds a process handle per process, which
+/// the cache must not keep.
+fn build_facts() -> HashMap<u32, Facts> {
+    let read_at = now_micros();
+    let mut system = System::new();
+    system.refresh_processes_specifics(ProcessesToUpdate::All, true, facts_kind());
+    system
+        .processes()
+        .iter()
+        .filter_map(|(pid, process)| Some((pid.as_u32(), facts_of(process, read_at)?)))
+        .collect()
+}
+
+/// The facts of one process, from a refresh of that pid alone.
+fn one_pid_facts(pid: u32) -> Option<Facts> {
+    let pid = Pid::from_u32(pid);
+    let read_at = now_micros();
+    let mut system = System::new();
+    system.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, facts_kind());
+    facts_of(system.process(pid)?, read_at)
+}
+
 impl SystemProcesses {
-    /// `read` of sysinfo's view of `pid`, its basic facts and `kind`
-    /// refreshed now (each read asks only for what it uses: the PEB reads
-    /// cost a handle and memory reads).
-    fn with_info<T>(
-        &self,
-        pid: i32,
-        kind: ProcessRefreshKind,
-        read: impl FnOnce(&sysinfo::Process) -> T,
-    ) -> Option<T> {
-        let pid = Pid::from_u32(u32::try_from(pid).ok().filter(|pid| *pid > 0)?);
-        let mut system = self
-            .windows
-            .system
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let system = system.get_or_insert_with(System::new);
-        system.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, kind);
-        system.process(pid).map(read)
+    /// The kernel list's entry for `pid`: parent and creation time.
+    fn kernel_entry(&self, pid: u32) -> Option<(u32, Option<u64>)> {
+        with_table(&self.windows.kernel, kernel_process_list, |list| {
+            list.get(&pid).copied()
+        })
+        .flatten()
     }
 
-    /// When `pid` started, in microseconds since the epoch: the kernel's
-    /// creation time, else sysinfo's whole seconds.
+    /// When `pid` started, in microseconds since the epoch: the process's
+    /// own creation time; for a process this one may not open, the kernel
+    /// list's. A pid that cannot be opened for any other reason is gone.
     fn start_micros(&self, pid: u32) -> Option<u64> {
-        creation_micros(pid).or_else(|| {
-            self.with_info(pid as i32, ProcessRefreshKind::nothing(), |process| {
-                process.start_time().saturating_mul(1_000_000)
-            })
-        })
+        match Owned::open(pid, PROCESS_QUERY_LIMITED_INFORMATION) {
+            Ok(process) => creation_micros_of(&process),
+            Err(ERROR_ACCESS_DENIED) => self.kernel_entry(pid)?.1,
+            Err(_) => None,
+        }
+    }
+
+    /// `read` of `pid`'s facts, at most `TABLE_TTL` old, for a process this
+    /// one can open (one it cannot has an unreadable PEB anyway). An entry
+    /// answers only if the process was created before it was read: the
+    /// handle held here keeps the pid from being reused meanwhile, so the
+    /// entry is then this process's own. A pid the table misses, or whose
+    /// entry fails that check, rebuilds a table 250 ms old or more, and
+    /// failing that is read on its own.
+    fn facts<T>(&self, pid: i32, read: impl FnOnce(&Facts) -> T) -> Option<T> {
+        let raw = u32::try_from(pid).ok().filter(|pid| *pid > 0)?;
+        let handle = Owned::process(raw, PROCESS_QUERY_LIMITED_INFORMATION)?;
+        let created = creation_micros_of(&handle)?;
+        type Table = Option<(Instant, HashMap<u32, Facts>)>;
+        let entry = |table: &Table| -> Option<Facts> {
+            let (_, table) = table.as_ref()?;
+            table.get(&raw).filter(|f| created < f.read_at).cloned()
+        };
+        let rebuild = |table: &mut Table| *table = Some((Instant::now(), build_facts()));
+        {
+            let mut slot = self
+                .windows
+                .facts
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let age = |slot: &Table| slot.as_ref().map(|(taken, _)| taken.elapsed());
+            if age(&slot).is_none_or(|age| age >= TABLE_TTL) {
+                rebuild(&mut slot);
+            }
+            if let Some(facts) = entry(&slot) {
+                return Some(read(&facts));
+            }
+            if age(&slot).is_some_and(|age| age >= REBUILD_AFTER_MISS) {
+                rebuild(&mut slot);
+                if let Some(facts) = entry(&slot) {
+                    return Some(read(&facts));
+                }
+            }
+        }
+        let facts = one_pid_facts(raw).filter(|facts| created < facts.read_at)?;
+        let result = read(&facts);
+        let mut slot = self
+            .windows
+            .facts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some((_, table)) = slot.as_mut() {
+            table.insert(raw, facts);
+        }
+        Some(result)
     }
 }
 
 impl ProcessTable for SystemProcesses {
     fn process(&self, pid: i32) -> Option<ProcessInfo> {
         let raw = u32::try_from(pid).ok().filter(|pid| *pid > 0)?;
-        let start = self.start_micros(raw)?;
-        let parent = self
-            .with_info(pid, ProcessRefreshKind::nothing(), |process| {
-                process.parent().map(|parent| parent.as_u32())
-            })?
-            .unwrap_or(0);
+        let (parent, start, uid) = match Owned::open(raw, PROCESS_QUERY_LIMITED_INFORMATION) {
+            Ok(handle) => {
+                let info = basic_information(&handle)?;
+                // An exited process some handle keeps is not a process.
+                if info.exit_status != STATUS_PENDING {
+                    return None;
+                }
+                let start = creation_micros_of(&handle)?;
+                let parent = u32::try_from(info.inherited_from_unique_process_id).unwrap_or(0);
+                // Read while `handle` is held: the pid cannot be reused
+                // between the reads.
+                let uid = crate::relay::peer::process_uid(raw).unwrap_or(u32::MAX);
+                (parent, start, uid)
+            }
+            // A process this one may not open (another account's, an
+            // elevated one): the kernel's list. Any other failure, a pid
+            // that no longer exists first, is no process.
+            Err(ERROR_ACCESS_DENIED) => {
+                let (parent, start) = self.kernel_entry(raw)?;
+                let uid = crate::relay::peer::process_uid(raw).unwrap_or(u32::MAX);
+                (parent, start?, uid)
+            }
+            Err(_) => return None,
+        };
         // A parent pid reused by a process that started later is not the
         // parent; neither is one whose start cannot be read.
         let parent = match parent {
@@ -375,7 +688,6 @@ impl ProcessTable for SystemProcesses {
             },
         };
         // A process whose token cannot be read matches no one.
-        let uid = crate::relay::peer::process_uid(raw).unwrap_or(u32::MAX);
         Some(ProcessInfo {
             pid,
             parent,
@@ -466,23 +778,16 @@ impl ProcessTable for SystemProcesses {
     }
 
     fn command_line(&self, pid: i32) -> CommandLine {
-        let kind = ProcessRefreshKind::nothing()
-            .with_cmd(UpdateKind::Always)
-            .with_environ(UpdateKind::Always);
-        self.with_info(pid, kind, |process| CommandLine {
-            arguments: process.cmd().iter().map(|arg| lossy(arg)).collect(),
-            environment: (!process.environ().is_empty())
-                .then(|| process.environ().iter().map(|entry| lossy(entry)).collect()),
+        self.facts(pid, |facts| CommandLine {
+            arguments: facts.arguments.clone(),
+            environment: facts.environment.clone(),
         })
         .unwrap_or_default()
     }
 
     fn arguments(&self, pid: i32) -> Vec<String> {
-        let kind = ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always);
-        self.with_info(pid, kind, |process| {
-            process.cmd().iter().map(|arg| lossy(arg)).collect()
-        })
-        .unwrap_or_default()
+        self.facts(pid, |facts| facts.arguments.clone())
+            .unwrap_or_default()
     }
 
     fn open_files(&self, pid: i32) -> Vec<PathBuf> {
@@ -509,9 +814,7 @@ impl ProcessTable for SystemProcesses {
     }
 
     fn cwd(&self, pid: i32) -> Option<PathBuf> {
-        let kind = ProcessRefreshKind::nothing().with_cwd(UpdateKind::Always);
-        self.with_info(pid, kind, |process| process.cwd().map(Path::to_path_buf))
-            .flatten()
+        self.facts(pid, |facts| facts.cwd.clone()).flatten()
     }
 
     fn owns_tcp_listener(&self, pid: i32, host: &str, port: u16) -> bool {
@@ -627,6 +930,42 @@ mod tests {
         assert!(table.process(0).is_none());
     }
 
+    /// A `ping.exe` child that is killed and reaped when dropped.
+    struct Pinger(std::process::Child);
+
+    impl Pinger {
+        fn start() -> Pinger {
+            Pinger(
+                std::process::Command::new("ping.exe")
+                    .args(["-n", "30", "127.0.0.1"])
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .unwrap(),
+            )
+        }
+
+        fn pid(&self) -> i32 {
+            self.0.id() as i32
+        }
+    }
+
+    impl Drop for Pinger {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[test]
+    fn a_running_child_names_this_process_as_its_parent() {
+        let child = Pinger::start();
+        let table = SystemProcesses::default();
+        let parent = table.process(child.pid()).map(|info| info.parent);
+        assert_eq!(parent, Some(std::process::id() as i32));
+    }
+
     #[test]
     fn an_exited_child_is_a_zombie_until_its_handle_closes() {
         let mut child = std::process::Command::new("cmd.exe")
@@ -639,6 +978,83 @@ mod tests {
         let table = SystemProcesses::default();
         assert!(table.zombie(pid));
         assert!(!table.process_gone(pid));
+        assert!(table.process(pid).is_none());
         drop(child);
+    }
+
+    #[test]
+    fn a_handle_opened_just_now_is_seen() {
+        let table = SystemProcesses::default();
+        let me = std::process::id() as i32;
+        let _ = table.open_files(me);
+        let name = format!("relay-fresh-handle-{}.tmp", std::process::id());
+        let path = std::env::temp_dir().join(&name);
+        let file = std::fs::File::create(&path).unwrap();
+        let open = table.open_files(me);
+        drop(file);
+        let _ = std::fs::remove_file(&path);
+        assert!(open.iter().any(|open| open
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|found| found.eq_ignore_ascii_case(&name))));
+    }
+
+    #[test]
+    fn a_pid_that_exited_is_not_a_process() {
+        let table = SystemProcesses::default();
+        let mut child = Pinger::start();
+        let pid = child.pid();
+        assert!(table.process(pid).is_some());
+        let _ = child.0.kill();
+        let _ = child.0.wait();
+        drop(child);
+        assert!(table.process(pid).is_none());
+    }
+
+    #[test]
+    fn the_kernel_list_agrees_with_this_process_handle() {
+        let me = std::process::id();
+        let list = kernel_process_list().unwrap();
+        let (parent, created) = *list.get(&me).expect("this process is listed");
+        assert_eq!(created, creation_micros(me));
+        let handle = Owned::process(me, PROCESS_QUERY_LIMITED_INFORMATION).unwrap();
+        let info = basic_information(&handle).unwrap();
+        assert_eq!(
+            u32::try_from(info.inherited_from_unique_process_id).ok(),
+            Some(parent)
+        );
+    }
+
+    #[test]
+    fn facts_of_this_process_and_of_a_new_child() {
+        let table = SystemProcesses::default();
+        let me = std::process::id() as i32;
+        assert!(!table.arguments(me).is_empty());
+        let environment = table.command_line(me).environment.unwrap();
+        assert!(environment
+            .iter()
+            .any(|entry| entry.to_ascii_uppercase().starts_with("PATH=")));
+        assert!(table.cwd(me).is_some());
+        // Started after the cached table was read: read on its own.
+        let child = Pinger::start();
+        assert!(table
+            .arguments(child.pid())
+            .iter()
+            .any(|argument| argument == "127.0.0.1"));
+    }
+
+    #[test]
+    fn open_files_sees_a_file_held_by_this_process() {
+        let name = format!("relay-open-files-{}.tmp", std::process::id());
+        let path = std::env::temp_dir().join(&name);
+        let file = std::fs::File::create(&path).unwrap();
+        let table = SystemProcesses::default();
+        let open = table.open_files(std::process::id() as i32);
+        drop(file);
+        let _ = std::fs::remove_file(&path);
+        assert!(open.iter().any(|open| open
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|found| found.eq_ignore_ascii_case(&name))));
     }
 }

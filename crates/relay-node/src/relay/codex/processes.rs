@@ -248,14 +248,15 @@ pub fn needs_probe_reply_client(table: &dyn ProcessTable, uid: u32, thread: &str
         if !table.process(pid).is_some_and(|process| process.uid == uid) {
             return false;
         }
-        // The kernel's lock evidence is cheap; verifying an executable is
-        // not, so only a process that holds the thread is verified.
-        let locked = codex_locked_threads(table, pid);
-        locked.contains(&thread)
+        // The executable first: its path is one kernel query and `trust`
+        // verifies each path once, while the lock evidence walks every open
+        // handle of the process on Windows (one duplication per handle),
+        // which only a trusted Codex is worth.
+        table
+            .executable(pid)
+            .is_some_and(|exe| trust.trusted(table, &exe))
+            && codex_locked_threads(table, pid).contains(&thread)
             && resume_argument(&table.arguments(pid)).map(str::to_lowercase) != Some(thread.clone())
-            && table
-                .executable(pid)
-                .is_some_and(|exe| trust.trusted(table, &exe))
     })
 }
 
