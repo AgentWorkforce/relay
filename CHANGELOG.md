@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `agent-relay cloud worker register` accepts exactly one of `--token`, `--token-file` or `--token-stdin`, so enrollment can read a projected Secret file or pipe without putting the credential in process arguments. File and stdin inputs are limited to 16 KiB; interactive stdin is refused.
 
 ## [18.0.0] - 2026-11-09
 
