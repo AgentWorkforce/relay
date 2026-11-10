@@ -255,6 +255,35 @@ pub async fn ensure_channel(
     .await
 }
 
+/// Creates the channel as the agent holding `token` and joins it; a
+/// channel of that name that already exists is joined instead, and a
+/// membership it already holds is kept. Returns whether this call created
+/// the channel.
+pub async fn create_channel(
+    base_url: &str,
+    token: &Secret,
+    name: &str,
+    topic: Option<&str>,
+) -> relaycast::Result<bool> {
+    crate::relay::request_log::observe(
+        "SDK: create_channel",
+        base_url,
+        serde_json::json!({"name": name}),
+        token.expose(),
+        async {
+            let outcome = agent_client(base_url, token)?
+                .ensure_joined_channel(CreateChannelRequest {
+                    name: name.into(),
+                    topic: topic.map(str::to_string),
+                    metadata: None,
+                })
+                .await?;
+            Ok(outcome.created)
+        },
+    )
+    .await
+}
+
 /// Joins the channel as the agent holding `token`; returns its id.
 pub async fn join_channel(base_url: &str, token: &Secret, name: &str) -> relaycast::Result<String> {
     crate::relay::request_log::observe(

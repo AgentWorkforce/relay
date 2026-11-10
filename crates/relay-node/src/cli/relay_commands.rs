@@ -191,13 +191,21 @@ pub enum RelayCommands {
         body: Option<String>,
     },
     /// Join one channel as the calling session, so its posts are delivered
-    /// (`POST /channels/subscribe`), or leave it with `--remove`.
+    /// (`POST /channels/subscribe`), or leave it with `--remove`. With
+    /// `--create` a channel that does not exist yet is created and joined
+    /// (`POST /channels`); an existing one is joined.
     SubscribeChannel {
         #[arg(value_name = "CHANNEL")]
         channel: String,
         /// Leave the channel instead.
         #[arg(long)]
         remove: bool,
+        /// Create the channel when it does not exist, then join it.
+        #[arg(long, conflicts_with = "remove")]
+        create: bool,
+        /// The new channel's topic (with --create).
+        #[arg(long, requires = "create")]
+        topic: Option<String>,
         /// The session socket, as the hint names it.
         #[arg(long)]
         socket: PathBuf,
@@ -373,11 +381,20 @@ pub fn session_command(
             socket,
             channel,
             remove,
+            create,
+            topic,
         } => (
             socket.as_path(),
-            SessionCommand::SubscribeChannel {
-                channel: channel.clone(),
-                remove: *remove,
+            if *create {
+                SessionCommand::CreateChannel {
+                    channel: channel.clone(),
+                    topic: topic.clone(),
+                }
+            } else {
+                SessionCommand::SubscribeChannel {
+                    channel: channel.clone(),
+                    remove: *remove,
+                }
             },
             None,
         ),

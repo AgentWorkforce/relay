@@ -88,7 +88,7 @@ impl Outbound {
                 "not_found",
                 "Unknown route. Common session-socket routes: GET /agents, GET /whoami, POST /send, \
                  POST /register, GET|PATCH /settings, GET /messages, POST /attachments/fetch, \
-                 POST|DELETE /channels/subscribe, POST /connect/join, POST /connect/send, \
+                 POST /channels, POST|DELETE /channels/subscribe, POST /connect/join, POST /connect/send, \
                  GET /connect/status, POST /connect/leave, and the setup, webhook and \
                  integration routes.",
             )),

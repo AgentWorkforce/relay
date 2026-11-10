@@ -469,6 +469,7 @@ impl Outbound {
             ("GET", "/messages") => self.read_message(pid, uid, &request.query).await,
             ("POST", "/send") => self.send_route(pid, uid, request).await,
             ("POST", "/register") => self.register_route(pid, uid, request).await,
+            ("POST", "/channels") => self.create_channel_route(pid, uid, request).await,
             ("POST" | "DELETE", "/channels/subscribe") => {
                 self.channel_subscription(pid, uid, request).await
             }
