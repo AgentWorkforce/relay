@@ -144,6 +144,7 @@ fn launch(directory: &Path, full_access: bool) -> Launch {
         full_access,
         message_id: "spawn-inv_o1".into(),
         session_id: SPAWN.into(),
+        fork: None,
     }
 }
 

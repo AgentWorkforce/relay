@@ -183,6 +183,7 @@ fn launch(directory: &Path, full_access: bool) -> Launch {
         full_access,
         message_id: "m1".into(),
         session_id: SPAWN_SESSION.into(),
+        fork: None,
     }
 }
 

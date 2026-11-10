@@ -47,6 +47,9 @@ pub struct Launch {
     /// An id for the session, decided before it starts (Claude's
     /// `--session-id`).
     pub session_id: String,
+    /// The harness's own id of the session this agent starts as a copy of:
+    /// its whole conversation so far, then `text` as the next turn.
+    pub fork: Option<String>,
 }
 
 /// Told the agent's session and process as soon as the launch started them,
@@ -134,6 +137,11 @@ pub trait Spawner: Send + Sync {
     }
     /// Starts one agent. Blocking, for up to about half a minute.
     fn launch(&self, launch: &Launch, started: Started) -> Result<Launched, LaunchError>;
+    /// The folder of `target`'s session when `harness` can start an agent
+    /// as a copy of it (`Launch::fork`); `None` when it cannot. Blocking.
+    fn fork_directory(&self, _harness: HarnessId, _target: &Target) -> Option<PathBuf> {
+        None
+    }
     /// The session and process of a spawn a restart interrupted, when they
     /// can be found; whether it still runs is `alive`'s to say.
     fn find(&self, intent: &super::intents::Intent) -> Option<(Target, Option<SpawnedProcess>)> {
@@ -333,6 +341,10 @@ impl Spawner for RegistrySpawner {
             }
         }
         result
+    }
+
+    fn fork_directory(&self, harness: HarnessId, target: &Target) -> Option<PathBuf> {
+        self.0.get(harness)?.spawn()?.fork_directory(target)
     }
 
     fn find(&self, intent: &super::intents::Intent) -> Option<(Target, Option<SpawnedProcess>)> {
@@ -1143,6 +1155,7 @@ mod tests {
                 full_access: true,
                 message_id: "m1".into(),
                 session_id: "s1".into(),
+                fork: None,
             }
         }
 

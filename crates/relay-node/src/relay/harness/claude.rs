@@ -265,7 +265,7 @@ impl SpawnFacet for ClaudeAdapter {
         );
         // Its turns' state on its output, so a native turn waits for idle.
         environment.insert("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS".into(), "1".into());
-        let arguments = arguments(session_id, launch.full_access);
+        let arguments = arguments(session_id, launch.fork.as_deref(), launch.full_access);
         let unit = crate::relay::spawn::launch::scope_unit(session_id);
         let start = |scope: Option<(&Path, &str)>| {
             start_with_input(
@@ -315,6 +315,27 @@ impl SpawnFacet for ClaudeAdapter {
             process: Some(process),
             task,
         })
+    }
+
+    /// A Claude Code session whose transcript is in this login's
+    /// `projects/`, where `--resume` finds it, by the folder it ran in.
+    fn fork_directory(&self, target: &Target) -> Option<PathBuf> {
+        if target.kind != SessionKind::ClaudeTerminal {
+            return None;
+        }
+        let (transcript, live) =
+            claude_code::transcript::path(&self.claude, self.table.as_ref(), &target.id)?;
+        if !transcript.starts_with(self.claude.projects()) {
+            return None;
+        }
+        let directory = live.and_then(|session| session.cwd).or_else(|| {
+            read_head(&transcript, LOG_HEAD)?
+                .split(|byte| *byte == b'\n')
+                .filter_map(|line| serde_json::from_slice::<Value>(line).ok())
+                .find_map(|entry| entry["cwd"].as_str().map(str::to_string))
+        })?;
+        let directory = PathBuf::from(directory);
+        directory.is_absolute().then_some(directory)
     }
 
     /// By the process it started or the session it published.
@@ -374,7 +395,9 @@ impl SpawnFacet for ClaudeAdapter {
 /// prompts, MCP elicitations and dialogs come to the core on its output
 /// (`--permission-prompt-tool stdio`) rather than being refused. Like the
 /// broker's workers it loads the person's own MCP servers and connectors.
-pub fn arguments(session_id: &str, full_access: bool) -> Vec<String> {
+/// A fork resumes `fork`'s transcript into its own new session
+/// (`--fork-session`), leaving the original untouched.
+pub fn arguments(session_id: &str, fork: Option<&str>, full_access: bool) -> Vec<String> {
     let mut arguments: Vec<String> = [
         "-p",
         "--input-format",
@@ -390,6 +413,9 @@ pub fn arguments(session_id: &str, full_access: bool) -> Vec<String> {
     ]
     .map(String::from)
     .to_vec();
+    if let Some(source) = fork {
+        arguments.extend(["--resume".into(), source.into(), "--fork-session".into()]);
+    }
     if full_access {
         arguments.push("--dangerously-skip-permissions".into());
     } else {

@@ -29,6 +29,7 @@ fn launch(home: &Path) -> Launch {
         full_access: true,
         message_id: "m1".into(),
         session_id: "s1".into(),
+        fork: None,
     }
 }
 

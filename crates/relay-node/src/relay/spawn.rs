@@ -42,6 +42,7 @@ mod completions;
 pub(crate) mod control;
 pub(crate) mod drive;
 mod failed;
+pub mod fork;
 pub mod handover;
 mod host;
 pub mod intents;
@@ -586,6 +587,7 @@ mod tests {
             name: name.into(),
             task: "Fix CI".into(),
             directory: None,
+            fork_from: None,
         }
     }
 

@@ -292,6 +292,16 @@ impl SpawnFacet for CodexAdapter {
         self.owns(target)
     }
 
+    /// An unarchived thread in this Codex home, by its recorded folder.
+    fn fork_directory(&self, target: &Target) -> Option<PathBuf> {
+        if !self.owns(target) || threads::contains_unarchived(&self.codex, &target.id) != Some(true)
+        {
+            return None;
+        }
+        let directory = PathBuf::from(threads::read_one(&self.codex, &target.id)?.directory?);
+        directory.is_absolute().then_some(directory)
+    }
+
     fn deliver(&self, target: &Target, message: &Message) -> Option<InjectOutcome> {
         if !self.owns(target) {
             return None;
@@ -396,6 +406,7 @@ impl SpawnFacet for CodexAdapter {
                         )
                     }),
                     ended: Some(&|thread| self.turn_ended(thread, &launch.message_id)),
+                    fork: launch.fork.as_deref(),
                 },
             )
             .map_err(|error| {

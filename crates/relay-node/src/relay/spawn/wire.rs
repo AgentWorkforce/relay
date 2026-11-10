@@ -39,6 +39,8 @@ pub use action::*;
 /// The capacity this node offers. A bare `spawn` must never be advertised:
 /// Relaycast would pin every spawn in the workspace to this node.
 pub const RELEASE: &str = "release";
+/// Spawns here accept `fork_from` for the harnesses its metadata lists.
+pub const FORK_CAPABILITY: &str = "relay:spawn-fork:v1";
 /// What kind of node this is, in each `spawn:<harness>` capability's
 /// `metadata.configured.node_kind`: a person's desktop.
 pub const NODE_KIND: &str = "desktop";
@@ -238,7 +240,31 @@ impl Advertisement {
                 }),
                 json!({"name": ERROR_DETAILS_CAPABILITY, "kind": ERROR_DETAILS_KIND}),
             ])
+            .chain(self.fork_capability())
             .collect()
+    }
+
+    /// `relay:spawn-fork:v1` with the offered harnesses that can start as a
+    /// copy of a session, and the `machine` its agents' `host` metadata
+    /// names, so a requester finds the node holding an agent. An older node
+    /// never lists it and ignores `fork_from`, so a requester must find it
+    /// before asking for a fork.
+    fn fork_capability(&self) -> Option<Value> {
+        let harnesses: Vec<&str> = self
+            .configured
+            .harnesses
+            .iter()
+            .map(|harness| harness.harness)
+            .filter(|harness| crate::relay::spawn::fork::supported(*harness))
+            .map(HarnessId::name)
+            .collect();
+        (!harnesses.is_empty()).then(|| {
+            json!({
+                "name": FORK_CAPABILITY,
+                "kind": "capacity",
+                "metadata": {"harnesses": harnesses, "machine": self.configured.machine},
+            })
+        })
     }
 
     /// Slot utilization is unknown without a finite cap, never fabricated as zero.
@@ -492,8 +518,12 @@ pub struct SpawnRequest {
     pub harness: HarnessId,
     pub name: String,
     pub task: String,
-    /// Absolute; `None` for the person's home folder.
+    /// Absolute; `None` for the person's home folder, or for a fork, the
+    /// folder of the session it copies.
     pub directory: Option<PathBuf>,
+    /// The agent on this computer whose session the new agent starts as a
+    /// copy of (`fork_from`), continuing its conversation.
+    pub fork_from: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -559,12 +589,20 @@ pub fn invoke(frame: &Value) -> Option<Result<Invoke, (String, String)>> {
         Some(path) if Path::new(path).is_absolute() => Some(PathBuf::from(path)),
         Some(_) => return fail("spawn_invalid_input: worker_cwd must be an absolute path"),
     };
+    let fork_from = match input["fork_from"].as_str() {
+        None | Some("") => None,
+        Some(source) => match valid_name(Some(source)) {
+            Some(source) if source != name => Some(source),
+            _ => return fail("spawn_invalid_input: fork_from must name another agent"),
+        },
+    };
     Some(Ok(Invoke::Spawn(SpawnRequest {
         invocation_id,
         harness,
         name,
         task,
         directory,
+        fork_from,
     })))
 }
 
@@ -683,7 +721,8 @@ mod tests {
                 "spawn:muse",
                 "spawn:devin",
                 "release",
-                "relay:spawn-error-details-v1"
+                "relay:spawn-error-details-v1",
+                "relay:spawn-fork:v1"
             ]
         );
         assert!(frame["capabilities"]
@@ -744,6 +783,23 @@ mod tests {
         assert_eq!(frame["load"], 0.25);
         assert_eq!(frame["load_reported"], true);
         assert_eq!(frame["capabilities"][0]["name"], "spawn:claude");
+    }
+
+    #[test]
+    fn forking_is_advertised_for_the_offered_harnesses_that_can_fork() {
+        let fork = |harnesses: &[HarnessId]| {
+            identity().heartbeat(&advertisement(harnesses, 0))["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["name"] == FORK_CAPABILITY)
+                .cloned()
+        };
+        let all = fork(&harness::ids()).unwrap();
+        assert_eq!(all["kind"], "capacity");
+        assert_eq!(all["metadata"]["harnesses"], json!(["codex", "claude"]));
+        assert_eq!(all["metadata"]["machine"], "Test-Mac-Mini");
+        assert_eq!(fork(&[crate::relay::harness::opencode::ID]), None);
     }
 
     #[test]
@@ -892,6 +948,27 @@ mod tests {
         assert_eq!(request.name, "w1");
         assert_eq!(request.task, "fix CI");
         assert_eq!(request.directory, Some(PathBuf::from(repo)));
+        assert_eq!(request.fork_from, None);
+    }
+
+    #[test]
+    fn a_fork_names_another_valid_agent() {
+        let spawn = |input: Value| {
+            invoke(&json!({"type": "action.invoke", "invocation_id": "inv_1",
+                "action": "spawn:claude", "input": input}))
+        };
+        let Some(Ok(Invoke::Spawn(request))) =
+            spawn(json!({"name": "planner-fork", "task": "go on", "fork_from": "planner"}))
+        else {
+            panic!("not a spawn")
+        };
+        assert_eq!(request.fork_from.as_deref(), Some("planner"));
+        for source in ["planner-fork", "-planner", "plan ner"] {
+            assert!(matches!(
+                spawn(json!({"name": "planner-fork", "fork_from": source})),
+                Some(Err((_, error))) if error.starts_with("spawn_invalid_input")
+            ));
+        }
     }
 
     #[test]

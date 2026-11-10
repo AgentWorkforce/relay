@@ -320,6 +320,7 @@ fn startup_timeout_stops_owned_acp_child_even_when_it_ignores_stdin_eof() {
             full_access: false,
             message_id: "timeout-initial".into(),
             session_id: launch_id.clone(),
+            fork: None,
         },
         &|_, process| *started.lock().unwrap() = process,
     );
