@@ -4,9 +4,9 @@
 discovers the coding-agent sessions running on a computer (Claude Code, Codex,
 Devin, OpenCode, Grok, Pi, Cursor CLI, OpenClaw, Hermes, Muse, …), puts them
 on the relay, and injects Relay messages into them through each harness's own
-native route (hooks, app servers, plugins and sockets, not a PTY). It is
-messaging only. It builds one binary, `agent-relay-node`, which runs as one
-long-lived process per user:
+native route (hooks, app servers, plugins and sockets, not a PTY). It provides
+messaging and native agent spawning. It builds one binary, `agent-relay-node`,
+which runs as one long-lived process per user:
 
 ```sh
 agent-relay-node serve [--socket PATH] [--app-data-dir PATH] [--headless]
@@ -19,6 +19,11 @@ with what they add through its plugins.
 
 - [`docs/relay-core.md`](docs/relay-core.md): the daemon, its bridge
   contract, delivery and the relay-send socket.
+
+For a headless server joining the same Cloud workspace as Desktop, use the
+[account-aware Linux service setup](../../docs/headless-server.md). The
+standalone core has no account sign-in plugin: `serve --headless` alone does
+not turn a CLI Cloud enrollment into a live Desktop spawn target.
 
 ## Layout
 

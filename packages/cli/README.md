@@ -42,6 +42,14 @@ agent-relay node workflow logs <run-id> --follow
 agent-relay node workflow sync <run-id>
 ```
 
+## Headless server in an existing Cloud workspace
+
+For an Ubuntu server that should appear beside your Mac as a spawn target,
+follow [the headless server guide](../../docs/headless-server.md). Use the Linux
+account-aware package and device sign-in to the exact workspace. A v18
+`cloud enroll` node ID alone does not start that service; its `node up` next-step
+message is stale. `init --hosted` can create a different workspace.
+
 ### Workspace selection
 
 Commands resolve the workspace through one precedence ladder. The first source
