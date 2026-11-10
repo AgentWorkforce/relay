@@ -1956,7 +1956,9 @@ describe('registerCloudCommands', () => {
 
     const output = log.mock.calls.flat().join('\n');
     expect(output).toContain('Enrolled node "kjglaptop" (node_abc) in workspace rw_123');
-    expect(output).toContain("Run 'relay node up'");
+    expect(output).not.toContain('node up');
+    expect(output).toContain('no runtime was started');
+    expect(output).toContain('https://agentrelay.com/docs/headless-server');
     expect(output).not.toContain('nt_secret');
   });
 
@@ -1990,6 +1992,7 @@ describe('registerCloudCommands', () => {
     expect(stderr).toContain('persisting credentials failed');
     expect(stderr).toContain('EACCES');
     expect(stderr).toContain('/tmp/recovery-123.json');
+    expect(stderr).not.toContain('node up');
     expect(stderr).not.toContain('nt_secret');
     expect(log.mock.calls.flat().join('\n')).not.toContain('Enrolled node');
   });
@@ -2019,6 +2022,7 @@ describe('registerCloudCommands', () => {
     // Last resort: a printed token beats a lost one.
     const stderr = error.mock.calls.flat().join('\n');
     expect(stderr).toContain('SAVE THESE CREDENTIALS');
+    expect(stderr).not.toContain('node up');
     expect(stderr).toContain('nt_secret');
   });
 
@@ -2092,7 +2096,7 @@ describe('registerCloudCommands', () => {
     expect(output).toContain('node_abc');
     // The pinned key holds a workspace *key* and the enrollment holds a
     // workspace *id*, so the link cannot be verified locally. Say which
-    // workspace will actually be served and do not claim more than that.
+    // workspace the enrollment names without claiming a runtime is serving it.
     expect(output).toContain('rw_123');
     expect(output).toContain('was not verified');
   });
@@ -2121,6 +2125,7 @@ describe('registerCloudCommands', () => {
     const warned = warn.mock.calls.flat().join('\n');
     expect(warned).toContain('already linked to node node_existing');
     expect(warned).toContain('node_new');
+    expect(warned).not.toContain('node up');
   });
 
   it('cloud enroll survives a pin write failure without failing the redeemed enrollment', async () => {
