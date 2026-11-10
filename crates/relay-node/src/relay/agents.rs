@@ -804,6 +804,27 @@ impl Core {
         }
     }
 
+    /// Deletes an agent whose removal `cleanup` already records (saved in
+    /// the same store update that let go of its token), and drops the record
+    /// once it is gone. Otherwise the record stays for
+    /// `retry_pending_cleanups`, across a restart too.
+    pub(crate) async fn delete_recorded_cleanup(&self, cleanup: PendingCleanup) {
+        let workspace = self.relaycast_scope(&cleanup.base_url, &cleanup.workspace_key);
+        let result =
+            client::delete_agent(&cleanup.base_url, &cleanup.workspace_key, &cleanup.name).await;
+        self.observe_relaycast_write_result(&workspace, &result);
+        if result.is_ok() {
+            let _ = self.store.update(|store| {
+                if let Some(list) = store.pending_cleanups.as_mut() {
+                    list.retain(|c| *c != cleanup);
+                    if list.is_empty() {
+                        store.pending_cleanups = None;
+                    }
+                }
+            });
+        }
+    }
+
     /// Deletes a channel this computer created but recorded nowhere, or
     /// records it to retry.
     async fn delete_channel_or_retry(&self, base_url: &str, key: &Secret, name: &str) {

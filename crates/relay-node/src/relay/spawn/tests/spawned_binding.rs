@@ -270,3 +270,120 @@ async fn a_session_no_spawn_started_gets_a_registration_of_its_own() {
     assert_eq!(registration.agent_id, "agent_solo");
     assert!(registration.spawn.is_none());
 }
+
+/// An identity the session was given of its own before its spawn saved.
+fn earlier_identity(base_url: &str) -> Registration {
+    serde_json::from_value(json!({
+        "name": "solo", "agentID": "agent_solo",
+        "target": {"kind": "codex", "id": THREAD},
+        "title": "solo", "baseURL": base_url, "registeredAt": "2026-11-10T00:00:00Z",
+        "workspaceKey": "rk_live_test0000"
+    }))
+    .unwrap()
+}
+
+/// Spawns `w1` onto `THREAD`, which already holds `earlier`; the spawn
+/// runs on until it has also taken `earlier` off Relaycast.
+fn spawn_over_earlier(
+    core: &Arc<Core>,
+    spawner: &FakeSpawner,
+    earlier: Registration,
+) -> tokio::task::JoinHandle<Value> {
+    assert!(core
+        .store
+        .update(|store| store.add(
+            earlier,
+            crate::relay::workspace::Secret::new("at_live_solo")
+        ))
+        .unwrap());
+    let (started_tx, started) = std::sync::mpsc::channel();
+    let (proceed, proceed_rx) = std::sync::mpsc::channel();
+    proceed.send(()).unwrap();
+    *spawner.pause.lock().unwrap() = Some((started_tx, proceed_rx));
+    let (link, sent) = NodeLink::detached(node());
+    let frames = relaycast(link.clone(), sent);
+    let core = core.clone();
+    tokio::spawn(async move {
+        let result = core.answer_spawn(link, request("w1")).await;
+        drop((started, frames));
+        result
+    })
+}
+
+fn saved_w1(core: &Core) -> bool {
+    core.store.read(|store| {
+        store
+            .registration_for(&Target::new(SessionKind::Codex, THREAD))
+            .is_some_and(|registration| registration.name == "w1" && registration.spawn.is_some())
+    })
+}
+
+fn displaced_cleanups(core: &Core) -> Vec<crate::relay::store::PendingCleanup> {
+    core.store.read(|store| {
+        store
+            .pending_cleanups
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|cleanup| cleanup.name == "solo")
+            .collect()
+    })
+}
+
+#[tokio::test]
+async fn a_displaced_identity_is_owed_from_the_save_on_across_a_restart() {
+    let home = tempfile::tempdir().unwrap();
+    let spawner = Arc::new(FakeSpawner {
+        starts_before_pause: true,
+        ..FakeSpawner::default()
+    });
+    let core = core(home.path(), spawner.clone());
+    // Its origin takes the connection and never answers: the deletion after
+    // the save is still running when the core stops.
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let origin = format!("http://{}", silent.local_addr().unwrap());
+    let spawning = spawn_over_earlier(&core, &spawner, earlier_identity(&origin));
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !saved_w1(&core) {
+        assert!(std::time::Instant::now() < deadline, "the spawn saves");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // Recorded in the update that replaced it, before any deletion.
+    let owed = displaced_cleanups(&core);
+    assert_eq!(owed.len(), 1, "{owed:?}");
+    assert_eq!(owed[0].kind, crate::relay::store::CleanupKind::Agent);
+    assert_eq!(owed[0].base_url, origin);
+    assert!(core.store.read(|store| !store.tokens.contains_key("solo")));
+    assert!(!spawning.is_finished(), "the deletion has not finished");
+
+    // The core stops there. Started again, it still owes the deletion, for
+    // its cleanup retries.
+    spawning.abort();
+    let _ = spawning.await;
+    drop(core);
+    let restarted = super::core(home.path(), Arc::new(FakeSpawner::default()));
+    assert_eq!(displaced_cleanups(&restarted), owed);
+}
+
+#[tokio::test]
+async fn a_displaced_identity_deleted_after_the_save_is_owed_no_more() {
+    let home = tempfile::tempdir().unwrap();
+    let (rest, seen) = relaycast_routes(vec![]);
+    let spawner = Arc::new(FakeSpawner {
+        starts_before_pause: true,
+        ..FakeSpawner::default()
+    });
+    let core = core(home.path(), spawner.clone());
+    spawn_over_earlier(&core, &spawner, earlier_identity(&rest))
+        .await
+        .unwrap();
+    assert!(saved_w1(&core));
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|line| line.starts_with("DELETE /v1/agents/solo ")),
+        "{seen:?}"
+    );
+    assert!(displaced_cleanups(&core).is_empty());
+}

@@ -14,6 +14,7 @@ use super::{first_text, lifecycle, session_ref, SpawnSettings};
 use crate::relay::daemon::Core;
 use crate::relay::push::PushState;
 use crate::relay::state::{Level, Listing, SpawnState};
+use crate::relay::store::{CleanupKind, PendingCleanup};
 use crate::relay::workspace::Secret;
 use chrono::Utc;
 use launching::LaunchFailure;
@@ -469,7 +470,9 @@ impl Core {
         // An identity the session was given of its own before this save
         // (one registered in the moment before its spawn recorded it) is
         // replaced here, and taken off Relaycast below: the session is the
-        // spawned agent alone.
+        // spawned agent alone. Its removal is recorded in the same update
+        // that lets go of its token, so a stop before the deletion below
+        // leaves it to the cleanup retries rather than unreachable.
         let mut displaced = None;
         let saved = self.store.update(|store| {
             let earlier = store
@@ -486,7 +489,16 @@ impl Core {
                 Secret::new(agent.token.clone()),
             );
             if added {
-                displaced = earlier;
+                displaced = earlier.and_then(|earlier| {
+                    let cleanup = PendingCleanup {
+                        kind: CleanupKind::Agent,
+                        name: earlier.name,
+                        base_url: earlier.base_url,
+                        workspace_key: earlier.workspace_key?,
+                    };
+                    store.add_pending_cleanup(cleanup.clone());
+                    Some(cleanup)
+                });
             }
             added
         });
@@ -503,11 +515,8 @@ impl Core {
             }
             .into());
         }
-        if let Some(earlier) = displaced {
-            if let Some(key) = earlier.workspace_key.as_ref() {
-                self.delete_or_retry(&earlier.base_url, key, &earlier.name)
-                    .await;
-            }
+        if let Some(cleanup) = displaced {
+            self.delete_recorded_cleanup(cleanup).await;
         }
         self.watch_spawned(&registration);
         in_flight.settled();

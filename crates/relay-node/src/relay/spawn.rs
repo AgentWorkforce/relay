@@ -152,11 +152,14 @@ impl Core {
     pub(crate) async fn saved_spawn_registration(&self, target: &Target) -> Option<Registration> {
         let deadline = tokio::time::Instant::now() + SPAWN_SAVE_WAIT;
         loop {
+            // In flight first, the registration second: a spawn that saves
+            // and settles between the two reads is then found saved, never
+            // taken for one that is neither saved nor in flight.
+            let spawning = self.spawning_targets().contains(target);
             if let Some(registration) = self.saved_spawn_registration_now(target) {
                 return Some(registration);
             }
-            if tokio::time::Instant::now() >= deadline || !self.spawning_targets().contains(target)
-            {
+            if !spawning || tokio::time::Instant::now() >= deadline {
                 return None;
             }
             tokio::time::sleep(SPAWN_SAVE_POLL).await;
