@@ -139,6 +139,9 @@ describe('isolated worker authored runtime', () => {
           encoding: 'utf8',
           timeout: 10_000,
         });
+        expect(refused.error).toBeUndefined();
+        expect(refused.signal).toBeNull();
+        expect(typeof refused.status).toBe('number');
         expect(refused.status).not.toBe(0);
         expect(refused.stderr).toContain('@relayflows/surface');
       }
