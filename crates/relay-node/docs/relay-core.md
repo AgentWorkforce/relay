@@ -271,7 +271,7 @@ Events are notifications on the connection that subscribed:
 | `shutdown`    | `{}`                                                                                                                                         | Sent to every greeted client, subscribed or not; the connection then closes                                                                                                                                      |
 | `invalidated` | `{"what":"sessions"\|"agents"\|"roster"\|"fleet"\|"messages"\|"people"\|"activity"\|"uploader"\|"chat"\|"projects"\|"settings"}` | Re-fetch that collection (2a; `sessions`, `fleet` 2b — compared every 5 s —; `uploader`, `chat`, `projects`, `incoming` 2c; `settings` when an agent changed one through the session socket's `PATCH /settings`) |
 | `sign_in`     | `status.account` plus `{"verification_url","verification_url_complete","user_code","expires_at","interval"}` (null when no link is waiting)  | After every sign-in step; the UI opens `verification_url_complete` when it appears                                                                                                                          |
-| `notify`      | `{"title","body","link"}`                                                                                                                    | The UI shows a notification; `link` (nullable) opens on click, e.g. a provider's connect page                                                                                                               |
+| `notify`      | `{"title","body","link"}`                                                                                                                    | The UI shows a notification; `link` (nullable) opens on click, e.g. a provider's connect page, or a person alert's link (see Delivery)                                                                           |
 
 `seq` increases by one per event across all topics, so a client sees gaps
 for topics it is not subscribed to. A client that falls more than 256 events
@@ -663,6 +663,29 @@ agents into its session (through the `Injector`) and settles it:
 - Your relay identity (for messaging) belongs to one signed-in person in
   one Cloud workspace on one site; when the account changes, it and
   everything read with it are forgotten.
+- **Person alerts.** A DM to your own relay identity may ask for a
+  notification by carrying this marker in its `data` (Relaycast keeps it as
+  the message's `metadata`):
+
+  ```json
+  {"relay_alert": {"title": "<string, 1-120 characters>", "link": "https://..."}}
+  ```
+
+  When such a DM is pushed to your identity on this computer, the core
+  raises one `notify` event: `title` from the marker (whitespace collapsed
+  to one line), `body` the first 200 characters of the message text on one
+  trimmed line (an ellipsis marks a cut), and `link` from the marker. An
+  ordinary DM never notifies, and the marker on a message to one of this
+  computer's agents is ignored. A malformed marker (not an object, title
+  missing, empty, longer than 120 characters or not a string, link missing,
+  not a string or not an `https` URL with a host and no credentials) is
+  ignored with a diagnostic line naming the reason; the sender is never told.
+  Each sender, by agent id, raises at most 3 alerts in 10 minutes; further
+  alerts are dropped and counted, with one diagnostic line per sender per
+  window, and their DMs still arrive. A DM redelivered before it is read
+  alerts once. The DM's delivery is unchanged: it is read and acknowledged
+  with its conversation as before. Alerts come from pushed frames only; a
+  DM read while the push socket is down does not alert.
 - Pushed `deliver` frames for DMs and thread replies are handled from the
   frame; anything else, and every socket that comes up or goes down, reads
   the queue. Each agent's work runs in order, one delivery at a time. The
