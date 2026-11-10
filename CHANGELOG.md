@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `@agent-relay/core-bridge` exposes the complete schema-v2 service-caller lifecycle: secure caller descriptors, identity checks, result-inbox open/next/settle/close helpers and disconnect.
 - `agent-relay cloud worker start --local-agent` opts into the supported Relayflows local worker, including daemon starts. TypeScript assignments use the SDK’s authored `.flow.ts` entrypoint.
 - `agent-relay cloud worker register` accepts exactly one of `--token`, `--token-file` or `--token-stdin`, so enrollment can read a projected Secret file or pipe without putting the credential in process arguments. File and stdin inputs are limited to 16 KiB; interactive stdin is refused.
 - A DM to your own relay identity can ask the core for a desktop notification with `data.relay_alert = {"title", "link"}` (title up to 120 characters, `https` link); the notification body previews the message. Messages to agents and ordinary DMs never notify, and each sender raises at most 3 alerts in 10 minutes. Delivery of the DM is unchanged.
