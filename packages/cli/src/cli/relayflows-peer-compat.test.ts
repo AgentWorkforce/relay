@@ -13,6 +13,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
+const NPM_INSTALL_TIMEOUT_MS = 120_000;
+const PEER_COMPAT_TIMEOUT_MS = 2 * NPM_INSTALL_TIMEOUT_MS + 30_000;
 
 function readCliPackage(): {
   version: string;
@@ -111,8 +113,8 @@ describe('published CLI @relayflows/sdk peer compatibility', () => {
     expect(pin).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
-  // Fresh registry install of @relayflows/sdk routinely exceeds vitest's 5s
-  // default under CI load; keep the proof but budget for a cold npm resolve.
+  // Budget for both cold npm resolutions (supported and rejected peers),
+  // bounding each child process and leaving time for assertions and cleanup.
   it('installs cleanly beside workspace packages at the released CLI version', () => {
     const cli = readCliPackage();
     const pin = cli.dependencies?.['@relayflows/sdk'];
@@ -145,6 +147,7 @@ describe('published CLI @relayflows/sdk peer compatibility', () => {
         cwd: root,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: NPM_INSTALL_TIMEOUT_MS,
       });
 
       // Unsupported Relay majors must fail resolution instead of being accepted
@@ -163,6 +166,7 @@ describe('published CLI @relayflows/sdk peer compatibility', () => {
           cwd: root,
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: NPM_INSTALL_TIMEOUT_MS,
         });
       } catch (error) {
         rejected = error as typeof rejected;
@@ -172,5 +176,5 @@ describe('published CLI @relayflows/sdk peer compatibility', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  }, 60_000);
+  }, PEER_COMPAT_TIMEOUT_MS);
 });
