@@ -78,11 +78,7 @@ impl Core {
             }
             Err(error) => {
                 let mapped = RpcError::from_relaycast(&error);
-                let verification = if crate::relay::node_credential::rejects_credential(&error) {
-                    Verification::Rejected
-                } else {
-                    Verification::Unreachable
-                };
+                let verification = verification_after(workspace.kind(), &error);
                 self.hub.update(|status| {
                     status.workspace.verification = verification;
                     status.workspace.checked_at_ms = checked_at_ms;
@@ -124,5 +120,75 @@ impl Core {
                 status.workspace.verification = Verification::Pending;
             }
         });
+    }
+}
+
+/// What a failed workspace check says of a credential of `kind`. Rejected
+/// when the credential itself was refused ([`rejects`]), so the operator is
+/// asked for another. A 403 that does not reject a node-scoped credential (a
+/// suspended workspace, a node another owner holds, as Relaycast judged
+/// them) leaves it `Pending`: neither a credential to replace nor an
+/// unreachable Relaycast; the activity log carries Relaycast's answer, and
+/// the next refresh asks again. Anything else is `Unreachable`.
+///
+/// [`rejects`]: crate::relay::node_credential::rejects
+fn verification_after(
+    kind: crate::relay::workspace::KeyKind,
+    error: &relaycast::RelayError,
+) -> Verification {
+    if crate::relay::node_credential::rejects(kind, error) {
+        Verification::Rejected
+    } else if kind == crate::relay::workspace::KeyKind::NodeScoped && error.status() == Some(403) {
+        Verification::Pending
+    } else {
+        Verification::Unreachable
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::relay::workspace::KeyKind;
+    use relaycast::RelayError;
+
+    fn api(status: u16, code: &str) -> RelayError {
+        RelayError::api(code, "synthetic", status)
+    }
+
+    /// A workspace key in a suspended workspace is rejected, as today.
+    #[test]
+    fn a_suspended_workspace_rejects_a_workspace_key() {
+        let kind = KeyKind::Workspace;
+        let suspended = api(403, "workspace_suspended");
+        assert_eq!(verification_after(kind, &suspended), Verification::Rejected);
+        assert_eq!(
+            verification_after(kind, &api(401, "unauthorized")),
+            Verification::Rejected
+        );
+        assert_eq!(
+            verification_after(kind, &api(502, "bad_gateway")),
+            Verification::Unreachable
+        );
+    }
+
+    /// A node credential in a suspended workspace is not rejected: the
+    /// broker passed Relaycast's 403 through, which judges the workspace.
+    #[test]
+    fn a_suspended_workspace_leaves_a_node_credential_pending() {
+        let kind = KeyKind::NodeScoped;
+        let suspended = api(403, "workspace_suspended");
+        assert_eq!(verification_after(kind, &suspended), Verification::Pending);
+        assert_eq!(
+            verification_after(kind, &api(403, "node_mismatch")),
+            Verification::Pending
+        );
+        assert_eq!(
+            verification_after(kind, &api(401, "token_invalid")),
+            Verification::Rejected
+        );
+        assert_eq!(
+            verification_after(kind, &api(502, "relaycast_unavailable")),
+            Verification::Unreachable
+        );
     }
 }

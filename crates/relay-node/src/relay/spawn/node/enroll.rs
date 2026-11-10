@@ -12,7 +12,7 @@ use crate::relay::node_credential;
 use crate::relay::sdk_gaps;
 use crate::relay::spawn::wire;
 use crate::relay::store::random_hex;
-use crate::relay::workspace::{workspace_route, Secret};
+use crate::relay::workspace::{is_node_key, workspace_route, Secret};
 use relaycast::RequestOptions;
 use serde_json::Value;
 
@@ -22,8 +22,9 @@ pub(super) const ALTERNATES: usize = 3;
 /// Why an enrollment failed.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Refused {
-    /// Another node holds the name (`node_name_conflict`).
-    NameTaken,
+    /// Another node holds the name (`node_name_conflict`), with why the
+    /// node did not enroll, naming the name.
+    NameTaken(String),
     /// Relaycast has a node under the id asked for a new one: another's
     /// (`node_id_conflict`), or one an earlier attempt enrolled whose
     /// answer with its token was lost (`node_token_proof_required` without
@@ -52,13 +53,11 @@ pub(super) enum Refused {
 impl Refused {
     pub(super) fn reason(self) -> String {
         match self {
-            Refused::NameTaken => {
-                "Agent Relay did not enroll this computer: another node holds its name.".into()
-            }
             Refused::IdTaken => {
                 "Agent Relay did not enroll this computer: another node holds its id.".into()
             }
-            Refused::ProofRefused(reason)
+            Refused::NameTaken(reason)
+            | Refused::ProofRefused(reason)
             | Refused::KeyRefused(reason)
             | Refused::Failed(reason)
             | Refused::NoName(reason)
@@ -88,6 +87,25 @@ fn node_mismatch(config: &NodeConfig, name: &str) -> Refused {
         "Agent Relay did not start this computer's spawn node: its node credential is bound to another node name than \"{name}\" (configured node \"{}\"). Use a node credential issued for this node.",
         config.node_name
     ))
+}
+
+/// Whether `config`'s workspace credential is node-scoped (`sh_wk_…`): it
+/// is bound to the configured node name, so no alternate name is tried.
+fn node_scoped(config: &NodeConfig) -> bool {
+    is_node_key(config.workspace_key.expose())
+}
+
+/// Why `name` was not enrolled: another node holds it. A node credential is
+/// bound to its one name, so the holder is a stale node of the same name
+/// that has to be released, or has to expire, before this one enrolls.
+fn name_taken(config: &NodeConfig, name: &str) -> Refused {
+    Refused::NameTaken(if node_scoped(config) {
+        format!(
+            "Agent Relay did not enroll this computer: a stale node still holds the name \"{name}\" its node credential is bound to. Release that node in Agent Relay or wait for it to expire; Agent Relay tries again."
+        )
+    } else {
+        "Agent Relay did not enroll this computer: another node holds its name.".into()
+    })
 }
 
 fn save_failed(error: std::io::Error) -> Refused {
@@ -130,7 +148,7 @@ pub(super) async fn enroll(
             let failed =
                 || Refused::Failed(format!("Agent Relay did not enroll this computer: {error}"));
             match error.code() {
-                Some("node_name_conflict") => Refused::NameTaken,
+                Some("node_name_conflict") => name_taken(config, name),
                 // With proof, `node_id_conflict` cannot happen: the id is
                 // this node's own, proven. It would fall to `Failed` and
                 // the same id be tried again.
@@ -180,7 +198,9 @@ fn no_name(config: &NodeConfig) -> Refused {
 /// agents stay bound to it: the name is held by another node only when
 /// Relaycast no longer has this one under it. The name is saved with the
 /// node, so every restart reuses it. When every name tried is taken, the
-/// node says so rather than trying again.
+/// node says so rather than trying again. A node credential (`sh_wk_…`) is
+/// bound to the configured name, which Control's broker holds it to: it
+/// never takes an alternate, and a name another node holds is `NameTaken`.
 pub(super) async fn enroll_named(
     config: &NodeConfig,
     current: Option<&Enrollment>,
@@ -217,13 +237,17 @@ async fn enroll_new(config: &NodeConfig) -> Result<Enrollment, Refused> {
         }
     };
     let mut ids = 0;
+    let alternates = !node_scoped(config);
     loop {
         match enroll(config, &pending.node_id, &pending.node_name, None).await {
-            Err(Refused::NameTaken) if pending.alternates < ALTERNATES => {
+            Err(Refused::NameTaken(_)) if alternates && pending.alternates < ALTERNATES => {
                 pending.alternates += 1;
                 pending.node_name = alternate(&config.node_name);
             }
-            Err(Refused::NameTaken) => {
+            // A node credential is bound to its name: no alternate. The
+            // pending node is kept, to ask for the same name again.
+            Err(taken @ Refused::NameTaken(_)) if !alternates => return Err(taken),
+            Err(Refused::NameTaken(_)) => {
                 // Nothing enrolled to keep: the next start asks for a new
                 // node.
                 let _ = forget(&path);
@@ -261,6 +285,7 @@ async fn rotate_named(config: &NodeConfig, current: &Enrollment) -> Result<Enrol
     };
     let mut names = 0;
     let mut rekeyed = false;
+    let alternates = !node_scoped(config);
     loop {
         match enroll(
             config,
@@ -270,14 +295,16 @@ async fn rotate_named(config: &NodeConfig, current: &Enrollment) -> Result<Enrol
         )
         .await
         {
-            Err(Refused::NameTaken) if names < ALTERNATES => {
+            Err(Refused::NameTaken(_)) if alternates && names < ALTERNATES => {
                 // Another body: a new key, so Relaycast does not take it
                 // for a replay of the refused one. Saved first with the
                 // name, so one whose answer is lost is replayed as sent.
                 names += 1;
                 pending.node_name = alternate(&config.node_name);
             }
-            Err(Refused::NameTaken) => return Err(no_name(config)),
+            // A node credential is bound to its name: no alternate.
+            Err(taken @ Refused::NameTaken(_)) if !alternates => return Err(taken),
+            Err(Refused::NameTaken(_)) => return Err(no_name(config)),
             Err(Refused::KeyRefused(_)) if !rekeyed => rekeyed = true,
             Err(Refused::KeyRefused(reason)) => return Err(Refused::Failed(reason)),
             done => return done,

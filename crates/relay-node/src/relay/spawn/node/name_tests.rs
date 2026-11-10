@@ -1091,3 +1091,54 @@ async fn a_node_credential_for_another_node_stops_the_node_and_says_so() {
     assert!(!states.iter().any(|s| s.state == SpawnState::Waiting));
     node.stop().await;
 }
+
+/// A name another node holds, under a node credential: Control's broker
+/// passes Relaycast's `409 node_name_conflict` through, and the credential
+/// is bound to the name, so no alternate is asked for (the broker would
+/// refuse it as `node_mismatch`). The node reports the stale holder.
+#[tokio::test]
+async fn a_name_another_node_holds_is_reported_under_a_node_credential() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let control = Scripted::new().await;
+    let config = node_scoped(&relaycast.base_url, &control.base_url, folder.path());
+    let (refused, request) = tokio::join!(enroll_named(&config, None), control.answer(CONFLICT));
+    assert!(
+        request.starts_with("post /relay-node/v1/nodes "),
+        "{request}"
+    );
+    assert_eq!(body(&request)["name"], "mac-desktop");
+    let Err(Refused::NameTaken(reason)) = refused else {
+        panic!("{refused:?}");
+    };
+    assert!(reason.contains("stale node"), "{reason}");
+    assert!(reason.contains("\"mac-desktop\""), "{reason}");
+    assert!(!reason.contains("sh_wk_"), "{reason}");
+    // No second POST /v1/nodes under an alternate.
+    assert!(untouched(&control).await);
+    assert!(untouched(&relaycast).await);
+}
+
+/// The same for a rotation under a node credential: no alternate.
+#[tokio::test]
+async fn a_rotation_whose_name_another_node_took_is_reported_under_a_node_credential() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let control = Scripted::new().await;
+    let config = node_scoped(&relaycast.base_url, &control.base_url, folder.path());
+    let current = enrollment(&config, "node_desktop_1", "mac-desktop", NODE_KEY);
+    save(&node_file(&config), &current).unwrap();
+    let (refused, request) = tokio::join!(
+        enroll_named(&config, Some(&current)),
+        control.answer(CONFLICT)
+    );
+    assert!(
+        request.starts_with("post /relay-node/v1/nodes "),
+        "{request}"
+    );
+    let Err(Refused::NameTaken(reason)) = refused else {
+        panic!("{refused:?}");
+    };
+    assert!(reason.contains("\"mac-desktop\""), "{reason}");
+    assert!(untouched(&control).await);
+}

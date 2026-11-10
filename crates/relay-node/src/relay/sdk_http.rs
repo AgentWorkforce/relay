@@ -29,10 +29,16 @@ fn transport(tls: Arc<rustls::ClientConfig>) -> relaycast::Result<reqwest::Clien
 /// ([`super::node_credential::check_destination`]); any other call with it is
 /// refused here as not available, before anything is sent.
 pub fn client(options: ClientOptions) -> relaycast::Result<HttpClient> {
-    super::node_credential::check_destination(&options)?;
+    let transport = guarded_transport(&options)?;
+    Ok(HttpClient::with_http_client(options, transport))
+}
+
+/// The transport [`client`] builds for `options`, under the same checks, for
+/// a call the SDK cannot decode ([`super::diagnostic_http::HttpClient::get_broker`]).
+pub(crate) fn guarded_transport(options: &ClientOptions) -> relaycast::Result<reqwest::Client> {
+    super::node_credential::check_destination(options)?;
     environment_is_safe()?;
-    let tls = super::websocket_tls::client_config();
-    Ok(HttpClient::with_http_client(options, transport(tls)?))
+    transport(super::websocket_tls::client_config())
 }
 
 #[cfg(test)]
