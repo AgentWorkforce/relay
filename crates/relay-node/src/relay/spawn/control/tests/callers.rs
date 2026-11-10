@@ -336,7 +336,8 @@ fn strict_pending() -> Value {
     json!({
         "id": "invocation_new",
         "status": "pending",
-        "spawn_contract_applied": "relay.spawn.invoke.logical/1",
+        "spawn_contract_applied": "relay.spawn.invoke.logical-replay-resume/1",
+        "spawn_replay_capability_applied": "relay.spawn.replay-resume/1",
     })
 }
 
@@ -592,6 +593,7 @@ async fn session_callers_are_unchanged_when_a_plugin_is_present() {
     assert_eq!(first_invoke, retry_invoke);
     assert!(first_invoke["input"].get("target_node_id").is_none());
     assert!(first_invoke["input"].get("spawn_contract").is_none());
+    assert!(first_invoke["input"].get("logical_request").is_none());
     assert!(requests[4].starts_with("GET /v1/actions/release/invocations/invocation_9 "));
     assert!(requests[5].starts_with("POST /v1/agents/release-exact "));
     for index in [1, 3, 4, 5] {
@@ -1034,6 +1036,47 @@ async fn an_external_caller_refuses_a_server_that_did_not_apply_the_strict_contr
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_external_caller_requires_the_exact_replay_resume_proofs() {
+    for response in [
+        json!({
+            "id": "invocation_new",
+            "status": "pending",
+            "spawn_contract_applied": "relay.spawn.invoke.logical/1",
+            "spawn_replay_capability_applied": "relay.spawn.replay-resume/1",
+        }),
+        json!({
+            "id": "invocation_new",
+            "status": "pending",
+            "spawn_contract_applied": "relay.spawn.invoke.logical-replay-resume/1",
+        }),
+        json!({
+            "id": "invocation_new",
+            "status": "pending",
+            "spawn_contract_applied": "relay.spawn.invoke.logical-replay-resume/1",
+            "spawn_replay_capability_applied": "relay.spawn.replay-resume/0",
+        }),
+    ] {
+        let relaycast = Relaycast::new();
+        let stub = Stub::new(service(true));
+        let (_home, core) = core_with(Some(stub.clone()), &relaycast.base);
+        let directory = tempfile::tempdir().unwrap();
+        let served = relaycast.serve(vec![response]);
+        let error = bound(
+            &core,
+            "spawn.invoke",
+            invoke_params(&core, "codex", directory.path().to_str().unwrap()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.data.kind, ErrorKind::Internal);
+        let requests = served.join().unwrap();
+        assert_eq!(requests.len(), 1, "unexpected fallback: {requests:?}");
+        assert!(requests[0].starts_with("POST /v1/actions/spawn/strict-invoke "));
+        assert_eq!(stub.log().last().unwrap(), "record:invoke:internal");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_external_caller_never_falls_back_to_the_legacy_route_on_an_old_server() {
     let relaycast = Relaycast::new();
     let stub = Stub::new(service(true));
@@ -1373,13 +1416,13 @@ async fn a_retry_after_a_failed_record_replays_the_durable_relaycast_claim() {
     let first_json: Value = serde_json::from_str(&first_body).unwrap();
     assert_eq!(
         first_json["input"]["spawn_contract"],
-        "relay.spawn.invoke.logical/1"
+        "relay.spawn.invoke.logical-replay-resume/1"
     );
     assert_eq!(first_json["input"]["target_node_id"], "node_local");
     assert_eq!(
         first_json["input"]["logical_request"],
         json!({
-            "schema": "relay.spawn.invoke.logical/1",
+            "schema": "relay.spawn.invoke.logical-replay-resume/1",
             "target_node_id": "node_local",
             "target_node": node_name,
             "name": "test-new-worker",
@@ -1542,7 +1585,9 @@ async fn a_retry_recovers_an_accepted_claim_without_reusing_an_unsafe_directory(
     )
     .await
     .unwrap_err();
-    served.join().unwrap();
+    let first_requests = served.join().unwrap();
+    assert_eq!(first_requests.len(), 1);
+    let first_request = first_requests.into_iter().next().unwrap();
     drop(core);
 
     let core = core_at(
@@ -1563,9 +1608,71 @@ async fn a_retry_recovers_an_accepted_claim_without_reusing_an_unsafe_directory(
     assert_eq!(requests.len(), 1);
     assert!(requests[0].starts_with("POST /v1/actions/spawn/replay "));
     let body = request_body(&requests[0]);
+    let first_body = request_body(&first_request);
+    assert_eq!(body.as_object().unwrap().len(), 1);
+    assert_eq!(
+        body["logical_request"],
+        first_body["input"]["logical_request"]
+    );
     assert_eq!(
         body["logical_request"]["directory"],
         allowed.path().to_str().unwrap()
     );
+    assert_eq!(body["logical_request"]["task"], first_body["input"]["task"]);
+    let idempotency = |request: &str| {
+        request
+            .lines()
+            .find(|line| line.to_ascii_lowercase().contains("idempotency"))
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(idempotency(&first_request), idempotency(&requests[0]));
     assert!(body.get("input").is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn replay_fails_closed_when_the_server_omits_the_replay_capability_proof() {
+    let relaycast = Relaycast::new();
+    let allowed = tempfile::tempdir().unwrap();
+    let revoked = tempfile::tempdir().unwrap();
+    let caller = |root: &std::path::Path| ExternalCaller {
+        directory_roots: Some(vec![root.into()]),
+        ..service(true)
+    };
+    let first = Stub::new(caller(allowed.path()));
+    first.fail_record(Some(RpcError::new(
+        ErrorKind::StoreFailed,
+        "the receipt ledger is unavailable",
+    )));
+    let (home, core) = core_with(Some(first), &relaycast.base);
+    let served = relaycast.serve(vec![strict_pending()]);
+    bound(
+        &core,
+        "spawn.invoke",
+        invoke_params(&core, "codex", allowed.path().to_str().unwrap()),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(served.join().unwrap().len(), 1);
+    drop(core);
+
+    let second = Stub::new(caller(revoked.path()));
+    let core = core_at(home.path(), Some(second.clone()), &relaycast.base);
+    let served = relaycast.serve(vec![json!({
+        "id": "invocation_new",
+        "status": "pending",
+        "spawn_contract_applied": "relay.spawn.invoke.logical-replay-resume/1",
+    })]);
+    let error = bound(
+        &core,
+        "spawn.invoke",
+        invoke_params(&core, "codex", allowed.path().to_str().unwrap()),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.data.kind, ErrorKind::Internal);
+    let requests = served.join().unwrap();
+    assert_eq!(requests.len(), 1, "unexpected fallback: {requests:?}");
+    assert!(requests[0].starts_with("POST /v1/actions/spawn/replay "));
+    assert_eq!(second.log().last().unwrap(), "record:invoke:internal");
 }
