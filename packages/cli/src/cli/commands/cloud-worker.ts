@@ -19,6 +19,7 @@ import {
 } from '@agent-relay/cloud';
 
 import { defaultExit } from '../lib/exit.js';
+import { prepareWorkerAuthoredRuntime } from '../lib/cloud-worker-authored-runtime.js';
 import {
   readWorkerEnrollmentToken,
   type WorkerEnrollmentTokenOptions,
@@ -96,7 +97,7 @@ function buildWorkerRuntimeEnv(
   deps: CloudWorkerDependencies,
   cliCredentialEnv: Record<string, string> = {}
 ): NodeJS.ProcessEnv {
-  return {
+  const env: NodeJS.ProcessEnv = {
     ...deps.env,
     ...payload.envSecrets,
     // Materialised subscription logins (CODEX_HOME/GROK_HOME pointing into the
@@ -110,6 +111,16 @@ function buildWorkerRuntimeEnv(
     RELAYFILE_URL: payload.relayfileUrl,
     RELAYFILE_TOKEN: payload.relayfileToken,
   };
+  if (payload.fileType === 'ts') {
+    const [major, minor] = process.versions.node.split('.').map(Number);
+    if (!process.versions.bun && (major! < 22 || (major === 22 && minor! < 12))) {
+      throw new Error('Authored worker assignments require Node.js 22.12 or newer, or Bun.');
+    }
+    // Node 22.14 needs this opt-in to import .flow.ts. Keep it scoped to
+    // this assignment and inherited by the standalone Bun CLI's SDK Node child.
+    env.NODE_OPTIONS = `${env.NODE_OPTIONS ?? ''} --experimental-strip-types`.trim();
+  }
+  return env;
 }
 
 function assertFreshWorkerAssignment(payload: WorkerWorkflowPayload): void {
@@ -253,6 +264,7 @@ export function createDefaultAssignmentRunner(
         payload.fileType === 'ts' ? `${suppliedName.replace(/(?:\.flow)?\.ts$/i, '')}.flow.ts` : suppliedName;
       const workflowPath = path.join(runDir, workflowName);
       await writeSecretFile(workflowPath, payload.workflow);
+      if (payload.fileType === 'ts') await prepareWorkerAuthoredRuntime(workflowPath);
 
       if (cliCredentials) {
         materialized = await materializeCliCredentials({
