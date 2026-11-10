@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay cloud worker register` accepts exactly one of `--token`, `--token-file` or `--token-stdin`, so enrollment can read a projected Secret file or pipe without putting the credential in process arguments. File and stdin inputs are limited to 16 KiB; interactive stdin is refused.
 - A DM to your own relay identity can ask the core for a desktop notification with `data.relay_alert = {"title", "link"}` (title up to 120 characters, `https` link); the notification body previews the message. Messages to agents and ordinary DMs never notify, and each sender raises at most 3 alerts in 10 minutes. Delivery of the DM is unchanged.
 
+- Node credentials (`sh_wk_…`): a workspace credential bound to one spawn node name. The `workspaces.json` entry carries `control_url` beside `base_url` (`controlUrl` in a project pin) and is refused without it. Workspace identity, node enrolment and lookup, and agent lookup go through Control's broker at `<control_url>/relay-node/v1`; other workspace-key calls report not available, and the credential is never sent to Relaycast. A credential issued for another node name stops the spawn node with a log line naming the configured node. Switching an `rk_…` or `ar_ws_…` key to a node credential for the same workspace keeps the enrolled node.
+
+### Changed
+
+- Agents, harness servers and spawned processes no longer inherit `RELAY_API_KEY`, `RELAY_WORKSPACE_KEY` or `AGENT_RELAY_WORKSPACE_KEY`.
+- Diagnostics, request logs and activity redact `sh_wk_…` credentials.
+
 ### Fixed
 
 - `agent-relay cloud enroll` explains that enrollment does not start a runtime and links to headless setup instead of recommending the removed `node up` command.

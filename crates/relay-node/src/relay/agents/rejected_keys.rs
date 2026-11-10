@@ -14,7 +14,7 @@ use crate::relay::daemon::Core;
 use crate::relay::sdk_gaps;
 use crate::relay::state::Level;
 use crate::relay::store::Registration;
-use crate::relay::workspace::Secret;
+use crate::relay::workspace::{Secret, Workspace};
 
 /// What the core's current key says of a rejected saved key.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,8 +38,9 @@ fn rejects_the_key(error: &relaycast::RelayError) -> bool {
 
 /// The Relaycast id of the agent `name` in the workspace `key` belongs to,
 /// or `None` when that workspace has no agent of the name.
-async fn agent_id(base_url: &str, key: &Secret, name: &str) -> relaycast::Result<Option<String>> {
-    let workspace = sdk_gaps::http(base_url, key)?;
+async fn agent_id(current: &Workspace, name: &str) -> relaycast::Result<Option<String>> {
+    // `GET /v1/agents/{name}`: brokered by Control for a node credential.
+    let workspace = sdk_gaps::workspace_http(current)?;
     let agent = sdk_gaps::get_agent(&workspace, name).await?;
     match agent {
         None => Ok(None),
@@ -71,10 +72,10 @@ impl Core {
         else {
             return KeyProof::Unknown;
         };
-        let checked = agent_id(&registration.base_url, &current.key, &registration.name).await;
+        let checked = agent_id(&current, &registration.name).await;
         match checked {
             Ok(Some(id)) if id == registration.agent_id => {
-                self.adopt_rotation(registration, rejected, current.key)
+                self.adopt_rotation(registration, rejected, current)
             }
             // Another agent holds the name there, or none does.
             Ok(_) => KeyProof::Unreachable,
@@ -120,12 +121,14 @@ impl Core {
         &self,
         registration: &Registration,
         rejected: &Secret,
-        current: Secret,
+        current: Workspace,
     ) -> KeyProof {
         let base = registration.base_url.clone();
-        let saved = self
-            .store
-            .update(|store| store.rotate_workspace_key(&base, rejected, &current));
+        let control_url = current.control_url.clone();
+        let current = current.key;
+        let saved = self.store.update(|store| {
+            store.rotate_workspace_key(&base, rejected, &current, control_url.as_deref())
+        });
         match saved {
             // An earlier proof already moved every saved copy: nothing new.
             Ok(0) => KeyProof::Current(current),

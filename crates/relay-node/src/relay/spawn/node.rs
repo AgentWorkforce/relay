@@ -33,9 +33,9 @@ pub(crate) use control_retry::KEEP as RESULT_KEEP;
 #[cfg(test)]
 use enroll::ALTERNATES;
 use enroll::{enroll_named, rotate, saved, Refused};
-pub(crate) use enrollment::enrolled_name;
 #[cfg(test)]
 use enrollment::{alternate, fingerprint, pending, read, save, save_pending, Pending};
+pub(crate) use enrollment::{enrolled_name, node_token};
 use enrollment::{forget, load, node_file, pending_file, Enrollment};
 
 use super::wire::{self, Advertisement, HarnessId, InventoryAgent, Invoke, NodeIdentity};
@@ -77,6 +77,10 @@ const TOKEN_REFUSALS: u32 = 3;
 pub struct NodeConfig {
     pub base_url: String,
     pub workspace_key: Secret,
+    /// The Control origin that brokers a node-scoped `workspace_key`'s
+    /// node lookup and enrolment (`<control_url>/relay-node/v1/nodes`);
+    /// `None` for a workspace key, whose calls go to `base_url`.
+    pub control_url: Option<String>,
     /// The name Cloud lists as the spawn target, and the machine half of
     /// every spawned agent's address, unless another node held it when this
     /// one enrolled: the node then has an alternate of it (`NodeInfo`).
@@ -378,9 +382,19 @@ async fn connect_once(
             Ok(enrollment) => enrollment,
             Err(Refused::PlanLimit(limit)) => return Ended::Refused(limit),
             Err(Refused::NoName(reason)) => return Ended::GaveUp(reason),
+            Err(Refused::NodeMismatch(reason)) => {
+                host.refused(reason.clone());
+                return Ended::GaveUp(reason);
+            }
             Err(refused) => return Ended::Closed(refused.reason()),
         },
-        Err(reason) => return Ended::Closed(reason),
+        // The saved node's credential is bound to another name: stopped,
+        // as for a new enrollment.
+        Err(Refused::NodeMismatch(reason)) => {
+            host.refused(reason.clone());
+            return Ended::GaveUp(reason);
+        }
+        Err(refused) => return Ended::Closed(refused.reason()),
     };
     let mut socket = match open(config, &enrollment).await {
         Ok(socket) => socket,
@@ -390,6 +404,10 @@ async fn connect_once(
                 Ok(_) => Ended::Closed(refused.into()),
                 Err(Refused::PlanLimit(limit)) => Ended::Refused(limit),
                 Err(Refused::NoName(reason)) => Ended::GaveUp(format!("{refused} {reason}")),
+                Err(Refused::NodeMismatch(reason)) => {
+                    host.refused(reason.clone());
+                    Ended::GaveUp(reason)
+                }
                 Err(Refused::ProofRefused(reason)) => {
                     Ended::TokenRefused(format!("{refused} {reason}"))
                 }
@@ -631,6 +649,7 @@ mod tests {
         NodeConfig {
             base_url: "https://cast.example".into(),
             workspace_key: Secret::new("rk_live_one".to_string()),
+            control_url: None,
             node_name: "mac-desktop".into(),
             version: "1.0.0".into(),
             app_data_dir: directory.to_path_buf(),
@@ -673,6 +692,39 @@ mod tests {
             ..config
         };
         assert_eq!(load(&other_name), None);
+    }
+
+    /// The report-back requester of a node-scoped workspace asks with the
+    /// saved node's token, and only when that node was enrolled at the same
+    /// origin with the same workspace credential.
+    #[test]
+    fn the_node_token_is_read_only_for_the_enrolling_origin_and_credential() {
+        let folder = tempfile::tempdir().unwrap();
+        let config = config(folder.path());
+        assert!(node_token(folder.path(), &config.base_url, &config.workspace_key).is_none());
+        let enrollment = Enrollment {
+            node_id: "node_desktop_1".into(),
+            node_name: "mac-desktop".into(),
+            token: Secret::new("nt_live_x".to_string()),
+            base_url: config.base_url.clone(),
+            workspace: fingerprint(&config.workspace_key),
+            rotation_key: None,
+        };
+        save(&node_file(&config), &enrollment).unwrap();
+        let token = node_token(folder.path(), &config.base_url, &config.workspace_key).unwrap();
+        assert_eq!(token.expose(), "nt_live_x");
+        assert!(node_token(
+            folder.path(),
+            "https://other.example",
+            &config.workspace_key
+        )
+        .is_none());
+        assert!(node_token(
+            folder.path(),
+            &config.base_url,
+            &Secret::new("sh_wk_other".to_string())
+        )
+        .is_none());
     }
 
     /// A record without a token (which no core writes) is not an

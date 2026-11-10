@@ -351,6 +351,7 @@ mod tests {
             base_url: "https://cast.test".into(),
             workspace_id: Some("workspace".into()),
             source: crate::relay::workspace::WorkspaceSource::Cloud,
+            control_url: None,
         });
         (temp, Outbound::new(core, direct), inbox)
     }

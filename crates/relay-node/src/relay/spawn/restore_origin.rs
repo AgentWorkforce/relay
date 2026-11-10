@@ -36,7 +36,7 @@ impl Core {
         if candidates.is_empty() || !self.config.app_data_dir.join("spawn-completions").is_dir() {
             return;
         }
-        let Ok(http) = sdk_gaps::http(&workspace.base_url, &workspace.key) else {
+        let Ok(http) = sdk_gaps::workspace_http(&workspace) else {
             return;
         };
         let Ok(Ok(roster)) =

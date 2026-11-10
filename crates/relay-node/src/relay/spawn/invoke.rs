@@ -322,7 +322,8 @@ impl Core {
         let requester = tokio::spawn({
             let workspace = workspace.clone();
             let invocation_id = request.invocation_id.clone();
-            async move { report_back::requester(&workspace, &invocation_id).await }
+            let app_data_dir = self.config.app_data_dir.clone();
+            async move { report_back::requester(&workspace, &app_data_dir, &invocation_id).await }
         });
         // On disk before anything starts, so a restart finds what it left.
         let mut in_flight = InFlight {
@@ -352,6 +353,7 @@ impl Core {
                 requester: None,
                 target: None,
                 process: None,
+                control_url: workspace.control_url.clone(),
             },
         };
         in_flight

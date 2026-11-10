@@ -85,6 +85,144 @@ pub struct Workspace {
     /// Which source named this workspace. Only a `Cloud` key is ever
     /// recovered through the Cloud account.
     pub source: WorkspaceSource,
+    /// The Control origin brokering a node-scoped key's workspace calls
+    /// ([`KeyKind::NodeScoped`]); `None` for a workspace key.
+    pub control_url: Option<String>,
+}
+
+impl Workspace {
+    /// What kind of credential `key` is. A key that is neither kind never
+    /// reaches a `Workspace` (every source refuses it), so it counts as a
+    /// workspace key here.
+    pub fn kind(&self) -> KeyKind {
+        key_kind(self.key.expose()).unwrap_or(KeyKind::Workspace)
+    }
+
+    /// Whether this workspace is reached through a node-scoped credential,
+    /// so only the brokered calls are available.
+    pub fn node_scoped(&self) -> bool {
+        self.kind() == KeyKind::NodeScoped
+    }
+
+    /// Where this workspace's workspace-key calls go, and with what.
+    pub fn route(&self) -> WorkspaceRoute {
+        workspace_route(&self.base_url, &self.key, self.control_url.as_deref())
+    }
+}
+
+/// What a workspace credential is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyKind {
+    /// A Relaycast workspace key (`rk_…`, `ar_ws_…`), sent to Relaycast.
+    Workspace,
+    /// A node-scoped workspace credential (`sh_wk_…`) Control minted for one
+    /// node. It never goes to Relaycast: Control brokers the few
+    /// workspace-key calls a node needs at `<control_url>/relay-node/v1/…`,
+    /// and every other workspace-key call is unavailable.
+    NodeScoped,
+}
+
+/// The prefix of a node-scoped workspace credential.
+pub const NODE_KEY_PREFIX: &str = "sh_wk_";
+/// The path Control brokers node-scoped workspace calls under.
+pub const NODE_BROKER_PREFIX: &str = "/relay-node";
+
+/// What `value` is as a workspace credential, or `None` when it is neither
+/// kind. Both need at least 12 characters and no whitespace.
+pub fn key_kind(value: &str) -> Option<KeyKind> {
+    if value.len() < 12 || value.chars().any(char::is_whitespace) {
+        return None;
+    }
+    if value.starts_with("rk_") || value.starts_with("ar_ws_") {
+        Some(KeyKind::Workspace)
+    } else if value.starts_with(NODE_KEY_PREFIX) {
+        Some(KeyKind::NodeScoped)
+    } else {
+        None
+    }
+}
+
+/// Whether `value` is a node-scoped credential (`sh_wk_…`).
+pub fn is_node_key(value: &str) -> bool {
+    key_kind(value) == Some(KeyKind::NodeScoped)
+}
+
+/// The environment variables a workspace credential is read from, highest
+/// precedence first. None of them reaches a child process the core starts:
+/// an agent never inherits the node's workspace credential.
+pub const WORKSPACE_KEY_ENV: [&str; 3] = [
+    "RELAY_WORKSPACE_KEY",
+    "AGENT_RELAY_WORKSPACE_KEY",
+    "RELAY_API_KEY",
+];
+
+/// Whether `name` is one of [`WORKSPACE_KEY_ENV`], in any ASCII case:
+/// Windows reads environment names case-insensitively, so `Relay_Api_Key`
+/// is `RELAY_API_KEY` there. Matched the same everywhere, so a child never
+/// gets a credential under another spelling on any platform.
+pub fn is_workspace_key_env(name: &str) -> bool {
+    WORKSPACE_KEY_ENV
+        .iter()
+        .any(|key| key.eq_ignore_ascii_case(name))
+}
+
+/// `environment` for a child process: without [`WORKSPACE_KEY_ENV`].
+pub fn without_workspace_key_env(
+    mut environment: std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    environment.retain(|name, _| !is_workspace_key_env(name));
+    environment
+}
+
+/// Removes [`WORKSPACE_KEY_ENV`] from a child `command`'s environment, for
+/// a command that inherits the core's own.
+/// Every spelling of them the core's environment has is removed
+/// ([`is_workspace_key_env`]).
+pub fn remove_workspace_key_env(command: &mut std::process::Command) {
+    for name in WORKSPACE_KEY_ENV {
+        command.env_remove(name);
+    }
+    for (name, _) in std::env::vars_os() {
+        if name.to_str().is_some_and(is_workspace_key_env) {
+            command.env_remove(name);
+        }
+    }
+}
+
+/// Where a workspace credential's workspace-key calls go: `origin` plus
+/// `prefix` plus the Relaycast `/v1/…` path, with `credential` as the bearer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceRoute {
+    pub origin: String,
+    pub prefix: &'static str,
+    pub credential: Secret,
+}
+
+impl WorkspaceRoute {
+    /// The base URL an SDK client for this route is built with.
+    pub fn base(&self) -> String {
+        format!("{}{}", self.origin.trim_end_matches('/'), self.prefix)
+    }
+}
+
+/// The route for `key` at Relaycast origin `base_url`: a workspace key goes
+/// to `base_url` itself; a node-scoped key to `control_url` under
+/// [`NODE_BROKER_PREFIX`]. A node-scoped key with no Control origin keeps
+/// `base_url` with no prefix, which the SDK transport refuses to send it to
+/// ([`crate::relay::sdk_http::client`]), so it fails closed.
+pub fn workspace_route(base_url: &str, key: &Secret, control_url: Option<&str>) -> WorkspaceRoute {
+    match (is_node_key(key.expose()), control_url) {
+        (true, Some(control_url)) => WorkspaceRoute {
+            origin: control_url.trim_end_matches('/').to_string(),
+            prefix: NODE_BROKER_PREFIX,
+            credential: key.clone(),
+        },
+        _ => WorkspaceRoute {
+            origin: base_url.trim_end_matches('/').to_string(),
+            prefix: "",
+            credential: key.clone(),
+        },
+    }
 }
 
 /// Where the daemon's workspace key came from. Printable: it names a
@@ -198,7 +336,8 @@ pub fn resolve_for_site(
 }
 
 /// The account's workspace, at its own origin; `Ok(None)` when signed out
-/// or its key is not a workspace key.
+/// or its key is not a workspace key. A node-scoped key (`sh_wk_…`) never
+/// comes from the sign-in: it counts as no key here.
 ///
 /// In the default build `RELAYCAST_URL` overrides that origin when it is a
 /// bare https origin, and a missing or invalid one falls back to
@@ -247,6 +386,7 @@ pub fn resolve_cloud_for_site(
         base_url,
         workspace_id: cloud.workspace_id.clone(),
         source: WorkspaceSource::Cloud,
+        control_url: None,
     }))
 }
 
@@ -266,11 +406,10 @@ pub fn relay_home(env: &dyn Fn(&str) -> Option<String>, home: &Path) -> PathBuf 
 /// Workspace keys are `rk_live_…` (or `rk_test_…`), or armadillo's
 /// `ar_ws_…`, which a self-hosted Relaycast on durable actors issues and
 /// which Cloud's workspace resolve hands every client, the Desktop core
-/// included; so every build accepts both.
+/// included; so every build accepts both. A node-scoped `sh_wk_…` key is
+/// not one ([`key_kind`]).
 pub fn is_workspace_key(value: &str) -> bool {
-    (value.starts_with("rk_") || value.starts_with("ar_ws_"))
-        && value.len() >= 12
-        && !value.chars().any(char::is_whitespace)
+    key_kind(value) == Some(KeyKind::Workspace)
 }
 
 /// `value` as a bare origin credentials may be sent to, or `None`: https
@@ -788,6 +927,100 @@ mod tests {
         assert!(!is_workspace_key("rk_live"));
         assert!(!is_workspace_key("at_live_abcdefgh"));
         assert!(!is_workspace_key("rk_live_abc def"));
+    }
+
+    #[test]
+    fn keys_are_classified_by_kind() {
+        assert_eq!(key_kind("rk_live_abcdef"), Some(KeyKind::Workspace));
+        assert_eq!(key_kind("ar_ws_0123456789abcdef"), Some(KeyKind::Workspace));
+        assert_eq!(key_kind("sh_wk_abcdef"), Some(KeyKind::NodeScoped));
+        // Surrounding whitespace is trimmed by every source before this.
+        assert_eq!(key_kind(" sh_wk_abcdef "), None);
+        // Twelve characters at least, and no whitespace.
+        assert_eq!(key_kind("sh_wk_abcde"), None);
+        assert_eq!(key_kind("sh_wk_abc def"), None);
+        assert_eq!(key_kind("at_live_abcdefgh"), None);
+        assert!(is_node_key("sh_wk_abcdef"));
+        // A node credential is neither a workspace key nor armadillo's.
+        assert!(!is_workspace_key("sh_wk_abcdef"));
+    }
+
+    #[test]
+    fn a_node_credential_is_refused_from_the_cloud_sign_in() {
+        assert!(resolve_with(&[], Some(account("sh_wk_fixture0123", DEFAULT_BASE_URL))).is_none());
+    }
+
+    #[test]
+    fn a_route_goes_to_the_broker_only_for_a_node_credential() {
+        let workspace_key = Secret::new("rk_live_abcdef");
+        let node_key = Secret::new("sh_wk_abcdef");
+        let route = workspace_route(
+            "https://cast.example",
+            &workspace_key,
+            Some("https://control.example"),
+        );
+        assert_eq!(route.base(), "https://cast.example");
+        let route = workspace_route(
+            "https://cast.example",
+            &node_key,
+            Some("https://control.example/"),
+        );
+        assert_eq!(route.base(), "https://control.example/relay-node");
+        assert_eq!(route.credential, node_key);
+        // Without a Control origin a node credential has no broker: its
+        // route is Relaycast's, which the transport refuses for it.
+        let route = workspace_route("https://cast.example", &node_key, None);
+        assert_eq!(route.base(), "https://cast.example");
+        let options = relaycast::ClientOptions::new(node_key.expose()).with_base_url(route.base());
+        assert!(crate::relay::node_credential::check_destination(&options).is_err());
+    }
+
+    #[test]
+    fn a_child_environment_loses_every_workspace_credential_variable() {
+        let environment: std::collections::BTreeMap<String, String> = [
+            ("RELAY_WORKSPACE_KEY", "sh_wk_fixture0123"),
+            ("AGENT_RELAY_WORKSPACE_KEY", "rk_live_fixture"),
+            ("RELAY_API_KEY", "ar_ws_fixture"),
+            ("RELAY_BASE_URL", "https://cast.example"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+        let stripped = without_workspace_key_env(environment);
+        assert_eq!(
+            stripped.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["RELAY_BASE_URL"]
+        );
+    }
+
+    /// Windows reads environment names in any case, so every spelling of a
+    /// credential variable is one, and none reaches a child.
+    #[test]
+    fn a_credential_variable_in_any_case_is_one() {
+        for name in [
+            "Relay_Api_Key",
+            "relay_workspace_key",
+            "Agent_Relay_Workspace_Key",
+        ] {
+            assert!(is_workspace_key_env(name), "{name}");
+        }
+        assert!(!is_workspace_key_env("RELAY_API_KEYS"));
+        assert!(!is_workspace_key_env("RELAY_BASE_URL"));
+        let environment: std::collections::BTreeMap<String, String> = [
+            ("Relay_Api_Key", "fixture"),
+            ("relay_workspace_key", "fixture"),
+            ("KEPT", "kept"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+        assert_eq!(
+            without_workspace_key_env(environment)
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["KEPT"]
+        );
     }
 
     #[test]

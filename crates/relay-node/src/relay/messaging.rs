@@ -771,6 +771,7 @@ mod tests {
             base_url: "https://relay.example".into(),
             workspace_id: Some("rw_team".into()),
             source: Default::default(),
+            control_url: None,
         };
         let person = PersonIdentity {
             name: "person".into(),
@@ -804,6 +805,7 @@ mod tests {
             base_url: "https://cast.agentrelay.com".into(),
             workspace_id: Some("rw_account".into()),
             source: Default::default(),
+            control_url: None,
         };
         let person = PersonIdentity {
             name: "person".into(),
