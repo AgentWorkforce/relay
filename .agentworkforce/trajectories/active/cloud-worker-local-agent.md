@@ -17,3 +17,7 @@ Review passes: adversarial pass rechecked default-off, daemon propagation, safe 
 ## Release-lock repair integration
 
 Forward-merged accepted main f86ebb61. All five feature source, test and documentation files remain byte-identical to the prior reviewed head, and manifests and lockfile are exactly main. Adversarial review confirmed default-off executor selection, fresh-only state refusal and nonzero runner failures; contextual review confirmed daemon propagation and the supported authored-flow filename. Clean npm ci with lifecycle scripts disabled, 15 focused tests and full npm run typecheck passed; diff whitespace check passed. Cross-platform hosted checks remain required.
+
+## Compose merged enrollment inputs
+
+Forward-merged main a5ea7bd0 after the credential-input feature landed. The sole manual conflict was the changelog; both pending Minor entries are retained. Local-agent feature edits and its four other source/test/documentation files match the previous reviewed head exactly. Registration changes from main merge automatically. Adversarial and contextual composition reviews found no behavior or authority changes beyond the two intended features. All 54 combined credential/local-agent tests, full typecheck and whitespace checks passed; package and lock remain exactly main. Required hosted checks and review remain separate.

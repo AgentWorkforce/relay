@@ -19,6 +19,11 @@ import {
 } from '@agent-relay/cloud';
 
 import { defaultExit } from '../lib/exit.js';
+import {
+  readWorkerEnrollmentToken,
+  type WorkerEnrollmentTokenOptions,
+  type WorkerEnrollmentTokenStream,
+} from '../lib/cloud-worker-enrollment-token.js';
 import { buildRelayflowsRunArgs, resolveAgentRelayCliChildCommand } from '../lib/agent-relay-cli-reentry.js';
 import {
   isCliCredentialsPayload,
@@ -40,6 +45,7 @@ export interface CloudWorkerDependencies {
   now: () => Date;
   cwd: () => string;
   fetchImpl: typeof fetch;
+  stdin?: WorkerEnrollmentTokenStream;
   resolveAgentRelayCliEntrypoint: () => string;
 }
 
@@ -53,6 +59,7 @@ function withDefaults(overrides: Partial<CloudWorkerDependencies> = {}): CloudWo
     now: () => new Date(),
     cwd: () => process.cwd(),
     fetchImpl: fetch,
+    stdin: process.stdin,
     resolveAgentRelayCliEntrypoint: () => process.argv[1] ?? 'agent-relay',
     ...overrides,
   };
@@ -422,32 +429,38 @@ export function registerCloudWorkerCommands(
   workerCommand
     .command('register')
     .description('Register this machine as an Agent Relay Cloud worker')
-    .requiredOption('--token <token>', 'Worker enrollment token')
+    .option('--token <token>', 'Worker enrollment token (choose exactly one token source)')
+    .option('--token-file <path>', 'Read the enrollment token from a regular file (maximum 16 KiB)')
+    .option('--token-stdin', 'Read the enrollment token from non-interactive stdin (maximum 16 KiB)')
     .requiredOption('--name <name>', 'Worker name')
     .option('--base-url <url>', 'Cloud API base URL')
     .option('--json', 'Print raw JSON response', false)
-    .action(async (options: { token: string; name: string; baseUrl?: string; json?: boolean }) => {
-      const record = await registerCloudWorker({
-        enrollmentToken: options.token,
-        name: options.name,
-        baseUrl: options.baseUrl,
-        env: deps.env,
-        hostInfo: {
-          hostname: os.hostname(),
-          platform: os.platform(),
-          arch: os.arch(),
-          node: process.version,
-        },
-      });
+    .action(
+      async (options: WorkerEnrollmentTokenOptions & { name: string; baseUrl?: string; json?: boolean }) => {
+        const enrollmentToken = await readWorkerEnrollmentToken(options, deps.stdin);
+        const record = await registerCloudWorker({
+          enrollmentToken,
+          name: options.name,
+          baseUrl: options.baseUrl,
+          env: deps.env,
+          fetchImpl: deps.fetchImpl,
+          hostInfo: {
+            hostname: os.hostname(),
+            platform: os.platform(),
+            arch: os.arch(),
+            node: process.version,
+          },
+        });
 
-      if (options.json) {
-        deps.log(JSON.stringify({ ...record, workerToken: undefined }, null, 2));
-        return;
+        if (options.json) {
+          deps.log(JSON.stringify({ ...record, workerToken: undefined }, null, 2));
+          return;
+        }
+
+        deps.log(`Registered worker ${record.name} (${record.workerId})`);
+        deps.log(`Start: agent-relay cloud worker start --worker-id ${record.workerId}`);
       }
-
-      deps.log(`Registered worker ${record.name} (${record.workerId})`);
-      deps.log(`Start: agent-relay cloud worker start --worker-id ${record.workerId}`);
-    });
+    );
 
   workerCommand
     .command('start')
