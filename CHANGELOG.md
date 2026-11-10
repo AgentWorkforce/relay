@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- On Windows, the core's process scans (Claude Code and Codex discovery, Codex delivery checks) read parents, start times, command lines, environments, folders and open handles from one whole-computer read per second instead of one per process, so a scan no longer costs seconds of CPU per pass on computers with many processes; exited processes still held open are no longer reported as running.
+- On Windows, the core's process scans (Claude Code and Codex discovery, Codex delivery checks) read parents, start times, command lines, environments, and folders from one whole-computer read per second instead of one per process, so a scan no longer costs seconds of CPU per pass on computers with many processes; exited processes still held open are no longer reported as running.
 - Authored TypeScript cloud-worker assignments resolve the CLI's pinned Surface from isolated run directories when no dependency is supplied, preserving assignment-provided packages.
 
 ## [18.0.0] - 2026-11-09
