@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/monorepo",
-  "version": "17.2.1",
+  "version": "18.0.0",
   "private": true,
   "description": "Agent Relay monorepo",
   "type": "module",
@@ -79,6 +79,7 @@
   "homepage": "https://github.com/AgentWorkforce/relay#readme",
   "devDependencies": {
     "@agent-assistant/telemetry": "^0.4.35",
+    "@agent-relay/harness-driver": "17.2.1",
     "@agentworkforce/runtime": "^4.1.23",
     "@eslint/js": "^10.0.1",
     "@relaycast/sdk": "^8.0.7",
@@ -123,7 +124,7 @@
     "smol-toml": "^1.7.1",
     "tar": "^7.5.22",
     "@relayflows/sdk": {
-      "@agent-relay/sdk": "17.2.1",
+      "@agent-relay/sdk": "18.0.0",
       "@agent-relay/harness-driver": "17.2.1"
     }
   }

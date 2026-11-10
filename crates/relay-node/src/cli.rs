@@ -73,6 +73,64 @@ fn run(cli: Cli) -> Result<()> {
 mod socket_request_tests {
     use super::*;
 
+    // Review on #2132: a profile id may start with a hyphen (a build in
+    // `com.agentrelay.desktop.-acme`); every command a build writes names it
+    // as `--profile=<id>`, which clap reads as the value.
+    #[test]
+    fn a_profile_id_may_start_with_a_hyphen() {
+        use crate::relay::outbound::Build;
+        let build = Build::Profile("-acme".into());
+        let hook = crate::relay::hook_owner::command(
+            "probe",
+            "codex-stop-hook",
+            &build,
+            std::path::Path::new("/s/relay.sock"),
+        );
+        assert!(hook.contains(" --profile=-acme "), "{hook}");
+        let socket = ["--socket", "/s/relay.sock"];
+        for args in [
+            vec!["devin-spawn-mcp", build.flag().as_str()],
+            vec!["muse-spawn-mcp", build.flag().as_str()],
+            vec!["read", "m1", build.flag().as_str()],
+            [&["codex-stop-hook", "--profile=-acme"][..], &socket].concat(),
+            [&["claude-session-hook", "--profile=-acme"][..], &socket].concat(),
+            vec![
+                "devin-spawn-host",
+                "--executable",
+                "/devin",
+                "--directory",
+                "/w",
+                "--runtime",
+                "/r",
+                "--launch-id",
+                "l1",
+                "--profile=-acme",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(std::iter::once("probe").chain(args.iter().copied()))
+                .unwrap_or_else(|error| panic!("{args:?}: {error}"));
+            let profile = match cli.command {
+                Commands::Node(relay_commands::RelayCommands::DevinSpawnMcp {
+                    profile, ..
+                })
+                | Commands::Node(relay_commands::RelayCommands::MuseSpawnMcp { profile, .. })
+                | Commands::Node(relay_commands::RelayCommands::Read { profile, .. })
+                | Commands::Node(relay_commands::RelayCommands::CodexStopHook {
+                    profile, ..
+                })
+                | Commands::Node(relay_commands::RelayCommands::ClaudeSessionHook {
+                    profile,
+                    ..
+                })
+                | Commands::Node(relay_commands::RelayCommands::DevinSpawnHost {
+                    profile, ..
+                }) => profile,
+                _ => panic!("{args:?}"),
+            };
+            assert_eq!(profile.as_deref(), Some("-acme"), "{args:?}");
+        }
+    }
+
     // Review on #2019: a reply that starts with a hyphen is still the body.
     #[test]
     fn a_socket_request_body_may_start_with_a_hyphen() {
