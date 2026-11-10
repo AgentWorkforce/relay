@@ -67,4 +67,26 @@ describe('buildRelayflowsRunArgs', () => {
       '{}',
     ]);
   });
+
+  it('attaches local execution only when explicitly selected, preserving TypeScript input', () => {
+    expect(buildRelayflowsRunArgs('/work/flow.yaml', 'yaml', { localAgent: true })).toEqual([
+      'flows',
+      'run',
+      '/work/flow.yaml',
+      '--local-agent',
+    ]);
+    expect(buildRelayflowsRunArgs('/work/flow.ts', 'ts', { localAgent: true })).toEqual([
+      'flows',
+      'run',
+      '/work/flow.ts',
+      '--input',
+      '{}',
+      '--local-agent',
+    ]);
+    expect(buildRelayflowsRunArgs('/work/flow.yaml', 'yaml', { localAgent: false })).toEqual([
+      'flows',
+      'run',
+      '/work/flow.yaml',
+    ]);
+  });
 });

@@ -73,6 +73,31 @@ machine-global active workspace, use:
 agent-relay workspace rebind default
 ```
 
+## Cloud worker enrollment
+
+`agent-relay cloud worker register` accepts exactly one token source. To read
+an enrollment token from a projected Secret file:
+
+```bash
+agent-relay cloud worker register --name worker --base-url https://control.example.com \
+  --token-file /var/run/worker-enrollment/token
+```
+
+Piped or redirected stdin is also supported:
+
+```bash
+agent-relay cloud worker register --name worker --base-url https://control.example.com \
+  --token-stdin < /var/run/worker-enrollment/token
+```
+
+The existing `--token <token>` option remains supported. Token inputs are
+limited to 16 KiB, must contain nonempty UTF-8 text, and have surrounding
+whitespace trimmed. File input follows projected Secret symlinks and requires
+the opened target to be a regular file. Stdin refuses an interactive terminal.
+Input failures occur before registration; the CLI does not echo the token or
+include file paths in input errors. Successful enrollment uses the existing
+worker credential store and start protocol.
+
 ## Fleet agents
 
 The `fleet` command group lists and controls agents across all live nodes in

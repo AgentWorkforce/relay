@@ -19,6 +19,12 @@ import {
 } from '@agent-relay/cloud';
 
 import { defaultExit } from '../lib/exit.js';
+import { prepareWorkerAuthoredRuntime } from '../lib/cloud-worker-authored-runtime.js';
+import {
+  readWorkerEnrollmentToken,
+  type WorkerEnrollmentTokenOptions,
+  type WorkerEnrollmentTokenStream,
+} from '../lib/cloud-worker-enrollment-token.js';
 import { buildRelayflowsRunArgs, resolveAgentRelayCliChildCommand } from '../lib/agent-relay-cli-reentry.js';
 import {
   isCliCredentialsPayload,
@@ -40,6 +46,7 @@ export interface CloudWorkerDependencies {
   now: () => Date;
   cwd: () => string;
   fetchImpl: typeof fetch;
+  stdin?: WorkerEnrollmentTokenStream;
   resolveAgentRelayCliEntrypoint: () => string;
 }
 
@@ -53,6 +60,7 @@ function withDefaults(overrides: Partial<CloudWorkerDependencies> = {}): CloudWo
     now: () => new Date(),
     cwd: () => process.cwd(),
     fetchImpl: fetch,
+    stdin: process.stdin,
     resolveAgentRelayCliEntrypoint: () => process.argv[1] ?? 'agent-relay',
     ...overrides,
   };
@@ -89,7 +97,7 @@ function buildWorkerRuntimeEnv(
   deps: CloudWorkerDependencies,
   cliCredentialEnv: Record<string, string> = {}
 ): NodeJS.ProcessEnv {
-  return {
+  const env: NodeJS.ProcessEnv = {
     ...deps.env,
     ...payload.envSecrets,
     // Materialised subscription logins (CODEX_HOME/GROK_HOME pointing into the
@@ -103,6 +111,16 @@ function buildWorkerRuntimeEnv(
     RELAYFILE_URL: payload.relayfileUrl,
     RELAYFILE_TOKEN: payload.relayfileToken,
   };
+  if (payload.fileType === 'ts') {
+    const [major, minor] = process.versions.node.split('.').map(Number);
+    if (!process.versions.bun && (major! < 22 || (major === 22 && minor! < 12))) {
+      throw new Error('Authored worker assignments require Node.js 22.12 or newer, or Bun.');
+    }
+    // Node 22.14 needs this opt-in to import .flow.ts. Keep it scoped to
+    // this assignment and inherited by the standalone Bun CLI's SDK Node child.
+    env.NODE_OPTIONS = `${env.NODE_OPTIONS ?? ''} --experimental-strip-types`.trim();
+  }
+  return env;
 }
 
 function assertFreshWorkerAssignment(payload: WorkerWorkflowPayload): void {
@@ -219,7 +237,10 @@ async function materializeCodeMounts(input: {
   }
 }
 
-export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): ExecuteWorkerAssignment {
+export function createDefaultAssignmentRunner(
+  deps: CloudWorkerDependencies,
+  options: { localAgent?: boolean } = {}
+): ExecuteWorkerAssignment {
   return async ({ payload, worker, signal }) => {
     // Cloud owns assignment control-plane semantics. Relayflows owns execution.
     // This boundary materializes a fresh Cloud payload into a local workflow
@@ -236,8 +257,14 @@ export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): Ex
       await fsp.chmod(runDir, 0o700).catch(() => undefined);
       await materializeCodeMounts({ worker, payload, runDir, deps, signal });
 
-      const workflowPath = path.join(runDir, safeFileName(payload.workflowFileName));
+      const suppliedName = safeFileName(payload.workflowFileName);
+      // The supported authored-flow SDK entrypoint recognizes *.flow.ts.
+      // Control can supply an ordinary *.ts name; preserve its directory/body.
+      const workflowName =
+        payload.fileType === 'ts' ? `${suppliedName.replace(/(?:\.flow)?\.ts$/i, '')}.flow.ts` : suppliedName;
+      const workflowPath = path.join(runDir, workflowName);
       await writeSecretFile(workflowPath, payload.workflow);
+      if (payload.fileType === 'ts') await prepareWorkerAuthoredRuntime(workflowPath);
 
       if (cliCredentials) {
         materialized = await materializeCliCredentials({
@@ -253,7 +280,7 @@ export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): Ex
       const agentRelayCli = resolveAgentRelayCliChildCommand({
         execPath: process.execPath,
         cliEntrypoint: deps.resolveAgentRelayCliEntrypoint(),
-        args: buildRelayflowsRunArgs(workflowPath, payload.fileType),
+        args: buildRelayflowsRunArgs(workflowPath, payload.fileType, options),
         cwd: deps.cwd(),
       });
       const result = await runChild({
@@ -324,7 +351,7 @@ export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): Ex
 
 async function startDaemon(input: {
   worker: CloudWorkerRecord;
-  options: { baseUrl?: string; workerId?: string; name?: string; once?: boolean };
+  options: { baseUrl?: string; workerId?: string; name?: string; once?: boolean; localAgent?: boolean };
   deps: CloudWorkerDependencies;
 }): Promise<CloudWorkerRecord> {
   const stateDir = cloudWorkerStateDir(input.deps.env);
@@ -345,6 +372,7 @@ async function startDaemon(input: {
       input.worker.baseUrl,
       '--foreground-child',
       ...(input.options.once ? ['--once'] : []),
+      ...(input.options.localAgent ? ['--local-agent'] : []),
     ],
     cwd: input.deps.cwd(),
   });
@@ -413,32 +441,38 @@ export function registerCloudWorkerCommands(
   workerCommand
     .command('register')
     .description('Register this machine as an Agent Relay Cloud worker')
-    .requiredOption('--token <token>', 'Worker enrollment token')
+    .option('--token <token>', 'Worker enrollment token (choose exactly one token source)')
+    .option('--token-file <path>', 'Read the enrollment token from a regular file (maximum 16 KiB)')
+    .option('--token-stdin', 'Read the enrollment token from non-interactive stdin (maximum 16 KiB)')
     .requiredOption('--name <name>', 'Worker name')
     .option('--base-url <url>', 'Cloud API base URL')
     .option('--json', 'Print raw JSON response', false)
-    .action(async (options: { token: string; name: string; baseUrl?: string; json?: boolean }) => {
-      const record = await registerCloudWorker({
-        enrollmentToken: options.token,
-        name: options.name,
-        baseUrl: options.baseUrl,
-        env: deps.env,
-        hostInfo: {
-          hostname: os.hostname(),
-          platform: os.platform(),
-          arch: os.arch(),
-          node: process.version,
-        },
-      });
+    .action(
+      async (options: WorkerEnrollmentTokenOptions & { name: string; baseUrl?: string; json?: boolean }) => {
+        const enrollmentToken = await readWorkerEnrollmentToken(options, deps.stdin);
+        const record = await registerCloudWorker({
+          enrollmentToken,
+          name: options.name,
+          baseUrl: options.baseUrl,
+          env: deps.env,
+          fetchImpl: deps.fetchImpl,
+          hostInfo: {
+            hostname: os.hostname(),
+            platform: os.platform(),
+            arch: os.arch(),
+            node: process.version,
+          },
+        });
 
-      if (options.json) {
-        deps.log(JSON.stringify({ ...record, workerToken: undefined }, null, 2));
-        return;
+        if (options.json) {
+          deps.log(JSON.stringify({ ...record, workerToken: undefined }, null, 2));
+          return;
+        }
+
+        deps.log(`Registered worker ${record.name} (${record.workerId})`);
+        deps.log(`Start: agent-relay cloud worker start --worker-id ${record.workerId}`);
       }
-
-      deps.log(`Registered worker ${record.name} (${record.workerId})`);
-      deps.log(`Start: agent-relay cloud worker start --worker-id ${record.workerId}`);
-    });
+    );
 
   workerCommand
     .command('start')
@@ -448,6 +482,11 @@ export function registerCloudWorkerCommands(
     .option('--name <name>', 'Stored worker name to start')
     .option('--daemon', 'Run in the background and write local daemon logs', false)
     .option('--once', 'Process one assignment, then exit', false)
+    .option(
+      '--local-agent',
+      'Attach the supported local Relayflows agent worker; provider setup is separate',
+      false
+    )
     .addOption(new Option('--foreground-child', 'Internal flag used by --daemon').hideHelp().default(false))
     .action(
       async (options: {
@@ -456,6 +495,7 @@ export function registerCloudWorkerCommands(
         name?: string;
         daemon?: boolean;
         once?: boolean;
+        localAgent?: boolean;
         foregroundChild?: boolean;
       }) => {
         const worker = resolveCloudWorkerRecord({
@@ -482,7 +522,8 @@ export function registerCloudWorkerCommands(
             worker,
             once: options.once,
             signal: controller.signal,
-            executeAssignment: createDefaultAssignmentRunner(deps),
+            executeAssignment: createDefaultAssignmentRunner(deps, { localAgent: options.localAgent }),
+            fetchImpl: deps.fetchImpl,
             log: (message) => deps.log(message),
           });
         } finally {
