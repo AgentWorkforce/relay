@@ -26,8 +26,13 @@
 //! Each sender, by Relaycast's immutable agent id, may raise at most
 //! [`LIMIT`] alerts in [`WINDOW_MS`]; the rest are dropped (the DMs still
 //! arrive) and counted, with one diagnostic line per sender per window. A
-//! message redelivered (a push socket reconnecting before the conversation
-//! was read) alerts once.
+//! sender without an agent id is capped by its name, and a DM from your own
+//! identity (by id, or by name when it has no id) never alerts. A message
+//! redelivered (a push socket reconnecting before the conversation was read)
+//! alerts once, as long as it is among the last [`SEEN_KEPT`] alerted
+//! messages; an older one redelivered counts as new. The caps and the
+//! remembered messages belong to one identity: when another person's
+//! identity is current, they start over.
 
 use crate::relay::daemon::Core;
 use crate::relay::state::now_ms;
@@ -47,8 +52,10 @@ pub const LIMIT: usize = 3;
 /// How long an alert counts toward its sender's cap.
 pub const WINDOW_MS: i64 = 10 * 60 * 1000;
 /// How many alerted message ids are remembered, so a redelivery does not
-/// alert again.
-const SEEN_KEPT: usize = 512;
+/// alert again. Past this the oldest is forgotten, and a redelivery of it
+/// alerts again (still within its sender's cap). With [`LIMIT`] per sender
+/// per window this covers far more than a reconnect's backlog.
+pub const SEEN_KEPT: usize = 4096;
 
 /// A valid marker.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,12 +101,14 @@ fn parse(marker: &Value) -> Result<Alert, Malformed> {
         .get("title")
         .and_then(Value::as_str)
         .ok_or(Malformed::TitleMissing)?;
+    // The raw title is measured: collapsing whitespace must not let a
+    // longer one through.
+    if title.chars().count() > TITLE_MAX_CHARS {
+        return Err(Malformed::TitleTooLong);
+    }
     let title = one_line(title);
     if title.is_empty() {
         return Err(Malformed::TitleEmpty);
-    }
-    if title.chars().count() > TITLE_MAX_CHARS {
-        return Err(Malformed::TitleTooLong);
     }
     let link = marker
         .get("link")
@@ -161,9 +170,12 @@ struct Drops {
     count: u32,
 }
 
-/// The alerts raised recently, in memory only: a restart forgets them.
+/// The alerts raised recently for one identity, in memory only: a restart
+/// forgets them, and so does another identity becoming current.
 #[derive(Debug, Default)]
 pub struct PersonAlerts {
+    /// The agent id of the identity these alerts were raised for.
+    owner: Option<String>,
     /// When each sender's counted alerts were raised, oldest first.
     sent: HashMap<String, VecDeque<i64>>,
     dropped: HashMap<String, Drops>,
@@ -172,8 +184,16 @@ pub struct PersonAlerts {
 }
 
 impl PersonAlerts {
-    /// Counts `message_id` from `sender` at `now_ms`, if it may alert.
-    pub fn admit(&mut self, sender: &str, message_id: &str, now_ms: i64) -> Admission {
+    /// Counts `message_id` from `sender` to the identity `owner` (its agent
+    /// id) at `now_ms`, if it may alert. Another owner than the last one
+    /// starts with no caps and nothing seen.
+    pub fn admit(&mut self, owner: &str, sender: &str, message_id: &str, now_ms: i64) -> Admission {
+        if self.owner.as_deref() != Some(owner) {
+            *self = PersonAlerts {
+                owner: Some(owner.to_string()),
+                ..PersonAlerts::default()
+            };
+        }
         if self.seen.contains(message_id) {
             return Admission::Repeated;
         }
@@ -247,13 +267,17 @@ impl Core {
         let Some(marker) = parse_marker(metadata) else {
             return;
         };
-        let Some(sender) = string(&message["agent_id"]).or_else(|| string(&message["agent_name"]))
-        else {
-            return;
+        // The sender by its immutable agent id, else its name; either way a
+        // DM from your own identity never alerts.
+        let sender = match string(&message["agent_id"]) {
+            Some(id) if id == identity.agent_id => return,
+            Some(id) => id,
+            None => match string(&message["agent_name"]) {
+                Some(name) if name == identity.name => return,
+                Some(name) => name,
+                None => return,
+            },
         };
-        if sender == identity.agent_id {
-            return;
-        }
         let alert = match marker {
             Ok(alert) => alert,
             Err(malformed) => {
@@ -267,12 +291,12 @@ impl Core {
         let Some(message_id) = string(&frame["msg_id"]).or_else(|| string(&message["id"])) else {
             return;
         };
-        let admission =
-            self.delivery
-                .lock()
-                .unwrap()
-                .person_alerts
-                .admit(sender, message_id, now_ms());
+        let admission = self.delivery.lock().unwrap().person_alerts.admit(
+            &identity.agent_id,
+            sender,
+            message_id,
+            now_ms(),
+        );
         match admission {
             Admission::Notify => {
                 let body = body_preview(message["text"].as_str().unwrap_or_default());
@@ -357,6 +381,15 @@ mod tests {
                 marker(json!("t".repeat(TITLE_MAX_CHARS + 1)), https.clone()),
                 Malformed::TitleTooLong,
             ),
+            // Measured before whitespace collapses: this one is 121
+            // characters raw and 61 collapsed.
+            (
+                marker(
+                    json!(format!("{}t", "t  ".repeat(TITLE_MAX_CHARS / 2))),
+                    https.clone(),
+                ),
+                Malformed::TitleTooLong,
+            ),
             (
                 json!({ MARKER: { "title": "Ready" } }),
                 Malformed::LinkMissing,
@@ -407,28 +440,31 @@ mod tests {
         let mut alerts = PersonAlerts::default();
         for (i, at) in [0, 1_000, 2_000].into_iter().enumerate() {
             assert_eq!(
-                alerts.admit("ag_a", &format!("m{i}"), at),
+                alerts.admit(OWNER_ID, "ag_a", &format!("m{i}"), at),
                 Admission::Notify
             );
         }
         assert_eq!(
-            alerts.admit("ag_a", "m3", 3_000),
+            alerts.admit(OWNER_ID, "ag_a", "m3", 3_000),
             Admission::Capped {
                 report: true,
                 dropped: 1
             }
         );
         assert_eq!(
-            alerts.admit("ag_a", "m4", WINDOW_MS - 1),
+            alerts.admit(OWNER_ID, "ag_a", "m4", WINDOW_MS - 1),
             Admission::Capped {
                 report: false,
                 dropped: 2
             }
         );
         // The first alert stops counting once it is WINDOW_MS old.
-        assert_eq!(alerts.admit("ag_a", "m5", WINDOW_MS), Admission::Notify);
         assert_eq!(
-            alerts.admit("ag_a", "m6", WINDOW_MS + 1),
+            alerts.admit(OWNER_ID, "ag_a", "m5", WINDOW_MS),
+            Admission::Notify
+        );
+        assert_eq!(
+            alerts.admit(OWNER_ID, "ag_a", "m6", WINDOW_MS + 1),
             Admission::Capped {
                 report: false,
                 dropped: 3
@@ -436,10 +472,16 @@ mod tests {
         );
         // The drop count is reported again once its window has passed.
         let later = 3_000 + WINDOW_MS + 1_000;
-        assert_eq!(alerts.admit("ag_a", "m7", later), Admission::Notify);
-        assert_eq!(alerts.admit("ag_a", "m8", later + 1), Admission::Notify);
         assert_eq!(
-            alerts.admit("ag_a", "m9", later + 2),
+            alerts.admit(OWNER_ID, "ag_a", "m7", later),
+            Admission::Notify
+        );
+        assert_eq!(
+            alerts.admit(OWNER_ID, "ag_a", "m8", later + 1),
+            Admission::Notify
+        );
+        assert_eq!(
+            alerts.admit(OWNER_ID, "ag_a", "m9", later + 2),
             Admission::Capped {
                 report: true,
                 dropped: 1
@@ -451,17 +493,23 @@ mod tests {
     fn senders_are_capped_independently() {
         let mut alerts = PersonAlerts::default();
         for i in 0..LIMIT {
-            assert_eq!(alerts.admit("ag_a", &format!("a{i}"), 0), Admission::Notify);
+            assert_eq!(
+                alerts.admit(OWNER_ID, "ag_a", &format!("a{i}"), 0),
+                Admission::Notify
+            );
         }
         assert!(matches!(
-            alerts.admit("ag_a", "a-over", 0),
+            alerts.admit(OWNER_ID, "ag_a", "a-over", 0),
             Admission::Capped { .. }
         ));
         for i in 0..LIMIT {
-            assert_eq!(alerts.admit("ag_b", &format!("b{i}"), 0), Admission::Notify);
+            assert_eq!(
+                alerts.admit(OWNER_ID, "ag_b", &format!("b{i}"), 0),
+                Admission::Notify
+            );
         }
         assert!(matches!(
-            alerts.admit("ag_b", "b-over", 0),
+            alerts.admit(OWNER_ID, "ag_b", "b-over", 0),
             Admission::Capped { .. }
         ));
     }
@@ -469,21 +517,64 @@ mod tests {
     #[test]
     fn a_redelivered_message_alerts_once_and_does_not_use_the_cap() {
         let mut alerts = PersonAlerts::default();
-        assert_eq!(alerts.admit("ag_a", "m1", 0), Admission::Notify);
-        assert_eq!(alerts.admit("ag_a", "m1", 10), Admission::Repeated);
-        assert_eq!(alerts.admit("ag_a", "m2", 20), Admission::Notify);
-        assert_eq!(alerts.admit("ag_a", "m3", 30), Admission::Notify);
+        assert_eq!(alerts.admit(OWNER_ID, "ag_a", "m1", 0), Admission::Notify);
+        assert_eq!(
+            alerts.admit(OWNER_ID, "ag_a", "m1", 10),
+            Admission::Repeated
+        );
+        assert_eq!(alerts.admit(OWNER_ID, "ag_a", "m2", 20), Admission::Notify);
+        assert_eq!(alerts.admit(OWNER_ID, "ag_a", "m3", 30), Admission::Notify);
+    }
+
+    #[test]
+    fn a_redelivery_after_the_seen_bound_alerts_again() {
+        let mut alerts = PersonAlerts::default();
+        // One sender per message, so no cap is reached.
+        for i in 0..=SEEN_KEPT {
+            assert_eq!(
+                alerts.admit(OWNER_ID, &format!("ag_{i}"), &format!("m{i}"), 0),
+                Admission::Notify
+            );
+        }
+        // m0 was forgotten when the bound was passed; m1 is still kept.
+        assert_eq!(alerts.admit(OWNER_ID, "ag_x", "m1", 1), Admission::Repeated);
+        assert_eq!(alerts.admit(OWNER_ID, "ag_x", "m0", 1), Admission::Notify);
+    }
+
+    #[test]
+    fn another_identity_starts_with_no_caps_and_nothing_seen() {
+        let mut alerts = PersonAlerts::default();
+        for i in 0..LIMIT {
+            assert_eq!(
+                alerts.admit("ag_alice", "ag_reviewer", &format!("m{i}"), 0),
+                Admission::Notify
+            );
+        }
+        assert!(matches!(
+            alerts.admit("ag_alice", "ag_reviewer", "m-over", 0),
+            Admission::Capped { .. }
+        ));
+        assert_eq!(
+            alerts.admit("ag_bob", "ag_reviewer", "m0", 1),
+            Admission::Notify
+        );
+        assert_eq!(
+            alerts.admit("ag_bob", "ag_reviewer", "m-bob", 1),
+            Admission::Notify
+        );
     }
 
     const OWNER_ID: &str = "ag_owner";
 
-    struct SignedIn;
+    /// Signed in as `user`, whose identity is `@<user>` with agent id
+    /// `ag_<user>`; the user can change, as with an account switch.
+    struct SignedIn(std::sync::Mutex<&'static str>);
     impl CloudAccess for SignedIn {
         fn account(&self) -> Option<CloudAccount> {
             Some(CloudAccount {
                 site_url: "https://agentrelay.example".into(),
                 workspace_id: "cloud-workspace".into(),
-                user_id: Some("person".into()),
+                user_id: Some(self.0.lock().unwrap().to_string()),
             })
         }
         fn agent_owner(&self) -> Option<AgentOwner> {
@@ -495,9 +586,10 @@ mod tests {
             path: String,
             _: Option<Value>,
         ) -> BoxFuture<'_, Result<Value, CloudError>> {
+            let user = *self.0.lock().unwrap();
             Box::pin(async move {
                 Ok(if path.ends_with("/messaging/identity/credential") {
-                    json!({"identity": {"name": "owner", "agentId": OWNER_ID,
+                    json!({"identity": {"name": user, "agentId": format!("ag_{user}"),
                         "token": "at_test", "relaycastUrl": "http://127.0.0.1:9"}})
                 } else {
                     Value::Null
@@ -507,6 +599,11 @@ mod tests {
     }
 
     async fn signed_in_core() -> (tempfile::TempDir, Arc<Core>) {
+        let (home, core, _) = switchable_core().await;
+        (home, core)
+    }
+
+    async fn switchable_core() -> (tempfile::TempDir, Arc<Core>, Arc<SignedIn>) {
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path();
         let config = Config {
@@ -520,13 +617,14 @@ mod tests {
             push_timing: PushTiming::default(),
             delivery_timing: DeliveryTiming::default(),
         };
+        let cloud = Arc::new(SignedIn(std::sync::Mutex::new("owner")));
         let plugins = Plugins {
-            cloud: Arc::new(SignedIn),
+            cloud: cloud.clone(),
             ..Plugins::default()
         };
         let core = Core::with_plugins(config, plugins).0;
         core.person_identity(false).await.unwrap();
-        (temp, core)
+        (temp, core, cloud)
     }
 
     fn dm_frame(to_id: &str, message_id: &str, metadata: Value) -> Value {
@@ -636,5 +734,40 @@ mod tests {
             );
         }
         assert_eq!(notifications(&mut events).len(), LIMIT);
+    }
+
+    #[tokio::test]
+    async fn a_self_dm_known_only_by_name_raises_none() {
+        let (_home, core) = signed_in_core().await;
+        let mut events = core.hub.subscribe();
+        let mut frame = dm_frame(OWNER_ID, "msg_self", valid_marker());
+        let message = &mut frame["payload"]["data"]["message"];
+        message.as_object_mut().unwrap().remove("agent_id");
+        message["agent_name"] = json!("owner");
+        core.wake("@owner".into(), Some(frame));
+        assert!(notifications(&mut events).is_empty());
+    }
+
+    #[tokio::test]
+    async fn after_an_account_switch_the_new_person_is_alerted() {
+        let (_home, core, cloud) = switchable_core().await;
+        *cloud.0.lock().unwrap() = "alice";
+        core.person_identity(false).await.unwrap();
+        let mut events = core.hub.subscribe();
+        for i in 0..LIMIT + 1 {
+            core.wake(
+                "@alice".into(),
+                Some(dm_frame("ag_alice", &format!("a{i}"), valid_marker())),
+            );
+        }
+        assert_eq!(notifications(&mut events).len(), LIMIT);
+        // Bob signs in: Alice's cap on ag_reviewer is not his.
+        *cloud.0.lock().unwrap() = "bob";
+        core.person_identity(false).await.unwrap();
+        core.wake(
+            "@bob".into(),
+            Some(dm_frame("ag_bob", "b0", valid_marker())),
+        );
+        assert_eq!(notifications(&mut events).len(), 1);
     }
 }

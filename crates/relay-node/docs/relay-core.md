@@ -680,10 +680,16 @@ agents into its session (through the `Injector`) and settles it:
   missing, empty, longer than 120 characters or not a string, link missing,
   not a string or not an `https` URL with a host and no credentials) is
   ignored with a diagnostic line naming the reason; the sender is never told.
-  Each sender, by agent id, raises at most 3 alerts in 10 minutes; further
-  alerts are dropped and counted, with one diagnostic line per sender per
-  window, and their DMs still arrive. A DM redelivered before it is read
-  alerts once. The DM's delivery is unchanged: it is read and acknowledged
+  The title's 120 characters are counted before whitespace is collapsed.
+  Each sender, by agent id (by name when the message carries no id),
+  raises at most 3 alerts in 10 minutes; further alerts are dropped and
+  counted, with one diagnostic line per sender per window, and their DMs
+  still arrive. A DM from your own identity never alerts. A DM redelivered
+  before it is read alerts once, as long as it is among the last 4096
+  alerted messages; an older one redelivered alerts again (within its
+  sender's cap). The caps and remembered messages belong to the identity
+  they were counted for and start over when another account's identity is
+  current. The DM's delivery is unchanged: it is read and acknowledged
   with its conversation as before. Alerts come from pushed frames only; a
   DM read while the push socket is down does not alert.
 - Pushed `deliver` frames for DMs and thread replies are handled from the
