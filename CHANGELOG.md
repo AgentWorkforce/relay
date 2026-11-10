@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay cloud worker start --local-agent` opts into the supported Relayflows local worker, including daemon starts. TypeScript assignments use the SDK’s authored `.flow.ts` entrypoint.
 - `agent-relay cloud worker register` accepts exactly one of `--token`, `--token-file` or `--token-stdin`, so enrollment can read a projected Secret file or pipe without putting the credential in process arguments. File and stdin inputs are limited to 16 KiB; interactive stdin is refused.
 
+### Fixed
+
+- Authored TypeScript cloud-worker assignments resolve the CLI's pinned Surface from isolated run directories when no dependency is supplied, preserving assignment-provided packages.
+
 ## [18.0.0] - 2026-11-09
 
 ### Added
