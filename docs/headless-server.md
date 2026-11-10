@@ -2,8 +2,8 @@
 
 Use the Linux Agent Relay package when an always-on server should appear beside
 an existing Mac in the same Cloud workspace and accept Claude Code or Codex
-spawns. It runs as a systemd user service over SSH; no desktop window, display
-server, local browser, or SSH port forwarding is required. The package includes
+spawns. It runs as `agent-relay.service`, a systemd user service over SSH; no
+desktop window, display server, local browser, or SSH port forwarding is required. The package includes
 the account-aware core, even when you never open its desktop UI.
 
 ## Choose the right setup path
@@ -115,8 +115,8 @@ interactive shell alone does not prove the service has the same PATH.
 For Relay’s `2026.11.3` integration, Codex also needs its app-server daemon: a
 managed daemon package, its standalone install, or an existing control socket.
 An older Codex installed only through npm or a version manager such as mise
-can lack these and be missing from spawn targets (`CODEX_NO_DAEMON`). If that
-is the cause, use the [official Codex standalone installer](https://learn.chatgpt.com/docs/codex/cli#getting-started)
+can lack these and be missing from spawn targets. The diagnostic begins
+“Codex here cannot start its app-server daemon”. If that is the cause, use the [official Codex standalone installer](https://learn.chatgpt.com/docs/codex/cli#getting-started)
 for this Linux user. This is Relay’s version-specific discovery requirement;
 npm remains a supported general Codex CLI installation method.
 
