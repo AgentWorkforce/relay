@@ -19,7 +19,7 @@ use crate::relay::managed_sessions::ManagedAuthority;
 use crate::relay::people::identity_hash;
 use crate::relay::protocol::{ErrorKind, RpcError};
 use crate::relay::push::{PushState, PushTarget};
-use crate::relay::sessions::DiscoveredSession;
+use crate::relay::sessions::{AutomaticCandidate, DiscoveredSession};
 use crate::relay::state::{Level, Listing};
 use crate::relay::store::{
     iso8601_now, random_hex, AgentAlias, CleanupKind, PendingCleanup, Registration, SessionKind,
@@ -250,6 +250,25 @@ fn is_name_taken(error: &relaycast::RelayError) -> bool {
 }
 
 impl Core {
+    /// A trusted host can request a global pass, but cannot name the chat
+    /// to register. Coalesce signals and leave network work off hook calls.
+    pub(crate) fn request_codex_discovery(self: &Arc<Self>) {
+        use std::sync::atomic::Ordering;
+        if self.codex_discovery_refresh.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let core = self.clone();
+        tokio::spawn(async move {
+            for attempt in 0..3 {
+                if attempt > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                core.activate_new_sessions().await;
+            }
+            core.codex_discovery_refresh.store(false, Ordering::Release);
+        });
+    }
+
     /// The agents or the sign-in changed: the spawn node is claimed for them,
     /// the people in the workspace are trusted like the person, and the
     /// account hears of it.
@@ -430,6 +449,26 @@ impl Core {
         added_by_session: bool,
         auto_activated: bool,
     ) -> Result<Registered, RpcError> {
+        self.register_session_authorized(
+            session,
+            raw_name,
+            description,
+            added_by_session,
+            auto_activated,
+            None,
+        )
+        .await
+    }
+
+    async fn register_session_authorized(
+        &self,
+        session: &DiscoveredSession,
+        raw_name: Option<&str>,
+        description: Option<&str>,
+        added_by_session: bool,
+        auto_activated: bool,
+        candidate: Option<&AutomaticCandidate>,
+    ) -> Result<Registered, RpcError> {
         let target = &session.target;
         let lock = self.target_locks.get(&target.key());
         let _changing = lock.lock().await;
@@ -472,7 +511,16 @@ impl Core {
         if is_managed(target.kind) {
             self.verify_managed_registration_authority(target).await?;
         }
-        if !session.live {
+        let runtime_admission = if let Some(candidate) = candidate {
+            let directory = self.plugins.sessions.clone();
+            let candidate = candidate.clone();
+            tokio::task::spawn_blocking(move || directory.automatic_candidate_current(&candidate))
+                .await
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        if !session.live && !runtime_admission {
             return Err(RpcError::new(
                 ErrorKind::Refused,
                 "This session is not running.",
@@ -514,6 +562,27 @@ impl Core {
                 "No Agent Relay workspace key on this computer.",
             )
         })?;
+        let still_admitted = if let Some(candidate) = candidate {
+            let directory = self.plugins.sessions.clone();
+            let candidate = candidate.clone();
+            tokio::task::spawn_blocking(move || directory.automatic_candidate_current(&candidate))
+                .await
+                .unwrap_or(false)
+        } else {
+            runtime_admission
+        };
+        if candidate.is_some()
+            && (!still_admitted
+                || !auto_activation::activation_applies(
+                    &self.store.read(auto_activation::ActivationSettings::of),
+                    target.kind,
+                ))
+        {
+            return Err(RpcError::new(
+                ErrorKind::Refused,
+                "Automatic admission is disabled or its runtime proof expired.",
+            ));
+        }
         let mut candidate = name;
         let mut attempt = 1;
         let registration = loop {
@@ -1431,11 +1500,7 @@ impl Core {
         let discovered = tokio::task::spawn_blocking(move || {
             sessions.pi_auto_join(pi_auto_join);
             let all = sessions.sessions();
-            let live: HashSet<Target> = all
-                .iter()
-                .filter(|session| session.live)
-                .map(|session| session.target.clone())
-                .collect();
+            let live = sessions.present_targets();
             let targets: Vec<Target> = registered.iter().map(|(_, t)| t.clone()).collect();
             let archived = sessions.archived(&targets);
             let archived: Vec<String> = registered
@@ -1443,7 +1508,7 @@ impl Core {
                 .filter(|(_, target)| archived.contains(target))
                 .map(|(name, _)| name)
                 .collect();
-            let found = sessions.auto_activation_sessions();
+            let found = sessions.automatic_candidates();
             (found, all, live, archived, sessions.cleared(&targets))
         })
         .await;
@@ -1459,10 +1524,10 @@ impl Core {
         let spawned_live = self.spawned_live();
         live.retain(|target| !spawned.contains(target));
         live.extend(spawned_live);
-        let mut found: HashMap<Target, DiscoveredSession> = found
+        let mut found: HashMap<Target, AutomaticCandidate> = found
             .into_iter()
-            .filter(|session| !spawned.contains(&session.target))
-            .map(|session| (session.target.clone(), session))
+            .filter(|candidate| !spawned.contains(&candidate.session.target))
+            .map(|candidate| (candidate.session.target.clone(), candidate))
             .collect();
         let moved = self.follow_cleared(&cleared);
         let now = chrono::Utc::now();

@@ -275,6 +275,13 @@ async fn cached_sessions_list(core: &Arc<Core>) -> LocalSessions {
                 .and_then(|directory| projects.get(directory).cloned().flatten()),
             directory: session.directory.clone(),
             live: session.live,
+            delivery_wait: (registration.is_some()
+                && !session.live
+                && running
+                && session.target.kind == crate::relay::store::SessionKind::Codex)
+                .then(|| {
+                    "Registered; waiting for a verified turn hook or desktop owner.".to_string()
+                }),
             running: Some(running),
             holder: session.holder,
             updated_at_ms: session.updated_at_ms,

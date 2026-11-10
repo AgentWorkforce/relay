@@ -2312,6 +2312,9 @@ public struct LocalAgent: Codable, Equatable, Hashable, Sendable {
 
 /// A session on this computer, with its registration when it has one.
 public struct LocalSession: Codable, Equatable, Hashable, Sendable {
+    /// Registration/transport presence is not proof that the model can
+    /// receive a message. Absent on older cores and when no wait is known.
+    public let deliveryWait: String?
     public let directory: String?
     /// What holds this session's transcript, for a session that can be
     /// held at all (see [`SessionHolder`]).
@@ -2338,7 +2341,8 @@ public struct LocalSession: Codable, Equatable, Hashable, Sendable {
     public let title: String
     public let updatedAtMs: Int64?
 
-    public init(directory: String? = nil, holder: SessionHolder? = nil, host: String? = nil, live: Bool, project: String? = nil, registration: SessionRegistration? = nil, running: Bool? = nil, suggestedName: String, target: Target, title: String, updatedAtMs: Int64? = nil) {
+    public init(deliveryWait: String? = nil, directory: String? = nil, holder: SessionHolder? = nil, host: String? = nil, live: Bool, project: String? = nil, registration: SessionRegistration? = nil, running: Bool? = nil, suggestedName: String, target: Target, title: String, updatedAtMs: Int64? = nil) {
+        self.deliveryWait = deliveryWait
         self.directory = directory
         self.holder = holder
         self.host = host
@@ -2353,6 +2357,7 @@ public struct LocalSession: Codable, Equatable, Hashable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
+        case deliveryWait = "delivery_wait"
         case directory
         case holder
         case host
@@ -2368,6 +2373,7 @@ public struct LocalSession: Codable, Equatable, Hashable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.deliveryWait = try c.decodeIfPresent(String.self, forKey: .deliveryWait)
         self.directory = try c.decodeIfPresent(String.self, forKey: .directory)
         self.holder = try c.decodeIfPresent(SessionHolder.self, forKey: .holder)
         self.host = try c.decodeIfPresent(String.self, forKey: .host)
@@ -2383,6 +2389,7 @@ public struct LocalSession: Codable, Equatable, Hashable, Sendable {
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(self.deliveryWait, forKey: .deliveryWait)
         try c.encode(self.directory, forKey: .directory)
         try c.encodeIfPresent(self.holder, forKey: .holder)
         try c.encodeIfPresent(self.host, forKey: .host)

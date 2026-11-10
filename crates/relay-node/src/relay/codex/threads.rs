@@ -332,6 +332,37 @@ pub fn read_one(config: &CodexConfig, id: &str) -> Option<CodexThread> {
     })
 }
 
+/// A root user chat held by a trusted runtime, outside the recent-history
+/// page. Internal/prewarmed and exec sessions never become automatic agents.
+pub(crate) fn read_runtime_user(config: &CodexConfig, id: &str) -> Option<CodexThread> {
+    if !crate::relay::store::is_uuid(id) {
+        return None;
+    }
+    with_connection(config, Duration::from_secs(2), |connection| {
+        let columns = columns(connection)?;
+        // Older schemas keep the existing deliverable-session discovery;
+        // do not widen it when user-session evidence is unavailable.
+        if !columns.contains("has_user_event") {
+            return None;
+        }
+        let root = if columns.contains("thread_source") {
+            " and +thread_source = 'user'"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "select {} from threads where {ID_MATCHES} and +archived = 0 \
+            and +source in ('cli', 'vscode') and +has_user_event = 1{root} limit 1",
+            select_list(&columns)?
+        );
+        let found = connection.query_row(&sql, [id], row).ok()?;
+        if is_relay_spawned_title(found.1.as_deref().unwrap_or_default()) {
+            return None;
+        }
+        Some(thread(found))
+    })
+}
+
 /// Whether this exact thread has a live catalog row, regardless of Codex's
 /// source label. Used before resuming a registered native spawn; it must
 /// not broaden the

@@ -160,6 +160,64 @@ impl SessionDirectory for LocalSessions {
             .collect()
     }
 
+    fn automatic_candidates(&self) -> Vec<crate::relay::sessions::AutomaticCandidate> {
+        use crate::relay::sessions::AutomaticCandidate;
+        let mut found: HashMap<Target, AutomaticCandidate> = self
+            .auto_activation_sessions()
+            .into_iter()
+            .filter_map(AutomaticCandidate::live)
+            .map(|c| (c.session.target.clone(), c))
+            .collect();
+        for (session, proof) in self.codex_runtime_sessions() {
+            if self.runtime_admitted(&session) {
+                found
+                    .entry(session.target.clone())
+                    .or_insert(AutomaticCandidate {
+                        session,
+                        runtime: Some(proof),
+                    });
+            }
+        }
+        found.into_values().collect()
+    }
+
+    fn automatic_candidate_current(
+        &self,
+        candidate: &crate::relay::sessions::AutomaticCandidate,
+    ) -> bool {
+        let Some(proof) = candidate.runtime.as_ref() else {
+            return candidate.session.live;
+        };
+        candidate.session.target.kind == SessionKind::Codex
+            && candidate.session.target.id == proof.thread()
+            && proof.current(&*self.table, self.config.uid)
+            && codex::threads::read_runtime_user(&self.config.codex, proof.thread()).is_some_and(
+                |thread| {
+                    thread.directory == candidate.session.directory
+                        && self.runtime_admitted(&candidate.session)
+                },
+            )
+    }
+
+    fn present_targets(&self) -> HashSet<Target> {
+        let mut targets: HashSet<_> = self
+            .sessions()
+            .into_iter()
+            .filter(|s| s.live)
+            .map(|s| s.target)
+            .collect();
+        targets.extend(
+            self.codex_runtime_sessions()
+                .into_iter()
+                .map(|(s, _)| s.target),
+        );
+        targets
+    }
+
+    fn trusted_codex_discovery_signal(&self, pid: i32) -> bool {
+        crate::relay::process::trusted_codex_host(&*self.table, pid, self.config.uid)
+    }
+
     fn pi_auto_join(&self, auto_join: bool) {
         self.config.pi.sync_auto_join(auto_join);
     }
@@ -412,6 +470,35 @@ fn fallback_title(kind: SessionKind) -> &'static str {
 }
 
 impl LocalSessions {
+    pub(super) fn codex_runtime_sessions(
+        &self,
+    ) -> Vec<(DiscoveredSession, crate::relay::process::CodexRuntimeProof)> {
+        crate::relay::process::codex_runtime_proofs(&*self.scans, self.config.uid)
+            .into_iter()
+            .filter_map(|proof| {
+                let thread = codex::threads::read_runtime_user(&self.config.codex, proof.thread())?;
+                let session = DiscoveredSession {
+                    target: Target::new(SessionKind::Codex, thread.id),
+                    title: thread.title,
+                    directory: thread.directory,
+                    updated_at_ms: thread.updated_at_ms,
+                    host: None,
+                    live: false,
+                    holder: None,
+                };
+                Some((session, proof))
+            })
+            .collect()
+    }
+
+    fn runtime_admitted(&self, session: &DiscoveredSession) -> bool {
+        session
+            .directory
+            .as_deref()
+            .is_some_and(|dir| !is_under(Path::new(dir), &self.config.auto_activate_excluded_dirs))
+            && !self.without_fleet_owned(vec![session.clone()]).is_empty()
+    }
+
     /// Whether automatic activation puts `session` on the relay: one
     /// predicate for activation itself and for `/setup/status`'s
     /// `auto_activates`, so the SessionStart hook never promises a join

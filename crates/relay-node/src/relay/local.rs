@@ -1878,6 +1878,7 @@ pub use plugins::{
 #[cfg(unix)]
 mod tests {
     mod automatic_admission;
+    mod runtime_registration;
 
     mod spawned_delivery;
     use super::*;

@@ -101,26 +101,50 @@ impl Outbound {
             return Ok(json!({}));
         };
         let target = crate::relay::store::Target::new(SessionKind::Codex, thread.clone());
-        let guidance = (event == HookEvent::PostToolUse
-            && inbox.is_ready()
-            && self.core.workspace().is_some()
-            && self.core.allows_self_registration()
-            && self
-                .core
-                .store
-                .read(|store| store.registration_for(&target).is_none())
-            && inbox.needs_registration_guidance(&thread))
-        .then(|| {
-            self.core
-                .plugins
-                .relay_send
-                .as_ref()
-                .and_then(|send| registration_context(&send.socket))
-        })
-        .flatten();
+        let automatic = self.core.store.read(|s| s.auto_activate == Some(true));
+        let identity = self.core.store.read(|s| {
+            s.registration_for(&target).map(|r| {
+                (
+                    r.display_name().to_string(),
+                    r.current_address(&self.core.machine_prefix),
+                )
+            })
+        });
+        let refresh = automatic && identity.is_none();
+        let guidance = if event == HookEvent::PostToolUse
+            && automatic
+            && inbox.needs_registration_guidance(&thread)
+        {
+            identity.as_ref().and_then(|(name, address)| {
+                let commands = self.codex_socket_commands()?;
+                Some(json!({"hookSpecificOutput":{"hookEventName":"PostToolUse",
+                    "additionalContext": crate::relay::hosted_mcp::codex_preamble(
+                        Some((name.as_str(),address.as_str())), &commands)}}))
+            })
+        } else {
+            (event == HookEvent::PostToolUse
+                && !automatic
+                && inbox.is_ready()
+                && self.core.workspace().is_some()
+                && self.core.allows_self_registration()
+                && self
+                    .core
+                    .store
+                    .read(|store| store.registration_for(&target).is_none())
+                && inbox.needs_registration_guidance(&thread))
+            .then(|| {
+                self.core
+                    .plugins
+                    .relay_send
+                    .as_ref()
+                    .and_then(|send| registration_context(&send.socket))
+            })
+            .flatten()
+        };
         if event == HookEvent::PostToolUse
             && !inbox.turns().has_offered(&thread)
             && guidance.is_none()
+            && !refresh
         {
             return Ok(json!({}));
         }
@@ -136,17 +160,38 @@ impl Outbound {
             .to_string();
         let directory = self.core.plugins.sessions.clone();
         let injector = self.core.plugins.injector.clone();
+        let core = self.core.clone();
         tokio::task::spawn_blocking(move || {
             if !directory.codex_hook_turn_matches(pid, &thread, &turn) {
                 return Err(OutboundError::not_a_session());
             }
+            if refresh {
+                core.request_codex_discovery();
+            }
             if event == HookEvent::PostToolUse {
+                let mut answer = inbox.turns().answer(&thread, event);
                 if let Some(guidance) = guidance {
                     if inbox.take_registration_guidance(&thread) {
-                        return Ok(guidance);
+                        if let Some(text) = answer
+                            .pointer("/hookSpecificOutput/additionalContext")
+                            .and_then(Value::as_str)
+                        {
+                            let mut combined = guidance;
+                            if let Some(context) =
+                                combined.pointer_mut("/hookSpecificOutput/additionalContext")
+                            {
+                                *context = json!(format!(
+                                    "{}\n\n{text}",
+                                    context.as_str().unwrap_or_default()
+                                ));
+                            }
+                            answer = combined;
+                        } else {
+                            answer = guidance;
+                        }
                     }
                 }
-                return Ok(inbox.turns().answer(&thread, event));
+                return Ok(answer);
             }
             let target = crate::relay::store::Target::new(SessionKind::Codex, thread.clone());
             let shown = !turn.is_empty() && !injector.relay_started_turn(&target, &turn);
@@ -187,6 +232,14 @@ impl Outbound {
         cwd: Option<String>,
     ) -> Result<Value, OutboundError> {
         let directory = self.core.plugins.sessions.clone();
+        let trusted_host =
+            tokio::task::spawn_blocking(move || directory.trusted_codex_discovery_signal(pid))
+                .await
+                .unwrap_or(false);
+        if trusted_host {
+            self.core.request_codex_discovery();
+        }
+        let directory = self.core.plugins.sessions.clone();
         let session = tokio::task::spawn_blocking(move || {
             if !directory.holds_codex_thread(pid, &thread) {
                 return None;
@@ -209,8 +262,16 @@ impl Outbound {
         })
         .await
         .ok()
-        .flatten()
-        .ok_or_else(OutboundError::not_a_session)?;
+        .flatten();
+        // A multiplexing host can request discovery without proving which
+        // chat will receive this response. Return no identity or context.
+        let Some(session) = session else {
+            return if trusted_host {
+                Ok(json!({}))
+            } else {
+                Err(OutboundError::not_a_session())
+            };
+        };
         let Some(commands) = self.codex_socket_commands() else {
             return Ok(json!({}));
         };

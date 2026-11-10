@@ -163,6 +163,8 @@ pub struct Core {
     pub(crate) session_snapshot: crate::relay::local_methods::PresentationSnapshot,
     /// Native title and mobile-state publications fence older roster snapshots.
     pub(crate) roster_revision: std::sync::atomic::AtomicU64,
+    /// Coalesces authenticated startup signals; never selects a chat.
+    pub(crate) codex_discovery_refresh: std::sync::atomic::AtomicBool,
     /// One change at a time per session (`target.key()`).
     pub(crate) target_locks: KeyedLocks,
     /// One delivery at a time per agent name; a removal waits for it.
@@ -294,6 +296,7 @@ impl Core {
             project_names,
             session_snapshot: Default::default(),
             roster_revision: std::sync::atomic::AtomicU64::new(0),
+            codex_discovery_refresh: std::sync::atomic::AtomicBool::new(false),
             target_locks: KeyedLocks::default(),
             agent_locks: KeyedLocks::default(),
             roster_locks: KeyedLocks::default(),
