@@ -2,6 +2,7 @@
 //! No credential or caller identity is accepted from MCP arguments: the socket
 //! derives the caller from this process's kernel-proven agent ancestry.
 
+use crate::relay::outbound::Build;
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::io::{BufRead, Read, Write};
@@ -16,15 +17,21 @@ pub(crate) enum Harness {
     Droid,
     Muse,
 }
-pub(crate) fn definition(helper: &Path, alias: &str, development: bool, harness: Harness) -> Value {
+/// The MCP server for a spawned session of `harness`, sending through
+/// `build`'s own pointer (`--dev`, `--profile=<id>`, or neither for Agent
+/// Relay), never another build's.
+pub(crate) fn definition(helper: &Path, alias: &str, build: &Build, harness: Harness) -> Value {
     let command = match harness {
         Harness::Devin => "devin-spawn-mcp",
         Harness::Droid => "droid-spawn-mcp",
         Harness::Muse => "muse-spawn-mcp",
     };
-    let mut arguments = vec![command];
-    if development {
-        arguments.push("--dev");
+    let mut arguments = vec![command.to_string()];
+    match build {
+        Build::Production => {}
+        Build::Development => arguments.push("--dev".into()),
+        // One word, so an id starting with `-` is never read as an option.
+        Build::Profile(id) => arguments.push(format!("--profile={id}")),
     }
     json!({"name":alias,"command":helper,"args":arguments,"env":[]})
 }
@@ -71,11 +78,11 @@ fn tool() -> Value {
     json!({"name":TOOL,"description":description,"inputSchema":{"type":"object","properties":{"to":{"type":"string","maxLength":256},"text":{"type":"string","maxLength":65536},"reply_to":{"type":"string","pattern":"^[0-9]{1,32}$"}},"required":["to","text"],"additionalProperties":false}})
 }
 
-fn send_message(arguments: &Value, development: bool) -> Result<Value> {
+fn send_message(arguments: &Value, build: &Build) -> Result<Value> {
     if !valid_arguments(arguments) {
         anyhow::bail!("Invalid Agent Relay send arguments");
     }
-    let socket = crate::relay::cli::pointed_socket(&crate::relay::paths::home()?, development)?;
+    let socket = crate::relay::cli::pointed_socket(&crate::relay::paths::home()?, build)?;
     let recipient = arguments["to"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing recipient"))?;
@@ -193,7 +200,7 @@ fn dispatch(request: &Value, send: &mut impl FnMut(&Value) -> Result<Value>) -> 
     json!({"jsonrpc":"2.0","id":request["id"],"result":result})
 }
 
-pub fn run(development: bool) -> Result<()> {
+pub fn run(build: &Build) -> Result<()> {
     let mut reader = std::io::stdin().lock();
     let mut output = std::io::stdout().lock();
     loop {
@@ -208,9 +215,7 @@ pub fn run(development: bool) -> Result<()> {
         if request.get("id").is_none() {
             continue;
         }
-        let response = dispatch(&request, &mut |arguments| {
-            send_message(arguments, development)
-        });
+        let response = dispatch(&request, &mut |arguments| send_message(arguments, build));
         writeln!(output, "{response}")?;
         output.flush()?;
     }

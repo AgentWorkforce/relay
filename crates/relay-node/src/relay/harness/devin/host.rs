@@ -42,6 +42,7 @@ pub fn run(
     runtime: &Path,
     launch_id: &str,
     full_access: bool,
+    build: &crate::relay::outbound::Build,
 ) -> Result<()> {
     if !crate::relay::store::is_uuid(launch_id)
         || !directory.is_absolute()
@@ -79,11 +80,7 @@ pub fn run(
         "agent-relay-private-{}",
         crate::relay::store::random_uuid().replace('-', "")
     );
-    let server = mcp::definition(
-        &std::env::current_exe()?,
-        &alias,
-        runtime.ends_with("spawned-dev"),
-    );
+    let server = mcp::definition(&std::env::current_exe()?, &alias, build);
     send(
         &mut input,
         json!({"jsonrpc":"2.0","id":"new","method":"session/new","params":{"cwd":directory,"mcpServers":[server]}}),
@@ -595,7 +592,16 @@ for line in sys.stdin:
             runtime.clone(),
             launch_id.clone(),
         );
-        let host = std::thread::spawn(move || run(&cli, &cwd, &folder, &id, false));
+        let host = std::thread::spawn(move || {
+            run(
+                &cli,
+                &cwd,
+                &folder,
+                &id,
+                false,
+                &crate::relay::outbound::Build::Production,
+            )
+        });
         let deadline = Instant::now() + Duration::from_secs(10);
         let record = loop {
             if let Some(record) =

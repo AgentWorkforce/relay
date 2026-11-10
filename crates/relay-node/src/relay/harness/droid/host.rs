@@ -4,6 +4,7 @@
 
 use super::{protocol::Engine, write_record, Record, MARKER};
 mod input;
+use crate::relay::outbound::Build;
 use crate::relay::process::{ProcessTable, SystemProcesses};
 use crate::relay::spawn::launch::SpawnedProcess;
 use anyhow::{anyhow, Result};
@@ -41,7 +42,13 @@ impl Drop for Provider {
     }
 }
 
-pub fn run(executable: &Path, directory: &Path, runtime: &Path, launch_id: &str) -> Result<()> {
+pub fn run(
+    executable: &Path,
+    directory: &Path,
+    runtime: &Path,
+    launch_id: &str,
+    build: &Build,
+) -> Result<()> {
     // initialize.mcpServers is additive, not an established configuration-source
     // boundary. Refuse before even creating runtime state or launching Droid:
     // inherited servers can execute at startup before any tool permission gate.
@@ -79,7 +86,7 @@ pub fn run(executable: &Path, directory: &Path, runtime: &Path, launch_id: &str)
     let mut server = super::super::relay_mcp::definition(
         &std::env::current_exe()?,
         &alias,
-        runtime.ends_with("spawned-dev"),
+        build,
         super::super::relay_mcp::Harness::Droid,
     );
     server["env"] = json!({});

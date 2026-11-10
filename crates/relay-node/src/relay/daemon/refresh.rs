@@ -16,6 +16,7 @@ pub(super) async fn run(core: Arc<Core>) {
         // unless the relay CLI manages this core and chose the tools itself.
         let defaults = core.clone();
         let _ = tokio::task::spawn_blocking(move || {
+            defaults.reclaim_own_integrations();
             if defaults
                 .integration_defaults
                 .load(std::sync::atomic::Ordering::SeqCst)
@@ -31,5 +32,31 @@ pub(super) async fn run(core: Arc<Core>) {
             }
         })
         .await;
+    }
+}
+
+impl Core {
+    /// Puts back this build's own relay-send pointer and session hooks when
+    /// another process displaced them: on every rediscovery tick and when
+    /// setup (`workspace.verify`) runs. Only this build's pointer file and
+    /// hooks are written; another build's are never touched
+    /// (`SettingsExtension::reclaim`, `ServingPath::reclaim_pointer`).
+    pub fn reclaim_own_integrations(&self) {
+        if let Some(send) = &self.plugins.relay_send {
+            match send.serving.reclaim_pointer() {
+                crate::relay::outbound::Reclaimed::Rewritten => self.hub.activity(
+                    crate::relay::state::Level::Info,
+                    "Another process had replaced this app's session socket pointer; it was put back.",
+                ),
+                crate::relay::outbound::Reclaimed::Failed => self.hub.activity(
+                    crate::relay::state::Level::Warning,
+                    "This app's session socket pointer could not be put back.",
+                ),
+                _ => {}
+            }
+        }
+        for extension in &self.plugins.settings {
+            extension.reclaim();
+        }
     }
 }

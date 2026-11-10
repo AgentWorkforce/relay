@@ -250,6 +250,7 @@ fn timeout_host_fixture() {
         Path::new(&runtime),
         &marker,
         false,
+        &crate::relay::outbound::Build::Production,
     );
 }
 

@@ -26,6 +26,7 @@ use super::{
     SpawnFacet,
 };
 use crate::relay::muse::{self as runtime, MuseConfig, RegistrySession};
+use crate::relay::outbound::Build;
 use crate::relay::spawn::intents::Intent;
 use crate::relay::spawn::launch::{
     scope_unit, start_scoped_or_plain, stop_process, Launch, LaunchError, Launched, SpawnedProcess,
@@ -246,10 +247,7 @@ impl MuseAdapter {
             launch.full_access,
             &helper,
             &launch.session_id,
-            self.cx
-                .app_data_dir
-                .file_name()
-                .is_some_and(|name| name.to_string_lossy().ends_with(".dev")),
+            &Build::of(&self.cx.app_data_dir),
         ));
         let start = |scope: Option<(&Path, &str)>| {
             start_host(
@@ -336,10 +334,7 @@ impl SpawnFacet for MuseAdapter {
                 launch.full_access,
                 &helper,
                 &launch.session_id,
-                self.cx
-                    .app_data_dir
-                    .file_name()
-                    .is_some_and(|name| name.to_string_lossy().ends_with(".dev")),
+                &Build::of(&self.cx.app_data_dir),
             );
             let log = self
                 .cx

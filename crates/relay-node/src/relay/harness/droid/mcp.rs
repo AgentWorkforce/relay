@@ -1,13 +1,14 @@
 //! The app-owned Factory helper never enrolls an identity during MCP startup.
 //! Until native startup isolation is established it exposes no tools and refuses
 //! calls locally, before looking up the person's home or opening a Relay socket.
+use crate::relay::outbound::Build;
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use std::io::{BufRead, Read, Write};
 
 const FRAME_LIMIT: u64 = 128 * 1024;
 
-pub fn run(development: bool) -> Result<()> {
+pub fn run(build: &Build) -> Result<()> {
     if let Some(reason) = super::unavailable_reason() {
         return held_transport(
             &mut std::io::stdin().lock(),
@@ -17,7 +18,7 @@ pub fn run(development: bool) -> Result<()> {
     }
     // The shared transport derives authority from the native caller on the core,
     // not from flags, persisted bearer credentials, or MCP initialization.
-    super::super::relay_mcp::run(development)
+    super::super::relay_mcp::run(build)
 }
 
 fn held_transport(input: &mut impl BufRead, output: &mut impl Write, reason: &str) -> Result<()> {

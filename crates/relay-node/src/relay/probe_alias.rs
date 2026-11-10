@@ -36,6 +36,7 @@
 //! a working one. Keeping the link for those would leave it after the person
 //! asked for Agent Relay's files to go.
 
+use crate::relay::outbound::Build;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
@@ -110,19 +111,30 @@ impl ProbeAlias {
         real: PathBuf,
         home: &Path,
         app_data_dir: &Path,
-        development: bool,
+        build: &Build,
     ) -> Arc<ProbeAlias> {
-        let alias = Arc::new(ProbeAlias::new(real, home, app_data_dir, development));
+        let alias = Arc::new(ProbeAlias::for_build(real, home, app_data_dir, build));
         *SYSTEM.write().unwrap_or_else(|poison| poison.into_inner()) = Some(alias.clone());
         alias
     }
 
     /// A link the hints do not use (tests).
     pub fn new(real: PathBuf, home: &Path, app_data_dir: &Path, development: bool) -> Self {
-        let name = if development {
-            "agent-relay-probe-dev"
+        let build = if development {
+            Build::Development
         } else {
-            "agent-relay-probe"
+            Build::Production
+        };
+        ProbeAlias::for_build(real, home, app_data_dir, &build)
+    }
+
+    /// The link for `build`: `agent-relay-probe`, `agent-relay-probe-dev`
+    /// or `agent-relay-probe-<profile id>`, so no two builds share one.
+    pub fn for_build(real: PathBuf, home: &Path, app_data_dir: &Path, build: &Build) -> Self {
+        let name = match build {
+            Build::Production => "agent-relay-probe".to_string(),
+            Build::Development => "agent-relay-probe-dev".to_string(),
+            Build::Profile(id) => format!("agent-relay-probe-{id}"),
         };
         ProbeAlias {
             real,

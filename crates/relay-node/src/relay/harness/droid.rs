@@ -16,6 +16,7 @@ pub mod host {
         _directory: &Path,
         _runtime: &Path,
         _launch_id: &str,
+        _build: &crate::relay::outbound::Build,
     ) -> anyhow::Result<()> {
         anyhow::bail!(super::unavailable_reason().unwrap_or_default())
     }
@@ -32,6 +33,7 @@ use crate::relay::droid::DroidConfig;
 use crate::relay::existing_session::platform::MetadataExt;
 #[cfg(all(test, unix))]
 use crate::relay::inject::InjectOutcome;
+use crate::relay::outbound::Build;
 use crate::relay::process::ProcessTable;
 use crate::relay::spawn::intents::Intent;
 use crate::relay::spawn::launch::{
@@ -95,6 +97,7 @@ pub struct DroidAdapter {
     environment: BTreeMap<String, String>,
     systemd_run: Option<PathBuf>,
     ready_timeout: Duration,
+    build: Build,
 }
 
 impl DroidAdapter {
@@ -134,12 +137,20 @@ impl DroidAdapter {
     }
     pub fn new(cx: &HarnessContext) -> Self {
         let executable = executable(cx);
-        let development = cx
+        let build = if cx
             .app_data_dir
             .file_name()
-            .and_then(|s| s.to_str())
-            .is_some_and(|s| s.ends_with(".dev"));
+            .and_then(|name| name.to_str())
+            .is_some()
+        {
+            Build::of(&cx.app_data_dir)
+        } else {
+            // Invalid folder names must not select a different build.
+            Build::Production
+        };
+        let development = build.is_development();
         Self {
+            build,
             executable,
             terminate: Arc::new(|table, process| {
                 stop_process(table, process.pid, Some(process.start))
@@ -256,7 +267,7 @@ impl SpawnFacet for DroidAdapter {
                     LaunchError::Failed("Droid initial task could not be saved privately".into())
                 })?;
             initial_saved = true;
-            let arguments = vec![
+            let mut arguments = vec![
                 "droid-spawn-host".into(),
                 "--executable".into(),
                 executable.display().to_string(),
@@ -267,6 +278,9 @@ impl SpawnFacet for DroidAdapter {
                 "--launch-id".into(),
                 launch.session_id.clone(),
             ];
+            if let Build::Profile(id) = &self.build {
+                arguments.push(format!("--profile={id}"));
+            }
 
             let mut environment = self.environment.clone();
             environment.insert(MARKER.into(), launch.session_id.clone());

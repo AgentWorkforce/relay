@@ -17,6 +17,7 @@ fn executable_discovery_canonicalizes_relative_paths_and_development_matches_plu
         Some(std::fs::canonicalize(binary).unwrap())
     );
     assert!(!adapter.config.development);
+    assert!(matches!(adapter.build, Build::Production));
 }
 
 #[test]
@@ -194,7 +195,14 @@ fn unverified_mcp_isolation_refuses_before_any_host_or_provider_side_effect() {
     ));
     let runtime = runtime(&adapter.config);
     assert!(!runtime.exists());
-    let error = host::run(&binary, home.path(), &runtime, &launch.session_id).unwrap_err();
+    let error = host::run(
+        &binary,
+        home.path(),
+        &runtime,
+        &launch.session_id,
+        &adapter.build,
+    )
+    .unwrap_err();
     assert_eq!(error.to_string(), STARTUP_ISOLATION_GUIDANCE);
     assert!(!runtime.exists());
 }

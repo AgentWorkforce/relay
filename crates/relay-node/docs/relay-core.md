@@ -366,6 +366,30 @@ kernel pid and process ancestry, not just uid. The core serves both sockets;
 the bridge socket is for UIs, the relay-send socket for sessions
 (`relay::outbound`).
 
+- **One pointer per build.** The build is named by its app data directory
+  (`outbound::Build::of`): `com.agentrelay.desktop` is Agent Relay,
+  a name ending `.dev` is Agent Relay Dev, and anything else is a profile
+  build. A profile's id is the suffix after `com.agentrelay.desktop.` when it
+  is 1-40 characters of `[a-z0-9-]` (and not `dev`), else `_` and twelve hex
+  digits of the name's SHA-256. A profile build advertises its socket in
+  `relay-socket.<id>`, uses `agent-relay-<id>` for its socket directory and
+  `agent-relay-probe-<id>` for its probe alias. Readers take `--dev` or
+  `--profile <id>` and never fall back to another build's pointer; a missing
+  pointer is an error naming the build.
+- **Hook ownership.** Agent Relay's Claude `SessionStart` and Codex hooks are
+  unmarked, Dev's carry ` --dev`, a profile build's carry
+  ` --socket <its socket>`. A build installs, refreshes and removes only hooks
+  carrying its own marker (`hook_owner`). An unmarked hook is Agent Relay's
+  slot, so Agent Relay replaces a legacy one; a profile build leaves it, and
+  leaves any hook naming another build's socket.
+- **Reclaim.** `workspace.verify` (setup, status, repair) and every refresh
+  tick rewrite this build's pointer when it no longer names the socket being
+  served and reinstall this build's hooks when they are enabled but missing.
+  Neither touches another build's pointer or hooks.
+- **Shared single-file integrations.** Pi, OMP, OpenCode, Grok, Devin, Cursor
+  and Copilot hooks, OpenClaw, Hermes and the default-follow setting live in
+  one file per user, so only Agent Relay and Agent Relay Dev install them; a
+  profile build skips them.
 - **Caller.** `SessionDirectory::caller(pid)` names the session from kernel
   evidence alone. A present `CODEX_THREAD_ID` decides alone: it is accepted
   only when the nearest trusted Codex ancestor (same user; on macOS OpenAI's
@@ -905,6 +929,7 @@ agent-relay-node call agents.list --json
 agent-relay-node call roster.list --json
 agent-relay-node call sessions.list --json
 agent-relay-node call fleet.list --json
+# relay-socket.dev for Agent Relay Dev, relay-socket.<profile id> for a profile build
 curl -s --unix-socket "$(cat ~/.agentworkforce/desktop/relay-socket)" http://relay/whoami
 agent-relay-node call daemon.shutdown --json
 ```

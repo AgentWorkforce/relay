@@ -512,6 +512,10 @@ pub async fn call_from(
             .await
         }
         method::WorkspaceVerify::NAME => {
+            // Setup verifies the workspace; it is also when this build
+            // takes back a pointer or hook another build displaced.
+            let reclaim = core.clone();
+            let _ = tokio::task::spawn_blocking(move || reclaim.reclaim_own_integrations()).await;
             answer::<method::WorkspaceVerify, _>(raw, |_| core.verify_workspace()).await
         }
         _ => {
