@@ -382,10 +382,10 @@ mod tests {
                 Malformed::TitleTooLong,
             ),
             // Measured before whitespace collapses: this one is 121
-            // characters raw and 61 collapsed.
+            // characters raw and 81 collapsed.
             (
                 marker(
-                    json!(format!("{}t", "t  ".repeat(TITLE_MAX_CHARS / 2))),
+                    json!(format!("{}t", "t  ".repeat(TITLE_MAX_CHARS / 3))),
                     https.clone(),
                 ),
                 Malformed::TitleTooLong,

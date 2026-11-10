@@ -689,7 +689,9 @@ agents into its session (through the `Injector`) and settles it:
   alerted messages; an older one redelivered alerts again (within its
   sender's cap). The caps and remembered messages belong to the identity
   they were counted for and start over when another account's identity is
-  current. The DM's delivery is unchanged: it is read and acknowledged
+  current. They are kept in memory only: a core restart forgets them, so
+  after a restart an unread redelivery alerts once more and a sender's
+  three alerts count from zero again. The DM's delivery is unchanged: it is read and acknowledged
   with its conversation as before. Alerts come from pushed frames only; a
   DM read while the push socket is down does not alert.
 - Pushed `deliver` frames for DMs and thread replies are handled from the
