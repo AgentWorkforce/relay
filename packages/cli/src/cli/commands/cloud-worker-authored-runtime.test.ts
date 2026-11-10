@@ -74,12 +74,18 @@ describe('isolated worker authored runtime', () => {
       await writeFile('body-completed.json', JSON.stringify({ name: definition.name, reason, version: loaded.surfaceAuthority.version }));
     `
       );
+      const spawnProcess = vi.fn(spawn);
       const deps: CloudWorkerDependencies = {
         log: vi.fn(),
         error: vi.fn(),
         exit: vi.fn() as never,
-        env: { ...process.env, AGENT_RELAY_HOME: f.home, AGENT_RELAY_WORKER_KEEP_RUN_DIR: '1' },
-        spawnProcess: spawn,
+        env: {
+          ...process.env,
+          NODE_OPTIONS: '--no-warnings',
+          AGENT_RELAY_HOME: f.home,
+          AGENT_RELAY_WORKER_KEEP_RUN_DIR: '1',
+        },
+        spawnProcess,
         now: () => new Date(),
         cwd: () => f.home,
         fetchImpl: vi.fn(),
@@ -110,6 +116,8 @@ describe('isolated worker authored runtime', () => {
         signal: new AbortController().signal,
       });
       expect(result.exitCode).toBe(0);
+      const childEnv = spawnProcess.mock.calls[0]![2]!.env;
+      expect(childEnv!.NODE_OPTIONS).toBe('--no-warnings --experimental-strip-types');
       expect(JSON.parse(fs.readFileSync(path.join(f.runDir, 'body-completed.json'), 'utf8'))).toEqual({
         name: 'isolated-worker',
         reason: 'success',
@@ -125,6 +133,7 @@ describe('isolated worker authored runtime', () => {
         fs.rmSync(target);
         const refused = spawnSync(process.execPath, [entry, 'flows', 'run', f.workflow, '--input', '{}'], {
           cwd: f.runDir,
+          env: childEnv,
           encoding: 'utf8',
         });
         expect(refused.status).not.toBe(0);
