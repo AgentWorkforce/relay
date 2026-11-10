@@ -293,7 +293,7 @@ fn person_channel(name: &str) -> String {
 impl Core {
     /// The identity in memory, when it belongs to the account signed in
     /// now. Anything read for another account is forgotten.
-    fn current_identity(&self) -> Option<PersonIdentity> {
+    pub(crate) fn current_identity(&self) -> Option<PersonIdentity> {
         let key = self.plugins.cloud.account().map(|a| account_key(&a));
         let mut state = self.messaging.lock().unwrap();
         match (&state.identity, key) {

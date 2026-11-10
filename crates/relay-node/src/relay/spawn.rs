@@ -70,6 +70,11 @@ use crate::relay::daemon::Core;
 use crate::relay::store::{Registration, Target};
 use std::collections::HashSet;
 
+/// How long a spawned session's own registration waits for its spawn to
+/// save the registration it binds to.
+const SPAWN_SAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+const SPAWN_SAVE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// The spawn node's name, distinct from a broker node this computer may
 /// also run: `<machine prefix>-desktop`.
 pub fn node_name(machine_prefix: &str) -> String {
@@ -114,16 +119,60 @@ impl Core {
     }
 
     /// The sessions this computer spawned, so discovery never registers
-    /// them a second time.
+    /// them a second time: those with a saved spawn registration, and those
+    /// a spawn in flight has started but not yet saved. A spawned session
+    /// can start (and Codex run its SessionStart hook) before its spawn's
+    /// registration is saved; it is never given an identity of its own in
+    /// that window.
     pub(crate) fn spawned_targets(&self) -> HashSet<Target> {
-        self.store.read(|store| {
+        let mut targets: HashSet<Target> = self.store.read(|store| {
             store
                 .registrations
                 .iter()
                 .filter(|r| r.spawn.is_some())
                 .map(|r| r.target.clone())
                 .collect()
+        });
+        targets.extend(self.spawning_targets());
+        targets
+    }
+
+    /// The spawn registration saved for `target`, if any.
+    pub(crate) fn saved_spawn_registration_now(&self, target: &Target) -> Option<Registration> {
+        self.store.read(|store| {
+            store
+                .registration_for(target)
+                .filter(|registration| registration.spawn.is_some())
+                .cloned()
         })
+    }
+
+    /// The spawn registration saved for `target`, waiting briefly while a
+    /// spawn in flight has started the session and not yet saved it.
+    pub(crate) async fn saved_spawn_registration(&self, target: &Target) -> Option<Registration> {
+        let deadline = tokio::time::Instant::now() + SPAWN_SAVE_WAIT;
+        loop {
+            // In flight first, the registration second: a spawn that saves
+            // and settles between the two reads is then found saved, never
+            // taken for one that is neither saved nor in flight.
+            let spawning = self.spawning_targets().contains(target);
+            if let Some(registration) = self.saved_spawn_registration_now(target) {
+                return Some(registration);
+            }
+            if !spawning || tokio::time::Instant::now() >= deadline {
+                return None;
+            }
+            tokio::time::sleep(SPAWN_SAVE_POLL).await;
+        }
+    }
+
+    /// The sessions spawns in flight here have started and not yet saved.
+    pub(crate) fn spawning_targets(&self) -> HashSet<Target> {
+        intents::load(&self.config.app_data_dir)
+            .into_iter()
+            .filter(|intent| !intent.ended && !intent.launch_failed)
+            .filter_map(|intent| intent.target)
+            .collect()
     }
 
     /// Saves a spawned agent's receipt before it is taken off the relay
@@ -243,6 +292,9 @@ mod tests {
         pause: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
         /// Its agents take native user turns.
         native: bool,
+        /// A paused launch starts its session (`THREAD`) before it pauses,
+        /// as Codex starts a thread before its first turn is confirmed.
+        starts_before_pause: bool,
     }
 
     /// Answers each agent by name; `Running`/`Idle` for one not set.
@@ -299,7 +351,11 @@ mod tests {
                 started_session(&Target::new(SessionKind::Codex, THREAD), None);
                 return Err(LaunchError::Failed("Codex refused the first turn".into()));
             }
+            let started_thread = self.starts_before_pause;
             if let Some((started, proceed)) = self.pause.lock().unwrap().take() {
+                if started_thread {
+                    started_session(&Target::new(SessionKind::Codex, THREAD), None);
+                }
                 started.send(()).unwrap();
                 proceed.recv().unwrap();
             }
@@ -308,7 +364,11 @@ mod tests {
                 return Err(LaunchError::Failed("Codex refused the first turn".into()));
             }
             // A thread of its own for each launch.
-            let thread = format!("{}{:012x}", &THREAD[..24], launched.len());
+            let thread = if started_thread {
+                THREAD.to_string()
+            } else {
+                format!("{}{:012x}", &THREAD[..24], launched.len())
+            };
             Ok(Launched {
                 target: Target::new(SessionKind::Codex, thread),
                 process: None,
@@ -350,6 +410,7 @@ mod tests {
     mod requester_approvals;
     mod restart_reasons;
     mod session_end;
+    mod spawned_binding;
     mod unanswered_register;
 
     #[tokio::test]

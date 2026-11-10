@@ -9,13 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `@agent-relay/core-bridge` exposes the complete schema-v2 service-caller lifecycle: secure caller descriptors, identity checks, result-inbox open/next/settle/close helpers and disconnect.
 - `agent-relay cloud worker start --local-agent` opts into the supported Relayflows local worker, including daemon starts. TypeScript assignments use the SDK’s authored `.flow.ts` entrypoint.
 - `agent-relay cloud worker register` accepts exactly one of `--token`, `--token-file` or `--token-stdin`, so enrollment can read a projected Secret file or pipe without putting the credential in process arguments. File and stdin inputs are limited to 16 KiB; interactive stdin is refused.
+- A DM to your own relay identity can ask the core for a desktop notification with `data.relay_alert = {"title", "link"}` (title up to 120 characters, `https` link); the notification body previews the message. Messages to agents and ordinary DMs never notify, and each sender raises at most 3 alerts in 10 minutes. Delivery of the DM is unchanged.
 
 ### Fixed
 
 - `agent-relay-node` service-caller `spawn.invoke` calls bind the exact node ID and retry durably through Relaycast, recovering an accepted invocation even when its requested directory can no longer be rematerialized safely.
+- `agent-relay cloud enroll` explains that enrollment does not start a runtime and links to headless setup instead of recommending the removed `node up` command.
 - Authored TypeScript cloud-worker assignments resolve the CLI's pinned Surface from isolated run directories when no dependency is supplied, preserving assignment-provided packages.
+- A spawned Codex or Claude worker no longer registers a second Relaycast agent when its own session connects before the spawn finishes: the session binds to the spawn's registration, keeping its `name@<node>` address and the requester who approves it.
 
 ## [18.0.0] - 2026-11-09
 
