@@ -278,7 +278,7 @@ impl Core {
         {
             return Some(false);
         }
-        let http = sdk_gaps::http(&registration.base_url, &workspace.key).ok()?;
+        let http = sdk_gaps::workspace_http(&workspace).ok()?;
         let agent = sdk_gaps::get_agent(&http, &requester.name).await.ok()?;
         Some(agent.is_some_and(|agent| agent["id"].as_str() == Some(requester.agent_id.as_str())))
     }
@@ -353,7 +353,7 @@ impl Core {
             return None;
         }
         let owner = self.person_identity(false).await.ok()?;
-        let http = sdk_gaps::http(&registration.base_url, &workspace.key).ok()?;
+        let http = sdk_gaps::workspace_http(&workspace).ok()?;
         let holds = sdk_gaps::get_agent(&http, &owner.name)
             .await
             .ok()

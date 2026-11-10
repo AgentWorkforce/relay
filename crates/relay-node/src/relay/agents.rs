@@ -732,6 +732,7 @@ impl Core {
             alias: None,
             retired_aliases: None,
             cleared: None,
+            control_url: workspace.control_url.clone(),
         };
         let mut spawned = false;
         let saved = self.store.update(|store| {
@@ -1101,7 +1102,7 @@ impl Core {
         let base = &registration.base_url;
         let sender = self.test_sender(base, &key).await?;
         let sent = match client::send_dm(base, &sender.token, &endpoint, &body, None).await {
-            Err(error) if error.is_auth_rejection() => {
+            Err(error) if crate::relay::node_credential::rejects_credential(&error) => {
                 // The sender was removed elsewhere: make a new one, once.
                 let id = crate::relay::delivery::policy::MessageRef::of(key.expose());
                 let _ = self.store.update(|store| {
@@ -1973,6 +1974,7 @@ mod tests {
             alias: None,
             retired_aliases: None,
             cleared: None,
+            control_url: None,
         }
     }
 
@@ -2396,6 +2398,7 @@ mod tests {
             base_url: "https://cast.test".into(),
             workspace_id: None,
             source: crate::relay::workspace::WorkspaceSource::Cloud,
+            control_url: None,
         }
     }
 

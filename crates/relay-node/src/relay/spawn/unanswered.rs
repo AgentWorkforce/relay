@@ -559,7 +559,12 @@ async fn registered_for(intent: &Intent) -> Result<Option<String>, ()> {
 /// The agent holding `intent`'s name, as Relaycast has it. `Err` when
 /// Relaycast could not be asked.
 async fn holder(intent: &Intent) -> Result<Option<Value>, ()> {
-    let http = sdk_gaps::http(&intent.base_url, &intent.workspace_key).map_err(drop)?;
+    let route = crate::relay::workspace::workspace_route(
+        &intent.base_url,
+        &intent.workspace_key,
+        intent.control_url.as_deref(),
+    );
+    let http = sdk_gaps::route_http(&route).map_err(drop)?;
     sdk_gaps::get_agent(&http, &intent.name).await.map_err(drop)
 }
 

@@ -9,7 +9,7 @@ use crate::relay::diagnostic_http::HttpClient;
 use crate::relay::protocol::{ErrorKind, RefusalReason, RpcError};
 use crate::relay::sdk_gaps;
 use crate::relay::store::{Registration, Store};
-use crate::relay::workspace::{Secret, Workspace};
+use crate::relay::workspace::{KeyKind, Secret, Workspace};
 use relaycast::RequestOptions;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -24,7 +24,8 @@ pub(crate) async fn call(
     match name {
         method::SpawnTargets::NAME => Some(
             answer::<method::SpawnTargets, _>(raw, |_| async {
-                targets(&workspace_http(core)?).await
+                let workspace = workspace(core)?;
+                targets(workspace.kind(), &workspace_http(&workspace)?).await
             })
             .await,
         ),
@@ -163,9 +164,9 @@ fn workspace(core: &Core) -> Result<Workspace, RpcError> {
         )
     })
 }
-fn workspace_http(core: &Core) -> Result<HttpClient, RpcError> {
-    let workspace = workspace(core)?;
-    sdk_gaps::http(&workspace.base_url, &workspace.key).map_err(|e| RpcError::from_relaycast(&e))
+fn workspace_http(workspace: &Workspace) -> Result<HttpClient, RpcError> {
+    sdk_gaps::workspace_http(workspace)
+        .map_err(|e| RpcError::from_relaycast_for(workspace.kind(), &e))
 }
 
 /// How a `spawn.*` call's bridge connection resolved, before its params
@@ -395,7 +396,8 @@ fn target(value: &Value) -> Result<SpawnControlTarget, RpcError> {
         max_agents: count("max_agents")?,
     })
 }
-async fn targets(http: &HttpClient) -> Result<SpawnTargets, RpcError> {
+/// The live spawn targets, listed with a workspace credential of `kind`.
+async fn targets(kind: KeyKind, http: &HttpClient) -> Result<SpawnTargets, RpcError> {
     let data: Value = http
         .get(
             "/v1/nodes",
@@ -403,7 +405,7 @@ async fn targets(http: &HttpClient) -> Result<SpawnTargets, RpcError> {
             None,
         )
         .await
-        .map_err(|e| RpcError::from_relaycast(&e))?;
+        .map_err(|e| RpcError::from_relaycast_for(kind, &e))?;
     Ok(SpawnTargets {
         targets: data
             .as_array()
@@ -598,9 +600,8 @@ async fn invoke_as(
 
     // Session calls retain their local workspace target preflight.
     {
-        let workspace_client = sdk_gaps::http(&workspace.base_url, &workspace.key)
-            .map_err(|e| RpcError::from_relaycast(&e))?;
-        let listed = targets(&workspace_client).await?;
+        let workspace_client = workspace_http(workspace)?;
+        let listed = targets(workspace.kind(), &workspace_client).await?;
         if !listed.targets.iter().any(|t| {
             t.id == params.node_id
                 && t.name == params.node_name
@@ -798,9 +799,13 @@ async fn release_as(
         Some(ReleaseOwnership::Owned) => true,
         Some(ReleaseOwnership::Other) => return Err(not_owner()),
         Some(ReleaseOwnership::Unknown(invocation_id)) => {
-            crate::relay::spawn::report_back::requester(workspace, &invocation_id)
-                .await
-                .is_some_and(|requester| requester.agent_id == caller.agent_id())
+            crate::relay::spawn::report_back::requester(
+                workspace,
+                &core.config.app_data_dir,
+                &invocation_id,
+            )
+            .await
+            .is_some_and(|requester| requester.agent_id == caller.agent_id())
         }
         None => false,
     };

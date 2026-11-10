@@ -361,6 +361,7 @@ fn it_owns_codex_threads_only() {
         requester: None,
         target: Some(Target::new(SessionKind::Codex, THREAD)),
         process: None,
+        control_url: None,
     };
     assert_eq!(
         codex.find(&intent),

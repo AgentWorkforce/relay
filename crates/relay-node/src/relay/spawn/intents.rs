@@ -40,6 +40,14 @@ pub struct Intent {
     pub base_url: String,
     #[serde(rename = "workspaceKey")]
     pub workspace_key: Secret,
+    /// The Control origin brokering `workspace_key` when it is node-scoped
+    /// (`sh_wk_…`); absent for a workspace key.
+    #[serde(
+        rename = "controlURL",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub control_url: Option<String>,
     /// The Relaycast workspace id, when the workspace's source records it:
     /// it still names the workspace after its key is rotated.
     #[serde(
@@ -158,6 +166,7 @@ impl Intent {
                 // saw its launch finish.
                 task_unconfirmed: Some(INTERRUPTED.to_string()),
             }),
+            control_url: self.control_url.clone(),
         }
     }
 }
@@ -482,6 +491,7 @@ pub(super) mod tests {
             requester: None,
             target: None,
             process: None,
+            control_url: None,
         }
     }
 

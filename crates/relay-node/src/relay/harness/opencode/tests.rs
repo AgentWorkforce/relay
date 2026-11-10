@@ -709,6 +709,7 @@ fn intent(target: Option<Target>, process: Option<SpawnedProcess>) -> Intent {
         requester: None,
         target,
         process,
+        control_url: None,
     }
 }
 

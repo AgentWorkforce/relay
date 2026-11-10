@@ -199,14 +199,28 @@ pub fn requester_identity_of(invocation: &Value) -> Option<SpawnRequester> {
 
 /// Asks Relaycast who invoked `invocation_id`, waiting at most
 /// [`REQUESTER_WAIT`]. Any failure is no requester.
-pub async fn requester(workspace: &Workspace, invocation_id: &str) -> Option<SpawnRequester> {
+///
+/// Asked with the workspace key; a node-scoped workspace (whose credential
+/// never goes to Relaycast, and whose broker does not serve this path) asks
+/// with the token of the node saved in `app_data_dir` instead, and has no
+/// requester without one.
+pub async fn requester(
+    workspace: &Workspace,
+    app_data_dir: &Path,
+    invocation_id: &str,
+) -> Option<SpawnRequester> {
     let segment = invocation_id
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'));
     if invocation_id.is_empty() || !segment {
         return None;
     }
-    let http = sdk_gaps::http(&workspace.base_url, &workspace.key).ok()?;
+    let credential = if workspace.node_scoped() {
+        super::node::node_token(app_data_dir, &workspace.base_url, &workspace.key)?
+    } else {
+        workspace.key.clone()
+    };
+    let http = sdk_gaps::http(&workspace.base_url, &credential).ok()?;
     let path = format!("/v1/actions/spawn/invocations/{invocation_id}");
     let read = tokio::time::timeout(REQUESTER_WAIT, http.get::<Value>(&path, None, None));
     requester_identity_of(&read.await.ok()?.ok()?)
@@ -268,7 +282,12 @@ pub async fn still_named(registration: &Registration, name: &str, agent_id: &str
     let Some(key) = registration.workspace_key.as_ref() else {
         return Some(false);
     };
-    let http = sdk_gaps::http(&registration.base_url, key).ok()?;
+    let route = crate::relay::workspace::workspace_route(
+        &registration.base_url,
+        key,
+        registration.control_url.as_deref(),
+    );
+    let http = sdk_gaps::route_http(&route).ok()?;
     match sdk_gaps::get_agent(&http, name).await {
         Ok(Some(agent)) => Some(agent["id"].as_str() == Some(agent_id)),
         Ok(None) => Some(false),
@@ -522,7 +541,14 @@ mod tests {
         )
         .lines()
         .unwrap();
-        for secret in ["rk_live", "at_live", "nt_live", "Bearer", "Authorization"] {
+        for secret in [
+            "rk_live",
+            "at_live",
+            "nt_live",
+            "sh_wk_",
+            "Bearer",
+            "Authorization",
+        ] {
             assert!(!lines.contains(secret), "{lines}");
         }
     }

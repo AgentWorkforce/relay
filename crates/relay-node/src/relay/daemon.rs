@@ -1096,6 +1096,7 @@ mod key_migration_tests {
             base_url: "https://cast.test".into(),
             workspace_id: None,
             source: Default::default(),
+            control_url: None,
         }
     }
 
@@ -1126,6 +1127,7 @@ mod key_migration_tests {
             alias: None,
             retired_aliases: None,
             cleared: None,
+            control_url: None,
         }
     }
 

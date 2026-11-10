@@ -42,8 +42,9 @@ pub struct WorkspaceInfo {
 /// `GET /v1/workspace` with the workspace key. Read through `sdk_gaps`,
 /// since the SDK's `Workspace` requires `api_key_hash`, which the server no
 /// longer sends.
+/// A node-scoped credential asks its Control broker.
 pub async fn workspace_info(workspace: &Workspace) -> relaycast::Result<WorkspaceInfo> {
-    let http = sdk_gaps::http(&workspace.base_url, &workspace.key)?;
+    let http = sdk_gaps::workspace_http(workspace)?;
     let info = sdk_gaps::workspace_identity(&http).await?;
     Ok(WorkspaceInfo {
         id: info.id,

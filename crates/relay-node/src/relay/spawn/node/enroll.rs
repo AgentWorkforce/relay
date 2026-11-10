@@ -8,10 +8,11 @@ use super::enrollment::{
 };
 use super::NodeConfig;
 use crate::relay::contract::plan::PlanLimitExceeded;
+use crate::relay::node_credential;
 use crate::relay::sdk_gaps;
 use crate::relay::spawn::wire;
 use crate::relay::store::random_hex;
-use crate::relay::workspace::Secret;
+use crate::relay::workspace::{is_node_key, workspace_route, Secret};
 use relaycast::RequestOptions;
 use serde_json::Value;
 
@@ -21,8 +22,9 @@ pub(super) const ALTERNATES: usize = 3;
 /// Why an enrollment failed.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Refused {
-    /// Another node holds the name (`node_name_conflict`).
-    NameTaken,
+    /// Another node holds the name (`node_name_conflict`), with why the
+    /// node did not enroll, naming the name.
+    NameTaken(String),
     /// Relaycast has a node under the id asked for a new one: another's
     /// (`node_id_conflict`), or one an earlier attempt enrolled whose
     /// answer with its token was lost (`node_token_proof_required` without
@@ -43,24 +45,82 @@ pub(super) enum Refused {
     NoName(String),
     /// The plan's device cap is reached.
     PlanLimit(PlanLimitExceeded),
+    /// The node credential is bound to another node name (the broker's
+    /// `403 node_mismatch`): the node does not start.
+    NodeMismatch(String),
 }
 
 impl Refused {
     pub(super) fn reason(self) -> String {
         match self {
-            Refused::NameTaken => {
-                "Agent Relay did not enroll this computer: another node holds its name.".into()
-            }
             Refused::IdTaken => {
                 "Agent Relay did not enroll this computer: another node holds its id.".into()
             }
-            Refused::ProofRefused(reason)
+            Refused::NameTaken(reason)
+            | Refused::ProofRefused(reason)
             | Refused::KeyRefused(reason)
             | Refused::Failed(reason)
-            | Refused::NoName(reason) => reason,
+            | Refused::NoName(reason)
+            | Refused::NodeMismatch(reason) => reason,
             Refused::PlanLimit(limit) => limit.message(),
         }
     }
+}
+
+/// The client for `config`'s workspace-key calls: Relaycast for a workspace
+/// key, the Control broker for a node-scoped one.
+#[allow(clippy::result_large_err)] // relaycast::RelayError, like every SDK call here
+fn workspace_http(
+    config: &NodeConfig,
+) -> relaycast::Result<crate::relay::diagnostic_http::HttpClient> {
+    sdk_gaps::route_http(&workspace_route(
+        &config.base_url,
+        &config.workspace_key,
+        config.control_url.as_deref(),
+    ))
+}
+
+/// Why the node does not start when its credential belongs to another node.
+/// Names the configured node, never the credential.
+fn node_mismatch(config: &NodeConfig, name: &str) -> Refused {
+    Refused::NodeMismatch(format!(
+        "Agent Relay did not start this computer's spawn node: its node credential is bound to another node name than \"{name}\" (configured node \"{}\"). Use a node credential issued for this node.",
+        config.node_name
+    ))
+}
+
+/// Whether `config`'s workspace credential is node-scoped (`sh_wk_…`): it
+/// is bound to the configured node name, so no alternate name is tried.
+fn node_scoped(config: &NodeConfig) -> bool {
+    is_node_key(config.workspace_key.expose())
+}
+
+/// Why `name` was not enrolled: another node holds it. A node credential is
+/// bound to its one name, so the holder is a stale node of the same name
+/// that has to be released, or has to expire, before this one enrolls.
+/// Under a node credential, also names the node saved under another name
+/// (an alternate taken under a workspace key), which is not kept (`saved`).
+fn name_taken(config: &NodeConfig, name: &str) -> Refused {
+    Refused::NameTaken(if node_scoped(config) {
+        let not_kept = read(config)
+            .filter(|kept| kept.node_name != config.node_name)
+            .map(|kept| saved_name_not_kept(config, &kept.node_name))
+            .unwrap_or_default();
+        format!(
+            "Agent Relay did not enroll this computer: a stale node still holds the name \"{name}\" its node credential is bound to. Release that node in Agent Relay or wait for it to expire; Agent Relay tries again.{not_kept}"
+        )
+    } else {
+        "Agent Relay did not enroll this computer: another node holds its name.".into()
+    })
+}
+
+/// Why the node saved as `saved` is not kept under a node credential: it
+/// was enrolled under another name than the configured one.
+fn saved_name_not_kept(config: &NodeConfig, saved: &str) -> String {
+    format!(
+        " This computer's saved node \"{saved}\" is not kept: it was enrolled under another name, and a node credential is bound to the configured node name \"{}\".",
+        config.node_name
+    )
 }
 
 fn save_failed(error: std::io::Error) -> Refused {
@@ -80,8 +140,7 @@ pub(super) async fn enroll(
     name: &str,
     rotation: Option<(&Secret, &str)>,
 ) -> Result<Enrollment, Refused> {
-    let http = sdk_gaps::http(&config.base_url, &config.workspace_key)
-        .map_err(|error| Refused::Failed(error.to_string()))?;
+    let http = workspace_http(config).map_err(|error| Refused::Failed(error.to_string()))?;
     let body = wire::enroll_body(node_id, name, &config.version);
     let proof = rotation.is_some();
     let options = rotation.map(|(token, key)| RequestOptions {
@@ -98,10 +157,13 @@ pub(super) async fn enroll(
             if let Some(limit) = PlanLimitExceeded::from_relaycast(&error) {
                 return Refused::PlanLimit(limit);
             }
+            if node_credential::is_node_mismatch(&error) {
+                return node_mismatch(config, name);
+            }
             let failed =
                 || Refused::Failed(format!("Agent Relay did not enroll this computer: {error}"));
             match error.code() {
-                Some("node_name_conflict") => Refused::NameTaken,
+                Some("node_name_conflict") => name_taken(config, name),
                 // With proof, `node_id_conflict` cannot happen: the id is
                 // this node's own, proven. It would fall to `Failed` and
                 // the same id be tried again.
@@ -151,7 +213,9 @@ fn no_name(config: &NodeConfig) -> Refused {
 /// agents stay bound to it: the name is held by another node only when
 /// Relaycast no longer has this one under it. The name is saved with the
 /// node, so every restart reuses it. When every name tried is taken, the
-/// node says so rather than trying again.
+/// node says so rather than trying again. A node credential (`sh_wk_…`) is
+/// bound to the configured name, which Control's broker holds it to: it
+/// never takes an alternate, and a name another node holds is `NameTaken`.
 pub(super) async fn enroll_named(
     config: &NodeConfig,
     current: Option<&Enrollment>,
@@ -188,13 +252,17 @@ async fn enroll_new(config: &NodeConfig) -> Result<Enrollment, Refused> {
         }
     };
     let mut ids = 0;
+    let alternates = !node_scoped(config);
     loop {
         match enroll(config, &pending.node_id, &pending.node_name, None).await {
-            Err(Refused::NameTaken) if pending.alternates < ALTERNATES => {
+            Err(Refused::NameTaken(_)) if alternates && pending.alternates < ALTERNATES => {
                 pending.alternates += 1;
                 pending.node_name = alternate(&config.node_name);
             }
-            Err(Refused::NameTaken) => {
+            // A node credential is bound to its name: no alternate. The
+            // pending node is kept, to ask for the same name again.
+            Err(taken @ Refused::NameTaken(_)) if !alternates => return Err(taken),
+            Err(Refused::NameTaken(_)) => {
                 // Nothing enrolled to keep: the next start asks for a new
                 // node.
                 let _ = forget(&path);
@@ -232,6 +300,7 @@ async fn rotate_named(config: &NodeConfig, current: &Enrollment) -> Result<Enrol
     };
     let mut names = 0;
     let mut rekeyed = false;
+    let alternates = !node_scoped(config);
     loop {
         match enroll(
             config,
@@ -241,14 +310,16 @@ async fn rotate_named(config: &NodeConfig, current: &Enrollment) -> Result<Enrol
         )
         .await
         {
-            Err(Refused::NameTaken) if names < ALTERNATES => {
+            Err(Refused::NameTaken(_)) if alternates && names < ALTERNATES => {
                 // Another body: a new key, so Relaycast does not take it
                 // for a replay of the refused one. Saved first with the
                 // name, so one whose answer is lost is replayed as sent.
                 names += 1;
                 pending.node_name = alternate(&config.node_name);
             }
-            Err(Refused::NameTaken) => return Err(no_name(config)),
+            // A node credential is bound to its name: no alternate.
+            Err(taken @ Refused::NameTaken(_)) if !alternates => return Err(taken),
+            Err(Refused::NameTaken(_)) => return Err(no_name(config)),
             Err(Refused::KeyRefused(_)) if !rekeyed => rekeyed = true,
             Err(Refused::KeyRefused(reason)) => return Err(Refused::Failed(reason)),
             done => return done,
@@ -265,19 +336,37 @@ async fn rotate_named(config: &NodeConfig, current: &Enrollment) -> Result<Enrol
 /// a new key for the same workspace (signing in again) keeps the node,
 /// whose name no new node could take while it stays enrolled. `None` when
 /// there is no such node, so a new one is enrolled.
-pub(super) async fn saved(config: &NodeConfig) -> Result<Option<Enrollment>, String> {
+/// Under a node credential, a node saved under another name than the
+/// configured one is never adopted (`None`), and the broker's
+/// `node_mismatch` is `Refused::NodeMismatch`; any other failure is
+/// `Refused::Failed`.
+pub(super) async fn saved(config: &NodeConfig) -> Result<Option<Enrollment>, Refused> {
     if let Some(enrollment) = load(config) {
         return Ok(Some(enrollment));
     }
     let Some(kept) = read(config) else {
         return Ok(None);
     };
-    let http = sdk_gaps::http(&config.base_url, &config.workspace_key)
-        .map_err(|error| error.to_string())?;
+    // A node credential is bound to the configured name, and Control's
+    // broker refuses any other as `node_mismatch`. A node saved under an
+    // alternate (taken under a workspace key) is therefore not adopted: a
+    // new node is enrolled under the configured name, and a stale holder of
+    // that name is reported as one, naming the saved node (`name_taken`).
+    if node_scoped(config) && kept.node_name != config.node_name {
+        return Ok(None);
+    }
+    let http = workspace_http(config).map_err(|error| Refused::Failed(error.to_string()))?;
     let holder = sdk_gaps::node_id_named(&http, &kept.node_name)
         .await
         .map_err(|error| {
-            format!("Agent Relay did not say which node is this computer's: {error}")
+            // The broker's `403 node_mismatch`: the credential is bound to
+            // another name. Kept as such, so the node stops (`connect_once`).
+            if node_credential::is_node_mismatch(&error) {
+                return node_mismatch(config, &kept.node_name);
+            }
+            Refused::Failed(format!(
+                "Agent Relay did not say which node is this computer's: {error}"
+            ))
         })?;
     if holder.as_deref() != Some(kept.node_id.as_str()) {
         return Ok(None);
@@ -286,8 +375,7 @@ pub(super) async fn saved(config: &NodeConfig) -> Result<Option<Enrollment>, Str
         workspace: fingerprint(&config.workspace_key),
         ..kept
     };
-    save(&node_file(config), &adopted)
-        .map_err(|error| format!("Could not save this computer's spawn node: {error}"))?;
+    save(&node_file(config), &adopted).map_err(save_failed)?;
     Ok(Some(adopted))
 }
 

@@ -72,6 +72,7 @@ fn intent() -> Intent {
         requester: None,
         target: None,
         process: None,
+        control_url: None,
     }
 }
 

@@ -113,6 +113,7 @@ pub mod mobile_handoff;
 mod mobile_permissions;
 pub mod muse;
 pub(crate) mod native_continuation;
+pub mod node_credential;
 pub mod openclaw;
 pub mod opencode;
 pub mod opencode_existing;
