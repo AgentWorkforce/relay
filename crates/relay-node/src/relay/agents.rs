@@ -211,6 +211,14 @@ fn not_registered(name: &str) -> RpcError {
     )
 }
 
+/// A session a spawn here started, asked to register on its own.
+fn spawned_session() -> RpcError {
+    RpcError::new(
+        ErrorKind::Refused,
+        "This session is being spawned by Agent Relay and is registered as its spawned agent once the spawn completes.",
+    )
+}
+
 fn name_rules() -> RpcError {
     RpcError::invalid_params("Use 2–48 lowercase letters, digits and single dashes.")
 }
@@ -433,6 +441,16 @@ impl Core {
             }
             return self.answer_registered(existing, raw_name, _changing).await;
         }
+        // A session a spawn here has started is that spawn's agent: its own
+        // connection (its SessionStart hook, an activation pass, its own
+        // registration request) binds to the spawn's registration once the
+        // spawn saves it, and never gets a second identity.
+        if self.spawning_targets().contains(target) {
+            return match self.saved_spawn_registration(target).await {
+                Some(existing) => self.answer_registered(existing, raw_name, _changing).await,
+                None => Err(spawned_session()),
+            };
+        }
         // An already-open Grok agent is pinned to the exact binding it is
         // registered against; delivery refuses any other. A Grok TUI session
         // listed from Grok's own registry has no binding yet: adding it binds
@@ -539,7 +557,14 @@ impl Core {
                     attempt += 1;
                     candidate = suggested_name_numbered(session, attempt);
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    // A spawn saved this session's registration meanwhile:
+                    // it is answered as that agent.
+                    if let Some(existing) = self.saved_spawn_registration_now(target) {
+                        return Ok(already_registered(&existing, &self.machine_prefix));
+                    }
+                    return Err(error);
+                }
             }
         };
         self.sync_agents().await;
@@ -708,7 +733,17 @@ impl Core {
             retired_aliases: None,
             cleared: None,
         };
+        let mut spawned = false;
         let saved = self.store.update(|store| {
+            // A spawn saved its registration for this session meanwhile:
+            // the session is that agent, so this one is never added.
+            if store
+                .registration_for(&registration.target)
+                .is_some_and(|existing| existing.spawn.is_some())
+            {
+                spawned = true;
+                return false;
+            }
             let added = store.add(registration.clone(), agent.token.clone());
             if added {
                 if let Some(owner) = owner.as_ref().filter(|owner| owner.workspace_id.is_some()) {
@@ -721,6 +756,11 @@ impl Core {
         });
         match saved {
             Ok(true) => Ok(registration),
+            Ok(false) if spawned => {
+                self.delete_or_retry(&workspace.base_url, &workspace.key, &agent.name)
+                    .await;
+                Err(spawned_session())
+            }
             Ok(false) => {
                 self.delete_or_retry(&workspace.base_url, &workspace.key, &agent.name)
                     .await;
@@ -748,7 +788,7 @@ impl Core {
     /// Deletes an agent this computer no longer holds the token of; when
     /// Relaycast cannot be reached, records the deletion to retry (in memory
     /// at least, when the store cannot be saved either).
-    async fn delete_or_retry(&self, base_url: &str, key: &Secret, name: &str) {
+    pub(crate) async fn delete_or_retry(&self, base_url: &str, key: &Secret, name: &str) {
         let workspace = self.relaycast_scope(base_url, key);
         let result = client::delete_agent(base_url, key, name).await;
         self.observe_relaycast_write_result(&workspace, &result);

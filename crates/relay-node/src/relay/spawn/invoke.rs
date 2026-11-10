@@ -466,12 +466,29 @@ impl Core {
         );
         // The requester gets the first turn's final answer unless the agent
         // sends them something itself (`report_back::owed`).
+        // An identity the session was given of its own before this save
+        // (one registered in the moment before its spawn recorded it) is
+        // replaced here, and taken off Relaycast below: the session is the
+        // spawned agent alone.
+        let mut displaced = None;
         let saved = self.store.update(|store| {
-            report_back::add_spawned(
+            let earlier = store
+                .registration_for(&registration.target)
+                .filter(|earlier| {
+                    earlier.spawn.is_none()
+                        && earlier.agent_id != registration.agent_id
+                        && earlier.name != registration.name
+                })
+                .cloned();
+            let added = report_back::add_spawned(
                 store,
                 registration.clone(),
                 Secret::new(agent.token.clone()),
-            )
+            );
+            if added {
+                displaced = earlier;
+            }
+            added
         });
         if saved != Ok(true) {
             if self.abandon(&launched, &mut in_flight).await {
@@ -485,6 +502,12 @@ impl Core {
                 Err(error) => format!("spawn_failed: could not save the agent: {error}"),
             }
             .into());
+        }
+        if let Some(earlier) = displaced {
+            if let Some(key) = earlier.workspace_key.as_ref() {
+                self.delete_or_retry(&earlier.base_url, key, &earlier.name)
+                    .await;
+            }
         }
         self.watch_spawned(&registration);
         in_flight.settled();
