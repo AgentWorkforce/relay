@@ -21,3 +21,9 @@ Forward-merged accepted main f86ebb61. All five feature source, test and documen
 ## Compose merged enrollment inputs
 
 Forward-merged main a5ea7bd0 after the credential-input feature landed. The sole manual conflict was the changelog; both pending Minor entries are retained. Local-agent feature edits and its four other source/test/documentation files match the previous reviewed head exactly. Registration changes from main merge automatically. Adversarial and contextual composition reviews found no behavior or authority changes beyond the two intended features. All 54 combined credential/local-agent tests, full typecheck and whitespace checks passed; package and lock remain exactly main. Required hosted checks and review remain separate.
+
+## Isolated authored Surface resolution
+
+The required runtime review found that a filename classifier does not prove dependency resolution: the SDK anchors Surface resolution at the isolated authored file. Supply the CLI's installed, lock-pinned SDK Surface through a package-directory link only when the assignment has no Surface. Preserve supplied dependencies, including refusing broken packages unchanged, and refuse writing through archive-provided parent links. The standalone path reuses the existing pinned SDK provisioning store. The assignment runner still controls credentials, exit status and run-directory cleanup.
+
+The regression enters the actual assignment runner, launches a real child process, imports the installed SDK loader and isolated authored file, and executes its body using the same Surface instance. Both a missing-dependency fallback and a physically separate compatible assignment dependency pass; removing the fallback causes the same flow to fail. This is module/body execution evidence, not daemon, journal, provider or hosted enrollment qualification.

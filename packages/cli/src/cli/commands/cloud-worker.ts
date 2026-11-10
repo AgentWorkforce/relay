@@ -19,6 +19,7 @@ import {
 } from '@agent-relay/cloud';
 
 import { defaultExit } from '../lib/exit.js';
+import { prepareWorkerAuthoredRuntime } from '../lib/cloud-worker-authored-runtime.js';
 import {
   readWorkerEnrollmentToken,
   type WorkerEnrollmentTokenOptions,
@@ -253,6 +254,7 @@ export function createDefaultAssignmentRunner(
         payload.fileType === 'ts' ? `${suppliedName.replace(/(?:\.flow)?\.ts$/i, '')}.flow.ts` : suppliedName;
       const workflowPath = path.join(runDir, workflowName);
       await writeSecretFile(workflowPath, payload.workflow);
+      if (payload.fileType === 'ts') await prepareWorkerAuthoredRuntime(workflowPath);
 
       if (cliCredentials) {
         materialized = await materializeCliCredentials({

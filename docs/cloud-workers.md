@@ -6,7 +6,7 @@ Register a worker through the supported enrollment command and retain its privat
 agent-relay cloud worker start --name example --base-url https://control.example.com
 ```
 
-Fresh deterministic workflows use the default execution path. TypeScript assignments are materialized as `.flow.ts` files so the SDK selects its authored-flow entrypoint; their directory and source body are preserved. To attach the supported Relayflows local agent worker to assigned workflows, select it explicitly:
+Fresh deterministic workflows use the default execution path. TypeScript assignments are materialized as `.flow.ts` files so the SDK selects its authored-flow entrypoint; their directory and source body are preserved. When an isolated assignment has no Surface package, the worker links the CLI's pinned Surface into its run directory. An assignment-provided Surface stays unchanged and must pass the SDK's normal compatibility checks. To attach the supported Relayflows local agent worker to assigned workflows, select it explicitly:
 
 ```sh
 agent-relay cloud worker start --name example --base-url https://control.example.com --local-agent
