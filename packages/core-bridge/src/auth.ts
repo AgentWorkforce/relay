@@ -48,8 +48,10 @@ export const CALLER_AUTH_SCHEME = 'challenge-hmac-sha256/v1';
 export const CALLER_CHALLENGE_METHOD = 'spawn_callers.challenge';
 /** The exact authenticate method named by a schema-v2 caller handoff. */
 export const CALLER_AUTHENTICATE_METHOD = 'spawn_callers.authenticate';
-/** The only `caller.json` schema this challenge-auth client accepts. */
-export const CALLER_FILE_SCHEMA = 'agent-relay-service-caller/2';
+/** The `caller.json` schemas accepted by the credential-only compatibility reader. */
+export const CALLER_FILE_SCHEMAS = ['agent-relay-service-caller/1', 'agent-relay-service-caller/2'] as const;
+/** The complete Desktop service-caller handoff schema. */
+export const CALLER_FILE_SCHEMA = CALLER_FILE_SCHEMAS[1];
 /** The feature methods a service-caller connection requires end to end. */
 export const REQUIRED_SERVICE_CALLER_METHODS = [
   CALLER_CHALLENGE_METHOD,
@@ -455,6 +457,56 @@ function parseCallerDocument(document: unknown): ParsedCallerDocument {
   };
 }
 
+interface ParsedCallerCredential {
+  callerId: string;
+  siteUrl: string;
+  workspaceId: string;
+  userId: string;
+  secret: string;
+}
+
+/**
+ * Preserves the credential-only reader's public compatibility contract while
+ * the complete descriptor reader intentionally requires Desktop schema 2.
+ */
+function parseCallerCredential(document: unknown): ParsedCallerCredential {
+  if (typeof document !== 'object' || document === null || Array.isArray(document)) {
+    throw callerFileBad('it must be an object');
+  }
+  const doc = document as Record<string, unknown>;
+  if (doc.schema === CALLER_FILE_SCHEMA && typeof doc.auth === 'object' && doc.auth !== null) {
+    const parsed = parseCallerDocument(document);
+    return {
+      callerId: parsed.callerId,
+      siteUrl: parsed.workspace.site_url,
+      workspaceId: parsed.workspace.workspace_id,
+      userId: parsed.account.user_id,
+      secret: parsed.secret,
+    };
+  }
+  if (!(CALLER_FILE_SCHEMAS as readonly unknown[]).includes(doc.schema)) {
+    throw callerFileBad('schema is not one this reader knows');
+  }
+  if (doc.schema !== CALLER_FILE_SCHEMAS[0] && doc.auth !== CALLER_AUTH_SCHEME) {
+    throw callerFileBad('auth is not one this reader knows');
+  }
+  if (typeof doc.caller_id !== 'string' || !CALLER_ID.test(doc.caller_id)) {
+    throw callerFileBad('caller_id must be "sc_" and 16 lowercase hex characters');
+  }
+  if (typeof doc.secret !== 'string' || !SECRET.test(doc.secret)) {
+    throw callerFileBad('secret is malformed');
+  }
+  const workspace = doc.workspace as Record<string, unknown> | undefined;
+  const account = doc.account as Record<string, unknown> | undefined;
+  return {
+    callerId: doc.caller_id,
+    siteUrl: fileText(workspace?.site_url, 'workspace.site_url', 2048),
+    workspaceId: fileText(workspace?.workspace_id, 'workspace.workspace_id', 256),
+    userId: fileText(account?.user_id, 'account.user_id', 256),
+    secret: doc.secret,
+  };
+}
+
 /**
  * Builds the exact version 1 transcript bytes: the version byte, then each
  * field with a big-endian u16 length prefix.
@@ -515,15 +567,9 @@ export class CallerCredential {
    * have the `caller.json` shape. The message never contains the secret.
    */
   static fromDocument(document: unknown): CallerCredential {
-    const parsed = parseCallerDocument(document);
+    const parsed = parseCallerCredential(document);
     const key = createHash('sha256').update(parsed.secret, 'utf8').digest();
-    return new CallerCredential(
-      key,
-      parsed.callerId,
-      parsed.workspace.site_url,
-      parsed.workspace.workspace_id,
-      parsed.account.user_id
-    );
+    return new CallerCredential(key, parsed.callerId, parsed.siteUrl, parsed.workspaceId, parsed.userId);
   }
 
   /**
@@ -640,15 +686,19 @@ function checkBound(bound: CallerBound, callerId: string): CallerBound {
   };
 }
 
+function requireMethod(client: Pick<CoreClient, 'hello'>, method: string): void {
+  if (client.hello.methods.includes(method)) return;
+  throw new CoreRpcError(`This Agent Relay core does not offer ${method}; update Agent Relay Desktop.`, {
+    rpcCode: -32601,
+    kind: 'method_not_found',
+    retryable: false,
+  });
+}
+
 /** Refuses a core that cannot provide the complete service-caller lifecycle. */
 export function requireServiceCallerMethods(client: Pick<CoreClient, 'hello'>): void {
   for (const method of REQUIRED_SERVICE_CALLER_METHODS) {
-    if (client.hello.methods.includes(method)) continue;
-    throw new CoreRpcError(`This Agent Relay core does not offer ${method}; update Agent Relay Desktop.`, {
-      rpcCode: -32601,
-      kind: 'method_not_found',
-      retryable: false,
-    });
+    requireMethod(client, method);
   }
 }
 
@@ -669,7 +719,8 @@ export async function authenticate(
   credential: CallerCredential,
   options?: CallOptions
 ): Promise<CallerBound> {
-  requireServiceCallerMethods(client);
+  requireMethod(client, CALLER_CHALLENGE_METHOD);
+  requireMethod(client, CALLER_AUTHENTICATE_METHOD);
   const challengeParams: CallerChallengeParams = { caller_id: credential.callerId };
   const challenge = await client.call<CallerChallenge>('spawn_callers.challenge', challengeParams, options);
   const params: CallerAuthenticateParams = {
@@ -794,5 +845,5 @@ export async function readCallerDescriptor(file: string): Promise<CallerFileDesc
  * publisher, workspace, scope or inbox route from the same checked read.
  */
 export async function readCallerCredential(file: string): Promise<CallerCredential> {
-  return (await readCallerDescriptor(file)).credential;
+  return CallerCredential.fromDocument(await readCallerDocument(file));
 }

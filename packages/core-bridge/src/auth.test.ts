@@ -13,12 +13,14 @@ import {
   CALLER_AUTH_SCHEME,
   CALLER_CHALLENGE_METHOD,
   CALLER_FILE_SCHEMA,
+  CALLER_FILE_SCHEMAS,
   REQUIRED_SERVICE_CALLER_METHODS,
   CallerCredential,
   authenticate,
   callerTranscript,
   readCallerCredential,
   readCallerDescriptor,
+  requireServiceCallerMethods,
   type CallerChallenge,
   type CallerTranscriptInput,
 } from './auth.js';
@@ -93,6 +95,15 @@ const document = (fields: Record<string, unknown> = {}) => ({
     disconnect: SERVICE_CALLER_DISCONNECT_METHOD,
   },
   desktop_version: '2026.11.2',
+  ...fields,
+});
+
+const legacyDocument = (fields: Record<string, unknown> = {}) => ({
+  schema: 'agent-relay-service-caller/1',
+  caller_id: base.caller_id,
+  secret: base.secret,
+  workspace: { site_url: base.site_url, workspace_id: base.workspace_id },
+  account: { user_id: base.user_id },
   ...fields,
 });
 
@@ -208,14 +219,19 @@ describe('CallerCredential', () => {
     expect(Object.values(credential)).not.toContain(base.secret);
   });
 
-  it('accepts only schema 2 with the exact Desktop challenge-auth route', () => {
+  it('keeps credential-only compatibility while strictly checking complete schema 2 documents', () => {
     expect(CallerCredential.fromDocument(document()).callerId).toBe(base.caller_id);
+    expect(CallerCredential.fromDocument(legacyDocument()).callerId).toBe(base.caller_id);
+    expect(
+      CallerCredential.fromDocument(
+        legacyDocument({ schema: 'agent-relay-service-caller/2', auth: CALLER_AUTH_SCHEME })
+      ).callerId
+    ).toBe(base.caller_id);
+    expect(CALLER_FILE_SCHEMAS).toEqual(['agent-relay-service-caller/1', 'agent-relay-service-caller/2']);
     expect(CALLER_FILE_SCHEMA).toBe('agent-relay-service-caller/2');
     const bad = [
-      document({ schema: 'agent-relay-service-caller/1', auth: undefined }),
-      document({ schema: 'agent-relay-service-caller/1' }),
       document({ schema: 'agent-relay-service-caller/3' }),
-      document({ auth: CALLER_AUTH_SCHEME }),
+      legacyDocument({ schema: 'agent-relay-service-caller/2', auth: 'challenge-hmac-sha256/v2' }),
       document({
         auth: {
           scheme: 'challenge-hmac-sha256/v2',
@@ -386,11 +402,29 @@ describe('authenticate', () => {
     }
   });
 
-  it('rejects every incomplete service-caller method set before sending anything', async () => {
+  it('authenticates when the two authentication methods are present', async () => {
+    const { client, calls } = fakeClient(
+      {
+        [CALLER_CHALLENGE_METHOD]: challenge,
+        [CALLER_AUTHENTICATE_METHOD]: BOUND,
+      },
+      ['hello', CALLER_CHALLENGE_METHOD, CALLER_AUTHENTICATE_METHOD]
+    );
+    await expect(authenticate(client, credential)).resolves.toEqual(BOUND);
+    expect(calls.map((call) => call.method)).toEqual([CALLER_CHALLENGE_METHOD, CALLER_AUTHENTICATE_METHOD]);
+  });
+
+  it('checks every incomplete service-caller lifecycle without sending anything', () => {
     for (const missing of REQUIRED_SERVICE_CALLER_METHODS) {
       const methods = ['hello', ...REQUIRED_SERVICE_CALLER_METHODS.filter((method) => method !== missing)];
       const { client, calls } = fakeClient({}, methods);
-      const error = await authenticate(client, credential).catch((e: unknown) => e);
+      const error = (() => {
+        try {
+          requireServiceCallerMethods(client);
+        } catch (caught) {
+          return caught;
+        }
+      })();
       expect(error, missing).toBeInstanceOf(CoreRpcError);
       expect((error as CoreRpcError).kind, missing).toBe('method_not_found');
       expect((error as Error).message, missing).toContain(missing);
@@ -467,6 +501,12 @@ describe.skipIf(process.platform === 'win32')('readCallerCredential (POSIX)', ()
     expect(Object.isFrozen(descriptor.workspace)).toBe(true);
     expect(Object.isFrozen(descriptor.harnesses)).toBe(true);
     expect(Object.isFrozen(descriptor.directoryScope)).toBe(true);
+  });
+
+  it('keeps credential compatibility separate from the strict complete descriptor', async () => {
+    await writeFile(file, JSON.stringify(legacyDocument()), { mode: 0o600 });
+    await expect(readCallerCredential(file)).resolves.toMatchObject({ callerId: base.caller_id });
+    await expect(readCallerDescriptor(file)).rejects.toMatchObject({ code: 'caller_file_invalid' });
   });
 
   it('reports a missing file, or a path through a file, unchanged and without a caller error', async () => {
