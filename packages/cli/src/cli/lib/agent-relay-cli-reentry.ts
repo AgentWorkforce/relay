@@ -45,8 +45,19 @@ export function resolveAgentRelayScriptInterpreter(input: {
  *
  * @param workflowPath - Absolute path to the workflow file.
  * @param fileType - Workflow format used to determine whether v2 requires explicit input.
+ * @param options - Explicit local executor selection; disabled by default.
  * @returns Arguments beginning with `flows run` for Agent Relay CLI re-entry.
  */
-export function buildRelayflowsRunArgs(workflowPath: string, fileType: 'yaml' | 'ts'): string[] {
-  return ['flows', 'run', workflowPath, ...(fileType === 'ts' ? ['--input', '{}'] : [])];
+export function buildRelayflowsRunArgs(
+  workflowPath: string,
+  fileType: 'yaml' | 'ts',
+  options: { localAgent?: boolean } = {}
+): string[] {
+  return [
+    'flows',
+    'run',
+    workflowPath,
+    ...(fileType === 'ts' ? ['--input', '{}'] : []),
+    ...(options.localAgent ? ['--local-agent'] : []),
+  ];
 }

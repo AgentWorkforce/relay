@@ -226,7 +226,10 @@ async function materializeCodeMounts(input: {
   }
 }
 
-export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): ExecuteWorkerAssignment {
+export function createDefaultAssignmentRunner(
+  deps: CloudWorkerDependencies,
+  options: { localAgent?: boolean } = {}
+): ExecuteWorkerAssignment {
   return async ({ payload, worker, signal }) => {
     // Cloud owns assignment control-plane semantics. Relayflows owns execution.
     // This boundary materializes a fresh Cloud payload into a local workflow
@@ -243,7 +246,12 @@ export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): Ex
       await fsp.chmod(runDir, 0o700).catch(() => undefined);
       await materializeCodeMounts({ worker, payload, runDir, deps, signal });
 
-      const workflowPath = path.join(runDir, safeFileName(payload.workflowFileName));
+      const suppliedName = safeFileName(payload.workflowFileName);
+      // The supported authored-flow SDK entrypoint recognizes *.flow.ts.
+      // Control can supply an ordinary *.ts name; preserve its directory/body.
+      const workflowName =
+        payload.fileType === 'ts' ? `${suppliedName.replace(/(?:\.flow)?\.ts$/i, '')}.flow.ts` : suppliedName;
+      const workflowPath = path.join(runDir, workflowName);
       await writeSecretFile(workflowPath, payload.workflow);
 
       if (cliCredentials) {
@@ -260,7 +268,7 @@ export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): Ex
       const agentRelayCli = resolveAgentRelayCliChildCommand({
         execPath: process.execPath,
         cliEntrypoint: deps.resolveAgentRelayCliEntrypoint(),
-        args: buildRelayflowsRunArgs(workflowPath, payload.fileType),
+        args: buildRelayflowsRunArgs(workflowPath, payload.fileType, options),
         cwd: deps.cwd(),
       });
       const result = await runChild({
@@ -331,7 +339,7 @@ export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): Ex
 
 async function startDaemon(input: {
   worker: CloudWorkerRecord;
-  options: { baseUrl?: string; workerId?: string; name?: string; once?: boolean };
+  options: { baseUrl?: string; workerId?: string; name?: string; once?: boolean; localAgent?: boolean };
   deps: CloudWorkerDependencies;
 }): Promise<CloudWorkerRecord> {
   const stateDir = cloudWorkerStateDir(input.deps.env);
@@ -352,6 +360,7 @@ async function startDaemon(input: {
       input.worker.baseUrl,
       '--foreground-child',
       ...(input.options.once ? ['--once'] : []),
+      ...(input.options.localAgent ? ['--local-agent'] : []),
     ],
     cwd: input.deps.cwd(),
   });
@@ -461,6 +470,11 @@ export function registerCloudWorkerCommands(
     .option('--name <name>', 'Stored worker name to start')
     .option('--daemon', 'Run in the background and write local daemon logs', false)
     .option('--once', 'Process one assignment, then exit', false)
+    .option(
+      '--local-agent',
+      'Attach the supported local Relayflows agent worker; provider setup is separate',
+      false
+    )
     .addOption(new Option('--foreground-child', 'Internal flag used by --daemon').hideHelp().default(false))
     .action(
       async (options: {
@@ -469,6 +483,7 @@ export function registerCloudWorkerCommands(
         name?: string;
         daemon?: boolean;
         once?: boolean;
+        localAgent?: boolean;
         foregroundChild?: boolean;
       }) => {
         const worker = resolveCloudWorkerRecord({
@@ -495,7 +510,8 @@ export function registerCloudWorkerCommands(
             worker,
             once: options.once,
             signal: controller.signal,
-            executeAssignment: createDefaultAssignmentRunner(deps),
+            executeAssignment: createDefaultAssignmentRunner(deps, { localAgent: options.localAgent }),
+            fetchImpl: deps.fetchImpl,
             log: (message) => deps.log(message),
           });
         } finally {
