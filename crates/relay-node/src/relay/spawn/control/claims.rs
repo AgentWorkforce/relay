@@ -150,36 +150,75 @@ fn unrecorded_slot(
 /// failed, so the same request again (same caller, idempotency key and
 /// parameters) gets it back even when the node is no longer live and the
 /// invocation could not be sent again. Saved the way release claims are
-/// (owner-private, never clobbered), so a restart keeps it; a slot that
-/// cannot be saved leaves the retry to replay the POST, as before.
+/// (owner-private, never clobbered), so a restart keeps it. Fails when the
+/// slot could not be saved, so the caller is told the receipt was not kept
+/// instead of a retry silently finding nothing to recover; a slot that
+/// already holds exactly this request and receipt (a retry whose record
+/// failed again) is kept, not a failure.
 pub(super) fn keep_unrecorded_receipt(
     folder: &Path,
     workspace: &Workspace,
     caller_id: &str,
     params: &SpawnInvokeParams,
     receipt: &SpawnControlInvocation,
-) {
+) -> Result<(), RpcError> {
     let _writing = WRITING.lock().unwrap_or_else(|e| e.into_inner());
     let (folder, name, request) = unrecorded_slot(folder, workspace, caller_id, params);
-    let Ok(bytes) = serde_json::to_vec(&json!({"request": request, "receipt": receipt})) else {
-        return;
+    let store_failed = || {
+        RpcError::new(
+            ErrorKind::StoreFailed,
+            "The unrecorded native spawn receipt could not be saved.",
+        )
     };
-    let _ = storage::persist(&folder, &name, &bytes);
+    let slot = json!({"request": request, "receipt": receipt});
+    let bytes = serde_json::to_vec(&slot).map_err(|_| store_failed())?;
+    match storage::persist(&folder, &name, &bytes) {
+        Ok(()) => Ok(()),
+        Err(_) if kept_already(&folder, &name, &slot) => Ok(()),
+        Err(_) => Err(store_failed()),
+    }
+}
+
+/// Whether the slot already holds exactly `slot`: the same request and the
+/// same receipt, field for field.
+fn kept_already(folder: &Path, name: &str, slot: &Value) -> bool {
+    match storage::read(folder, name) {
+        Ok(Some(bytes)) => {
+            serde_json::from_slice::<Value>(&bytes).is_ok_and(|saved| saved == *slot)
+        }
+        _ => false,
+    }
 }
 
 /// The receipt [`keep_unrecorded_receipt`] kept for this exact request, if
 /// any. A slot for the same key but other parameters is not this request's.
+/// Only a missing slot reads as none kept: a slot that cannot be read or
+/// parsed fails, rather than sending the request again.
 pub(super) fn unrecorded_receipt(
     folder: &Path,
     workspace: &Workspace,
     caller_id: &str,
     params: &SpawnInvokeParams,
-) -> Option<SpawnControlInvocation> {
+) -> Result<Option<SpawnControlInvocation>, RpcError> {
     let (folder, name, request) = unrecorded_slot(folder, workspace, caller_id, params);
-    let bytes = storage::read(&folder, &name).ok()??;
-    let saved: Value = serde_json::from_slice(&bytes).ok()?;
-    if saved["request"] != request {
-        return None;
+    let unreadable = || {
+        RpcError::new(
+            ErrorKind::StoreFailed,
+            "The unrecorded native spawn receipt could not be read.",
+        )
+    };
+    let bytes = match storage::read(&folder, &name) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return Ok(None),
+        Err(_) => return Err(unreadable()),
+    };
+    let saved = serde_json::from_slice::<Value>(&bytes).map_err(|_| unreadable())?;
+    let saved_request = saved.get("request").ok_or_else(unreadable)?;
+    if *saved_request != request {
+        return Ok(None);
     }
-    serde_json::from_value(saved["receipt"].clone()).ok()
+    let receipt = saved.get("receipt").cloned().ok_or_else(unreadable)?;
+    serde_json::from_value(receipt)
+        .map(Some)
+        .map_err(|_| unreadable())
 }

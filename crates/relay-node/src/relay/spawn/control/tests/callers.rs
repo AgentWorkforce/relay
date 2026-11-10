@@ -1269,3 +1269,164 @@ async fn a_retry_with_the_same_idempotency_key_returns_the_receipt_after_the_nod
     )
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_receipt_neither_recorded_nor_kept_fails_closed_with_its_invocation_id() {
+    let relaycast = Relaycast::new();
+    let stub = Stub::new(service(true));
+    let (home, core) = core_with(Some(stub.clone()), &relaycast.base);
+    let directory = tempfile::tempdir().unwrap();
+    let directory = directory.path().to_str().unwrap().to_string();
+    let name = crate::relay::spawn::node_name(&core.machine_prefix);
+    let params = invoke_params(&core, "codex", &directory);
+    // The slot for this caller and key already holds another request's
+    // receipt, and a slot is never clobbered: this receipt cannot be kept.
+    let workspace = core.workspace().unwrap();
+    let mut other: SpawnInvokeParams = serde_json::from_value(params.clone()).unwrap();
+    other.task = "another task".into();
+    let occupied: SpawnControlInvocation =
+        serde_json::from_value(json!({"id":"invocation_other","status":"pending","spawned":false,"ready":false,"task_unconfirmed":false})).unwrap();
+    claims::keep_unrecorded_receipt(
+        &core.config.app_data_dir,
+        &workspace,
+        "agent_service",
+        &other,
+        &occupied,
+    )
+    .unwrap();
+    let failure = RpcError::new(ErrorKind::StoreFailed, "the receipt ledger is unavailable");
+    stub.fail_record(Some(failure.clone()));
+    let served = relaycast.serve(vec![
+        json!([{"id":"node_local","name": name,"live":true,"handlers_live":true,"active_agents":0,"reserved_agents":0,"max_agents":4,"capabilities":["spawn:codex"]}]),
+        json!({"id":"invocation_new","status":"pending"}),
+    ]);
+    let error = bound(&core, "spawn.invoke", params.clone())
+        .await
+        .unwrap_err();
+    let requests = served.join().unwrap();
+    assert!(requests[1].starts_with("POST /v1/actions/spawn/invoke "));
+    // Not the plugin's error alone: the caller learns the receipt was not
+    // kept, and which invocation was accepted.
+    assert_ne!(error, failure);
+    assert_eq!(error.data.kind, ErrorKind::StoreFailed, "{error:?}");
+    assert!(!error.data.retryable, "{error:?}");
+    assert!(error.message.contains("invocation_new"), "{error:?}");
+    assert!(error.message.contains(&failure.message), "{error:?}");
+
+    // A receipt slot that cannot be read fails the retry before the node's
+    // listing is asked for or the invocation is sent again.
+    stub.fail_record(None);
+    let kept = home.path().join("app-data").join("spawn-control-receipts");
+    std::fs::remove_dir_all(&kept).unwrap();
+    std::fs::write(&kept, b"not a folder").unwrap();
+    let error = bound(&core, "spawn.invoke", params).await.unwrap_err();
+    assert_eq!(error.data.kind, ErrorKind::StoreFailed, "{error:?}");
+    assert!(relaycast.untouched());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retry_whose_record_fails_again_keeps_the_receipt_and_stays_retryable() {
+    let relaycast = Relaycast::new();
+    let stub = Stub::new(service(true));
+    let (home, core) = core_with(Some(stub.clone()), &relaycast.base);
+    let directory = tempfile::tempdir().unwrap();
+    let directory = directory.path().to_str().unwrap().to_string();
+    let name = crate::relay::spawn::node_name(&core.machine_prefix);
+    let params = invoke_params(&core, "codex", &directory);
+    let failure = RpcError::new(ErrorKind::Busy, "the receipt ledger is busy");
+    stub.fail_record(Some(failure.clone()));
+    let served = relaycast.serve(vec![
+        json!([{"id":"node_local","name": name,"live":true,"handlers_live":true,"active_agents":0,"reserved_agents":0,"max_agents":4,"capabilities":["spawn:codex"]}]),
+        json!({"id":"invocation_new","status":"pending"}),
+    ]);
+    let error = bound(&core, "spawn.invoke", params.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(error, failure);
+    let requests = served.join().unwrap();
+    assert!(requests[1].starts_with("POST /v1/actions/spawn/invoke "));
+    let kept = home.path().join("app-data").join("spawn-control-receipts");
+    let slot = std::fs::read_dir(&kept)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let saved = std::fs::read(&slot).unwrap();
+
+    // The same request again, and the record fails again: the kept receipt
+    // answers it without Relaycast, and keeping that same receipt again is
+    // not a failure, so the caller still gets the plugin's retryable error.
+    let error = bound(&core, "spawn.invoke", params.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(error, failure);
+    assert!(error.data.retryable, "{error:?}");
+    assert!(relaycast.untouched());
+    assert_eq!(std::fs::read_dir(&kept).unwrap().count(), 1);
+    assert_eq!(std::fs::read(&slot).unwrap(), saved);
+
+    // Once the record succeeds, the retry gets the original receipt.
+    stub.fail_record(None);
+    let answer = bound(&core, "spawn.invoke", params).await.unwrap();
+    assert_eq!(answer["id"], "invocation_new");
+    assert_eq!(stub.recorded().last().unwrap().as_ref().unwrap(), &answer);
+    assert!(relaycast.untouched());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_malformed_receipt_slot_fails_the_retry_closed_instead_of_invoking_again() {
+    let relaycast = Relaycast::new();
+    let stub = Stub::new(service(true));
+    let (home, core) = core_with(Some(stub.clone()), &relaycast.base);
+    let directory = tempfile::tempdir().unwrap();
+    let directory = directory.path().to_str().unwrap().to_string();
+    let params = invoke_params(&core, "codex", &directory);
+    let workspace = core.workspace().unwrap();
+    let typed: SpawnInvokeParams = serde_json::from_value(params.clone()).unwrap();
+    let receipt: SpawnControlInvocation =
+        serde_json::from_value(json!({"id":"invocation_kept","status":"pending","spawned":false,"ready":false,"task_unconfirmed":false})).unwrap();
+    claims::keep_unrecorded_receipt(
+        &core.config.app_data_dir,
+        &workspace,
+        "agent_service",
+        &typed,
+        &receipt,
+    )
+    .unwrap();
+    let kept = home.path().join("app-data").join("spawn-control-receipts");
+    let slot = std::fs::read_dir(&kept)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let saved: Value = serde_json::from_slice(&std::fs::read(&slot).unwrap()).unwrap();
+    // Rewritten in place, so the slot stays owner-private.
+    let rewrite = |bytes: &[u8]| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&slot)
+            .unwrap();
+        file.write_all(bytes).unwrap();
+    };
+
+    // A truncated slot, then one for this request whose receipt does not
+    // parse: neither reads as "nothing kept", so neither sends it again.
+    let truncated = serde_json::to_vec(&saved).unwrap();
+    let mut wrong_receipt = saved.clone();
+    wrong_receipt["receipt"] = json!({"unexpected": true});
+    for bytes in [
+        truncated[..truncated.len() / 2].to_vec(),
+        serde_json::to_vec(&wrong_receipt).unwrap(),
+    ] {
+        rewrite(&bytes);
+        let error = bound(&core, "spawn.invoke", params.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(error.data.kind, ErrorKind::StoreFailed, "{error:?}");
+        assert!(!error.data.retryable, "{error:?}");
+        assert!(relaycast.untouched());
+    }
+}
