@@ -104,7 +104,7 @@ fn scrub_text(value: &str, secret: &str) -> String {
         .scan(false, |bearer, word| {
             let lower = word.to_ascii_lowercase();
             let hide = *bearer
-                || ["rk_", "at_", "ar_", "sk_", "eyj"]
+                || ["rk_", "at_", "ar_", "sk_", "sh_wk_", "eyj"]
                     .iter()
                     .any(|prefix| lower.trim_start_matches(['\"', '\'']).starts_with(prefix));
             *bearer = lower.trim() == "bearer";
@@ -330,6 +330,13 @@ pub async fn observe<T: Serialize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_service_echo_of_a_node_credential_is_redacted() {
+        let text = scrub_text("refused sh_wk_fixture1234 here", "");
+        assert!(!text.contains("sh_wk_fixture1234"), "{text}");
+        assert!(text.contains("refused"), "{text}");
+    }
 
     #[test]
     fn a_service_echo_of_an_armadillo_credential_is_redacted() {

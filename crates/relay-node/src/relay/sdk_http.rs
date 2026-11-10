@@ -24,7 +24,12 @@ fn transport(tls: Arc<rustls::ClientConfig>) -> relaycast::Result<reqwest::Clien
 
 /// Construct immediately before an SDK operation; no environment can seed the
 /// platform cache or select additional trust files. SDK retries keep this client.
+///
+/// A node-scoped credential is sent only to a Control broker
+/// ([`super::node_credential::check_destination`]); any other call with it is
+/// refused here as not available, before anything is sent.
 pub fn client(options: ClientOptions) -> relaycast::Result<HttpClient> {
+    super::node_credential::check_destination(&options)?;
     environment_is_safe()?;
     let tls = super::websocket_tls::client_config();
     Ok(HttpClient::with_http_client(options, transport(tls)?))

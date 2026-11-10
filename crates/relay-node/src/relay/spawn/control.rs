@@ -165,7 +165,7 @@ fn workspace(core: &Core) -> Result<Workspace, RpcError> {
 }
 fn workspace_http(core: &Core) -> Result<HttpClient, RpcError> {
     let workspace = workspace(core)?;
-    sdk_gaps::http(&workspace.base_url, &workspace.key).map_err(|e| RpcError::from_relaycast(&e))
+    sdk_gaps::workspace_http(&workspace).map_err(|e| RpcError::from_relaycast(&e))
 }
 
 /// How a `spawn.*` call's bridge connection resolved, before its params
@@ -574,8 +574,8 @@ async fn invoke_as(
     };
     let directory = directory.to_str().ok_or_else(outside_scope)?;
     let http = caller.http(workspace)?;
-    let workspace_client = sdk_gaps::http(&workspace.base_url, &workspace.key)
-        .map_err(|e| RpcError::from_relaycast(&e))?;
+    let workspace_client =
+        sdk_gaps::workspace_http(workspace).map_err(|e| RpcError::from_relaycast(&e))?;
     let listed = targets(&workspace_client).await?;
     if !listed.targets.iter().any(|t| {
         t.id == params.node_id
@@ -772,9 +772,13 @@ async fn release_as(
         Some(ReleaseOwnership::Owned) => true,
         Some(ReleaseOwnership::Other) => return Err(not_owner()),
         Some(ReleaseOwnership::Unknown(invocation_id)) => {
-            crate::relay::spawn::report_back::requester(workspace, &invocation_id)
-                .await
-                .is_some_and(|requester| requester.agent_id == caller.agent_id())
+            crate::relay::spawn::report_back::requester(
+                workspace,
+                &core.config.app_data_dir,
+                &invocation_id,
+            )
+            .await
+            .is_some_and(|requester| requester.agent_id == caller.agent_id())
         }
         None => false,
     };

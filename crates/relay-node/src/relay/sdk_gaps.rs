@@ -38,7 +38,7 @@
 //!   the clients here send `relay-desktop` and the desktop's version.
 
 use crate::relay::diagnostic_http::HttpClient;
-use crate::relay::workspace::Secret;
+use crate::relay::workspace::{Secret, Workspace, WorkspaceRoute};
 use futures_util::{SinkExt, StreamExt};
 use relaycast::types::DirectNodeToken;
 use relaycast::{AgentClient, ClientOptions, RelayError, RequestOptions};
@@ -71,6 +71,21 @@ pub fn http(base_url: &str, credential: &Secret) -> relaycast::Result<HttpClient
             .with_base_url(base_url)
             .with_origin("relay-desktop", crate::VERSION),
     )
+}
+
+/// An SDK HTTP client for `route`'s workspace-key calls: Relaycast for a
+/// workspace key, the Control broker for a node-scoped one.
+#[allow(clippy::result_large_err)] // the SDK's own error type
+pub fn route_http(route: &WorkspaceRoute) -> relaycast::Result<HttpClient> {
+    http(&route.base(), &route.credential)
+}
+
+/// [`route_http`] for `workspace`'s own route. Use it for the calls Control
+/// brokers for a node-scoped credential: `GET /v1/workspace`,
+/// `GET /v1/nodes[/{name}]`, `POST /v1/nodes`, `GET /v1/agents[/{name}]`.
+#[allow(clippy::result_large_err)] // the SDK's own error type
+pub fn workspace_http(workspace: &Workspace) -> relaycast::Result<HttpClient> {
+    route_http(&workspace.route())
 }
 
 /// The workspace a key belongs to: `GET /v1/workspace`, read leniently, as

@@ -572,7 +572,7 @@ pub(crate) fn start_with_input(
         .args(&arguments)
         .current_dir(directory)
         .env_clear()
-        .envs(environment)
+        .envs(child_environment(environment))
         .stdin(Stdio::piped())
         .stdout(output)
         .stderr(errors)
@@ -657,7 +657,7 @@ printf '%s\n' "$?" >"$exit_file.tmp" && command -p mv -f "$exit_file.tmp" "$exit
         .args(arguments.iter().map(OsString::from))
         .current_dir(directory)
         .env_clear()
-        .envs(environment)
+        .envs(child_environment(environment))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -690,10 +690,49 @@ pub(crate) fn stop_process(table: &dyn ProcessTable, pid: i32, start: Option<u64
     }
 }
 
+/// A spawned agent's environment: `environment` without the workspace
+/// credential variables, so no agent inherits the node's credential.
+fn child_environment(
+    environment: &BTreeMap<String, String>,
+) -> impl Iterator<Item = (&String, &String)> {
+    environment
+        .iter()
+        .filter(|(name, _)| !crate::relay::workspace::is_workspace_key_env(name))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::relay::harness::claude::first_message;
+
+    /// No spawned agent inherits a workspace credential variable, whatever
+    /// the harness put in its environment.
+    #[cfg(unix)]
+    #[test]
+    fn spawned_agents_never_inherit_a_workspace_credential_variable() {
+        let environment: BTreeMap<String, String> = [
+            ("RELAY_WORKSPACE_KEY", "sh_wk_fixture_value"),
+            ("AGENT_RELAY_WORKSPACE_KEY", "rk_live_fixture"),
+            ("RELAY_API_KEY", "ar_ws_fixture"),
+            ("KEPT_VARIABLE", "kept"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+        let output = Command::new("/usr/bin/env")
+            .env_clear()
+            .envs(child_environment(&environment))
+            .output()
+            .unwrap();
+        let printed = String::from_utf8_lossy(&output.stdout);
+        assert!(printed.contains("KEPT_VARIABLE=kept"));
+        for name in crate::relay::workspace::WORKSPACE_KEY_ENV {
+            assert!(
+                !printed.contains(&format!("{name}=")),
+                "{name} reached the child"
+            );
+        }
+    }
     use std::time::{Duration, Instant};
 
     #[test]

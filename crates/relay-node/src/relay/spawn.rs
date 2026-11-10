@@ -1636,6 +1636,7 @@ mod tests {
             requester: None,
             target,
             process: None,
+            control_url: None,
         }
     }
 
@@ -1912,6 +1913,7 @@ mod tests {
             base_url: "http://localhost:9".into(),
             workspace_id: id.map(str::to_string),
             source: Default::default(),
+            control_url: None,
         };
         let mut intent = interrupted("w1", true, None);
         intent.workspace_id = Some("rw_1".into());

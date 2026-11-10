@@ -36,10 +36,13 @@ impl Core {
         }
         let mut result = client::workspace_info(&workspace).await;
         self.observe_relaycast_result(&scope, &result);
-        if result
-            .as_ref()
-            .err()
-            .is_some_and(|error| error.is_auth_rejection())
+        // A refused node credential is revoked or expired at Control; it is
+        // not an account key, so there is nothing to recover.
+        if !workspace.node_scoped()
+            && result
+                .as_ref()
+                .err()
+                .is_some_and(crate::relay::node_credential::rejects_credential)
         {
             let expected_id = self
                 .status()
@@ -75,7 +78,7 @@ impl Core {
             }
             Err(error) => {
                 let mapped = RpcError::from_relaycast(&error);
-                let verification = if error.is_auth_rejection() {
+                let verification = if crate::relay::node_credential::rejects_credential(&error) {
                     Verification::Rejected
                 } else {
                     Verification::Unreachable
@@ -107,7 +110,7 @@ impl Core {
         workspace: &WorkspaceScope,
         error: &relaycast::RelayError,
     ) {
-        if !error.is_auth_rejection() {
+        if !crate::relay::node_credential::rejects_credential(error) {
             return;
         }
         let Some(current) = self.workspace().filter(|current| {

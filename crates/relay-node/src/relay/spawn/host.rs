@@ -41,6 +41,7 @@ impl Core {
         Ok(NodeConfig {
             base_url: workspace.base_url,
             workspace_key: workspace.key,
+            control_url: workspace.control_url,
             node_name: node_name(&self.machine_prefix),
             version: self.config.version.clone(),
             app_data_dir: self.config.app_data_dir.clone(),

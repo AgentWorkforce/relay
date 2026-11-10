@@ -294,6 +294,17 @@ impl RpcError {
             relaycast::RelayError::Api { code, .. } if code == "plan_limit_exceeded" => {
                 RpcError::plan_limit(PlanLimitExceeded::from_relaycast(error))
             }
+            // A call outside a node credential's scope is unavailable, and a
+            // node credential bound to another node name is refused; neither
+            // rejects the credential itself.
+            error if crate::relay::node_credential::is_scope_denied(error) => RpcError::new(
+                ErrorKind::Refused,
+                crate::relay::node_credential::UNAVAILABLE,
+            ),
+            error if crate::relay::node_credential::is_node_mismatch(error) => RpcError::new(
+                ErrorKind::Refused,
+                "The node credential belongs to another node name.",
+            ),
             error if error.is_auth_rejection() => RpcError::new(
                 ErrorKind::Unauthorized,
                 "Agent Relay rejected the workspace credential.",
@@ -402,6 +413,26 @@ mod tests {
         assert!(!mapped.message.contains("rk_live_"));
         let server = relaycast::RelayError::api("oops", "stack trace", 503);
         assert!(RpcError::from_relaycast(&server).data.retryable);
+    }
+
+    #[test]
+    fn broker_refusals_of_a_node_credential_do_not_reject_it() {
+        let scope = relaycast::RelayError::api("scope_denied", "sh_wk_secret out of scope", 403);
+        let mapped = RpcError::from_relaycast(&scope);
+        assert_eq!(mapped.data.kind, ErrorKind::Refused);
+        assert!(!mapped.message.contains("sh_wk_"));
+        let mismatch = relaycast::RelayError::api("node_mismatch", "other node", 403);
+        assert_eq!(
+            RpcError::from_relaycast(&mismatch).data.kind,
+            ErrorKind::Refused
+        );
+        let invalid = relaycast::RelayError::api("token_invalid", "revoked", 401);
+        assert_eq!(
+            RpcError::from_relaycast(&invalid).data.kind,
+            ErrorKind::Unauthorized
+        );
+        let outage = relaycast::RelayError::api("relaycast_unavailable", "down", 502);
+        assert!(RpcError::from_relaycast(&outage).data.retryable);
     }
 
     #[test]

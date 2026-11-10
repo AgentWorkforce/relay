@@ -8,10 +8,11 @@ use super::enrollment::{
 };
 use super::NodeConfig;
 use crate::relay::contract::plan::PlanLimitExceeded;
+use crate::relay::node_credential;
 use crate::relay::sdk_gaps;
 use crate::relay::spawn::wire;
 use crate::relay::store::random_hex;
-use crate::relay::workspace::Secret;
+use crate::relay::workspace::{workspace_route, Secret};
 use relaycast::RequestOptions;
 use serde_json::Value;
 
@@ -43,6 +44,9 @@ pub(super) enum Refused {
     NoName(String),
     /// The plan's device cap is reached.
     PlanLimit(PlanLimitExceeded),
+    /// The node credential is bound to another node name (the broker's
+    /// `403 node_mismatch`): the node does not start.
+    NodeMismatch(String),
 }
 
 impl Refused {
@@ -57,10 +61,33 @@ impl Refused {
             Refused::ProofRefused(reason)
             | Refused::KeyRefused(reason)
             | Refused::Failed(reason)
-            | Refused::NoName(reason) => reason,
+            | Refused::NoName(reason)
+            | Refused::NodeMismatch(reason) => reason,
             Refused::PlanLimit(limit) => limit.message(),
         }
     }
+}
+
+/// The client for `config`'s workspace-key calls: Relaycast for a workspace
+/// key, the Control broker for a node-scoped one.
+#[allow(clippy::result_large_err)] // relaycast::RelayError, like every SDK call here
+fn workspace_http(
+    config: &NodeConfig,
+) -> relaycast::Result<crate::relay::diagnostic_http::HttpClient> {
+    sdk_gaps::route_http(&workspace_route(
+        &config.base_url,
+        &config.workspace_key,
+        config.control_url.as_deref(),
+    ))
+}
+
+/// Why the node does not start when its credential belongs to another node.
+/// Names the configured node, never the credential.
+fn node_mismatch(config: &NodeConfig, name: &str) -> Refused {
+    Refused::NodeMismatch(format!(
+        "Agent Relay did not start this computer's spawn node: its node credential is bound to another node name than \"{name}\" (configured node \"{}\"). Use a node credential issued for this node.",
+        config.node_name
+    ))
 }
 
 fn save_failed(error: std::io::Error) -> Refused {
@@ -80,8 +107,7 @@ pub(super) async fn enroll(
     name: &str,
     rotation: Option<(&Secret, &str)>,
 ) -> Result<Enrollment, Refused> {
-    let http = sdk_gaps::http(&config.base_url, &config.workspace_key)
-        .map_err(|error| Refused::Failed(error.to_string()))?;
+    let http = workspace_http(config).map_err(|error| Refused::Failed(error.to_string()))?;
     let body = wire::enroll_body(node_id, name, &config.version);
     let proof = rotation.is_some();
     let options = rotation.map(|(token, key)| RequestOptions {
@@ -97,6 +123,9 @@ pub(super) async fn enroll(
         .map_err(|error| {
             if let Some(limit) = PlanLimitExceeded::from_relaycast(&error) {
                 return Refused::PlanLimit(limit);
+            }
+            if node_credential::is_node_mismatch(&error) {
+                return node_mismatch(config, name);
             }
             let failed =
                 || Refused::Failed(format!("Agent Relay did not enroll this computer: {error}"));
@@ -272,8 +301,7 @@ pub(super) async fn saved(config: &NodeConfig) -> Result<Option<Enrollment>, Str
     let Some(kept) = read(config) else {
         return Ok(None);
     };
-    let http = sdk_gaps::http(&config.base_url, &config.workspace_key)
-        .map_err(|error| error.to_string())?;
+    let http = workspace_http(config).map_err(|error| error.to_string())?;
     let holder = sdk_gaps::node_id_named(&http, &kept.node_name)
         .await
         .map_err(|error| {

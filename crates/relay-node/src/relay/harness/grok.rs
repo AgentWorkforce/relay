@@ -195,6 +195,7 @@ impl GrokAdapter {
         if let Some(agent_environment) = &self.environment {
             environment = agent_environment("grok", environment);
         }
+        let mut environment = crate::relay::workspace::without_workspace_key_env(environment);
         environment.insert(MANAGED_MARKER.into(), marker.into());
         if full_access {
             environment.remove("GROK_SANDBOX");

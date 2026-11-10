@@ -889,3 +889,122 @@ fn the_credential_reference_matches_the_cli() {
         "5efe173d0f0bf1522a9926ff2f455c7f72744ad6d3e6673091b23590e13b0510"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Node-scoped credentials (`sh_wk_…`)
+
+const NODE_KEY: &str = "sh_wk_fixture0123456789";
+const CONTROL: &str = "https://control.example";
+const NODE_RELAYCAST: &str = "https://cast.example";
+
+impl Machine {
+    fn store_entry(self, active: &str, entry: serde_json::Value) -> Machine {
+        self.write_relay(
+            WORKSPACE_STORE_FILE,
+            &serde_json::json!({ "active": active, "workspaces": { active: entry } }).to_string(),
+        )
+    }
+}
+
+#[test]
+fn a_node_credential_in_the_store_carries_its_relaycast_and_control_origins() {
+    let found = Machine::new()
+        .store_entry(
+            "node",
+            serde_json::json!({
+                "key": NODE_KEY,
+                "base_url": NODE_RELAYCAST,
+                "control_url": CONTROL,
+            }),
+        )
+        .found();
+    assert_eq!(found.key.expose(), NODE_KEY);
+    assert_eq!(found.base_url, NODE_RELAYCAST);
+    assert_eq!(found.control_url.as_deref(), Some(CONTROL));
+    assert_eq!(found.kind(), KeyKind::NodeScoped);
+    assert_eq!(found.route().base(), format!("{CONTROL}/relay-node"));
+}
+
+#[test]
+fn a_workspace_key_in_the_store_ignores_a_control_url() {
+    let found = Machine::new()
+        .store_entry(
+            "local",
+            serde_json::json!({ "key": "rk_live_store0000", "control_url": CONTROL }),
+        )
+        .found();
+    assert_eq!(found.kind(), KeyKind::Workspace);
+    assert_eq!(found.control_url, None);
+    assert_eq!(found.route().base(), found.base_url);
+}
+
+#[test]
+fn a_node_credential_without_a_control_url_is_refused_at_load() {
+    let error = Machine::new()
+        .store_entry(
+            "node",
+            serde_json::json!({ "key": NODE_KEY, "base_url": NODE_RELAYCAST }),
+        )
+        .resolve()
+        .unwrap_err();
+    assert!(error.contains("control_url"), "{error}");
+    assert!(!error.contains(NODE_KEY), "{error}");
+}
+
+#[test]
+fn a_node_credential_with_a_control_url_that_is_not_an_https_origin_is_refused() {
+    for control in [
+        "http://control.example",
+        "https://control.example/path",
+        "nope",
+    ] {
+        let error = Machine::new()
+            .store_entry(
+                "node",
+                serde_json::json!({ "key": NODE_KEY, "control_url": control }),
+            )
+            .resolve()
+            .unwrap_err();
+        assert!(error.contains("control_url"), "{control}: {error}");
+        assert!(!error.contains(NODE_KEY), "{error}");
+    }
+}
+
+#[test]
+fn a_node_credential_is_read_from_the_project_pin_beside_its_control_url() {
+    let machine = Machine::new().in_project().pin(serde_json::json!({
+        "workspaceKey": NODE_KEY,
+        "controlUrl": CONTROL,
+    }));
+    let found = machine.found();
+    assert_eq!(found.kind(), KeyKind::NodeScoped);
+    assert_eq!(found.control_url.as_deref(), Some(CONTROL));
+    assert_eq!(
+        found.source,
+        WorkspaceSource::CliProject(machine.data_dir().join(PROJECT_WORKSPACE_KEY_FILE))
+    );
+
+    let error = Machine::new()
+        .in_project()
+        .pin(serde_json::json!({ "workspaceKey": NODE_KEY }))
+        .resolve()
+        .unwrap_err();
+    assert!(error.contains("controlUrl"), "{error}");
+    assert!(!error.contains(NODE_KEY), "{error}");
+}
+
+#[test]
+fn a_node_credential_is_refused_from_every_environment_variable_by_name() {
+    for name in WORKSPACE_KEY_ENV_VARS {
+        let error = Machine::new()
+            .env(name, NODE_KEY)
+            .store_entry(
+                "node",
+                serde_json::json!({ "key": NODE_KEY, "control_url": CONTROL }),
+            )
+            .resolve()
+            .unwrap_err();
+        assert!(error.contains(&format!("${name}")), "{error}");
+        assert!(!error.contains(NODE_KEY), "{error}");
+    }
+}

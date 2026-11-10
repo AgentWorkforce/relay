@@ -9,6 +9,7 @@ fn selected_workspace() -> Workspace {
         base_url: "https://cast.example".into(),
         workspace_id: None,
         source: Default::default(),
+        control_url: None,
     }
 }
 #[test]
