@@ -172,7 +172,10 @@ fn save(path: &Path, state: &HostState) -> Result<()> {
 }
 
 fn pointed(home: &Path) -> Result<Option<PathBuf>> {
-    let pointer = home.join(".agentworkforce/desktop/relay-socket");
+    // Connect hosts belong to Agent Relay itself: a profile or Dev build's
+    // pointer is never read here.
+    let build = crate::relay::outbound::Build::Production;
+    let pointer = crate::relay::outbound::pointer_directory(home).join(build.pointer_name());
     if !pointer.try_exists()? {
         return Ok(None);
     }
@@ -181,7 +184,7 @@ fn pointed(home: &Path) -> Result<Option<PathBuf>> {
         m.is_file() && owned_and_private(&m, 0o022),
         SafeError("Unsafe Agent Relay socket pointer.".into())
     );
-    trusted_socket(&cli::pointed_socket(home, false)?)
+    trusted_socket(&cli::pointed_socket(home, &build)?)
 }
 fn socket_call(socket: &Path, method: &str, path: &str, body: &[u8]) -> Result<Value> {
     socket_call_with_headers(socket, method, path, body, &[])

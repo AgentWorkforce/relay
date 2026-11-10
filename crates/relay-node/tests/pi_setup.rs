@@ -10,7 +10,8 @@ fn config(home: &Path, enabled: bool) -> Config {
     Config {
         paths: CorePaths::for_socket(home.join("run/core.sock")).unwrap(),
         home: home.to_path_buf(),
-        app_data_dir: home.join("app-data"),
+        // Agent Relay's own data directory: only it installs Pi's extension.
+        app_data_dir: home.join(agent_relay_node::relay::app_store::APP_ID),
         env: BTreeMap::from([
             ("AGENT_RELAY_ENABLE_OPENCLAW".into(), "0".into()),
             ("AGENT_RELAY_ENABLE_HERMES".into(), "0".into()),

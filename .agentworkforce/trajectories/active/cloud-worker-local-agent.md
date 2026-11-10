@@ -13,3 +13,7 @@ Review follow-up: SDK2.0.65 attaches a YAML agent worker but its authored TypeSc
 Main-forward: preserve the released 18.0.0 history and keep this pending feature under Unreleased Minor. Both feature modules, their tests and the worker documentation remain byte-identical to the reviewed predecessor. The real lock-pinned SDK 2.0.66 tarball integrity was verified; its actual authored-path classifier passed the materialization controls. All 25 selected tests and strict selected TypeScript checks pass on the composed tree. No provider, registration, publication or runtime operation is claimed.
 
 Review passes: adversarial pass rechecked default-off, daemon propagation, safe materialization, state-bearing refusal and nonzero failure handling; contextual pass compared all five feature files and retained main’s release/package changes. Both are source-only clearance.
+
+## Release-lock repair integration
+
+Forward-merged accepted main f86ebb61. All five feature source, test and documentation files remain byte-identical to the prior reviewed head, and manifests and lockfile are exactly main. Adversarial review confirmed default-off executor selection, fresh-only state refusal and nonzero runner failures; contextual review confirmed daemon propagation and the supported authored-flow filename. Clean npm ci with lifecycle scripts disabled, 15 focused tests and full npm run typecheck passed; diff whitespace check passed. Cross-platform hosted checks remain required.

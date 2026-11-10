@@ -46,6 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `diagnostic_http::RequestOptions` lets embedding applications construct the core HTTP transport's request options directly, keeping idempotency keys compatible across Relaycast SDK versions.
+- `agent-relay-node` built for a site profile (an app data directory such as `com.agentrelay.desktop.<profile>`) no longer takes over Agent Relay's: it advertises its relay-send socket in its own pointer `~/.agentworkforce/desktop/relay-socket.<profile>`, marks its Claude and Codex hooks with ` --socket <socket>`, and replaces or removes only hooks it owns. On setup, status, repair and every refresh tick each build rewrites its own pointer and reinstalls its own hooks; Agent Relay also reclaims an older unmarked hook. A profile build skips the integrations that live in one shared file (Pi, OMP, OpenCode, Grok, Devin, Cursor and Copilot hooks, OpenClaw, Hermes), and its spawn MCP servers run with `--profile <id>`.
 - Relaycast workspace verification and agent HTTP requests use the operating system trust store, preserving that transport when credentials change and refusing credential-bearing redirects.
 
 - `agent-relay-node` authenticates Cloud sign-in/session HTTPS requests with the operating system trust store, matching its WebSocket connections, so sites using an installed organizational CA can sign in without certificate exceptions.
