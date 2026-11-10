@@ -486,8 +486,8 @@ function reconcileEnrollmentPin(
     if (result.status === 'conflict') {
       deps.warn(
         `This project's workspace pin (${result.pinPath}) is already linked to node ${result.pinnedNodeId}, ` +
-          `so it was left unchanged. 'relay node up' here will keep serving ${result.pinnedNodeId}, not the node ` +
-          `just enrolled (${result.nodeId}). Update or remove the pin to serve the new node.`
+          `so it was left unchanged rather than linked to the node just enrolled (${result.nodeId}). ` +
+          'Enrollment did not change the selected workspace or start a runtime.'
       );
     }
     return result;
@@ -495,7 +495,7 @@ function reconcileEnrollmentPin(
     deps.warn(
       `Enrollment succeeded but this project's workspace pin could not be updated: ${describeError(
         err
-      )}. 'relay node up' in this project may ignore the new enrollment.`
+      )}. The project pin may still name a different node; no runtime was started.`
     );
     return undefined;
   }
@@ -949,7 +949,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
 
   cloudCommand
     .command('enroll')
-    .description('Enroll this machine as a Cloud-managed fleet node')
+    .description('Save a Cloud fleet enrollment for this machine (does not start a runtime)')
     .addOption(
       new Option('--token <token>', 'One-time Cloud enrollment token (ocl_node_enr_...)').conflicts(
         'workspace'
@@ -1004,7 +1004,8 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
                 `The one-time enrollment token has been consumed. Credentials were saved to ${recoveryPath} (owner-only permissions).`
               );
               deps.error(
-                "Fix the store problem and re-add them from that file, or export RELAY_NODE_TOKEN/RELAY_NODE_ID/RELAY_BASE_URL from it before 'relay node up'. Delete the file afterwards."
+                'Fix the store problem and recover the enrollment from that private file, then delete it. ' +
+                  'For headless server setup, see https://agentrelay.com/docs/headless-server.'
               );
             } catch {
               deps.error(
@@ -1012,16 +1013,16 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
               );
               deps.error(JSON.stringify(record, null, 2));
               deps.error(
-                "Export RELAY_NODE_TOKEN/RELAY_NODE_ID/RELAY_BASE_URL from them before 'relay node up'."
+                'No runtime was started. For headless server setup, see https://agentrelay.com/docs/headless-server.'
               );
             }
             deps.exit(1);
             return;
           }
 
-          // A repo pinned to a workspace ignores the enrollment store entirely
-          // on `node up`, so link the two now while we know the node id. Never
-          // let this fail the command: the one-time token is already redeemed.
+          // Keep the enrolled node metadata on the existing project pin. This
+          // does not start a runtime or verify the workspace key. Never fail
+          // the command here: the one-time token is already redeemed.
           const pin = reconcileEnrollmentPin(record.nodeId, deps);
 
           if (options.json) {
@@ -1035,12 +1036,14 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
           const nodeIdSuffix = record.nodeId ? ` (${record.nodeId})` : '';
           deps.log(
             `Enrolled node "${record.nodeName}"${nodeIdSuffix} in workspace ${record.relayWorkspaceId}. ` +
-              "Run 'relay node up' to serve it."
+              'Enrollment saved; no runtime was started. To join an existing Desktop workspace ' +
+              'as a live spawn target, use the Linux account-aware service: ' +
+              'https://agentrelay.com/docs/headless-server.'
           );
           if (pin?.status === 'linked') {
             deps.log(
-              `Linked this project's workspace pin (${pin.pinPath}) to node ${pin.nodeId}, so ` +
-                `'relay node up' here serves this enrollment in workspace ${record.relayWorkspaceId}. ` +
+              `Linked this project's workspace pin (${pin.pinPath}) to node ${pin.nodeId} ` +
+                `as enrollment metadata for workspace ${record.relayWorkspaceId}. ` +
                 'The pinned workspace key was not verified against that workspace — if they differ, ' +
                 'agent commands in this project keep using the pinned one.'
             );
