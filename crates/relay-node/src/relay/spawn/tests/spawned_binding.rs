@@ -387,3 +387,63 @@ async fn a_displaced_identity_deleted_after_the_save_is_owed_no_more() {
     );
     assert!(displaced_cleanups(&core).is_empty());
 }
+
+/// The removal recorded for `solo` at `base_url`, as the spawn saves it.
+fn solo_cleanup(core: &Core, base_url: &str) -> crate::relay::store::PendingCleanup {
+    let cleanup = crate::relay::store::PendingCleanup {
+        kind: crate::relay::store::CleanupKind::Agent,
+        name: "solo".into(),
+        base_url: base_url.into(),
+        workspace_key: crate::relay::workspace::Secret::new("rk_live_test0000"),
+    };
+    core.store
+        .update(|store| store.add_pending_cleanup(cleanup.clone()))
+        .unwrap();
+    cleanup
+}
+
+fn deletes_of_solo(seen: &Mutex<Vec<String>>) -> usize {
+    seen.lock()
+        .unwrap()
+        .iter()
+        .filter(|line| line.starts_with("DELETE /v1/agents/solo "))
+        .count()
+}
+
+#[tokio::test]
+async fn a_displaced_name_registered_again_before_its_deletion_is_kept() {
+    let home = tempfile::tempdir().unwrap();
+    let (rest, seen) = relaycast_routes(vec![]);
+    let core = core(home.path(), Arc::new(FakeSpawner::default()));
+    let cleanup = solo_cleanup(&core, &rest);
+    // `solo` answers here again (a new registration) before the deletion
+    // after the save runs: that agent is kept, and nothing more is owed.
+    let mut again = earlier_identity(&rest);
+    again.target = Target::new(SessionKind::Codex, "7c9e6679-7425-40de-944b-e07fc1f90ae7");
+    assert!(core
+        .store
+        .update(|store| store.add(again, crate::relay::workspace::Secret::new("at_live_again")))
+        .unwrap());
+
+    core.delete_recorded_cleanup(cleanup).await;
+
+    assert_eq!(deletes_of_solo(&seen), 0, "{seen:?}");
+    assert!(displaced_cleanups(&core).is_empty());
+}
+
+#[tokio::test]
+async fn a_displaced_name_held_by_another_claim_is_left_to_the_retries() {
+    let home = tempfile::tempdir().unwrap();
+    let (rest, seen) = relaycast_routes(vec![]);
+    let core = core(home.path(), Arc::new(FakeSpawner::default()));
+    let cleanup = solo_cleanup(&core, &rest);
+    // A registration (or the retry pass) holds the name: the deletion after
+    // the save does not race it, and the record stays for the retries.
+    core.claim_name("solo").unwrap();
+
+    core.delete_recorded_cleanup(cleanup.clone()).await;
+
+    assert_eq!(deletes_of_solo(&seen), 0, "{seen:?}");
+    assert_eq!(displaced_cleanups(&core), vec![cleanup]);
+    core.release_name("solo");
+}

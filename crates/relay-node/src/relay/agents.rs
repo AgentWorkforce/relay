@@ -806,12 +806,18 @@ impl Core {
 
     /// Deletes an agent whose removal `cleanup` already records (saved in
     /// the same store update that let go of its token), and drops the record
-    /// once it is gone. Otherwise the record stays for
-    /// `retry_pending_cleanups`, across a restart too.
+    /// once it is gone. It goes through `delete_agent_cleanup`, as the retry
+    /// pass does: when Relaycast writes are paused, the name is held by
+    /// another removal or registration, or the deletion fails, the record
+    /// stays for `retry_pending_cleanups`, across a restart too.
     pub(crate) async fn delete_recorded_cleanup(&self, cleanup: PendingCleanup) {
         let workspace = self.relaycast_scope(&cleanup.base_url, &cleanup.workspace_key);
-        let result =
-            client::delete_agent(&cleanup.base_url, &cleanup.workspace_key, &cleanup.name).await;
+        if !self.relaycast_write_allowed(&workspace) {
+            return;
+        }
+        let Some(result) = self.delete_agent_cleanup(&cleanup).await else {
+            return;
+        };
         self.observe_relaycast_write_result(&workspace, &result);
         if result.is_ok() {
             let _ = self.store.update(|store| {
@@ -823,6 +829,37 @@ impl Core {
                 }
             });
         }
+    }
+
+    /// Carries out a recorded agent removal under its name's claim: `None`
+    /// when the name is held (a registration or another removal in flight;
+    /// tried again next pass). An agent answering to the name here again
+    /// (a rename back, a new registration) is kept, and the removal counts
+    /// as done without a DELETE.
+    async fn delete_agent_cleanup(
+        &self,
+        cleanup: &PendingCleanup,
+    ) -> Option<relaycast::Result<()>> {
+        // The name is held for the removal, as a registration holds it
+        // until saved: one in flight is waited out, and none starts
+        // meanwhile.
+        if !self.claim_cleanup_name(&cleanup.name) {
+            return None;
+        }
+        // Re-read before the removal: the name may have been taken again
+        // since the cleanup was recorded, and that agent is kept.
+        let kept = self.store.read(|s| {
+            s.registrations
+                .iter()
+                .any(|r| r.answers_to(&cleanup.name) && r.base_url == cleanup.base_url)
+        });
+        let result = if kept {
+            Ok(())
+        } else {
+            client::delete_agent(&cleanup.base_url, &cleanup.workspace_key, &cleanup.name).await
+        };
+        self.release_name(&cleanup.name);
+        Some(result)
     }
 
     /// Deletes a channel this computer created but recorded nowhere, or
@@ -861,34 +898,10 @@ impl Core {
                     client::delete_channel(&cleanup.base_url, &cleanup.workspace_key, &cleanup.name)
                         .await
                 }
-                CleanupKind::Agent => {
-                    // The name is held for the removal, as a registration
-                    // holds it until saved: one in flight is waited out (and
-                    // tried next pass), and none starts meanwhile.
-                    if !self.claim_cleanup_name(&cleanup.name) {
-                        continue;
-                    }
-                    // Re-read before the removal: the name may have been
-                    // taken again here (a rename back, a new registration)
-                    // since the cleanup was recorded, and that agent is kept.
-                    let kept = self.store.read(|s| {
-                        s.registrations
-                            .iter()
-                            .any(|r| r.answers_to(&cleanup.name) && r.base_url == cleanup.base_url)
-                    });
-                    let result = if kept {
-                        Ok(())
-                    } else {
-                        client::delete_agent(
-                            &cleanup.base_url,
-                            &cleanup.workspace_key,
-                            &cleanup.name,
-                        )
-                        .await
-                    };
-                    self.release_name(&cleanup.name);
-                    result
-                }
+                CleanupKind::Agent => match self.delete_agent_cleanup(&cleanup).await {
+                    Some(result) => result,
+                    None => continue,
+                },
             };
             self.observe_relaycast_write_result(&workspace, &result);
             if result.is_ok() {
