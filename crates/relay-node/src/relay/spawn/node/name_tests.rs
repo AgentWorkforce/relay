@@ -1142,3 +1142,87 @@ async fn a_rotation_whose_name_another_node_took_is_reported_under_a_node_creden
     assert!(reason.contains("\"mac-desktop\""), "{reason}");
     assert!(untouched(&control).await);
 }
+
+/// A node saved under an alternate name (taken under a workspace key) is
+/// not adopted under a node credential, which is bound to the configured
+/// name: nothing is asked of the broker for it, a new node is enrolled
+/// under the configured name, and a stale holder of that name is reported
+/// as one, naming the saved node and the configured name.
+#[tokio::test]
+async fn a_saved_alternate_is_not_adopted_under_a_node_credential() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let control = Scripted::new().await;
+    let config = node_scoped(&relaycast.base_url, &control.base_url, folder.path());
+    let kept = enrollment(&config, "node_desktop_1", "mac-desktop-3f9a", "rk_live_old");
+    save(&node_file(&config), &kept).unwrap();
+    assert_eq!(saved(&config).await, Ok(None));
+    assert!(untouched(&control).await);
+    let (refused, request) = tokio::join!(enroll_named(&config, None), control.answer(CONFLICT));
+    assert!(
+        request.starts_with("post /relay-node/v1/nodes "),
+        "{request}"
+    );
+    assert_eq!(body(&request)["name"], "mac-desktop");
+    let Err(Refused::NameTaken(reason)) = refused else {
+        panic!("{refused:?}");
+    };
+    assert!(reason.contains("stale node"), "{reason}");
+    assert!(reason.contains("\"mac-desktop-3f9a\""), "{reason}");
+    assert!(
+        reason.contains("bound to the configured node name \"mac-desktop\""),
+        "{reason}"
+    );
+    assert!(!reason.contains("sh_wk_"), "{reason}");
+    // The saved node is kept until a new one is enrolled.
+    assert_eq!(read(&config), Some(kept));
+    assert!(untouched(&control).await);
+    assert!(untouched(&relaycast).await);
+}
+
+/// The broker's `403 node_mismatch` for the saved node's name is kept as
+/// `NodeMismatch` by `saved`, and the node stops and says so, as it does
+/// for a new enrollment, rather than retrying forever.
+#[tokio::test]
+async fn a_saved_node_whose_credential_is_for_another_name_stops_the_node() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let control = Scripted::new().await;
+    let config = node_scoped(&relaycast.base_url, &control.base_url, folder.path());
+    let kept = enrollment(&config, "node_desktop_1", "mac-desktop", "rk_live_old");
+    save(&node_file(&config), &kept).unwrap();
+    const MISMATCH: (&str, &str) = (
+        "403 Forbidden",
+        r#"{"ok":false,"error":{"code":"node_mismatch","message":"name differs"}}"#,
+    );
+    let (found, asked) = tokio::join!(saved(&config), control.answer(MISMATCH));
+    assert!(
+        asked.starts_with("get /relay-node/v1/nodes/mac-desktop "),
+        "{asked}"
+    );
+    let Err(Refused::NodeMismatch(reason)) = found else {
+        panic!("{found:?}");
+    };
+    assert!(reason.contains("bound to another node name"), "{reason}");
+
+    let host = Arc::new(Recording::default());
+    let node = SpawnNode::start(config, host.clone());
+    let asked = control.answer(MISMATCH).await;
+    assert!(
+        asked.starts_with("get /relay-node/v1/nodes/mac-desktop "),
+        "{asked}"
+    );
+    until(&host, |states| {
+        states.iter().any(|s| s.state == SpawnState::Off)
+    })
+    .await;
+    // Given up: no retry.
+    assert!(untouched(&control).await);
+    let states = host.states.lock().unwrap().clone();
+    let error = states.last().unwrap().error.clone().unwrap();
+    assert!(error.contains("bound to another node name"), "{error}");
+    assert!(error.contains("\"mac-desktop\""), "{error}");
+    assert!(!error.contains("sh_wk_"), "{error}");
+    assert!(!states.iter().any(|s| s.state == SpawnState::Waiting));
+    node.stop().await;
+}

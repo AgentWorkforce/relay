@@ -388,7 +388,13 @@ async fn connect_once(
             }
             Err(refused) => return Ended::Closed(refused.reason()),
         },
-        Err(reason) => return Ended::Closed(reason),
+        // The saved node's credential is bound to another name: stopped,
+        // as for a new enrollment.
+        Err(Refused::NodeMismatch(reason)) => {
+            host.refused(reason.clone());
+            return Ended::GaveUp(reason);
+        }
+        Err(refused) => return Ended::Closed(refused.reason()),
     };
     let mut socket = match open(config, &enrollment).await {
         Ok(socket) => socket,

@@ -156,9 +156,14 @@ pub const WORKSPACE_KEY_ENV: [&str; 3] = [
     "RELAY_API_KEY",
 ];
 
-/// Whether `name` is one of [`WORKSPACE_KEY_ENV`].
+/// Whether `name` is one of [`WORKSPACE_KEY_ENV`], in any ASCII case:
+/// Windows reads environment names case-insensitively, so `Relay_Api_Key`
+/// is `RELAY_API_KEY` there. Matched the same everywhere, so a child never
+/// gets a credential under another spelling on any platform.
 pub fn is_workspace_key_env(name: &str) -> bool {
-    WORKSPACE_KEY_ENV.contains(&name)
+    WORKSPACE_KEY_ENV
+        .iter()
+        .any(|key| key.eq_ignore_ascii_case(name))
 }
 
 /// `environment` for a child process: without [`WORKSPACE_KEY_ENV`].
@@ -171,9 +176,16 @@ pub fn without_workspace_key_env(
 
 /// Removes [`WORKSPACE_KEY_ENV`] from a child `command`'s environment, for
 /// a command that inherits the core's own.
+/// Every spelling of them the core's environment has is removed
+/// ([`is_workspace_key_env`]).
 pub fn remove_workspace_key_env(command: &mut std::process::Command) {
     for name in WORKSPACE_KEY_ENV {
         command.env_remove(name);
+    }
+    for (name, _) in std::env::vars_os() {
+        if name.to_str().is_some_and(is_workspace_key_env) {
+            command.env_remove(name);
+        }
     }
 }
 
@@ -978,6 +990,36 @@ mod tests {
         assert_eq!(
             stripped.keys().map(String::as_str).collect::<Vec<_>>(),
             ["RELAY_BASE_URL"]
+        );
+    }
+
+    /// Windows reads environment names in any case, so every spelling of a
+    /// credential variable is one, and none reaches a child.
+    #[test]
+    fn a_credential_variable_in_any_case_is_one() {
+        for name in [
+            "Relay_Api_Key",
+            "relay_workspace_key",
+            "Agent_Relay_Workspace_Key",
+        ] {
+            assert!(is_workspace_key_env(name), "{name}");
+        }
+        assert!(!is_workspace_key_env("RELAY_API_KEYS"));
+        assert!(!is_workspace_key_env("RELAY_BASE_URL"));
+        let environment: std::collections::BTreeMap<String, String> = [
+            ("Relay_Api_Key", "fixture"),
+            ("relay_workspace_key", "fixture"),
+            ("KEPT", "kept"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+        assert_eq!(
+            without_workspace_key_env(environment)
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["KEPT"]
         );
     }
 

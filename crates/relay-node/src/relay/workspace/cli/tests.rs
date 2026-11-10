@@ -972,13 +972,17 @@ fn a_node_credential_with_a_control_url_that_is_not_an_https_origin_is_refused()
 
 #[test]
 fn a_node_credential_is_read_from_the_project_pin_beside_its_control_url() {
-    let machine = Machine::new().in_project().pin(serde_json::json!({
-        "workspaceKey": NODE_KEY,
-        "controlUrl": CONTROL,
-    }));
+    let machine = Machine::new()
+        .env(BASE_URL_ENV, NODE_RELAYCAST)
+        .in_project()
+        .pin(serde_json::json!({
+            "workspaceKey": NODE_KEY,
+            "controlUrl": CONTROL,
+        }));
     let found = machine.found();
     assert_eq!(found.kind(), KeyKind::NodeScoped);
     assert_eq!(found.control_url.as_deref(), Some(CONTROL));
+    assert_eq!(found.base_url, NODE_RELAYCAST);
     assert_eq!(
         found.source,
         WorkspaceSource::CliProject(machine.data_dir().join(PROJECT_WORKSPACE_KEY_FILE))
@@ -991,6 +995,38 @@ fn a_node_credential_is_read_from_the_project_pin_beside_its_control_url() {
         .unwrap_err();
     assert!(error.contains("controlUrl"), "{error}");
     assert!(!error.contains(NODE_KEY), "{error}");
+}
+
+/// A node credential's spawn socket goes to the Relaycast origin recorded
+/// for it, never to a guessed one: an active store entry without
+/// `base_url`, or a pin that names no origin, is refused, naming the field.
+#[test]
+fn a_node_credential_without_a_relaycast_origin_is_refused() {
+    let error = Machine::new()
+        .store_entry(
+            "node",
+            serde_json::json!({ "key": NODE_KEY, "control_url": CONTROL }),
+        )
+        .resolve()
+        .unwrap_err();
+    assert!(error.contains("base_url"), "{error}");
+    assert!(!error.contains(NODE_KEY), "{error}");
+    assert!(!error.contains(DEFAULT_BASE_URL), "{error}");
+
+    let error = Machine::new()
+        .in_project()
+        .pin(serde_json::json!({ "workspaceKey": NODE_KEY, "controlUrl": CONTROL }))
+        .resolve()
+        .unwrap_err();
+    assert!(error.contains("names no Relaycast origin"), "{error}");
+    assert!(error.contains(BASE_URL_ENV), "{error}");
+    assert!(!error.contains(NODE_KEY), "{error}");
+
+    // A workspace key in the store keeps the default origin.
+    let found = Machine::new()
+        .store_entry("local", serde_json::json!({ "key": "rk_live_store0000" }))
+        .found();
+    assert_eq!(found.base_url, DEFAULT_BASE_URL);
 }
 
 #[test]

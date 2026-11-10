@@ -227,6 +227,19 @@ fn transport(
         KeyKind::NodeScoped => Some(node_key_control_url(&selection)?),
     };
     if kind == KeyKind::NodeScoped {
+        // The active store entry records the Relaycast origin the node
+        // credential was issued for; its spawn socket goes there. Without
+        // it no other origin is guessed (the public gateway included).
+        if matches!(selection.source, WorkspaceSource::CliStore { .. })
+            && selection.base_url.is_none()
+        {
+            return Err(format!(
+                "The node credential ({NODE_KEY_PREFIX}…) from {} has no base_url: a node \
+                 credential's spawn node connects only to the Relaycast origin recorded \
+                 beside it. Record base_url with the agent-relay CLI.",
+                selection.source.describe()
+            ));
+        }
         if let Some(recorded) = selection.base_url.as_deref() {
             let base_url = validated_base_url(recorded).ok_or_else(|| {
                 format!(
@@ -273,6 +286,19 @@ fn transport(
                         selection.source.describe(),
                         bindings_path.display(),
                         build.site
+                    ))
+                }
+                // A node credential from a project pin is never sent to a
+                // guessed origin: its pin's route, `RELAY_BASE_URL` or a
+                // binding recorded for it names the Relaycast origin.
+                None if kind == KeyKind::NodeScoped => {
+                    return Err(format!(
+                        "The node credential ({NODE_KEY_PREFIX}…) from {} names no Relaycast \
+                         origin: its pin has no relaycastBaseUrl and relaycastRoute, {} \
+                         records none for it and {BASE_URL_ENV} is not set. Record the \
+                         node's Relaycast origin in the pin or set {BASE_URL_ENV}.",
+                        selection.source.describe(),
+                        bindings_path.display(),
                     ))
                 }
                 None => DEFAULT_BASE_URL.to_string(),

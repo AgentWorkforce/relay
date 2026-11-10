@@ -503,8 +503,22 @@ impl Outbound {
                 let route = format!("{} {}", request.method, request.path);
                 self.setup_route(pid, uid, &route, fields).await
             }
-            _ => self.mobile_handoff_route(pid, uid, request).await,
+            _ => self.boxed_mobile_handoff_route(pid, uid, request).await,
         }
+    }
+
+    /// [`Self::mobile_handoff_route`], built outside [`Self::handle`]'s poll
+    /// frame and awaited boxed. Its permission long-poll is the deepest call
+    /// under `handle`; built inline, its future's temporaries sat in that
+    /// frame and took a test thread's 2 MiB stack past its end in debug
+    /// builds.
+    fn boxed_mobile_handoff_route<'a>(
+        &'a self,
+        pid: i32,
+        uid: u32,
+        request: &'a Request,
+    ) -> futures_util::future::BoxFuture<'a, Result<Value, OutboundError>> {
+        Box::pin(self.mobile_handoff_route(pid, uid, request))
     }
 
     /// The supported live session the caller runs inside, registered or

@@ -98,14 +98,29 @@ fn node_scoped(config: &NodeConfig) -> bool {
 /// Why `name` was not enrolled: another node holds it. A node credential is
 /// bound to its one name, so the holder is a stale node of the same name
 /// that has to be released, or has to expire, before this one enrolls.
+/// Under a node credential, also names the node saved under another name
+/// (an alternate taken under a workspace key), which is not kept (`saved`).
 fn name_taken(config: &NodeConfig, name: &str) -> Refused {
     Refused::NameTaken(if node_scoped(config) {
+        let not_kept = read(config)
+            .filter(|kept| kept.node_name != config.node_name)
+            .map(|kept| saved_name_not_kept(config, &kept.node_name))
+            .unwrap_or_default();
         format!(
-            "Agent Relay did not enroll this computer: a stale node still holds the name \"{name}\" its node credential is bound to. Release that node in Agent Relay or wait for it to expire; Agent Relay tries again."
+            "Agent Relay did not enroll this computer: a stale node still holds the name \"{name}\" its node credential is bound to. Release that node in Agent Relay or wait for it to expire; Agent Relay tries again.{not_kept}"
         )
     } else {
         "Agent Relay did not enroll this computer: another node holds its name.".into()
     })
+}
+
+/// Why the node saved as `saved` is not kept under a node credential: it
+/// was enrolled under another name than the configured one.
+fn saved_name_not_kept(config: &NodeConfig, saved: &str) -> String {
+    format!(
+        " This computer's saved node \"{saved}\" is not kept: it was enrolled under another name, and a node credential is bound to the configured node name \"{}\".",
+        config.node_name
+    )
 }
 
 fn save_failed(error: std::io::Error) -> Refused {
@@ -321,18 +336,37 @@ async fn rotate_named(config: &NodeConfig, current: &Enrollment) -> Result<Enrol
 /// a new key for the same workspace (signing in again) keeps the node,
 /// whose name no new node could take while it stays enrolled. `None` when
 /// there is no such node, so a new one is enrolled.
-pub(super) async fn saved(config: &NodeConfig) -> Result<Option<Enrollment>, String> {
+/// Under a node credential, a node saved under another name than the
+/// configured one is never adopted (`None`), and the broker's
+/// `node_mismatch` is `Refused::NodeMismatch`; any other failure is
+/// `Refused::Failed`.
+pub(super) async fn saved(config: &NodeConfig) -> Result<Option<Enrollment>, Refused> {
     if let Some(enrollment) = load(config) {
         return Ok(Some(enrollment));
     }
     let Some(kept) = read(config) else {
         return Ok(None);
     };
-    let http = workspace_http(config).map_err(|error| error.to_string())?;
+    // A node credential is bound to the configured name, and Control's
+    // broker refuses any other as `node_mismatch`. A node saved under an
+    // alternate (taken under a workspace key) is therefore not adopted: a
+    // new node is enrolled under the configured name, and a stale holder of
+    // that name is reported as one, naming the saved node (`name_taken`).
+    if node_scoped(config) && kept.node_name != config.node_name {
+        return Ok(None);
+    }
+    let http = workspace_http(config).map_err(|error| Refused::Failed(error.to_string()))?;
     let holder = sdk_gaps::node_id_named(&http, &kept.node_name)
         .await
         .map_err(|error| {
-            format!("Agent Relay did not say which node is this computer's: {error}")
+            // The broker's `403 node_mismatch`: the credential is bound to
+            // another name. Kept as such, so the node stops (`connect_once`).
+            if node_credential::is_node_mismatch(&error) {
+                return node_mismatch(config, &kept.node_name);
+            }
+            Refused::Failed(format!(
+                "Agent Relay did not say which node is this computer's: {error}"
+            ))
         })?;
     if holder.as_deref() != Some(kept.node_id.as_str()) {
         return Ok(None);
@@ -341,8 +375,7 @@ pub(super) async fn saved(config: &NodeConfig) -> Result<Option<Enrollment>, Str
         workspace: fingerprint(&config.workspace_key),
         ..kept
     };
-    save(&node_file(config), &adopted)
-        .map_err(|error| format!("Could not save this computer's spawn node: {error}"))?;
+    save(&node_file(config), &adopted).map_err(save_failed)?;
     Ok(Some(adopted))
 }
 

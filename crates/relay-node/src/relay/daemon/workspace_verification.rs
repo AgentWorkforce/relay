@@ -77,7 +77,7 @@ impl Core {
                 Ok(status.workspace)
             }
             Err(error) => {
-                let mapped = RpcError::from_relaycast(&error);
+                let mapped = RpcError::from_relaycast_for(workspace.kind(), &error);
                 let verification = verification_after(workspace.kind(), &error);
                 self.hub.update(|status| {
                     status.workspace.verification = verification;
@@ -128,8 +128,9 @@ impl Core {
 /// asked for another. A 403 that does not reject a node-scoped credential (a
 /// suspended workspace, a node another owner holds, as Relaycast judged
 /// them) leaves it `Pending`: neither a credential to replace nor an
-/// unreachable Relaycast; the activity log carries Relaycast's answer, and
-/// the next refresh asks again. Anything else is `Unreachable`.
+/// unreachable Relaycast; the activity log and the error carry Relaycast's
+/// status, code and message ([`RpcError::from_relaycast_for`]), and the next
+/// refresh asks again. Anything else is `Unreachable`.
 ///
 /// [`rejects`]: crate::relay::node_credential::rejects
 fn verification_after(
