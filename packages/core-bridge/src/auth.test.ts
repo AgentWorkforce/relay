@@ -212,6 +212,8 @@ describe('CallerCredential', () => {
     expect(CallerCredential.fromDocument(document()).callerId).toBe(base.caller_id);
     expect(CALLER_FILE_SCHEMA).toBe('agent-relay-service-caller/2');
     const bad = [
+      document({ schema: 'agent-relay-service-caller/1', auth: undefined }),
+      document({ schema: 'agent-relay-service-caller/1' }),
       document({ schema: 'agent-relay-service-caller/3' }),
       document({ auth: CALLER_AUTH_SCHEME }),
       document({
@@ -293,7 +295,7 @@ const BOUND = { caller_id: base.caller_id, caller_name: 'flows-runner', authorit
 
 function fakeClient(
   replies: Record<string, unknown>,
-  methods = ['hello', 'spawn_callers.challenge', 'spawn_callers.authenticate']
+  methods = ['hello', ...REQUIRED_SERVICE_CALLER_METHODS]
 ) {
   const calls: Array<{ method: string; params: unknown; options: unknown }> = [];
   const hello: HelloResult = { bridge_version: 2, daemon_version: '17.2.1', pid: 1, methods, topics: [] };
@@ -384,12 +386,16 @@ describe('authenticate', () => {
     }
   });
 
-  it('reports method_not_found when the core has no spawn caller extension, sending nothing', async () => {
-    const { client, calls } = fakeClient({}, ['hello', 'spawn.invoke']);
-    const error = await authenticate(client, credential).catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(CoreRpcError);
-    expect((error as CoreRpcError).kind).toBe('method_not_found');
-    expect(calls).toEqual([]);
+  it('rejects every incomplete service-caller method set before sending anything', async () => {
+    for (const missing of REQUIRED_SERVICE_CALLER_METHODS) {
+      const methods = ['hello', ...REQUIRED_SERVICE_CALLER_METHODS.filter((method) => method !== missing)];
+      const { client, calls } = fakeClient({}, methods);
+      const error = await authenticate(client, credential).catch((e: unknown) => e);
+      expect(error, missing).toBeInstanceOf(CoreRpcError);
+      expect((error as CoreRpcError).kind, missing).toBe('method_not_found');
+      expect((error as Error).message, missing).toContain(missing);
+      expect(calls, missing).toEqual([]);
+    }
   });
 });
 

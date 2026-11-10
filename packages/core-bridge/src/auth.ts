@@ -640,8 +640,10 @@ function checkBound(bound: CallerBound, callerId: string): CallerBound {
   };
 }
 
-function requireMethod(client: CoreClient, method: string): void {
-  if (!client.hello.methods.includes(method)) {
+/** Refuses a core that cannot provide the complete service-caller lifecycle. */
+export function requireServiceCallerMethods(client: Pick<CoreClient, 'hello'>): void {
+  for (const method of REQUIRED_SERVICE_CALLER_METHODS) {
+    if (client.hello.methods.includes(method)) continue;
     throw new CoreRpcError(`This Agent Relay core does not offer ${method}; update Agent Relay Desktop.`, {
       rpcCode: -32601,
       kind: 'method_not_found',
@@ -667,8 +669,7 @@ export async function authenticate(
   credential: CallerCredential,
   options?: CallOptions
 ): Promise<CallerBound> {
-  requireMethod(client, 'spawn_callers.challenge');
-  requireMethod(client, 'spawn_callers.authenticate');
+  requireServiceCallerMethods(client);
   const challengeParams: CallerChallengeParams = { caller_id: credential.callerId };
   const challenge = await client.call<CallerChallenge>('spawn_callers.challenge', challengeParams, options);
   const params: CallerAuthenticateParams = {
