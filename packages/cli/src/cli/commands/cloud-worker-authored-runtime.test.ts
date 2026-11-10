@@ -9,24 +9,24 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultAssignmentRunner, type CloudWorkerDependencies } from './cloud-worker.js';
 import { prepareWorkerAuthoredRuntime } from '../lib/cloud-worker-authored-runtime.js';
 
-const directories: string[] = [];
-const sdkEntry = fileURLToPath(import.meta.resolve('@relayflows/sdk/relay-cli'));
-const sdkDist = path.dirname(sdkEntry);
-const surfaceRoot = path.dirname(
-  path.dirname(createRequire(pathToFileURL(sdkEntry)).resolve('@relayflows/surface/runtime'))
+const DIRECTORIES: string[] = [];
+const SDK_ENTRY = fileURLToPath(import.meta.resolve('@relayflows/sdk/relay-cli'));
+const SDK_DIST = path.dirname(SDK_ENTRY);
+const SURFACE_ROOT = path.dirname(
+  path.dirname(createRequire(pathToFileURL(SDK_ENTRY)).resolve('@relayflows/surface/runtime'))
 );
-const loaderUrl = pathToFileURL(path.join(sdkDist, 'authored-flow-loader.js')).href;
+const LOADER_URL = pathToFileURL(path.join(SDK_DIST, 'authored-flow-loader.js')).href;
 
 function fixture() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'worker-authored-runtime-'));
-  directories.push(home);
+  DIRECTORIES.push(home);
   const runDir = path.join(home, 'cloud-workers', 'runs', 'authored-fixture');
   fs.mkdirSync(runDir, { recursive: true });
   return { home, runDir, workflow: path.join(runDir, 'example.flow.ts') };
 }
 
 afterEach(() => {
-  for (const directory of directories.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
+  for (const directory of DIRECTORIES.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
 describe('isolated worker authored runtime', () => {
@@ -37,9 +37,9 @@ describe('isolated worker authored runtime', () => {
       const target = path.join(f.runDir, 'node_modules', '@relayflows', 'surface');
       if (supplied) {
         // A physically separate, compatible assignment dependency, not our link.
-        fs.cpSync(surfaceRoot, target, { recursive: true });
+        fs.cpSync(SURFACE_ROOT, target, { recursive: true });
         fs.symlinkSync(
-          path.join(path.dirname(surfaceRoot), '..'),
+          path.join(path.dirname(SURFACE_ROOT), '..'),
           path.join(target, 'node_modules'),
           process.platform === 'win32' ? 'junction' : 'dir'
         );
@@ -56,8 +56,8 @@ describe('isolated worker authored runtime', () => {
         `
       import assert from 'node:assert/strict';
       import { writeFile } from 'node:fs/promises';
-      import { loadAuthoredFlow } from ${JSON.stringify(loaderUrl)};
-      import { createRelayCliSurface } from ${JSON.stringify(pathToFileURL(sdkEntry).href)};
+      import { loadAuthoredFlow } from ${JSON.stringify(LOADER_URL)};
+      import { createRelayCliSurface } from ${JSON.stringify(pathToFileURL(SDK_ENTRY).href)};
       const [group, command, file, flag, input] = process.argv.slice(2);
       assert.equal(group, 'flows'); assert.equal(command, 'run');
       assert.equal(flag, '--input'); assert.equal(input, '{}');
@@ -113,7 +113,9 @@ describe('isolated worker authored runtime', () => {
           workflow:
             "import { flow } from '@relayflows/surface';\nexport default flow('isolated-worker', async (f) => { f.done('success'); });\n",
         },
-        signal: new AbortController().signal,
+        // Bound the real child independently of the test runner, including
+        // slow SDK imports while other integration work uses the host.
+        signal: AbortSignal.timeout(20_000),
       });
       expect(result.exitCode).toBe(0);
       const childEnv = spawnProcess.mock.calls[0]![2]!.env;
@@ -127,7 +129,7 @@ describe('isolated worker authored runtime', () => {
         expect(fs.lstatSync(target).isSymbolicLink()).toBe(false);
         expect(fs.readFileSync(path.join(target, 'package.json'), 'utf8')).toBe(originalManifest);
       } else {
-        expect(fs.realpathSync(target)).toBe(fs.realpathSync(surfaceRoot));
+        expect(fs.realpathSync(target)).toBe(fs.realpathSync(SURFACE_ROOT));
         // Causal negative: exactly the materialized flow fails with the former
         // missing-dependency layout; do not substitute a classifier-only test.
         fs.rmSync(target);
@@ -135,11 +137,13 @@ describe('isolated worker authored runtime', () => {
           cwd: f.runDir,
           env: childEnv,
           encoding: 'utf8',
+          timeout: 10_000,
         });
         expect(refused.status).not.toBe(0);
         expect(refused.stderr).toContain('@relayflows/surface');
       }
-    }
+    },
+    40_000
   );
 
   it('preserves an incompatible assignment package and refuses instead of replacing it', async () => {
