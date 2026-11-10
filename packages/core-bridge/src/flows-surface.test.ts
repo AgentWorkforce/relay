@@ -85,6 +85,32 @@ interface FlowCoreInvocation {
   error_code: string | null;
 }
 
+interface FlowSpawnInvokeParams {
+  caller_name?: string;
+  node_id: string;
+  node_name: string;
+  name: string;
+  harness: string;
+  task: string;
+  directory: string;
+  idempotency_key: string;
+}
+
+interface FlowSpawnStatusParams {
+  caller_name?: string;
+  action: 'spawn' | 'release';
+  invocation_id: string;
+}
+
+interface FlowSpawnReleaseParams {
+  caller_name?: string;
+  node_id: string;
+  node_name: string;
+  name: string;
+  expected_agent_id: string;
+  idempotency_key: string;
+}
+
 interface FlowCoreInboxDelivery {
   item_id: string;
   message_id: string;
@@ -124,17 +150,17 @@ interface FlowCoreBridgeApi<TClient extends FlowCoreBridgeClient, TDescriptor ex
   ) => Promise<{ targets: FlowCoreTarget[] }>;
   spawnInvoke: (
     client: TClient,
-    params: SpawnInvokeParams,
+    params: FlowSpawnInvokeParams,
     options?: { signal?: AbortSignal; actionTimeoutMs?: number }
   ) => Promise<FlowCoreInvocation>;
   spawnStatus: (
     client: TClient,
-    params: SpawnStatusParams,
+    params: FlowSpawnStatusParams,
     options?: { signal?: AbortSignal }
   ) => Promise<FlowCoreInvocation>;
   spawnRelease: (
     client: TClient,
-    params: SpawnReleaseParams,
+    params: FlowSpawnReleaseParams,
     options?: { signal?: AbortSignal; actionTimeoutMs?: number }
   ) => Promise<FlowCoreInvocation>;
   serviceCallerInboxOpen: (
@@ -219,18 +245,9 @@ type Assert<T extends true> = T;
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 type _ClientAssignable = Assert<CoreClient extends FlowCoreBridgeClient ? true : false>;
 type _HelloExact = Assert<Equal<HelloResult, FlowCoreBridgeClient['hello']>>;
-type _InvokeParamsExact = Assert<
-  Equal<SpawnInvokeParams, Parameters<FlowCoreBridgeApi<CoreClient, CallerFileDescriptor>['spawnInvoke']>[1]>
->;
-type _StatusParamsExact = Assert<
-  Equal<SpawnStatusParams, Parameters<FlowCoreBridgeApi<CoreClient, CallerFileDescriptor>['spawnStatus']>[1]>
->;
-type _ReleaseParamsExact = Assert<
-  Equal<
-    SpawnReleaseParams,
-    Parameters<FlowCoreBridgeApi<CoreClient, CallerFileDescriptor>['spawnRelease']>[1]
-  >
->;
+type _InvokeParamsExact = Assert<Equal<SpawnInvokeParams, FlowSpawnInvokeParams>>;
+type _StatusParamsExact = Assert<Equal<SpawnStatusParams, FlowSpawnStatusParams>>;
+type _ReleaseParamsExact = Assert<Equal<SpawnReleaseParams, FlowSpawnReleaseParams>>;
 
 void (null as unknown as [
   _ClientAssignable,
