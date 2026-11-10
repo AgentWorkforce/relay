@@ -1433,6 +1433,92 @@ async fn a_retry_after_restart_replays_the_exact_request_without_rechecking_the_
     a_retry_after_a_failed_record_replays_the_durable_relaycast_claim().await;
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retry_rechecks_a_moved_allowed_directory_without_changing_its_logical_claim() {
+    use std::os::unix::fs::symlink;
+
+    let relaycast = Relaycast::new();
+    let allowed = tempfile::tempdir().unwrap();
+    let first_target = allowed.path().join("first-target");
+    let second_target = allowed.path().join("second-target");
+    std::fs::create_dir(&first_target).unwrap();
+    std::fs::create_dir(&second_target).unwrap();
+    let selected = allowed.path().join("selected");
+    symlink(&first_target, &selected).unwrap();
+    let stub = Stub::new(ExternalCaller {
+        harnesses: Some(vec!["codex".into()]),
+        directory_roots: Some(vec![allowed.path().into()]),
+        ..service(true)
+    });
+    stub.fail_record(Some(RpcError::new(
+        ErrorKind::StoreFailed,
+        "the receipt ledger is unavailable",
+    )));
+    let (_home, core) = core_with(Some(stub.clone()), &relaycast.base);
+
+    let served = relaycast.serve(vec![strict_pending()]);
+    bound(
+        &core,
+        "spawn.invoke",
+        invoke_params(&core, "codex", selected.to_str().unwrap()),
+    )
+    .await
+    .unwrap_err();
+    let first_request = served.join().unwrap().pop().unwrap();
+
+    std::fs::remove_file(&selected).unwrap();
+    symlink(&second_target, &selected).unwrap();
+    stub.fail_record(None);
+    let served = relaycast.serve(vec![strict_pending()]);
+    bound(
+        &core,
+        "spawn.invoke",
+        invoke_params(&core, "codex", selected.to_str().unwrap()),
+    )
+    .await
+    .unwrap();
+    let second_request = served.join().unwrap().pop().unwrap();
+
+    let first_body = request_body(&first_request);
+    let second_body = request_body(&second_request);
+    assert_eq!(
+        first_body["input"]["logical_request"],
+        second_body["input"]["logical_request"]
+    );
+    assert_eq!(
+        first_body["input"]["logical_request"]["directory"],
+        selected.to_str().unwrap()
+    );
+    assert_eq!(
+        first_body["input"]["worker_cwd"],
+        std::fs::canonicalize(&first_target)
+            .unwrap()
+            .to_str()
+            .unwrap()
+    );
+    assert_eq!(
+        second_body["input"]["worker_cwd"],
+        std::fs::canonicalize(&second_target)
+            .unwrap()
+            .to_str()
+            .unwrap()
+    );
+    assert_ne!(
+        first_body["input"]["worker_cwd"],
+        second_body["input"]["worker_cwd"]
+    );
+    let idempotency = |request: &str| {
+        request
+            .lines()
+            .find(|line| line.to_ascii_lowercase().contains("idempotency"))
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(idempotency(&first_request), idempotency(&second_request));
+    assert!(first_request.contains("spawn-test-20261107-0001"));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_retry_recovers_an_accepted_claim_without_reusing_an_unsafe_directory() {
     let relaycast = Relaycast::new();

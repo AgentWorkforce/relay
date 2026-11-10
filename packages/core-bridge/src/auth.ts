@@ -333,7 +333,11 @@ function checkBound(bound: CallerBound, callerId: string): CallerBound {
   };
 }
 
-/** Refuses a core that cannot provide the complete service-caller lifecycle. */
+/**
+ * Refuses a core that cannot provide the complete service-caller lifecycle.
+ * @param client - A greeted client whose advertised methods are checked.
+ * @returns Nothing when all required service-caller methods exist.
+ */
 export function requireServiceCallerMethods(client: Pick<CoreClient, 'hello'>): void {
   for (const method of REQUIRED_SERVICE_CALLER_METHODS) {
     if (client.hello.methods.includes(method)) continue;
