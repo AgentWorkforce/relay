@@ -292,7 +292,11 @@ async fn consuming_hook_thread_affinity_preserves_registration_guidance() {
             .codex_stop_hook(pid, outbound.uid, &fields(thread, "PostToolUse"))
             .await
             .unwrap();
-        assert!(answer.to_string().contains("/register"));
+        let context = answer["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(context.contains(" register --socket "));
+        assert!(!context.contains("socket-request"));
         assert!(!inbox.needs_registration_guidance(thread));
         assert_eq!(
             outbound

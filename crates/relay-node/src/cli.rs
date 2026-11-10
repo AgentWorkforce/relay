@@ -73,6 +73,64 @@ fn run(cli: Cli) -> Result<()> {
 mod socket_request_tests {
     use super::*;
 
+    // Review on #2132: a profile id may start with a hyphen (a build in
+    // `com.agentrelay.desktop.-acme`); every command a build writes names it
+    // as `--profile=<id>`, which clap reads as the value.
+    #[test]
+    fn a_profile_id_may_start_with_a_hyphen() {
+        use crate::relay::outbound::Build;
+        let build = Build::Profile("-acme".into());
+        let hook = crate::relay::hook_owner::command(
+            "probe",
+            "codex-stop-hook",
+            &build,
+            std::path::Path::new("/s/relay.sock"),
+        );
+        assert!(hook.contains(" --profile=-acme "), "{hook}");
+        let socket = ["--socket", "/s/relay.sock"];
+        for args in [
+            vec!["devin-spawn-mcp", build.flag().as_str()],
+            vec!["muse-spawn-mcp", build.flag().as_str()],
+            vec!["read", "m1", build.flag().as_str()],
+            [&["codex-stop-hook", "--profile=-acme"][..], &socket].concat(),
+            [&["claude-session-hook", "--profile=-acme"][..], &socket].concat(),
+            vec![
+                "devin-spawn-host",
+                "--executable",
+                "/devin",
+                "--directory",
+                "/w",
+                "--runtime",
+                "/r",
+                "--launch-id",
+                "l1",
+                "--profile=-acme",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(std::iter::once("probe").chain(args.iter().copied()))
+                .unwrap_or_else(|error| panic!("{args:?}: {error}"));
+            let profile = match cli.command {
+                Commands::Node(relay_commands::RelayCommands::DevinSpawnMcp {
+                    profile, ..
+                })
+                | Commands::Node(relay_commands::RelayCommands::MuseSpawnMcp { profile, .. })
+                | Commands::Node(relay_commands::RelayCommands::Read { profile, .. })
+                | Commands::Node(relay_commands::RelayCommands::CodexStopHook {
+                    profile, ..
+                })
+                | Commands::Node(relay_commands::RelayCommands::ClaudeSessionHook {
+                    profile,
+                    ..
+                })
+                | Commands::Node(relay_commands::RelayCommands::DevinSpawnHost {
+                    profile, ..
+                }) => profile,
+                _ => panic!("{args:?}"),
+            };
+            assert_eq!(profile.as_deref(), Some("-acme"), "{args:?}");
+        }
+    }
+
     // Review on #2019: a reply that starts with a hyphen is still the body.
     #[test]
     fn a_socket_request_body_may_start_with_a_hyphen() {
@@ -138,6 +196,7 @@ mod sandbox_rule_reach_tests {
             ),
             "agents" => (&[("GET", "/agents")], &[]),
             "whoami" => (&[("GET", "/whoami")], &[]),
+            "register" => (&[("POST", "/register")], &[]),
             "read" => (&[("GET", "/messages")], &["ref"]),
             "fetch-attachment" => (&[("POST", "/attachments/fetch")], &["file_id"]),
             "connect-send" => (&[("POST", "/connect/send")], &["to"]),
@@ -189,6 +248,63 @@ mod sandbox_rule_reach_tests {
         "--remove",
         "swarm",
     ];
+
+    #[test]
+    fn typed_registration_allows_no_identity_or_raw_request_overrides() {
+        let mut command = Cli::command();
+        let prefix = ["probe", "register", "--socket", "/s/relay.sock"];
+        let args: Vec<String> = prefix
+            .into_iter()
+            .chain(["--name", "review-bot", "--description", "Reviews releases"])
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            reach(&mut command, &args),
+            Some(("/s/relay.sock".into(), "POST", "/register".into()))
+        );
+        for mcp in ["none", "agent-relay-sessions"] {
+            let args: Vec<String> = prefix
+                .into_iter()
+                .chain(["--mcp", mcp])
+                .map(str::to_string)
+                .collect();
+            assert_eq!(
+                reach(&mut command, &args),
+                Some(("/s/relay.sock".into(), "POST", "/register".into()))
+            );
+        }
+        for flag in [
+            "--target",
+            "--pid",
+            "--uid",
+            "--session-id",
+            "--native-thread-id",
+            "--method",
+            "--path",
+            "--body",
+            "--socket",
+            "--mcp", // an unknown declaration is refused
+        ] {
+            let args: Vec<String> = prefix
+                .into_iter()
+                .chain([flag, "other"])
+                .map(str::to_string)
+                .collect();
+            assert!(reach(&mut command, &args).is_none(), "{flag}");
+        }
+        let rules = SandboxRules {
+            probe: "probe".into(),
+            socket: "/s/relay.sock".into(),
+        };
+        assert!(rules
+            .patterns()
+            .iter()
+            .any(|p| p == &prefix.map(str::to_string)));
+        assert!(!rules
+            .patterns()
+            .iter()
+            .any(|p| p.iter().any(|word| word == "socket-request")));
+    }
 
     /// What `argv` would send if it ran: `None` when the probe refuses it
     /// before opening the socket, else the socket, method and path.
@@ -301,7 +417,6 @@ mod sandbox_rule_reach_tests {
             ("DELETE", "/webhooks"),
             ("POST", "/claude/attestation"),
             ("POST", "/copilot/mcp"),
-            ("POST", "/register"),
             ("DELETE", "/register"),
         ] {
             assert!(

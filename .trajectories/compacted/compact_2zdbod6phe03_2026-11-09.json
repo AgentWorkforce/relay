@@ -1,0 +1,37 @@
+{
+  "id": "compact_2zdbod6phe03",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-11-09T18:27:29.100Z",
+  "sourceTrajectories": [
+    "traj_ilnzj6fj2e7o"
+  ],
+  "dateRange": {
+    "start": "2026-11-09T18:24:30.385Z",
+    "end": "2026-11-09T18:27:28.786Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "architecture",
+      "decisions": [
+        {
+          "question": "Mock the fetch boundary through command dependencies instead of internal modules",
+          "chosen": "Mock the fetch boundary through command dependencies instead of internal modules",
+          "reasoning": "Run the real worker registration API in Commander tests with injected fetch, log and exit functions plus an owned temporary credential-store home. This verifies request serialization and token persistence while input failures still prove zero network calls.",
+          "fromTrajectory": "traj_ilnzj6fj2e7o"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}

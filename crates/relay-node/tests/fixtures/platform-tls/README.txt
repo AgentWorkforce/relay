@@ -1,0 +1,1 @@
+Throwaway public TLS test fixtures. The key is intentionally public and must never be used outside isolated loopback tests. The CA is never installed in a host trust store. The localhost leaf has no IP SAN, allowing a strict hostname-refusal control. Generated for tests; no production certificate, host identity or credential is present.

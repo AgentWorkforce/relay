@@ -66,7 +66,7 @@ pub(super) fn message_file(session_id: &str, message_id: &str) -> String {
     format!("{session_id}.{nonce}.msg")
 }
 
-const STAGED: &str = "in the session's inbox; Cursor shows it at the session's next tool call or when its turn ends, or at once to a Cursor editor chat that has finished its turn";
+const STAGED: &str = "in the session's inbox; Cursor shows it at the session's next tool call or when its turn ends, or at once to a Cursor chat or CLI session that has finished its turn";
 
 /// Queues `text` for the session in its inbox file, renamed into place once
 /// written and synced, so a hook never reads half a message. `Accepted`

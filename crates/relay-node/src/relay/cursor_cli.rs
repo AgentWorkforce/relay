@@ -16,10 +16,10 @@
 //! - **Delivery** stages a file in Agent Relay's own inbox for the session.
 //!   Agent Relay's hooks in `~/.cursor/hooks.json` hand it to the session
 //!   at its next tool call (`postToolUse` → `additional_context`) or when
-//!   its turn ends (`stop` → `followup_message`, a new user turn). A CLI
-//!   session idle at its prompt runs no hook, so its messages wait for its
-//!   person. An editor conversation's `stop` hook waits after a completed
-//!   turn instead, and answers the next message staged for it (`wait`).
+//!   its turn ends (`stop` → `followup_message`, a new user turn). A
+//!   conversation idle at its prompt runs no hook, so its `stop` hook waits
+//!   after a completed turn instead, and answers the next message staged
+//!   for it (`wait`).
 //! - **Settlement** claims a message before the hook prints it and
 //!   tombstones it once the answer is written. A claim the hook never
 //!   finished is settled by Cursor's transcript, which records a `stop`
@@ -427,7 +427,7 @@ const HOOK_ANCESTRY: usize = 8;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HookCaller {
     /// The one `cursor-agent` holding the session's store.
-    Cli,
+    Cli { agent: i32 },
     /// A Cursor window's extension host (`editor`), which runs the
     /// conversation the payload names.
     Editor { host: i32 },
@@ -459,7 +459,7 @@ pub fn hook_caller(
         if process.uid == uid && is_cursor_process(table, pid) {
             let holder = held(config, table, uid, session_id).is_some_and(|held| held.pid == pid);
             if holder {
-                return Some(HookCaller::Cli);
+                return Some(HookCaller::Cli { agent: pid });
             }
             if !editor::is_editor_worker(table, pid) {
                 return None;
@@ -524,11 +524,11 @@ pub fn record_editor_hook(
 /// Then, only under the caller `hook_caller` proves, it hands the
 /// conversation's staged messages over through `write`, which says whether
 /// the answer was written in full: claims are tombstoned once it was and
-/// put back if not. With `watch` (the `stop` entry's `--wait`) an editor
-/// conversation's completed turn waits for its next message (`wait::wait`).
-/// A Cursor CLI session answers at once, and keeps Cursor's own limit of
-/// follow-ups in a row (`wait::CURSOR_LOOP_LIMIT`), which that entry lifts.
-/// `true` once it answered.
+/// put back if not. With `watch` (the `stop` entry's `--wait`) a completed
+/// turn, in the editor or a Cursor CLI session, waits for its next message
+/// (`wait::wait`), once its `stop` noted the turn ended, and named it when
+/// it ran no `beforeSubmitPrompt` (`wait::stop_seen`). `true` once it
+/// answered.
 pub fn run_hook(
     config: &CursorConfig,
     table: &dyn ProcessTable,
@@ -547,26 +547,22 @@ pub fn run_hook(
         }
         return false;
     }
-    match hook_caller(config, table, pid, session) {
-        None => false,
-        Some(HookCaller::Cli) => {
-            let looped = payload["hook_event_name"] == "stop"
-                && payload["loop_count"]
-                    .as_u64()
-                    .is_some_and(|count| count >= wait::CURSOR_LOOP_LIMIT);
-            !(watch.is_some() && looped) && answer_now(config, payload, write)
-        }
+    let holder = match hook_caller(config, table, pid, session) {
+        None => return false,
+        Some(HookCaller::Cli { agent }) => wait::Holder::Cli { agent },
         Some(HookCaller::Editor { host }) => {
             if !record_editor_hook(config, table, pid, host, payload) {
                 return false;
             }
-            match watch {
-                Some(watch) if wait::waits_after(payload) => {
-                    wait::wait(config, table, host, payload, watch, write) == wait::Ended::Answered
-                }
-                _ => answer_now(config, payload, write),
-            }
+            wait::Holder::Editor { host }
         }
+    };
+    wait::stop_seen(config, payload);
+    match watch {
+        Some(watch) if wait::waits_after(payload) => {
+            wait::wait(config, table, holder, payload, watch, write) == wait::Ended::Answered
+        }
+        _ => answer_now(config, payload, write),
     }
 }
 
@@ -599,9 +595,11 @@ fn answer_now(
 
 /// The caller a tool process `pid` of the editor's agent is, once the walk
 /// up from it reaches the extension host `host` of this user's: the
-/// conversation its `CURSOR_CONVERSATION_ID` names, when a hook of that
-/// conversation already recorded it live under this host, or nobody. A
-/// tool's environment alone never puts a conversation on a host.
+/// conversation its `CURSOR_CONVERSATION_ID` names, claimed for this host
+/// (`editor::claim`), or nobody. A tool naming its conversation vouches for
+/// it as a hook it ran itself would, so a new conversation's first tool
+/// call can put it on the relay before Cursor writes the transcript a hook
+/// that names none needs.
 pub fn editor_caller(
     config: &CursorConfig,
     table: &dyn ProcessTable,
@@ -611,13 +609,7 @@ pub fn editor_caller(
     if !platform::SUPPORTED || !editor::is_editor_host(table, host) {
         return None;
     }
-    let uid = crate::relay::peer::current_uid();
     let session_id = editor::tool_conversation(table, pid, host)?;
-    let owned = editor::live(config, table, uid, &session_id)
-        .is_some_and(|session| session.host_pid == host);
-    if !owned {
-        return None;
-    }
     let workspace = table
         .cwd(pid)
         .map(|path| path.to_string_lossy().into_owned());

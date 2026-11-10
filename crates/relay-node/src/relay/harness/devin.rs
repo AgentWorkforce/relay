@@ -17,6 +17,7 @@ pub mod host {
         _runtime: &Path,
         _launch_id: &str,
         _full_access: bool,
+        _build: &crate::relay::outbound::Build,
     ) -> anyhow::Result<()> {
         anyhow::bail!(crate::relay::existing_session::platform::unavailable(
             super::DESCRIPTOR.label
@@ -32,6 +33,7 @@ use super::{
 use crate::relay::devin::{is_session_id, DevinConfig};
 use crate::relay::existing_session::platform::{self, MetadataExt, OpenOptionsExt};
 use crate::relay::inject::InjectOutcome;
+use crate::relay::outbound::Build;
 use crate::relay::process::ProcessTable;
 use crate::relay::spawn::intents::Intent;
 use crate::relay::spawn::launch::{
@@ -225,6 +227,9 @@ pub struct DevinAdapter {
     environment: BTreeMap<String, String>,
     systemd_run: Option<PathBuf>,
     ready_timeout: Duration,
+    /// Which build spawns: the host's MCP server sends through this build's
+    /// own pointer, never another build's.
+    build: Build,
 }
 
 impl DevinAdapter {
@@ -264,11 +269,10 @@ impl DevinAdapter {
     }
     pub fn new(cx: &HarnessContext) -> Self {
         let executable = executable(cx);
-        let development = cx
-            .app_data_dir
-            .file_name()
-            .is_some_and(|s| s.to_string_lossy().ends_with(".dev"));
+        let build = Build::of(&cx.app_data_dir);
+        let development = build.is_development();
         Self {
+            build,
             executable,
             config: DevinConfig::from_env(&|k| cx.var(k), &cx.home).development(development),
             table: cx.table.clone(),
@@ -376,6 +380,11 @@ impl SpawnFacet for DevinAdapter {
             ];
             if launch.full_access {
                 arguments.push("--full-access".into());
+            }
+            if let Build::Profile(id) = &self.build {
+                // One word, so an id starting with `-` is never read
+                // as an option.
+                arguments.push(format!("--profile={id}"));
             }
             let mut environment = self.environment.clone();
             environment.insert(MARKER.into(), launch.session_id.clone());

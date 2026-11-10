@@ -41,9 +41,16 @@ and the key is only ever sent to that server. See the
 which injects messages into running agent sessions and spawns and releases
 agents on this machine against the same server. The core and every agent MCP
 server it starts read the credential-to-server binding `relay init` saved.
-For a private certificate authority, install it in the operating system trust
-store or set `SSL_CERT_FILE` to a PEM certificate bundle; the setting applies
-to both HTTPS and secure WebSocket connections.
+For the Rust core's Cloud sign-in/session HTTPS requests and secure WebSocket
+connections, install a private certificate authority in the operating system
+trust store. These clients use only that store: they do not fall back to bundled
+public roots or load CA files from `SSL_CERT_FILE` or `SSL_CERT_DIR`. Unset
+those variables for the core process.
+On minimal Linux hosts, install the system CA certificate package first. An
+empty platform store is reported in the core diagnostics and TLS fails closed;
+install the required CA in the OS store rather than disabling verification.
+This guidance does not cover attachment uploads/downloads, which use separate
+HTTP clients; it does not claim private-CA support for those transfers.
 
 - `RELAY_BASE_URL` is read by the CLI and the MCP server. When it is not set,
   a bound self-hosted credential returns only to its saved server; an unbound

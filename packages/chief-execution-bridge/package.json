@@ -1,0 +1,28 @@
+{
+  "name": "@agent-relay/chief-execution-bridge",
+  "version": "18.0.0",
+  "private": true,
+  "description": "Execution-side bridge from Relay Chief assignments to Relay-managed native spawns",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "chief-execution-bridge": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test": "vitest run --root ../.. packages/chief-execution-bridge/"
+  },
+  "dependencies": {
+    "@agent-relay/core-bridge": "18.0.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.3",
+    "vitest": "^4.1.0"
+  }
+}

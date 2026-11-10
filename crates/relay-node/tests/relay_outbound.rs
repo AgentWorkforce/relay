@@ -3076,6 +3076,84 @@ async fn whoami_names_the_caller_registered_or_not() {
 }
 
 #[tokio::test]
+async fn typed_registration_keeps_peer_identity_and_self_registration_guards() {
+    use agent_relay_node::relay::session_cli::SessionCommand;
+    let h = Harness::start().await;
+    let command = SessionCommand::Register {
+        name: Some("review-bot".into()),
+        description: Some("Reviews releases".into()),
+        mcp: Some("none".into()),
+    };
+    let request = command.request().unwrap();
+    let body: Value = serde_json::from_slice(&command.typed_body().unwrap().unwrap()).unwrap();
+    assert_eq!(
+        code(
+            h.call(OUTSIDE, request.method, &request.path, body.clone())
+                .await
+        ),
+        (403, "not_a_relay_session".into())
+    );
+    assert_eq!(
+        code(
+            h.call_as(
+                IN_CODEX,
+                h.me + 1,
+                request.method,
+                &request.path,
+                body.clone()
+            )
+            .await
+        ),
+        (403, "not_this_user".into())
+    );
+    *h.sessions.2.lock().unwrap() = Ok(vec![Target::new(SessionKind::Codex, CODEX)]);
+    assert_eq!(
+        code(
+            h.call(IN_CODEX, request.method, &request.path, body.clone())
+                .await
+        ),
+        (403, "not_a_relay_session".into())
+    );
+    *h.sessions.2.lock().unwrap() = Ok(Vec::new());
+    h.core
+        .set_settings(&serde_json::from_value(json!({"allow_self_registration": false})).unwrap())
+        .unwrap();
+    assert_eq!(
+        code(
+            h.call(IN_CODEX, request.method, &request.path, body.clone())
+                .await
+        ),
+        (403, "not_allowed".into())
+    );
+    assert!(h.fake.calls("POST", "/v1/agents").is_empty());
+    h.core
+        .set_settings(&serde_json::from_value(json!({"allow_self_registration": true})).unwrap())
+        .unwrap();
+    let registered = h
+        .call(IN_CODEX, request.method, &request.path, body.clone())
+        .await
+        .unwrap();
+    assert_eq!(registered["session_id"], CODEX);
+    assert_eq!(registered["name"], "review-bot");
+    let repeated = h
+        .call(IN_CODEX, request.method, &request.path, body)
+        .await
+        .unwrap();
+    assert_eq!(repeated["already_registered"], true);
+    assert_eq!(h.fake.calls("POST", "/v1/agents").len(), 1);
+    for key in ["target", "pid", "uid", "native_thread_id", "session_id"] {
+        assert_eq!(
+            code(
+                h.call(IN_CLAUDE, "POST", "/register", json!({key: "other"}))
+                    .await
+            ),
+            (400, "invalid_request".into())
+        );
+    }
+    h.stop().await;
+}
+
+#[tokio::test]
 async fn a_session_registers_itself_once() {
     let h = Harness::start().await;
     let first = h
@@ -4478,6 +4556,40 @@ async fn the_mcp_a_session_declares_picks_its_reply_instructions() {
     h.register(IN_CODEX, json!({"name": "codex-api", "mcp": "none"}))
         .await;
     assert_eq!(h.core.relay_mcp_access(&target), McpAccess::SocketOnly);
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn a_cursor_session_is_handed_the_socket_whatever_it_declares() {
+    use agent_relay_node::relay::hosted_mcp::McpAccess;
+    let h = Harness::start().await;
+    let chat = session(
+        SessionKind::CursorCli,
+        "b72f559d-7023-4a67-944f-57f923f54ba7",
+        "/Users/me/Projects/api",
+    );
+    h.sessions.0.lock().unwrap().push(chat.clone());
+    h.sessions.call_from(4600, chat.clone());
+    // Cloud's hosted MCP acts as no Cursor chat's desktop identity, so the
+    // tools a Cursor session can see would send as nobody.
+    let declared = h
+        .register(
+            4600,
+            json!({"name": "cursor-api", "mcp": "agent-relay-sessions"}),
+        )
+        .await;
+    assert_eq!(declared["mcp"], "agent-relay-sessions");
+    assert_eq!(h.core.relay_mcp_access(&chat.target), McpAccess::SocketOnly);
+    h.fake.seed_agent("alice", "agent", json!({}));
+    *h.injector.hint.lock().unwrap() = Some("[reply: probe send]".into());
+    let (delivery, _) = h.fake.send_dm("alice", "cursor-api", "ping");
+    eventually("delivered", || {
+        h.fake.delivery_state(&delivery).map(|d| d.state).as_deref() == Some("acked")
+    })
+    .await;
+    let text = &h.injector.injected()[0].text;
+    assert!(text.contains("[reply: probe send]"), "{text}");
+    assert!(!text.contains("send_relay_message"), "{text}");
     h.stop().await;
 }
 

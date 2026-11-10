@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/monorepo",
-  "version": "17.2.1",
+  "version": "18.0.0",
   "private": true,
   "description": "Agent Relay monorepo",
   "type": "module",
@@ -8,15 +8,16 @@
     "packages/*"
   ],
   "scripts": {
-    "typecheck": "npm run build:core-bridge && npm run build:session && npm run build:config && npm run build:cloud && npm run build:utils && npm run build:sdk && npm run build:cli-surface && cd packages/cli && npx tsc --noEmit",
+    "typecheck": "npm run build:core-bridge && npm run build:chief-execution-bridge && npm run build:session && npm run build:config && npm run build:cloud && npm run build:utils && npm run build:sdk && npm run build:cli-surface && cd packages/cli && npx tsc --noEmit",
     "build": "npm run clean && npm run build:core",
-    "build:core": "npm run build:core-bridge && npm run build:session && npm run build:config && npm run build:cloud && npm run build:utils && npm run build:sdk && npm run build:integration-prompts && npm run build:cli-surface && npm run build:connect && npm run build:cli",
+    "build:core": "npm run build:core-bridge && npm run build:chief-execution-bridge && npm run build:session && npm run build:config && npm run build:cloud && npm run build:utils && npm run build:sdk && npm run build:integration-prompts && npm run build:cli-surface && npm run build:connect && npm run build:cli",
     "build:packages": "npm run build:core",
     "build:packages:watch": "echo 'Package watch build was removed with the simplified core surface. Use package-specific watch commands instead.'",
     "build:cli": "npm --prefix packages/cli run build",
     "build:cloud": "npm --prefix packages/cloud run build",
     "build:connect": "npm --prefix packages/connect run build",
     "build:core-bridge": "npm --prefix packages/core-bridge run build",
+    "build:chief-execution-bridge": "npm --prefix packages/chief-execution-bridge run build",
     "build:utils": "npm --prefix packages/utils run build",
     "build:config": "npm --prefix packages/config run build",
     "build:integration-prompts": "npm --prefix packages/integration-prompts run build",
@@ -78,12 +79,13 @@
   "homepage": "https://github.com/AgentWorkforce/relay#readme",
   "devDependencies": {
     "@agent-assistant/telemetry": "^0.4.35",
+    "@agent-relay/harness-driver": "17.2.1",
     "@agentworkforce/runtime": "^4.1.23",
     "@eslint/js": "^10.0.1",
     "@relaycast/sdk": "^8.0.7",
     "@relayfile/adapter-github": "0.5.9",
     "@relayfile/relay-helpers": "^0.4.6",
-    "@relayflows/sdk": "2.0.65",
+    "@relayflows/sdk": "2.0.66",
     "@testing-library/jest-dom": "^6.9.1",
     "@types/node": "^22.19.3",
     "@types/ssh2": "^1.15.5",
@@ -122,7 +124,7 @@
     "smol-toml": "^1.7.1",
     "tar": "^7.5.22",
     "@relayflows/sdk": {
-      "@agent-relay/sdk": "17.2.1",
+      "@agent-relay/sdk": "18.0.0",
       "@agent-relay/harness-driver": "17.2.1"
     }
   }

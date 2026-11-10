@@ -1,0 +1,51 @@
+{
+  "generatedBy": "relay-chief@9a46584 dist hash/readAssignment/reportSchema",
+  "now": 1800000001000,
+  "assignment": {
+    "protocol": "relay-chief.assignment.v1",
+    "taskId": "task-golden-1",
+    "chiefId": "chief-1",
+    "organizationId": "org-1",
+    "workspaceId": "ws-1",
+    "projectId": "project-1",
+    "repository": "acme/app",
+    "workKey": "issue-42",
+    "resourceKeys": ["issue-42", "src/auth.ts"],
+    "action": "investigate",
+    "worker": {
+      "agentId": "agent-worker",
+      "address": "worker@node",
+      "actions": ["investigate"]
+    },
+    "policyVersion": "p1",
+    "configurationRevision": 1,
+    "policyDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "reservationMicros": 1000,
+    "evidenceDigest": "6cb6bf4baa79e19d56623eb6edfe5dce432c07aff403f79cb538eba4974ee13d",
+    "evidence": {
+      "sourceId": "project-sessions-v1",
+      "sessionId": "session-123",
+      "version": "v1",
+      "organizationId": "org-1",
+      "workspaceId": "ws-1",
+      "projectId": "project-1",
+      "repository": "acme/app",
+      "workKey": "issue-42",
+      "resourceKeys": ["issue-42", "src/auth.ts"],
+      "observedAt": 1800000000000,
+      "summary": "Redacted evidence with unicode é and \"quotes\"",
+      "references": ["https://github.com/acme/app/issues/42"]
+    },
+    "acceptance": ["The test passes"]
+  },
+  "digest": "9503545e60a04a0ec6ea6e39fa82e47176d624a46b5e9d63762412d26c16223c",
+  "canonicalAssignmentHash": "9503545e60a04a0ec6ea6e39fa82e47176d624a46b5e9d63762412d26c16223c",
+  "report": {
+    "protocol": "relay-chief.report.v1",
+    "taskId": "task-golden-1",
+    "assignmentDigest": "9503545e60a04a0ec6ea6e39fa82e47176d624a46b5e9d63762412d26c16223c",
+    "sequence": 1,
+    "state": "accepted",
+    "artifactRefs": []
+  }
+}
