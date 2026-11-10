@@ -1,7 +1,12 @@
 //! The process table on Windows.
 //!
 //! - **pid, parent, start**: the kernel (`K32EnumProcesses`,
-//!   `GetProcessTimes`) and sysinfo's parent pid. Windows never reparents:
+//!   `NtQueryInformationProcess`, `GetProcessTimes`), one process at a
+//!   time; for a process this one cannot open, one sysinfo snapshot of the
+//!   whole computer shared for `SNAPSHOT_TTL`. Never a sysinfo refresh per
+//!   pid: on Windows it snapshots every process and thread to refresh one,
+//!   which made a scan that asks about every pid quadratic in the process
+//!   count. Windows never reparents:
 //!   a parent that exited leaves its pid free for reuse, so a "parent" that
 //!   started after its child is a stranger and is reported as no parent
 //!   (0), which ends every ancestry walk there.
@@ -25,8 +30,9 @@ use super::*;
 use std::ffi::{OsStr, OsString};
 use std::os::windows::ffi::OsStringExt;
 use std::sync::{mpsc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessBasicInformation};
 use windows_sys::Win32::Foundation::{
     CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, FILETIME, HANDLE,
 };
@@ -58,11 +64,18 @@ const ERROR_INVALID_PARAMETER: i32 = windows_sys::Win32::Foundation::ERROR_INVAL
 /// Unix epoch.
 const FILETIME_UNIX_EPOCH: u64 = 116_444_736_000_000_000;
 
-/// The sysinfo table, kept between reads so each read refreshes only the
-/// process it asks about.
+/// How long the whole-computer snapshot answers for the processes this one
+/// cannot open.
+const SNAPSHOT_TTL: Duration = Duration::from_secs(1);
+
+/// The sysinfo tables: `system`, kept between reads so each read refreshes
+/// only the process it asks about (sysinfo still walks the whole computer
+/// to do it, so only a few candidates are asked); `snapshot`, every process
+/// at once, refreshed at most once per `SNAPSHOT_TTL`.
 #[derive(Default)]
 pub struct Cache {
     system: Mutex<Option<System>>,
+    snapshot: Mutex<Option<(System, Instant)>>,
 }
 
 /// A handle this module opened, closed on drop.
@@ -112,6 +125,42 @@ fn creation_micros(pid: u32) -> Option<u64> {
     filetime_ticks(&created)
         .checked_sub(FILETIME_UNIX_EPOCH)
         .map(|ticks| ticks / 10)
+}
+
+/// `PROCESS_BASIC_INFORMATION`, declared here so its PEB pointer, never
+/// read, needs no `Win32_System_Kernel` feature.
+#[repr(C)]
+#[allow(dead_code)]
+struct BasicInformation {
+    exit_status: i32,
+    peb: *mut std::ffi::c_void,
+    affinity_mask: usize,
+    base_priority: i32,
+    unique_process_id: usize,
+    inherited_from_unique_process_id: usize,
+}
+
+/// The pid `pid`'s creator had, as the kernel recorded it at creation
+/// (possibly reused since: `process` checks start times).
+fn parent_pid(pid: u32) -> Option<u32> {
+    let process = Owned::process(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
+    // SAFETY: plain integers and null pointers; every field is overwritten
+    // by the kernel on success and unread on failure.
+    let mut info: BasicInformation = unsafe { std::mem::zeroed() };
+    // SAFETY: a live process handle and an out buffer of the stated size.
+    let status = unsafe {
+        NtQueryInformationProcess(
+            process.0,
+            ProcessBasicInformation,
+            (&mut info as *mut BasicInformation).cast(),
+            std::mem::size_of::<BasicInformation>() as u32,
+            std::ptr::null_mut(),
+        )
+    };
+    if status < 0 {
+        return None;
+    }
+    u32::try_from(info.inherited_from_unique_process_id).ok()
 }
 
 fn lossy<S: AsRef<OsStr> + ?Sized>(value: &S) -> String {
@@ -345,13 +394,52 @@ impl SystemProcesses {
         system.process(pid).map(read)
     }
 
+    /// `read` of `pid` in the whole-computer snapshot, at most
+    /// `SNAPSHOT_TTL` old: the facts of a process this one cannot open
+    /// (another account's, an elevated one), for which a scan asks one
+    /// snapshot in all instead of one per pid.
+    fn in_snapshot<T>(&self, pid: u32, read: impl FnOnce(&sysinfo::Process) -> T) -> Option<T> {
+        let mut snapshot = self
+            .windows
+            .snapshot
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let stale = snapshot
+            .as_ref()
+            .is_none_or(|(_, taken)| taken.elapsed() >= SNAPSHOT_TTL);
+        if stale {
+            let mut system = snapshot
+                .take()
+                .map(|(system, _)| system)
+                .unwrap_or_default();
+            system.refresh_processes_specifics(
+                ProcessesToUpdate::All,
+                true,
+                ProcessRefreshKind::nothing(),
+            );
+            *snapshot = Some((system, Instant::now()));
+        }
+        let (system, _) = snapshot.as_ref()?;
+        system.process(Pid::from_u32(pid)).map(read)
+    }
+
     /// When `pid` started, in microseconds since the epoch: the kernel's
     /// creation time, else sysinfo's whole seconds.
     fn start_micros(&self, pid: u32) -> Option<u64> {
         creation_micros(pid).or_else(|| {
-            self.with_info(pid as i32, ProcessRefreshKind::nothing(), |process| {
+            self.in_snapshot(pid, |process| {
                 process.start_time().saturating_mul(1_000_000)
             })
+        })
+    }
+
+    /// `pid`'s parent pid: the kernel's, else the snapshot's.
+    fn parent_of(&self, pid: u32) -> Option<u32> {
+        parent_pid(pid).or_else(|| {
+            self.in_snapshot(pid, |process| {
+                process.parent().map(|parent| parent.as_u32())
+            })
+            .flatten()
         })
     }
 }
@@ -360,11 +448,7 @@ impl ProcessTable for SystemProcesses {
     fn process(&self, pid: i32) -> Option<ProcessInfo> {
         let raw = u32::try_from(pid).ok().filter(|pid| *pid > 0)?;
         let start = self.start_micros(raw)?;
-        let parent = self
-            .with_info(pid, ProcessRefreshKind::nothing(), |process| {
-                process.parent().map(|parent| parent.as_u32())
-            })?
-            .unwrap_or(0);
+        let parent = self.parent_of(raw).unwrap_or(0);
         // A parent pid reused by a process that started later is not the
         // parent; neither is one whose start cannot be read.
         let parent = match parent {
@@ -625,6 +709,20 @@ mod tests {
         assert!(table.has_terminal(me));
         // The System Idle Process's pid 0 is never a process here.
         assert!(table.process(0).is_none());
+    }
+
+    #[test]
+    fn a_running_child_names_this_process_as_its_parent() {
+        let mut child = std::process::Command::new("cmd.exe")
+            .args(["/C", "ping -n 30 127.0.0.1 >NUL"])
+            .spawn()
+            .unwrap();
+        let pid = child.id() as i32;
+        let table = SystemProcesses::default();
+        let parent = table.process(pid).map(|info| info.parent);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(parent, Some(std::process::id() as i32));
     }
 
     #[test]

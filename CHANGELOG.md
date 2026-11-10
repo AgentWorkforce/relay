@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- On Windows, the Agent Relay core no longer keeps a CPU core busy on computers with many processes: process scans read each process's parent and start time from the kernel, and processes it cannot open from one shared snapshot, instead of taking a snapshot of every process and thread for each pid (a full scan of ~800 processes drops from about 28 s to 45 ms).
 - Authored TypeScript cloud-worker assignments resolve the CLI's pinned Surface from isolated run directories when no dependency is supplied, preserving assignment-provided packages.
 
 ## [18.0.0] - 2026-11-09
