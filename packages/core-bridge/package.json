@@ -20,7 +20,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && tsc -p tsconfig.type-tests.json",
     "clean": "rm -rf dist",
     "test": "vitest run --root ../.. packages/core-bridge/",
     "test:watch": "vitest --root ../.. packages/core-bridge/"

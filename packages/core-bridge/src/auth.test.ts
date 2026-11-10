@@ -64,7 +64,10 @@ const base = vectors.base;
 // Field-for-field copy of Relay Desktop's schema-v2 writer fixture at
 // desktop-core/src/service_callers/fixtures/caller.v2.json. Keeping the
 // producer fixture here makes a Desktop schema change break this consumer.
-const desktopCallerV2Text = readFileSync(new URL('../fixtures/caller.v2.fixture', import.meta.url), 'utf8');
+const DESKTOP_CALLER_V2_TEXT = readFileSync(
+  new URL('../fixtures/caller.v2.fixture', import.meta.url),
+  'utf8'
+);
 
 const document = (fields: Record<string, unknown> = {}) => ({
   schema: 'agent-relay-service-caller/2',
@@ -499,7 +502,7 @@ describe.skipIf(process.platform === 'win32')('readCallerCredential (POSIX)', ()
   });
 
   it("reads Relay Desktop's exact schema-v2 writer fixture", async () => {
-    await writeFile(file, desktopCallerV2Text, { mode: 0o600 });
+    await writeFile(file, DESKTOP_CALLER_V2_TEXT, { mode: 0o600 });
     const descriptor = await readCallerDescriptor(file);
     expect(descriptor).toMatchObject({
       schema: 'agent-relay-service-caller/2',

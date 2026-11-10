@@ -710,7 +710,11 @@ function requireMethods(client: Pick<CoreClient, 'hello'>, methods: readonly str
   }
 }
 
-/** Refuses a core that cannot provide the complete service-caller lifecycle. */
+/**
+ * Refuses a core that cannot provide the complete service-caller lifecycle.
+ * @param client - A greeted bridge connection whose advertised methods are checked.
+ * @returns Nothing when every required service-caller method is available.
+ */
 export function requireServiceCallerMethods(client: Pick<CoreClient, 'hello'>): void {
   requireMethods(client, REQUIRED_SERVICE_CALLER_METHODS);
 }
@@ -846,6 +850,8 @@ async function readCallerDocument(file: string): Promise<unknown> {
  * Securely reads and validates the complete schema-v2 caller handoff.
  * The returned descriptor contains no secret; {@link CallerFileDescriptor.credential}
  * retains only its derived key and always prints as `[redacted]`.
+ * @param file - The absolute path of the schema-v2 `caller.json` handoff.
+ * @returns The validated descriptor and its redacting challenge credential.
  */
 export async function readCallerDescriptor(file: string): Promise<CallerFileDescriptor> {
   return descriptorFromDocument(await readCallerDocument(file));
@@ -855,6 +861,8 @@ export async function readCallerDescriptor(file: string): Promise<CallerFileDesc
  * Securely reads `caller.json` and returns only its challenge credential.
  * Prefer {@link readCallerDescriptor} when a caller also needs the socket,
  * publisher, workspace, scope or inbox route from the same checked read.
+ * @param file - The absolute path of `caller.json`.
+ * @returns The credential, holding the derived key and never the secret.
  */
 export async function readCallerCredential(file: string): Promise<CallerCredential> {
   return CallerCredential.fromDocument(await readCallerDocument(file));
