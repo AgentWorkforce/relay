@@ -59,6 +59,9 @@ interface Vectors {
 const vectors = JSON.parse(
   readFileSync(new URL('../fixtures/caller-transcript-v1.json', import.meta.url), 'utf8')
 ) as Vectors;
+const desktopSchemaV2Fixture = JSON.parse(
+  readFileSync(new URL('../fixtures/caller.v2.json', import.meta.url), 'utf8')
+) as Record<string, unknown>;
 const base = vectors.base;
 
 const document = (fields: Record<string, unknown> = {}) => ({
@@ -501,6 +504,23 @@ describe.skipIf(process.platform === 'win32')('readCallerCredential (POSIX)', ()
     expect(Object.isFrozen(descriptor.workspace)).toBe(true);
     expect(Object.isFrozen(descriptor.harnesses)).toBe(true);
     expect(Object.isFrozen(descriptor.directoryScope)).toBe(true);
+  });
+
+  it('accepts the exact schema-v2 fixture emitted by Agent Relay Desktop', async () => {
+    await writeFile(file, JSON.stringify(desktopSchemaV2Fixture), { mode: 0o600 });
+    await expect(readCallerDescriptor(file)).resolves.toMatchObject({
+      schema: CALLER_FILE_SCHEMA,
+      callerId: 'sc_0123456789abcdef',
+      callerName: 'fixture-caller',
+      publisher: { id: 'agent_fixture0001', name: 'fixture-caller' },
+      workspace: {
+        base_url: 'https://api.relaycast.example',
+        workspace_id: 'ws_fixture0001',
+        relaycast_workspace_id: 'rw_fixture0001',
+      },
+      inbox: { transport: 'core-bridge' },
+      desktopVersion: '2026.11.4',
+    });
   });
 
   it('keeps credential compatibility separate from the strict complete descriptor', async () => {
