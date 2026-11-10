@@ -26,6 +26,15 @@ import { inspect } from 'node:util';
 
 import type { CallOptions, CoreClient } from './client.js';
 import { CoreBridgeError, CoreRpcError } from './errors.js';
+import {
+  SERVICE_CALLER_DISCONNECT_METHOD,
+  SERVICE_CALLER_IDENTITY_METHOD,
+  SERVICE_CALLER_INBOX_ACK_METHOD,
+  SERVICE_CALLER_INBOX_CLOSE_METHOD,
+  SERVICE_CALLER_INBOX_FAIL_METHOD,
+  SERVICE_CALLER_INBOX_NEXT_METHOD,
+  SERVICE_CALLER_INBOX_OPEN_METHOD,
+} from './service-callers.js';
 
 /** The transcript version byte, which is also the challenge `version`. */
 export const CALLER_TRANSCRIPT_VERSION = 1;
@@ -35,10 +44,93 @@ export const CALLER_TRANSCRIPT_DOMAIN = 'agent-relay/service-caller/v1';
 export const CALLER_CHALLENGE_TTL_MS = 30_000;
 /** The `caller.json` `auth` value naming this transcript. */
 export const CALLER_AUTH_SCHEME = 'challenge-hmac-sha256/v1';
-/** The `caller.json` schemas this reader accepts. */
+/** The exact challenge method named by a schema-v2 caller handoff. */
+export const CALLER_CHALLENGE_METHOD = 'spawn_callers.challenge';
+/** The exact authenticate method named by a schema-v2 caller handoff. */
+export const CALLER_AUTHENTICATE_METHOD = 'spawn_callers.authenticate';
+/** The `caller.json` schemas accepted by the credential-only compatibility reader. */
 export const CALLER_FILE_SCHEMAS = ['agent-relay-service-caller/1', 'agent-relay-service-caller/2'] as const;
+/** The complete Desktop service-caller handoff schema. */
+export const CALLER_FILE_SCHEMA = CALLER_FILE_SCHEMAS[1];
+/** The feature methods a service-caller connection requires end to end. */
+export const REQUIRED_SERVICE_CALLER_METHODS = [
+  CALLER_CHALLENGE_METHOD,
+  CALLER_AUTHENTICATE_METHOD,
+  'spawn.targets',
+  'spawn.invoke',
+  'spawn.status',
+  'spawn.release',
+  SERVICE_CALLER_IDENTITY_METHOD,
+  SERVICE_CALLER_INBOX_OPEN_METHOD,
+  SERVICE_CALLER_INBOX_NEXT_METHOD,
+  SERVICE_CALLER_INBOX_ACK_METHOD,
+  SERVICE_CALLER_INBOX_FAIL_METHOD,
+  SERVICE_CALLER_INBOX_CLOSE_METHOD,
+  SERVICE_CALLER_DISCONNECT_METHOD,
+] as const;
 /** The largest `caller.json` this reader opens, in bytes. */
 export const MAX_CALLER_FILE_BYTES = 64 * 1024;
+
+/** The exact schema-v2 authentication route Desktop writes. */
+export interface CallerAuthRoute {
+  readonly scheme: typeof CALLER_AUTH_SCHEME;
+  readonly challenge: typeof CALLER_CHALLENGE_METHOD;
+  readonly authenticate: typeof CALLER_AUTHENTICATE_METHOD;
+}
+
+/** The Relaycast agent that publishes this service caller's results. */
+export interface CallerFilePublisher {
+  readonly id: string;
+  readonly name: string;
+}
+
+/** The account and workspace scope covered by challenge authentication. */
+export interface CallerFileWorkspace {
+  readonly site_url: string;
+  readonly base_url: string;
+  readonly workspace_id: string;
+  readonly relaycast_workspace_id: string;
+}
+
+export interface CallerFileAccount {
+  readonly user_id: string;
+}
+
+/** The exact schema-v2 result-inbox route Desktop writes. */
+export interface CallerInboxRoute {
+  readonly transport: 'core-bridge';
+  readonly open: typeof SERVICE_CALLER_INBOX_OPEN_METHOD;
+  readonly next: typeof SERVICE_CALLER_INBOX_NEXT_METHOD;
+  readonly ack: typeof SERVICE_CALLER_INBOX_ACK_METHOD;
+  readonly fail: typeof SERVICE_CALLER_INBOX_FAIL_METHOD;
+  readonly close: typeof SERVICE_CALLER_INBOX_CLOSE_METHOD;
+  readonly disconnect: typeof SERVICE_CALLER_DISCONNECT_METHOD;
+}
+
+/**
+ * A validated schema-v2 caller handoff. It deliberately has no `secret`:
+ * only the redacting {@link credential} retains its derived key.
+ */
+export interface CallerFileDescriptor {
+  readonly schema: typeof CALLER_FILE_SCHEMA;
+  readonly schemaVersion: 2;
+  readonly auth: CallerAuthRoute;
+  readonly callerId: string;
+  readonly callerName: string;
+  readonly publisher: CallerFilePublisher;
+  readonly workspace: CallerFileWorkspace;
+  readonly account: CallerFileAccount;
+  readonly credential: CallerCredential;
+  readonly createdAt: string;
+  readonly rotatedAt?: string;
+  readonly expiresAt: string;
+  readonly harnesses: readonly string[];
+  readonly directoryScope: readonly string[];
+  readonly ownsOnly: boolean;
+  readonly socket: string;
+  readonly inbox: CallerInboxRoute;
+  readonly desktopVersion: string;
+}
 
 /** The params of `spawn_callers.challenge`. */
 export type CallerChallengeParams = {
@@ -95,7 +187,47 @@ const CHALLENGE_ID = /^ch_[0-9a-f]{32}$/;
 const B64URL_32 = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
 const SECRET = /^rsc_[A-Za-z0-9_-]{43}$/;
 const CALLER_NAME = /^[A-Za-z0-9_-]{1,200}$/;
+const HARNESS = /^[A-Za-z0-9_-]{1,64}$/;
+const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 const NONCE_BYTES = 32;
+
+const CALLER_KEYS = [
+  'account',
+  'auth',
+  'caller_id',
+  'caller_name',
+  'created_at',
+  'desktop_version',
+  'directory_scope',
+  'expires_at',
+  'harnesses',
+  'inbox',
+  'owns_only',
+  'publisher',
+  'schema',
+  'secret',
+  'socket',
+  'workspace',
+] as const;
+
+interface ParsedCallerDocument {
+  auth: CallerAuthRoute;
+  callerId: string;
+  callerName: string;
+  publisher: CallerFilePublisher;
+  workspace: CallerFileWorkspace;
+  account: CallerFileAccount;
+  secret: string;
+  createdAt: string;
+  rotatedAt?: string;
+  expiresAt: string;
+  harnesses: string[];
+  directoryScope: string[];
+  ownsOnly: boolean;
+  socket: string;
+  inbox: CallerInboxRoute;
+  desktopVersion: string;
+}
 
 function invalid(code: string, message: string): CoreBridgeError {
   return new CoreBridgeError(code, message);
@@ -141,6 +273,238 @@ function u64(value: bigint): Buffer {
   const out = Buffer.alloc(8);
   out.writeBigUInt64BE(value);
   return out;
+}
+
+function callerFileBad(rule: string): CoreBridgeError {
+  return invalid('caller_file_invalid', `caller.json is invalid: ${rule}.`);
+}
+
+function fileRecord(value: unknown, name: string, keys: readonly string[]): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw callerFileBad(`${name} must be an object`);
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).sort().join(',') !== [...keys].sort().join(',')) {
+    throw callerFileBad(`${name} has fields this reader does not know`);
+  }
+  return record;
+}
+
+function fileText(value: unknown, name: string, max: number): string {
+  if (typeof value !== 'string' || value.length === 0 || Buffer.byteLength(value, 'utf8') > max) {
+    throw callerFileBad(`${name} must be 1 to ${max} bytes`);
+  }
+  return value;
+}
+
+function timestamp(value: unknown, name: string): string {
+  const text = fileText(value, name, 128);
+  if (!RFC3339.test(text) || !Number.isFinite(Date.parse(text))) {
+    throw callerFileBad(`${name} must be RFC 3339`);
+  }
+  return text;
+}
+
+function fileBoolean(value: unknown, name: string): boolean {
+  if (typeof value !== 'boolean') throw callerFileBad(`${name} must be a boolean`);
+  return value;
+}
+
+function uniqueStrings(value: unknown, name: string, check: (item: string) => boolean): string[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 256) {
+    throw callerFileBad(`${name} must contain 1 to 256 entries`);
+  }
+  const items: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string' || !check(item)) throw callerFileBad(`${name} has a malformed entry`);
+    if (items.includes(item)) throw callerFileBad(`${name} has a duplicate entry`);
+    items.push(item);
+  }
+  return items;
+}
+
+function parseCallerDocument(document: unknown): ParsedCallerDocument {
+  if (typeof document !== 'object' || document === null || Array.isArray(document)) {
+    throw callerFileBad('it must be an object');
+  }
+  const raw = document as Record<string, unknown>;
+  if (raw.schema === 'agent-relay-service-caller/1') {
+    throw callerFileBad('schema 1 is retired; rotate the caller in Agent Relay');
+  }
+  if (raw.schema !== CALLER_FILE_SCHEMA) throw callerFileBad('schema is not one this reader knows');
+  const keys = raw.rotated_at === undefined ? CALLER_KEYS : [...CALLER_KEYS, 'rotated_at'];
+  const doc = fileRecord(raw, 'it', keys);
+
+  const auth = fileRecord(doc.auth, 'auth', ['authenticate', 'challenge', 'scheme']);
+  if (
+    auth.scheme !== CALLER_AUTH_SCHEME ||
+    auth.challenge !== CALLER_CHALLENGE_METHOD ||
+    auth.authenticate !== CALLER_AUTHENTICATE_METHOD
+  ) {
+    throw callerFileBad('auth is not one this reader knows');
+  }
+  if (typeof doc.caller_id !== 'string' || !CALLER_ID.test(doc.caller_id)) {
+    throw callerFileBad('caller_id must be "sc_" and 16 lowercase hex characters');
+  }
+  if (typeof doc.caller_name !== 'string' || !CALLER_NAME.test(doc.caller_name)) {
+    throw callerFileBad('caller_name is malformed');
+  }
+  if (typeof doc.secret !== 'string' || !SECRET.test(doc.secret)) {
+    throw callerFileBad('secret is malformed');
+  }
+
+  const publisher = fileRecord(doc.publisher, 'publisher', ['id', 'name']);
+  const workspace = fileRecord(doc.workspace, 'workspace', [
+    'base_url',
+    'relaycast_workspace_id',
+    'site_url',
+    'workspace_id',
+  ]);
+  const account = fileRecord(doc.account, 'account', ['user_id']);
+  const inbox = fileRecord(doc.inbox, 'inbox', [
+    'ack',
+    'close',
+    'disconnect',
+    'fail',
+    'next',
+    'open',
+    'transport',
+  ]);
+  if (
+    inbox.transport !== 'core-bridge' ||
+    inbox.open !== SERVICE_CALLER_INBOX_OPEN_METHOD ||
+    inbox.next !== SERVICE_CALLER_INBOX_NEXT_METHOD ||
+    inbox.ack !== SERVICE_CALLER_INBOX_ACK_METHOD ||
+    inbox.fail !== SERVICE_CALLER_INBOX_FAIL_METHOD ||
+    inbox.close !== SERVICE_CALLER_INBOX_CLOSE_METHOD ||
+    inbox.disconnect !== SERVICE_CALLER_DISCONNECT_METHOD
+  ) {
+    throw callerFileBad('inbox is not one this reader knows');
+  }
+
+  const socket = fileText(doc.socket, 'socket', 4096);
+  if (
+    socket.includes('\0') ||
+    (!path.isAbsolute(socket) && !path.win32.isAbsolute(socket) && !/^\\\\\.\\pipe\\/i.test(socket))
+  ) {
+    throw callerFileBad('socket must be an absolute path or named pipe');
+  }
+
+  const callerName = doc.caller_name;
+  const publisherName = fileText(publisher.name, 'publisher.name', 256);
+  if (publisherName !== callerName) {
+    throw callerFileBad('publisher.name must match caller_name');
+  }
+  const createdAt = timestamp(doc.created_at, 'created_at');
+  const rotatedAt = doc.rotated_at === undefined ? undefined : timestamp(doc.rotated_at, 'rotated_at');
+  const expiresAt = timestamp(doc.expires_at, 'expires_at');
+  const createdMs = Date.parse(createdAt);
+  const rotatedMs = rotatedAt === undefined ? undefined : Date.parse(rotatedAt);
+  const expiresMs = Date.parse(expiresAt);
+  if (
+    expiresMs <= createdMs ||
+    (rotatedMs !== undefined && (rotatedMs < createdMs || rotatedMs >= expiresMs))
+  ) {
+    throw callerFileBad('timestamps are out of order');
+  }
+
+  return {
+    auth: {
+      scheme: CALLER_AUTH_SCHEME,
+      challenge: CALLER_CHALLENGE_METHOD,
+      authenticate: CALLER_AUTHENTICATE_METHOD,
+    },
+    callerId: doc.caller_id,
+    callerName,
+    publisher: {
+      id: fileText(publisher.id, 'publisher.id', 256),
+      name: publisherName,
+    },
+    workspace: {
+      site_url: fileText(workspace.site_url, 'workspace.site_url', 2048),
+      base_url: fileText(workspace.base_url, 'workspace.base_url', 2048),
+      workspace_id: fileText(workspace.workspace_id, 'workspace.workspace_id', 256),
+      relaycast_workspace_id: fileText(
+        workspace.relaycast_workspace_id,
+        'workspace.relaycast_workspace_id',
+        256
+      ),
+    },
+    account: { user_id: fileText(account.user_id, 'account.user_id', 256) },
+    secret: doc.secret,
+    createdAt,
+    ...(rotatedAt === undefined ? {} : { rotatedAt }),
+    expiresAt,
+    harnesses: uniqueStrings(doc.harnesses, 'harnesses', (item) => HARNESS.test(item)),
+    directoryScope: uniqueStrings(
+      doc.directory_scope,
+      'directory_scope',
+      (item) =>
+        item.length <= 4096 && !item.includes('\0') && (path.isAbsolute(item) || path.win32.isAbsolute(item))
+    ),
+    ownsOnly: fileBoolean(doc.owns_only, 'owns_only'),
+    socket,
+    inbox: {
+      transport: 'core-bridge',
+      open: SERVICE_CALLER_INBOX_OPEN_METHOD,
+      next: SERVICE_CALLER_INBOX_NEXT_METHOD,
+      ack: SERVICE_CALLER_INBOX_ACK_METHOD,
+      fail: SERVICE_CALLER_INBOX_FAIL_METHOD,
+      close: SERVICE_CALLER_INBOX_CLOSE_METHOD,
+      disconnect: SERVICE_CALLER_DISCONNECT_METHOD,
+    },
+    desktopVersion: fileText(doc.desktop_version, 'desktop_version', 128),
+  };
+}
+
+interface ParsedCallerCredential {
+  callerId: string;
+  siteUrl: string;
+  workspaceId: string;
+  userId: string;
+  secret: string;
+}
+
+/**
+ * Preserves the credential-only reader's public compatibility contract while
+ * the complete descriptor reader intentionally requires Desktop schema 2.
+ */
+function parseCallerCredential(document: unknown): ParsedCallerCredential {
+  if (typeof document !== 'object' || document === null || Array.isArray(document)) {
+    throw callerFileBad('it must be an object');
+  }
+  const doc = document as Record<string, unknown>;
+  if (doc.schema === CALLER_FILE_SCHEMA && typeof doc.auth === 'object' && doc.auth !== null) {
+    const parsed = parseCallerDocument(document);
+    return {
+      callerId: parsed.callerId,
+      siteUrl: parsed.workspace.site_url,
+      workspaceId: parsed.workspace.workspace_id,
+      userId: parsed.account.user_id,
+      secret: parsed.secret,
+    };
+  }
+  if (!(CALLER_FILE_SCHEMAS as readonly unknown[]).includes(doc.schema)) {
+    throw callerFileBad('schema is not one this reader knows');
+  }
+  if (doc.schema !== CALLER_FILE_SCHEMAS[0] && doc.auth !== CALLER_AUTH_SCHEME) {
+    throw callerFileBad('auth is not one this reader knows');
+  }
+  if (typeof doc.caller_id !== 'string' || !CALLER_ID.test(doc.caller_id)) {
+    throw callerFileBad('caller_id must be "sc_" and 16 lowercase hex characters');
+  }
+  if (typeof doc.secret !== 'string' || !SECRET.test(doc.secret)) {
+    throw callerFileBad('secret is malformed');
+  }
+  const workspace = doc.workspace as Record<string, unknown> | undefined;
+  const account = doc.account as Record<string, unknown> | undefined;
+  return {
+    callerId: doc.caller_id,
+    siteUrl: fileText(workspace?.site_url, 'workspace.site_url', 2048),
+    workspaceId: fileText(workspace?.workspace_id, 'workspace.workspace_id', 256),
+    userId: fileText(account?.user_id, 'account.user_id', 256),
+    secret: doc.secret,
+  };
 }
 
 /**
@@ -192,6 +556,7 @@ export class CallerCredential {
     this.siteUrl = siteUrl;
     this.workspaceId = workspaceId;
     this.userId = userId;
+    Object.freeze(this);
   }
 
   /**
@@ -202,31 +567,9 @@ export class CallerCredential {
    * have the `caller.json` shape. The message never contains the secret.
    */
   static fromDocument(document: unknown): CallerCredential {
-    const bad = (rule: string) => invalid('caller_file_invalid', `caller.json is invalid: ${rule}.`);
-    if (typeof document !== 'object' || document === null || Array.isArray(document))
-      throw bad('it must be an object');
-    const doc = document as Record<string, unknown>;
-    if (!(CALLER_FILE_SCHEMAS as readonly unknown[]).includes(doc.schema))
-      throw bad('schema is not one this reader knows');
-    if (doc.schema !== CALLER_FILE_SCHEMAS[0] && doc.auth !== CALLER_AUTH_SCHEME)
-      throw bad('auth is not one this reader knows');
-    if (typeof doc.caller_id !== 'string' || !CALLER_ID.test(doc.caller_id)) {
-      throw bad('caller_id must be "sc_" and 16 lowercase hex characters');
-    }
-    if (typeof doc.secret !== 'string' || !SECRET.test(doc.secret)) throw bad('secret is malformed');
-    const workspace = doc.workspace as Record<string, unknown> | undefined;
-    const account = doc.account as Record<string, unknown> | undefined;
-    const text = (value: unknown, name: string, max: number): string => {
-      if (typeof value !== 'string' || value.length === 0 || Buffer.byteLength(value, 'utf8') > max) {
-        throw bad(`${name} must be 1 to ${max} bytes`);
-      }
-      return value;
-    };
-    const siteUrl = text(workspace?.site_url, 'workspace.site_url', 2048);
-    const workspaceId = text(workspace?.workspace_id, 'workspace.workspace_id', 256);
-    const userId = text(account?.user_id, 'account.user_id', 256);
-    const key = createHash('sha256').update(doc.secret, 'utf8').digest();
-    return new CallerCredential(key, doc.caller_id, siteUrl, workspaceId, userId);
+    const parsed = parseCallerCredential(document);
+    const key = createHash('sha256').update(parsed.secret, 'utf8').digest();
+    return new CallerCredential(key, parsed.callerId, parsed.siteUrl, parsed.workspaceId, parsed.userId);
   }
 
   /**
@@ -275,6 +618,30 @@ export class CallerCredential {
   }
 }
 
+function descriptorFromDocument(document: unknown): CallerFileDescriptor {
+  const parsed = parseCallerDocument(document);
+  return Object.freeze({
+    schema: CALLER_FILE_SCHEMA,
+    schemaVersion: 2,
+    auth: Object.freeze({ ...parsed.auth }),
+    callerId: parsed.callerId,
+    callerName: parsed.callerName,
+    publisher: Object.freeze({ ...parsed.publisher }),
+    workspace: Object.freeze({ ...parsed.workspace }),
+    account: Object.freeze({ ...parsed.account }),
+    credential: CallerCredential.fromDocument(document),
+    createdAt: parsed.createdAt,
+    ...(parsed.rotatedAt === undefined ? {} : { rotatedAt: parsed.rotatedAt }),
+    expiresAt: parsed.expiresAt,
+    harnesses: Object.freeze([...parsed.harnesses]),
+    directoryScope: Object.freeze([...parsed.directoryScope]),
+    ownsOnly: parsed.ownsOnly,
+    socket: parsed.socket,
+    inbox: Object.freeze({ ...parsed.inbox }),
+    desktopVersion: parsed.desktopVersion,
+  });
+}
+
 function badReply(rule: string): CoreRpcError {
   return new CoreRpcError(`The caller challenge reply is invalid: ${rule}.`, {
     rpcCode: -32603,
@@ -319,13 +686,19 @@ function checkBound(bound: CallerBound, callerId: string): CallerBound {
   };
 }
 
-function requireMethod(client: CoreClient, method: string): void {
-  if (!client.hello.methods.includes(method)) {
-    throw new CoreRpcError(`This Agent Relay core does not offer ${method}; update Agent Relay Desktop.`, {
-      rpcCode: -32601,
-      kind: 'method_not_found',
-      retryable: false,
-    });
+function requireMethod(client: Pick<CoreClient, 'hello'>, method: string): void {
+  if (client.hello.methods.includes(method)) return;
+  throw new CoreRpcError(`This Agent Relay core does not offer ${method}; update Agent Relay Desktop.`, {
+    rpcCode: -32601,
+    kind: 'method_not_found',
+    retryable: false,
+  });
+}
+
+/** Refuses a core that cannot provide the complete service-caller lifecycle. */
+export function requireServiceCallerMethods(client: Pick<CoreClient, 'hello'>): void {
+  for (const method of REQUIRED_SERVICE_CALLER_METHODS) {
+    requireMethod(client, method);
   }
 }
 
@@ -346,8 +719,8 @@ export async function authenticate(
   credential: CallerCredential,
   options?: CallOptions
 ): Promise<CallerBound> {
-  requireMethod(client, 'spawn_callers.challenge');
-  requireMethod(client, 'spawn_callers.authenticate');
+  requireMethod(client, CALLER_CHALLENGE_METHOD);
+  requireMethod(client, CALLER_AUTHENTICATE_METHOD);
   const challengeParams: CallerChallengeParams = { caller_id: credential.callerId };
   const challenge = await client.call<CallerChallenge>('spawn_callers.challenge', challengeParams, options);
   const params: CallerAuthenticateParams = {
@@ -365,7 +738,7 @@ function unsafe(file: string, rule: string): CoreBridgeError {
 }
 
 /**
- * Reads `caller.json` securely and returns its credential.
+ * Reads and parses `caller.json` once through a checked file descriptor.
  *
  * On macOS and Linux the file must be a regular file (not a symlink), owned
  * by this user, with no group or other permission bits (0600 or stricter),
@@ -378,11 +751,12 @@ function unsafe(file: string, rule: string): CoreBridgeError {
  * verify the file's DACL or owner; it relies on the per-user profile's
  * access list that Desktop writes the file under.
  * @param file - The absolute path of `caller.json`.
- * @returns The credential, holding the derived key and not the secret.
+ * @returns The parsed document; callers immediately validate it and discard
+ * its secret after deriving the credential key.
  * @throws CoreBridgeError `caller_file_unsafe` when the file fails a check
  * above, `caller_file_invalid` when its contents are malformed.
  */
-export async function readCallerCredential(file: string): Promise<CallerCredential> {
+async function readCallerDocument(file: string): Promise<unknown> {
   if (typeof file !== 'string' || !path.isAbsolute(file) || file.includes('\0')) {
     throw unsafe(String(file), 'the path must be absolute');
   }
@@ -453,5 +827,23 @@ export async function readCallerCredential(file: string): Promise<CallerCredenti
     // The parser's message can quote the file, secret included.
     throw new CoreBridgeError('caller_file_invalid', 'caller.json is invalid: it is not JSON.');
   }
-  return CallerCredential.fromDocument(document);
+  return document;
+}
+
+/**
+ * Securely reads and validates the complete schema-v2 caller handoff.
+ * The returned descriptor contains no secret; {@link CallerFileDescriptor.credential}
+ * retains only its derived key and always prints as `[redacted]`.
+ */
+export async function readCallerDescriptor(file: string): Promise<CallerFileDescriptor> {
+  return descriptorFromDocument(await readCallerDocument(file));
+}
+
+/**
+ * Securely reads `caller.json` and returns only its challenge credential.
+ * Prefer {@link readCallerDescriptor} when a caller also needs the socket,
+ * publisher, workspace, scope or inbox route from the same checked read.
+ */
+export async function readCallerCredential(file: string): Promise<CallerCredential> {
+  return CallerCredential.fromDocument(await readCallerDocument(file));
 }

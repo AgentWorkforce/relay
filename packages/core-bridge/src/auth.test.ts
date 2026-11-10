@@ -9,15 +9,31 @@ import { inspect } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  CALLER_AUTHENTICATE_METHOD,
+  CALLER_AUTH_SCHEME,
+  CALLER_CHALLENGE_METHOD,
+  CALLER_FILE_SCHEMA,
+  CALLER_FILE_SCHEMAS,
+  REQUIRED_SERVICE_CALLER_METHODS,
   CallerCredential,
   authenticate,
   callerTranscript,
   readCallerCredential,
+  readCallerDescriptor,
+  requireServiceCallerMethods,
   type CallerChallenge,
   type CallerTranscriptInput,
 } from './auth.js';
 import type { CoreClient, HelloResult } from './client.js';
 import { CoreBridgeError, CoreRpcError } from './errors.js';
+import {
+  SERVICE_CALLER_DISCONNECT_METHOD,
+  SERVICE_CALLER_INBOX_ACK_METHOD,
+  SERVICE_CALLER_INBOX_CLOSE_METHOD,
+  SERVICE_CALLER_INBOX_FAIL_METHOD,
+  SERVICE_CALLER_INBOX_NEXT_METHOD,
+  SERVICE_CALLER_INBOX_OPEN_METHOD,
+} from './service-callers.js';
 
 interface Vectors {
   version: number;
@@ -43,16 +59,54 @@ interface Vectors {
 const vectors = JSON.parse(
   readFileSync(new URL('../fixtures/caller-transcript-v1.json', import.meta.url), 'utf8')
 ) as Vectors;
+const desktopSchemaV2Fixture = JSON.parse(
+  readFileSync(new URL('../fixtures/caller.v2.json', import.meta.url), 'utf8')
+) as Record<string, unknown>;
 const base = vectors.base;
 
 const document = (fields: Record<string, unknown> = {}) => ({
   schema: 'agent-relay-service-caller/2',
-  auth: 'challenge-hmac-sha256/v1',
+  auth: {
+    scheme: CALLER_AUTH_SCHEME,
+    challenge: CALLER_CHALLENGE_METHOD,
+    authenticate: CALLER_AUTHENTICATE_METHOD,
+  },
+  caller_id: base.caller_id,
+  caller_name: 'flows-runner',
+  publisher: { id: 'agent_1', name: 'flows-runner' },
+  secret: base.secret,
+  workspace: {
+    site_url: base.site_url,
+    base_url: 'https://relay.example',
+    workspace_id: base.workspace_id,
+    relaycast_workspace_id: 'rcws_1',
+  },
+  account: { user_id: base.user_id },
+  created_at: '2026-11-09T00:00:00Z',
+  expires_at: '2027-11-09T00:00:00Z',
+  harnesses: ['claude'],
+  directory_scope: ['/tmp/project'],
+  owns_only: true,
+  socket: '/tmp/core.sock',
+  inbox: {
+    transport: 'core-bridge',
+    open: SERVICE_CALLER_INBOX_OPEN_METHOD,
+    next: SERVICE_CALLER_INBOX_NEXT_METHOD,
+    ack: SERVICE_CALLER_INBOX_ACK_METHOD,
+    fail: SERVICE_CALLER_INBOX_FAIL_METHOD,
+    close: SERVICE_CALLER_INBOX_CLOSE_METHOD,
+    disconnect: SERVICE_CALLER_DISCONNECT_METHOD,
+  },
+  desktop_version: '2026.11.2',
+  ...fields,
+});
+
+const legacyDocument = (fields: Record<string, unknown> = {}) => ({
+  schema: 'agent-relay-service-caller/1',
   caller_id: base.caller_id,
   secret: base.secret,
   workspace: { site_url: base.site_url, workspace_id: base.workspace_id },
   account: { user_id: base.user_id },
-  harnesses: ['claude'],
   ...fields,
 });
 
@@ -168,23 +222,76 @@ describe('CallerCredential', () => {
     expect(Object.values(credential)).not.toContain(base.secret);
   });
 
-  it('accepts a schema 1 file and refuses unknown schemas, auth schemes and malformed fields', () => {
+  it('keeps credential-only compatibility while strictly checking complete schema 2 documents', () => {
+    expect(CallerCredential.fromDocument(document()).callerId).toBe(base.caller_id);
+    expect(CallerCredential.fromDocument(legacyDocument()).callerId).toBe(base.caller_id);
     expect(
-      CallerCredential.fromDocument(document({ schema: 'agent-relay-service-caller/1', auth: undefined }))
-        .callerId
+      CallerCredential.fromDocument(
+        legacyDocument({ schema: 'agent-relay-service-caller/2', auth: CALLER_AUTH_SCHEME })
+      ).callerId
     ).toBe(base.caller_id);
+    expect(CALLER_FILE_SCHEMAS).toEqual(['agent-relay-service-caller/1', 'agent-relay-service-caller/2']);
+    expect(CALLER_FILE_SCHEMA).toBe('agent-relay-service-caller/2');
     const bad = [
       document({ schema: 'agent-relay-service-caller/3' }),
-      document({ auth: 'challenge-hmac-sha256/v2' }),
+      legacyDocument({ schema: 'agent-relay-service-caller/2', auth: 'challenge-hmac-sha256/v2' }),
+      document({
+        auth: {
+          scheme: 'challenge-hmac-sha256/v2',
+          challenge: CALLER_CHALLENGE_METHOD,
+          authenticate: CALLER_AUTHENTICATE_METHOD,
+        },
+      }),
+      document({
+        auth: {
+          scheme: CALLER_AUTH_SCHEME,
+          challenge: 'spawn_callers.wrong',
+          authenticate: CALLER_AUTHENTICATE_METHOD,
+        },
+      }),
+      document({
+        auth: {
+          scheme: CALLER_AUTH_SCHEME,
+          challenge: CALLER_CHALLENGE_METHOD,
+          authenticate: 'spawn_callers.wrong',
+        },
+      }),
+      document({
+        auth: {
+          scheme: CALLER_AUTH_SCHEME,
+          challenge: CALLER_CHALLENGE_METHOD,
+          authenticate: CALLER_AUTHENTICATE_METHOD,
+          extra: true,
+        },
+      }),
       document({ auth: undefined }),
+      document({ extra: true }),
       document({ caller_id: 'sc_0123456789ABCDEF' }),
       document({ caller_id: 'sc_0123456789abcdef0' }),
       document({ caller_id: 'xx_0123456789abcdef' }),
       document({ secret: 'rsc_short' }),
       document({ secret: undefined }),
+      document({ caller_name: 'bad name' }),
+      document({ publisher: { id: 'agent_1', name: 'other' } }),
+      document({ publisher: { id: 'agent_1', name: 'flows-runner', extra: true } }),
       document({ workspace: { site_url: '', workspace_id: 'ws' } }),
       document({ workspace: undefined }),
       document({ account: { user_id: 7 } }),
+      document({ created_at: 'yesterday' }),
+      document({ rotated_at: null }),
+      document({ rotated_at: '2025-11-09T00:00:00Z' }),
+      document({ expires_at: 7 }),
+      document({ expires_at: '2025-11-09T00:00:00Z' }),
+      document({ harnesses: [] }),
+      document({ harnesses: ['claude', 'claude'] }),
+      document({ harnesses: ['bad harness'] }),
+      document({ directory_scope: ['relative'] }),
+      document({ directory_scope: ['/tmp/a', '/tmp/a'] }),
+      document({ owns_only: 'true' }),
+      document({ socket: 'relative.sock' }),
+      document({ inbox: { ...document().inbox, fail: 'spawn_callers.inbox.other' } }),
+      document({ inbox: { ...document().inbox, extra: true } }),
+      document({ desktop_version: '' }),
       [],
       null,
     ];
@@ -207,7 +314,7 @@ const BOUND = { caller_id: base.caller_id, caller_name: 'flows-runner', authorit
 
 function fakeClient(
   replies: Record<string, unknown>,
-  methods = ['hello', 'spawn_callers.challenge', 'spawn_callers.authenticate']
+  methods = ['hello', ...REQUIRED_SERVICE_CALLER_METHODS]
 ) {
   const calls: Array<{ method: string; params: unknown; options: unknown }> = [];
   const hello: HelloResult = { bridge_version: 2, daemon_version: '17.2.1', pid: 1, methods, topics: [] };
@@ -298,12 +405,34 @@ describe('authenticate', () => {
     }
   });
 
-  it('reports method_not_found when the core has no spawn caller extension, sending nothing', async () => {
-    const { client, calls } = fakeClient({}, ['hello', 'spawn.invoke']);
-    const error = await authenticate(client, credential).catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(CoreRpcError);
-    expect((error as CoreRpcError).kind).toBe('method_not_found');
-    expect(calls).toEqual([]);
+  it('authenticates when the two authentication methods are present', async () => {
+    const { client, calls } = fakeClient(
+      {
+        [CALLER_CHALLENGE_METHOD]: challenge,
+        [CALLER_AUTHENTICATE_METHOD]: BOUND,
+      },
+      ['hello', CALLER_CHALLENGE_METHOD, CALLER_AUTHENTICATE_METHOD]
+    );
+    await expect(authenticate(client, credential)).resolves.toEqual(BOUND);
+    expect(calls.map((call) => call.method)).toEqual([CALLER_CHALLENGE_METHOD, CALLER_AUTHENTICATE_METHOD]);
+  });
+
+  it('checks every incomplete service-caller lifecycle without sending anything', () => {
+    for (const missing of REQUIRED_SERVICE_CALLER_METHODS) {
+      const methods = ['hello', ...REQUIRED_SERVICE_CALLER_METHODS.filter((method) => method !== missing)];
+      const { client, calls } = fakeClient({}, methods);
+      const error = (() => {
+        try {
+          requireServiceCallerMethods(client);
+        } catch (caught) {
+          return caught;
+        }
+      })();
+      expect(error, missing).toBeInstanceOf(CoreRpcError);
+      expect((error as CoreRpcError).kind, missing).toBe('method_not_found');
+      expect((error as Error).message, missing).toContain(missing);
+      expect(calls, missing).toEqual([]);
+    }
   });
 });
 
@@ -335,6 +464,69 @@ describe.skipIf(process.platform === 'win32')('readCallerCredential (POSIX)', ()
     expect(credential.authenticatorFor(challenge)).toBe(base.authenticator);
     await chmod(file, 0o400);
     expect((await readCallerCredential(file)).callerId).toBe(base.caller_id);
+  });
+
+  it('returns the complete checked descriptor from the same secure read without its secret', async () => {
+    await writeFile(file, JSON.stringify(document({ rotated_at: '2026-11-09T01:00:00Z' })), { mode: 0o600 });
+    const descriptor = await readCallerDescriptor(file);
+    expect(descriptor).toMatchObject({
+      schema: CALLER_FILE_SCHEMA,
+      schemaVersion: 2,
+      callerId: base.caller_id,
+      callerName: 'flows-runner',
+      publisher: { id: 'agent_1', name: 'flows-runner' },
+      workspace: {
+        site_url: base.site_url,
+        base_url: 'https://relay.example',
+        workspace_id: base.workspace_id,
+        relaycast_workspace_id: 'rcws_1',
+      },
+      account: { user_id: base.user_id },
+      createdAt: '2026-11-09T00:00:00Z',
+      rotatedAt: '2026-11-09T01:00:00Z',
+      expiresAt: '2027-11-09T00:00:00Z',
+      harnesses: ['claude'],
+      directoryScope: ['/tmp/project'],
+      ownsOnly: true,
+      socket: '/tmp/core.sock',
+      desktopVersion: '2026.11.2',
+    });
+    expect(descriptor.inbox).toEqual(document().inbox);
+    expect(descriptor.credential.callerId).toBe(base.caller_id);
+    expect(descriptor.credential.authenticatorFor(challenge)).toBe(base.authenticator);
+    const printed = JSON.stringify(descriptor);
+    expect(printed).not.toContain(base.secret);
+    expect(printed).not.toContain(base.key_hex);
+    expect(printed).toContain('[redacted]');
+    expect(Object.isFrozen(descriptor)).toBe(true);
+    expect(Object.isFrozen(descriptor.credential)).toBe(true);
+    expect(Object.isFrozen(descriptor.publisher)).toBe(true);
+    expect(Object.isFrozen(descriptor.workspace)).toBe(true);
+    expect(Object.isFrozen(descriptor.harnesses)).toBe(true);
+    expect(Object.isFrozen(descriptor.directoryScope)).toBe(true);
+  });
+
+  it('accepts the exact schema-v2 fixture emitted by Agent Relay Desktop', async () => {
+    await writeFile(file, JSON.stringify(desktopSchemaV2Fixture), { mode: 0o600 });
+    await expect(readCallerDescriptor(file)).resolves.toMatchObject({
+      schema: CALLER_FILE_SCHEMA,
+      callerId: 'sc_0123456789abcdef',
+      callerName: 'fixture-caller',
+      publisher: { id: 'agent_fixture0001', name: 'fixture-caller' },
+      workspace: {
+        base_url: 'https://api.relaycast.example',
+        workspace_id: 'ws_fixture0001',
+        relaycast_workspace_id: 'rw_fixture0001',
+      },
+      inbox: { transport: 'core-bridge' },
+      desktopVersion: '2026.11.4',
+    });
+  });
+
+  it('keeps credential compatibility separate from the strict complete descriptor', async () => {
+    await writeFile(file, JSON.stringify(legacyDocument()), { mode: 0o600 });
+    await expect(readCallerCredential(file)).resolves.toMatchObject({ callerId: base.caller_id });
+    await expect(readCallerDescriptor(file)).rejects.toMatchObject({ code: 'caller_file_invalid' });
   });
 
   it('reports a missing file, or a path through a file, unchanged and without a caller error', async () => {

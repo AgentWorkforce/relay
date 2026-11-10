@@ -132,8 +132,8 @@ The core stays authoritative. Rules a caller must know:
 - A service caller binds its connection first and then passes no caller:
 
   ```ts
-  const credential = await readCallerCredential('/path/to/caller.json');
-  await authenticate(client, credential); // spawn_callers.challenge + .authenticate
+  const descriptor = await readCallerDescriptor('/path/to/caller.json');
+  await authenticate(client, descriptor.credential); // spawn_callers.challenge + .authenticate
   await spawnInvoke(client, { node_id, node_name, name, harness, task, directory, idempotency_key });
   ```
 
@@ -149,6 +149,63 @@ The core stays authoritative. Rules a caller must know:
   retry.
 - `spawn.status` fills in `agent_id`, `name` and `node_id` only for spawns made on
   this core.
+
+## Service-caller result inbox
+
+After `authenticate` binds a connection, the service-caller helpers use the
+connection as the caller and send no `caller_name` or `caller_secret`:
+
+```ts
+const descriptor = await readCallerDescriptor('/path/to/caller.json');
+await using client = await connectCore({ socket: descriptor.socket });
+await authenticate(client, descriptor.credential);
+const identity = await serviceCallerIdentity(client);
+assertServiceCallerIdentity(descriptor, identity);
+const { iterator_id } = await serviceCallerInboxOpen(client, invocationId);
+const { delivery } = await serviceCallerInboxNext(client, iterator_id);
+
+if (delivery?.text !== undefined) {
+  await writeResultToJournal(delivery.text);
+  await serviceCallerInboxAck(client, delivery.item_id);
+} else if (delivery?.failure) {
+  await writeFailureToJournal(delivery.failure);
+  await serviceCallerInboxFail(client, delivery.item_id);
+}
+
+await serviceCallerInboxClose(client, iterator_id);
+await serviceCallerDisconnect(client);
+```
+
+`serviceCallerInboxOpen` binds one iterator to one invocation. `inbox.next`
+long-polls for at most 30 seconds; its helper gives the bridge call five extra
+seconds by default and preserves an explicit call timeout or abort signal. Use
+an independent authenticated connection for each concurrently waiting inbox,
+because the core answers one connection's calls in order.
+
+`readCallerDescriptor(path)` returns the exact validated schema-v2 handoff from
+the same secure file read: its redacting credential, socket, publisher,
+workspace and account identity, allowed harnesses and directories, ownership
+rule, timestamps, Desktop version and exact inbox route. It rejects unknown
+top-level or nested fields, a retired schema, a changed auth/inbox route,
+relative socket or directory paths, malformed timestamps and duplicate scope
+entries. The descriptor never contains the secret. `readCallerCredential`
+remains as a convenience for consumers that need only challenge
+authentication. Before spawning, use `assertServiceCallerIdentity` to compare
+the authenticated publisher and workspace to the descriptor; the helper
+returns no mismatched value in its error.
+
+The settlement helpers hard-code the only metadata Desktop accepts:
+`{"relayflows_result":"journaled"}` for ack and
+`{"relayflows_result":"rejected"}` for fail. Journal the terminal result or
+failure before settling it. An ack of a failure delivery is refused by the
+core. Close every iterator before `serviceCallerDisconnect`; disconnect fails
+while an iterator is still open. Closing the bridge connection also closes its
+iterators and releases their unsettled delivery leases.
+
+Every helper feature-detects its method, validates its input without echoing
+values, and refuses malformed replies. Settlement replies must match the item,
+action and terminal state requested; delivery replies must contain exactly one
+of `text` or a typed failure.
 
 ## Versioning
 
