@@ -9,11 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `agent-relay cloud worker start --local-agent` opts into the supported Relayflows local worker, including daemon starts. TypeScript assignments use the SDK’s authored `.flow.ts` entrypoint.
 - `agent-relay cloud worker register` accepts exactly one of `--token`, `--token-file` or `--token-stdin`, so enrollment can read a projected Secret file or pipe without putting the credential in process arguments. File and stdin inputs are limited to 16 KiB; interactive stdin is refused.
 
 ### Fixed
 
 - Service-caller spawns bind the exact node ID and a strict logical request to Relaycast's durable invocation claim. Retries may rematerialize an authorized working directory, while a replay-only lookup recovers an accepted invocation when that directory is no longer safe to materialize; neither path needs a second local lifetime ledger. `@agent-relay/core-bridge` now accepts only schema-v2 challenge credentials and refuses a core missing any required service-caller method.
+- Authored TypeScript cloud-worker assignments resolve the CLI's pinned Surface from isolated run directories when no dependency is supplied, preserving assignment-provided packages.
 
 ## [18.0.0] - 2026-11-09
 
