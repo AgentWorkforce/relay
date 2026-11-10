@@ -227,7 +227,15 @@ impl Outbound {
             })
         };
         let mut identity = registered();
-        if identity.is_none() {
+        if identity.is_none() && self.core.spawning_targets().contains(&session.target) {
+            // A thread a spawn here started is that spawn's agent: it waits
+            // for the spawn's registration, never one of its own.
+            identity = self
+                .core
+                .saved_spawn_registration(&session.target)
+                .await
+                .and(registered());
+        } else if identity.is_none() {
             if !self.setup.auto_activates(&session).await {
                 return Ok(json!({}));
             }

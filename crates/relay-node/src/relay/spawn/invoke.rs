@@ -14,6 +14,7 @@ use super::{first_text, lifecycle, session_ref, SpawnSettings};
 use crate::relay::daemon::Core;
 use crate::relay::push::PushState;
 use crate::relay::state::{Level, Listing, SpawnState};
+use crate::relay::store::{CleanupKind, PendingCleanup};
 use crate::relay::workspace::Secret;
 use chrono::Utc;
 use launching::LaunchFailure;
@@ -466,12 +467,40 @@ impl Core {
         );
         // The requester gets the first turn's final answer unless the agent
         // sends them something itself (`report_back::owed`).
+        // An identity the session was given of its own before this save
+        // (one registered in the moment before its spawn recorded it) is
+        // replaced here, and taken off Relaycast below: the session is the
+        // spawned agent alone. Its removal is recorded in the same update
+        // that lets go of its token, so a stop before the deletion below
+        // leaves it to the cleanup retries rather than unreachable.
+        let mut displaced = None;
         let saved = self.store.update(|store| {
-            report_back::add_spawned(
+            let earlier = store
+                .registration_for(&registration.target)
+                .filter(|earlier| {
+                    earlier.spawn.is_none()
+                        && earlier.agent_id != registration.agent_id
+                        && earlier.name != registration.name
+                })
+                .cloned();
+            let added = report_back::add_spawned(
                 store,
                 registration.clone(),
                 Secret::new(agent.token.clone()),
-            )
+            );
+            if added {
+                displaced = earlier.and_then(|earlier| {
+                    let cleanup = PendingCleanup {
+                        kind: CleanupKind::Agent,
+                        name: earlier.name,
+                        base_url: earlier.base_url,
+                        workspace_key: earlier.workspace_key?,
+                    };
+                    store.add_pending_cleanup(cleanup.clone());
+                    Some(cleanup)
+                });
+            }
+            added
         });
         if saved != Ok(true) {
             if self.abandon(&launched, &mut in_flight).await {
@@ -485,6 +514,9 @@ impl Core {
                 Err(error) => format!("spawn_failed: could not save the agent: {error}"),
             }
             .into());
+        }
+        if let Some(cleanup) = displaced {
+            self.delete_recorded_cleanup(cleanup).await;
         }
         self.watch_spawned(&registration);
         in_flight.settled();

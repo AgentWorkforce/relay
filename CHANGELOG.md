@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Authored TypeScript cloud-worker assignments resolve the CLI's pinned Surface from isolated run directories when no dependency is supplied, preserving assignment-provided packages.
+- A spawned Codex or Claude worker no longer registers a second Relaycast agent when its own session connects before the spawn finishes: the session binds to the spawn's registration, keeping its `name@<node>` address and the requester who approves it.
 
 ## [18.0.0] - 2026-11-09
 
