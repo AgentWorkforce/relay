@@ -16,7 +16,8 @@ the account-aware core, even when you never open its desktop UI.
 | `agent-relay-node serve --headless`                         | Runs the standalone messaging core. It reads CLI workspace configuration and has no Cloud account sign-in plugin; it does not consume the Cloud fleet enrollment as an account login. |
 
 In v18, `relay node up` and `relay fleet status` were removed with the local
-broker. Some enrollment output still recommends `node up`; that is stale advice.
+broker. The older v18.0.0 enrollment output still recommends `node up`; that
+is stale advice, corrected in newer CLI builds.
 Do not use it as the next step, repeat enrollment, or create another workspace
 to make the existing machine appear.
 
@@ -25,7 +26,12 @@ to make the existing machine appear.
 Run as the non-root Linux user who will run Claude Code and Codex. You need
 `curl`, `ca-certificates`, and sudo access for the package installation and
 lingering. On Ubuntu 24.04, use the `.deb` for your architecture. Download its
-published checksum alongside it, and stop if verification fails.
+published checksum alongside it, and stop if verification fails. The script
+uses the latest stable release; its checksum verifies download integrity. If
+a release changes between the two downloads, rerun both. To repeat the verified
+`2026.11.3` release, set `relay_release` to
+`https://github.com/AgentWorkforce/relay-desktop-releases/releases/download/v2026.11.3`
+in place of the `latest/download` URL below.
 
 ```sh
 case "$(uname -m)" in
@@ -71,6 +77,10 @@ Linux stable `2026.11.3` uses the `relay setup` terminal wizard to sign in
 without copying a key:
 
 ```sh
+test -x /usr/lib/agent-relay/agent-relay-probe || {
+  printf 'Agent Relay helper missing; check the Linux package installation.\n' >&2
+  exit 1
+}
 /usr/lib/agent-relay/agent-relay-probe relay setup --workspace YOUR-CLOUD-WORKSPACE-UUID
 ```
 
