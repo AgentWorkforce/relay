@@ -65,6 +65,10 @@ after SSH logout and starts it at boot. A user-bus error means the systemd user
 session needs fixing; running the service as root would use a different home
 and provider credentials.
 
+The `.deb` installs GTK runtime dependencies even when no window is used.
+For a minimal server, the release also offers a separate GTK-free probe archive
+and headless installer; the commands here use the Debian-managed package.
+
 ## 2. Sign into the exact existing workspace
 
 Use the Cloud workspace UUID for the workspace your Mac uses. Names such as
@@ -107,6 +111,14 @@ app launcher as `/usr/bin/agent-relay-desktop`. Older packages used the CLI’s
 Install and authenticate Claude Code and Codex for the same Linux user running
 the service. The service must be able to find their executables; a working
 interactive shell alone does not prove the service has the same PATH.
+
+For Relay’s `2026.11.3` integration, Codex also needs its app-server daemon: a
+managed daemon package, its standalone install, or an existing control socket.
+An older Codex installed only through npm or a version manager such as mise
+can lack these and be missing from spawn targets (`CODEX_NO_DAEMON`). If that
+is the cause, use the [official Codex standalone installer](https://learn.chatgpt.com/docs/codex/cli#getting-started)
+for this Linux user. This is Relay’s version-specific discovery requirement;
+npm remains a supported general Codex CLI installation method.
 
 Spawning is on by default unless explicitly disabled. Check **Accept spawns
 from Agent Relay** under **Settings → Messages → Spawned agents** if it was
