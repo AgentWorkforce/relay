@@ -8,12 +8,12 @@ the account-aware core, even when you never open its desktop UI.
 
 ## Choose the right setup path
 
-| Path | What it does |
-| --- | --- |
-| Linux Agent Relay package + `agent-relay-probe relay setup` | Signs this machine into an existing Cloud workspace by device approval and runs the account-aware service. Use this for a server beside your Mac. |
-| npm CLI `agent-relay cloud login` + `cloud enroll` | Saves a separate CLI login and fleet enrollment record. A returned node ID does not start a service or prove a live spawn target. |
-| npm CLI `agent-relay init --hosted` | Can create a new hosted messaging workspace. It does not select your Desktop workspace just because both use the same account or the name “Default”. |
-| `agent-relay-node serve --headless` | Runs the standalone messaging core. It reads CLI workspace configuration and has no Cloud account sign-in plugin; it does not consume the Cloud fleet enrollment as an account login. |
+| Path                                                        | What it does                                                                                                                                                                          |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Linux Agent Relay package + `agent-relay-probe relay setup` | Signs this machine into an existing Cloud workspace by device approval and runs the account-aware service. Use this for a server beside your Mac.                                     |
+| npm CLI `agent-relay cloud login` + `cloud enroll`          | Saves a separate CLI login and fleet enrollment record. A returned node ID does not start a service or prove a live spawn target.                                                     |
+| npm CLI `agent-relay init --hosted`                         | Can create a new hosted messaging workspace. It does not select your Desktop workspace just because both use the same account or the name “Default”.                                  |
+| `agent-relay-node serve --headless`                         | Runs the standalone messaging core. It reads CLI workspace configuration and has no Cloud account sign-in plugin; it does not consume the Cloud fleet enrollment as an account login. |
 
 In v18, `relay node up` and `relay fleet status` were removed with the local
 broker. Some enrollment output still recommends `node up`; that is stale advice.
