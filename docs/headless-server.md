@@ -47,12 +47,14 @@ Continue only after a successful install:
 ```sh
 sudo loginctl enable-linger "$USER"
 systemctl --user daemon-reload
-systemctl --user enable --now agent-relay.service
+systemctl --user enable agent-relay.service
+systemctl --user restart agent-relay.service
 systemctl --user is-active agent-relay.service
 loginctl show-user "$USER" -p Linger
 ```
 
-Expect `active` and `Linger=yes`. Lingering keeps the user's service running
+Restarting loads the newly installed build even when an older service was
+already active. Expect `active` and `Linger=yes`. Lingering keeps the user's service running
 after SSH logout and starts it at boot. A user-bus error means the systemd user
 session needs fixing; running the service as root would use a different home
 and provider credentials.
@@ -86,8 +88,9 @@ on those builds omit `relay` from the probe commands in this guide. If neither
 form is available, update the Linux package from the download page.
 `agent-relay-probe` is the account-aware package helper. It is different from
 `agent-relay-node`, and from the separately installed npm `agent-relay` CLI.
-On a `.deb` install, `/usr/bin/agent-relay` launches the app; use the full probe
-path above to avoid command-name collisions.
+The stable `2026.11.3` `.deb` installs the helper at the path above and the
+app launcher as `/usr/bin/agent-relay-desktop`. Older packages used the CLI’s
+`agent-relay` name for that launcher; use the full probe path to avoid confusion.
 
 ## 3. Verify spawning separately from sign-in
 
