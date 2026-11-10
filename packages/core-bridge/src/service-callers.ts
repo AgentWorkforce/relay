@@ -45,6 +45,9 @@ export interface CallerIdentity {
  * Refuses when Desktop's bound identity is not the identity covered by the
  * caller file. The local node is intentionally not compared: it is returned
  * only by Desktop and selects the spawn target after this check.
+ * @param descriptor - The validated schema-v2 caller handoff.
+ * @param identity - The identity reported by the authenticated bridge connection.
+ * @returns Nothing when the publisher and workspace identities match exactly.
  */
 export function assertServiceCallerIdentity(
   descriptor: CallerFileDescriptor,
@@ -280,7 +283,12 @@ function checkSettled(
   };
 }
 
-/** Returns the publisher, local node and Relaycast scope of the bound caller. */
+/**
+ * Returns the publisher, local node and Relaycast scope of the bound caller.
+ * @param client - An authenticated service-caller bridge connection.
+ * @param options - Optional timeout and cancellation controls for the call.
+ * @returns The validated publisher, node, base URL and workspace identity.
+ */
 export async function serviceCallerIdentity(
   client: CoreClient,
   options?: CallOptions
@@ -289,7 +297,13 @@ export async function serviceCallerIdentity(
   return checkIdentity(await client.call(SERVICE_CALLER_IDENTITY_METHOD, {}, options));
 }
 
-/** Opens one inbox iterator, scoped durably to exactly one spawn invocation. */
+/**
+ * Opens one inbox iterator, scoped durably to exactly one spawn invocation.
+ * @param client - An authenticated service-caller bridge connection.
+ * @param invocationId - The exact spawn invocation whose result is awaited.
+ * @param options - Optional timeout and cancellation controls for the call.
+ * @returns The validated identifier of the opened iterator.
+ */
 export async function serviceCallerInboxOpen(
   client: CoreClient,
   invocationId: string,
@@ -305,7 +319,14 @@ export async function serviceCallerInboxOpen(
   );
 }
 
-/** Long-polls the next terminal delivery for an open iterator. */
+/**
+ * Long-polls the next terminal delivery for an open iterator.
+ * @param client - An authenticated service-caller bridge connection.
+ * @param iteratorId - The exact iterator returned by {@link serviceCallerInboxOpen}.
+ * @param timeoutMs - The server-side long-poll duration, from zero through 30 seconds.
+ * @param options - Optional call timeout and cancellation controls.
+ * @returns The validated terminal delivery, or `null` when the poll elapsed.
+ */
 export async function serviceCallerInboxNext(
   client: CoreClient,
   iteratorId: string,
@@ -348,7 +369,13 @@ async function settle(
   );
 }
 
-/** Acknowledges an item only after Relayflows durably journaled its result. */
+/**
+ * Acknowledges an item only after Relayflows durably journaled its result.
+ * @param client - An authenticated service-caller bridge connection.
+ * @param itemId - The exact inbox item whose result was journaled.
+ * @param options - Optional timeout and cancellation controls for the call.
+ * @returns The core's validated acknowledgement receipt.
+ */
 export function serviceCallerInboxAck(
   client: CoreClient,
   itemId: string,
@@ -357,7 +384,13 @@ export function serviceCallerInboxAck(
   return settle(client, itemId, 'ack', options);
 }
 
-/** Rejects an item whose result cannot be accepted into the Relayflows journal. */
+/**
+ * Rejects an item whose result cannot be accepted into the Relayflows journal.
+ * @param client - An authenticated service-caller bridge connection.
+ * @param itemId - The exact inbox item whose result was rejected.
+ * @param options - Optional timeout and cancellation controls for the call.
+ * @returns The core's validated failure-settlement receipt.
+ */
 export function serviceCallerInboxFail(
   client: CoreClient,
   itemId: string,
@@ -366,7 +399,13 @@ export function serviceCallerInboxFail(
   return settle(client, itemId, 'fail', options);
 }
 
-/** Closes one iterator and releases any unsettled delivery lease it holds. */
+/**
+ * Closes one iterator and releases any unsettled delivery lease it holds.
+ * @param client - An authenticated service-caller bridge connection.
+ * @param iteratorId - The exact iterator to close.
+ * @param options - Optional timeout and cancellation controls for the call.
+ * @returns A promise that resolves after the core confirms closure.
+ */
 export async function serviceCallerInboxClose(
   client: CoreClient,
   iteratorId: string,
@@ -383,7 +422,12 @@ export async function serviceCallerInboxClose(
   );
 }
 
-/** Invalidates this connection's binding after every iterator is closed. */
+/**
+ * Invalidates this connection's binding after every iterator is closed.
+ * @param client - An authenticated service-caller bridge connection.
+ * @param options - Optional timeout and cancellation controls for the call.
+ * @returns A promise that resolves after the core confirms disconnection.
+ */
 export async function serviceCallerDisconnect(client: CoreClient, options?: CallOptions): Promise<void> {
   requireMethod(client, SERVICE_CALLER_DISCONNECT_METHOD);
   checkDone(

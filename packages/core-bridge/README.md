@@ -133,15 +133,20 @@ The core stays authoritative. Rules a caller must know:
 
   ```ts
   const descriptor = await readCallerDescriptor('/path/to/caller.json');
+  requireServiceCallerMethods(client);
   await authenticate(client, descriptor.credential); // spawn_callers.challenge + .authenticate
   await spawnInvoke(client, { node_id, node_name, name, harness, task, directory, idempotency_key });
   ```
 
-  The credential file must use schema `agent-relay-service-caller/2` and auth
-  `challenge-hmac-sha256/v1`; schema 1 static-secret files are refused.
-  `authenticate` also requires the complete service-caller method set before
-  sending a challenge. Consumers that select a local service-caller path can
-  call `requireServiceCallerMethods(client)` for the same fail-closed check.
+  `readCallerDescriptor` requires schema `agent-relay-service-caller/2` and the
+  exact `challenge-hmac-sha256/v1` auth route, and refuses schema 1
+  static-secret files. `readCallerCredential` retains its 18.0 compatibility
+  behavior and still accepts them.
+  `authenticate` requires only `spawn_callers.challenge` and
+  `spawn_callers.authenticate` before it sends a challenge. Consumers that
+  need the complete service-caller lifecycle must call
+  `requireServiceCallerMethods(client)` to fail closed when any method is
+  absent.
 
   `authenticate` answers a single-use challenge with
   `HMAC-SHA256(SHA-256(secret), transcript)`. A connection binds once; three
@@ -164,6 +169,7 @@ connection as the caller and send no `caller_name` or `caller_secret`:
 ```ts
 const descriptor = await readCallerDescriptor('/path/to/caller.json');
 await using client = await connectCore({ socket: descriptor.socket });
+requireServiceCallerMethods(client);
 await authenticate(client, descriptor.credential);
 const identity = await serviceCallerIdentity(client);
 assertServiceCallerIdentity(descriptor, identity);

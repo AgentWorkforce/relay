@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { CallOptions, CoreClient, HelloResult } from './client.js';
 import { CoreBridgeError, CoreRpcError } from './errors.js';
@@ -33,7 +33,7 @@ const METHODS = [
   SERVICE_CALLER_DISCONNECT_METHOD,
 ];
 
-const identity = {
+const IDENTITY = {
   publisher: { id: 'agent_1', name: 'relayflows' },
   node: { id: 'node_1', name: 'laptop' },
   base_url: 'https://relay.example',
@@ -41,16 +41,16 @@ const identity = {
   relaycast_workspace_id: 'rcws_1',
 };
 
-const descriptorIdentity = {
-  publisher: identity.publisher,
+const DESCRIPTOR_IDENTITY = {
+  publisher: IDENTITY.publisher,
   workspace: {
-    base_url: identity.base_url,
-    workspace_id: identity.workspace_id,
-    relaycast_workspace_id: identity.relaycast_workspace_id,
+    base_url: IDENTITY.base_url,
+    workspace_id: IDENTITY.workspace_id,
+    relaycast_workspace_id: IDENTITY.relaycast_workspace_id,
   },
 } as CallerFileDescriptor;
 
-const textDelivery = {
+const TEXT_DELIVERY = {
   item_id: 'item_1',
   message_id: 'msg_1',
   sender: { id: 'agent_2', name: 'worker-1' },
@@ -59,7 +59,7 @@ const textDelivery = {
   sent_at: '2026-11-09T00:00:00Z',
 };
 
-const failedDelivery = {
+const FAILED_DELIVERY = {
   item_id: 'item_2',
   message_id: 'msg_2',
   sender: { id: 'agent_3', name: 'worker-2' },
@@ -84,9 +84,9 @@ function fakeClient(
     topics: [],
   };
   const defaults: Record<string, unknown> = {
-    [SERVICE_CALLER_IDENTITY_METHOD]: identity,
+    [SERVICE_CALLER_IDENTITY_METHOD]: IDENTITY,
     [SERVICE_CALLER_INBOX_OPEN_METHOD]: { iterator_id: `it_${'a'.repeat(32)}` },
-    [SERVICE_CALLER_INBOX_NEXT_METHOD]: { delivery: textDelivery },
+    [SERVICE_CALLER_INBOX_NEXT_METHOD]: { delivery: TEXT_DELIVERY },
     [SERVICE_CALLER_INBOX_ACK_METHOD]: {
       item_id: 'item_1',
       message_id: 'msg_1',
@@ -108,10 +108,10 @@ function fakeClient(
     hello,
     socket: '/tmp/core.sock',
     closed: false,
-    call: async (method: string, params?: unknown, options?: CallOptions) => {
+    call: vi.fn(async (method: string, params?: unknown, options?: CallOptions) => {
       calls.push({ method, params, options });
       return Object.hasOwn(replies, method) ? replies[method] : defaults[method];
-    },
+    }),
   } as unknown as CoreClient;
   return { client, calls };
 }
@@ -125,17 +125,17 @@ async function bridgeError(promise: Promise<unknown>, code: string): Promise<Cor
 
 describe('service-caller helpers', () => {
   it('pins the authenticated publisher and workspace to caller.json before spawn', () => {
-    expect(() => assertServiceCallerIdentity(descriptorIdentity, identity)).not.toThrow();
+    expect(() => assertServiceCallerIdentity(DESCRIPTOR_IDENTITY, IDENTITY)).not.toThrow();
     for (const mismatch of [
-      { ...identity, publisher: { ...identity.publisher, id: 'agent_other' } },
-      { ...identity, publisher: { ...identity.publisher, name: 'other' } },
-      { ...identity, base_url: 'https://other.example' },
-      { ...identity, workspace_id: 'ws_other' },
-      { ...identity, relaycast_workspace_id: 'rcws_other' },
+      { ...IDENTITY, publisher: { ...IDENTITY.publisher, id: 'agent_other' } },
+      { ...IDENTITY, publisher: { ...IDENTITY.publisher, name: 'other' } },
+      { ...IDENTITY, base_url: 'https://other.example' },
+      { ...IDENTITY, workspace_id: 'ws_other' },
+      { ...IDENTITY, relaycast_workspace_id: 'rcws_other' },
     ]) {
       const error = (() => {
         try {
-          assertServiceCallerIdentity(descriptorIdentity, mismatch);
+          assertServiceCallerIdentity(DESCRIPTOR_IDENTITY, mismatch);
         } catch (value) {
           return value;
         }
@@ -199,16 +199,16 @@ describe('service-caller helpers', () => {
 
   it('returns checked identity, text, failure and settlement replies', async () => {
     const textClient = fakeClient();
-    await expect(serviceCallerIdentity(textClient.client)).resolves.toEqual(identity);
+    await expect(serviceCallerIdentity(textClient.client)).resolves.toEqual(IDENTITY);
     await expect(serviceCallerInboxNext(textClient.client, `it_${'a'.repeat(32)}`, 0)).resolves.toEqual({
-      delivery: textDelivery,
+      delivery: TEXT_DELIVERY,
     });
 
     const failureClient = fakeClient({
-      [SERVICE_CALLER_INBOX_NEXT_METHOD]: { delivery: failedDelivery },
+      [SERVICE_CALLER_INBOX_NEXT_METHOD]: { delivery: FAILED_DELIVERY },
     });
     await expect(serviceCallerInboxNext(failureClient.client, `it_${'a'.repeat(32)}`, 0)).resolves.toEqual({
-      delivery: failedDelivery,
+      delivery: FAILED_DELIVERY,
     });
     await expect(serviceCallerInboxAck(textClient.client, 'item_1')).resolves.toMatchObject({
       action: 'ack',
@@ -261,18 +261,18 @@ describe('service-caller helpers', () => {
   });
 
   it.each([
-    ['identity', SERVICE_CALLER_IDENTITY_METHOD, { ...identity, base_url: 'file:///tmp/x' }],
+    ['identity', SERVICE_CALLER_IDENTITY_METHOD, { ...IDENTITY, base_url: 'file:///tmp/x' }],
     ['open', SERVICE_CALLER_INBOX_OPEN_METHOD, { iterator_id: 'it_bad' }],
     ['missing delivery', SERVICE_CALLER_INBOX_NEXT_METHOD, {}],
     [
       'both text and failure',
       SERVICE_CALLER_INBOX_NEXT_METHOD,
-      { delivery: { ...textDelivery, failure: failedDelivery.failure } },
+      { delivery: { ...TEXT_DELIVERY, failure: FAILED_DELIVERY.failure } },
     ],
     [
       'unknown failure',
       SERVICE_CALLER_INBOX_NEXT_METHOD,
-      { delivery: { ...failedDelivery, failure: { ...failedDelivery.failure, code: 'other' } } },
+      { delivery: { ...FAILED_DELIVERY, failure: { ...FAILED_DELIVERY.failure, code: 'other' } } },
     ],
     [
       'ack mismatch',

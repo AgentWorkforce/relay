@@ -165,7 +165,7 @@ interface FlowCoreBridgeApi {
   serviceCallerDisconnect(client: FlowCoreBridgeClient, options?: { signal?: AbortSignal }): Promise<unknown>;
 }
 
-const requiredFunctions = [
+const REQUIRED_FUNCTIONS = [
   'connectCore',
   'readCallerDescriptor',
   'authenticate',
@@ -186,7 +186,7 @@ const requiredFunctions = [
 
 // Each assignment is deliberate: a missing export or incompatible signature
 // must fail TypeScript before a package reaches Flows' dynamic import.
-const structuralContract: FlowCoreBridgeApi = {
+const STRUCTURAL_CONTRACT: FlowCoreBridgeApi = {
   connectCore: bridge.connectCore,
   readCallerDescriptor: bridge.readCallerDescriptor,
   authenticate: bridge.authenticate,
@@ -225,9 +225,9 @@ void (null as unknown as [
 
 describe('Flows schema-v2 public surface', () => {
   it('exports every function the optional local adapter loads', () => {
-    expect(requiredFunctions).toHaveLength(16);
-    for (const name of requiredFunctions) {
-      expect(structuralContract[name], name).toBeTypeOf('function');
+    expect(REQUIRED_FUNCTIONS).toHaveLength(16);
+    for (const name of REQUIRED_FUNCTIONS) {
+      expect(STRUCTURAL_CONTRACT[name], name).toBeTypeOf('function');
     }
   });
 });
