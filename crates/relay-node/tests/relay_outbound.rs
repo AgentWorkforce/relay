@@ -1815,6 +1815,108 @@ async fn connect_sender_attribution_is_one_line_and_precedes_untrusted_body() {
     h.stop().await;
 }
 
+/// Joins as the guest of a Connect whose saved expiry passes in two seconds,
+/// then waits for it to pass.
+async fn join_then_pass_saved_expiry(h: &Harness) {
+    let guest = h.connect_fake.agent("connect-guest").unwrap();
+    let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(2))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    h.join.set_response(JoinResponse {
+        connect_id: "connect-1".into(),
+        task: "Extended".into(),
+        expires_at,
+        host: ConnectHost {
+            person: "Alice".into(),
+            agent_name: "connect-host".into(),
+        },
+        participant: JoinedParticipant {
+            agent_name: guest.name,
+            agent_id: guest.id,
+            role: "guest".into(),
+            token: Secret::new(guest.token),
+            relay_base_url: h.connect_fake.base_url.clone(),
+        },
+        participants: vec![Participant {
+            agent_name: "connect-guest".into(),
+            role: "guest".into(),
+        }],
+    });
+    h.call(
+        IN_CODEX,
+        "POST",
+        "/connect/join",
+        json!({"link": "connect-1"}),
+    )
+    .await
+    .expect("the guest joins");
+    tokio::time::sleep(std::time::Duration::from_millis(2_500)).await;
+}
+
+#[tokio::test]
+async fn a_connect_the_host_extended_stays_open_past_its_join_expiry() {
+    let h = Harness::start().await;
+    h.join
+        .set_expiry(Ok(Some("2099-10-01T12:00:00.000Z".into())));
+    join_then_pass_saved_expiry(&h).await;
+    let status = h
+        .call(IN_CODEX, "GET", "/connect/status", Value::Null)
+        .await
+        .expect("an extended Connect stays joined");
+    assert_eq!(status["expires_at"], "2099-10-01T12:00:00.000Z");
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn a_connect_cloud_reports_expired_closes_at_its_saved_expiry() {
+    let h = Harness::start().await;
+    h.join.set_expiry(Err(OutboundError::new(
+        410,
+        "connect_expired",
+        "This Relay Connect expired.",
+    )));
+    join_then_pass_saved_expiry(&h).await;
+    // Either the poll loop or this request confirms the expiry first; both
+    // close the credential and tell the session the Connect expired.
+    let first = code(
+        h.call(IN_CODEX, "GET", "/connect/status", Value::Null)
+            .await,
+    );
+    assert!(
+        first == (410, "connect_expired".into()) || first == (404, "connect_not_joined".into()),
+        "{first:?}"
+    );
+    assert_eq!(
+        code(
+            h.call(IN_CODEX, "GET", "/connect/status", Value::Null)
+                .await
+        ),
+        (404, "connect_not_joined".into())
+    );
+    eventually("the Connect expired notice", || {
+        h.injector
+            .injected()
+            .iter()
+            .any(|notice| notice.text.contains("This Connect expired."))
+    })
+    .await;
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn an_unreachable_cloud_keeps_a_just_expired_connect_open() {
+    let h = Harness::start().await;
+    h.join.set_expiry(Err(OutboundError::new(
+        503,
+        "connect_unreachable",
+        "Relay Connect could not be reached.",
+    )));
+    join_then_pass_saved_expiry(&h).await;
+    h.call(IN_CODEX, "GET", "/connect/status", Value::Null)
+        .await
+        .expect("Cloud's silence alone does not close a Connect");
+    h.stop().await;
+}
+
 #[tokio::test]
 async fn an_expired_connect_is_never_adopted() {
     let h = Harness::start().await;
