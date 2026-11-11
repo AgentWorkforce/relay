@@ -25,6 +25,7 @@ use crate::relay::sessions::DiscoveredSession;
 use crate::relay::store::Registration;
 use crate::relay::store::SessionKind;
 use crate::relay::workspace::Secret;
+use futures_util::future::BoxFuture;
 use serde_json::{json, Map, Value};
 use std::path::Path;
 
@@ -271,7 +272,20 @@ impl Outbound {
     /// and joins it. A channel that already exists is joined instead
     /// (`created` false), so asking again is harmless. The channel and its
     /// optional topic are named in the query or a JSON body.
-    pub(super) async fn create_channel_route(
+    ///
+    /// Boxed here, outside [`Outbound::handle`]: an unoptimised build lays
+    /// every route's future out in `handle`'s own stack frame, and this one
+    /// tipped a long-polling session request over a 2 MiB test stack.
+    pub(super) fn create_channel_route<'a>(
+        &'a self,
+        pid: i32,
+        uid: u32,
+        request: &'a Request,
+    ) -> BoxFuture<'a, Result<Value, OutboundError>> {
+        Box::pin(self.create_and_join_channel(pid, uid, request))
+    }
+
+    async fn create_and_join_channel(
         &self,
         pid: i32,
         uid: u32,
