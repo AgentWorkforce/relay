@@ -79,6 +79,7 @@ pub(super) fn of_workspace(mut intent: Intent, workspace: &Workspace) -> Option<
     }
     // A kept agent's registration pins the key in use now.
     intent.workspace_key = workspace.key.clone();
+    intent.control_url = workspace.control_url.clone();
     Some(intent)
 }
 

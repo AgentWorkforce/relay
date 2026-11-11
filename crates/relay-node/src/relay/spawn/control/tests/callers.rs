@@ -37,16 +37,28 @@ impl Relaycast {
     /// Serves one request per body, on a thread; the handle returns the
     /// requests as text.
     fn serve(&self, bodies: Vec<Value>) -> std::thread::JoinHandle<Vec<String>> {
+        self.serve_statuses(
+            bodies
+                .into_iter()
+                .map(|body| ("200 OK", json!({"ok": true, "data": body})))
+                .collect(),
+        )
+    }
+
+    fn serve_statuses(
+        &self,
+        responses: Vec<(&'static str, Value)>,
+    ) -> std::thread::JoinHandle<Vec<String>> {
         let listener = self.listener.try_clone().unwrap();
         std::thread::spawn(move || {
             let mut requests = Vec::new();
-            for body in bodies {
+            for (status, body) in responses {
                 let (mut stream, _) = listener.accept().unwrap();
                 requests.push(read_request(&mut stream));
-                let body = json!({"ok": true, "data": body}).to_string();
+                let body = body.to_string();
                 write!(
                     stream,
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     body.len(),
                     body
                 )
@@ -93,6 +105,10 @@ fn read_request(stream: &mut std::net::TcpStream) -> String {
             return text;
         }
     }
+}
+
+fn request_body(request: &str) -> Value {
+    serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap()
 }
 
 /// A plugin that binds one caller on connection 1 (or resolves it however a
@@ -226,7 +242,11 @@ fn service(owns_only: bool) -> ExternalCaller {
 
 fn core_with(plugin: Option<Arc<dyn SpawnCallers>>, base: &str) -> (tempfile::TempDir, Arc<Core>) {
     let temp = tempfile::tempdir().unwrap();
-    let home = temp.path();
+    let core = core_at(temp.path(), plugin, base);
+    (temp, core)
+}
+
+fn core_at(home: &std::path::Path, plugin: Option<Arc<dyn SpawnCallers>>, base: &str) -> Arc<Core> {
     let config = Config {
         paths: CorePaths::for_socket(home.join("core.sock")).unwrap(),
         home: home.into(),
@@ -248,7 +268,7 @@ fn core_with(plugin: Option<Arc<dyn SpawnCallers>>, base: &str) -> (tempfile::Te
         workspace_id: Some("rw_test".into()),
         ..selected_workspace()
     });
-    (temp, core)
+    core
 }
 
 /// The session caller `test-caller` and a worker it can see, spawned on
@@ -309,6 +329,15 @@ fn released() -> Value {
         "id":"invocation_release",
         "status":"completed",
         "output":{"released":true,"name":"test-worker"}
+    })
+}
+
+fn strict_pending() -> Value {
+    json!({
+        "id": "invocation_new",
+        "status": "pending",
+        "spawn_contract_applied": "relay.spawn.invoke.logical-replay-resume/1",
+        "spawn_replay_capability_applied": "relay.spawn.replay-resume/1",
     })
 }
 
@@ -524,13 +553,30 @@ async fn session_callers_are_unchanged_when_a_plugin_is_present() {
         )
         .is_err());
     }
-    // Status and release by the session caller take today's path: its own
+    // Invoke, status and release by the session caller take today's path: its own
     // token, no plugin call, and no owner check on a worker another
     // requester started.
+    let node_name = crate::relay::spawn::node_name(&core.machine_prefix);
+    let target = json!({
+        "id":"node_local", "name":node_name, "live":true, "handlers_live":true,
+        "active_agents":0, "reserved_agents":0, "max_agents":4,
+        "capabilities":["spawn:codex"]
+    });
     let served = relaycast.serve(vec![
+        json!([target.clone()]),
+        json!({"id":"invocation_session","status":"pending"}),
+        json!([target]),
+        json!({"id":"invocation_session","status":"pending"}),
         json!({"id":"invocation_9","status":"completed"}),
         released(),
     ]);
+    let directory = tempfile::tempdir().unwrap();
+    let mut invoke = invoke_params(&core, "codex", directory.path().to_str().unwrap());
+    invoke["caller_name"] = json!("test-caller");
+    server::call(&core, "spawn.invoke", invoke.clone())
+        .await
+        .unwrap();
+    server::call(&core, "spawn.invoke", invoke).await.unwrap();
     server::call(&core, "spawn.status", status_params(false))
         .await
         .unwrap();
@@ -538,10 +584,23 @@ async fn session_callers_are_unchanged_when_a_plugin_is_present() {
         .await
         .unwrap();
     let requests = served.join().unwrap();
-    assert!(requests[0].starts_with("GET /v1/actions/release/invocations/invocation_9 "));
-    assert!(requests[1].starts_with("POST /v1/agents/release-exact "));
-    for request in &requests {
-        assert!(request.contains("test-agent-secret"));
+    assert!(requests[0].starts_with("GET /v1/nodes?"));
+    assert!(requests[1].starts_with("POST /v1/actions/spawn/invoke "));
+    assert!(requests[2].starts_with("GET /v1/nodes?"));
+    assert!(requests[3].starts_with("POST /v1/actions/spawn/invoke "));
+    let first_invoke = request_body(&requests[1]);
+    let retry_invoke = request_body(&requests[3]);
+    assert_eq!(first_invoke, retry_invoke);
+    assert!(first_invoke["input"].get("target_node_id").is_none());
+    assert!(first_invoke["input"].get("spawn_contract").is_none());
+    assert!(first_invoke["input"].get("logical_request").is_none());
+    assert!(requests[4].starts_with("GET /v1/actions/release/invocations/invocation_9 "));
+    assert!(requests[5].starts_with("POST /v1/agents/release-exact "));
+    for index in [1, 3, 4, 5] {
+        assert!(requests[index].contains("test-agent-secret"));
+    }
+    for index in [0, 2] {
+        assert!(requests[index].contains("test-workspace-secret"));
     }
     assert!(stub.log().is_empty(), "{:?}", stub.log());
     // Over a bridge connection the plugin does not know, the same: the
@@ -892,37 +951,55 @@ async fn an_external_caller_is_held_to_its_harnesses_and_folders() {
         ..service(true)
     });
     let (_home, core) = core_with(Some(stub.clone()), &relaycast.base);
+    let error = bound(
+        &core,
+        "spawn.invoke",
+        invoke_params(&core, "claude", inside.to_str().unwrap()),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.data.reason, Some(RefusalReason::OutsideScope));
+    assert!(relaycast.untouched());
+
     let escape = format!("{}/../{}", inside.display(), { outside.path().display() });
-    for (harness, directory) in [
-        ("claude", inside.to_str().unwrap().to_string()),
-        ("codex", outside.path().to_str().unwrap().to_string()),
-        ("codex", escape),
-        (
-            "codex",
-            inside.join("missing").to_str().unwrap().to_string(),
-        ),
-    ] {
+    let directories = [
+        outside.path().to_str().unwrap().to_string(),
+        escape,
+        inside.join("missing").to_str().unwrap().to_string(),
+    ];
+    let served = relaycast.serve_statuses(
+        directories
+            .iter()
+            .map(|_| {
+                (
+                    "404 Not Found",
+                    json!({"ok": false, "error": {"code": "invocation_not_found", "message": "No accepted invocation"}}),
+                )
+            })
+            .collect(),
+    );
+    for directory in &directories {
         let error = bound(
             &core,
             "spawn.invoke",
-            invoke_params(&core, harness, &directory),
+            invoke_params(&core, "codex", directory),
         )
         .await
         .unwrap_err();
         assert_eq!(
             error.data.reason,
             Some(RefusalReason::OutsideScope),
-            "{harness} {directory}"
+            "{directory}"
         );
-        assert!(relaycast.untouched());
     }
+    let requests = served.join().unwrap();
+    assert_eq!(requests.len(), directories.len());
+    assert!(requests
+        .iter()
+        .all(|request| request.starts_with("POST /v1/actions/spawn/replay ")));
     assert_eq!(stub.log().last().unwrap(), "record:invoke:refused");
     // In scope, it reaches Relaycast as itself.
-    let node = crate::relay::spawn::node_name(&core.machine_prefix);
-    let served = relaycast.serve(vec![
-        json!([{"id":"node_local","name": node,"live":true,"handlers_live":true,"active_agents":0,"reserved_agents":0,"max_agents":4,"capabilities":["spawn:codex"]}]),
-        json!({"id":"invocation_new","status":"pending"}),
-    ]);
+    let served = relaycast.serve(vec![strict_pending()]);
     let answer = bound(
         &core,
         "spawn.invoke",
@@ -932,10 +1009,140 @@ async fn an_external_caller_is_held_to_its_harnesses_and_folders() {
     .unwrap();
     assert_eq!(answer["id"], "invocation_new");
     let requests = served.join().unwrap();
-    assert!(requests[0].contains("test-workspace-secret"));
-    assert!(requests[1].starts_with("POST /v1/actions/spawn/invoke "));
-    assert!(requests[1].contains("service-agent-token"));
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert!(requests[0].starts_with("POST /v1/actions/spawn/strict-invoke "));
+    assert!(!requests[0].contains("test-workspace-secret"));
+    assert!(requests[0].contains("service-agent-token"));
     assert_eq!(stub.log().last().unwrap(), "record:invoke:ok");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_external_caller_refuses_a_server_that_did_not_apply_the_strict_contract() {
+    let relaycast = Relaycast::new();
+    let stub = Stub::new(service(true));
+    let (_home, core) = core_with(Some(stub.clone()), &relaycast.base);
+    let directory = tempfile::tempdir().unwrap();
+    let served = relaycast.serve(vec![json!({"id":"invocation_new","status":"pending"})]);
+    let error = bound(
+        &core,
+        "spawn.invoke",
+        invoke_params(&core, "codex", directory.path().to_str().unwrap()),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.data.kind, ErrorKind::Internal);
+    assert_eq!(served.join().unwrap().len(), 1);
+    assert_eq!(stub.log().last().unwrap(), "record:invoke:internal");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_external_caller_requires_the_exact_replay_resume_proofs() {
+    for response in [
+        json!({
+            "id": "invocation_new",
+            "status": "pending",
+            "spawn_contract_applied": "relay.spawn.invoke.logical/1",
+            "spawn_replay_capability_applied": "relay.spawn.replay-resume/1",
+        }),
+        json!({
+            "id": "invocation_new",
+            "status": "pending",
+            "spawn_contract_applied": "relay.spawn.invoke.logical-replay-resume/1",
+        }),
+        json!({
+            "id": "invocation_new",
+            "status": "pending",
+            "spawn_contract_applied": "relay.spawn.invoke.logical-replay-resume/1",
+            "spawn_replay_capability_applied": "relay.spawn.replay-resume/0",
+        }),
+    ] {
+        let relaycast = Relaycast::new();
+        let stub = Stub::new(service(true));
+        let (_home, core) = core_with(Some(stub.clone()), &relaycast.base);
+        let directory = tempfile::tempdir().unwrap();
+        let served = relaycast.serve(vec![response]);
+        let error = bound(
+            &core,
+            "spawn.invoke",
+            invoke_params(&core, "codex", directory.path().to_str().unwrap()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.data.kind, ErrorKind::Internal);
+        let requests = served.join().unwrap();
+        assert_eq!(requests.len(), 1, "unexpected fallback: {requests:?}");
+        assert!(requests[0].starts_with("POST /v1/actions/spawn/strict-invoke "));
+        assert_eq!(stub.log().last().unwrap(), "record:invoke:internal");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_external_caller_never_falls_back_to_the_legacy_route_on_an_old_server() {
+    let relaycast = Relaycast::new();
+    let stub = Stub::new(service(true));
+    let (_home, core) = core_with(Some(stub.clone()), &relaycast.base);
+    let listener = relaycast.listener.try_clone().unwrap();
+    let served = std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        let (mut stream, _) = listener.accept().unwrap();
+        requests.push(read_request(&mut stream));
+        let body = json!({
+            "ok": false,
+            "error": {"code": "route_not_found", "message": "No such route"}
+        })
+        .to_string();
+        write!(
+            stream,
+            "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+
+        // A compatibility fallback would enqueue a second connection on the
+        // legacy route. Give it a bounded window so this assertion itself
+        // cannot hang when the client correctly fails closed.
+        listener.set_nonblocking(true).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+        while std::time::Instant::now() < deadline {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    requests.push(read_request(&mut stream));
+                    let body = json!({
+                        "ok": true,
+                        "data": {"id": "legacy_side_effect", "status": "pending"}
+                    })
+                    .to_string();
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                    .unwrap();
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(error) => panic!("accept failed: {error}"),
+            }
+        }
+        requests
+    });
+    let directory = tempfile::tempdir().unwrap();
+    let error = bound(
+        &core,
+        "spawn.invoke",
+        invoke_params(&core, "codex", directory.path().to_str().unwrap()),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.data.kind, ErrorKind::NotFound);
+    let requests = served.join().unwrap();
+    assert_eq!(requests.len(), 1, "legacy fallback occurred: {requests:?}");
+    assert!(requests[0].starts_with("POST /v1/actions/spawn/strict-invoke "));
+    assert_eq!(stub.log().last().unwrap(), "record:invoke:not_found");
 }
 
 #[cfg(unix)]
@@ -945,8 +1152,10 @@ async fn a_scoped_spawn_forwards_the_checked_path_after_a_symlink_swap() {
 
     let relaycast = Relaycast::new();
     let allowed = tempfile::tempdir().unwrap();
+    let checked_target = allowed.path().join("checked-target");
+    std::fs::create_dir(&checked_target).unwrap();
     let checked = allowed.path().join("checked");
-    std::fs::create_dir(&checked).unwrap();
+    symlink(&checked_target, &checked).unwrap();
     let outside = tempfile::tempdir().unwrap();
     let selected = allowed.path().join("selected");
     symlink(&checked, &selected).unwrap();
@@ -957,31 +1166,22 @@ async fn a_scoped_spawn_forwards_the_checked_path_after_a_symlink_swap() {
     });
     let (_home, core) = core_with(Some(stub), &relaycast.base);
     let listener = relaycast.listener.try_clone().unwrap();
-    let node = crate::relay::spawn::node_name(&core.machine_prefix);
     let moved = selected.clone();
     let escaped = outside.path().to_path_buf();
     let served = std::thread::spawn(move || {
-        let mut requests = Vec::new();
-        for body in [
-            json!([{"id":"node_local","name":node,"live":true,"handlers_live":true,"active_agents":0,"reserved_agents":0,"max_agents":4,"capabilities":["spawn:codex"]}]),
-            json!({"id":"invocation_new","status":"pending"}),
-        ] {
-            let (mut stream, _) = listener.accept().unwrap();
-            requests.push(read_request(&mut stream));
-            if requests.len() == 1 {
-                std::fs::remove_file(&moved).unwrap();
-                symlink(&escaped, &moved).unwrap();
-            }
-            let body = json!({"ok":true,"data":body}).to_string();
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            )
-            .unwrap();
-        }
-        requests
+        let (mut stream, _) = listener.accept().unwrap();
+        let request = read_request(&mut stream);
+        std::fs::remove_file(&moved).unwrap();
+        symlink(&escaped, &moved).unwrap();
+        let body = json!({"ok":true,"data":strict_pending()}).to_string();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+        vec![request]
     });
     bound(
         &core,
@@ -991,9 +1191,14 @@ async fn a_scoped_spawn_forwards_the_checked_path_after_a_symlink_swap() {
     .await
     .unwrap();
     let requests = served.join().unwrap();
-    assert!(requests[1].contains(checked.to_str().unwrap()));
-    assert!(!requests[1].contains(selected.to_str().unwrap()));
-    assert!(!requests[1].contains(outside.path().to_str().unwrap()));
+    let body = request_body(&requests[0]);
+    let checked = std::fs::canonicalize(&checked).unwrap();
+    assert_eq!(body["input"]["worker_cwd"], checked.to_str().unwrap());
+    assert_eq!(
+        body["input"]["logical_request"]["directory"],
+        selected.to_str().unwrap()
+    );
+    assert!(!requests[0].contains(outside.path().to_str().unwrap()));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1179,22 +1384,20 @@ async fn a_session_connection_that_turned_external_is_refused_before_its_side_ef
     assert!(relaycast.untouched());
 }
 
-/// A spawn whose record failed, then the same request (same idempotency key)
-/// again once the node lists as `node`: the retry must get the original
-/// receipt without Relaycast being asked anything, and the plugin records it.
-async fn a_retry_after_a_failed_record_returns_the_kept_receipt(node: Value) {
+/// A service-caller spawn whose local receipt write failed retries the exact
+/// keyed Relaycast request after a cold restart. External calls do not depend
+/// on a fresh target listing: Relaycast's durable claim owns exact-body
+/// idempotency and returns the original invocation.
+async fn a_retry_after_a_failed_record_replays_the_durable_relaycast_claim() {
     let relaycast = Relaycast::new();
     let stub = Stub::new(service(true));
     let (home, core) = core_with(Some(stub.clone()), &relaycast.base);
     let directory = tempfile::tempdir().unwrap();
     let directory = directory.path().to_str().unwrap().to_string();
-    let name = crate::relay::spawn::node_name(&core.machine_prefix);
+    let node_name = crate::relay::spawn::node_name(&core.machine_prefix);
     let failure = RpcError::new(ErrorKind::StoreFailed, "the receipt ledger is unavailable");
     stub.fail_record(Some(failure.clone()));
-    let served = relaycast.serve(vec![
-        json!([{"id":"node_local","name": name,"live":true,"handlers_live":true,"active_agents":0,"reserved_agents":0,"max_agents":4,"capabilities":["spawn:codex"]}]),
-        json!({"id":"invocation_new","status":"pending"}),
-    ]);
+    let served = relaycast.serve(vec![strict_pending()]);
     let error = bound(
         &core,
         "spawn.invoke",
@@ -1204,68 +1407,272 @@ async fn a_retry_after_a_failed_record_returns_the_kept_receipt(node: Value) {
     .unwrap_err();
     assert_eq!(error, failure);
     let requests = served.join().unwrap();
-    assert!(requests[1].starts_with("POST /v1/actions/spawn/invoke "));
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert!(requests[0].starts_with("POST /v1/actions/spawn/strict-invoke "));
+    let first_body = requests[0]
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body.to_string())
+        .unwrap();
+    let first_json: Value = serde_json::from_str(&first_body).unwrap();
+    assert_eq!(
+        first_json["input"]["spawn_contract"],
+        "relay.spawn.invoke.logical-replay-resume/1"
+    );
+    assert_eq!(first_json["input"]["target_node_id"], "node_local");
+    assert_eq!(
+        first_json["input"]["logical_request"],
+        json!({
+            "schema": "relay.spawn.invoke.logical-replay-resume/1",
+            "target_node_id": "node_local",
+            "target_node": node_name,
+            "name": "test-new-worker",
+            "cli": "codex",
+            "task": "do the thing",
+            "directory": directory,
+            "verify_ready": true,
+        })
+    );
+    assert_eq!(first_json["input"]["worker_cwd"], directory);
 
-    // The node is no longer usable; the retry is answered from the kept
-    // receipt. The listing is served in case the core asks for it; a
-    // sentinel request then frees the server thread.
-    stub.fail_record(None);
-    let mut listed = node;
-    listed["name"] = Value::String(name);
-    let served = relaycast.serve(vec![json!([listed]), json!({})]);
+    // A restart has no local receipt or intent file to consult. The identical
+    // POST and key recover from Relaycast's durable claim directly.
+    drop(core);
+    let stub = Stub::new(service(true));
+    let core = core_at(home.path(), Some(stub.clone()), &relaycast.base);
+    let served = relaycast.serve(vec![strict_pending()]);
     let answer = bound(
         &core,
         "spawn.invoke",
         invoke_params(&core, "codex", &directory),
     )
-    .await;
-    let mut sentinel =
-        std::net::TcpStream::connect(relaycast.base.trim_start_matches("http://")).unwrap();
-    write!(sentinel, "GET /sentinel HTTP/1.1\r\nHost: test\r\n\r\n").unwrap();
-    let mut second =
-        std::net::TcpStream::connect(relaycast.base.trim_start_matches("http://")).unwrap();
-    write!(second, "GET /sentinel HTTP/1.1\r\nHost: test\r\n\r\n").unwrap();
+    .await
+    .unwrap();
     let requests = served.join().unwrap();
-    let answer = answer.unwrap();
     assert_eq!(answer["id"], "invocation_new");
-    assert!(
-        requests
-            .iter()
-            .all(|request| request.starts_with("GET /sentinel ")),
-        "{requests:?}"
-    );
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert!(requests[0].starts_with("POST /v1/actions/spawn/strict-invoke "));
+    assert!(requests[0].contains("spawn-test-20261107-0001"));
+    let replay_body = requests[0]
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .unwrap();
+    assert_eq!(replay_body, first_body);
     assert_eq!(stub.recorded().last().unwrap().as_ref().unwrap(), &answer);
     assert_eq!(stub.log().last().unwrap(), "record:invoke:ok");
-    // It was kept on disk, so a restart does not lose it.
-    let kept = home.path().join("app-data").join("spawn-control-receipts");
-    assert_eq!(std::fs::read_dir(&kept).unwrap().count(), 1);
-
-    // Another idempotency key is another request: nothing kept answers it.
-    let mut other = invoke_params(&core, "codex", &directory);
-    other["idempotency_key"] = json!("spawn-test-20261107-0002");
-    let served = relaycast.serve(vec![json!([listed_offline()])]);
-    let error = bound(&core, "spawn.invoke", other).await.unwrap_err();
-    assert_eq!(error.data.kind, ErrorKind::Refused);
-    served.join().unwrap();
-}
-
-fn listed_offline() -> Value {
-    json!({"id":"node_local","name":"someone-else","live":false,"handlers_live":false,"active_agents":0,"reserved_agents":0,"max_agents":4,"capabilities":["spawn:codex"]})
+    assert!(!home
+        .path()
+        .join("app-data")
+        .join("spawn-control-receipts")
+        .exists());
+    assert!(!home
+        .path()
+        .join("app-data")
+        .join("spawn-control-invokes")
+        .exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_retry_with_the_same_idempotency_key_returns_the_receipt_after_the_node_went_offline() {
-    a_retry_after_a_failed_record_returns_the_kept_receipt(
-        json!({"id":"node_local","live":false,"handlers_live":false,"active_agents":0,"reserved_agents":0,"max_agents":4,"capabilities":["spawn:codex"]}),
+async fn a_retry_after_restart_replays_the_exact_request_without_rechecking_the_target() {
+    a_retry_after_a_failed_record_replays_the_durable_relaycast_claim().await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retry_rechecks_a_moved_allowed_directory_without_changing_its_logical_claim() {
+    use std::os::unix::fs::symlink;
+
+    let relaycast = Relaycast::new();
+    let allowed = tempfile::tempdir().unwrap();
+    let first_target = allowed.path().join("first-target");
+    let second_target = allowed.path().join("second-target");
+    std::fs::create_dir(&first_target).unwrap();
+    std::fs::create_dir(&second_target).unwrap();
+    let selected = allowed.path().join("selected");
+    symlink(&first_target, &selected).unwrap();
+    let stub = Stub::new(ExternalCaller {
+        harnesses: Some(vec!["codex".into()]),
+        directory_roots: Some(vec![allowed.path().into()]),
+        ..service(true)
+    });
+    stub.fail_record(Some(RpcError::new(
+        ErrorKind::StoreFailed,
+        "the receipt ledger is unavailable",
+    )));
+    let (_home, core) = core_with(Some(stub.clone()), &relaycast.base);
+
+    let served = relaycast.serve(vec![strict_pending()]);
+    bound(
+        &core,
+        "spawn.invoke",
+        invoke_params(&core, "codex", selected.to_str().unwrap()),
     )
-    .await;
+    .await
+    .unwrap_err();
+    let first_request = served.join().unwrap().pop().unwrap();
+
+    std::fs::remove_file(&selected).unwrap();
+    symlink(&second_target, &selected).unwrap();
+    stub.fail_record(None);
+    let served = relaycast.serve(vec![strict_pending()]);
+    bound(
+        &core,
+        "spawn.invoke",
+        invoke_params(&core, "codex", selected.to_str().unwrap()),
+    )
+    .await
+    .unwrap();
+    let second_request = served.join().unwrap().pop().unwrap();
+
+    let first_body = request_body(&first_request);
+    let second_body = request_body(&second_request);
+    assert_eq!(
+        first_body["input"]["logical_request"],
+        second_body["input"]["logical_request"]
+    );
+    assert_eq!(
+        first_body["input"]["logical_request"]["directory"],
+        selected.to_str().unwrap()
+    );
+    assert_eq!(
+        first_body["input"]["worker_cwd"],
+        std::fs::canonicalize(&first_target)
+            .unwrap()
+            .to_str()
+            .unwrap()
+    );
+    assert_eq!(
+        second_body["input"]["worker_cwd"],
+        std::fs::canonicalize(&second_target)
+            .unwrap()
+            .to_str()
+            .unwrap()
+    );
+    assert_ne!(
+        first_body["input"]["worker_cwd"],
+        second_body["input"]["worker_cwd"]
+    );
+    let idempotency = |request: &str| {
+        request
+            .lines()
+            .find(|line| line.to_ascii_lowercase().contains("idempotency"))
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(idempotency(&first_request), idempotency(&second_request));
+    assert!(first_request.contains("spawn-test-20261107-0001"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_retry_with_the_same_idempotency_key_returns_the_receipt_after_the_node_lost_its_handlers(
-) {
-    a_retry_after_a_failed_record_returns_the_kept_receipt(
-        json!({"id":"node_local","live":true,"handlers_live":false,"active_agents":0,"reserved_agents":0,"max_agents":4,"capabilities":["spawn:codex"]}),
+async fn a_retry_recovers_an_accepted_claim_without_reusing_an_unsafe_directory() {
+    let relaycast = Relaycast::new();
+    let allowed = tempfile::tempdir().unwrap();
+    let revoked = tempfile::tempdir().unwrap();
+    let caller = |root: &std::path::Path| ExternalCaller {
+        directory_roots: Some(vec![root.into()]),
+        ..service(true)
+    };
+    let first = Stub::new(caller(allowed.path()));
+    first.fail_record(Some(RpcError::new(
+        ErrorKind::StoreFailed,
+        "the receipt ledger is unavailable",
+    )));
+    let (home, core) = core_with(Some(first), &relaycast.base);
+    let served = relaycast.serve(vec![strict_pending()]);
+    bound(
+        &core,
+        "spawn.invoke",
+        invoke_params(&core, "codex", allowed.path().to_str().unwrap()),
     )
-    .await;
+    .await
+    .unwrap_err();
+    let first_requests = served.join().unwrap();
+    assert_eq!(first_requests.len(), 1);
+    let first_request = first_requests.into_iter().next().unwrap();
+    drop(core);
+
+    let core = core_at(
+        home.path(),
+        Some(Stub::new(caller(revoked.path()))),
+        &relaycast.base,
+    );
+    let served = relaycast.serve(vec![strict_pending()]);
+    let answer = bound(
+        &core,
+        "spawn.invoke",
+        invoke_params(&core, "codex", allowed.path().to_str().unwrap()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(answer["id"], "invocation_new");
+    let requests = served.join().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("POST /v1/actions/spawn/replay "));
+    let body = request_body(&requests[0]);
+    let first_body = request_body(&first_request);
+    assert_eq!(body.as_object().unwrap().len(), 1);
+    assert_eq!(
+        body["logical_request"],
+        first_body["input"]["logical_request"]
+    );
+    assert_eq!(
+        body["logical_request"]["directory"],
+        allowed.path().to_str().unwrap()
+    );
+    assert_eq!(body["logical_request"]["task"], first_body["input"]["task"]);
+    let idempotency = |request: &str| {
+        request
+            .lines()
+            .find(|line| line.to_ascii_lowercase().contains("idempotency"))
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(idempotency(&first_request), idempotency(&requests[0]));
+    assert!(body.get("input").is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn replay_fails_closed_when_the_server_omits_the_replay_capability_proof() {
+    let relaycast = Relaycast::new();
+    let allowed = tempfile::tempdir().unwrap();
+    let revoked = tempfile::tempdir().unwrap();
+    let caller = |root: &std::path::Path| ExternalCaller {
+        directory_roots: Some(vec![root.into()]),
+        ..service(true)
+    };
+    let first = Stub::new(caller(allowed.path()));
+    first.fail_record(Some(RpcError::new(
+        ErrorKind::StoreFailed,
+        "the receipt ledger is unavailable",
+    )));
+    let (home, core) = core_with(Some(first), &relaycast.base);
+    let served = relaycast.serve(vec![strict_pending()]);
+    bound(
+        &core,
+        "spawn.invoke",
+        invoke_params(&core, "codex", allowed.path().to_str().unwrap()),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(served.join().unwrap().len(), 1);
+    drop(core);
+
+    let second = Stub::new(caller(revoked.path()));
+    let core = core_at(home.path(), Some(second.clone()), &relaycast.base);
+    let served = relaycast.serve(vec![json!({
+        "id": "invocation_new",
+        "status": "pending",
+        "spawn_contract_applied": "relay.spawn.invoke.logical-replay-resume/1",
+    })]);
+    let error = bound(
+        &core,
+        "spawn.invoke",
+        invoke_params(&core, "codex", allowed.path().to_str().unwrap()),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.data.kind, ErrorKind::Internal);
+    let requests = served.join().unwrap();
+    assert_eq!(requests.len(), 1, "unexpected fallback: {requests:?}");
+    assert!(requests[0].starts_with("POST /v1/actions/spawn/replay "));
+    assert_eq!(second.log().last().unwrap(), "record:invoke:internal");
 }

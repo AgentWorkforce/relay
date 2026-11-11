@@ -9,6 +9,7 @@ fn selected_workspace() -> Workspace {
         base_url: "https://cast.example".into(),
         workspace_id: None,
         source: Default::default(),
+        control_url: None,
     }
 }
 #[test]
@@ -241,7 +242,7 @@ async fn targets_uses_only_the_fixed_sdk_route_and_projects_away_credentials() {
         .unwrap();
     });
     let http = sdk_gaps::http(&base, &Secret::new("local-test-credential")).unwrap();
-    let result = targets(&http).await.unwrap();
+    let result = targets(KeyKind::Workspace, &http).await.unwrap();
     assert_eq!(result.targets.len(), 1);
     assert!(!serde_json::to_string(&result)
         .unwrap()

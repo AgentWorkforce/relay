@@ -60,6 +60,13 @@ pub enum SessionCommand {
     /// `remove`, `DELETE`) `/channels/subscribe`, joining or leaving one
     /// channel as the calling session.
     SubscribeChannel { channel: String, remove: bool },
+    /// `subscribe-channel <channel> --create [--topic <text>]`: `POST
+    /// /channels`, creating the channel and joining it (an existing one is
+    /// joined) as the calling session.
+    CreateChannel {
+        channel: String,
+        topic: Option<String>,
+    },
 }
 
 /// The one request a [`SessionCommand`] makes.
@@ -92,6 +99,9 @@ pub const ALLOWED_SUBCOMMANDS: [&str; 8] = [
 
 /// The longest name, address, channel or id accepted.
 const MAX_FIELD: usize = 200;
+
+/// The longest channel topic accepted, in characters.
+const MAX_TOPIC: usize = 500;
 
 fn refuse(message: &str) -> anyhow::Error {
     SafeError(message.to_string()).into()
@@ -138,7 +148,9 @@ impl SessionCommand {
             SessionCommand::Read { .. } => "read",
             SessionCommand::FetchAttachment { .. } => "fetch-attachment",
             SessionCommand::ConnectSend { .. } => "connect-send",
-            SessionCommand::SubscribeChannel { .. } => "subscribe-channel",
+            SessionCommand::SubscribeChannel { .. } | SessionCommand::CreateChannel { .. } => {
+                "subscribe-channel"
+            }
         }
     }
 
@@ -215,6 +227,27 @@ impl SessionCommand {
                 Ok(SessionRequest {
                     method: if *remove { "DELETE" } else { "POST" },
                     path: format!("/channels/subscribe?channel={}", query_encode(channel)),
+                })
+            }
+            SessionCommand::CreateChannel { channel, topic } => {
+                if !valid_channel(channel) {
+                    return Err(refuse("Name one channel, with no spaces."));
+                }
+                let mut path = format!("/channels?channel={}", query_encode(channel));
+                if let Some(topic) = topic {
+                    let plain = !topic.trim().is_empty()
+                        && topic.chars().count() <= MAX_TOPIC
+                        && !topic.chars().any(char::is_control);
+                    if !plain {
+                        return Err(refuse(
+                            "--topic takes 1–500 characters, without control characters.",
+                        ));
+                    }
+                    path.push_str(&format!("&topic={}", query_encode(topic)));
+                }
+                Ok(SessionRequest {
+                    method: "POST",
+                    path,
                 })
             }
         }
@@ -307,6 +340,13 @@ impl SessionCommand {
                 let mut parts = vec![channel.as_str()];
                 if *remove {
                     parts.push("--remove");
+                }
+                parts
+            }
+            SessionCommand::CreateChannel { channel, topic } => {
+                let mut parts = vec![channel.as_str(), "--create"];
+                if let Some(topic) = topic {
+                    parts.extend(["--topic", topic.as_str()]);
                 }
                 parts
             }
@@ -587,6 +627,22 @@ mod tests {
                 },
                 "DELETE",
                 "/channels/subscribe?channel=swarm",
+            ),
+            (
+                SessionCommand::CreateChannel {
+                    channel: "#swarm".into(),
+                    topic: None,
+                },
+                "POST",
+                "/channels?channel=%23swarm",
+            ),
+            (
+                SessionCommand::CreateChannel {
+                    channel: "swarm".into(),
+                    topic: Some("Release work & more".into()),
+                },
+                "POST",
+                "/channels?channel=swarm&topic=Release%20work%20%26%20more",
             ),
             (
                 SessionCommand::ConnectSend {

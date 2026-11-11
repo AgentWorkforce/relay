@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import * as bridge from './index.js';
 import type {
+  CallerFileDescriptor,
   CoreClient,
   HelloResult,
   SpawnInvokeParams,
@@ -84,6 +85,32 @@ interface FlowCoreInvocation {
   error_code: string | null;
 }
 
+interface FlowSpawnInvokeParams {
+  caller_name?: string;
+  node_id: string;
+  node_name: string;
+  name: string;
+  harness: string;
+  task: string;
+  directory: string;
+  idempotency_key: string;
+}
+
+interface FlowSpawnStatusParams {
+  caller_name?: string;
+  action: 'spawn' | 'release';
+  invocation_id: string;
+}
+
+interface FlowSpawnReleaseParams {
+  caller_name?: string;
+  node_id: string;
+  node_name: string;
+  name: string;
+  expected_agent_id: string;
+  idempotency_key: string;
+}
+
 interface FlowCoreInboxDelivery {
   item_id: string;
   message_id: string;
@@ -94,75 +121,75 @@ interface FlowCoreInboxDelivery {
   sent_at: string;
 }
 
-interface FlowCoreBridgeApi {
-  connectCore(options?: { socket?: string; signal?: AbortSignal }): Promise<FlowCoreBridgeClient>;
-  readCallerDescriptor(path: string): Promise<FlowCallerDescriptor>;
-  authenticate(
-    client: FlowCoreBridgeClient,
-    credential: unknown,
+interface FlowCoreBridgeApi<TClient extends FlowCoreBridgeClient, TDescriptor extends FlowCallerDescriptor> {
+  connectCore: (options?: { socket?: string; signal?: AbortSignal }) => Promise<TClient>;
+  readCallerDescriptor: (path: string) => Promise<TDescriptor>;
+  authenticate: (
+    client: TClient,
+    credential: TDescriptor['credential'],
     options?: { signal?: AbortSignal }
-  ): Promise<unknown>;
-  requireServiceCallerMethods(client: FlowCoreBridgeClient): void;
-  assertServiceCallerIdentity(
-    descriptor: FlowCallerDescriptor,
-    identity: Awaited<ReturnType<FlowCoreBridgeApi['serviceCallerIdentity']>>
-  ): void;
-  serviceCallerIdentity(
-    client: FlowCoreBridgeClient,
+  ) => Promise<unknown>;
+  requireServiceCallerMethods: (client: TClient) => void;
+  assertServiceCallerIdentity: (
+    descriptor: TDescriptor,
+    identity: Awaited<ReturnType<FlowCoreBridgeApi<TClient, TDescriptor>['serviceCallerIdentity']>>
+  ) => void;
+  serviceCallerIdentity: (
+    client: TClient,
     options?: { signal?: AbortSignal }
-  ): Promise<{
+  ) => Promise<{
     publisher: { id: string; name: string };
     node: { id: string; name: string };
     base_url: string;
     workspace_id: string;
     relaycast_workspace_id: string;
   }>;
-  spawnTargets(
-    client: FlowCoreBridgeClient,
+  spawnTargets: (
+    client: TClient,
     options?: { signal?: AbortSignal }
-  ): Promise<{ targets: FlowCoreTarget[] }>;
-  spawnInvoke(
-    client: FlowCoreBridgeClient,
-    params: SpawnInvokeParams,
+  ) => Promise<{ targets: FlowCoreTarget[] }>;
+  spawnInvoke: (
+    client: TClient,
+    params: FlowSpawnInvokeParams,
     options?: { signal?: AbortSignal; actionTimeoutMs?: number }
-  ): Promise<FlowCoreInvocation>;
-  spawnStatus(
-    client: FlowCoreBridgeClient,
-    params: SpawnStatusParams,
+  ) => Promise<FlowCoreInvocation>;
+  spawnStatus: (
+    client: TClient,
+    params: FlowSpawnStatusParams,
     options?: { signal?: AbortSignal }
-  ): Promise<FlowCoreInvocation>;
-  spawnRelease(
-    client: FlowCoreBridgeClient,
-    params: SpawnReleaseParams,
+  ) => Promise<FlowCoreInvocation>;
+  spawnRelease: (
+    client: TClient,
+    params: FlowSpawnReleaseParams,
     options?: { signal?: AbortSignal; actionTimeoutMs?: number }
-  ): Promise<FlowCoreInvocation>;
-  serviceCallerInboxOpen(
-    client: FlowCoreBridgeClient,
+  ) => Promise<FlowCoreInvocation>;
+  serviceCallerInboxOpen: (
+    client: TClient,
     invocationId: string,
     options?: { signal?: AbortSignal }
-  ): Promise<{ iterator_id: string }>;
-  serviceCallerInboxNext(
-    client: FlowCoreBridgeClient,
+  ) => Promise<{ iterator_id: string }>;
+  serviceCallerInboxNext: (
+    client: TClient,
     iteratorId: string,
     timeoutMs: number,
     options?: { signal?: AbortSignal }
-  ): Promise<{ delivery: FlowCoreInboxDelivery | null }>;
-  serviceCallerInboxAck(
-    client: FlowCoreBridgeClient,
+  ) => Promise<{ delivery: FlowCoreInboxDelivery | null }>;
+  serviceCallerInboxAck: (
+    client: TClient,
     itemId: string,
     options?: { signal?: AbortSignal }
-  ): Promise<unknown>;
-  serviceCallerInboxFail(
-    client: FlowCoreBridgeClient,
+  ) => Promise<unknown>;
+  serviceCallerInboxFail: (
+    client: TClient,
     itemId: string,
     options?: { signal?: AbortSignal }
-  ): Promise<unknown>;
-  serviceCallerInboxClose(
-    client: FlowCoreBridgeClient,
+  ) => Promise<unknown>;
+  serviceCallerInboxClose: (
+    client: TClient,
     iteratorId: string,
     options?: { signal?: AbortSignal }
-  ): Promise<unknown>;
-  serviceCallerDisconnect(client: FlowCoreBridgeClient, options?: { signal?: AbortSignal }): Promise<unknown>;
+  ) => Promise<unknown>;
+  serviceCallerDisconnect: (client: TClient, options?: { signal?: AbortSignal }) => Promise<unknown>;
 }
 
 const REQUIRED_FUNCTIONS = [
@@ -182,11 +209,11 @@ const REQUIRED_FUNCTIONS = [
   'serviceCallerInboxFail',
   'serviceCallerInboxClose',
   'serviceCallerDisconnect',
-] as const satisfies ReadonlyArray<keyof FlowCoreBridgeApi>;
+] as const satisfies ReadonlyArray<keyof FlowCoreBridgeApi<CoreClient, CallerFileDescriptor>>;
 
 // Each assignment is deliberate: a missing export or incompatible signature
 // must fail TypeScript before a package reaches Flows' dynamic import.
-const STRUCTURAL_CONTRACT: FlowCoreBridgeApi = {
+const STRUCTURAL_CONTRACT: FlowCoreBridgeApi<CoreClient, CallerFileDescriptor> = {
   connectCore: bridge.connectCore,
   readCallerDescriptor: bridge.readCallerDescriptor,
   authenticate: bridge.authenticate,
@@ -205,15 +232,22 @@ const STRUCTURAL_CONTRACT: FlowCoreBridgeApi = {
   serviceCallerDisconnect: bridge.serviceCallerDisconnect,
 };
 
+// The copied Flows shapes are intentionally less specific than the package's
+// correlated client and credential types. Function-valued properties make
+// strictFunctionTypes reject an implementation that narrows either input.
+// @ts-expect-error authenticate requires the richer CoreClient and CallerCredential.
+const REJECTED_NARROW_AUTHENTICATE: FlowCoreBridgeApi<
+  FlowCoreBridgeClient,
+  FlowCallerDescriptor
+>['authenticate'] = bridge.authenticate;
+
 type Assert<T extends true> = T;
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 type _ClientAssignable = Assert<CoreClient extends FlowCoreBridgeClient ? true : false>;
 type _HelloExact = Assert<Equal<HelloResult, FlowCoreBridgeClient['hello']>>;
-type _InvokeParamsExact = Assert<Equal<SpawnInvokeParams, Parameters<FlowCoreBridgeApi['spawnInvoke']>[1]>>;
-type _StatusParamsExact = Assert<Equal<SpawnStatusParams, Parameters<FlowCoreBridgeApi['spawnStatus']>[1]>>;
-type _ReleaseParamsExact = Assert<
-  Equal<SpawnReleaseParams, Parameters<FlowCoreBridgeApi['spawnRelease']>[1]>
->;
+type _InvokeParamsExact = Assert<Equal<SpawnInvokeParams, FlowSpawnInvokeParams>>;
+type _StatusParamsExact = Assert<Equal<SpawnStatusParams, FlowSpawnStatusParams>>;
+type _ReleaseParamsExact = Assert<Equal<SpawnReleaseParams, FlowSpawnReleaseParams>>;
 
 void (null as unknown as [
   _ClientAssignable,
@@ -222,6 +256,7 @@ void (null as unknown as [
   _StatusParamsExact,
   _ReleaseParamsExact,
 ]);
+void REJECTED_NARROW_AUTHENTICATE;
 
 describe('Flows schema-v2 public surface', () => {
   it('exports every function the optional local adapter loads', () => {

@@ -1,6 +1,6 @@
 {
   "name": "agent-relay",
-  "version": "18.0.0",
+  "version": "18.1.0",
   "description": "Real-time agent-to-agent communication system",
   "type": "module",
   "main": "dist/index.cjs",
@@ -43,13 +43,13 @@
     "pack:validate": "npm pack --dry-run"
   },
   "dependencies": {
-    "@agent-relay/cli-surface": "18.0.0",
-    "@agent-relay/cloud": "18.0.0",
-    "@agent-relay/config": "18.0.0",
-    "@agent-relay/core-bridge": "18.0.0",
-    "@agent-relay/sdk": "18.0.0",
-    "@agent-relay/session": "18.0.0",
-    "@agent-relay/utils": "18.0.0",
+    "@agent-relay/cli-surface": "18.1.0",
+    "@agent-relay/cloud": "18.1.0",
+    "@agent-relay/config": "18.1.0",
+    "@agent-relay/core-bridge": "18.1.0",
+    "@agent-relay/sdk": "18.1.0",
+    "@agent-relay/session": "18.1.0",
+    "@agent-relay/utils": "18.1.0",
     "@clack/prompts": "^1.8.1",
     "@modelcontextprotocol/sdk": "^1.23.0",
     "@relayfile/client": "^0.10.27",

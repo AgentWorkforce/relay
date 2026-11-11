@@ -36,6 +36,7 @@ fn registration(name: &str, target: Target) -> Registration {
         alias: None,
         retired_aliases: None,
         cleared: None,
+        control_url: None,
     }
 }
 
@@ -2104,6 +2105,7 @@ fn rotate_workspace_key_rewrites_saved_copies_for_the_origin() {
         DEFAULT_BASE_URL,
         &Secret::new("rk_live_old"),
         &Secret::new("rk_live_new"),
+        None,
     );
 
     assert_eq!(migrated, 2);

@@ -37,19 +37,15 @@
 
 use super::origin_binding::{self, OriginBindings};
 use super::{
-    is_workspace_key, validated_base_url, Secret, Workspace, WorkspaceSource, ARMADILLO_ORIGIN,
-    DEFAULT_BASE_URL,
+    key_kind, validated_base_url, KeyKind, Secret, Workspace, WorkspaceSource, ARMADILLO_ORIGIN,
+    DEFAULT_BASE_URL, NODE_KEY_PREFIX,
 };
 use crate::relay::links;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 /// Workspace-key environment variables, highest precedence first.
-pub const WORKSPACE_KEY_ENV_VARS: [&str; 3] = [
-    "RELAY_WORKSPACE_KEY",
-    "AGENT_RELAY_WORKSPACE_KEY",
-    "RELAY_API_KEY",
-];
+pub const WORKSPACE_KEY_ENV_VARS: [&str; 3] = super::WORKSPACE_KEY_ENV;
 /// The CLI's explicit project root.
 pub const PROJECT_ENV: &str = "AGENT_RELAY_PROJECT";
 /// The explicit Relaycast base URL the CLI honours.
@@ -75,6 +71,9 @@ struct ProjectSession {
     /// `relaycast-credentials.json` when it matches the pin, else a legacy
     /// inline `relaycastApiKey`.
     relaycast_api_key: Option<String>,
+    /// `controlUrl`: the Control origin that brokers a node-scoped key's
+    /// workspace calls. Read for every key, used only for `sh_wk_…`.
+    control_url: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,6 +105,12 @@ struct Selection {
     key: String,
     source: WorkspaceSource,
     project: Option<ProjectSession>,
+    /// The Relaycast origin the store entry records (`base_url`), used only
+    /// for a node-scoped key.
+    base_url: Option<String>,
+    /// The Control origin the store entry or pin records, used only for a
+    /// node-scoped key.
+    control_url: Option<String>,
 }
 
 /// The build resolving a CLI key: the site it was made for and, in a site
@@ -171,6 +176,8 @@ fn select(
                 key,
                 source: WorkspaceSource::CliEnv(name.to_string()),
                 project,
+                base_url: None,
+                control_url: None,
             }));
         }
     }
@@ -178,14 +185,21 @@ fn select(
         return Ok(Some(Selection {
             key: project.workspace_key.clone(),
             source: WorkspaceSource::CliProject(dir.join(PROJECT_WORKSPACE_KEY_FILE)),
+            control_url: project.control_url.clone(),
             project: Some(project),
+            base_url: None,
         }));
     }
     let store = relay_home.join(WORKSPACE_STORE_FILE);
-    Ok(read_active_store_key(&store)?.map(|(name, key)| Selection {
-        key,
-        source: WorkspaceSource::CliStore { file: store, name },
+    Ok(read_active_store_key(&store)?.map(|entry| Selection {
+        key: entry.key,
+        source: WorkspaceSource::CliStore {
+            file: store,
+            name: entry.name,
+        },
         project: None,
+        base_url: entry.base_url,
+        control_url: entry.control_url,
     }))
 }
 
@@ -199,11 +213,48 @@ fn transport(
     let credential = project
         .and_then(|project| project.relaycast_api_key.clone())
         .unwrap_or_else(|| selection.key.clone());
-    if !is_workspace_key(&credential) {
-        return Err(format!(
-            "The workspace key from {} is not a Relaycast workspace key.",
-            selection.source.describe()
-        ));
+    let kind = match key_kind(&credential) {
+        Some(kind) => kind,
+        None => {
+            return Err(format!(
+                "The workspace key from {} is not a Relaycast workspace key.",
+                selection.source.describe()
+            ))
+        }
+    };
+    let control_url = match kind {
+        KeyKind::Workspace => None,
+        KeyKind::NodeScoped => Some(node_key_control_url(&selection)?),
+    };
+    if kind == KeyKind::NodeScoped {
+        // The active store entry records the Relaycast origin the node
+        // credential was issued for; its spawn socket goes there. Without
+        // it no other origin is guessed (the public gateway included).
+        if matches!(selection.source, WorkspaceSource::CliStore { .. })
+            && selection.base_url.is_none()
+        {
+            return Err(format!(
+                "The node credential ({NODE_KEY_PREFIX}…) from {} has no base_url: a node \
+                 credential's spawn node connects only to the Relaycast origin recorded \
+                 beside it. Record base_url with the agent-relay CLI.",
+                selection.source.describe()
+            ));
+        }
+        if let Some(recorded) = selection.base_url.as_deref() {
+            let base_url = validated_base_url(recorded).ok_or_else(|| {
+                format!(
+                    "The node credential's base_url in {} is not a bare https origin.",
+                    selection.source.describe()
+                )
+            })?;
+            return Ok(Workspace {
+                key: Secret::new(credential),
+                base_url,
+                workspace_id: None,
+                source: selection.source,
+                control_url,
+            });
+        }
     }
     let bindings_path = origin_binding::bindings_path(relay_home);
     let bindings = origin_binding::read_bindings(&bindings_path)?;
@@ -237,6 +288,19 @@ fn transport(
                         build.site
                     ))
                 }
+                // A node credential from a project pin is never sent to a
+                // guessed origin: its pin's route, `RELAY_BASE_URL` or a
+                // binding recorded for it names the Relaycast origin.
+                None if kind == KeyKind::NodeScoped => {
+                    return Err(format!(
+                        "The node credential ({NODE_KEY_PREFIX}…) from {} names no Relaycast \
+                         origin: its pin has no relaycastBaseUrl and relaycastRoute, {} \
+                         records none for it and {BASE_URL_ENV} is not set. Record the \
+                         node's Relaycast origin in the pin or set {BASE_URL_ENV}.",
+                        selection.source.describe(),
+                        bindings_path.display(),
+                    ))
+                }
                 None => DEFAULT_BASE_URL.to_string(),
             }
         }
@@ -248,6 +312,39 @@ fn transport(
         // necessarily Relaycast's; verification records Relaycast's own.
         workspace_id: None,
         source: selection.source,
+        control_url,
+    })
+}
+
+/// The Control origin a node-scoped key's workspace calls go to. A
+/// node-scoped key is accepted only from the active `workspaces.json` entry
+/// or the project pin, and only with a Control origin beside it: an
+/// environment variable cannot carry one, so a `sh_wk_…` key there is
+/// refused, naming the variable.
+fn node_key_control_url(selection: &Selection) -> Result<String, String> {
+    if let WorkspaceSource::CliEnv(name) = &selection.source {
+        return Err(format!(
+            "${name} holds a node credential ({NODE_KEY_PREFIX}…), which is accepted only \
+             from the active entry of {WORKSPACE_STORE_FILE} or the project's \
+             {PROJECT_WORKSPACE_KEY_FILE}, beside its control_url. Unset ${name}."
+        ));
+    }
+    let (field, recorded) = match &selection.source {
+        WorkspaceSource::CliProject(_) => ("controlUrl", selection.control_url.as_deref()),
+        _ => ("control_url", selection.control_url.as_deref()),
+    };
+    let Some(recorded) = recorded else {
+        return Err(format!(
+            "The node credential ({NODE_KEY_PREFIX}…) from {} has no {field}: a node \
+             credential is used only through the Control origin that minted it.",
+            selection.source.describe()
+        ));
+    };
+    validated_base_url(recorded).ok_or_else(|| {
+        format!(
+            "The node credential's {field} in {} is not a bare https origin.",
+            selection.source.describe()
+        )
     })
 }
 
@@ -407,6 +504,7 @@ fn read_project_session(data_dir: &Path, relay_home: &Path) -> Option<ProjectSes
         relaycast_base_url,
         relaycast_cloud_api_url: text("relaycastCloudApiUrl"),
         relaycast_api_key,
+        control_url: text("controlUrl"),
     })
 }
 
@@ -505,6 +603,19 @@ fn is_drive_path(path: &str) -> bool {
         && (bytes.len() == 2 || bytes[2] == b'\\')
 }
 
+/// The active `workspaces.json` entry: its name and key and, beside a
+/// node-scoped key, the origins it records.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StoreEntry {
+    name: String,
+    key: String,
+    /// `base_url`: the Relaycast origin. Read only beside a node-scoped key;
+    /// a workspace key's origin follows the CLI's origin rule as before.
+    base_url: Option<String>,
+    /// `control_url`: the Control origin brokering a node-scoped key.
+    control_url: Option<String>,
+}
+
 /// The active store entry's name and key. A missing file selects nothing;
 /// one that cannot be read or parsed is an error, as in the CLI.
 ///
@@ -513,7 +624,7 @@ fn is_drive_path(path: &str) -> bool {
 /// present but not a string, so those fail closed here too. A `null` or
 /// missing `workspaces` is `{}` there (`parsed.workspaces ?? {}`), so it
 /// selects nothing, as does an entry that is not an object.
-fn read_active_store_key(file: &Path) -> Result<Option<(String, String)>, String> {
+fn read_active_store_key(file: &Path) -> Result<Option<StoreEntry>, String> {
     let raw = match std::fs::read_to_string(file) {
         Ok(raw) => raw,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -551,13 +662,31 @@ fn read_active_store_key(file: &Path) -> Result<Option<(String, String)>, String
             .and_then(|index| workspaces.get(index)),
         _ => None,
     };
-    let key = match entry {
-        Some(serde_json::Value::Object(entry)) => optional_string(entry.get("key"))
-            .map_err(|_| malformed("the active entry's \"key\" is not a string"))?
-            .and_then(trimmed_str),
-        _ => None,
+    let Some(serde_json::Value::Object(entry)) = entry else {
+        return Ok(None);
     };
-    Ok(key.map(|key| (active, key)))
+    let Some(key) = optional_string(entry.get("key"))
+        .map_err(|_| malformed("the active entry's \"key\" is not a string"))?
+        .and_then(trimmed_str)
+    else {
+        return Ok(None);
+    };
+    let (base_url, control_url) = if key.starts_with(NODE_KEY_PREFIX) {
+        let field = |name: &str| {
+            optional_string(entry.get(name))
+                .map_err(|_| malformed(&format!("the active entry's \"{name}\" is not a string")))
+                .map(|value| value.and_then(trimmed_str))
+        };
+        (field("base_url")?, field("control_url")?)
+    } else {
+        (None, None)
+    };
+    Ok(Some(StoreEntry {
+        name: active,
+        key,
+        base_url,
+        control_url,
+    }))
 }
 
 /// A field JavaScript would `?.trim()`: absent or `null` is unset, a string

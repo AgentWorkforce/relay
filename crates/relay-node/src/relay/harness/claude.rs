@@ -258,6 +258,7 @@ impl SpawnFacet for ClaudeAdapter {
         if let Some(agent_environment) = &self.environment {
             environment = agent_environment("claude", environment);
         }
+        let mut environment = crate::relay::workspace::without_workspace_key_env(environment);
         environment.insert(
             "AGENT_RELAY_SPAWN_INPUT".into(),
             first_message(&launch.text),

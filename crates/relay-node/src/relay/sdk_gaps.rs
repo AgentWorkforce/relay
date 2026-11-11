@@ -38,7 +38,7 @@
 //!   the clients here send `relay-desktop` and the desktop's version.
 
 use crate::relay::diagnostic_http::HttpClient;
-use crate::relay::workspace::Secret;
+use crate::relay::workspace::{Secret, Workspace, WorkspaceRoute};
 use futures_util::{SinkExt, StreamExt};
 use relaycast::types::DirectNodeToken;
 use relaycast::{AgentClient, ClientOptions, RelayError, RequestOptions};
@@ -73,6 +73,21 @@ pub fn http(base_url: &str, credential: &Secret) -> relaycast::Result<HttpClient
     )
 }
 
+/// An SDK HTTP client for `route`'s workspace-key calls: Relaycast for a
+/// workspace key, the Control broker for a node-scoped one.
+#[allow(clippy::result_large_err)] // the SDK's own error type
+pub fn route_http(route: &WorkspaceRoute) -> relaycast::Result<HttpClient> {
+    http(&route.base(), &route.credential)
+}
+
+/// [`route_http`] for `workspace`'s own route. Use it for the calls Control
+/// brokers for a node-scoped credential: `GET /v1/workspace`,
+/// `GET /v1/nodes[/{name}]`, `POST /v1/nodes`, `GET /v1/agents[/{name}]`.
+#[allow(clippy::result_large_err)] // the SDK's own error type
+pub fn workspace_http(workspace: &Workspace) -> relaycast::Result<HttpClient> {
+    route_http(&workspace.route())
+}
+
 /// The workspace a key belongs to: `GET /v1/workspace`, read leniently, as
 /// the SDK's `Workspace` requires fields the server stopped sending.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,8 +100,16 @@ pub struct WorkspaceIdentity {
 
 /// `GET /v1/workspace` with the workspace key. Only `id`, `name` and `plan`
 /// are read; the answer must carry `id` and `name` as non-empty strings.
+/// A node-scoped credential asks its Control broker, whose answer is read
+/// leniently ([`crate::relay::node_credential::broker_data`]): broker images
+/// older than relay-control 01614898 send a bare `{id,name}`, which the SDK
+/// cannot read.
 pub async fn workspace_identity(workspace: &HttpClient) -> relaycast::Result<WorkspaceIdentity> {
-    let data: Value = workspace.get("/v1/workspace", None, None).await?;
+    let data: Value = if workspace.node_scoped() {
+        workspace.get_broker("/v1/workspace").await?
+    } else {
+        workspace.get("/v1/workspace", None, None).await?
+    };
     workspace_identity_of(&data)
 }
 
@@ -589,6 +612,80 @@ pub async fn next_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Control broker answering one request with `status` and `body`;
+    /// returns its base URL and the request it got (lower case).
+    fn broker(status: &str, body: &str) -> (String, std::thread::JoinHandle<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/relay-node", listener.local_addr().unwrap());
+        let reply = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            let count = stream.read(&mut request).unwrap();
+            stream.write_all(reply.as_bytes()).unwrap();
+            String::from_utf8_lossy(&request[..count]).to_lowercase()
+        });
+        (base, server)
+    }
+
+    const NODE_KEY: &str = "sh_wk_fixture0123456789";
+
+    async fn broker_identity(status: &str, body: &str) -> relaycast::Result<WorkspaceIdentity> {
+        let (base, server) = broker(status, body);
+        let http = http(&base, &Secret::new(NODE_KEY.to_string())).unwrap();
+        let identity = workspace_identity(&http).await;
+        let request = server.join().unwrap();
+        assert!(
+            request.starts_with("get /relay-node/v1/workspace "),
+            "{request}"
+        );
+        assert!(request.contains(&format!("authorization: bearer {NODE_KEY}")));
+        identity
+    }
+
+    #[tokio::test]
+    async fn a_node_credential_reads_the_brokers_workspace_envelope() {
+        let identity =
+            broker_identity("200 OK", r#"{"ok":true,"data":{"id":"rw_1","name":"One"}}"#)
+                .await
+                .unwrap();
+        assert_eq!(identity.id, "rw_1");
+        assert_eq!(identity.name, "One");
+    }
+
+    /// Today's relay-control answers `GET /relay-node/v1/workspace` with a
+    /// bare `{id,name}`, which the SDK cannot read.
+    #[tokio::test]
+    async fn a_node_credential_reads_todays_bare_workspace_body() {
+        let identity = broker_identity("200 OK", r#"{"id":"rw_1","name":"One"}"#)
+            .await
+            .unwrap();
+        assert_eq!(identity.id, "rw_1");
+        assert_eq!(identity.name, "One");
+    }
+
+    /// Today's relay-control answers its own errors as a flat
+    /// `{error,message}`.
+    #[tokio::test]
+    async fn a_node_credential_reads_todays_flat_broker_error() {
+        let error = broker_identity(
+            "401 Unauthorized",
+            r#"{"error":"token_invalid","message":"Node credential revoked"}"#,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code(), Some("token_invalid"));
+        assert_eq!(error.status(), Some(401));
+        assert!(crate::relay::node_credential::rejects(
+            crate::relay::workspace::KeyKind::NodeScoped,
+            &error
+        ));
+    }
 
     #[test]
     fn a_workspace_is_read_without_the_fields_the_server_dropped() {

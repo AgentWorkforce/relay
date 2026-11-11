@@ -4499,6 +4499,97 @@ async fn a_session_subscribes_to_and_leaves_a_channel_on_the_socket() {
 }
 
 #[tokio::test]
+async fn a_session_creates_a_missing_channel_and_creating_it_again_joins_it() {
+    let h = Harness::start().await;
+    h.register(IN_CODEX, json!({"name": "codex-api"})).await;
+    // Subscribing to a channel that does not exist says how to create it.
+    let missing = h
+        .call(
+            IN_CODEX,
+            "POST",
+            "/channels/subscribe",
+            json!({"channel": "launch"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (missing.status, missing.code.as_str()),
+        (404, "channel_not_found")
+    );
+    assert!(missing.message.contains("--create"), "{}", missing.message);
+    let created = h
+        .call(
+            IN_CODEX,
+            "POST",
+            "/channels",
+            json!({"channel": "#launch", "topic": "Release work"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        created,
+        json!({"from": "codex-api", "channel": "launch", "created": true, "subscribed": true})
+    );
+    assert_eq!(h.fake.channel_members("launch"), ["codex-api"]);
+    let creates = h.fake.calls("POST", "/v1/channels");
+    assert_eq!(creates.len(), 1);
+    assert_eq!(creates[0].body["name"], "launch");
+    assert_eq!(creates[0].body["topic"], "Release work");
+    // Asking again, in the query form, joins what is there.
+    let again = h
+        .call(IN_CODEX, "POST", "/channels?channel=launch", Value::Null)
+        .await
+        .unwrap();
+    assert_eq!(again["created"], false);
+    assert_eq!(again["subscribed"], true);
+    assert_eq!(h.fake.channel_members("launch"), ["codex-api"]);
+    // A channel someone else made is joined, not refused.
+    h.fake.seed_channel("swarm", &["alice"]);
+    let joined = h
+        .call(IN_CODEX, "POST", "/channels", json!({"channel": "swarm"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        (joined["created"].clone(), joined["subscribed"].clone()),
+        (json!(false), json!(true))
+    );
+    assert!(h
+        .fake
+        .channel_members("swarm")
+        .contains(&"codex-api".to_string()));
+    // Bad names and topics never reach Relaycast.
+    let before = h.fake.calls("POST", "/v1/channels").len();
+    for (body, code) in [
+        (json!({"channel": "a b"}), "invalid_channel"),
+        (
+            json!({"channel": "x", "topic": "two\nlines"}),
+            "invalid_topic",
+        ),
+        (
+            json!({"channel": "x", "topic": "t".repeat(501)}),
+            "invalid_topic",
+        ),
+    ] {
+        let error = h
+            .call(IN_CODEX, "POST", "/channels", body)
+            .await
+            .unwrap_err();
+        assert_eq!((error.status, error.code.as_str()), (400, code));
+    }
+    // A session that is not on the relay cannot create one.
+    let stranger = h
+        .call(IN_CLAUDE, "POST", "/channels", json!({"channel": "x"}))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (stranger.status, stranger.code.as_str()),
+        (403, "not_a_relay_session")
+    );
+    assert_eq!(h.fake.calls("POST", "/v1/channels").len(), before);
+    h.stop().await;
+}
+
+#[tokio::test]
 async fn the_mcp_a_session_declares_picks_its_reply_instructions() {
     use agent_relay_node::relay::hosted_mcp::McpAccess;
     let h = Harness::start().await;

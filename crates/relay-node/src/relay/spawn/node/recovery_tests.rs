@@ -86,6 +86,7 @@ async fn heartbeats_go_on_while_recovery_runs_and_the_inventory_follows_it() {
     let config = NodeConfig {
         base_url: format!("http://{}", listener.local_addr().unwrap()),
         workspace_key: Secret::new("rk_live_one".to_string()),
+        control_url: None,
         node_name: "mac-desktop".into(),
         version: "1.0.0".into(),
         app_data_dir: folder.path().to_path_buf(),

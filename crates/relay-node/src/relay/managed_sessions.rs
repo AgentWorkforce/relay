@@ -909,7 +909,7 @@ impl SystemManagedRuntime {
 
     fn environment(&self, executable: &Path) -> BTreeMap<String, String> {
         let base: BTreeMap<String, String> = std::env::vars().collect();
-        match &self.agent_environment {
+        crate::relay::workspace::without_workspace_key_env(match &self.agent_environment {
             Some(environment) => environment(
                 &executable
                     .file_name()
@@ -918,7 +918,7 @@ impl SystemManagedRuntime {
                 base,
             ),
             None => base,
-        }
+        })
     }
 
     fn process(&self, pid: i32, expected_uid: u32) -> Option<ProcessInfo> {

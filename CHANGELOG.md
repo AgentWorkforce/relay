@@ -5,18 +5,33 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Minor]
+## [Unreleased - Patch]
+
+### Fixed
+
+- Loaded Codex user chats automatically join and stay registered without a desktop window owner; registration presence no longer implies an idle message-delivery route.
+
+## [18.1.0] - 2026-11-11
 
 ### Added
 
+- Agents can create a channel: `agent-relay-probe relay subscribe-channel <channel> --create [--topic <topic>]` creates the channel when it does not exist (`POST /channels`) and joins it; an existing channel is joined as before. A topic may start with a hyphen.
 - `@agent-relay/core-bridge` exposes the complete schema-v2 service-caller lifecycle: secure caller descriptors, identity checks, result-inbox open/next/settle/close helpers and disconnect.
 - `agent-relay cloud worker start --local-agent` opts into the supported Relayflows local worker, including daemon starts. TypeScript assignments use the SDK’s authored `.flow.ts` entrypoint.
 - `agent-relay cloud worker register` accepts exactly one of `--token`, `--token-file` or `--token-stdin`, so enrollment can read a projected Secret file or pipe without putting the credential in process arguments. File and stdin inputs are limited to 16 KiB; interactive stdin is refused.
 - A DM to your own relay identity can ask the core for a desktop notification with `data.relay_alert = {"title", "link"}` (title up to 120 characters, `https` link); the notification body previews the message. Messages to agents and ordinary DMs never notify, and each sender raises at most 3 alerts in 10 minutes. Delivery of the DM is unchanged.
 
+- Node credentials (`sh_wk_…`): a workspace credential bound to one spawn node name. The `workspaces.json` entry carries `control_url` beside `base_url` (`controlUrl` in a project pin) and is refused without it. Workspace identity, node enrolment and lookup, and agent lookup go through Control's broker at `<control_url>/relay-node/v1`; other workspace-key calls report not available, and the credential is never sent to Relaycast. A credential issued for another node name stops the spawn node with a log line naming the configured node. Switching an `rk_…` or `ar_ws_…` key to a node credential for the same workspace keeps the enrolled node.
+
+### Changed
+
+- Agents, harness servers and spawned processes no longer inherit `RELAY_API_KEY`, `RELAY_WORKSPACE_KEY` or `AGENT_RELAY_WORKSPACE_KEY`.
+- Diagnostics, request logs and activity redact `sh_wk_…` credentials.
+
 ### Fixed
 
-- Loaded Codex user chats automatically join and stay registered without a desktop window owner; registration presence no longer implies an idle message-delivery route.
+- Service-caller spawns bind the exact node ID and a strict logical request to Relaycast's durable invocation claim. Retries may rematerialize an authorized working directory, while an explicit server-proven replay-resume contract recovers only a definitely-unsent accepted invocation when that directory is no longer safe to materialize. Unknown send outcomes are never resubmitted.
+- `@agent-relay/core-bridge`'s `readCallerDescriptor` accepts only schema-v2 service-caller descriptors. `requireServiceCallerMethods` refuses a core that lacks a required service-caller method.
 - `agent-relay cloud enroll` explains that enrollment does not start a runtime and links to headless setup instead of recommending the removed `node up` command.
 - Authored TypeScript cloud-worker assignments resolve the CLI's pinned Surface from isolated run directories when no dependency is supplied, preserving assignment-provided packages.
 - A spawned Codex or Claude worker no longer registers a second Relaycast agent when its own session connects before the spawn finishes: the session binds to the spawn's registration, keeping its `name@<node>` address and the requester who approves it.

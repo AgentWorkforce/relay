@@ -118,6 +118,7 @@ fn core(base: &str) -> (Arc<Core>, tempfile::TempDir) {
         base_url: base.into(),
         workspace_id: None,
         source: crate::relay::workspace::WorkspaceSource::Cloud,
+        control_url: None,
     });
     (core, temp)
 }

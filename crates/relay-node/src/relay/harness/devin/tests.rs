@@ -149,6 +149,7 @@ fn restart_finds_only_its_live_host_and_never_adopts_a_reused_pid() {
         requester: None,
         target: None,
         process: None,
+        control_url: None,
     };
     let env = std::collections::HashMap::from([(MARKER.into(), intent.session_id.clone())]);
     table.insert(

@@ -42,6 +42,7 @@ async fn main() {
         base_url: origin,
         workspace_id: Some(input.expected_workspace_id.clone()),
         source: WorkspaceSource::Cloud,
+        control_url: None,
     };
     match client::workspace_info(&workspace).await {
         Ok(info) if info.id == input.expected_workspace_id => {
