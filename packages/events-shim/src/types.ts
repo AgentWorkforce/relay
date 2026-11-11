@@ -49,6 +49,11 @@ export interface ShimRecord {
 
 /** What happened to a post after it was stored. */
 export type DeliveryState =
+  /**
+   * Claimed by a wake that is sending it now. A lease: if the host stops
+   * mid-send, the claim expires and the post is claimable again.
+   */
+  | 'sending'
   /** Forwarded to the agent's relay; Agent Relay injects it (waking an idle session). */
   | 'woken'
   /** Waiting for the agent: no wake link, or the forward failed. */
@@ -139,23 +144,34 @@ export interface EventsShimStore {
   ): Promise<{ duplicate: false; event: ShimEvent } | { duplicate: true; eventId: string; seq: number }>;
   /** Newest first, at most `limit`. */
   listRecent(shimId: string, limit: number): Promise<ShimEvent[]>;
-  /** How many posts are still `pending`. */
-  countPending(shimId: string): Promise<number>;
+  /** How many posts the agent has not received: `pending`, plus `sending` claims that expired before `staleBefore`. */
+  countPending(shimId: string, staleBefore: string): Promise<number>;
   /**
-   * Atomically moves `pending` events to `state` and returns exactly the
-   * events this call moved: the oldest `limit`, or only `ids` when given.
-   * Two concurrent callers never receive the same event (e.g. `UPDATE …
-   * WHERE delivery = 'pending' … RETURNING` with `FOR UPDATE SKIP LOCKED`).
+   * Atomically claims posts and returns exactly the posts this call claimed:
+   * the oldest `limit`, or only `ids` when given. Claimable posts are
+   * `pending` ones and `sending` ones whose claim (`deliveredAt`) is older
+   * than `staleBefore` (an expired lease). Two concurrent callers never
+   * receive the same post.
+   *
+   * With `linkedAt`, nothing is claimed unless the shim's current wake link
+   * is the one linked at `linkedAt` and is not broken, checked in the same
+   * atomic step, so a pass for a removed or replaced link stops.
+   *
+   * Postgres: pick the ids once in a `MATERIALIZED` CTE (`… FOR UPDATE SKIP
+   * LOCKED`), then `UPDATE … FROM picked … RETURNING`; a plain
+   * `WHERE id IN (SELECT … LIMIT n …)` can return more than `n` rows.
    */
   claimPending(
     shimId: string,
-    options: { limit: number; ids?: string[] },
-    state: 'woken' | 'read',
+    options: { limit: number; ids?: string[]; staleBefore: string; linkedAt?: string },
+    state: 'sending' | 'read',
     at: string
   ): Promise<ShimEvent[]>;
+  /** A sent post: `sending` → `woken`. Applies only while it is still `sending`. */
+  confirmWake(shimId: string, eventId: string, at: string): Promise<void>;
   /**
-   * Returns an event claimed for a wake to `pending` after the forward
-   * failed, recording `wakeError`. Applies only while it is still `woken`.
+   * A post whose send failed: `sending` → `pending`, recording `wakeError`.
+   * Applies only while it is still `sending`.
    */
   releaseWake(shimId: string, eventId: string, wakeError: string): Promise<void>;
   /**

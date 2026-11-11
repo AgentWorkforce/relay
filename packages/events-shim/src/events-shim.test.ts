@@ -346,6 +346,62 @@ describe('events shim', () => {
     expect(replay.body.duplicate).toBe(true);
   });
 
+  it('confirms a post woken only after it was sent, and an expired send lease is claimable again', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const posted = await h.post(shim.webhook_url, { a: 1 });
+    const record = (await h.store.findByHookTokenHash(await sha256Hex(shim.webhook_url.split('/h/')[1]!)))!;
+    const t0 = new Date('2026-11-11T12:00:00.000Z');
+    const stale = (t: Date) => new Date(t.getTime() - EVENTS_SHIM_LIMITS.sendLeaseMs).toISOString();
+    // A host claims it for a wake and then dies before sending.
+    const [claimed] = await h.store.claimPending(
+      record.id,
+      { limit: 1, staleBefore: stale(t0) },
+      'sending',
+      t0.toISOString()
+    );
+    expect(claimed!.id).toBe(posted.body.event_id);
+    expect(
+      await h.store.claimPending(record.id, { limit: 1, staleBefore: stale(t0) }, 'read', t0.toISOString())
+    ).toHaveLength(0);
+    // Once the lease expires, a reader gets it.
+    const later = new Date(t0.getTime() + EVENTS_SHIM_LIMITS.sendLeaseMs + 1);
+    const [read] = await h.store.claimPending(
+      record.id,
+      { limit: 1, staleBefore: stale(later) },
+      'read',
+      later.toISOString()
+    );
+    expect(read!.id).toBe(posted.body.event_id);
+    // The dead host's late confirmation cannot overwrite the read.
+    await h.store.confirmWake(record.id, read!.id, later.toISOString());
+    expect((await h.store.listRecent(record.id, 1))[0]!.delivery).toBe('read');
+  });
+
+  it('stops forwarding to a link that was removed or replaced', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const agent = await h.connect(shim.mcp_url);
+    await agent.call('link_relay_wake', RELAY_HOOK);
+    const record = (await h.store.findByHookTokenHash(await sha256Hex(shim.webhook_url.split('/h/')[1]!)))!;
+    const oldLinkedAt = record.wake!.linkedAt;
+    await agent.call('unlink_relay_wake');
+    await h.post(shim.webhook_url, { after: 'unlink' });
+    const stale = new Date(
+      Date.parse('2026-11-11T12:00:00.000Z') - EVENTS_SHIM_LIMITS.sendLeaseMs
+    ).toISOString();
+    // An old pass still holding the removed link cannot claim the new post.
+    expect(
+      await h.store.claimPending(
+        record.id,
+        { limit: 1, staleBefore: stale, linkedAt: oldLinkedAt },
+        'sending',
+        new Date().toISOString()
+      )
+    ).toHaveLength(0);
+    expect((await h.feed(shim.manage_token)).body.events[0]!.delivery).toBe('pending');
+  });
+
   it('refuses wake links outside the allowed relay origins', async () => {
     const h = createHarness();
     const shim = await h.create();

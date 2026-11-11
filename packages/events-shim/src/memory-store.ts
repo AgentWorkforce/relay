@@ -156,21 +156,26 @@ export class MemoryEventsShimStore implements EventsShimStore {
     return structuredClone(this.row(shimId).events.slice(-limit).reverse());
   }
 
-  async countPending(shimId: string) {
-    return this.row(shimId).events.filter((event) => event.delivery === 'pending').length;
+  async countPending(shimId: string, staleBefore: string) {
+    return this.row(shimId).events.filter((event) => claimable(event, staleBefore)).length;
   }
 
   async claimPending(
     shimId: string,
-    options: { limit: number; ids?: string[] },
-    state: 'woken' | 'read',
+    options: { limit: number; ids?: string[]; staleBefore: string; linkedAt?: string },
+    state: 'sending' | 'read',
     at: string
   ) {
-    // Synchronous from read to write, so two callers can never claim the same event.
+    // Synchronous from read to write, so two callers can never claim the same post.
+    const row = this.row(shimId);
+    if (options.linkedAt !== undefined) {
+      const wake = row.shim.wake;
+      if (!wake || wake.brokenAt || wake.linkedAt !== options.linkedAt) return [];
+    }
     const claimed: ShimEvent[] = [];
-    for (const event of this.row(shimId).events) {
+    for (const event of row.events) {
       if (claimed.length >= options.limit) break;
-      if (event.delivery !== 'pending') continue;
+      if (!claimable(event, options.staleBefore)) continue;
       if (options.ids && !options.ids.includes(event.id)) continue;
       event.delivery = state;
       event.deliveredAt = at;
@@ -180,9 +185,17 @@ export class MemoryEventsShimStore implements EventsShimStore {
     return claimed;
   }
 
+  async confirmWake(shimId: string, eventId: string, at: string) {
+    const event = this.row(shimId).events.find((candidate) => candidate.id === eventId);
+    if (event && event.delivery === 'sending') {
+      event.delivery = 'woken';
+      event.deliveredAt = at;
+    }
+  }
+
   async releaseWake(shimId: string, eventId: string, wakeError: string) {
     const event = this.row(shimId).events.find((candidate) => candidate.id === eventId);
-    if (event && event.delivery === 'woken') {
+    if (event && event.delivery === 'sending') {
       event.delivery = 'pending';
       delete event.deliveredAt;
       event.wakeError = wakeError;
@@ -198,4 +211,11 @@ export class MemoryEventsShimStore implements EventsShimStore {
       }
     }
   }
+}
+
+/** `pending`, or `sending` with a claim that expired before `staleBefore`. */
+function claimable(event: ShimEvent, staleBefore: string): boolean {
+  return (
+    event.delivery === 'pending' || (event.delivery === 'sending' && (event.deliveredAt ?? '') < staleBefore)
+  );
 }

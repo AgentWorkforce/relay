@@ -24,12 +24,16 @@ export interface DeliveryDeps {
 }
 
 /**
- * Forwards pending posts to the agent's relay, oldest first, each claimed
- * atomically before it is sent so no post is forwarded or read twice. With
- * `ids` it forwards only those posts (if still pending), then keeps going
- * through any older backlog. A post whose forward fails after the retries
- * returns to `pending` with the reason; a permanent refusal marks the link
- * broken, but only if `target` is still the current link.
+ * Forwards pending posts to the agent's relay one at a time, oldest first.
+ * Each post is claimed atomically (a `sending` lease) before it is sent and
+ * confirmed `woken` only after Relaycast accepted it, so a host that stops
+ * mid-send leaves at most one post on an expiring lease, never a post that
+ * looks delivered. Every claim also requires `target` to still be the
+ * current, unbroken link, so a pass for an unlinked or replaced link stops at
+ * its next post. With `ids` it sends those posts first, then drains any older
+ * backlog. A post whose forward fails after the retries goes back to
+ * `pending`; a permanent refusal marks the link broken, but only if `target`
+ * is still the current link.
  *
  * @param deps - The store, fetch and clock to use.
  * @param shimId - The inbox whose posts to forward.
@@ -45,27 +49,32 @@ export async function deliverPending(
 ): Promise<DeliveryPass> {
   const clock = deps.now ?? (() => new Date());
   let forwarded = 0;
-  const batches: Array<{ limit: number; ids?: string[] }> = ids?.length ? [{ limit: ids.length, ids }] : [];
+  const first = [...(ids ?? [])];
   for (;;) {
-    const batch = batches.shift() ?? { limit: EVENTS_SHIM_LIMITS.batchSize };
-    const claimed = await deps.store.claimPending(shimId, batch, 'woken', clock().toISOString());
-    if (claimed.length === 0) {
-      if (batch.ids) continue;
+    const at = clock();
+    const staleBefore = new Date(at.getTime() - EVENTS_SHIM_LIMITS.sendLeaseMs).toISOString();
+    const id = first.shift();
+    const [event] = await deps.store.claimPending(
+      shimId,
+      { limit: 1, staleBefore, linkedAt: target.linkedAt, ...(id ? { ids: [id] } : {}) },
+      'sending',
+      at.toISOString()
+    );
+    if (!event) {
+      if (id) continue; // already taken or read; move on to the backlog
       return { forwarded };
     }
-    for (let i = 0; i < claimed.length; i += 1) {
-      const outcome = await forwardWithRetry(deps, target, claimed[i]!);
-      if (outcome.ok) {
-        forwarded += 1;
-        continue;
-      }
-      // Hand back this post and every other one this pass claimed but did not send.
-      for (const event of claimed.slice(i)) await deps.store.releaseWake(shimId, event.id, outcome.reason);
-      if (outcome.permanent) {
-        await deps.store.markWakeBroken(shimId, target.linkedAt, outcome.reason, clock().toISOString());
-      }
-      return { forwarded, stalled: { permanent: outcome.permanent, reason: outcome.reason } };
+    const outcome = await forwardWithRetry(deps, target, event);
+    if (outcome.ok) {
+      await deps.store.confirmWake(shimId, event.id, clock().toISOString());
+      forwarded += 1;
+      continue;
     }
+    await deps.store.releaseWake(shimId, event.id, outcome.reason);
+    if (outcome.permanent) {
+      await deps.store.markWakeBroken(shimId, target.linkedAt, outcome.reason, clock().toISOString());
+    }
+    return { forwarded, stalled: { permanent: outcome.permanent, reason: outcome.reason } };
   }
 }
 

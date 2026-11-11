@@ -76,13 +76,15 @@ function wakeState(shim: ShimRecord): 'linked' | 'broken' | 'none' {
 async function handOver(
   ctx: EventsShimMcpContext
 ): Promise<{ events: Record<string, unknown>[]; more: boolean }> {
+  const at = now(ctx);
+  const staleBefore = new Date(at.getTime() - EVENTS_SHIM_LIMITS.sendLeaseMs).toISOString();
   const claimed = await ctx.deps.store.claimPending(
     ctx.shim.id,
-    { limit: EVENTS_SHIM_LIMITS.batchSize },
+    { limit: EVENTS_SHIM_LIMITS.batchSize, staleBefore },
     'read',
-    now(ctx).toISOString()
+    at.toISOString()
   );
-  const more = claimed.length > 0 && (await ctx.deps.store.countPending(ctx.shim.id)) > 0;
+  const more = claimed.length > 0 && (await ctx.deps.store.countPending(ctx.shim.id, staleBefore)) > 0;
   return { events: claimed.map(publicEvent), more };
 }
 
@@ -109,7 +111,10 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
     },
     async () => {
       await seen(ctx);
-      const waiting = await ctx.deps.store.countPending(ctx.shim.id);
+      const waiting = await ctx.deps.store.countPending(
+        ctx.shim.id,
+        new Date(now(ctx).getTime() - EVENTS_SHIM_LIMITS.sendLeaseMs).toISOString()
+      );
       const state = wakeState(ctx.shim);
       const nextSteps =
         state === 'linked'
