@@ -5,7 +5,15 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `agent-relay-probe connect extend --minutes <N>` keeps a hosted Connect room open longer (up to 7 days per call) and prints the new expiry.
+
+### Fixed
+
+- `agent-relay-probe connect create` starts a new room when Cloud has already closed the saved one, even before its saved expiry, instead of refusing with "already has a pending or active room". `connect end` clears a room that has expired, ended or no longer exists instead of failing.
 
 ## [18.1.0] - 2026-11-11
 

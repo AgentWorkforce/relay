@@ -2,7 +2,7 @@
 
 use anyhow::{ensure, Result};
 
-use super::{parse_iso_ms, random_id, HostState, SafeError};
+use super::{expired_locally, random_id, HostState, SafeError};
 
 /// Cloud creates and extends rooms for at most 7 days. The parser still
 /// accepts the older 30-day maximum so a host can rejoin a room an earlier CLI
@@ -29,13 +29,7 @@ pub(super) fn for_create(
     minutes: u32,
     name: Option<String>,
 ) -> Result<HostState> {
-    let live = saved.filter(|state| {
-        !state
-            .expires_at
-            .as_deref()
-            .and_then(parse_iso_ms)
-            .is_some_and(|expiry| expiry <= crate::relay::state::now_ms())
-    });
+    let live = saved.filter(|state| !expired_locally(state, crate::relay::state::now_ms()));
     let state = match live {
         Some(state) => state,
         None => HostState {
