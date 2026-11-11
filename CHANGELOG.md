@@ -23,7 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay-node` service-caller `spawn.invoke` calls bind the exact node ID and retry durably through Relaycast, recovering an accepted invocation even when its requested directory can no longer be rematerialized safely.
+- Service-caller spawns bind the exact node ID and a strict logical request to Relaycast's durable invocation claim. Retries may rematerialize an authorized working directory, while an explicit server-proven replay-resume contract recovers only a definitely-unsent accepted invocation when that directory is no longer safe to materialize. Unknown send outcomes are never resubmitted.
+- `@agent-relay/core-bridge`'s `readCallerDescriptor` accepts only schema-v2 service-caller descriptors. `requireServiceCallerMethods` refuses a core that lacks a required service-caller method.
 - `agent-relay cloud enroll` explains that enrollment does not start a runtime and links to headless setup instead of recommending the removed `node up` command.
 - Authored TypeScript cloud-worker assignments resolve the CLI's pinned Surface from isolated run directories when no dependency is supplied, preserving assignment-provided packages.
 - A spawned Codex or Claude worker no longer registers a second Relaycast agent when its own session connects before the spawn finishes: the session binds to the spawn's registration, keeping its `name@<node>` address and the requester who approves it.

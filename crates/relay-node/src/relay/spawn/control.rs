@@ -452,8 +452,13 @@ fn receipt(data: &Value) -> Result<SpawnControlInvocation, RpcError> {
     })
 }
 
+const STRICT_SPAWN_REPLAY_RESUME_SCHEMA: &str = "relay.spawn.invoke.logical-replay-resume/1";
+const STRICT_SPAWN_REPLAY_RESUME_CAPABILITY: &str = "relay.spawn.replay-resume/1";
+
 fn strict_spawn_receipt(data: &Value) -> Result<SpawnControlInvocation, RpcError> {
-    if data["spawn_contract_applied"] != "relay.spawn.invoke.logical/1" {
+    if data["spawn_contract_applied"] != STRICT_SPAWN_REPLAY_RESUME_SCHEMA
+        || data["spawn_replay_capability_applied"] != STRICT_SPAWN_REPLAY_RESUME_CAPABILITY
+    {
         return Err(malformed());
     }
     receipt(data)
@@ -548,7 +553,7 @@ async fn invoke_as(
     if let Some(external) = caller.external() {
         scoped_harness(external, &params.harness)?;
         let logical = json!({
-            "schema": "relay.spawn.invoke.logical/1",
+            "schema": STRICT_SPAWN_REPLAY_RESUME_SCHEMA,
             "target_node_id": params.node_id,
             "target_node": params.node_name,
             "name": params.name,
@@ -581,7 +586,7 @@ async fn invoke_as(
         };
         let directory = directory.to_str().ok_or_else(outside_scope)?;
         let body = json!({"input": {
-            "spawn_contract": "relay.spawn.invoke.logical/1",
+            "spawn_contract": STRICT_SPAWN_REPLAY_RESUME_SCHEMA,
             "target_node_id": params.node_id,
             "target_node": params.node_name,
             "name": params.name,
