@@ -605,14 +605,26 @@ impl Outbound {
         self.admit(&session.target.key())?;
         let lock = self.core.target_locks.get(&session.target.key());
         let _changing = lock.lock().await;
-        if let Some(current) = self.core.connect_for(&session.target) {
+        if let Some(mut current) = self.core.connect_for(&session.target) {
+            // A host may have extended the room since this session joined:
+            // confirm a passed expiry with Cloud before discarding it.
+            let mut gone = false;
             if current.expired() {
                 let delivery = self
                     .core
                     .agent_locks
                     .get(&format!("connect:{}", current.agent_id));
                 let _delivery = delivery.lock().await;
-                self.core.close_connect(&current, "connect_expired");
+                match self.core.confirm_connect_expiry(&current).await {
+                    crate::relay::connect::ExpiryCheck::Open(open) => current = *open,
+                    crate::relay::connect::ExpiryCheck::Gone(code) => {
+                        self.core.close_connect(&current, &code);
+                        gone = true;
+                    }
+                }
+            }
+            if gone {
+                // Closed: join the requested Connect below.
             } else if current.connect_id == requested_id {
                 return Ok(current.join_public());
             } else {
@@ -738,10 +750,21 @@ impl Outbound {
                 "This session has not joined a Connect.",
             )
         })?;
+        if !joined.expired() {
+            return Ok((session, joined));
+        }
+        // Confirm and close under the credential's lock, as the poll loop
+        // does, so an overlapping check cannot close a room the other just
+        // found extended.
+        let lock = self
+            .core
+            .agent_locks
+            .get(&format!("connect:{}", joined.agent_id));
+        let _checking = lock.lock().await;
         let joined = match self.core.confirm_connect_expiry(&joined).await {
             crate::relay::connect::ExpiryCheck::Open(joined) => *joined,
             crate::relay::connect::ExpiryCheck::Gone(code) => {
-                self.close_connect_serialized(&joined, &code).await;
+                self.core.close_connect(&joined, &code);
                 let (status, message) = match code.as_str() {
                     "connect_not_found" => (404, "This Connect no longer exists."),
                     "connect_ended" => (410, "This Connect has ended."),

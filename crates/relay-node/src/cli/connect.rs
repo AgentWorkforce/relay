@@ -547,13 +547,16 @@ fn complete_extend(
         }
         result => result?,
     };
-    if let Some(expiry) = extended["expires_at"]
+    // A success without a readable expiry cannot be recorded, so it is not
+    // reported as an extension.
+    let expiry = extended["expires_at"]
         .as_str()
         .filter(|expiry| parse_iso_ms(expiry).is_some())
-    {
-        state.expires_at = Some(expiry.to_owned());
-        save(path, state)?;
-    }
+        .ok_or_else(|| {
+            error("Cloud did not report the room's new expiry. Run connect status to check it.")
+        })?;
+    state.expires_at = Some(expiry.to_owned());
+    save(path, state)?;
     Ok(json!({"link":state.link,"expires_at":state.expires_at}))
 }
 /// Drop a saved room Cloud reports gone, so `connect create` can start a new
@@ -782,6 +785,7 @@ mod tests {
         calls: Vec<(String, String, String)>,
         claims: Vec<String>,
         fail_call: bool,
+        extend_without_expiry: bool,
         fail_join: bool,
         invalid_claim: bool,
         /// Answer every tool as Cloud does once the room is gone.
@@ -810,6 +814,7 @@ mod tests {
                 ),
                 "connect_status" => Ok(json!({"host_claim":"replacement-claim"})),
                 "end_connect" => Ok(json!({"ended":true})),
+                "extend_connect" if self.extend_without_expiry => Ok(json!({"extended":true})),
                 "extend_connect" => Ok(json!({"expires_at":"2099-01-02T00:00:00.000Z"})),
                 _ => panic!("unexpected tool"),
             }
@@ -832,6 +837,7 @@ mod tests {
             calls: vec![],
             claims: vec![],
             fail_call: false,
+            extend_without_expiry: false,
             fail_join: false,
             invalid_claim: false,
             gone: None,
@@ -1062,6 +1068,20 @@ mod tests {
         let failed = complete_extend(&path, &mut state, 60, &mut api).unwrap_err();
         assert!(failed.to_string().contains("expired"));
         assert!(!path.exists());
+    }
+    #[test]
+    fn an_extension_without_a_readable_expiry_is_not_reported_as_done() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("host.json");
+        let mut state = created("2099-01-01T00:00:00Z");
+        save(&path, &state).unwrap();
+        let mut api = fake();
+        api.extend_without_expiry = true;
+        assert!(complete_extend(&path, &mut state, 60, &mut api).is_err());
+        assert_eq!(
+            reload(&path).expires_at.as_deref(),
+            Some("2099-01-01T00:00:00Z")
+        );
     }
     #[test]
     fn extending_past_the_saved_expiry_asks_cloud() {

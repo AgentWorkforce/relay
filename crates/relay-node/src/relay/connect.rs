@@ -707,6 +707,19 @@ fn is_false(value: &bool) -> bool {
 /// cannot confirm whether the host extended it.
 pub(crate) const CONNECT_EXPIRY_GRACE_MS: i64 = 15 * 60 * 1000;
 
+/// How long a credential whose expiry Cloud could not confirm waits before
+/// it is asked again.
+pub(crate) const CONNECT_EXPIRY_RETRY_MS: i64 = 60 * 1000;
+
+/// Cloud's answer that a Connect is over.
+fn terminal_connect_error(error: &OutboundError) -> bool {
+    matches!(error.status, 404 | 410)
+        && matches!(
+            error.code.as_str(),
+            "connect_not_found" | "connect_ended" | "connect_expired"
+        )
+}
+
 /// What [`Core::confirm_connect_expiry`] found.
 #[derive(Debug)]
 pub(crate) enum ExpiryCheck {
@@ -741,6 +754,10 @@ pub struct ConnectState {
     /// `None` until a pass completes. Only a running session's credential
     /// is used, so Relaycast presence follows the session.
     live_targets: Option<HashSet<String>>,
+    /// Agent id to when Cloud may next be asked for the expiry of a
+    /// credential whose last expiry check could not reach it. In memory only:
+    /// a restart asks again at once.
+    expiry_retry_after_ms: HashMap<String, i64>,
 }
 
 impl ConnectState {
@@ -823,6 +840,7 @@ impl ConnectState {
             last_heartbeat_ms: HashMap::new(),
             inbox_reads: Default::default(),
             live_targets: None,
+            expiry_retry_after_ms: HashMap::new(),
         }
     }
 
@@ -870,6 +888,28 @@ impl ConnectState {
         };
         let bytes = serde_json::to_vec(&snapshot)?;
         write_atomic(&self.path, &bytes)
+    }
+
+    /// Whether an expiry check of `agent_id` that could not reach Cloud is
+    /// still waiting out its pause at `now_ms`.
+    pub(crate) fn expiry_retry_pending(&self, agent_id: &str, now_ms: i64) -> bool {
+        self.expiry_retry_after_ms
+            .get(agent_id)
+            .is_some_and(|after| *after > now_ms)
+    }
+
+    /// Records when Cloud may next be asked for `agent_id`'s expiry, or
+    /// clears the pause once Cloud answered.
+    pub(crate) fn record_expiry_check(&mut self, agent_id: &str, retry_after_ms: Option<i64>) {
+        match retry_after_ms {
+            Some(after) => {
+                self.expiry_retry_after_ms
+                    .insert(agent_id.to_owned(), after);
+            }
+            None => {
+                self.expiry_retry_after_ms.remove(agent_id);
+            }
+        }
     }
 
     /// Records a later Cloud expiry for a joined Connect, when the session
@@ -1346,11 +1386,23 @@ impl ConnectState {
     /// Cancels terminal-queue handoffs before exposing a restarted core.
     /// Expired sessions are deliberately loaded above so their target and
     /// pending message ids remain available for this startup reconciliation.
+    /// Startup reconciliation of joined sessions whose saved expiry passed
+    /// while the core was stopped. A host may have extended the room
+    /// meanwhile, and only Cloud knows, so a session is closed here only once
+    /// it is past the grace an unreachable Cloud is given: the first poll
+    /// confirms the rest with Cloud (`Core::confirm_connect_expiry`) before it
+    /// reads, injects or settles anything for them, and closes them, with
+    /// their pending handoffs, if Cloud says they are over.
     pub(crate) fn reconcile_expired(&mut self, injector: &dyn crate::relay::inject::Injector) {
+        let now = Utc::now().timestamp_millis();
         let expired: Vec<_> = self
             .sessions
             .values()
-            .filter(|session| session.expired())
+            .filter(|session| {
+                DateTime::parse_from_rfc3339(&session.expires_at)
+                    .map(|at| now - at.timestamp_millis() > CONNECT_EXPIRY_GRACE_MS)
+                    .unwrap_or(true)
+            })
             .cloned()
             .collect();
         for session in expired {
@@ -1485,8 +1537,39 @@ impl Core {
     /// session stays open for [`CONNECT_EXPIRY_GRACE_MS`] past its saved
     /// expiry and is then closed, as before.
     pub(crate) async fn confirm_connect_expiry(&self, session: &ConnectSession) -> ExpiryCheck {
+        // Callers hold the credential's `connect:<agent_id>` lock, so checks
+        // of one credential never overlap. Their snapshot may still predate a
+        // check that extended it, so decide on the saved session.
+        let saved = self
+            .connect
+            .lock()
+            .unwrap()
+            .sessions
+            .get(&session.target.key())
+            .filter(|saved| saved.agent_id == session.agent_id)
+            .cloned();
+        let Some(session) = saved else {
+            // Left or replaced meanwhile: nothing of this credential remains.
+            return ExpiryCheck::Gone("connect_ended".into());
+        };
         if !session.expired() {
-            return ExpiryCheck::Open(Box::new(session.clone()));
+            return ExpiryCheck::Open(Box::new(session));
+        }
+        let now = Utc::now();
+        let past_grace = DateTime::parse_from_rfc3339(&session.expires_at)
+            .map(|at| now.timestamp_millis() - at.timestamp_millis() > CONNECT_EXPIRY_GRACE_MS)
+            .unwrap_or(true);
+        // While Cloud is unreachable, ask again only after a pause, so a
+        // locally expired credential cannot hold up every poll for the whole
+        // grace period with a lookup that times out.
+        if !past_grace
+            && self
+                .connect
+                .lock()
+                .unwrap()
+                .expiry_retry_pending(&session.agent_id, now.timestamp_millis())
+        {
+            return ExpiryCheck::Open(Box::new(session));
         }
         let client = self.plugins.connect_cloud.clone();
         let connect_id = session.connect_id.clone();
@@ -1495,6 +1578,11 @@ impl Core {
             .await
             .unwrap_or_else(|_| Err(connect_internal_error("expiry", &session.connect_id)));
         let now = Utc::now();
+        let unreachable = matches!(&answer, Err(error) if !terminal_connect_error(error));
+        self.connect.lock().unwrap().record_expiry_check(
+            &session.agent_id,
+            unreachable.then(|| now.timestamp_millis() + CONNECT_EXPIRY_RETRY_MS),
+        );
         match answer {
             Ok(Some(at))
                 if DateTime::parse_from_rfc3339(&at)
@@ -1507,8 +1595,6 @@ impl Core {
                 );
                 match updated {
                     Ok(Some(updated)) => ExpiryCheck::Open(Box::new(updated)),
-                    // Left or replaced meanwhile: nothing of this credential
-                    // remains to keep open.
                     Ok(None) => ExpiryCheck::Gone("connect_ended".into()),
                     Err(_) => {
                         let mut extended = session.clone();
@@ -1518,27 +1604,9 @@ impl Core {
                 }
             }
             Ok(_) => ExpiryCheck::Gone("connect_expired".into()),
-            Err(error)
-                if matches!(error.status, 404 | 410)
-                    && matches!(
-                        error.code.as_str(),
-                        "connect_not_found" | "connect_ended" | "connect_expired"
-                    ) =>
-            {
-                ExpiryCheck::Gone(error.code)
-            }
-            Err(_) => {
-                let past_grace = DateTime::parse_from_rfc3339(&session.expires_at)
-                    .map(|at| {
-                        now.timestamp_millis() - at.timestamp_millis() > CONNECT_EXPIRY_GRACE_MS
-                    })
-                    .unwrap_or(true);
-                if past_grace {
-                    ExpiryCheck::Gone("connect_expired".into())
-                } else {
-                    ExpiryCheck::Open(Box::new(session.clone()))
-                }
-            }
+            Err(error) if terminal_connect_error(&error) => ExpiryCheck::Gone(error.code),
+            Err(_) if past_grace => ExpiryCheck::Gone("connect_expired".into()),
+            Err(_) => ExpiryCheck::Open(Box::new(session)),
         }
     }
 
@@ -2760,6 +2828,61 @@ mod tests {
         assert_eq!(connect_handoff_ttl_ms(Some("7200")), 2 * 60 * 60 * 1_000);
         assert_eq!(connect_handoff_ttl_ms(Some("59")), 60 * 60 * 1_000);
         assert_eq!(connect_handoff_ttl_ms(Some("invalid")), 60 * 60 * 1_000);
+    }
+
+    #[test]
+    fn restart_leaves_a_just_expired_connect_for_cloud_to_confirm() {
+        // The host may have extended the room while this core was stopped;
+        // within the grace the first poll asks Cloud instead.
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("app/connect-sessions.json");
+        let target = Target::new(SessionKind::Codex, "01a0c221-6806-7210-af25-97e104b15049");
+        let mut state = ConnectState::load(path.clone());
+        state
+            .insert(ConnectSession {
+                target: target.clone(),
+                connect_id: "extended-connect".into(),
+                task: "Review".into(),
+                expires_at: (Utc::now() - chrono::Duration::minutes(1))
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                host: ConnectHost {
+                    person: "Alice".into(),
+                    agent_name: "host".into(),
+                },
+                agent_name: "guest".into(),
+                agent_id: "agent-guest".into(),
+                role: "guest".into(),
+                token: Secret::new("at_live_connect"),
+                base_url: "https://cast.agentrelay.com".into(),
+                participants: vec![Participant {
+                    agent_name: "guest".into(),
+                    role: "guest".into(),
+                }],
+                observed_participants: Vec::new(),
+            })
+            .unwrap();
+        state
+            .remember_pending("agent-guest:delivery-1".into(), "message-1".into())
+            .unwrap();
+        let injector = RecordingInjector::default();
+        let mut restarted = ConnectState::load(path);
+        restarted.reconcile_expired(&injector);
+        assert!(restarted.sessions.contains_key(&target.key()));
+        assert!(injector.cancelled.lock().unwrap().is_empty());
+        assert!(injector.connect_injected.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_unreachable_expiry_check_waits_before_asking_again() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut state = ConnectState::load(temp.path().join("connect.json"));
+        assert!(!state.expiry_retry_pending("agent-1", 1_000));
+        state.record_expiry_check("agent-1", Some(1_000 + CONNECT_EXPIRY_RETRY_MS));
+        assert!(state.expiry_retry_pending("agent-1", 1_000));
+        assert!(!state.expiry_retry_pending("agent-1", 1_000 + CONNECT_EXPIRY_RETRY_MS));
+        assert!(!state.expiry_retry_pending("agent-2", 1_000));
+        state.record_expiry_check("agent-1", None);
+        assert!(!state.expiry_retry_pending("agent-1", 1_000));
     }
 
     #[test]
