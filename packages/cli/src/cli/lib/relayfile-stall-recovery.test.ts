@@ -1,5 +1,5 @@
 import { createServer, type RequestListener, type ServerResponse } from 'node:http';
-import { rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -144,6 +144,131 @@ describe('RecoveringControlPlane', () => {
     ).rejects.toBe(notFound);
     expect(stopDaemon).not.toHaveBeenCalled();
   });
+
+  it('shares one restart across concurrent reads that stall on the same daemon', async () => {
+    const stalled = { id: 'stalled' };
+    const fresh = { id: 'fresh' };
+    const createClient = fakeClients(stalled, fresh);
+    let releaseStop!: () => void;
+    const stopDaemon = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseStop = resolve;
+        })
+    );
+    const cp = new RecoveringControlPlane({
+      clientOptions: { autoStart: true },
+      createClient,
+      stopDaemon,
+      warn: () => {},
+    });
+    const read = (workspace: string) =>
+      cp.run('webhook-subscriptions', async (client) => {
+        if (client === (stalled as unknown)) throw timeoutError();
+        return `${workspace}:ok`;
+      });
+
+    // Promise.all fan-out, as the per-workspace subscription listing does.
+    const pending = Promise.all([read('ws_a'), read('ws_b'), read('ws_c')]);
+    await vi.waitFor(() => expect(stopDaemon).toHaveBeenCalled());
+    releaseStop();
+
+    await expect(pending).resolves.toEqual(['ws_a:ok', 'ws_b:ok', 'ws_c:ok']);
+    expect(stopDaemon).toHaveBeenCalledTimes(1);
+    expect(createClient).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not stop a replacement daemon when a late caller stalled on the old one', async () => {
+    const stalled = { id: 'stalled' };
+    const fresh = { id: 'fresh' };
+    const stopDaemon = vi.fn(async () => {});
+    const cp = new RecoveringControlPlane({
+      clientOptions: { autoStart: true },
+      createClient: fakeClients(stalled, fresh),
+      stopDaemon,
+      warn: () => {},
+    });
+    let failLate!: () => void;
+    const late = cp.run('provider-status', async (client) => {
+      if (client === (stalled as unknown)) {
+        // Still waiting on the old daemon while another caller recovers.
+        await new Promise<void>((resolve) => {
+          failLate = resolve;
+        });
+        throw timeoutError();
+      }
+      return 'late:ok';
+    });
+    await expect(
+      cp.run('hello', async (client) => {
+        if (client === (stalled as unknown)) throw timeoutError();
+        return 'early:ok';
+      })
+    ).resolves.toBe('early:ok');
+    failLate();
+
+    await expect(late).resolves.toBe('late:ok');
+    expect(stopDaemon).toHaveBeenCalledTimes(1);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'kills and replaces a real hung daemon process with the default stopper',
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'rf-stall-bin-'));
+      const binary = join(dir, 'relayfile');
+      const socketPath = join(dir, 'cp.sock');
+      // The first daemon answers one provider-status and then hangs; the
+      // auto-started replacement answers everything.
+      writeFileSync(
+        binary,
+        `#!/usr/bin/env node
+const { existsSync, rmSync, writeFileSync } = require('node:fs');
+const { createServer } = require('node:http');
+const { join, dirname } = require('node:path');
+const args = process.argv.slice(2);
+if (args[0] === '--version') { process.stdout.write('0.10.79'); process.exit(0); }
+const sock = args[args.indexOf('--sock') + 1];
+rmSync(sock, { force: true });
+// Only the first daemon process wedges; its replacement stays healthy.
+const marker = join(dirname(sock), 'first-daemon-started');
+const wedges = !existsSync(marker);
+writeFileSync(marker, String(process.pid));
+let served = 0;
+const json = (res, body) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
+const server = createServer((req, res) => {
+  if (req.url === '/v1/hello') return json(res, { daemonVersion: '0.10.79', apiVersion: 3, supportedApiVersions: [1, 2, 3] });
+  served += 1;
+  if (wedges && served > 1) return; // hang
+  json(res, { provider: 'github', status: 'ready' });
+});
+server.listen(sock);
+process.on('SIGTERM', () => { rmSync(sock, { force: true }); process.exit(0); });
+setTimeout(() => { rmSync(sock, { force: true }); process.exit(0); }, 15000).unref();
+`,
+        'utf8'
+      );
+      chmodSync(binary, 0o755);
+
+      try {
+        const cp = new RecoveringControlPlane({
+          clientOptions: { socketPath, binary, autoStart: true, startTimeoutMs: 3000, requestTimeoutMs: 300 },
+          warn: () => {},
+        });
+        const status = (c: RelayfileControlPlaneClient) => c.providerStatus('github');
+        await expect(cp.run('provider-status', status)).resolves.toMatchObject({ status: 'ready' });
+        // The same daemon now hangs; concurrent reads must share one real restart.
+        await expect(
+          Promise.all([cp.run('provider-status', status), cp.run('provider-status', status)])
+        ).resolves.toEqual([
+          expect.objectContaining({ status: 'ready' }),
+          expect.objectContaining({ status: 'ready' }),
+        ]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    20_000
+  );
 
   it.skipIf(process.platform === 'win32')(
     'recovers a real socket daemon that hangs after serving its first request (#1952)',

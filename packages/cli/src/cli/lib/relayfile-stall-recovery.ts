@@ -58,6 +58,7 @@ export class RecoveringControlPlane {
   #client: RelayfileControlPlaneClient;
   readonly #options: RecoveringControlPlaneOptions;
   readonly #autoStart: boolean;
+  #recovery: Promise<void> | undefined;
 
   constructor(options: RecoveringControlPlaneOptions) {
     this.#options = options;
@@ -77,8 +78,12 @@ export class RecoveringControlPlane {
    * @returns the request's result
    */
   async run<T>(label: string, op: (client: RelayfileControlPlaneClient) => Promise<T>): Promise<T> {
+    // Pin the client this attempt used: recovery must only ever replace the
+    // daemon *this* client stalled on, never a replacement another caller
+    // already started.
+    const attempted = this.#client;
     try {
-      return await op(this.#client);
+      return await op(attempted);
     } catch (err) {
       if (!isRelayfileControlPlaneTimeout(err)) throw err;
       const first = err as RelayfileControlPlaneError;
@@ -92,7 +97,7 @@ export class RecoveringControlPlane {
       }
 
       try {
-        await (this.#options.stopDaemon ?? stopDaemonViaClient)(this.#client);
+        await this.#recover(attempted, label);
       } catch (stopErr) {
         throw stalledError(
           label,
@@ -101,11 +106,6 @@ export class RecoveringControlPlane {
         );
       }
 
-      (this.#options.warn ?? defaultWarn)(
-        `relayfile control-plane did not answer ${label}; restarted the daemon and retrying.`
-      );
-      // A fresh client re-runs hello negotiation and auto-starts the daemon.
-      this.#client = this.#create();
       try {
         return await op(this.#client);
       } catch (retryErr) {
@@ -117,6 +117,29 @@ export class RecoveringControlPlane {
         );
       }
     }
+  }
+
+  /**
+   * Single-flight daemon replacement. Concurrent reads that stall on the same
+   * daemon (e.g. per-workspace subscription listings fanned out with
+   * Promise.all) share one stop + restart; a caller whose stalled client was
+   * already replaced just retries on the replacement instead of stopping it.
+   */
+  #recover(stalled: RelayfileControlPlaneClient, label: string): Promise<void> {
+    if (this.#client !== stalled) return Promise.resolve();
+    if (!this.#recovery) {
+      this.#recovery = (async () => {
+        await (this.#options.stopDaemon ?? stopDaemonViaClient)(stalled);
+        (this.#options.warn ?? defaultWarn)(
+          `relayfile control-plane did not answer ${label}; restarted the daemon and retrying.`
+        );
+        // A fresh client re-runs hello negotiation and auto-starts the daemon.
+        this.#client = this.#create();
+      })().finally(() => {
+        this.#recovery = undefined;
+      });
+    }
+    return this.#recovery;
   }
 
   #create(): RelayfileControlPlaneClient {
