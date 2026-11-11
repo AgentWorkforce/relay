@@ -95,6 +95,8 @@ struct FakeJoin {
     roster: Mutex<Result<Vec<RosterEntry>, OutboundError>>,
     roster_tokens: Mutex<Vec<String>>,
     calls: Mutex<Vec<JoinCall>>,
+    /// Cloud's current expiry for the Connect, as its roster reports it.
+    expiry: Mutex<Result<Option<String>, OutboundError>>,
 }
 
 /// One participant of Cloud's roster.
@@ -120,7 +122,12 @@ impl FakeJoin {
             roster: Mutex::new(Ok(roster)),
             roster_tokens: Mutex::default(),
             calls: Mutex::default(),
+            expiry: Mutex::new(Ok(None)),
         }
+    }
+
+    fn set_expiry(&self, expiry: Result<Option<String>, OutboundError>) {
+        *self.expiry.lock().unwrap() = expiry;
     }
 
     fn set_roster(&self, roster: Vec<RosterEntry>) {
@@ -180,6 +187,10 @@ impl ConnectJoinClient for FakeJoin {
 
     fn availability(&self, _: &str) -> Result<ConnectAvailability, OutboundError> {
         self.availability.lock().unwrap().clone()
+    }
+
+    fn expiry(&self, _: &str, _: &Secret) -> Result<Option<String>, OutboundError> {
+        self.expiry.lock().unwrap().clone()
     }
 
     /// Like Cloud, a roster read of an ended Connect answers its gone code.
