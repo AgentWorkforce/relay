@@ -738,15 +738,18 @@ impl Outbound {
                 "This session has not joined a Connect.",
             )
         })?;
-        if joined.expired() {
-            self.close_connect_serialized(&joined, "connect_expired")
-                .await;
-            return Err(OutboundError::new(
-                410,
-                "connect_expired",
-                "This Connect has expired.",
-            ));
-        }
+        let joined = match self.core.confirm_connect_expiry(&joined).await {
+            crate::relay::connect::ExpiryCheck::Open(joined) => *joined,
+            crate::relay::connect::ExpiryCheck::Gone(code) => {
+                self.close_connect_serialized(&joined, &code).await;
+                let (status, message) = match code.as_str() {
+                    "connect_not_found" => (404, "This Connect no longer exists."),
+                    "connect_ended" => (410, "This Connect has ended."),
+                    _ => (410, "This Connect has expired."),
+                };
+                return Err(OutboundError::new(status, &code, message));
+            }
+        };
         Ok((session, joined))
     }
 

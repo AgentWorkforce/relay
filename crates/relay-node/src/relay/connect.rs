@@ -9,7 +9,7 @@ use crate::platform::fs::{create_private_dir, write_atomic};
 use crate::relay::client;
 use crate::relay::cloud_http;
 use crate::relay::codex::processes::needs_probe_reply_client;
-use crate::relay::connect_presence::{read_cloud_roster, RosterEntry};
+use crate::relay::connect_presence::{read_cloud_expiry, read_cloud_roster, RosterEntry};
 use crate::relay::daemon::Core;
 use crate::relay::delivery::policy::{self, Decision, MessageRef};
 use crate::relay::delivery::{preview, DeliveryActivity, DeliveryOutcome, DeliverySettlement};
@@ -98,6 +98,14 @@ pub trait ConnectJoinClient: Send + Sync + 'static {
     /// Reads Cloud's participant-authenticated roster, the one source of
     /// presence a participant token may read.
     fn roster(&self, connect_id: &str, token: &Secret) -> Result<Vec<RosterEntry>, OutboundError>;
+
+    /// Cloud's current expiry for this Connect, read with the participant
+    /// token. Asked only once the expiry saved at join has passed, because a
+    /// host may have extended the room since. `Ok(None)` means Cloud gave no
+    /// readable expiry, and the saved one stands.
+    fn expiry(&self, _connect_id: &str, _token: &Secret) -> Result<Option<String>, OutboundError> {
+        Ok(None)
+    }
 }
 
 pub struct CloudJoinClient;
@@ -391,6 +399,15 @@ impl ConnectJoinClient for CloudJoinClient {
                 answer.status
             ),
         ))
+    }
+
+    fn expiry(&self, connect_id: &str, token: &Secret) -> Result<Option<String>, OutboundError> {
+        #[cfg(debug_assertions)]
+        let debug_override = std::env::var(CONNECT_JOIN_OVERRIDE).ok();
+        #[cfg(not(debug_assertions))]
+        let debug_override: Option<String> = None;
+        let url = cloud_roster_url(connect_id, debug_override.as_deref());
+        read_cloud_expiry(&url, connect_id, token)
     }
 }
 
@@ -686,6 +703,19 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+/// How long past its saved expiry a joined Connect stays open while Cloud
+/// cannot confirm whether the host extended it.
+pub(crate) const CONNECT_EXPIRY_GRACE_MS: i64 = 15 * 60 * 1000;
+
+/// What [`Core::confirm_connect_expiry`] found.
+#[derive(Debug)]
+pub(crate) enum ExpiryCheck {
+    /// Still open; the session carries any later expiry Cloud reported.
+    Open(Box<ConnectSession>),
+    /// Over, with the code to close it under.
+    Gone(String),
+}
+
 pub struct ConnectState {
     path: PathBuf,
     pub sessions: HashMap<String, ConnectSession>,
@@ -840,6 +870,32 @@ impl ConnectState {
         };
         let bytes = serde_json::to_vec(&snapshot)?;
         write_atomic(&self.path, &bytes)
+    }
+
+    /// Records a later Cloud expiry for a joined Connect, when the session
+    /// at `target` is still the credential `agent_id`.
+    pub(crate) fn set_expiry(
+        &mut self,
+        target: &Target,
+        agent_id: &str,
+        expires_at: &str,
+    ) -> std::io::Result<Option<ConnectSession>> {
+        let key = target.key();
+        let Some(session) = self.sessions.get_mut(&key) else {
+            return Ok(None);
+        };
+        if session.agent_id != agent_id {
+            return Ok(None);
+        }
+        let previous = std::mem::replace(&mut session.expires_at, expires_at.to_owned());
+        let updated = session.clone();
+        if let Err(error) = self.persist() {
+            if let Some(session) = self.sessions.get_mut(&key) {
+                session.expires_at = previous;
+            }
+            return Err(error);
+        }
+        Ok(Some(updated))
     }
 
     pub fn insert(&mut self, session: ConnectSession) -> std::io::Result<()> {
@@ -1421,6 +1477,71 @@ impl Core {
             .unwrap_or_else(|_| Err(connect_internal_error("availability", &connect_id)))
     }
 
+    /// Whether a joined Connect whose saved expiry has passed is really over.
+    /// A host can extend a room after its participants joined, and only
+    /// Cloud's clock decides when it ends, so the saved expiry is confirmed
+    /// with Cloud's roster before the credential is closed. A later expiry is
+    /// saved and the session stays open. When Cloud cannot be reached the
+    /// session stays open for [`CONNECT_EXPIRY_GRACE_MS`] past its saved
+    /// expiry and is then closed, as before.
+    pub(crate) async fn confirm_connect_expiry(&self, session: &ConnectSession) -> ExpiryCheck {
+        if !session.expired() {
+            return ExpiryCheck::Open(Box::new(session.clone()));
+        }
+        let client = self.plugins.connect_cloud.clone();
+        let connect_id = session.connect_id.clone();
+        let token = session.token.clone();
+        let answer = tokio::task::spawn_blocking(move || client.expiry(&connect_id, &token))
+            .await
+            .unwrap_or_else(|_| Err(connect_internal_error("expiry", &session.connect_id)));
+        let now = Utc::now();
+        match answer {
+            Ok(Some(at))
+                if DateTime::parse_from_rfc3339(&at)
+                    .is_ok_and(|at| at.with_timezone(&Utc) > now) =>
+            {
+                let updated = self.connect.lock().unwrap().set_expiry(
+                    &session.target,
+                    &session.agent_id,
+                    &at,
+                );
+                match updated {
+                    Ok(Some(updated)) => ExpiryCheck::Open(Box::new(updated)),
+                    // Left or replaced meanwhile: nothing of this credential
+                    // remains to keep open.
+                    Ok(None) => ExpiryCheck::Gone("connect_ended".into()),
+                    Err(_) => {
+                        let mut extended = session.clone();
+                        extended.expires_at = at;
+                        ExpiryCheck::Open(Box::new(extended))
+                    }
+                }
+            }
+            Ok(_) => ExpiryCheck::Gone("connect_expired".into()),
+            Err(error)
+                if matches!(error.status, 404 | 410)
+                    && matches!(
+                        error.code.as_str(),
+                        "connect_not_found" | "connect_ended" | "connect_expired"
+                    ) =>
+            {
+                ExpiryCheck::Gone(error.code)
+            }
+            Err(_) => {
+                let past_grace = DateTime::parse_from_rfc3339(&session.expires_at)
+                    .map(|at| {
+                        now.timestamp_millis() - at.timestamp_millis() > CONNECT_EXPIRY_GRACE_MS
+                    })
+                    .unwrap_or(true);
+                if past_grace {
+                    ExpiryCheck::Gone("connect_expired".into())
+                } else {
+                    ExpiryCheck::Open(Box::new(session.clone()))
+                }
+            }
+        }
+    }
+
     pub(crate) fn close_connect(&self, session: &ConnectSession, code: &str) -> bool {
         let removed = self.remove_connect(&session.target, &session.agent_id);
         if removed {
@@ -1478,10 +1599,13 @@ impl Core {
             {
                 continue;
             }
-            if session.expired() {
-                self.close_connect(&session, "connect_expired");
-                continue;
-            }
+            let session = match self.confirm_connect_expiry(&session).await {
+                ExpiryCheck::Open(session) => *session,
+                ExpiryCheck::Gone(code) => {
+                    self.close_connect(&session, &code);
+                    continue;
+                }
+            };
             // Every request with this credential refreshes its Relaycast
             // presence, so a session that is gone is neither heartbeated nor
             // read: its participants see it offline and its messages wait on

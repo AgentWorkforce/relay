@@ -502,12 +502,10 @@ fn complete_end(
     state: &mut HostState,
     services: &mut impl HostServices,
 ) -> Result<Value> {
-    // A room past its expiry is already closed for everyone: there is nothing
-    // to end, and signing in again only to be told so would be pointless.
-    if state.link.is_some() && expired_locally(state, crate::relay::state::now_ms()) {
-        fs::remove_file(path)?;
-        return Ok(json!({"ended":true}));
-    }
+    // Cloud decides when a room ends, not this computer's clock: a host clock
+    // running ahead must not discard the authority to end a live room. Cloud
+    // answers a room that is already gone with a terminal code, which counts
+    // as ended.
     services.authenticate(path, state)?;
     let ended = services.call(state, "end_connect", json!({}))?;
     ensure!(
@@ -536,10 +534,7 @@ fn complete_extend(
             "A Relay Connect room can be extended by at most {MAX_EXTEND_MINUTES} minutes (7 days)."
         ))
     );
-    if expired_locally(state, crate::relay::state::now_ms()) {
-        fs::remove_file(path)?;
-        return Err(RoomGone("connect_expired".into()).into());
-    }
+    // As with end, Cloud decides whether the room is still open.
     services.authenticate(path, state)?;
     let extended = match services.call(
         state,
@@ -629,7 +624,7 @@ fn run_inner(command: Command) -> Result<()> {
     let home = paths::home()?;
     let start = matches!(
         &command,
-        Command::Create { .. } | Command::Join { .. } | Command::End
+        Command::Create { .. } | Command::Join { .. } | Command::End | Command::Extend { .. }
     );
     let socket = ensure_probe(&home, start)?;
     let result = match command {
@@ -1005,17 +1000,24 @@ mod tests {
         assert!(api.calls.is_empty());
     }
     #[test]
-    fn ending_an_expired_room_clears_it_without_cloud() {
+    fn ending_a_room_past_its_saved_expiry_still_asks_cloud() {
+        // This computer's clock may run ahead of Cloud's, so a saved expiry in
+        // the past is no proof the room is over: the host keeps its authority
+        // until Cloud confirms the end.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("host.json");
         let mut state = created("2020-01-01T00:00:00Z");
         save(&path, &state).unwrap();
         let mut api = fake();
+        api.fail_call = true;
+        assert!(complete_end(&path, &mut state, &mut api).is_err());
+        assert!(path.exists());
+        let mut api = fake();
         assert_eq!(
             complete_end(&path, &mut state, &mut api).unwrap()["ended"],
             true
         );
-        assert!(api.calls.is_empty());
+        assert!(api.calls.iter().any(|call| call.0 == "end_connect"));
         assert!(!path.exists());
     }
     #[test]
@@ -1060,15 +1062,19 @@ mod tests {
         let failed = complete_extend(&path, &mut state, 60, &mut api).unwrap_err();
         assert!(failed.to_string().contains("expired"));
         assert!(!path.exists());
-        // Past its saved expiry: refused without asking Cloud.
+    }
+    #[test]
+    fn extending_past_the_saved_expiry_asks_cloud() {
+        // A saved expiry in the past may only mean this clock runs ahead:
+        // Cloud decides, and a room it still holds open is extended.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("host.json");
         let mut state = created("2020-01-01T00:00:00Z");
         save(&path, &state).unwrap();
         let mut api = fake();
-        assert!(room_gone(
-            &complete_extend(&path, &mut state, 60, &mut api).unwrap_err()
-        ));
-        assert!(api.calls.is_empty());
-        assert!(!path.exists());
+        let output = complete_extend(&path, &mut state, 60, &mut api).unwrap();
+        assert_eq!(output["expires_at"], "2099-01-02T00:00:00.000Z");
+        assert!(api.calls.iter().any(|call| call.0 == "extend_connect"));
     }
     #[test]
     fn extend_minutes_are_bounded_on_the_command_line() {
