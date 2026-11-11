@@ -73,11 +73,13 @@ export async function verifyInbound(input: {
       const expected = await hmacSha256Hex(secret, rawBody);
       if (!timingSafeEqual(header, expected))
         return refused('Linear signature does not match the stored secret.');
+      // Linear signs webhookTimestamp into every body; without it a captured
+      // post could be replayed once deduplication forgets it.
       const timestamp = readJson(rawBody)?.webhookTimestamp;
-      if (
-        typeof timestamp === 'number' &&
-        Math.abs(now.getTime() - timestamp) > EVENTS_SHIM_LIMITS.signatureToleranceMs
-      ) {
+      if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) {
+        return refused('Linear body has no numeric webhookTimestamp.');
+      }
+      if (Math.abs(now.getTime() - timestamp) > EVENTS_SHIM_LIMITS.signatureToleranceMs) {
         return refused('Linear webhookTimestamp is outside the accepted window.');
       }
       return { ok: true };
@@ -109,14 +111,18 @@ export async function idempotencyKeyFor(
 ): Promise<string | undefined> {
   if (mode === 'stripe') {
     const id = readJson(rawBody)?.id;
-    if (typeof id === 'string' && id)
-      return `stripe:${id.slice(0, EVENTS_SHIM_LIMITS.maxIdempotencyKeyLength)}`;
+    if (typeof id === 'string' && id) return `stripe:${await boundedKey(id)}`;
   }
   if (mode === 'github' || mode === 'stripe' || mode === 'linear') {
     return `${mode}:body:${await sha256Hex(rawBody)}`;
   }
   const explicit = headers.get('idempotency-key')?.trim();
-  return explicit ? `key:${explicit.slice(0, EVENTS_SHIM_LIMITS.maxIdempotencyKeyLength)}` : undefined;
+  return explicit ? `key:${await boundedKey(explicit)}` : undefined;
+}
+
+/** The key itself when short; otherwise a hash of all of it, so distinct long keys stay distinct. */
+async function boundedKey(key: string): Promise<string> {
+  return key.length <= EVENTS_SHIM_LIMITS.maxIdempotencyKeyLength ? key : `sha256:${await sha256Hex(key)}`;
 }
 
 /**

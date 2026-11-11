@@ -11,7 +11,7 @@ import type {
 } from './types.js';
 import { VERIFICATION_MODES } from './types.js';
 import { eventTypeFor, idempotencyKeyFor, keptHeaders, verifyInbound, type HeaderReader } from './verify.js';
-import { deliverPending } from './delivery.js';
+import { deliverInBackground } from './delivery.js';
 
 export const MCP_TOKEN_PREFIX = 'esm_';
 export const HOOK_TOKEN_PREFIX = 'esh_';
@@ -29,6 +29,8 @@ export interface EventsShimDeps {
   defer?: (work: Promise<unknown>) => void;
   /** Replaces the wait between wake retries; tests pass one that does not sleep. */
   sleep?: (ms: number) => Promise<void>;
+  /** Replaces `WAKE_RECOVERY_DELAYS_MS`. */
+  recoveryDelaysMs?: readonly number[];
 }
 
 /**
@@ -190,6 +192,8 @@ export async function receivePost(
       dedupeSince: new Date(now.getTime() - EVENTS_SHIM_LIMITS.dedupeWindowMs).toISOString(),
     }
   );
+  // Linear treats anything but 200 as a failed delivery and retries it.
+  const accepted = input.mode === 'linear' ? 200 : 202;
   if (appended.duplicate) {
     return {
       status: 200,
@@ -198,19 +202,31 @@ export async function receivePost(
   }
   const { event } = appended;
 
-  const target = shim.wake && !shim.wake.brokenAt ? shim.wake : undefined;
-  if (!target) return { status: 202, body: { ok: true, event_id: event.id, seq: event.seq, wake: 'queued' } };
+  const target = liveTarget(shim);
+  if (!target)
+    return { status: accepted, body: { ok: true, event_id: event.id, seq: event.seq, wake: 'queued' } };
+  // Acknowledge now: senders time out (Linear after 5 s) while retries run.
   // Forward this post, then anything an earlier failure left pending.
-  const pass = deliverPending(deps, shim.id, target, [event.id]);
-  if (deps.defer) {
-    deps.defer(pass);
-    return { status: 202, body: { ok: true, event_id: event.id, seq: event.seq, wake: 'forwarding' } };
-  }
-  const done = await pass;
-  return {
-    status: 202,
-    body: { ok: true, event_id: event.id, seq: event.seq, wake: done.stalled ? 'queued' : 'forwarded' },
-  };
+  void deliverInBackground(deps, shim.id, target, [event.id]);
+  return { status: accepted, body: { ok: true, event_id: event.id, seq: event.seq, wake: 'forwarding' } };
+}
+
+function liveTarget(shim: ShimRecord) {
+  return shim.wake && !shim.wake.brokenAt ? shim.wake : undefined;
+}
+
+/**
+ * Starts a background pass for posts an earlier temporary failure left
+ * pending, if the inbox has a working wake link. Called on feed reads and
+ * tool calls so a stalled post does not wait for the next post.
+ *
+ * @param deps - The store, fetch, clock and optional `defer`.
+ * @param shim - The inbox.
+ * @returns Nothing; the pass runs in the background.
+ */
+export function drainStalledWakes(deps: EventsShimDeps, shim: ShimRecord): void {
+  const target = liveTarget(shim);
+  if (target) void deliverInBackground({ ...deps, recoveryDelaysMs: [] }, shim.id, target);
 }
 
 /**
@@ -226,6 +242,7 @@ export async function feedFor(
   shim: ShimRecord,
   urls: ShimUrls
 ): Promise<Record<string, unknown>> {
+  drainStalledWakes(deps, shim);
   const events = await deps.store.listRecent(shim.id, EVENTS_SHIM_LIMITS.feedSize);
   return {
     shim_id: shim.id,
@@ -287,8 +304,8 @@ export async function rotateHook(deps: EventsShimDeps, shim: ShimRecord): Promis
 }
 
 /**
- * Stores the signing secret for a mode. For `bearer`, omitting `secret`
- * generates one, which is returned once.
+ * Stores the signing secret for a mode. For `bearer`, omitting `secret` (or
+ * sending a blank one) generates one, which is returned once.
  *
  * @param deps - The store.
  * @param shim - The inbox.
@@ -307,15 +324,17 @@ export async function setModeSecret(
     return {};
   }
   let value = secret?.trim();
+  let generated = false;
   if (!value) {
     if (mode !== 'bearer') throw new EventsShimInputError(`Paste the ${mode} signing secret.`);
     value = mintToken(BEARER_SECRET_PREFIX);
+    generated = true;
   }
   if (value.length < 8 || value.length > 256 || /\s/.test(value)) {
     throw new EventsShimInputError('Secrets are 8 to 256 characters with no spaces.');
   }
   await deps.store.setSecret(shim.id, mode, value);
-  return mode === 'bearer' && !secret ? { secret: value } : {};
+  return generated ? { secret: value } : {};
 }
 
 export class EventsShimInputError extends Error {}

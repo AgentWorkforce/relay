@@ -64,7 +64,7 @@ export function wakeText(event: ShimEvent): string {
   if (isNudge(event)) {
     const text = event.body.trim();
     return text.length > EVENTS_SHIM_LIMITS.wakePreviewChars
-      ? `${text.slice(0, EVENTS_SHIM_LIMITS.wakePreviewChars)}\n… (truncated)`
+      ? `${text.slice(0, EVENTS_SHIM_LIMITS.wakePreviewChars)}\n… (truncated; call get_webhook_events with event_id "${event.id}" on the webhooks MCP for the rest)`
       : text;
   }
   const what = event.eventType ? `${event.eventType} ` : '';
@@ -84,14 +84,32 @@ export function wakeText(event: ShimEvent): string {
 }
 
 /**
- * Whether a post is a nudge: `text/plain` from a sender the shim authenticated
- * (any mode but `open`), delivered as exactly that text.
+ * Whether a post is a nudge, delivered as exactly its text. Bearer posts
+ * qualify with `text/plain`. Signed provider modes (`github`, `stripe`,
+ * `linear`) sign the body but not `Content-Type`, so for them the body itself
+ * must also not look like a provider event (JSON, or GitHub's form-encoded
+ * `payload=`): a captured provider delivery replayed with a changed header
+ * stays wrapped as untrusted data. Open posts never qualify.
  *
  * @param event - The post's mode, content type and body.
  * @returns Whether to deliver it verbatim.
  */
 export function isNudge(event: Pick<ShimEvent, 'mode' | 'contentType' | 'body'>): boolean {
-  return event.mode !== 'open' && /^text\/plain\b/i.test(event.contentType) && event.body.trim().length > 0;
+  if (event.mode === 'open' || !/^text\/plain\b/i.test(event.contentType)) return false;
+  const text = event.body.trim();
+  if (!text) return false;
+  return event.mode === 'bearer' || !looksLikeProviderEvent(text);
+}
+
+function looksLikeProviderEvent(text: string): boolean {
+  if (/^payload=/.test(text)) return true;
+  if (!/^[[{]/.test(text)) return false;
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function prettyBody(body: string, contentType: string): string {

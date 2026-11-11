@@ -5,6 +5,14 @@ import { forwardWake } from './wake.js';
 /** Delays between wake attempts for one post: immediately, then after 1s and 4s. */
 export const WAKE_RETRY_DELAYS_MS: readonly number[] = [0, 1_000, 4_000];
 
+/**
+ * Waits before each recovery pass after a temporary failure left posts
+ * pending. The first ones fit inside a Worker's post-response window; later
+ * ones run only where the host process lives on (Node). Posts not delivered
+ * by then wait for the next post, tool call or feed read.
+ */
+export const WAKE_RECOVERY_DELAYS_MS: readonly number[] = [10_000, 20_000, 120_000, 600_000];
+
 /** What a delivery pass did. */
 export interface DeliveryPass {
   /** Posts forwarded to the agent's relay (and so marked `woken`). */
@@ -21,6 +29,9 @@ export interface DeliveryDeps {
   /** Replaces the retry wait; tests pass one that does not sleep. */
   sleep?: (ms: number) => Promise<void>;
   retryDelaysMs?: readonly number[];
+  recoveryDelaysMs?: readonly number[];
+  /** Keeps background work alive after the response (e.g. `ctx.waitUntil`). */
+  defer?: (work: Promise<unknown>) => void;
 }
 
 /**
@@ -103,4 +114,40 @@ async function forwardWithRetry(
     if (sent.permanent) break;
   }
   return last;
+}
+
+/**
+ * Runs a delivery pass in the background and, if a temporary failure stalls
+ * it, re-drains the backlog after each `WAKE_RECOVERY_DELAYS_MS` until a pass
+ * finishes, the failure turns permanent, or the link changes (every claim
+ * checks `target.linkedAt`). Hands the work to `deps.defer` when the host
+ * gives one; otherwise it runs detached. Never throws.
+ *
+ * @param deps - The store, fetch, clock, sleep and optional `defer`.
+ * @param shimId - The inbox whose posts to forward.
+ * @param target - The wake link to forward to.
+ * @param ids - Posts to forward first.
+ * @param first - An already-running first pass to follow up on, instead of starting one.
+ * @returns The background work, for hosts and tests that want to await it.
+ */
+export function deliverInBackground(
+  deps: DeliveryDeps,
+  shimId: string,
+  target: WakeTarget,
+  ids?: string[],
+  first?: Promise<DeliveryPass>
+): Promise<void> {
+  const work = (async () => {
+    let pass = await (first ?? deliverPending(deps, shimId, target, ids));
+    const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    for (const delay of deps.recoveryDelaysMs ?? WAKE_RECOVERY_DELAYS_MS) {
+      if (!pass.stalled || pass.stalled.permanent) return;
+      await sleep(delay);
+      pass = await deliverPending(deps, shimId, target);
+    }
+  })().catch((error: unknown) => {
+    console.warn('[events-shim] wake delivery failed', error instanceof Error ? error.name : 'error');
+  });
+  if (deps.defer) deps.defer(work);
+  return work;
 }

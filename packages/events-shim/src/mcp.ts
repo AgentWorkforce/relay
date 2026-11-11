@@ -2,9 +2,9 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
 import { EVENTS_SHIM_LIMITS } from './limits.js';
-import { publicEvent, type EventsShimDeps } from './service.js';
+import { drainStalledWakes, publicEvent, type EventsShimDeps } from './service.js';
 import type { ShimEvent, ShimRecord, ShimUrls } from './types.js';
-import { deliverPending } from './delivery.js';
+import { deliverInBackground, deliverPending } from './delivery.js';
 import { checkWakeTarget, DEFAULT_RELAY_ORIGINS, forwardWake } from './wake.js';
 
 export const EVENTS_SHIM_SERVER_NAME = 'agent-relay-webhooks';
@@ -17,6 +17,13 @@ export interface EventsShimMcpContext {
   relayOrigins?: readonly string[];
   /** How often `wait_for_webhook` re-reads the store. */
   pollIntervalMs?: number;
+  /**
+   * Re-reads the inbox before a tool reports its wake state. Pass it when the
+   * tools stay registered across requests (a long-lived server), since a
+   * delivery pass may have marked the link broken since `shim` was read.
+   * The per-request HTTP handler reads the inbox fresh and does not need it.
+   */
+  reloadShim?: () => Promise<ShimRecord | null>;
   /** Ends a `wait_for_webhook` early when the client disconnects. */
   signal?: AbortSignal;
   version?: string;
@@ -65,6 +72,10 @@ function failure(message: string) {
 
 async function seen(ctx: EventsShimMcpContext): Promise<void> {
   await ctx.deps.store.touch(ctx.shim.id, now(ctx).toISOString(), true);
+  if (ctx.reloadShim) {
+    const fresh = await ctx.reloadShim();
+    if (fresh) ctx.shim = fresh;
+  }
 }
 
 function wakeState(shim: ShimRecord): 'linked' | 'broken' | 'none' {
@@ -111,6 +122,7 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
     },
     async () => {
       await seen(ctx);
+      drainStalledWakes(ctx.deps, ctx.shim);
       const waiting = await ctx.deps.store.countPending(
         ctx.shim.id,
         new Date(now(ctx).getTime() - EVENTS_SHIM_LIMITS.sendLeaseMs).toISOString()
@@ -210,6 +222,12 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
       // Forward everything already waiting, claim by claim, so nothing is left behind or sent twice.
       const pass = await deliverPending(ctx.deps, ctx.shim.id, target);
       const forwarded = pass.forwarded;
+      if (pass.stalled?.permanent) {
+        ctx.shim.wake = { ...target, brokenAt: now(ctx).toISOString(), brokenReason: pass.stalled.reason };
+      } else if (pass.stalled) {
+        // Keep retrying in the background; the agent can also read them now.
+        void deliverInBackground(ctx.deps, ctx.shim.id, target, undefined, Promise.resolve(pass));
+      }
       if (pass.stalled) {
         return result({
           wake: pass.stalled.permanent ? 'broken' : 'linked',
@@ -275,6 +293,20 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
     async (input) => {
       await seen(ctx);
       if (input.event_id) {
+        // An unread post is claimed as read, so a later batch does not return it again.
+        const at = now(ctx);
+        const [claimed] = await ctx.deps.store.claimPending(
+          ctx.shim.id,
+          {
+            limit: 1,
+            ids: [input.event_id],
+            staleBefore: new Date(at.getTime() - EVENTS_SHIM_LIMITS.sendLeaseMs).toISOString(),
+          },
+          'read',
+          at.toISOString()
+        );
+        if (claimed) return result({ events: [publicEvent(claimed)], more: false });
+        // Already woken or read: return it as history.
         const recent = await ctx.deps.store.listRecent(ctx.shim.id, EVENTS_SHIM_LIMITS.feedSize);
         const event = recent.find((candidate) => candidate.id === input.event_id);
         if (!event) return failure('No post with that id in this inbox (the feed keeps the last 50).');
@@ -312,6 +344,10 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
       const interval = ctx.pollIntervalMs ?? 1_000;
       const signals = [ctx.signal, extra?.signal].filter((signal): signal is AbortSignal => Boolean(signal));
       for (;;) {
+        // Never claim for a client that is gone: claimed posts are marked read.
+        if (signals.some((signal) => signal.aborted)) {
+          return result({ events: [], more: false, next_steps: ['Cancelled. Call wait_for_webhook again.'] });
+        }
         const batch = await handOver(ctx);
         if (batch.events.length > 0) {
           return result({
@@ -319,7 +355,7 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
             next_steps: ['Act on the posts, then call wait_for_webhook again.'],
           });
         }
-        if (Date.now() >= deadline || signals.some((signal) => signal.aborted)) {
+        if (Date.now() >= deadline) {
           return result({
             events: [],
             more: false,
