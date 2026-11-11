@@ -13,13 +13,13 @@ and points any sender at the paired webhook URL. Each post becomes an Agent Rela
 
 ## Tools
 
-| Tool | What it does |
-| --- | --- |
-| `watch_webhooks` | Start here: webhook URLs, wake state, waiting posts and next steps |
-| `link_relay_wake` | Link the session's relay webhook (checked with a test post first) |
-| `unlink_relay_wake` | Stop forwarding |
-| `get_webhook_events` | Unread posts (marks them read), or one post by id |
-| `wait_for_webhook` | Block until a post arrives (≤ 50 s), then return it |
+| Tool                 | What it does                                                       |
+| -------------------- | ------------------------------------------------------------------ |
+| `watch_webhooks`     | Start here: webhook URLs, wake state, waiting posts and next steps |
+| `link_relay_wake`    | Link the session's relay webhook (checked with a test post first)  |
+| `unlink_relay_wake`  | Stop forwarding                                                    |
+| `get_webhook_events` | Unread posts (marks them read), or one post by id                  |
+| `wait_for_webhook`   | Block until a post arrives (≤ 50 s), then return it                |
 
 ## Webhook URLs
 

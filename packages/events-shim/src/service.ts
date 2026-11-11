@@ -53,7 +53,7 @@ async function find(
   token: string,
   prefix: string,
   lookup: (hash: string) => Promise<ShimRecord | null>,
-  now: Date,
+  now: Date
 ): Promise<ShimRecord | null> {
   if (!token.startsWith(prefix) || !TOKEN_PATTERN.test(token.slice(prefix.length))) return null;
   const shim = await lookup(await sha256Hex(token));
@@ -84,24 +84,54 @@ export interface PostOutcome {
  */
 export async function receivePost(
   deps: EventsShimDeps,
-  input: { hookToken: string; mode: VerificationMode; headers: HeaderReader; rawBody: string },
+  input: { hookToken: string; mode: VerificationMode; headers: HeaderReader; rawBody: string }
 ): Promise<PostOutcome> {
   const now = clock(deps);
-  const shim = await find(input.hookToken, HOOK_TOKEN_PREFIX, (hash) => deps.store.findByHookTokenHash(hash), now);
-  if (!shim) return { status: 404, body: { error: 'not_found', message: 'No webhook at this URL. It may have been replaced or expired.' } };
+  const shim = await find(
+    input.hookToken,
+    HOOK_TOKEN_PREFIX,
+    (hash) => deps.store.findByHookTokenHash(hash),
+    now
+  );
+  if (!shim)
+    return {
+      status: 404,
+      body: { error: 'not_found', message: 'No webhook at this URL. It may have been replaced or expired.' },
+    };
   if (new TextEncoder().encode(input.rawBody).byteLength > EVENTS_SHIM_LIMITS.maxBodyBytes) {
-    return { status: 413, body: { error: 'payload_too_large', message: `Bodies are limited to ${EVENTS_SHIM_LIMITS.maxBodyBytes / 1024} KB.` } };
+    return {
+      status: 413,
+      body: {
+        error: 'payload_too_large',
+        message: `Bodies are limited to ${EVENTS_SHIM_LIMITS.maxBodyBytes / 1024} KB.`,
+      },
+    };
   }
-  const verified = await verifyInbound({ mode: input.mode, shim, headers: input.headers, rawBody: input.rawBody, now });
-  if (!verified.ok) return { status: verified.status, body: { error: verified.code, message: verified.message } };
+  const verified = await verifyInbound({
+    mode: input.mode,
+    shim,
+    headers: input.headers,
+    rawBody: input.rawBody,
+    now,
+  });
+  if (!verified.ok)
+    return { status: verified.status, body: { error: verified.code, message: verified.message } };
 
   const hourAgo = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
   const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
   if ((await deps.store.countPostsSince(shim.id, hourAgo)) >= EVENTS_SHIM_LIMITS.postsPerHour) {
-    return { status: 429, body: { error: 'rate_limited', message: `At most ${EVENTS_SHIM_LIMITS.postsPerHour} posts per hour.` }, headers: { 'retry-after': '300' } };
+    return {
+      status: 429,
+      body: { error: 'rate_limited', message: `At most ${EVENTS_SHIM_LIMITS.postsPerHour} posts per hour.` },
+      headers: { 'retry-after': '300' },
+    };
   }
   if ((await deps.store.countPostsSince(shim.id, dayAgo)) >= EVENTS_SHIM_LIMITS.postsPerDay) {
-    return { status: 429, body: { error: 'rate_limited', message: `At most ${EVENTS_SHIM_LIMITS.postsPerDay} posts per day.` }, headers: { 'retry-after': '3600' } };
+    return {
+      status: 429,
+      body: { error: 'rate_limited', message: `At most ${EVENTS_SHIM_LIMITS.postsPerDay} posts per day.` },
+      headers: { 'retry-after': '3600' },
+    };
   }
   const at = now.toISOString();
   await deps.store.recordPost(shim.id, at);
@@ -121,7 +151,7 @@ export async function receivePost(
       ...(eventType ? { eventType } : {}),
       ...(idempotencyKey ? { idempotencyKey } : {}),
     },
-    EVENTS_SHIM_LIMITS.feedSize,
+    EVENTS_SHIM_LIMITS.feedSize
   );
   if (duplicate) {
     return { status: 200, body: { ok: true, duplicate: true, event_id: event.id, seq: event.seq } };
@@ -132,13 +162,23 @@ export async function receivePost(
   else if (wake) await wake;
   return {
     status: 202,
-    body: { ok: true, event_id: event.id, seq: event.seq, wake: shim.wake && !shim.wake.brokenAt ? 'forwarded' : 'queued' },
+    body: {
+      ok: true,
+      event_id: event.id,
+      seq: event.seq,
+      wake: shim.wake && !shim.wake.brokenAt ? 'forwarded' : 'queued',
+    },
   };
 }
 
 async function wakeOne(deps: EventsShimDeps, shim: ShimRecord, event: ShimEvent): Promise<void> {
   const target = shim.wake!;
-  const result = await forwardWake({ url: target.url, secret: target.secret, event, fetchImpl: deps.fetchImpl });
+  const result = await forwardWake({
+    url: target.url,
+    secret: target.secret,
+    event,
+    fetchImpl: deps.fetchImpl,
+  });
   const at = clock(deps).toISOString();
   if (result.ok) {
     await deps.store.markDelivery(shim.id, [event.id], 'woken', at);
@@ -151,12 +191,23 @@ async function wakeOne(deps: EventsShimDeps, shim: ShimRecord, event: ShimEvent)
 }
 
 /** What the page shows: the feed and whether an agent is connected. */
-export async function feedFor(deps: EventsShimDeps, shim: ShimRecord, urls: ShimUrls): Promise<Record<string, unknown>> {
+export async function feedFor(
+  deps: EventsShimDeps,
+  shim: ShimRecord,
+  urls: ShimUrls
+): Promise<Record<string, unknown>> {
   const events = await deps.store.listRecent(shim.id, EVENTS_SHIM_LIMITS.feedSize);
   return {
     shim_id: shim.id,
-    webhook_urls: Object.fromEntries(VERIFICATION_MODES.map((mode) => [mode, urls.hookUrl(shim.hookToken, mode)])),
-    secrets_set: Object.fromEntries(VERIFICATION_MODES.filter((mode) => mode !== 'open').map((mode) => [mode, Boolean(shim.secrets[mode as SecretMode])])),
+    webhook_urls: Object.fromEntries(
+      VERIFICATION_MODES.map((mode) => [mode, urls.hookUrl(shim.hookToken, mode)])
+    ),
+    secrets_set: Object.fromEntries(
+      VERIFICATION_MODES.filter((mode) => mode !== 'open').map((mode) => [
+        mode,
+        Boolean(shim.secrets[mode as SecretMode]),
+      ])
+    ),
     agent: {
       connected: Boolean(shim.agentSeenAt),
       last_seen_at: shim.agentSeenAt ?? null,
@@ -201,7 +252,7 @@ export async function setModeSecret(
   deps: EventsShimDeps,
   shim: ShimRecord,
   mode: SecretMode,
-  secret: string | null | undefined,
+  secret: string | null | undefined
 ): Promise<{ secret?: string }> {
   if (secret === null) {
     await deps.store.setSecret(shim.id, mode, null);

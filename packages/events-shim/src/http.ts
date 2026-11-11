@@ -41,24 +41,37 @@ export interface EventsShimHttpOptions {
 export async function handleEventsShimRequest(
   request: Request,
   path: string,
-  options: EventsShimHttpOptions,
+  options: EventsShimHttpOptions
 ): Promise<Response | null> {
   const method = request.method.toUpperCase();
 
   const hook = /^\/h\/([A-Za-z0-9_-]{1,100})(?:\/([a-z]+))?\/?$/.exec(path);
   if (hook) {
-    if (method !== 'POST') return json(405, { error: 'method_not_allowed', message: 'POST JSON to this URL.' }, { allow: 'POST' });
+    if (method !== 'POST')
+      return json(405, { error: 'method_not_allowed', message: 'POST JSON to this URL.' }, { allow: 'POST' });
     const mode = (hook[2] ?? 'open') as VerificationMode;
-    if (!VERIFICATION_MODES.includes(mode)) return json(404, { error: 'not_found', message: 'Unknown verification mode.' });
+    if (!VERIFICATION_MODES.includes(mode))
+      return json(404, { error: 'not_found', message: 'Unknown verification mode.' });
     const declared = Number(request.headers.get('content-length') ?? '0');
     if (declared > EVENTS_SHIM_LIMITS.maxBodyBytes) {
-      return json(413, { error: 'payload_too_large', message: `Bodies are limited to ${EVENTS_SHIM_LIMITS.maxBodyBytes / 1024} KB.` });
+      return json(413, {
+        error: 'payload_too_large',
+        message: `Bodies are limited to ${EVENTS_SHIM_LIMITS.maxBodyBytes / 1024} KB.`,
+      });
     }
     const rawBody = await readBounded(request, EVENTS_SHIM_LIMITS.maxBodyBytes);
     if (rawBody === null) {
-      return json(413, { error: 'payload_too_large', message: `Bodies are limited to ${EVENTS_SHIM_LIMITS.maxBodyBytes / 1024} KB.` });
+      return json(413, {
+        error: 'payload_too_large',
+        message: `Bodies are limited to ${EVENTS_SHIM_LIMITS.maxBodyBytes / 1024} KB.`,
+      });
     }
-    const outcome = await receivePost(options.deps, { hookToken: hook[1]!, mode, headers: request.headers, rawBody });
+    const outcome = await receivePost(options.deps, {
+      hookToken: hook[1]!,
+      mode,
+      headers: request.headers,
+      rawBody,
+    });
     return json(outcome.status, outcome.body, outcome.headers);
   }
 
@@ -66,7 +79,12 @@ export async function handleEventsShimRequest(
   if (mcp) return handleMcp(request, mcp[1]!, options);
 
   if (path === '/shims' || path === '/shims/') {
-    if (method !== 'POST') return json(405, { error: 'method_not_allowed', message: 'POST to create a webhook inbox.' }, { allow: 'POST' });
+    if (method !== 'POST')
+      return json(
+        405,
+        { error: 'method_not_allowed', message: 'POST to create a webhook inbox.' },
+        { allow: 'POST' }
+      );
     const refused = await options.beforeCreate?.(request);
     if (refused) return refused;
     const minted = await createShim(options.deps);
@@ -74,7 +92,9 @@ export async function handleEventsShimRequest(
       shim_id: minted.shim.id,
       mcp_url: options.urls.mcpUrl(minted.mcpToken),
       webhook_url: options.urls.hookUrl(minted.hookToken, 'open'),
-      webhook_urls: Object.fromEntries(VERIFICATION_MODES.map((mode) => [mode, options.urls.hookUrl(minted.hookToken, mode)])),
+      webhook_urls: Object.fromEntries(
+        VERIFICATION_MODES.map((mode) => [mode, options.urls.hookUrl(minted.hookToken, mode)])
+      ),
       manage_token: minted.manageToken,
       limits: EVENTS_SHIM_LIMITS,
     });
@@ -84,21 +104,31 @@ export async function handleEventsShimRequest(
   if (manage) {
     const token = /^Bearer\s+(\S+)$/i.exec(request.headers.get('authorization') ?? '')?.[1] ?? '';
     const shim = token ? await findShimByManageToken(options.deps, token) : null;
-    if (!shim) return json(404, { error: 'not_found', message: 'This webhook inbox expired or the link is wrong. Create a new one.' });
+    if (!shim)
+      return json(404, {
+        error: 'not_found',
+        message: 'This webhook inbox expired or the link is wrong. Create a new one.',
+      });
     if (!manage[1]) {
-      if (method !== 'GET') return json(405, { error: 'method_not_allowed', message: 'GET the feed.' }, { allow: 'GET' });
+      if (method !== 'GET')
+        return json(405, { error: 'method_not_allowed', message: 'GET the feed.' }, { allow: 'GET' });
       return json(200, await feedFor(options.deps, shim, options.urls));
     }
     if (manage[1] === '/rotate') {
-      if (method !== 'POST') return json(405, { error: 'method_not_allowed', message: 'POST to rotate.' }, { allow: 'POST' });
+      if (method !== 'POST')
+        return json(405, { error: 'method_not_allowed', message: 'POST to rotate.' }, { allow: 'POST' });
       const hookToken = await rotateHook(options.deps, shim);
       return json(200, await feedFor(options.deps, { ...shim, hookToken }, options.urls));
     }
     const mode = manage[2] as SecretMode;
     if (!VERIFICATION_MODES.includes(mode) || (mode as VerificationMode) === 'open') {
-      return json(404, { error: 'not_found', message: 'Secrets exist for github, stripe, linear and bearer.' });
+      return json(404, {
+        error: 'not_found',
+        message: 'Secrets exist for github, stripe, linear and bearer.',
+      });
     }
-    if (method !== 'PUT') return json(405, { error: 'method_not_allowed', message: 'PUT {"secret": "…"}.' }, { allow: 'PUT' });
+    if (method !== 'PUT')
+      return json(405, { error: 'method_not_allowed', message: 'PUT {"secret": "…"}.' }, { allow: 'PUT' });
     const body = await readJsonObject(request);
     if (!body) return json(400, { error: 'invalid_request', message: 'Send a JSON object.' });
     const secret = body.secret;
@@ -107,9 +137,15 @@ export async function handleEventsShimRequest(
     }
     try {
       const saved = await setModeSecret(options.deps, shim, mode, secret as string | null | undefined);
-      return json(200, { mode, set: secret !== null, ...(saved.secret ? { secret: saved.secret } : {}), webhook_url: options.urls.hookUrl(shim.hookToken, mode) });
+      return json(200, {
+        mode,
+        set: secret !== null,
+        ...(saved.secret ? { secret: saved.secret } : {}),
+        webhook_url: options.urls.hookUrl(shim.hookToken, mode),
+      });
     } catch (error) {
-      if (error instanceof EventsShimInputError) return json(400, { error: 'invalid_request', message: error.message });
+      if (error instanceof EventsShimInputError)
+        return json(400, { error: 'invalid_request', message: error.message });
       throw error;
     }
   }
@@ -122,7 +158,11 @@ async function handleMcp(request: Request, token: string, options: EventsShimHtt
     return rpcError(405, 'This MCP server speaks Streamable HTTP over POST.', { allow: 'POST' });
   }
   const shim: ShimRecord | null = await findShimByMcpToken(options.deps, token);
-  if (!shim) return rpcError(404, 'This MCP URL expired or was never valid. Create a new one at the page that gave it to you.');
+  if (!shim)
+    return rpcError(
+      404,
+      'This MCP URL expired or was never valid. Create a new one at the page that gave it to you.'
+    );
   const raw = await readBounded(request, 64 * 1024);
   if (raw === null) return rpcError(413, 'Request too large.');
   let parsed: unknown;
@@ -140,7 +180,10 @@ async function handleMcp(request: Request, token: string, options: EventsShimHtt
     signal: request.signal,
     version: options.version,
   });
-  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+  const transport = new WebStandardStreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  });
   try {
     await server.connect(transport);
     const headers = new Headers(request.headers);
@@ -148,7 +191,7 @@ async function handleMcp(request: Request, token: string, options: EventsShimHtt
     headers.set('accept', 'application/json, text/event-stream');
     const response = await transport.handleRequest(
       new Request(request.url, { method: 'POST', headers, body: raw }),
-      { parsedBody: parsed },
+      { parsedBody: parsed }
     );
     const out = new Headers(response.headers);
     out.set('cache-control', 'no-store');
@@ -199,7 +242,9 @@ async function readJsonObject(request: Request): Promise<Record<string, unknown>
   if (raw === null) return null;
   try {
     const value: unknown = JSON.parse(raw || '{}');
-    return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
   } catch {
     return null;
   }

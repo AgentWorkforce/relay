@@ -1,4 +1,12 @@
-import type { DeliveryState, EventsShimStore, NewShimEvent, SecretMode, ShimEvent, ShimRecord, WakeTarget } from './types.js';
+import type {
+  DeliveryState,
+  EventsShimStore,
+  NewShimEvent,
+  SecretMode,
+  ShimEvent,
+  ShimRecord,
+  WakeTarget,
+} from './types.js';
 
 interface Row {
   shim: ShimRecord;
@@ -27,8 +35,21 @@ export class MemoryEventsShimStore implements EventsShimStore {
     return structuredClone(row.shim);
   }
 
-  async createShim(input: { id: string; mcpTokenHash: string; hookToken: string; hookTokenHash: string; manageTokenHash: string; now: string }): Promise<ShimRecord> {
-    const shim: ShimRecord = { id: input.id, createdAt: input.now, lastUsedAt: input.now, hookToken: input.hookToken, secrets: {} };
+  async createShim(input: {
+    id: string;
+    mcpTokenHash: string;
+    hookToken: string;
+    hookTokenHash: string;
+    manageTokenHash: string;
+    now: string;
+  }): Promise<ShimRecord> {
+    const shim: ShimRecord = {
+      id: input.id,
+      createdAt: input.now,
+      lastUsedAt: input.now,
+      hookToken: input.hookToken,
+      secrets: {},
+    };
     this.rows.set(input.id, {
       shim,
       mcpTokenHash: input.mcpTokenHash,
@@ -100,7 +121,13 @@ export class MemoryEventsShimStore implements EventsShimStore {
       const existing = row.events.find((event) => event.idempotencyKey === input.idempotencyKey);
       if (existing) return { event: structuredClone(existing), duplicate: true };
     }
-    const event: ShimEvent = { ...input, id: crypto.randomUUID(), shimId, seq: row.nextSeq, delivery: 'pending' };
+    const event: ShimEvent = {
+      ...input,
+      id: crypto.randomUUID(),
+      shimId,
+      seq: row.nextSeq,
+      delivery: 'pending',
+    };
     row.nextSeq += 1;
     row.events.push(event);
     if (row.events.length > feedSize) row.events.splice(0, row.events.length - feedSize);
@@ -114,12 +141,20 @@ export class MemoryEventsShimStore implements EventsShimStore {
   async listUndelivered(shimId: string, limit: number, includeWoken: boolean) {
     return structuredClone(
       this.row(shimId)
-        .events.filter((event) => event.delivery === 'pending' || (includeWoken && event.delivery === 'woken'))
-        .slice(0, limit),
+        .events.filter(
+          (event) => event.delivery === 'pending' || (includeWoken && event.delivery === 'woken')
+        )
+        .slice(0, limit)
     );
   }
 
-  async markDelivery(shimId: string, eventIds: string[], state: DeliveryState, at: string, wakeError?: string) {
+  async markDelivery(
+    shimId: string,
+    eventIds: string[],
+    state: DeliveryState,
+    at: string,
+    wakeError?: string
+  ) {
     for (const event of this.row(shimId).events) {
       if (!eventIds.includes(event.id)) continue;
       // A wake result that lands after the agent read the post must not hand it over again.

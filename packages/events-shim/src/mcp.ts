@@ -35,7 +35,7 @@ export const EVENTS_SHIM_INSTRUCTIONS = [
 export function buildEventsShimMcpServer(ctx: EventsShimMcpContext): McpServer {
   const server = new McpServer(
     { name: EVENTS_SHIM_SERVER_NAME, version: ctx.version ?? '1.0.0' },
-    { instructions: EVENTS_SHIM_INSTRUCTIONS, capabilities: { tools: {} } },
+    { instructions: EVENTS_SHIM_INSTRUCTIONS, capabilities: { tools: {} } }
   );
   registerEventsShimTools(server, ctx);
   return server;
@@ -71,7 +71,7 @@ async function handOver(ctx: EventsShimMcpContext, events: ShimEvent[]): Promise
       ctx.shim.id,
       events.map((event) => event.id),
       'read',
-      now(ctx).toISOString(),
+      now(ctx).toISOString()
     );
   }
   return events.map((event) => ({ ...publicEvent(event), delivery: 'read' }));
@@ -85,7 +85,7 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
     {
       title: 'Watch for webhooks',
       description:
-        'Start here. Returns this inbox\'s webhook URL, whether posts will wake this session, posts waiting for you, and the exact next steps to get woken when a post arrives.',
+        "Start here. Returns this inbox's webhook URL, whether posts will wake this session, posts waiting for you, and the exact next steps to get woken when a post arrives.",
       inputSchema: {},
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
@@ -101,7 +101,9 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
             ]
           : [
               ...(state === 'broken'
-                ? [`Your relay link stopped working (${ctx.shim.wake?.brokenReason ?? 'refused'}). Relink it:`]
+                ? [
+                    `Your relay link stopped working (${ctx.shim.wake?.brokenReason ?? 'refused'}). Relink it:`,
+                  ]
                 : []),
               `If this session runs under Agent Relay (it has a relay socket, e.g. a SessionStart hook named agent-relay-probe or messages with a [reply: …] hint): run \`${RELAY_WEBHOOK_COMMAND}\` using the socket path you were given, then call link_relay_wake with the url and secret it prints (an older probe without the webhook command: \`agent-relay-probe socket-request --socket <your relay socket> --method POST --path /webhooks --body '{}'\`). If it prints created:false and no secret, the session already has one whose secret was shown earlier: run it with --revoke, then without, and use the new secret.`,
               'Otherwise: run wait_for_webhook in the background and call it again each time it returns. If your client cannot run tools in the background, call get_webhook_events when the person asks.',
@@ -124,7 +126,7 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
           max_body_kb: EVENTS_SHIM_LIMITS.maxBodyBytes / 1024,
         },
       });
-    },
+    }
   );
 
   server.registerTool(
@@ -133,8 +135,18 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
       title: 'Wake this session through Agent Relay',
       description: `Links this inbox to the webhook your local Agent Relay made for this session (run \`${RELAY_WEBHOOK_COMMAND}\` first). Every later post is forwarded there, and Agent Relay injects it into this session, waking it even when idle. Posts already waiting are forwarded too.`,
       inputSchema: {
-        url: z.string().trim().min(1).max(500).describe('The url your relay printed: https://<relay>/v1/hooks/<id>'),
-        secret: z.string().trim().min(1).max(200).describe('The wh_live_… secret your relay printed (shown once).'),
+        url: z
+          .string()
+          .trim()
+          .min(1)
+          .max(500)
+          .describe('The url your relay printed: https://<relay>/v1/hooks/<id>'),
+        secret: z
+          .string()
+          .trim()
+          .min(1)
+          .max(200)
+          .describe('The wh_live_… secret your relay printed (shown once).'),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
@@ -157,12 +169,18 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
           mode: 'open',
           eventType: 'link_check',
           contentType: 'application/json',
-          body: JSON.stringify({ linked: true, note: 'Webhook posts will now wake this session. No action needed.' }),
+          body: JSON.stringify({
+            linked: true,
+            note: 'Webhook posts will now wake this session. No action needed.',
+          }),
           headers: {},
           delivery: 'pending',
         },
       });
-      if (!probe.ok) return failure(`Your relay did not accept the link check: ${probe.reason}. Check the url and secret, or make a new one (the relay command with --revoke, then without).`);
+      if (!probe.ok)
+        return failure(
+          `Your relay did not accept the link check: ${probe.reason}. Check the url and secret, or make a new one (the relay command with --revoke, then without).`
+        );
       await ctx.deps.store.setWakeTarget(ctx.shim.id, target);
       await seen(ctx);
       ctx.shim.wake = target;
@@ -170,7 +188,12 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
       const waiting = await ctx.deps.store.listUndelivered(ctx.shim.id, EVENTS_SHIM_LIMITS.batchSize, false);
       let forwarded = 0;
       for (const event of waiting) {
-        const sent = await forwardWake({ url: target.url, secret: target.secret, event, fetchImpl: ctx.deps.fetchImpl });
+        const sent = await forwardWake({
+          url: target.url,
+          secret: target.secret,
+          event,
+          fetchImpl: ctx.deps.fetchImpl,
+        });
         if (!sent.ok) break;
         await ctx.deps.store.markDelivery(ctx.shim.id, [event.id], 'woken', now(ctx).toISOString());
         forwarded += 1;
@@ -178,25 +201,33 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
       return result({
         wake: 'linked',
         forwarded_waiting: forwarded,
-        next_steps: ['Tell the person you are watching, then end your turn. Each post arrives in this session as a message from webhook.'],
+        next_steps: [
+          'Tell the person you are watching, then end your turn. Each post arrives in this session as a message from webhook.',
+        ],
       });
-    },
+    }
   );
 
   server.registerTool(
     'unlink_relay_wake',
     {
       title: 'Stop waking this session',
-      description: 'Stops forwarding posts to your relay. Posts keep arriving in the inbox for get_webhook_events and wait_for_webhook.',
+      description:
+        'Stops forwarding posts to your relay. Posts keep arriving in the inbox for get_webhook_events and wait_for_webhook.',
       inputSchema: {},
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async () => {
       await ctx.deps.store.setWakeTarget(ctx.shim.id, null);
       await seen(ctx);
       ctx.shim.wake = undefined;
       return result({ wake: 'none' });
-    },
+    }
   );
 
   server.registerTool(
@@ -205,9 +236,20 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
       title: 'Read webhook posts',
       description: `Returns posts you have not read yet, oldest first (at most ${EVENTS_SHIM_LIMITS.batchSize}), and marks them read. Pass event_id for one post's full body, including one that already woke you.`,
       inputSchema: {
-        event_id: z.string().trim().min(1).max(100).optional().describe('One post, by the id in its wake message.'),
+        event_id: z
+          .string()
+          .trim()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe('One post, by the id in its wake message.'),
       },
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
     },
     async (input) => {
       await seen(ctx);
@@ -217,10 +259,14 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
         if (!event) return failure('No post with that id in this inbox (the feed keeps the last 50).');
         return result({ events: [publicEvent(event)], more: false });
       }
-      const events = await ctx.deps.store.listUndelivered(ctx.shim.id, EVENTS_SHIM_LIMITS.batchSize + 1, false);
+      const events = await ctx.deps.store.listUndelivered(
+        ctx.shim.id,
+        EVENTS_SHIM_LIMITS.batchSize + 1,
+        false
+      );
       const more = events.length > EVENTS_SHIM_LIMITS.batchSize;
       return result({ events: await handOver(ctx, events.slice(0, EVENTS_SHIM_LIMITS.batchSize)), more });
-    },
+    }
   );
 
   server.registerTool(
@@ -236,7 +282,12 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
           .max(EVENTS_SHIM_LIMITS.maxWaitMs / 1000)
           .optional(),
       },
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
     },
     async (input, extra) => {
       await seen(ctx);
@@ -246,17 +297,29 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
       const interval = ctx.pollIntervalMs ?? 1_000;
       const signals = [ctx.signal, extra?.signal].filter((signal): signal is AbortSignal => Boolean(signal));
       for (;;) {
-        const events = await ctx.deps.store.listUndelivered(ctx.shim.id, EVENTS_SHIM_LIMITS.batchSize + 1, false);
+        const events = await ctx.deps.store.listUndelivered(
+          ctx.shim.id,
+          EVENTS_SHIM_LIMITS.batchSize + 1,
+          false
+        );
         if (events.length > 0) {
           const more = events.length > EVENTS_SHIM_LIMITS.batchSize;
-          return result({ events: await handOver(ctx, events.slice(0, EVENTS_SHIM_LIMITS.batchSize)), more, next_steps: ['Act on the posts, then call wait_for_webhook again.'] });
+          return result({
+            events: await handOver(ctx, events.slice(0, EVENTS_SHIM_LIMITS.batchSize)),
+            more,
+            next_steps: ['Act on the posts, then call wait_for_webhook again.'],
+          });
         }
         if (Date.now() >= deadline || signals.some((signal) => signal.aborted)) {
-          return result({ events: [], more: false, next_steps: ['Nothing yet. Call wait_for_webhook again.'] });
+          return result({
+            events: [],
+            more: false,
+            next_steps: ['Nothing yet. Call wait_for_webhook again.'],
+          });
         }
         await sleep(interval, signals);
       }
-    },
+    }
   );
 }
 

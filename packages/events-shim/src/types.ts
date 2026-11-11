@@ -1,7 +1,13 @@
 /** How a webhook URL checks who posted to it. */
 export type VerificationMode = 'open' | 'github' | 'stripe' | 'linear' | 'bearer';
 
-export const VERIFICATION_MODES: readonly VerificationMode[] = ['open', 'github', 'stripe', 'linear', 'bearer'];
+export const VERIFICATION_MODES: readonly VerificationMode[] = [
+  'open',
+  'github',
+  'stripe',
+  'linear',
+  'bearer',
+];
 
 /** Modes whose URL needs a stored secret before it accepts posts. */
 export type SecretMode = Exclude<VerificationMode, 'open'>;
@@ -71,7 +77,10 @@ export interface ShimEvent {
   wakeError?: string;
 }
 
-export type NewShimEvent = Omit<ShimEvent, 'id' | 'seq' | 'shimId' | 'delivery' | 'deliveredAt' | 'wakeError'>;
+export type NewShimEvent = Omit<
+  ShimEvent,
+  'id' | 'seq' | 'shimId' | 'delivery' | 'deliveredAt' | 'wakeError'
+>;
 
 /**
  * Persistence the host provides. Cloud implements it with Drizzle,
@@ -106,7 +115,11 @@ export interface EventsShimStore {
    * shim; then returns that one with `duplicate: true`. Assigns `seq`,
    * starts `delivery` at `pending`, and prunes beyond `feedSize`.
    */
-  appendEvent(shimId: string, event: NewShimEvent, feedSize: number): Promise<{ event: ShimEvent; duplicate: boolean }>;
+  appendEvent(
+    shimId: string,
+    event: NewShimEvent,
+    feedSize: number
+  ): Promise<{ event: ShimEvent; duplicate: boolean }>;
   /** Newest first, at most `limit`. */
   listRecent(shimId: string, limit: number): Promise<ShimEvent[]>;
   /** Oldest first: `pending` events, plus `woken` ones when `includeWoken`. */
@@ -120,7 +133,7 @@ export interface EventsShimStore {
     eventIds: string[],
     state: DeliveryState,
     at: string,
-    wakeError?: string,
+    wakeError?: string
   ): Promise<void>;
   /** Deletes shims idle since before `idleBefore`, and feed rows older than `feedBefore` on idle shims. */
   prune(input: { idleBefore: string; feedBefore: string }): Promise<void>;

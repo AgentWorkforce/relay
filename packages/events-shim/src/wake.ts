@@ -3,15 +3,17 @@ import type { ShimEvent } from './types.js';
 
 export const DEFAULT_RELAY_ORIGINS: readonly string[] = ['https://cast.agentrelay.com'];
 
-export type WakeTargetCheck =
-  | { ok: true; url: string }
-  | { ok: false; message: string };
+export type WakeTargetCheck = { ok: true; url: string } | { ok: false; message: string };
 
 /**
  * Accepts only a Relaycast inbound-webhook URL on an allowed origin, so a
  * caller holding the MCP URL cannot make the host post to arbitrary URLs.
  */
-export function checkWakeTarget(rawUrl: string, secret: string, allowedOrigins: readonly string[]): WakeTargetCheck {
+export function checkWakeTarget(
+  rawUrl: string,
+  secret: string,
+  allowedOrigins: readonly string[]
+): WakeTargetCheck {
   let url: URL;
   try {
     url = new URL(rawUrl);
@@ -24,11 +26,20 @@ export function checkWakeTarget(rawUrl: string, secret: string, allowedOrigins: 
       message: `url must be an Agent Relay webhook on ${allowedOrigins.join(' or ')}. Pass the \`url\` your relay printed.`,
     };
   }
-  if (!/^\/v1\/hooks\/[A-Za-z0-9_-]{1,128}$/.test(url.pathname) || url.search || url.hash || url.username || url.password) {
+  if (
+    !/^\/v1\/hooks\/[A-Za-z0-9_-]{1,128}$/.test(url.pathname) ||
+    url.search ||
+    url.hash ||
+    url.username ||
+    url.password
+  ) {
     return { ok: false, message: 'url must look like <origin>/v1/hooks/<id>.' };
   }
   if (!/^wh_live_[A-Za-z0-9]{16,128}$/.test(secret)) {
-    return { ok: false, message: 'secret must be the wh_live_… value your relay printed (it is shown once).' };
+    return {
+      ok: false,
+      message: 'secret must be the wh_live_… value your relay printed (it is shown once).',
+    };
   }
   return { ok: true, url: url.toString() };
 }
@@ -117,13 +128,26 @@ export async function forwardWake(input: {
       signal: AbortSignal.timeout(input.timeoutMs ?? 10_000),
     });
   } catch (error) {
-    return { ok: false, permanent: false, reason: `relay unreachable: ${error instanceof Error ? error.name : 'error'}` };
+    return {
+      ok: false,
+      permanent: false,
+      reason: `relay unreachable: ${error instanceof Error ? error.name : 'error'}`,
+    };
   }
   // Drain so the connection can be reused; the body is not needed.
   await response.text().catch(() => undefined);
   if (response.ok) return { ok: true };
-  if (response.status === 401 || response.status === 403 || response.status === 404 || response.status === 410) {
-    return { ok: false, permanent: true, reason: `relay refused the wake (HTTP ${response.status}); relink with link_relay_wake` };
+  if (
+    response.status === 401 ||
+    response.status === 403 ||
+    response.status === 404 ||
+    response.status === 410
+  ) {
+    return {
+      ok: false,
+      permanent: true,
+      reason: `relay refused the wake (HTTP ${response.status}); relink with link_relay_wake`,
+    };
   }
   return { ok: false, permanent: false, reason: `relay answered HTTP ${response.status}` };
 }

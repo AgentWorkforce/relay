@@ -25,7 +25,7 @@ export async function hmacSha256Hex(secret: string, message: string | Uint8Array
     encoder.encode(secret),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
-    ['sign'],
+    ['sign']
   );
   const data = typeof message === 'string' ? encoder.encode(message) : message;
   const signature = await crypto.subtle.sign('HMAC', key, data as BufferSource);

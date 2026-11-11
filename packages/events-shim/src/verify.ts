@@ -6,8 +6,7 @@ import type { ShimRecord, VerificationMode } from './types.js';
 export type HeaderReader = Pick<Headers, 'get'>;
 
 export type VerifyResult =
-  | { ok: true }
-  | { ok: false; status: 401 | 403 | 409; code: string; message: string };
+  { ok: true } | { ok: false; status: 401 | 403 | 409; code: string; message: string };
 
 /**
  * Checks a post against the shim's mode. `open` accepts anyone holding
@@ -35,7 +34,9 @@ export async function verifyInbound(input: {
   switch (mode) {
     case 'bearer': {
       const match = /^Bearer\s+(\S+)$/i.exec(headers.get('authorization') ?? '');
-      return match && timingSafeEqual(match[1]!, secret) ? { ok: true } : refused('Missing or wrong bearer token.');
+      return match && timingSafeEqual(match[1]!, secret)
+        ? { ok: true }
+        : refused('Missing or wrong bearer token.');
     }
     case 'github': {
       const header = headers.get('x-hub-signature-256') ?? '';
@@ -47,7 +48,9 @@ export async function verifyInbound(input: {
     }
     case 'stripe': {
       const header = headers.get('stripe-signature') ?? '';
-      const parts = header.split(',').map((part) => part.trim().split('=', 2) as [string, string | undefined]);
+      const parts = header
+        .split(',')
+        .map((part) => part.trim().split('=', 2) as [string, string | undefined]);
       const timestamp = parts.find(([key]) => key === 't')?.[1];
       const signatures = parts.filter(([key]) => key === 'v1').map(([, value]) => value ?? '');
       if (!timestamp || !/^\d+$/.test(timestamp) || signatures.length === 0) {
@@ -65,9 +68,13 @@ export async function verifyInbound(input: {
       const header = (headers.get('linear-signature') ?? '').trim().toLowerCase();
       if (!header) return refused('Missing Linear-Signature.');
       const expected = await hmacSha256Hex(secret, rawBody);
-      if (!timingSafeEqual(header, expected)) return refused('Linear signature does not match the stored secret.');
+      if (!timingSafeEqual(header, expected))
+        return refused('Linear signature does not match the stored secret.');
       const timestamp = readJson(rawBody)?.webhookTimestamp;
-      if (typeof timestamp === 'number' && Math.abs(now.getTime() - timestamp) > EVENTS_SHIM_LIMITS.signatureToleranceMs) {
+      if (
+        typeof timestamp === 'number' &&
+        Math.abs(now.getTime() - timestamp) > EVENTS_SHIM_LIMITS.signatureToleranceMs
+      ) {
         return refused('Linear webhookTimestamp is outside the accepted window.');
       }
       return { ok: true };
@@ -83,7 +90,11 @@ function refused(message: string): VerifyResult {
  * The key that makes a retried post arrive once: the sender's
  * `Idempotency-Key`, else the provider's own delivery or event id.
  */
-export function idempotencyKeyFor(mode: VerificationMode, headers: HeaderReader, rawBody: string): string | undefined {
+export function idempotencyKeyFor(
+  mode: VerificationMode,
+  headers: HeaderReader,
+  rawBody: string
+): string | undefined {
   const explicit = headers.get('idempotency-key')?.trim();
   if (explicit) return `key:${explicit.slice(0, EVENTS_SHIM_LIMITS.maxIdempotencyKeyLength)}`;
   if (mode === 'github') {
@@ -102,7 +113,11 @@ export function idempotencyKeyFor(mode: VerificationMode, headers: HeaderReader,
 }
 
 /** A short event name for the feed and the wake message, when the sender says one. */
-export function eventTypeFor(mode: VerificationMode, headers: HeaderReader, rawBody: string): string | undefined {
+export function eventTypeFor(
+  mode: VerificationMode,
+  headers: HeaderReader,
+  rawBody: string
+): string | undefined {
   const body = readJson(rawBody);
   if (mode === 'github') {
     const event = headers.get('x-github-event')?.trim();
@@ -144,7 +159,9 @@ export function keptHeaders(headers: HeaderReader): Record<string, string> {
 function readJson(rawBody: string): Record<string, unknown> | undefined {
   try {
     const value: unknown = JSON.parse(rawBody);
-    return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : undefined;
   } catch {
     return undefined;
   }
