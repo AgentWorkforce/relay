@@ -1,5 +1,15 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 
 import {
@@ -117,15 +127,35 @@ export const canStartReplacementViaClient: CanStartReplacement = async (client) 
 export type RestartClaim =
   | {
       kind: 'acquired';
+      /**
+       * Reserve the stop record; call BEFORE stopping the daemon. Throws if
+       * it cannot be reserved: an unrecorded stop would let another process
+       * mistake the replacement for the hung daemon and stop it too.
+       */
+      prepareStop: () => void;
       /** Record that the daemon was stopped; call right after the stop, before {@link release}. */
       markStopped: () => void;
+      /**
+       * Whether this claim is still held. A claim whose owner stopped
+       * refreshing it (paused past the claim lifetime) may have been expired
+       * by another process, which could since have admitted writes or taken
+       * the restart; the owner must check this before every daemon operation
+       * and abandon the restart when it returns false.
+       */
+      stillHeld: () => boolean;
       /** Give up the claim; call when the replacement is ready or the restart was abandoned. */
       release: () => void;
     }
   | { kind: 'held' }
   | { kind: 'restarted' };
 
-const UNCOORDINATED: RestartClaim = { kind: 'acquired', markStopped: () => {}, release: () => {} };
+const UNCOORDINATED: RestartClaim = {
+  kind: 'acquired',
+  prepareStop: () => {},
+  markStopped: () => {},
+  stillHeld: () => true,
+  release: () => {},
+};
 
 export interface WriteGuard {
   /**
@@ -160,10 +190,22 @@ export interface WriteGuard {
 /** A write marker older than this is treated as abandoned (pid reuse, killed process). */
 const WRITE_MARKER_MAX_AGE_MS = 10 * 60_000;
 /**
- * A restart claim older than this is treated as abandoned. A restart is
- * bounded by the client's stop (<= 10s) and start (default 5s) budgets.
+ * A restart claim not refreshed for this long is treated as abandoned, even if
+ * its pid is alive (pid reuse, or an owner paused past its lifetime). A live
+ * owner refreshes it every {@link RESTART_CLAIM_HEARTBEAT_MS}, so a running
+ * restart is never expired however long it takes.
  */
 const RESTART_CLAIM_MAX_AGE_MS = 2 * 60_000;
+/** How often a held restart claim is refreshed. */
+const RESTART_CLAIM_HEARTBEAT_MS = 10_000;
+
+/** Lifetimes for {@link fileWriteGuard}; overridable for tests. */
+export interface WriteGuardTimings {
+  /** Restart claim lifetime without a refresh; defaults to 2 minutes. */
+  claimMaxAgeMs?: number;
+  /** Restart claim refresh interval; defaults to 10 seconds. */
+  claimHeartbeatMs?: number;
+}
 /** How long a write or a second recoverer waits for another process's restart. */
 export const RESTART_WAIT_MS = 30_000;
 const RESTART_POLL_MS = 100;
@@ -175,6 +217,13 @@ const RESTART_CLAIM_PREFIX = '.restart-';
  * sees the claim gone also sees the record.
  */
 const STOPPED_PREFIX = '.stopped-';
+/**
+ * Prefix of a reserved, not yet timestamped stop record,
+ * `.stopping-<pid>-<uuid>`. Created before the stop (so a stop never happens
+ * unless its record can be written) and renamed to a `.stopped-` record after
+ * it, so the timestamp is never earlier than a request the old daemon took.
+ */
+const STOPPING_PREFIX = '.stopping-';
 /** Attempts to resolve a simultaneous claim (both claimants saw each other) by random backoff. */
 const RESTART_CLAIM_ATTEMPTS = 5;
 /** Times a recoverer waits out another process's restart before giving up. */
@@ -196,9 +245,16 @@ export function writeMarkerDir(socketPath: string): string {
  * proceed (uncoordinated, but never blocked).
  * @param dir - Coordination directory, normally {@link writeMarkerDir}.
  * @param restartWaitMs - How long {@link WriteGuard.begin} waits out a restart.
+ * @param timings - Claim lifetime and refresh interval.
  * @returns The guard.
  */
-export function fileWriteGuard(dir: string, restartWaitMs: number = RESTART_WAIT_MS): WriteGuard {
+export function fileWriteGuard(
+  dir: string,
+  restartWaitMs: number = RESTART_WAIT_MS,
+  timings: WriteGuardTimings = {}
+): WriteGuard {
+  const claimMaxAgeMs = timings.claimMaxAgeMs ?? RESTART_CLAIM_MAX_AGE_MS;
+  const claimHeartbeatMs = timings.claimHeartbeatMs ?? RESTART_CLAIM_HEARTBEAT_MS;
   /**
    * Live files with `prefix`, as `{ name, pid }`. Files of dead pids, or past
    * `maxAgeMs`, are removed: their owner can no longer be using them.
@@ -230,7 +286,7 @@ export function fileWriteGuard(dir: string, restartWaitMs: number = RESTART_WAIT
     return live;
   };
 
-  const liveClaims = () => liveFiles(RESTART_CLAIM_PREFIX, RESTART_CLAIM_MAX_AGE_MS);
+  const liveClaims = () => liveFiles(RESTART_CLAIM_PREFIX, claimMaxAgeMs);
 
   /** Whether any process stopped the daemon at or after `since` (expiring old records). */
   const stoppedSince = (since: number): boolean => {
@@ -242,6 +298,16 @@ export function fileWriteGuard(dir: string, restartWaitMs: number = RESTART_WAIT
     }
     let stopped = false;
     for (const name of names) {
+      if (name.startsWith(STOPPING_PREFIX)) {
+        // Reservation of a restarter that died mid-restart: expire it.
+        const path = join(dir, name);
+        try {
+          if (Date.now() - statSync(path).mtimeMs > RESTART_CLAIM_MAX_AGE_MS) rmSync(path, { force: true });
+        } catch {
+          // Removed while scanning.
+        }
+        continue;
+      }
       if (!name.startsWith(STOPPED_PREFIX)) continue;
       const at = Number.parseInt(name.slice(STOPPED_PREFIX.length).split('-')[0] ?? '', 10);
       if (!Number.isSafeInteger(at) || Date.now() - at > RESTART_CLAIM_MAX_AGE_MS) {
@@ -322,20 +388,48 @@ export function fileWriteGuard(dir: string, restartWaitMs: number = RESTART_WAIT
             rmSync(claim, { force: true });
             return { kind: 'restarted' };
           }
+          const suffix = `${process.pid}-${randomUUID()}`;
+          const reserved = join(dir, `${STOPPING_PREFIX}${suffix}`);
+          let isReserved = false;
+          // Keep the claim fresh while this process runs, so a long restart is
+          // never expired. A missing claim is never re-created: once expired,
+          // this owner is fenced (see stillHeld).
+          const heartbeat = setInterval(() => {
+            try {
+              const now = new Date();
+              utimesSync(claim, now, now);
+            } catch {
+              clearInterval(heartbeat);
+            }
+          }, claimHeartbeatMs);
+          heartbeat.unref();
           return {
             kind: 'acquired',
+            prepareStop: () => {
+              writeFileSync(reserved, '', { flag: 'wx', mode: 0o600 });
+              isReserved = true;
+            },
             markStopped: () => {
+              const record = join(dir, `${STOPPED_PREFIX}${Date.now()}-${suffix}`);
               try {
-                writeFileSync(
-                  join(dir, `${STOPPED_PREFIX}${Date.now()}-${process.pid}-${randomUUID()}`),
-                  '',
-                  { flag: 'wx', mode: 0o600 }
-                );
+                // Renaming within the directory needs no new space, so a
+                // reserved record can always be published.
+                if (isReserved) renameSync(reserved, record);
+                else writeFileSync(record, '', { flag: 'wx', mode: 0o600 });
+                isReserved = false;
               } catch {
-                // Best-effort, like every other record here.
+                // Nothing more can be done; the claim still guards until release.
               }
             },
-            release: () => rmSync(claim, { force: true }),
+            // Claims are only ever deleted by their owner or on expiry, and
+            // names are unique, so "still on disk" means "never expired": no
+            // other process could have admitted a write or taken the restart.
+            stillHeld: () => existsSync(claim),
+            release: () => {
+              clearInterval(heartbeat);
+              if (isReserved) rmSync(reserved, { force: true });
+              rmSync(claim, { force: true });
+            },
           };
         }
         rmSync(claim, { force: true });
@@ -568,15 +662,7 @@ export class RecoveringControlPlane {
     if (!this.#recovery) {
       this.#recoveringFrom = stalled;
       this.#recovery = (async () => {
-        // 1. Never stop a working daemon we cannot replace.
-        const canStart = await (this.#options.canStartReplacement ?? canStartReplacementViaClient)(stalled);
-        if (!canStart) {
-          throw new RecoveryFailure(
-            'preflight',
-            'the relayfile binary (RELAYFILE_BIN or `relayfile` on PATH) could not be run'
-          );
-        }
-        // 2. Claim the restart across processes. New writes in any relay
+        // 1. Claim the restart across processes. New writes in any relay
         // process wait while the claim is held, so none can start between the
         // write check below and the replacement being ready.
         let claim = await this.#writeGuard.acquireRestart(sentAt);
@@ -599,9 +685,28 @@ export class RecoveringControlPlane {
           return;
         }
         try {
-          // 3. Never stop a daemon while any relay process has a write in
-          // flight on it. Checked after claiming: a write that began first is
-          // seen here; one that begins later sees the claim and waits.
+          // 2. Never stop a working daemon we cannot replace. Only needed when
+          // this process will stop it: reusing another process's replacement
+          // (`restarted` above) needs no local binary.
+          const canStart = await (this.#options.canStartReplacement ?? canStartReplacementViaClient)(stalled);
+          if (!canStart) {
+            throw new RecoveryFailure(
+              'preflight',
+              'the relayfile binary (RELAYFILE_BIN or `relayfile` on PATH) could not be run'
+            );
+          }
+          // 3. Reserve the stop record: a stop nobody can see would let
+          // another process take its replacement for the hung daemon.
+          try {
+            claim.prepareStop();
+          } catch (err) {
+            throw new RecoveryFailure('busy', `the restart could not be recorded (${describe(err)})`);
+          }
+          // 4. Fence, then make sure no write is in flight, immediately before
+          // the stop. A claim still on disk was never expired, so no other
+          // process admitted a write or took the restart meanwhile; a write
+          // that began before the claim is seen here, one after it waits.
+          this.#assertStillHeld(claim);
           const writes = this.#writeGuard.activeWrites();
           if (writes.length > 0) {
             throw new RecoveryFailure(
@@ -609,14 +714,17 @@ export class RecoveringControlPlane {
               `another relay command has a write in flight on it (${writes.join(', ')})`
             );
           }
-          // 4. Stop the hung daemon, and record it before giving up the claim.
+          // 5. Stop the hung daemon, and record it before giving up the claim.
           try {
             await (this.#options.stopDaemon ?? stopDaemonViaClient)(stalled);
           } catch (err) {
             throw new RecoveryFailure('stop', describe(err));
           }
           claim.markStopped();
-          // 5. Start the replacement and prove it is up, still under the claim.
+          // 6. Start the replacement and prove it is up, still under the
+          // claim — unless the claim expired during the stop, in which case
+          // another process now owns the restart and starts the replacement.
+          this.#assertStillHeld(claim);
           await this.#install(this.#create());
         } finally {
           claim.release();
@@ -630,6 +738,16 @@ export class RecoveringControlPlane {
       });
     }
     return this.#recovery;
+  }
+
+  /** Abandon the restart if this process's claim expired while it was paused. */
+  #assertStillHeld(claim: { stillHeld: () => boolean }): void {
+    if (!claim.stillHeld()) {
+      throw new RecoveryFailure(
+        'busy',
+        'this command paused past its restart claim, which may now belong to another relay command'
+      );
+    }
   }
 
   /**

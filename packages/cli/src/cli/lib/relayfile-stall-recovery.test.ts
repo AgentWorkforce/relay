@@ -19,6 +19,7 @@ import { RelayfileControlPlaneClient, RelayfileControlPlaneError } from '@relayf
 
 import {
   RELAYFILE_DAEMON_STALLED,
+  RESTART_WAIT_MS,
   RecoveringControlPlane,
   fileWriteGuard,
   isRelayfileControlPlaneTimeout,
@@ -768,6 +769,76 @@ describe('RecoveringControlPlane', () => {
     }
   });
 
+  it('times a reserved stop record from the stop, not the reservation', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rf-writes-'));
+    try {
+      const a = await fileWriteGuard(dir).acquireRestart(Date.now());
+      if (a.kind !== 'acquired') throw new Error('expected to acquire');
+      a.prepareStop();
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      // B's request reached the old daemon after A reserved but before A stopped it.
+      const sentAt = Date.now();
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      a.markStopped();
+      a.release();
+      expect(readdirSync(dir).filter((n) => n.startsWith('.stopping-'))).toEqual([]);
+      await expect(fileWriteGuard(dir).acquireRestart(sentAt)).resolves.toEqual({ kind: 'restarted' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not treat a reservation whose stop failed as a restart', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rf-writes-'));
+    try {
+      const sentAt = Date.now();
+      const a = await fileWriteGuard(dir).acquireRestart(sentAt);
+      if (a.kind !== 'acquired') throw new Error('expected to acquire');
+      a.prepareStop();
+      a.release(); // the stop failed: nothing was replaced
+      expect(readdirSync(dir).filter((n) => n.startsWith('.stopping-'))).toEqual([]);
+      const b = await fileWriteGuard(dir).acquireRestart(sentAt);
+      expect(b.kind).toBe('acquired');
+      if (b.kind === 'acquired') b.release();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves the daemon running when its stop cannot be recorded', async () => {
+    const stalled = { id: 'stalled' };
+    const stopDaemon = vi.fn(async () => {});
+    const release = vi.fn();
+    const cp = new RecoveringControlPlane({
+      clientOptions: { autoStart: true },
+      createClient: fakeClients(stalled, { id: 'fresh' }),
+      stopDaemon,
+      writeGuard: {
+        begin: async () => () => {},
+        activeWrites: () => [],
+        acquireRestart: async () => ({
+          kind: 'acquired',
+          prepareStop: () => {
+            throw new Error('ENOSPC: no space left on device');
+          },
+          markStopped: () => {},
+          stillHeld: () => true,
+          release,
+        }),
+        waitForRestart: async () => true,
+      },
+      warn: () => {},
+    });
+    const read = cp.run('provider-status', async () => {
+      throw timeoutError();
+    });
+
+    await expect(read).rejects.toThrow(/could not be recorded \(ENOSPC/);
+    expect(stopDaemon).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(cp.client).toBe(stalled);
+  });
+
   it('retries on another process replacement without stopping it', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rf-writes-'));
     try {
@@ -873,6 +944,151 @@ describe('RecoveringControlPlane', () => {
       expect(stopA).toHaveBeenCalledTimes(1);
       // B must not stop the replacement A just started.
       expect(stopB).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a live restarter claim held past its lifetime by refreshing it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rf-writes-'));
+    try {
+      const timings = { claimMaxAgeMs: 150, claimHeartbeatMs: 30 };
+      const a = await fileWriteGuard(dir, RESTART_WAIT_MS, timings).acquireRestart(Date.now());
+      if (a.kind !== 'acquired') throw new Error('expected to acquire');
+      // A long restart: well past the claim lifetime.
+      await new Promise((resolve) => setTimeout(resolve, 450));
+      expect(a.stillHeld()).toBe(true);
+      // Another process must still see the restart as held.
+      await expect(fileWriteGuard(dir, RESTART_WAIT_MS, timings).acquireRestart(Date.now())).resolves.toEqual(
+        {
+          kind: 'held',
+        }
+      );
+      a.release();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('fences a restarter whose claim expired while it was paused', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rf-writes-'));
+    try {
+      // The heartbeat never fires in time: the owner is effectively paused.
+      const paused = { claimMaxAgeMs: 100, claimHeartbeatMs: 60_000 };
+      const a = await fileWriteGuard(dir, RESTART_WAIT_MS, paused).acquireRestart(Date.now());
+      if (a.kind !== 'acquired') throw new Error('expected to acquire');
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      // Another process expires the claim and takes the restart.
+      const b = await fileWriteGuard(dir, RESTART_WAIT_MS, paused).acquireRestart(Date.now());
+      expect(b.kind).toBe('acquired');
+      // The paused owner learns it no longer holds the restart.
+      expect(a.stillHeld()).toBe(false);
+      if (b.kind === 'acquired') b.release();
+      a.release();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not stop the daemon once its restart claim has expired', async () => {
+    const stalled = { id: 'stalled' };
+    const stopDaemon = vi.fn(async () => {});
+    const release = vi.fn();
+    const cp = new RecoveringControlPlane({
+      clientOptions: { autoStart: true },
+      createClient: fakeClients(stalled, { id: 'fresh' }),
+      stopDaemon,
+      writeGuard: {
+        begin: async () => () => {},
+        activeWrites: () => [],
+        acquireRestart: async () => ({
+          kind: 'acquired',
+          prepareStop: () => {},
+          markStopped: () => {},
+          stillHeld: () => false, // expired while this process was paused
+          release,
+        }),
+        waitForRestart: async () => true,
+      },
+      warn: () => {},
+    });
+    await expect(
+      cp.run('provider-status', async () => {
+        throw timeoutError();
+      })
+    ).rejects.toMatchObject({
+      code: RELAYFILE_DAEMON_STALLED,
+      message: expect.stringContaining('paused past its restart claim'),
+    });
+    expect(stopDaemon).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(cp.client).toBe(stalled);
+  });
+
+  it('does not start a replacement when the claim expired during the stop', async () => {
+    const stalled = { id: 'stalled' };
+    const createClient = fakeClients(stalled, { id: 'fresh' });
+    let held = true;
+    const stopDaemon = vi.fn(async () => {
+      held = false; // paused mid-stop; another process now owns the restart
+    });
+    const cp = new RecoveringControlPlane({
+      clientOptions: { autoStart: true },
+      createClient,
+      stopDaemon,
+      writeGuard: {
+        begin: async () => () => {},
+        activeWrites: () => [],
+        acquireRestart: async () => ({
+          kind: 'acquired',
+          prepareStop: () => {},
+          markStopped: () => {},
+          stillHeld: () => held,
+          release: () => {},
+        }),
+        waitForRestart: async () => true,
+      },
+      warn: () => {},
+    });
+    await expect(
+      cp.run('provider-status', async () => {
+        throw timeoutError();
+      })
+    ).rejects.toMatchObject({ code: RELAYFILE_DAEMON_STALLED });
+    expect(stopDaemon).toHaveBeenCalledTimes(1);
+    // No replacement client was started by the fenced owner.
+    expect(createClient).toHaveBeenCalledTimes(1);
+  });
+
+  it('reuses another process replacement without needing a local relayfile binary', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rf-writes-'));
+    try {
+      const stalled = { id: 'stalled' };
+      const fresh = { id: 'fresh' };
+      const canStartReplacement = vi.fn(async () => false);
+      const stopDaemon = vi.fn();
+      const cp = new RecoveringControlPlane({
+        clientOptions: { autoStart: true },
+        createClient: fakeClients(stalled, fresh),
+        stopDaemon,
+        canStartReplacement,
+        writeGuard: fileWriteGuard(dir),
+        warn: () => {},
+      });
+      const read = cp.run('provider-status', async (client) => {
+        if (client === (stalled as unknown)) {
+          // Another process replaces the daemon while this request hangs.
+          const other = await fileWriteGuard(dir).acquireRestart(0);
+          if (other.kind !== 'acquired') throw new Error('expected to acquire');
+          other.markStopped();
+          other.release();
+          throw timeoutError();
+        }
+        return 'ready';
+      });
+      await expect(read).resolves.toBe('ready');
+      expect(canStartReplacement).not.toHaveBeenCalled();
+      expect(stopDaemon).not.toHaveBeenCalled();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
