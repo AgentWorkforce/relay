@@ -9,8 +9,10 @@ pub struct CodexRuntimeProof {
     thread: String,
     rollout: PathBuf,
     birth: i128,
+    rollout_key: Option<(u64, u64)>,
     lock: PathBuf,
     lock_birth: Option<i128>,
+    lock_key: Option<(u64, u64)>,
 }
 
 impl CodexRuntimeProof {
@@ -25,6 +27,7 @@ impl CodexRuntimeProof {
     pub(crate) fn has_native_user_turn(&self) -> bool {
         const MAX_SCAN: u64 = 512 * 1024;
         if file_birth_ns(&self.rollout) != Some(self.birth)
+            || file_key(&self.rollout) != self.rollout_key
             || rollout_proof(&self.rollout, &self.thread) != Some(RolloutProof::Root)
         {
             return false;
@@ -64,7 +67,8 @@ impl CodexRuntimeProof {
                     .get("initiating_agent_path")
                     .is_some_and(serde_json::Value::is_null)
             {
-                return file_birth_ns(&self.rollout) == Some(self.birth);
+                return file_birth_ns(&self.rollout) == Some(self.birth)
+                    && file_key(&self.rollout) == self.rollout_key;
             }
         }
         false
@@ -72,7 +76,9 @@ impl CodexRuntimeProof {
 
     /// Revalidate process incarnation, executable, held lock and rollout.
     pub(crate) fn current(&self, table: &dyn ProcessTable, uid: u32) -> bool {
-        if self.process.uid != uid
+        if file_key(&self.rollout) != self.rollout_key
+            || file_key(&self.lock) != self.lock_key
+            || self.process.uid != uid
             || table.process(self.process.pid) != Some(self.process)
             || table.zombie(self.process.pid)
             || table.executable(self.process.pid).as_ref() != Some(&self.executable)
@@ -99,6 +105,8 @@ impl CodexRuntimeProof {
         matches(&table.opened_files(self.process.pid))
             && table.process(self.process.pid) == Some(self.process)
             && file_birth_ns(&self.rollout) == Some(self.birth)
+            && file_key(&self.rollout) == self.rollout_key
+            && file_key(&self.lock) == self.lock_key
     }
 }
 
@@ -173,14 +181,22 @@ pub(crate) fn codex_runtime_proofs(table: &dyn ProcessTable, uid: u32) -> Vec<Co
             {
                 continue;
             }
+            let rollout_key = file_key(&rollout);
+            let lock_key = file_key(&lock.path);
+            #[cfg(unix)]
+            if rollout_key.is_none() || lock_key.is_none() {
+                continue;
+            }
             let proof = CodexRuntimeProof {
                 process,
                 executable: executable.clone(),
                 thread: thread.clone(),
+                rollout_key,
                 rollout,
                 birth,
                 lock: lock.path.clone(),
                 lock_birth: lock.birth_ns,
+                lock_key,
             };
             if found.insert(thread.clone(), proof).is_some() {
                 ambiguous.insert(thread);
@@ -192,6 +208,22 @@ pub(crate) fn codex_runtime_proofs(table: &dyn ProcessTable, uid: u32) -> Vec<Co
         .filter(|(id, _)| !ambiguous.contains(id))
         .map(|(_, p)| p)
         .collect()
+}
+
+/// Unix replacements can share a creation timestamp when they happen
+/// rapidly; device and inode bind the exact named file as well. Other
+/// platforms retain the existing kernel-held creation-time evidence.
+#[cfg(unix)]
+fn file_key(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::metadata(path).ok()?;
+    Some((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(not(unix))]
+/// Other platforms retain their existing held-file creation-time proof.
+fn file_key(_: &Path) -> Option<(u64, u64)> {
+    None
 }
 
 /// A SessionStart may nudge global discovery without selecting any chat.

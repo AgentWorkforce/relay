@@ -398,7 +398,9 @@ mod tests {
             push_timing: PushTiming::default(),
             delivery_timing: DeliveryTiming::default(),
         };
-        let inbox = Arc::new(StopHookInbox::default());
+        let inbox = Arc::new(StopHookInbox::with_turns(
+            crate::relay::codex::turn_hook::TurnInbox::open(home.join("turns.json")),
+        ));
         inbox.set_ready(true);
         let direct = Arc::new(Direct);
         let plugins = Plugins {
@@ -493,9 +495,12 @@ mod tests {
         );
     }
 
+    /// Registration may complete between two hooks after manual guidance.
     #[tokio::test]
     async fn manual_guidance_cannot_spend_later_registered_identity_context() {
         let (_temp, outbound, inbox) = fixture();
+        let send = outbound.core.plugins.relay_send.as_ref().unwrap();
+        send.serving.set(Some(send.socket.clone()));
         outbound
             .core
             .store

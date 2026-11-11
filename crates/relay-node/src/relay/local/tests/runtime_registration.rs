@@ -228,7 +228,15 @@ fn fallback_user_evidence_rejects_internal_turns_and_prompt_text() {
 
 #[test]
 fn proofs_reject_replaced_inodes_wrong_owner_and_process_reuse() {
-    for change in ["pid", "uid", "untrusted", "rollout", "lock", "held_birth"] {
+    for change in [
+        "pid",
+        "uid",
+        "untrusted",
+        "rollout",
+        "lock",
+        "lock_replaced",
+        "held_birth",
+    ] {
         let w = world();
         let _db = seed(&w, &[THREAD]);
         let c = w.sessions.automatic_candidates().pop().unwrap();
@@ -255,7 +263,14 @@ fn proofs_reject_replaced_inodes_wrong_owner_and_process_reuse() {
                 let path = host
                     .open_files
                     .iter()
-                    .find(|p| p.extension().and_then(|s| s.to_str()) == Some("jsonl"))
+                    .find(|p| {
+                        p.extension().and_then(|s| s.to_str())
+                            == Some(if change == "lock_replaced" {
+                                "lock"
+                            } else {
+                                "jsonl"
+                            })
+                    })
                     .unwrap();
                 let replacement = path.with_extension("new");
                 std::fs::write(&replacement, std::fs::read(path).unwrap()).unwrap();
