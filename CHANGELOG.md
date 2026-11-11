@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay integration subscribe` (and other relayfile integration reads) recover from a control-plane daemon that accepts requests but never answers: the CLI restarts the daemon and retries once instead of failing with a generic 30s timeout. A daemon that still hangs reports `DAEMON_STALLED` naming the endpoint; with `RELAYFILE_REQUIRE_DAEMON=1` the daemon is never restarted.
+- `agent-relay integration subscribe` (and other relayfile integration reads) recover from a control-plane daemon that accepts requests but never answers: the CLI restarts the daemon and retries once instead of failing with a generic 30s timeout. A daemon that still hangs, or cannot be replaced, reports `DAEMON_STALLED` naming the endpoint and a manual remedy. The daemon is only stopped when the `relayfile` binary can start a replacement, and never with `RELAYFILE_REQUIRE_DAEMON=1`. Automatic restart is unavailable on Windows, where the manual remedy is shown instead.
 
 ## [18.1.0] - 2026-11-11
 

@@ -20,9 +20,18 @@ const timeoutError = () =>
     true
   );
 
-function fakeClients(...clients: unknown[]) {
+/**
+ * Hand out fake clients in order. Each gets a ready daemon and a runnable
+ * binary unless the test overrides them; identity is preserved so tests can
+ * tell the stalled client from its replacement.
+ */
+function fakeClients(...clients: Array<Record<string, unknown>>) {
+  for (const client of clients) {
+    client.ensureReady ??= async () => {};
+    client.installedBinaryVersion ??= async () => '0.10.79';
+  }
   const queue = [...clients];
-  return vi.fn(() => queue.shift() as RelayfileControlPlaneClient);
+  return vi.fn(() => queue.shift() as unknown as RelayfileControlPlaneClient);
 }
 
 describe('isRelayfileControlPlaneTimeout', () => {
@@ -112,6 +121,53 @@ describe('RecoveringControlPlane', () => {
       code: RELAYFILE_DAEMON_STALLED,
       message: expect.stringContaining('Could not restart it automatically (lsof not found)'),
     });
+  });
+
+  it('leaves a working daemon running when no replacement can be started', async () => {
+    const stopDaemon = vi.fn();
+    const cp = new RecoveringControlPlane({
+      clientOptions: { autoStart: true },
+      createClient: fakeClients({ installedBinaryVersion: async () => undefined }),
+      stopDaemon,
+    });
+    await expect(
+      cp.run('provider-status', async () => {
+        throw timeoutError();
+      })
+    ).rejects.toMatchObject({
+      code: RELAYFILE_DAEMON_STALLED,
+      message: expect.stringContaining('Left the daemon running because no replacement could be started'),
+    });
+    expect(stopDaemon).not.toHaveBeenCalled();
+  });
+
+  it('reports DAEMON_STALLED when the replacement daemon fails to start', async () => {
+    const unavailable = new RelayfileControlPlaneError(
+      'DAEMON_UNAVAILABLE',
+      'failed to start relayfile control-plane (spawn relayfile ENOENT)'
+    );
+    const stalled = {};
+    const replacement = {
+      ensureReady: async () => {
+        throw unavailable;
+      },
+    };
+    const op = vi.fn(async (client: unknown) => {
+      if (client === stalled) throw timeoutError();
+      return 'unreachable';
+    });
+    const cp = new RecoveringControlPlane({
+      clientOptions: { autoStart: true },
+      createClient: fakeClients(stalled, replacement),
+      stopDaemon: async () => {},
+      warn: () => {},
+    });
+    await expect(cp.run('writeback-secret', op)).rejects.toMatchObject({
+      code: RELAYFILE_DAEMON_STALLED,
+      message: expect.stringMatching(/Stopped the hung daemon, but its replacement did not start.*ENOENT/s),
+    });
+    // The endpoint is never retried against a daemon that is not up.
+    expect(op).toHaveBeenCalledTimes(1);
   });
 
   it('never kills the daemon when auto-start is disabled', async () => {
@@ -303,6 +359,7 @@ setTimeout(() => { rmSync(sock, { force: true }); process.exit(0); }, 15000).unr
         const cp = new RecoveringControlPlane({
           clientOptions: { socketPath, autoStart: true, requestTimeoutMs: 200 },
           // The "restart": the replacement daemon is healthy.
+          canStartReplacement: async () => true,
           stopDaemon: async () => {
             wedged = false;
           },

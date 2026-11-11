@@ -36,10 +36,44 @@ export const stopDaemonViaClient: StopDaemon = async (client) => {
   await stop.call(client);
 };
 
+/**
+ * Whether a replacement daemon could be started, checked BEFORE the running
+ * one is stopped: a daemon started elsewhere must not be killed when this
+ * CLI's RELAYFILE_BIN / `relayfile` cannot spawn a new one.
+ */
+export type CanStartReplacement = (client: RelayfileControlPlaneClient) => Promise<boolean>;
+
+export const canStartReplacementViaClient: CanStartReplacement = async (client) => {
+  // `installedBinaryVersion` runs `<binary> --version` with a bounded timeout;
+  // it is private in @relayfile/client, like `stopStaleDaemon`. Without it we
+  // cannot prove a replacement is possible, so refuse to stop the daemon.
+  const probe = (client as unknown as { installedBinaryVersion?: () => Promise<string | undefined> })
+    .installedBinaryVersion;
+  if (typeof probe !== 'function') return false;
+  try {
+    return Boolean(await probe.call(client));
+  } catch {
+    return false;
+  }
+};
+
+type RecoveryPhase = 'preflight' | 'stop' | 'start';
+
+/** A recovery step that failed, so the caller can give the matching remedy. */
+class RecoveryFailure extends Error {
+  constructor(
+    readonly phase: RecoveryPhase,
+    message: string
+  ) {
+    super(message);
+  }
+}
+
 export interface RecoveringControlPlaneOptions {
   clientOptions: RelayfileClientOptions;
   createClient?: (options: RelayfileClientOptions) => RelayfileControlPlaneClient;
   stopDaemon?: StopDaemon;
+  canStartReplacement?: CanStartReplacement;
   /** Diagnostics sink for the recovery notice; defaults to stderr. */
   warn?: (message: string) => void;
 }
@@ -98,12 +132,8 @@ export class RecoveringControlPlane {
 
       try {
         await this.#recover(attempted, label);
-      } catch (stopErr) {
-        throw stalledError(
-          label,
-          first,
-          `Could not restart it automatically (${describe(stopErr)}); stop the running \`relayfile control-plane serve\` process and retry.`
-        );
+      } catch (recoveryErr) {
+        throw stalledError(label, first, recoveryRemedy(recoveryErr));
       }
 
       try {
@@ -129,12 +159,34 @@ export class RecoveringControlPlane {
     if (this.#client !== stalled) return Promise.resolve();
     if (!this.#recovery) {
       this.#recovery = (async () => {
-        await (this.#options.stopDaemon ?? stopDaemonViaClient)(stalled);
+        // 1. Never stop a working daemon we cannot replace.
+        const canStart = await (this.#options.canStartReplacement ?? canStartReplacementViaClient)(stalled);
+        if (!canStart) {
+          throw new RecoveryFailure(
+            'preflight',
+            'the relayfile binary (RELAYFILE_BIN or `relayfile` on PATH) could not be run'
+          );
+        }
+        // 2. Stop the hung daemon.
+        try {
+          await (this.#options.stopDaemon ?? stopDaemonViaClient)(stalled);
+        } catch (err) {
+          throw new RecoveryFailure('stop', describe(err));
+        }
+        // 3. A fresh client re-runs hello negotiation and auto-starts the
+        // replacement; prove it is up before anyone retries on it. Install it
+        // even on failure so the next call auto-starts instead of reusing the
+        // client bound to the stopped daemon.
+        const replacement = this.#create();
+        this.#client = replacement;
+        try {
+          await replacement.ensureReady();
+        } catch (err) {
+          throw new RecoveryFailure('start', describe(err));
+        }
         (this.#options.warn ?? defaultWarn)(
           `relayfile control-plane did not answer ${label}; restarted the daemon and retrying.`
         );
-        // A fresh client re-runs hello negotiation and auto-starts the daemon.
-        this.#client = this.#create();
       })().finally(() => {
         this.#recovery = undefined;
       });
@@ -158,6 +210,27 @@ function stalledError(
     `relayfile control-plane stalled on ${label}: ${cause.message}. ${remedy}`,
     cause.status
   );
+}
+
+function recoveryRemedy(err: unknown): string {
+  const phase = err instanceof RecoveryFailure ? err.phase : 'stop';
+  switch (phase) {
+    case 'preflight':
+      return (
+        `Left the daemon running because no replacement could be started (${describe(err)}); ` +
+        'fix RELAYFILE_BIN or install relayfile, or restart `relayfile control-plane serve` manually, then retry.'
+      );
+    case 'start':
+      return (
+        `Stopped the hung daemon, but its replacement did not start (${describe(err)}); ` +
+        'run `relayfile control-plane serve` and retry.'
+      );
+    default:
+      return (
+        `Could not restart it automatically (${describe(err)}); ` +
+        'stop the running `relayfile control-plane serve` process and retry.'
+      );
+  }
 }
 
 function describe(err: unknown): string {
