@@ -106,10 +106,18 @@ export interface EventsShimStore {
   setWakeTarget(shimId: string, target: WakeTarget | null): Promise<void>;
   /** Records that the shim was used now (extends idle expiry). */
   touch(shimId: string, now: string, agent: boolean): Promise<void>;
-  /** Accepted posts since `since` (ISO), for rate limits. Duplicates count. */
-  countPostsSince(shimId: string, since: string): Promise<number>;
-  /** Counts one post toward the rate limit, even when it turns out to be a duplicate. */
-  recordPost(shimId: string, at: string): Promise<void>;
+  /**
+   * Atomically counts one post toward the shim's rate limits, unless either
+   * window is already full. Must be atomic with respect to concurrent calls
+   * for the same shim (e.g. lock the shim row, count, insert), so overlapping
+   * posts cannot all pass the check. Duplicates count. Hosts may drop
+   * records older than a day.
+   */
+  reservePost(
+    shimId: string,
+    at: string,
+    windows: { since: string; limit: number; name: 'hour' | 'day' }[]
+  ): Promise<{ ok: true } | { ok: false; window: 'hour' | 'day' }>;
   /**
    * Stores a post unless one with the same idempotency key exists for the
    * shim; then returns that one with `duplicate: true`. Assigns `seq`,
@@ -125,8 +133,10 @@ export interface EventsShimStore {
   /** Oldest first: `pending` events, plus `woken` ones when `includeWoken`. */
   listUndelivered(shimId: string, limit: number, includeWoken: boolean): Promise<ShimEvent[]>;
   /**
-   * Sets the delivery state. Never moves a `read` event to another state: a
-   * wake result can land after the agent already read the post.
+   * Sets the delivery state, moving only forward: `pending → woken → read`.
+   * `woken` never overwrites `read`, and `pending` (a failed wake, with
+   * `wakeError`) applies only to events still `pending`, so a late or
+   * overlapping wake result can never hand a post over twice.
    */
   markDelivery(
     shimId: string,

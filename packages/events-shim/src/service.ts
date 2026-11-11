@@ -117,24 +117,32 @@ export async function receivePost(
   if (!verified.ok)
     return { status: verified.status, body: { error: verified.code, message: verified.message } };
 
-  const hourAgo = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
-  const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
-  if ((await deps.store.countPostsSince(shim.id, hourAgo)) >= EVENTS_SHIM_LIMITS.postsPerHour) {
-    return {
-      status: 429,
-      body: { error: 'rate_limited', message: `At most ${EVENTS_SHIM_LIMITS.postsPerHour} posts per hour.` },
-      headers: { 'retry-after': '300' },
-    };
-  }
-  if ((await deps.store.countPostsSince(shim.id, dayAgo)) >= EVENTS_SHIM_LIMITS.postsPerDay) {
-    return {
-      status: 429,
-      body: { error: 'rate_limited', message: `At most ${EVENTS_SHIM_LIMITS.postsPerDay} posts per day.` },
-      headers: { 'retry-after': '3600' },
-    };
-  }
   const at = now.toISOString();
-  await deps.store.recordPost(shim.id, at);
+  const reserved = await deps.store.reservePost(shim.id, at, [
+    {
+      name: 'hour',
+      since: new Date(now.getTime() - 60 * 60 * 1000).toISOString(),
+      limit: EVENTS_SHIM_LIMITS.postsPerHour,
+    },
+    {
+      name: 'day',
+      since: new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+      limit: EVENTS_SHIM_LIMITS.postsPerDay,
+    },
+  ]);
+  if (!reserved.ok) {
+    const hour = reserved.window === 'hour';
+    return {
+      status: 429,
+      body: {
+        error: 'rate_limited',
+        message: hour
+          ? `At most ${EVENTS_SHIM_LIMITS.postsPerHour} posts per hour.`
+          : `At most ${EVENTS_SHIM_LIMITS.postsPerDay} posts per day.`,
+      },
+      headers: { 'retry-after': hour ? '300' : '3600' },
+    };
+  }
   await deps.store.touch(shim.id, at, false);
 
   const contentType = (input.headers.get('content-type') ?? 'application/octet-stream').slice(0, 200);

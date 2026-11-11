@@ -237,6 +237,47 @@ describe('events shim', () => {
     expect(open.startsWith('ignore')).toBe(false);
   });
 
+  it('forwards the whole backlog when linking, not just one batch', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    for (let i = 0; i < EVENTS_SHIM_LIMITS.batchSize + 5; i += 1) await h.post(shim.webhook_url, { i });
+    const agent = await h.connect(shim.mcp_url);
+    const linked = await agent.call('link_relay_wake', RELAY_HOOK);
+    expect(linked.structuredContent?.forwarded_waiting).toBe(EVENTS_SHIM_LIMITS.batchSize + 5);
+    expect(
+      (await h.feed(shim.manage_token)).body.events.every(
+        (event: { delivery: string }) => event.delivery === 'woken'
+      )
+    ).toBe(true);
+  });
+
+  it('cannot exceed the hourly limit with concurrent posts', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const results = await Promise.all(
+      Array.from({ length: EVENTS_SHIM_LIMITS.postsPerHour + 20 }, (_, i) => h.post(shim.webhook_url, { i }))
+    );
+    expect(results.filter((r) => r.status === 202)).toHaveLength(EVENTS_SHIM_LIMITS.postsPerHour);
+    expect(results.filter((r) => r.status === 429)).toHaveLength(20);
+  });
+
+  it('moves delivery state only forward', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const posted = await h.post(shim.webhook_url, { a: 1 });
+    const record = (await h.store.findByHookTokenHash(
+      await (await import('./crypto.js')).sha256Hex(shim.webhook_url.split('/h/')[1]!)
+    ))!;
+    const id = posted.body.event_id as string;
+    const at = new Date().toISOString();
+    await h.store.markDelivery(record.id, [id], 'woken', at);
+    await h.store.markDelivery(record.id, [id], 'pending', at, 'late failure');
+    expect((await h.store.listRecent(record.id, 1))[0]!.delivery).toBe('woken');
+    await h.store.markDelivery(record.id, [id], 'read', at);
+    await h.store.markDelivery(record.id, [id], 'woken', at);
+    expect((await h.store.listRecent(record.id, 1))[0]!.delivery).toBe('read');
+  });
+
   it('refuses wake links outside the allowed relay origins', async () => {
     const h = createHarness();
     const shim = await h.create();

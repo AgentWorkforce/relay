@@ -103,16 +103,21 @@ export class MemoryEventsShimStore implements EventsShimStore {
     if (agent) row.shim.agentSeenAt = now;
   }
 
-  async countPostsSince(shimId: string, since: string) {
-    return this.row(shimId).posts.filter((at) => at >= since).length;
-  }
-
-  async recordPost(shimId: string, at: string) {
+  async reservePost(
+    shimId: string,
+    at: string,
+    windows: { since: string; limit: number; name: 'hour' | 'day' }[]
+  ) {
+    // Synchronous between the read and the write, so atomic in one process.
     const row = this.row(shimId);
+    for (const window of windows) {
+      if (row.posts.filter((post) => post >= window.since).length >= window.limit)
+        return { ok: false as const, window: window.name };
+    }
     row.posts.push(at);
-    // Keep only a day of post times; nothing older is ever counted.
     const dayAgo = new Date(Date.parse(at) - 24 * 60 * 60 * 1000).toISOString();
     row.posts = row.posts.filter((post) => post >= dayAgo);
+    return { ok: true as const };
   }
 
   async appendEvent(shimId: string, input: NewShimEvent, feedSize: number) {
@@ -157,8 +162,10 @@ export class MemoryEventsShimStore implements EventsShimStore {
   ) {
     for (const event of this.row(shimId).events) {
       if (!eventIds.includes(event.id)) continue;
-      // A wake result that lands after the agent read the post must not hand it over again.
-      if (event.delivery === 'read' && state !== 'read') continue;
+      // Forward only: pending → woken → read. A failure (pending) applies only to a
+      // still-pending event, and woken never overwrites read.
+      if (state === 'pending' && event.delivery !== 'pending') continue;
+      if (state === 'woken' && event.delivery === 'read') continue;
       event.delivery = state;
       if (state === 'pending') {
         if (wakeError) event.wakeError = wakeError;

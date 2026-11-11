@@ -184,19 +184,39 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
       await ctx.deps.store.setWakeTarget(ctx.shim.id, target);
       await seen(ctx);
       ctx.shim.wake = target;
-      // Forward what is already waiting so nothing sits unseen.
-      const waiting = await ctx.deps.store.listUndelivered(ctx.shim.id, EVENTS_SHIM_LIMITS.batchSize, false);
+      // Forward everything already waiting, batch by batch, so nothing is left behind.
       let forwarded = 0;
-      for (const event of waiting) {
-        const sent = await forwardWake({
-          url: target.url,
-          secret: target.secret,
-          event,
-          fetchImpl: ctx.deps.fetchImpl,
+      let stalled = false;
+      while (!stalled) {
+        const waiting = await ctx.deps.store.listUndelivered(
+          ctx.shim.id,
+          EVENTS_SHIM_LIMITS.batchSize,
+          false
+        );
+        if (waiting.length === 0) break;
+        for (const event of waiting) {
+          const sent = await forwardWake({
+            url: target.url,
+            secret: target.secret,
+            event,
+            fetchImpl: ctx.deps.fetchImpl,
+          });
+          if (!sent.ok) {
+            stalled = true;
+            break;
+          }
+          await ctx.deps.store.markDelivery(ctx.shim.id, [event.id], 'woken', now(ctx).toISOString());
+          forwarded += 1;
+        }
+      }
+      if (stalled) {
+        return result({
+          wake: 'linked',
+          forwarded_waiting: forwarded,
+          next_steps: [
+            'Linked, but some waiting posts could not be forwarded yet. Call get_webhook_events to read them now; new posts will still wake this session.',
+          ],
         });
-        if (!sent.ok) break;
-        await ctx.deps.store.markDelivery(ctx.shim.id, [event.id], 'woken', now(ctx).toISOString());
-        forwarded += 1;
       }
       return result({
         wake: 'linked',
