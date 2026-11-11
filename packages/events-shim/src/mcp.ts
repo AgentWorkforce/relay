@@ -132,6 +132,7 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
         state === 'linked'
           ? [
               'You are set: each post is injected into this session by Agent Relay and wakes it when idle.',
+              'Give the person (or whoever sends the webhooks) webhook_url, or the matching verified_urls entry for a sender that signs its posts or sends a bearer token.',
               'Tell the person you are watching, then end your turn. Do not poll.',
             ]
           : [
@@ -140,8 +141,11 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
                     `Your relay link stopped working (${ctx.shim.wake?.brokenReason ?? 'refused'}). Relink it:`,
                   ]
                 : []),
-              `If this session runs under Agent Relay (it has a relay socket, e.g. a SessionStart hook named agent-relay-probe or messages with a [reply: …] hint): run \`${RELAY_WEBHOOK_COMMAND}\` using the socket path you were given, then call link_relay_wake with the url and secret it prints (an older probe without the webhook command: \`agent-relay-probe socket-request --socket <your relay socket> --method POST --path /webhooks --body '{}'\`). If it prints created:false and no secret, the session already has one whose secret was shown earlier: run it with --revoke, then without, and use the new secret.`,
-              'Otherwise: run wait_for_webhook in the background and call it again each time it returns. If your client cannot run tools in the background, call get_webhook_events when the person asks.',
+              'Give the person (or whoever sends the webhooks) webhook_url: anyone holding it can post. For a sender that signs its posts (GitHub, Stripe, Linear) or sends a bearer token, use the matching verified_urls entry instead, once its secret is set on the page that created this inbox.',
+              `If this session runs under Agent Relay (it has a relay socket, e.g. a SessionStart hook named agent-relay-probe or messages with a [reply: …] hint), make your session's relay webhook: run \`${RELAY_WEBHOOK_COMMAND}\` with the socket path you were given. It prints a url and a secret.`,
+              "If the probe answers that it has no webhook command (an older Agent Relay), run `agent-relay-probe socket-request --socket <your relay socket> --method POST --path /webhooks --body '{}'` instead; the url and secret are under data.",
+              'Then call link_relay_wake with that url and secret. If the probe printed created:false and no secret, the session already has a webhook whose secret was shown earlier: delete it (add --revoke, or the older probe: --method DELETE --path /webhooks), make it again, and use the new secret.',
+              'Without Agent Relay: run wait_for_webhook in the background and call it again each time it returns. If your client cannot run tools in the background, call get_webhook_events when the person asks.',
               'Then tell the person you are watching.',
             ];
       return result({
@@ -168,7 +172,7 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
     'link_relay_wake',
     {
       title: 'Wake this session through Agent Relay',
-      description: `Links this inbox to the webhook your local Agent Relay made for this session (run \`${RELAY_WEBHOOK_COMMAND}\` first). Every later post is forwarded there, and Agent Relay injects it into this session, waking it even when idle. Posts already waiting are forwarded too.`,
+      description: `Links this inbox to the webhook your local Agent Relay made for this session (run \`${RELAY_WEBHOOK_COMMAND}\` first; an older probe without that command: \`agent-relay-probe socket-request --socket <your relay socket> --method POST --path /webhooks --body '{}'\`). Every later post is forwarded there, and Agent Relay injects it into this session, waking it even when idle. Posts already waiting are forwarded too.`,
       inputSchema: {
         url: z
           .string()

@@ -6,6 +6,7 @@ import { hmacSha256Hex, sha256Hex } from './crypto.js';
 import { handleEventsShimRequest } from './http.js';
 import { EVENTS_SHIM_LIMITS } from './limits.js';
 import { MemoryEventsShimStore } from './memory-store.js';
+import { recoverStalledWakes } from './delivery.js';
 import type { ShimUrls } from './types.js';
 
 const BASE = 'https://shim.test/api/v1/events-shim';
@@ -145,6 +146,7 @@ function createHarness(
 
   return {
     store,
+    deps: options_.deps,
     app,
     relayCalls,
     create,
@@ -741,5 +743,48 @@ describe('events shim', () => {
     expect(verified.status).toBe(202);
     expect(verified.body.duplicate).toBeUndefined();
     expect(verified.body.event_id).not.toBe(open.body.event_id);
+  });
+
+  it('a recovery sweep delivers a stalled post once the relay is back, and skips what it should', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const agent = await h.connect(shim.mcp_url);
+    await agent.call('link_relay_wake', RELAY_HOOK);
+    h.setRelayStatus(503);
+    await h.post(shim.webhook_url, { stalled: 1 });
+    const states = async () => (await h.store.listRecent(shimId, 10)).map((e) => e.delivery);
+    const shimId = (
+      await h.store.listStalledWakes({ staleBefore: '9999', receivedBefore: '9999', limit: 1 })
+    )[0]!.id;
+    expect(await states()).toEqual(['pending']);
+
+    h.setRelayStatus(200);
+    // Too young: its own delivery pass may still be running.
+    expect(await recoverStalledWakes(h.deps)).toEqual({ shims: 0, forwarded: 0, stalled: 0 });
+    h.advance(EVENTS_SHIM_LIMITS.sweepSettleMs + 1);
+    expect(await recoverStalledWakes(h.deps)).toEqual({ shims: 1, forwarded: 1, stalled: 0 });
+    expect(await states()).toEqual(['woken']);
+    expect(await recoverStalledWakes(h.deps)).toEqual({ shims: 0, forwarded: 0, stalled: 0 });
+
+    // A refused relay (permanent) breaks the link; later sweeps leave it alone.
+    h.setRelayStatus(503);
+    await h.post(shim.webhook_url, { stalled: 2 });
+    h.advance(EVENTS_SHIM_LIMITS.sweepSettleMs + 1);
+    h.setRelayStatus(410);
+    expect(await recoverStalledWakes(h.deps)).toMatchObject({ shims: 1, forwarded: 0, stalled: 1 });
+    expect((await h.feed(shim.manage_token)).body.agent.wake).toBe('broken');
+    expect(await recoverStalledWakes(h.deps)).toEqual({ shims: 0, forwarded: 0, stalled: 0 });
+  });
+
+  it('a recovery sweep skips expired inboxes', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const agent = await h.connect(shim.mcp_url);
+    await agent.call('link_relay_wake', RELAY_HOOK);
+    h.setRelayStatus(503);
+    await h.post(shim.webhook_url, { stalled: 1 });
+    h.setRelayStatus(200);
+    h.advance(EVENTS_SHIM_LIMITS.idleExpiryMs + 1);
+    expect(await recoverStalledWakes(h.deps)).toEqual({ shims: 0, forwarded: 0, stalled: 0 });
   });
 });

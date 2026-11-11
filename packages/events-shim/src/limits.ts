@@ -28,6 +28,10 @@ export const EVENTS_SHIM_LIMITS = Object.freeze({
   maxIdempotencyKeyLength: 200,
   /** How long a wake claim (`sending`) lasts before another delivery may take the post. */
   sendLeaseMs: 2 * 60 * 1000,
+  /** A post younger than this is left to its own delivery pass, not the recovery sweep. */
+  sweepSettleMs: 30_000,
+  /** Most inboxes one recovery sweep re-drains. */
+  sweepShimLimit: 25,
   /** How long an idempotency key keeps a retried post from arriving twice. */
   dedupeWindowMs: 24 * 60 * 60 * 1000,
   /** Accepted clock skew for timestamped signatures (Stripe, Linear). */

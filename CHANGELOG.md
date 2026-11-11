@@ -5,14 +5,22 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `@agent-relay/events-shim`: `recoverStalledWakes` re-drains inboxes whose posts a temporary relay failure left pending, so a stalled post still wakes an idle agent without waiting for the next post. Hosts run it on a schedule and implement the new `EventsShimStore.listStalledWakes`.
+
+### Changed
+
+- `@agent-relay/events-shim`: `watch_webhooks` says which URL to give senders and lists the older-probe `socket-request` fallback as its own step, so agents on Agent Relay builds without `agent-relay-probe webhook` link without guessing.
 
 ## [18.2.0] - 2026-11-11
 
 ### Added
 
 - `agent-relay-probe connect extend --minutes <N>` keeps a hosted Connect room open longer (up to 7 days per call) and prints the new expiry. Joined hosts and guests stay connected past the original expiry: a core confirms a room's expiry with Cloud before closing it.
-- `@agent-relay/events-shim`: one MCP URL that turns webhook posts into Agent Relay messages. Each post wakes the agent's session even when idle (linked through its own relay webhook), or waits for `wait_for_webhook` / `get_webhook_events` when the agent runs without Agent Relay. Open, GitHub, Stripe, Linear and bearer-verified URLs; once-per-`Idempotency-Key` delivery; 60 posts/hour, 500/day and 64 KB bodies per webhook. Hosts supply storage and mount one `Request → Response` handler. A `text/plain` post to an authenticated URL is a nudge: the agent sees exactly that text, so an MCP vendor can wake agents with a pointer to its own data.
+- `@agent-relay/events-shim`: one MCP URL that turns webhook posts into Agent Relay messages. Each post wakes the agent's session even when idle (linked through its own relay webhook), or waits for `wait_for_webhook` / `get_webhook_events` when the agent runs without Agent Relay. Open, GitHub, Stripe, Linear and bearer-verified URLs; once-per-`Idempotency-Key` delivery; 60 posts/hour, 500/day and 64 KB bodies per webhook. Hosts supply storage and mount one `Request → Response` handler. A `text/plain` post to an authenticated URL is a nudge: the agent sees that text as the message (trimmed, cut at 6,000 characters with a pointer to the rest), so an MCP vendor can wake agents with a pointer to its own data. On GitHub, Stripe and Linear URLs a body that looks like a provider event stays wrapped as data.
 - `agent-relay-probe webhook --socket <socket>` creates the calling session's own inbound webhook (`--revoke` deletes it). Codex asks before running it, since its secret lets the holder inject into the session.
 
 ### Fixed

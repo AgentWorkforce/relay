@@ -156,6 +156,22 @@ export class MemoryEventsShimStore implements EventsShimStore {
     return structuredClone(this.row(shimId).events.slice(-limit).reverse());
   }
 
+  async listStalledWakes(input: { staleBefore: string; receivedBefore: string; limit: number }) {
+    const stalled: { oldest: string; shim: ShimRecord }[] = [];
+    for (const row of this.rows.values()) {
+      if (!row.shim.wake || row.shim.wake.brokenAt) continue;
+      const waiting = row.events
+        .filter((event) => claimable(event, input.staleBefore) && event.receivedAt < input.receivedBefore)
+        .map((event) => event.receivedAt)
+        .sort();
+      if (waiting.length > 0) stalled.push({ oldest: waiting[0]!, shim: this.copy(row) });
+    }
+    return stalled
+      .sort((a, b) => (a.oldest < b.oldest ? -1 : a.oldest > b.oldest ? 1 : 0))
+      .slice(0, input.limit)
+      .map((entry) => entry.shim);
+  }
+
   async countPending(shimId: string, staleBefore: string) {
     return this.row(shimId).events.filter((event) => claimable(event, staleBefore)).length;
   }

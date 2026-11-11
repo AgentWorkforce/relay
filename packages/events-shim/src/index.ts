@@ -66,10 +66,12 @@ export {
 export {
   deliverInBackground,
   deliverPending,
+  recoverStalledWakes,
   WAKE_RECOVERY_DELAYS_MS,
   WAKE_RETRY_DELAYS_MS,
   type DeliveryDeps,
   type DeliveryPass,
+  type WakeSweep,
 } from './delivery.js';
 export { handleEventsShimRequest, type EventsShimHttpOptions } from './http.js';
 export { MemoryEventsShimStore } from './memory-store.js';
