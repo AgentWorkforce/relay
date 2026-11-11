@@ -136,6 +136,8 @@ describe('events shim', () => {
     // A link check, then the post that was already waiting.
     expect(h.relayCalls).toHaveLength(2);
     expect(h.relayCalls[0]!.authorization).toBe(`Bearer ${RELAY_HOOK.secret}`);
+    expect(h.relayCalls[0]!.body.text).toContain('link check');
+    expect(h.relayCalls[0]!.body.text).not.toContain('Webhook post #');
     expect(h.relayCalls[1]!.body.text).toContain('"waiting": true');
 
     const posted = await h.post(shim.webhook_url, { action: 'opened' }, { 'x-event-type': 'deploy.finished' });

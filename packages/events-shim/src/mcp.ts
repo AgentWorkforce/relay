@@ -148,6 +148,7 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
         url: target.url,
         secret: target.secret,
         fetchImpl: ctx.deps.fetchImpl,
+        text: 'Agent Relay webhook link check: posts to your webhooks MCP inbox will now arrive in this session and wake it. No action needed.',
         event: {
           id: 'link-check',
           shimId: ctx.shim.id,

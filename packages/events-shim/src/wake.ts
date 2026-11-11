@@ -75,6 +75,8 @@ export async function forwardWake(input: {
   url: string;
   secret: string;
   event: ShimEvent;
+  /** Replaces the default `wakeText(event)`, e.g. for the link check. */
+  text?: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
 }): Promise<WakeResult> {
@@ -88,7 +90,7 @@ export async function forwardWake(input: {
         'content-type': 'application/json',
       },
       body: JSON.stringify({
-        text: wakeText(input.event),
+        text: input.text ?? wakeText(input.event),
         source: 'webhook',
         author: 'webhook',
         payload: {
