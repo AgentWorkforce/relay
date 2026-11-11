@@ -11,7 +11,11 @@ import {
  */
 export const RELAYFILE_DAEMON_STALLED = 'DAEMON_STALLED';
 
-/** True when the client gave up waiting on a daemon response (not a refused/missing socket). */
+/**
+ * True when the client gave up waiting on a daemon response (not a refused/missing socket).
+ * @param err - The error to check.
+ * @returns Whether the error is a control-plane request timeout.
+ */
 export function isRelayfileControlPlaneTimeout(err: unknown): boolean {
   return (
     err instanceof RelayfileControlPlaneError &&
@@ -28,6 +32,11 @@ export function isRelayfileControlPlaneTimeout(err: unknown): boolean {
  */
 export type StopDaemon = (client: RelayfileControlPlaneClient) => Promise<void>;
 
+/**
+ * Default {@link StopDaemon}: delegates to the client's own stale-daemon stop.
+ * @param client - Client bound to the hung daemon's socket.
+ * @returns Resolves once the daemon has exited and released its socket.
+ */
 export const stopDaemonViaClient: StopDaemon = async (client) => {
   const stop = (client as unknown as { stopStaleDaemon?: () => Promise<void> }).stopStaleDaemon;
   if (typeof stop !== 'function') {
@@ -43,6 +52,11 @@ export const stopDaemonViaClient: StopDaemon = async (client) => {
  */
 export type CanStartReplacement = (client: RelayfileControlPlaneClient) => Promise<boolean>;
 
+/**
+ * Default {@link CanStartReplacement}: runs the configured binary's `--version`.
+ * @param client - Client whose configured binary would start the replacement.
+ * @returns Whether the binary ran and reported a version.
+ */
 export const canStartReplacementViaClient: CanStartReplacement = async (client) => {
   // `installedBinaryVersion` runs `<binary> --version` with a bounded timeout;
   // it is private in @relayfile/client, like `stopStaleDaemon`. Without it we
@@ -69,10 +83,15 @@ class RecoveryFailure extends Error {
   }
 }
 
+/** Configuration for {@link RecoveringControlPlane}. */
 export interface RecoveringControlPlaneOptions {
+  /** Options for every client created, including replacements. */
   clientOptions: RelayfileClientOptions;
+  /** Client factory; defaults to `new RelayfileControlPlaneClient`. */
   createClient?: (options: RelayfileClientOptions) => RelayfileControlPlaneClient;
+  /** Stops a hung daemon; defaults to {@link stopDaemonViaClient}. */
   stopDaemon?: StopDaemon;
+  /** Preflight before stopping; defaults to {@link canStartReplacementViaClient}. */
   canStartReplacement?: CanStartReplacement;
   /** Diagnostics sink for the recovery notice; defaults to stderr. */
   warn?: (message: string) => void;
@@ -94,6 +113,9 @@ export class RecoveringControlPlane {
   readonly #autoStart: boolean;
   #recovery: Promise<void> | undefined;
 
+  /**
+   * @param options - Client options and injectable recovery steps.
+   */
   constructor(options: RecoveringControlPlaneOptions) {
     this.#options = options;
     this.#client = this.#create();
