@@ -102,12 +102,31 @@ export const canStartReplacementViaClient: CanStartReplacement = async (client) 
  *   daemon is ready;
  * - a write creates its marker, THEN looks for live restart claims; if any
  *   exist, it withdraws its marker, waits for them to clear, and tries again.
+ * - a restarter that stops the daemon writes a timestamped stop record
+ *   BEFORE giving up its claim; a would-be restarter that finds a stop record
+ *   newer than its own stalled request knows that daemon is already gone, and
+ *   uses the replacement instead of stopping it.
  *
- * So two processes can never both restart the daemon, no restart can stop a
+ * So two processes can never both restart the daemon, a restart never stops
+ * the replacement another process just started, no restart can stop a
  * daemon while a write is in flight on it, and no write is sent while a
  * restart is in progress — a bind can never be committed with its response
  * lost to a restart.
  */
+/** Outcome of {@link WriteGuard.acquireRestart}. */
+export type RestartClaim =
+  | {
+      kind: 'acquired';
+      /** Record that the daemon was stopped; call right after the stop, before {@link release}. */
+      markStopped: () => void;
+      /** Give up the claim; call when the replacement is ready or the restart was abandoned. */
+      release: () => void;
+    }
+  | { kind: 'held' }
+  | { kind: 'restarted' };
+
+const UNCOORDINATED: RestartClaim = { kind: 'acquired', markStopped: () => {}, release: () => {} };
+
 export interface WriteGuard {
   /**
    * Record a write as in flight, first waiting out any restart in progress.
@@ -122,11 +141,14 @@ export interface WriteGuard {
   activeWrites(): string[];
   /**
    * Claim the exclusive right to restart the daemon. If the directory cannot
-   * be used at all, the restart proceeds uncoordinated (a no-op release),
-   * like writes do.
-   * @returns A release function, or `undefined` when another live process holds the restart.
+   * be used at all, the restart proceeds uncoordinated, like writes do.
+   * @param since - When the stalled request was sent. A daemon stop recorded
+   *   at or after this time means that request's daemon is already gone.
+   * @returns `acquired` (this process restarts), `held` (another process is
+   *   restarting now; wait for it), or `restarted` (another process already
+   *   replaced the daemon since `since`; use the replacement, stop nothing).
    */
-  acquireRestart(): Promise<(() => void) | undefined>;
+  acquireRestart(since: number): Promise<RestartClaim>;
   /**
    * Wait until no live process holds a restart claim.
    * @param timeoutMs - Maximum time to wait.
@@ -147,8 +169,16 @@ export const RESTART_WAIT_MS = 30_000;
 const RESTART_POLL_MS = 100;
 /** Prefix of restart claim files; the leading dot keeps them out of the write markers. */
 const RESTART_CLAIM_PREFIX = '.restart-';
+/**
+ * Prefix of daemon-stop records, `.stopped-<ms>-<pid>-<uuid>`. Written by a
+ * restarter right after its stop and BEFORE it removes its claim, so whoever
+ * sees the claim gone also sees the record.
+ */
+const STOPPED_PREFIX = '.stopped-';
 /** Attempts to resolve a simultaneous claim (both claimants saw each other) by random backoff. */
 const RESTART_CLAIM_ATTEMPTS = 5;
+/** Times a recoverer waits out another process's restart before giving up. */
+const RESTART_CLAIM_ROUNDS = 3;
 
 /**
  * The coordination directory for a daemon socket: `<socket>.writes/`, beside
@@ -202,6 +232,27 @@ export function fileWriteGuard(dir: string, restartWaitMs: number = RESTART_WAIT
 
   const liveClaims = () => liveFiles(RESTART_CLAIM_PREFIX, RESTART_CLAIM_MAX_AGE_MS);
 
+  /** Whether any process stopped the daemon at or after `since` (expiring old records). */
+  const stoppedSince = (since: number): boolean => {
+    let names: string[];
+    try {
+      names = readdirSync(dir);
+    } catch {
+      return false;
+    }
+    let stopped = false;
+    for (const name of names) {
+      if (!name.startsWith(STOPPED_PREFIX)) continue;
+      const at = Number.parseInt(name.slice(STOPPED_PREFIX.length).split('-')[0] ?? '', 10);
+      if (!Number.isSafeInteger(at) || Date.now() - at > RESTART_CLAIM_MAX_AGE_MS) {
+        rmSync(join(dir, name), { force: true });
+      } else if (at >= since) {
+        stopped = true;
+      }
+    }
+    return stopped;
+  };
+
   const waitForRestart = async (timeoutMs: number): Promise<boolean> => {
     const deadline = Date.now() + timeoutMs;
     while (liveClaims().length > 0) {
@@ -245,11 +296,11 @@ export function fileWriteGuard(dir: string, restartWaitMs: number = RESTART_WAIT
         `pid ${pid} ${readLabel(join(dir, name))}`.trim()
       );
     },
-    async acquireRestart() {
+    async acquireRestart(since) {
       try {
         mkdirSync(dir, { recursive: true, mode: 0o700 });
       } catch {
-        return () => {};
+        return UNCOORDINATED;
       }
       for (let attempt = 0; attempt < RESTART_CLAIM_ATTEMPTS; attempt += 1) {
         const name = `${RESTART_CLAIM_PREFIX}${process.pid}-${randomUUID()}`;
@@ -257,24 +308,48 @@ export function fileWriteGuard(dir: string, restartWaitMs: number = RESTART_WAIT
         try {
           writeFileSync(claim, '', { flag: 'wx', mode: 0o600 });
         } catch {
-          return () => {};
+          return UNCOORDINATED;
         }
         // Claim first, THEN look: of two simultaneous claimants, at least one
         // sees the other, so both can never hold the restart.
         const others = liveClaims().filter((c) => c.name !== name);
         if (others.length === 0) {
-          return () => rmSync(claim, { force: true });
+          // Sole claimant — but if another process already stopped the daemon
+          // this request hung on (its stop record is written before its claim
+          // is removed), the current daemon is its healthy replacement: do not
+          // stop it.
+          if (stoppedSince(since)) {
+            rmSync(claim, { force: true });
+            return { kind: 'restarted' };
+          }
+          return {
+            kind: 'acquired',
+            markStopped: () => {
+              try {
+                writeFileSync(
+                  join(dir, `${STOPPED_PREFIX}${Date.now()}-${process.pid}-${randomUUID()}`),
+                  '',
+                  { flag: 'wx', mode: 0o600 }
+                );
+              } catch {
+                // Best-effort, like every other record here.
+              }
+            },
+            release: () => rmSync(claim, { force: true }),
+          };
         }
         rmSync(claim, { force: true });
         // A genuine holder keeps its claim for the whole restart; a
         // simultaneous claimant withdraws at once. Back off with jitter and
         // look again, so a collision resolves while a real restart is waited on.
         await sleep(20 + Math.floor(Math.random() * 80));
+        // If the holder finished during the backoff, the next round finds no
+        // other claim and its stop record, and reports `restarted`.
         // Someone still claims it: a restart in progress (or the winner of
         // the collision). Let the caller wait for it.
-        if (liveClaims().length > 0) return undefined;
+        if (liveClaims().length > 0) return { kind: 'held' };
       }
-      return undefined;
+      return { kind: 'held' };
     },
     waitForRestart,
   };
@@ -386,11 +461,14 @@ export class RecoveringControlPlane {
     // daemon *this* client stalled on, never a replacement another caller
     // already started.
     const attempted = this.#client;
+    // When the request was sent: a daemon stop recorded after this means
+    // the daemon it hung on is already gone.
+    const sentAt = Date.now();
     try {
       return await op(attempted);
     } catch (err) {
       if (isRelayfileControlPlaneTimeout(err)) {
-        return this.#recoverAndRetry(label, op, attempted, err as RelayfileControlPlaneError);
+        return this.#recoverAndRetry(label, op, attempted, sentAt, err as RelayfileControlPlaneError);
       }
       if (this.#interruptedByRecovery(attempted, err)) {
         // This read was still in flight on the daemon another caller's
@@ -426,6 +504,7 @@ export class RecoveringControlPlane {
     label: string,
     op: (client: RelayfileControlPlaneClient) => Promise<T>,
     attempted: RelayfileControlPlaneClient,
+    sentAt: number,
     first: RelayfileControlPlaneError
   ): Promise<T> {
     if (!this.#autoStart) {
@@ -436,7 +515,7 @@ export class RecoveringControlPlane {
       );
     }
     try {
-      await this.#recover(attempted, label);
+      await this.#recover(attempted, label, sentAt);
     } catch (recoveryErr) {
       throw stalledError(label, first, recoveryRemedy(recoveryErr));
     }
@@ -484,7 +563,7 @@ export class RecoveringControlPlane {
    * Promise.all) share one stop + restart; a caller whose stalled client was
    * already replaced just retries on the replacement instead of stopping it.
    */
-  #recover(stalled: RelayfileControlPlaneClient, label: string): Promise<void> {
+  #recover(stalled: RelayfileControlPlaneClient, label: string, sentAt: number): Promise<void> {
     if (this.#client !== stalled) return Promise.resolve();
     if (!this.#recovery) {
       this.#recoveringFrom = stalled;
@@ -497,23 +576,32 @@ export class RecoveringControlPlane {
             'the relayfile binary (RELAYFILE_BIN or `relayfile` on PATH) could not be run'
           );
         }
-        // 2. Take the cross-process restart lock. New writes in any relay
-        // process wait while it is held, so none can start between the
+        // 2. Claim the restart across processes. New writes in any relay
+        // process wait while the claim is held, so none can start between the
         // write check below and the replacement being ready.
-        const release = await this.#writeGuard.acquireRestart();
-        if (!release) {
-          // Another process is already replacing this daemon: wait for it and
-          // use its replacement rather than stopping that one too.
+        let claim = await this.#writeGuard.acquireRestart(sentAt);
+        for (let round = 1; claim.kind === 'held' && round < RESTART_CLAIM_ROUNDS; round += 1) {
+          // Another process is replacing the daemon now: wait for it, then
+          // ask again — its stop record tells us whether it actually replaced
+          // the daemon this request hung on, or gave up and left it to us.
           if (!(await this.#writeGuard.waitForRestart(this.#restartWaitMs))) {
             throw new RecoveryFailure('busy', 'another relay command is restarting the daemon');
           }
+          claim = await this.#writeGuard.acquireRestart(sentAt);
+        }
+        if (claim.kind === 'held') {
+          throw new RecoveryFailure('busy', 'another relay command is restarting the daemon');
+        }
+        if (claim.kind === 'restarted') {
+          // The daemon this request hung on was already replaced by another
+          // process: use the replacement and stop nothing.
           await this.#install(this.#create());
           return;
         }
         try {
           // 3. Never stop a daemon while any relay process has a write in
-          // flight on it. Checked after taking the lock: a write that began
-          // first is seen here; one that begins later sees the lock and waits.
+          // flight on it. Checked after claiming: a write that began first is
+          // seen here; one that begins later sees the claim and waits.
           const writes = this.#writeGuard.activeWrites();
           if (writes.length > 0) {
             throw new RecoveryFailure(
@@ -521,16 +609,17 @@ export class RecoveringControlPlane {
               `another relay command has a write in flight on it (${writes.join(', ')})`
             );
           }
-          // 4. Stop the hung daemon.
+          // 4. Stop the hung daemon, and record it before giving up the claim.
           try {
             await (this.#options.stopDaemon ?? stopDaemonViaClient)(stalled);
           } catch (err) {
             throw new RecoveryFailure('stop', describe(err));
           }
-          // 5. Start the replacement and prove it is up, still under the lock.
+          claim.markStopped();
+          // 5. Start the replacement and prove it is up, still under the claim.
           await this.#install(this.#create());
         } finally {
-          release();
+          claim.release();
         }
         (this.#options.warn ?? defaultWarn)(
           `relayfile control-plane did not answer ${label}; restarted the daemon and retrying.`

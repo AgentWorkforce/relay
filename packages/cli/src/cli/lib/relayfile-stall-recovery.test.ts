@@ -495,8 +495,8 @@ describe('RecoveringControlPlane', () => {
     const dir = mkdtempSync(join(tmpdir(), 'rf-writes-'));
     try {
       const restarter = fileWriteGuard(dir);
-      const release = await restarter.acquireRestart();
-      expect(release).toBeTypeOf('function');
+      const claim = await restarter.acquireRestart(Date.now());
+      expect(claim.kind).toBe('acquired');
 
       // Another relay process begins a bind after the lock was taken.
       let begun = false;
@@ -511,7 +511,7 @@ describe('RecoveringControlPlane', () => {
       // Its marker is withdrawn while it waits, so it never blocks the restart.
       expect(restarter.activeWrites()).toEqual([]);
 
-      release!();
+      if (claim.kind === 'acquired') claim.release();
       const end = await writer;
       expect(begun).toBe(true);
       expect(restarter.activeWrites()).toHaveLength(1);
@@ -585,7 +585,13 @@ describe('RecoveringControlPlane', () => {
         return 'ready';
       });
       await new Promise((resolve) => setTimeout(resolve, 300));
-      rmSync(lock, { force: true }); // the other process finished its restart
+      // The other process finishes its restart: it records the stop, then
+      // gives up its claim (in that order, as the real guard does).
+      writeFileSync(
+        join(dir, `.stopped-${Date.now()}-${other.pid}-00000000-0000-4000-8000-000000000001`),
+        ''
+      );
+      rmSync(lock, { force: true });
 
       await expect(read).resolves.toBe('ready');
       expect(stopDaemon).not.toHaveBeenCalled();
@@ -636,10 +642,10 @@ describe('RecoveringControlPlane', () => {
       const dead = spawnSync(process.execPath, ['-e', '0']).pid;
       const abandoned = join(dir, `.restart-${dead}-00000000-0000-4000-8000-000000000000`);
       writeFileSync(abandoned, '');
-      const release = await fileWriteGuard(dir).acquireRestart();
-      expect(release).toBeTypeOf('function');
+      const claim = await fileWriteGuard(dir).acquireRestart(Date.now());
+      expect(claim.kind).toBe('acquired');
       expect(existsSync(abandoned)).toBe(false);
-      release!();
+      if (claim.kind === 'acquired') claim.release();
       expect(readdirSync(dir)).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -665,14 +671,14 @@ describe('RecoveringControlPlane', () => {
         'while (Date.now() < Number(startAt)) {}',
         'let held = 0;',
         'for (let round = 0; round < 20 && held < 2; round += 1) {',
-        '  const release = await guard.acquireRestart();',
-        '  if (!release) { await guard.waitForRestart(10000); continue; }',
+        '  const claim = await guard.acquireRestart(0);',
+        "  if (claim.kind !== 'acquired') { await guard.waitForRestart(10000); continue; }",
         '  held += 1;',
         '  const t0 = performance.timeOrigin + performance.now();',
         '  await sleep(30);',
         '  const t1 = performance.timeOrigin + performance.now();',
         '  appendFileSync(logPath, `${process.pid} ${t0} ${t1}\\n`);',
-        '  release();',
+        '  claim.release();',
         '}',
       ].join('\n'),
       'utf8'
@@ -708,6 +714,169 @@ describe('RecoveringControlPlane', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 60_000);
+
+  it('does not restart a replacement when the observed restart finishes during backoff', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rf-writes-'));
+    try {
+      const sentAt = Date.now();
+      // Process A holds the restart of the daemon B's request hung on.
+      const a = await fileWriteGuard(dir).acquireRestart(sentAt);
+      expect(a.kind).toBe('acquired');
+      // B sees A's claim, withdraws, and backs off...
+      const b = fileWriteGuard(dir).acquireRestart(sentAt);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      // ...while A stops the old daemon and finishes.
+      if (a.kind !== 'acquired') throw new Error('unreachable');
+      a.markStopped();
+      a.release();
+      // B must use A's replacement, not claim the restart and stop it.
+      await expect(b).resolves.toEqual({ kind: 'restarted' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not restart a replacement made after the stalled request was sent', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rf-writes-'));
+    try {
+      const sentAt = Date.now();
+      const a = await fileWriteGuard(dir).acquireRestart(sentAt);
+      if (a.kind !== 'acquired') throw new Error('expected to acquire');
+      a.markStopped();
+      a.release();
+      // B only looks after A is completely done: no claim is left to see.
+      await expect(fileWriteGuard(dir).acquireRestart(sentAt)).resolves.toEqual({ kind: 'restarted' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('still restarts a replacement that itself hung after an earlier restart', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rf-writes-'));
+    try {
+      const a = await fileWriteGuard(dir).acquireRestart(Date.now());
+      if (a.kind !== 'acquired') throw new Error('expected to acquire');
+      a.markStopped();
+      a.release();
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      // B's request went to the replacement (sent after the stop) and hung.
+      const b = await fileWriteGuard(dir).acquireRestart(Date.now());
+      expect(b.kind).toBe('acquired');
+      if (b.kind === 'acquired') b.release();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('retries on another process replacement without stopping it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rf-writes-'));
+    try {
+      const stalled = { id: 'stalled' };
+      const fresh = { id: 'fresh' };
+      const stopDaemon = vi.fn();
+      const cp = new RecoveringControlPlane({
+        clientOptions: { autoStart: true },
+        createClient: fakeClients(stalled, fresh),
+        stopDaemon,
+        writeGuard: fileWriteGuard(dir),
+        warn: () => {},
+      });
+      // Process A is mid-restart when B's read times out.
+      const other = await fileWriteGuard(dir).acquireRestart(0);
+      if (other.kind !== 'acquired') throw new Error('expected to acquire');
+      const read = cp.run('provider-status', async (client) => {
+        if (client === (stalled as unknown)) throw timeoutError();
+        return 'ready';
+      });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      other.markStopped();
+      other.release();
+
+      await expect(read).resolves.toBe('ready');
+      expect(stopDaemon).not.toHaveBeenCalled();
+      expect(cp.client).toBe(fresh);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('takes over when the other process gave up without stopping the daemon', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rf-writes-'));
+    try {
+      const stalled = { id: 'stalled' };
+      const fresh = { id: 'fresh' };
+      const stopDaemon = vi.fn(async () => {});
+      const cp = new RecoveringControlPlane({
+        clientOptions: { autoStart: true },
+        createClient: fakeClients(stalled, fresh),
+        stopDaemon,
+        writeGuard: fileWriteGuard(dir),
+        warn: () => {},
+      });
+      const other = await fileWriteGuard(dir).acquireRestart(0);
+      if (other.kind !== 'acquired') throw new Error('expected to acquire');
+      const read = cp.run('provider-status', async (client) => {
+        if (client === (stalled as unknown)) throw timeoutError();
+        return 'ready';
+      });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      other.release(); // abandoned (e.g. preflight failed): no stop record
+
+      await expect(read).resolves.toBe('ready');
+      expect(stopDaemon).toHaveBeenCalledTimes(1);
+      expect(stopDaemon).toHaveBeenCalledWith(stalled);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('lets a second process use the first process restart instead of stopping its replacement', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rf-writes-'));
+    try {
+      // Two agent-relay processes whose reads hung on the same daemon.
+      const stalledA = { id: 'stalled-a' };
+      const stalledB = { id: 'stalled-b' };
+      const stoppingA = deferred();
+      const stopA = vi.fn(() => stoppingA.promise);
+      const stopB = vi.fn(async () => {});
+      const a = new RecoveringControlPlane({
+        clientOptions: { autoStart: true },
+        createClient: fakeClients(stalledA, { id: 'fresh-a' }),
+        stopDaemon: stopA,
+        writeGuard: fileWriteGuard(dir),
+        warn: () => {},
+      });
+      const b = new RecoveringControlPlane({
+        clientOptions: { autoStart: true },
+        createClient: fakeClients(stalledB, { id: 'fresh-b' }),
+        stopDaemon: stopB,
+        writeGuard: fileWriteGuard(dir),
+        warn: () => {},
+      });
+      const readB = b.run('provider-status', async (client) => {
+        if (client === (stalledB as unknown)) {
+          // B's request is already on the wire when A starts its restart.
+          await vi.waitFor(() => expect(stopA).toHaveBeenCalled());
+          throw timeoutError();
+        }
+        return 'b:ready';
+      });
+      const readA = a.run('provider-status', async (client) => {
+        if (client === (stalledA as unknown)) throw timeoutError();
+        return 'a:ready';
+      });
+      await vi.waitFor(() => expect(stopA).toHaveBeenCalled());
+      await new Promise((resolve) => setTimeout(resolve, 200)); // B waits on A's claim
+      stoppingA.resolve();
+
+      await expect(Promise.all([readA, readB])).resolves.toEqual(['a:ready', 'b:ready']);
+      expect(stopA).toHaveBeenCalledTimes(1);
+      // B must not stop the replacement A just started.
+      expect(stopB).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   it('places write markers beside the daemon socket', () => {
     expect(writeMarkerDir('/run/user/1000/relayfile.sock')).toBe('/run/user/1000/relayfile.sock.writes');
