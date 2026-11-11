@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/events-shim",
-  "version": "18.1.0",
+  "version": "18.2.0",
   "description": "One MCP URL that turns webhook posts into Agent Relay messages that wake an idle agent session",
   "type": "module",
   "main": "dist/index.js",
