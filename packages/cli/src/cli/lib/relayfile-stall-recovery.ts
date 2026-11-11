@@ -89,18 +89,24 @@ export const canStartReplacementViaClient: CanStartReplacement = async (client) 
  * Cross-process coordination between control-plane writes and daemon
  * restarts, shared by every `agent-relay` process using the same socket.
  *
- * Protocol (each side writes its own file BEFORE reading the other's, so at
- * least one always observes the other):
- * - a restart takes the exclusive restart lock, THEN checks for write
- *   markers, and backs off if any exist; it holds the lock until the
- *   replacement daemon is ready;
- * - a write creates its marker, THEN checks the restart lock; if a restart
- *   holds it, the write withdraws its marker, waits for the restart to
- *   finish, and tries again.
+ * Every participant only ever creates and removes its OWN files, each named
+ * `<pid>-<uuid>` so its owner is known from the name alone (no file is ever
+ * read half-written). A file is only removed by someone else once its pid is
+ * dead or it is past its maximum age, so a live owner's file is never
+ * deleted out from under it. The protocol is "create yours, THEN look at the
+ * others", so of any two participants at least one sees the other:
  *
- * So no restart can stop a daemon while a write is in flight on it, and no
- * write is sent while a restart is in progress — a bind can never be
- * committed with its response lost to a restart.
+ * - a restart creates its claim, THEN lists claims: it holds the restart only
+ *   if its claim is the sole live one (otherwise it withdraws and backs off),
+ *   THEN checks for write markers, and keeps its claim until the replacement
+ *   daemon is ready;
+ * - a write creates its marker, THEN looks for live restart claims; if any
+ *   exist, it withdraws its marker, waits for them to clear, and tries again.
+ *
+ * So two processes can never both restart the daemon, no restart can stop a
+ * daemon while a write is in flight on it, and no write is sent while a
+ * restart is in progress — a bind can never be committed with its response
+ * lost to a restart.
  */
 export interface WriteGuard {
   /**
@@ -115,15 +121,16 @@ export interface WriteGuard {
    */
   activeWrites(): string[];
   /**
-   * Take the exclusive restart lock. If the directory cannot be used at all,
-   * the restart proceeds uncoordinated (a no-op release), like writes do.
-   * @returns A release function, or `undefined` when another live process holds it.
+   * Claim the exclusive right to restart the daemon. If the directory cannot
+   * be used at all, the restart proceeds uncoordinated (a no-op release),
+   * like writes do.
+   * @returns A release function, or `undefined` when another live process holds the restart.
    */
-  acquireRestart(): (() => void) | undefined;
+  acquireRestart(): Promise<(() => void) | undefined>;
   /**
-   * Wait until no live process holds the restart lock.
+   * Wait until no live process holds a restart claim.
    * @param timeoutMs - Maximum time to wait.
-   * @returns Whether the lock was released within the timeout.
+   * @returns Whether the claims cleared within the timeout.
    */
   waitForRestart(timeoutMs: number): Promise<boolean>;
 }
@@ -131,14 +138,17 @@ export interface WriteGuard {
 /** A write marker older than this is treated as abandoned (pid reuse, killed process). */
 const WRITE_MARKER_MAX_AGE_MS = 10 * 60_000;
 /**
- * A restart lock older than this is treated as abandoned. A restart is
+ * A restart claim older than this is treated as abandoned. A restart is
  * bounded by the client's stop (<= 10s) and start (default 5s) budgets.
  */
-const RESTART_LOCK_MAX_AGE_MS = 2 * 60_000;
+const RESTART_CLAIM_MAX_AGE_MS = 2 * 60_000;
 /** How long a write or a second recoverer waits for another process's restart. */
 export const RESTART_WAIT_MS = 30_000;
 const RESTART_POLL_MS = 100;
-const RESTART_LOCK_NAME = '.restart.lock';
+/** Prefix of restart claim files; the leading dot keeps them out of the write markers. */
+const RESTART_CLAIM_PREFIX = '.restart-';
+/** Attempts to resolve a simultaneous claim (both claimants saw each other) by random backoff. */
+const RESTART_CLAIM_ATTEMPTS = 5;
 
 /**
  * The coordination directory for a daemon socket: `<socket>.writes/`, beside
@@ -151,36 +161,50 @@ export function writeMarkerDir(socketPath: string): string {
 }
 
 /**
- * File-backed {@link WriteGuard}: one marker file per in-flight write, named
- * with the writer's pid, plus an exclusive-create restart lock. Markers and
- * locks from dead processes, or past their maximum age, are ignored and
- * removed. Recording is best-effort: if the directory cannot be written, the
- * write still proceeds (it cannot be coordinated, but is never blocked).
+ * File-backed {@link WriteGuard} implementing the protocol above. Recording is
+ * best-effort: if the directory cannot be written, writes and restarts still
+ * proceed (uncoordinated, but never blocked).
  * @param dir - Coordination directory, normally {@link writeMarkerDir}.
  * @param restartWaitMs - How long {@link WriteGuard.begin} waits out a restart.
  * @returns The guard.
  */
 export function fileWriteGuard(dir: string, restartWaitMs: number = RESTART_WAIT_MS): WriteGuard {
-  const lockPath = join(dir, RESTART_LOCK_NAME);
-
-  /** The live process holding the restart lock, clearing an abandoned lock. */
-  const restartHolder = (): number | undefined => {
-    let pid: number;
-    let fresh: boolean;
+  /**
+   * Live files with `prefix`, as `{ name, pid }`. Files of dead pids, or past
+   * `maxAgeMs`, are removed: their owner can no longer be using them.
+   */
+  const liveFiles = (prefix: string, maxAgeMs: number): Array<{ name: string; pid: number }> => {
+    let names: string[];
     try {
-      pid = Number.parseInt(readFileSync(lockPath, 'utf8'), 10);
-      fresh = Date.now() - statSync(lockPath).mtimeMs < RESTART_LOCK_MAX_AGE_MS;
+      names = readdirSync(dir);
     } catch {
-      return undefined; // no lock
+      return [];
     }
-    if (Number.isSafeInteger(pid) && pid > 0 && fresh && isProcessAlive(pid)) return pid;
-    rmSync(lockPath, { force: true });
-    return undefined;
+    const live: Array<{ name: string; pid: number }> = [];
+    for (const name of names) {
+      if (prefix ? !name.startsWith(prefix) : name.startsWith('.')) continue;
+      const path = join(dir, name);
+      const pid = Number.parseInt(name.slice(prefix.length).split('-')[0] ?? '', 10);
+      let fresh: boolean;
+      try {
+        fresh = Date.now() - statSync(path).mtimeMs < maxAgeMs;
+      } catch {
+        continue; // removed while scanning
+      }
+      if (Number.isSafeInteger(pid) && pid > 0 && fresh && isProcessAlive(pid)) {
+        live.push({ name, pid });
+      } else {
+        rmSync(path, { force: true });
+      }
+    }
+    return live;
   };
+
+  const liveClaims = () => liveFiles(RESTART_CLAIM_PREFIX, RESTART_CLAIM_MAX_AGE_MS);
 
   const waitForRestart = async (timeoutMs: number): Promise<boolean> => {
     const deadline = Date.now() + timeoutMs;
-    while (restartHolder() !== undefined) {
+    while (liveClaims().length > 0) {
       if (Date.now() >= deadline) return false;
       await sleep(RESTART_POLL_MS);
     }
@@ -197,13 +221,13 @@ export function fileWriteGuard(dir: string, restartWaitMs: number = RESTART_WAIT
       for (;;) {
         const marker = join(dir, `${process.pid}-${randomUUID()}`);
         try {
-          writeFileSync(marker, label, { mode: 0o600 });
+          writeFileSync(marker, label, { flag: 'wx', mode: 0o600 });
         } catch {
           return () => {};
         }
-        // Marker first, THEN the lock: a restart that took the lock before
-        // our marker existed is seen here; one that takes it after sees us.
-        if (restartHolder() === undefined) {
+        // Marker first, THEN the claims: a restart that claimed before our
+        // marker existed is seen here; one that claims after sees our marker.
+        if (liveClaims().length === 0) {
           return () => rmSync(marker, { force: true });
         }
         rmSync(marker, { force: true });
@@ -217,46 +241,38 @@ export function fileWriteGuard(dir: string, restartWaitMs: number = RESTART_WAIT
       }
     },
     activeWrites() {
-      let names: string[];
-      try {
-        names = readdirSync(dir);
-      } catch {
-        return [];
-      }
-      const active: string[] = [];
-      for (const name of names) {
-        if (name.startsWith('.')) continue; // the restart lock
-        const marker = join(dir, name);
-        const pid = Number.parseInt(name.split('-')[0] ?? '', 10);
-        let fresh: boolean;
-        try {
-          fresh = Date.now() - statSync(marker).mtimeMs < WRITE_MARKER_MAX_AGE_MS;
-        } catch {
-          continue; // removed while scanning
-        }
-        if (Number.isSafeInteger(pid) && pid > 0 && fresh && isProcessAlive(pid)) {
-          active.push(`pid ${pid} ${readLabel(marker)}`.trim());
-        } else {
-          rmSync(marker, { force: true });
-        }
-      }
-      return active;
+      return liveFiles('', WRITE_MARKER_MAX_AGE_MS).map(({ name, pid }) =>
+        `pid ${pid} ${readLabel(join(dir, name))}`.trim()
+      );
     },
-    acquireRestart() {
+    async acquireRestart() {
       try {
         mkdirSync(dir, { recursive: true, mode: 0o700 });
       } catch {
         return () => {};
       }
-      // Two tries: the second follows clearing an abandoned lock.
-      for (let attempt = 0; attempt < 2; attempt += 1) {
+      for (let attempt = 0; attempt < RESTART_CLAIM_ATTEMPTS; attempt += 1) {
+        const name = `${RESTART_CLAIM_PREFIX}${process.pid}-${randomUUID()}`;
+        const claim = join(dir, name);
         try {
-          writeFileSync(lockPath, String(process.pid), { flag: 'wx', mode: 0o600 });
-          return () => rmSync(lockPath, { force: true });
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return () => {};
-          if (restartHolder() !== undefined) return undefined;
+          writeFileSync(claim, '', { flag: 'wx', mode: 0o600 });
+        } catch {
+          return () => {};
         }
+        // Claim first, THEN look: of two simultaneous claimants, at least one
+        // sees the other, so both can never hold the restart.
+        const others = liveClaims().filter((c) => c.name !== name);
+        if (others.length === 0) {
+          return () => rmSync(claim, { force: true });
+        }
+        rmSync(claim, { force: true });
+        // A genuine holder keeps its claim for the whole restart; a
+        // simultaneous claimant withdraws at once. Back off with jitter and
+        // look again, so a collision resolves while a real restart is waited on.
+        await sleep(20 + Math.floor(Math.random() * 80));
+        // Someone still claims it: a restart in progress (or the winner of
+        // the collision). Let the caller wait for it.
+        if (liveClaims().length > 0) return undefined;
       }
       return undefined;
     },
@@ -484,7 +500,7 @@ export class RecoveringControlPlane {
         // 2. Take the cross-process restart lock. New writes in any relay
         // process wait while it is held, so none can start between the
         // write check below and the replacement being ready.
-        const release = this.#writeGuard.acquireRestart();
+        const release = await this.#writeGuard.acquireRestart();
         if (!release) {
           // Another process is already replacing this daemon: wait for it and
           // use its replacement rather than stopping that one too.

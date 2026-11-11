@@ -1,8 +1,18 @@
 import { createServer, type RequestListener, type ServerResponse } from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { RelayfileControlPlaneClient, RelayfileControlPlaneError } from '@relayfile/client';
@@ -485,7 +495,7 @@ describe('RecoveringControlPlane', () => {
     const dir = mkdtempSync(join(tmpdir(), 'rf-writes-'));
     try {
       const restarter = fileWriteGuard(dir);
-      const release = restarter.acquireRestart();
+      const release = await restarter.acquireRestart();
       expect(release).toBeTypeOf('function');
 
       // Another relay process begins a bind after the lock was taken.
@@ -557,8 +567,9 @@ describe('RecoveringControlPlane', () => {
     const other = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' });
     try {
       mkdirSync(dir, { recursive: true });
-      const lock = join(dir, '.restart.lock');
-      writeFileSync(lock, String(other.pid));
+      // Another live process's claim on the restart.
+      const lock = join(dir, `.restart-${other.pid}-00000000-0000-4000-8000-000000000000`);
+      writeFileSync(lock, '');
       const stalled = { id: 'stalled' };
       const fresh = { id: 'fresh' };
       const stopDaemon = vi.fn();
@@ -590,7 +601,7 @@ describe('RecoveringControlPlane', () => {
     const other = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' });
     try {
       mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, '.restart.lock'), String(other.pid));
+      writeFileSync(join(dir, `.restart-${other.pid}-00000000-0000-4000-8000-000000000000`), '');
       const stopDaemon = vi.fn();
       const cp = new RecoveringControlPlane({
         clientOptions: { autoStart: true },
@@ -618,20 +629,85 @@ describe('RecoveringControlPlane', () => {
     }
   });
 
-  it('breaks a restart lock abandoned by a dead process', () => {
+  it('ignores and removes a restart claim abandoned by a dead process', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rf-writes-'));
     try {
       mkdirSync(dir, { recursive: true });
       const dead = spawnSync(process.execPath, ['-e', '0']).pid;
-      writeFileSync(join(dir, '.restart.lock'), String(dead));
-      const release = fileWriteGuard(dir).acquireRestart();
+      const abandoned = join(dir, `.restart-${dead}-00000000-0000-4000-8000-000000000000`);
+      writeFileSync(abandoned, '');
+      const release = await fileWriteGuard(dir).acquireRestart();
       expect(release).toBeTypeOf('function');
+      expect(existsSync(abandoned)).toBe(false);
       release!();
-      expect(existsSync(join(dir, '.restart.lock'))).toBe(false);
+      expect(readdirSync(dir)).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('never lets two processes hold the restart at once, even when they claim simultaneously', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rf-race-'));
+    const log = join(dir, 'holders.log');
+    const child = join(dir, 'claimant.mjs');
+    // Each claimant loads the real module, waits for a shared start instant
+    // so the claims genuinely collide, then repeatedly takes the restart,
+    // holds it briefly, and releases it.
+    writeFileSync(
+      child,
+      [
+        "import { appendFileSync } from 'node:fs';",
+        'const [jitiUrl, modulePath, guardDir, startAt, logPath] = process.argv.slice(2);',
+        'const { createJiti } = await import(jitiUrl);',
+        'const { fileWriteGuard } = await createJiti(modulePath).import(modulePath);',
+        'const guard = fileWriteGuard(guardDir);',
+        'const sleep = (ms) => new Promise((r) => setTimeout(r, ms));',
+        'while (Date.now() < Number(startAt)) {}',
+        'let held = 0;',
+        'for (let round = 0; round < 20 && held < 2; round += 1) {',
+        '  const release = await guard.acquireRestart();',
+        '  if (!release) { await guard.waitForRestart(10000); continue; }',
+        '  held += 1;',
+        '  const t0 = performance.timeOrigin + performance.now();',
+        '  await sleep(30);',
+        '  const t1 = performance.timeOrigin + performance.now();',
+        '  appendFileSync(logPath, `${process.pid} ${t0} ${t1}\\n`);',
+        '  release();',
+        '}',
+      ].join('\n'),
+      'utf8'
+    );
+    const modulePath = fileURLToPath(new URL('./relayfile-stall-recovery.ts', import.meta.url));
+    const jitiUrl = import.meta.resolve('jiti');
+    const startAt = Date.now() + 4000;
+    const claimants = Array.from(
+      { length: 6 },
+      () =>
+        new Promise<number>((resolve) => {
+          const proc = spawn(
+            process.execPath,
+            [child, jitiUrl, modulePath, join(dir, 'guard'), String(startAt), log],
+            { stdio: 'inherit' }
+          );
+          proc.on('exit', (code) => resolve(code ?? 1));
+        })
+    );
+    try {
+      expect(await Promise.all(claimants)).toEqual([0, 0, 0, 0, 0, 0]);
+      const holds = readFileSync(log, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => line.split(' ').map(Number) as [number, number, number])
+        .sort((a, b) => a[1] - b[1]);
+      expect(holds.length).toBeGreaterThanOrEqual(6);
+      for (let i = 1; i < holds.length; i += 1) {
+        // Each hold starts only after the previous one ended.
+        expect(holds[i]![1]).toBeGreaterThanOrEqual(holds[i - 1]![2]);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 
   it('places write markers beside the daemon socket', () => {
     expect(writeMarkerDir('/run/user/1000/relayfile.sock')).toBe('/run/user/1000/relayfile.sock.writes');
