@@ -21,6 +21,7 @@ pub struct AutomaticCandidate {
 }
 
 impl AutomaticCandidate {
+    /// Existing providers admit only sessions with an established live route.
     pub fn live(session: DiscoveredSession) -> Option<Self> {
         session.live.then_some(Self {
             session,
@@ -231,6 +232,7 @@ pub trait SessionDirectory: Send + Sync + 'static {
             .collect()
     }
 
+    /// Internal admission evidence; public discovery is not caller authority.
     fn automatic_candidates(&self) -> Vec<AutomaticCandidate> {
         self.auto_activation_sessions()
             .into_iter()

@@ -38,6 +38,9 @@ pub(super) struct State {
     /// unregistered chat gets (context, not a reason to keep a turn open).
     /// Bounded by [`GUIDED_LIMIT`].
     registration_guidance: HashSet<String>,
+    /// Registered address last announced to each thread; manual guidance
+    /// cannot spend this marker, and a new registration can be announced.
+    registered_identity: HashMap<String, String>,
     /// Discovery has already been nudged by a verified hook for this thread.
     discovery_requested: HashSet<String>,
     /// By lowercase thread id.
@@ -62,6 +65,31 @@ pub struct StopHookInbox {
 }
 
 impl StopHookInbox {
+    /// Whether this actual registered address still needs its preamble.
+    pub(crate) fn needs_registered_identity(&self, thread: &str, address: &str) -> bool {
+        self.state()
+            .registered_identity
+            .get(&thread.to_lowercase())
+            .map(String::as_str)
+            != Some(address)
+    }
+
+    /// Consume identity context only after the receiving turn is verified.
+    pub(crate) fn take_registered_identity(&self, thread: &str, address: &str) -> bool {
+        let mut state = self.state();
+        let thread = thread.to_lowercase();
+        if state.registered_identity.get(&thread).map(String::as_str) == Some(address) {
+            return false;
+        }
+        if state.registered_identity.len() >= GUIDED_LIMIT {
+            state.registered_identity.clear();
+        }
+        state
+            .registered_identity
+            .insert(thread, address.to_string());
+        true
+    }
+
     /// Whether a verified hook may still request its first discovery pass.
     pub(crate) fn needs_discovery_refresh(&self, thread: &str) -> bool {
         !self

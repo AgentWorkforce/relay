@@ -349,6 +349,21 @@ async fn loaded_stdio_chats_register_once_and_keep_identity_without_an_idle_rout
         .iter()
         .filter(|s| s.target.kind == SessionKind::Codex)
         .all(|s| s.delivery_wait.is_some()));
+    // Listing must stay off the provider/SQLite path, even while that
+    // provider's database is exclusively locked by its own writer.
+    db.execute_batch("begin exclusive").unwrap();
+    tokio::time::timeout(
+        Duration::from_millis(250),
+        crate::relay::local_methods::sessions_list(&core),
+    )
+    .await
+    .expect("cached listing must not wait for the Codex database");
+    db.execute_batch("rollback").unwrap();
+    core.runtime_presence.lock().unwrap().as_mut().unwrap().0 =
+        std::time::Instant::now() - Duration::from_secs(61);
+    let rows = crate::relay::local_methods::sessions_list(&core).await;
+    assert!(rows.sessions.iter().all(|s| s.delivery_wait.is_none()));
+    assert!(core.activate_new_sessions().await.is_empty());
     // Stale proof is denied at the internal registration boundary.
     let c = sessions.automatic_candidates().pop().unwrap();
     db.execute(
@@ -358,6 +373,45 @@ async fn loaded_stdio_chats_register_once_and_keep_identity_without_an_idle_rout
     .unwrap();
     assert!(!sessions.automatic_candidate_current(&c));
     w.table.remove(500);
+    core.activate_new_sessions().await;
     let rows = crate::relay::local_methods::sessions_list(&core).await;
     assert!(rows.sessions.iter().all(|s| s.delivery_wait.is_none()));
+}
+
+#[test]
+fn duplicate_descriptors_do_not_create_a_second_runtime_owner() {
+    let w = world();
+    let _db = seed(&w, &[THREAD]);
+    let mut host = w.table.processes.lock().unwrap()[&500].clone();
+    host.open_files
+        .push(host.open_files.last().unwrap().clone());
+    w.table.insert(500, host);
+    assert_eq!(w.sessions.automatic_candidates().len(), 1);
+}
+
+#[test]
+fn uppercase_catalog_ids_bind_to_the_normalized_runtime_proof() {
+    let w = world();
+    let db = seed(&w, &[THREAD]);
+    db.execute("update threads set id=upper(id)", []).unwrap();
+    let candidate = w.sessions.automatic_candidates().pop().unwrap();
+    assert_eq!(candidate.session.target.id, THREAD);
+    assert!(w.sessions.automatic_candidate_current(&candidate));
+}
+
+#[test]
+fn runtime_presence_filters_fleet_ownership_but_keeps_manual_excluded_chats() {
+    let w = world();
+    let db = seed(&w, &[THREAD]);
+    db.execute("update threads set cwd='/tmp/private'", [])
+        .unwrap();
+    let target = Target::new(SessionKind::Codex, THREAD);
+    assert!(w.sessions.automatic_candidates().is_empty());
+    assert!(w.sessions.present_targets(&[]).contains(&target));
+    w.sessions
+        .fleet_owned
+        .lock()
+        .unwrap()
+        .insert(target.clone());
+    assert!(!w.sessions.present_targets(&[]).contains(&target));
 }

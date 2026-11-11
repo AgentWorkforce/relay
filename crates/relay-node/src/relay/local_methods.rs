@@ -243,19 +243,16 @@ async fn cached_sessions_list(core: &Arc<Core>) -> LocalSessions {
         .1
         .clone();
     let store = core.store.snapshot();
-    let present = if found.iter().any(|s| {
-        !s.live
-            && s.target.kind == crate::relay::store::SessionKind::Codex
-            && store.registration_for(&s.target).is_some()
-    }) {
-        let sessions = core.plugins.sessions.clone();
-        let rows = found.clone();
-        tokio::task::spawn_blocking(move || sessions.present_targets(&rows))
-            .await
-            .unwrap_or_default()
-    } else {
-        Default::default()
-    };
+    // Runtime checks belong to background discovery, not an RPC read. If
+    // discovery stalls, an expired snapshot must not promise a waiting route.
+    let present = core
+        .runtime_presence
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .filter(|(at, _)| at.elapsed() <= std::time::Duration::from_secs(60))
+        .map(|(_, targets)| targets.clone())
+        .unwrap_or_default();
     let status = core.status();
     let machine_prefix = core.machine_prefix.clone();
     let stalls = core.inbox_stalls();

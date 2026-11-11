@@ -14,6 +14,7 @@ pub struct CodexRuntimeProof {
 }
 
 impl CodexRuntimeProof {
+    /// Canonical thread id bound to the held rollout and writer lock.
     pub(crate) fn thread(&self) -> &str {
         &self.thread
     }
@@ -69,6 +70,7 @@ impl CodexRuntimeProof {
         false
     }
 
+    /// Revalidate process incarnation, executable, held lock and rollout.
     pub(crate) fn current(&self, table: &dyn ProcessTable, uid: u32) -> bool {
         if self.process.uid != uid
             || table.process(self.process.pid) != Some(self.process)
@@ -129,7 +131,7 @@ pub(crate) fn codex_runtime_proofs(table: &dyn ProcessTable, uid: u32) -> Vec<Co
         if locks.is_empty() {
             continue;
         }
-        let paths: Vec<_> = before
+        let mut paths: Vec<_> = before
             .iter()
             .filter_map(|f| {
                 let thread = rollout_thread_of_path(&f.path)?;
@@ -138,6 +140,8 @@ pub(crate) fn codex_runtime_proofs(table: &dyn ProcessTable, uid: u32) -> Vec<Co
                     .then(|| f.path.clone())
             })
             .collect();
+        paths.sort();
+        paths.dedup();
         let headers = open_rollout_proofs(&paths);
         let after = table.opened_files(pid);
         if table.process(pid) != Some(process) {

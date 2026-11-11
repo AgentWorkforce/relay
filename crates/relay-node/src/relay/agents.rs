@@ -1523,8 +1523,18 @@ impl Core {
         })
         .await;
         if let Ok((_, _, live, _, _)) = &discovered {
+            *self
+                .runtime_presence
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) =
+                Some((std::time::Instant::now(), live.clone()));
             // Relay Connect credentials follow the same running sessions.
             self.connect.lock().unwrap().observe_live_targets(live);
+        } else {
+            *self
+                .runtime_presence
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
         }
         let (found, all, mut live, archived, cleared) = discovered.unwrap_or_default();
         self.mark_sessions_archived(&archived);

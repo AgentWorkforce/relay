@@ -160,6 +160,7 @@ impl SessionDirectory for LocalSessions {
             .collect()
     }
 
+    /// Combine live routes with internal evidence of loaded user chats.
     fn automatic_candidates(&self) -> Vec<crate::relay::sessions::AutomaticCandidate> {
         use crate::relay::sessions::AutomaticCandidate;
         let mut found: HashMap<Target, AutomaticCandidate> = self
@@ -181,6 +182,7 @@ impl SessionDirectory for LocalSessions {
         found.into_values().collect()
     }
 
+    /// A discovery result must still prove its authority at admission.
     fn automatic_candidate_current(
         &self,
         candidate: &crate::relay::sessions::AutomaticCandidate,
@@ -200,20 +202,27 @@ impl SessionDirectory for LocalSessions {
             })
     }
 
+    /// Fleet ownership excludes lifetime presence; directory admission does not.
     fn present_targets(&self, discovered: &[DiscoveredSession]) -> HashSet<Target> {
         let mut targets: HashSet<_> = discovered
             .iter()
             .filter(|s| s.live)
             .map(|s| s.target.clone())
             .collect();
+        let runtime = self
+            .codex_runtime_sessions()
+            .into_iter()
+            .map(|(s, _)| s)
+            .collect();
         targets.extend(
-            self.codex_runtime_sessions()
+            self.without_fleet_owned(runtime)
                 .into_iter()
-                .map(|(s, _)| s.target),
+                .map(|s| s.target),
         );
         targets
     }
 
+    /// A trusted host ancestry grants only a global discovery nudge.
     fn trusted_codex_discovery_signal(&self, pid: i32) -> bool {
         crate::relay::process::trusted_codex_host(&*self.table, pid, self.config.uid)
     }
@@ -470,6 +479,7 @@ fn fallback_title(kind: SessionKind) -> &'static str {
 }
 
 impl LocalSessions {
+    /// Current root user chats held by a runtime, independent of routing.
     pub(super) fn codex_runtime_sessions(
         &self,
     ) -> Vec<(DiscoveredSession, crate::relay::process::CodexRuntimeProof)> {
@@ -481,7 +491,7 @@ impl LocalSessions {
                         proof.has_native_user_turn()
                     })?;
                 let session = DiscoveredSession {
-                    target: Target::new(SessionKind::Codex, thread.id),
+                    target: Target::new(SessionKind::Codex, proof.thread().to_string()),
                     title: thread.title,
                     directory: thread.directory,
                     updated_at_ms: thread.updated_at_ms,
@@ -494,6 +504,7 @@ impl LocalSessions {
             .collect()
     }
 
+    /// Apply directory and fleet policy before automatic registration.
     fn runtime_admitted(&self, session: &DiscoveredSession) -> bool {
         session
             .directory

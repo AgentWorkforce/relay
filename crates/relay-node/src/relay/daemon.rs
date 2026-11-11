@@ -161,6 +161,14 @@ pub struct Core {
     pub project_names: crate::relay::project::Names,
     /// Completed provider snapshots. Bridge reads never scan providers.
     pub(crate) session_snapshot: crate::relay::local_methods::PresentationSnapshot,
+    /// Presence from completed background discovery; listings never query
+    /// provider databases to derive a delivery-wait explanation.
+    pub(crate) runtime_presence: Mutex<
+        Option<(
+            std::time::Instant,
+            std::collections::HashSet<crate::relay::store::Target>,
+        )>,
+    >,
     /// Native title and mobile-state publications fence older roster snapshots.
     pub(crate) roster_revision: std::sync::atomic::AtomicU64,
     /// Coalesces authenticated startup signals; never selects a chat.
@@ -295,6 +303,7 @@ impl Core {
             plugins,
             project_names,
             session_snapshot: Default::default(),
+            runtime_presence: Default::default(),
             roster_revision: std::sync::atomic::AtomicU64::new(0),
             codex_discovery_refresh: std::sync::atomic::AtomicBool::new(false),
             target_locks: KeyedLocks::default(),

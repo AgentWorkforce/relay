@@ -111,16 +111,16 @@ impl Outbound {
             })
         });
         let refresh = automatic && identity.is_none() && inbox.needs_discovery_refresh(&thread);
-        let guidance = if event == HookEvent::PostToolUse
-            && automatic
-            && inbox.needs_registration_guidance(&thread)
-        {
-            identity.as_ref().and_then(|(name, address)| {
-                let commands = self.codex_socket_commands()?;
-                Some(json!({"hookSpecificOutput":{"hookEventName":"PostToolUse",
+        let guidance = if event == HookEvent::PostToolUse && automatic {
+            identity
+                .as_ref()
+                .filter(|(_, address)| inbox.needs_registered_identity(&thread, address))
+                .and_then(|(name, address)| {
+                    let commands = self.codex_socket_commands()?;
+                    Some(json!({"hookSpecificOutput":{"hookEventName":"PostToolUse",
                     "additionalContext": crate::relay::hosted_mcp::codex_preamble(
                         Some((name.as_str(),address.as_str())), &commands)}}))
-            })
+                })
         } else {
             None
         };
@@ -174,7 +174,11 @@ impl Outbound {
             if event == HookEvent::PostToolUse {
                 let mut answer = inbox.turns().answer(&thread, event);
                 if let Some(guidance) = guidance {
-                    if inbox.take_registration_guidance(&thread) {
+                    let take = match identity.as_ref() {
+                        Some((_, address)) => inbox.take_registered_identity(&thread, address),
+                        None => inbox.take_registration_guidance(&thread),
+                    };
+                    if take {
                         if let Some(text) = answer
                             .pointer("/hookSpecificOutput/additionalContext")
                             .and_then(Value::as_str)
@@ -480,6 +484,68 @@ mod tests {
         assert!(!inbox.needs_registration_guidance(THREAD));
         // Once there is no pending delivery, later hooks take the fast path
         // rather than repeatedly probing affinity and scheduling discovery.
+        assert_eq!(
+            outbound
+                .codex_stop_hook(99, outbound.uid, &fields())
+                .await
+                .unwrap(),
+            json!({})
+        );
+    }
+
+    #[tokio::test]
+    async fn manual_guidance_cannot_spend_later_registered_identity_context() {
+        let (_temp, outbound, inbox) = fixture();
+        outbound
+            .core
+            .store
+            .update(|s| s.auto_activate = Some(true))
+            .unwrap();
+        let first = outbound
+            .codex_stop_hook(42, outbound.uid, &fields())
+            .await
+            .unwrap();
+        assert!(first.to_string().contains(" register --socket "));
+        assert!(!inbox.needs_registration_guidance(THREAD));
+        let registration = serde_json::from_value(json!({
+            "name":"codex-api", "agentID":"agent-1",
+            "target":{"kind":"codex", "id":THREAD}, "title":"API",
+            "baseURL":"https://cast.test", "registeredAt":"2026-11-02T00:00:00Z"
+        }))
+        .unwrap();
+        outbound
+            .core
+            .store
+            .update(|s| {
+                assert!(s.add(registration, Secret::new("fixture-only")));
+            })
+            .unwrap();
+        let address = outbound.core.store.read(|s| {
+            s.registration_for(&Target::new(SessionKind::Codex, THREAD))
+                .unwrap()
+                .current_address(&outbound.core.machine_prefix)
+        });
+        assert!(inbox.needs_registered_identity(THREAD, &address));
+        assert!(outbound
+            .codex_stop_hook(99, outbound.uid, &fields())
+            .await
+            .is_err());
+        assert!(inbox.needs_registered_identity(THREAD, &address));
+        inbox
+            .turns()
+            .offer(THREAD, "late-message", "late delivery fixture")
+            .unwrap();
+        let answer = outbound
+            .codex_stop_hook(42, outbound.uid, &fields())
+            .await
+            .unwrap();
+        let context = answer["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(context.contains("codex-api"));
+        assert!(context.contains("late delivery fixture"));
+        assert!(!context.contains("This Codex chat is not registered"));
+        assert!(!inbox.needs_registered_identity(THREAD, &address));
         assert_eq!(
             outbound
                 .codex_stop_hook(99, outbound.uid, &fields())
