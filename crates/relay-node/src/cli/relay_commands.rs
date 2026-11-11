@@ -211,6 +211,19 @@ pub enum RelayCommands {
         #[arg(long)]
         socket: PathBuf,
     },
+    /// Create the calling session's own inbound webhook (`POST /webhooks`),
+    /// or delete it with `--revoke` (`DELETE /webhooks`). Anything posted to
+    /// the printed URL with the printed secret is delivered to this session
+    /// and wakes it when idle. The secret is shown only when the webhook is
+    /// created; revoke and create again for a new one.
+    Webhook {
+        /// Delete the session's webhook instead.
+        #[arg(long)]
+        revoke: bool,
+        /// The session socket, as the hint names it.
+        #[arg(long)]
+        socket: PathBuf,
+    },
     /// Make any documented session-scoped request to the local relay
     /// socket, for people and debugging. No sandbox or permission rule
     /// allows it; sessions are handed the commands above.
@@ -364,6 +377,11 @@ pub fn session_command(
         }
         RelayCommands::Agents { socket } => (socket.as_path(), SessionCommand::Agents, None),
         RelayCommands::Whoami { socket } => (socket.as_path(), SessionCommand::Whoami, None),
+        RelayCommands::Webhook { socket, revoke } => (
+            socket.as_path(),
+            SessionCommand::Webhook { revoke: *revoke },
+            None,
+        ),
         RelayCommands::Register {
             socket,
             name,
@@ -437,6 +455,7 @@ pub fn run(command: RelayCommands) -> Result<()> {
         RelayCommands::Send { .. }
         | RelayCommands::Agents { .. }
         | RelayCommands::Whoami { .. }
+        | RelayCommands::Webhook { .. }
         | RelayCommands::Register { .. }
         | RelayCommands::SubscribeChannel { .. }
         | RelayCommands::FetchAttachment { .. }

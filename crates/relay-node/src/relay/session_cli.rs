@@ -44,6 +44,12 @@ pub enum SessionCommand {
     Agents,
     /// `whoami`: `GET /whoami`.
     Whoami,
+    /// `webhook [--revoke]`: `POST` (or, with `revoke`, `DELETE`)
+    /// `/webhooks`, creating or deleting the calling session's own inbound
+    /// webhook. Not in [`ALLOWED_SUBCOMMANDS`]: its secret lets anyone who
+    /// holds it inject into the session, so a relayed message must not be
+    /// able to have a sandboxed session mint one without a person approving.
+    Webhook { revoke: bool },
     /// `register`: `POST /register`, identifying only the calling process.
     Register {
         name: Option<String>,
@@ -144,6 +150,7 @@ impl SessionCommand {
             SessionCommand::Send { .. } => "send",
             SessionCommand::Agents => "agents",
             SessionCommand::Whoami => "whoami",
+            SessionCommand::Webhook { .. } => "webhook",
             SessionCommand::Register { .. } => "register",
             SessionCommand::Read { .. } => "read",
             SessionCommand::FetchAttachment { .. } => "fetch-attachment",
@@ -179,6 +186,10 @@ impl SessionCommand {
             SessionCommand::Whoami => Ok(SessionRequest {
                 method: "GET",
                 path: "/whoami".into(),
+            }),
+            SessionCommand::Webhook { revoke } => Ok(SessionRequest {
+                method: if *revoke { "DELETE" } else { "POST" },
+                path: "/webhooks".into(),
             }),
             SessionCommand::Register { .. } => {
                 self.typed_body()?;
@@ -313,6 +324,13 @@ impl SessionCommand {
                 parts
             }
             SessionCommand::Agents | SessionCommand::Whoami => Vec::new(),
+            SessionCommand::Webhook { revoke } => {
+                if *revoke {
+                    vec!["--revoke"]
+                } else {
+                    Vec::new()
+                }
+            }
             SessionCommand::Register {
                 name,
                 description,
@@ -584,6 +602,8 @@ mod tests {
             ),
             (SessionCommand::Agents, "GET", "/agents"),
             (SessionCommand::Whoami, "GET", "/whoami"),
+            (SessionCommand::Webhook { revoke: false }, "POST", "/webhooks"),
+            (SessionCommand::Webhook { revoke: true }, "DELETE", "/webhooks"),
             (
                 SessionCommand::Register {
                     name: None,
