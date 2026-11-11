@@ -1,16 +1,46 @@
 import { createServer, type RequestListener, type ServerResponse } from 'node:http';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { RelayfileControlPlaneClient, RelayfileControlPlaneError } from '@relayfile/client';
 
 import {
   RELAYFILE_DAEMON_STALLED,
   RecoveringControlPlane,
+  fileWriteGuard,
   isRelayfileControlPlaneTimeout,
+  writeMarkerDir,
 } from './relayfile-stall-recovery.js';
+
+// Isolate the default write-marker directory (beside the default socket) from
+// any real relayfile daemon on this machine.
+const isolatedRuntime = mkdtempSync(join(tmpdir(), 'rf-stall-runtime-'));
+const savedSock = process.env.RELAYFILE_SOCK;
+beforeAll(() => {
+  process.env.RELAYFILE_SOCK = join(isolatedRuntime, 'relayfile.sock');
+});
+afterAll(() => {
+  if (savedSock === undefined) delete process.env.RELAYFILE_SOCK;
+  else process.env.RELAYFILE_SOCK = savedSock;
+  rmSync(isolatedRuntime, { recursive: true, force: true });
+});
+
+const resetError = () =>
+  new RelayfileControlPlaneError('DAEMON_UNAVAILABLE', 'socket hang up', undefined, true);
+
+/** A deferred promise, for driving interleavings by hand. */
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  let reject!: (err: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 const timeoutError = () =>
   new RelayfileControlPlaneError(
@@ -265,6 +295,194 @@ describe('RecoveringControlPlane', () => {
 
     await expect(late).resolves.toBe('late:ok');
     expect(stopDaemon).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a read reset by a shared recovery that is still in flight (staggered reads)', async () => {
+    const stalled = { id: 'stalled' };
+    const fresh = { id: 'fresh' };
+    const stopping = deferred();
+    const stopDaemon = vi.fn(() => stopping.promise);
+    const cp = new RecoveringControlPlane({
+      clientOptions: { autoStart: true },
+      createClient: fakeClients(stalled, fresh),
+      stopDaemon,
+      warn: () => {},
+    });
+    // Read A is mid-request on the old daemon when read B times out.
+    const inFlightA = deferred<string>();
+    const a = cp.run('webhook-subscriptions', (client) =>
+      client === (stalled as unknown) ? inFlightA.promise : Promise.resolve('a:fresh')
+    );
+    const b = cp.run('webhook-subscriptions', async (client) => {
+      if (client === (stalled as unknown)) throw timeoutError();
+      return 'b:fresh';
+    });
+    await vi.waitFor(() => expect(stopDaemon).toHaveBeenCalled());
+    // Stopping the daemon resets A's connection: a connection loss, not a timeout.
+    inFlightA.reject(resetError());
+    stopping.resolve();
+
+    await expect(Promise.all([a, b])).resolves.toEqual(['a:fresh', 'b:fresh']);
+    expect(stopDaemon).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a read reset after the shared recovery already finished', async () => {
+    const stalled = { id: 'stalled' };
+    const fresh = { id: 'fresh' };
+    const cp = new RecoveringControlPlane({
+      clientOptions: { autoStart: true },
+      createClient: fakeClients(stalled, fresh),
+      stopDaemon: async () => {},
+      warn: () => {},
+    });
+    const inFlightA = deferred<string>();
+    const a = cp.run('list-bindings', (client) =>
+      client === (stalled as unknown) ? inFlightA.promise : Promise.resolve('a:fresh')
+    );
+    await expect(
+      cp.run('hello', async (client) => {
+        if (client === (stalled as unknown)) throw timeoutError();
+        return 'b:fresh';
+      })
+    ).resolves.toBe('b:fresh');
+    inFlightA.reject(resetError());
+    await expect(a).resolves.toBe('a:fresh');
+  });
+
+  it('does not retry a connection loss when no recovery is involved', async () => {
+    const reset = resetError();
+    const op = vi.fn(async () => {
+      throw reset;
+    });
+    const stopDaemon = vi.fn();
+    const cp = new RecoveringControlPlane({
+      clientOptions: { autoStart: true },
+      createClient: fakeClients({}),
+      stopDaemon,
+    });
+    await expect(cp.run('provider-status', op)).rejects.toBe(reset);
+    expect(op).toHaveBeenCalledTimes(1);
+    expect(stopDaemon).not.toHaveBeenCalled();
+  });
+
+  it('never retries a write and never recovers on its timeout', async () => {
+    const timedOut = timeoutError();
+    const op = vi.fn(async () => {
+      throw timedOut;
+    });
+    const stopDaemon = vi.fn();
+    const cp = new RecoveringControlPlane({
+      clientOptions: { autoStart: true },
+      createClient: fakeClients({}),
+      stopDaemon,
+    });
+    await expect(cp.mutate('bind', op)).rejects.toBe(timedOut);
+    expect(op).toHaveBeenCalledTimes(1);
+    expect(stopDaemon).not.toHaveBeenCalled();
+  });
+
+  it('leaves the daemon running while this process has a write in flight', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rf-writes-'));
+    try {
+      const stopDaemon = vi.fn();
+      const cp = new RecoveringControlPlane({
+        clientOptions: { autoStart: true },
+        createClient: fakeClients({}),
+        stopDaemon,
+        writeGuard: fileWriteGuard(dir),
+      });
+      const bindInFlight = deferred<string>();
+      const write = cp.mutate('bind', () => bindInFlight.promise);
+
+      await expect(
+        cp.run('provider-status', async () => {
+          throw timeoutError();
+        })
+      ).rejects.toMatchObject({
+        code: RELAYFILE_DAEMON_STALLED,
+        message: expect.stringMatching(/another relay command has a write in flight on it \(pid \d+ bind\)/),
+      });
+      expect(stopDaemon).not.toHaveBeenCalled();
+
+      bindInFlight.resolve('bound');
+      await expect(write).resolves.toBe('bound');
+      expect(readdirSync(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves the daemon running while another live process has a write in flight', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rf-writes-'));
+    // Stands in for a second agent-relay invocation in the middle of an unbind.
+    const other = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' });
+    try {
+      writeFileSync(join(dir, `${other.pid}-00000000-0000-4000-8000-000000000000`), 'unbind');
+      const stopDaemon = vi.fn();
+      const cp = new RecoveringControlPlane({
+        clientOptions: { autoStart: true },
+        createClient: fakeClients({}),
+        stopDaemon,
+        writeGuard: fileWriteGuard(dir),
+      });
+      await expect(
+        cp.run('provider-status', async () => {
+          throw timeoutError();
+        })
+      ).rejects.toMatchObject({
+        code: RELAYFILE_DAEMON_STALLED,
+        message: expect.stringContaining(`pid ${other.pid} unbind`),
+      });
+      expect(stopDaemon).not.toHaveBeenCalled();
+    } finally {
+      other.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores and removes write markers left by dead processes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rf-writes-'));
+    try {
+      const dead = spawnSync(process.execPath, ['-e', '0']).pid;
+      mkdirSync(dir, { recursive: true });
+      const marker = join(dir, `${dead}-00000000-0000-4000-8000-000000000000`);
+      writeFileSync(marker, 'bind');
+      expect(fileWriteGuard(dir).activeWrites()).toEqual([]);
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('sends a write issued during recovery to the replacement daemon', async () => {
+    const stalled = { id: 'stalled' };
+    const fresh = { id: 'fresh' };
+    const stopping = deferred();
+    const stopDaemon = vi.fn(() => stopping.promise);
+    const cp = new RecoveringControlPlane({
+      clientOptions: { autoStart: true },
+      createClient: fakeClients(stalled, fresh),
+      stopDaemon,
+      writeGuard: fileWriteGuard(mkdtempSync(join(isolatedRuntime, 'w-'))),
+      warn: () => {},
+    });
+    const read = cp.run('hello', async (client) => {
+      if (client === (stalled as unknown)) throw timeoutError();
+      return 'ok';
+    });
+    await vi.waitFor(() => expect(stopDaemon).toHaveBeenCalled());
+    const seen: unknown[] = [];
+    const write = cp.mutate('bind', async (client) => {
+      seen.push(client);
+      return 'bound';
+    });
+    stopping.resolve();
+    await expect(Promise.all([read, write])).resolves.toEqual(['ok', 'bound']);
+    expect(seen).toEqual([fresh]);
+  });
+
+  it('places write markers beside the daemon socket', () => {
+    expect(writeMarkerDir('/run/user/1000/relayfile.sock')).toBe('/run/user/1000/relayfile.sock.writes');
   });
 
   it.skipIf(process.platform === 'win32')(

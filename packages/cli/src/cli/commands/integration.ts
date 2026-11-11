@@ -257,7 +257,9 @@ function readProviderConnected(payload: unknown, provider: string): boolean {
  *
  * Read-only / idempotent calls go through `cp.run`, which restarts a daemon
  * that accepted the request but never answered and retries once (#1952).
- * Mutations (connect, bind, unbind, webhook create/delete) are not retried.
+ * Mutations (connect, bind, unbind, webhook create/delete) go through
+ * `cp.mutate`: never retried, and recorded so no recovery stops the daemon
+ * while they are in flight.
  */
 export function defaultRelayfileBridge(options?: RelayfileClientOptions): RelayfileBridge {
   const cp = controlPlaneClient(options);
@@ -272,22 +274,24 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
     async connect(provider) {
       // OAuth runs in the daemon; on a local daemon the browser still opens
       // (noOpen defaults false). The returned output carries any connect URL.
-      const { output } = await cp.client.connect({ provider });
+      const { output } = await cp.mutate('connect', (c) => c.connect({ provider }));
       if (output?.trim()) process.stderr.write(output.endsWith('\n') ? output : `${output}\n`);
     },
     async bind(input) {
-      await cp.client.bind({
-        provider: input.provider,
-        resource: input.resource,
-        channel: input.channel,
-        webhookId: input.webhookId,
-        webhookToken: input.webhookToken,
-        subscriptionId: input.subscriptionId,
-        webhookSubscriptionId: input.webhookSubscriptionId,
-        ...(input.webhookSubscriptionWorkspaceId
-          ? { webhookSubscriptionWorkspaceId: input.webhookSubscriptionWorkspaceId }
-          : {}),
-      });
+      await cp.mutate('bind', (c) =>
+        c.bind({
+          provider: input.provider,
+          resource: input.resource,
+          channel: input.channel,
+          webhookId: input.webhookId,
+          webhookToken: input.webhookToken,
+          subscriptionId: input.subscriptionId,
+          webhookSubscriptionId: input.webhookSubscriptionId,
+          ...(input.webhookSubscriptionWorkspaceId
+            ? { webhookSubscriptionWorkspaceId: input.webhookSubscriptionWorkspaceId }
+            : {}),
+        })
+      );
     },
     async listBindings() {
       const bindings = await cp.run('list-bindings', (c) => c.listBindings());
@@ -307,7 +311,7 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
       });
     },
     async unbind(provider, resource) {
-      await cp.client.unbind(provider, resource);
+      await cp.mutate('unbind', (c) => c.unbind(provider, resource));
     },
     async resolveResourcePath(provider, resource) {
       const resolved = await cp.run('resolve-path', (c) => c.resolvePath(provider, resource));
@@ -356,10 +360,12 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
       }
     },
     async createWebhookSubscription(input) {
-      return cp.client.createWebhookSubscription(input);
+      return cp.mutate('create-webhook-subscription', (c) => c.createWebhookSubscription(input));
     },
     async deleteWebhookSubscription(subscriptionId, workspace) {
-      await cp.client.deleteWebhookSubscription(subscriptionId, workspace);
+      await cp.mutate('delete-webhook-subscription', (c) =>
+        c.deleteWebhookSubscription(subscriptionId, workspace)
+      );
     },
     async listWebhookSubscriptions(workspace?: string) {
       return cp.run('webhook-subscriptions', (c) => c.listWebhookSubscriptions(workspace));

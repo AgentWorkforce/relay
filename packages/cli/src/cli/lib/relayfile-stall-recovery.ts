@@ -1,6 +1,11 @@
+import { randomUUID } from 'node:crypto';
+import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import {
   RelayfileControlPlaneClient,
   RelayfileControlPlaneError,
+  defaultRelayfileSocketPath,
   type RelayfileClientOptions,
 } from '@relayfile/client';
 
@@ -21,6 +26,15 @@ export function isRelayfileControlPlaneTimeout(err: unknown): boolean {
     err instanceof RelayfileControlPlaneError &&
     err.code === 'DAEMON_UNAVAILABLE' &&
     /timed out after \d+ms/.test(err.message)
+  );
+}
+
+/** A connection-level failure (reset, refused, missing socket) rather than a timeout or an endpoint error. */
+function isConnectionLoss(err: unknown): boolean {
+  return (
+    err instanceof RelayfileControlPlaneError &&
+    err.code === 'DAEMON_UNAVAILABLE' &&
+    !isRelayfileControlPlaneTimeout(err)
   );
 }
 
@@ -71,7 +85,106 @@ export const canStartReplacementViaClient: CanStartReplacement = async (client) 
   }
 };
 
-type RecoveryPhase = 'preflight' | 'stop' | 'start';
+/**
+ * Cross-process record of control-plane writes in flight. Recovery consults
+ * it before stopping a daemon, so a hung read in one `agent-relay` process
+ * never kills the daemon while another process's bind/unbind/webhook write is
+ * still being served — that write could be persisted with its response lost.
+ */
+export interface WriteGuard {
+  /**
+   * Record a write as in flight.
+   * @param label - Endpoint name, for diagnostics.
+   * @returns A function that clears the record; call it when the write settles.
+   */
+  begin(label: string): () => void;
+  /**
+   * List writes currently in flight in live processes.
+   * @returns One `pid label` description per write.
+   */
+  activeWrites(): string[];
+}
+
+/** A write marker older than this is treated as abandoned (pid reuse, killed process). */
+const WRITE_MARKER_MAX_AGE_MS = 10 * 60_000;
+
+/**
+ * The marker directory for a daemon socket: `<socket>.writes/`, beside the
+ * socket so every client of that daemon shares it.
+ * @param socketPath - The control-plane socket path.
+ * @returns The marker directory path.
+ */
+export function writeMarkerDir(socketPath: string): string {
+  return `${socketPath}.writes`;
+}
+
+/**
+ * File-backed {@link WriteGuard}: one marker file per in-flight write, named
+ * with the writer's pid. Markers from dead processes or older than
+ * {@link WRITE_MARKER_MAX_AGE_MS} are ignored and removed. Recording is
+ * best-effort: if the directory cannot be written, the write still proceeds.
+ * @param dir - Marker directory, normally {@link writeMarkerDir}.
+ * @returns The guard.
+ */
+export function fileWriteGuard(dir: string): WriteGuard {
+  return {
+    begin(label) {
+      const marker = join(dir, `${process.pid}-${randomUUID()}`);
+      try {
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+        writeFileSync(marker, label, { mode: 0o600 });
+      } catch {
+        return () => {};
+      }
+      return () => rmSync(marker, { force: true });
+    },
+    activeWrites() {
+      let names: string[];
+      try {
+        names = readdirSync(dir);
+      } catch {
+        return [];
+      }
+      const active: string[] = [];
+      for (const name of names) {
+        const marker = join(dir, name);
+        const pid = Number.parseInt(name.split('-')[0] ?? '', 10);
+        let fresh: boolean;
+        try {
+          fresh = Date.now() - statSync(marker).mtimeMs < WRITE_MARKER_MAX_AGE_MS;
+        } catch {
+          continue; // removed while scanning
+        }
+        if (Number.isSafeInteger(pid) && pid > 0 && fresh && isProcessAlive(pid)) {
+          active.push(`pid ${pid} ${readLabel(marker)}`.trim());
+        } else {
+          rmSync(marker, { force: true });
+        }
+      }
+      return active;
+    },
+  };
+}
+
+function readLabel(marker: string): string {
+  try {
+    return readFileSync(marker, 'utf8').trim().slice(0, 64);
+  } catch {
+    return '';
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM: alive but owned by another user.
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+type RecoveryPhase = 'busy' | 'preflight' | 'stop' | 'start';
 
 /** A recovery step that failed, so the caller can give the matching remedy. */
 class RecoveryFailure extends Error {
@@ -93,6 +206,8 @@ export interface RecoveringControlPlaneOptions {
   stopDaemon?: StopDaemon;
   /** Preflight before stopping; defaults to {@link canStartReplacementViaClient}. */
   canStartReplacement?: CanStartReplacement;
+  /** In-flight write record; defaults to {@link fileWriteGuard} beside the socket. */
+  writeGuard?: WriteGuard;
   /** Diagnostics sink for the recovery notice; defaults to stderr. */
   warn?: (message: string) => void;
 }
@@ -101,7 +216,9 @@ export interface RecoveringControlPlaneOptions {
  * Wraps a control-plane client so a request that times out against a daemon
  * that is alive but hung is recovered: the daemon is stopped, a fresh client
  * auto-starts a new one, and the request is retried once. Only safe-to-repeat
- * operations should go through {@link RecoveringControlPlane.run}.
+ * operations go through {@link RecoveringControlPlane.run}; writes go through
+ * {@link RecoveringControlPlane.mutate}, which is never retried and holds off
+ * recovery while it is in flight.
  *
  * Without this, a daemon that wedges after serving earlier requests turns every
  * subscribe into a generic 30s timeout while `relayfile integration list`
@@ -111,7 +228,10 @@ export class RecoveringControlPlane {
   #client: RelayfileControlPlaneClient;
   readonly #options: RecoveringControlPlaneOptions;
   readonly #autoStart: boolean;
+  readonly #writeGuard: WriteGuard;
   #recovery: Promise<void> | undefined;
+  /** The client whose daemon the in-flight recovery is replacing. */
+  #recoveringFrom: RelayfileControlPlaneClient | undefined;
 
   /**
    * @param options - Client options and injectable recovery steps.
@@ -120,6 +240,9 @@ export class RecoveringControlPlane {
     this.#options = options;
     this.#client = this.#create();
     this.#autoStart = options.clientOptions.autoStart ?? process.env.RELAYFILE_REQUIRE_DAEMON !== '1';
+    this.#writeGuard =
+      options.writeGuard ??
+      fileWriteGuard(writeMarkerDir(options.clientOptions.socketPath ?? defaultRelayfileSocketPath()));
   }
 
   /** The current client. Replaced after a recovery, so don't cache it. */
@@ -141,34 +264,92 @@ export class RecoveringControlPlane {
     try {
       return await op(attempted);
     } catch (err) {
-      if (!isRelayfileControlPlaneTimeout(err)) throw err;
-      const first = err as RelayfileControlPlaneError;
-
-      if (!this.#autoStart) {
-        throw stalledError(
-          label,
-          first,
-          'Automatic restart is disabled (RELAYFILE_REQUIRE_DAEMON=1); restart `relayfile control-plane serve` and retry.'
-        );
+      if (isRelayfileControlPlaneTimeout(err)) {
+        return this.#recoverAndRetry(label, op, attempted, err as RelayfileControlPlaneError);
       }
+      if (this.#interruptedByRecovery(attempted, err)) {
+        // This read was still in flight on the daemon another caller's
+        // recovery stopped; its reset is not a real failure.
+        return this.#retryAfterSharedRecovery(label, op, err as RelayfileControlPlaneError);
+      }
+      throw err;
+    }
+  }
 
+  /**
+   * Runs a write. Writes are never retried (a lost response may still have
+   * been committed) and are recorded in the {@link WriteGuard} so no
+   * recovery — in this or another process — stops the daemon under them.
+   * @param label - endpoint name used in diagnostics (e.g. `bind`)
+   * @param op - the request; receives the client to use
+   * @returns the request's result
+   */
+  async mutate<T>(label: string, op: (client: RelayfileControlPlaneClient) => Promise<T>): Promise<T> {
+    // A write issued while this process is replacing the daemon goes to the
+    // replacement, not the daemon being stopped.
+    if (this.#recovery) await this.#recovery.catch(() => {});
+    const end = this.#writeGuard.begin(label);
+    try {
+      return await op(this.#client);
+    } finally {
+      end();
+    }
+  }
+
+  async #recoverAndRetry<T>(
+    label: string,
+    op: (client: RelayfileControlPlaneClient) => Promise<T>,
+    attempted: RelayfileControlPlaneClient,
+    first: RelayfileControlPlaneError
+  ): Promise<T> {
+    if (!this.#autoStart) {
+      throw stalledError(
+        label,
+        first,
+        'Automatic restart is disabled (RELAYFILE_REQUIRE_DAEMON=1); restart `relayfile control-plane serve` and retry.'
+      );
+    }
+    try {
+      await this.#recover(attempted, label);
+    } catch (recoveryErr) {
+      throw stalledError(label, first, recoveryRemedy(recoveryErr));
+    }
+    return this.#retry(label, op);
+  }
+
+  async #retryAfterSharedRecovery<T>(
+    label: string,
+    op: (client: RelayfileControlPlaneClient) => Promise<T>,
+    interrupted: RelayfileControlPlaneError
+  ): Promise<T> {
+    if (this.#recovery) {
       try {
-        await this.#recover(attempted, label);
+        await this.#recovery;
       } catch (recoveryErr) {
-        throw stalledError(label, first, recoveryRemedy(recoveryErr));
-      }
-
-      try {
-        return await op(this.#client);
-      } catch (retryErr) {
-        if (!isRelayfileControlPlaneTimeout(retryErr)) throw retryErr;
-        throw stalledError(
-          label,
-          retryErr as RelayfileControlPlaneError,
-          'It also stalled after an automatic restart, so the hang is likely upstream of the daemon (Cloud/provider); retry later.'
-        );
+        throw stalledError(label, interrupted, recoveryRemedy(recoveryErr));
       }
     }
+    return this.#retry(label, op);
+  }
+
+  /** The single retry on the current (replacement) client. */
+  async #retry<T>(label: string, op: (client: RelayfileControlPlaneClient) => Promise<T>): Promise<T> {
+    try {
+      return await op(this.#client);
+    } catch (retryErr) {
+      if (!isRelayfileControlPlaneTimeout(retryErr)) throw retryErr;
+      throw stalledError(
+        label,
+        retryErr as RelayfileControlPlaneError,
+        'It also stalled after an automatic restart, so the hang is likely upstream of the daemon (Cloud/provider); retry later.'
+      );
+    }
+  }
+
+  /** A connection loss on a client whose daemon is being, or has been, replaced. */
+  #interruptedByRecovery(attempted: RelayfileControlPlaneClient, err: unknown): boolean {
+    if (!isConnectionLoss(err)) return false;
+    return this.#recoveringFrom === attempted || this.#client !== attempted;
   }
 
   /**
@@ -180,6 +361,7 @@ export class RecoveringControlPlane {
   #recover(stalled: RelayfileControlPlaneClient, label: string): Promise<void> {
     if (this.#client !== stalled) return Promise.resolve();
     if (!this.#recovery) {
+      this.#recoveringFrom = stalled;
       this.#recovery = (async () => {
         // 1. Never stop a working daemon we cannot replace.
         const canStart = await (this.#options.canStartReplacement ?? canStartReplacementViaClient)(stalled);
@@ -189,13 +371,19 @@ export class RecoveringControlPlane {
             'the relayfile binary (RELAYFILE_BIN or `relayfile` on PATH) could not be run'
           );
         }
-        // 2. Stop the hung daemon.
+        // 2. Never stop a daemon while any relay process has a write in
+        // flight on it. Checked immediately before the stop.
+        const writes = this.#writeGuard.activeWrites();
+        if (writes.length > 0) {
+          throw new RecoveryFailure('busy', writes.join(', '));
+        }
+        // 3. Stop the hung daemon.
         try {
           await (this.#options.stopDaemon ?? stopDaemonViaClient)(stalled);
         } catch (err) {
           throw new RecoveryFailure('stop', describe(err));
         }
-        // 3. A fresh client re-runs hello negotiation and auto-starts the
+        // 4. A fresh client re-runs hello negotiation and auto-starts the
         // replacement; prove it is up before anyone retries on it. Install it
         // even on failure so the next call auto-starts instead of reusing the
         // client bound to the stopped daemon.
@@ -211,6 +399,7 @@ export class RecoveringControlPlane {
         );
       })().finally(() => {
         this.#recovery = undefined;
+        this.#recoveringFrom = undefined;
       });
     }
     return this.#recovery;
@@ -237,6 +426,11 @@ function stalledError(
 function recoveryRemedy(err: unknown): string {
   const phase = err instanceof RecoveryFailure ? err.phase : 'stop';
   switch (phase) {
+    case 'busy':
+      return (
+        `Left the daemon running because another relay command has a write in flight on it (${describe(err)}); ` +
+        'retry once it finishes, or restart `relayfile control-plane serve` manually.'
+      );
     case 'preflight':
       return (
         `Left the daemon running because no replacement could be started (${describe(err)}); ` +
