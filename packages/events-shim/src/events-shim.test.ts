@@ -2,7 +2,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { describe, expect, it } from 'vitest';
 
-import { hmacSha256Hex } from './crypto.js';
+import { hmacSha256Hex, sha256Hex } from './crypto.js';
 import { handleEventsShimRequest } from './http.js';
 import { EVENTS_SHIM_LIMITS } from './limits.js';
 import { MemoryEventsShimStore } from './memory-store.js';
@@ -10,6 +10,30 @@ import type { ShimUrls } from './types.js';
 
 const BASE = 'https://shim.test/api/v1/events-shim';
 const RELAY = 'https://cast.agentrelay.com';
+
+interface EventJson {
+  id: string;
+  seq: number;
+  delivery: string;
+  event_type: string | null;
+  wake_error: string | null;
+  body: string;
+}
+
+interface FeedJson {
+  agent: { connected: boolean; wake: string; wake_error: string | null };
+  events: EventJson[];
+  webhook_urls: Record<string, string>;
+}
+
+interface ToolJson {
+  wake: string;
+  webhook_url: string;
+  next_steps: string[];
+  events: EventJson[];
+  forwarded_waiting: number;
+  more: boolean;
+}
 
 interface RelayCall {
   url: string;
@@ -36,7 +60,7 @@ function createHarness(options: { relayStatus?: number } = {}) {
     return new Response('{}', { status: relayStatus });
   };
   const options_ = {
-    deps: { store, now: () => clock, fetchImpl: relayFetch },
+    deps: { store, now: () => clock, fetchImpl: relayFetch, sleep: async () => {} },
     urls,
     pollIntervalMs: 5,
   };
@@ -73,7 +97,7 @@ function createHarness(options: { relayStatus?: number } = {}) {
     const response = await app(`${BASE}/shims/current`, {
       headers: { authorization: `Bearer ${manageToken}` },
     });
-    return { status: response.status, body: (await response.json()) as Record<string, any> };
+    return { status: response.status, body: (await response.json()) as FeedJson };
   }
 
   async function connect(mcpUrl: string) {
@@ -85,7 +109,7 @@ function createHarness(options: { relayStatus?: number } = {}) {
         const result = await client.callTool({ name, arguments: args });
         return result as {
           isError?: boolean;
-          structuredContent?: Record<string, any>;
+          structuredContent?: ToolJson;
           content: Array<{ text: string }>;
         };
       },
@@ -127,7 +151,7 @@ describe('events shim', () => {
 
     const first = await agent.call('get_webhook_events');
     expect(first.structuredContent?.events).toHaveLength(1);
-    expect(JSON.parse(first.structuredContent?.events[0].body)).toEqual({ hello: 'from curl' });
+    expect(JSON.parse(first.structuredContent!.events[0]!.body)).toEqual({ hello: 'from curl' });
     const second = await agent.call('get_webhook_events');
     expect(second.structuredContent?.events).toHaveLength(0);
 
@@ -193,20 +217,15 @@ describe('events shim', () => {
     expect((await agent.call('watch_webhooks')).structuredContent?.wake).toBe('broken');
   });
 
-  it('never hands a post over twice when its wake result lands after the agent read it', async () => {
+  it('never hands a post over twice to concurrent readers', async () => {
     const h = createHarness();
     const shim = await h.create();
     const agent = await h.connect(shim.mcp_url);
-    await h.post(shim.webhook_url, { n: 1 });
-    const read = await agent.call('get_webhook_events');
-    const id = read.structuredContent?.events[0].id as string;
-    const [{ id: shimId }] = [
-      (await h.store.findByHookTokenHash(
-        await (await import('./crypto.js')).sha256Hex(shim.webhook_url.split('/h/')[1]!)
-      ))!,
-    ];
-    await h.store.markDelivery(shimId, [id], 'pending', new Date().toISOString(), 'late failure');
-    expect((await agent.call('get_webhook_events')).structuredContent?.events).toHaveLength(0);
+    for (let i = 0; i < 5; i += 1) await h.post(shim.webhook_url, { i });
+    const [a, b] = await Promise.all([agent.call('get_webhook_events'), agent.call('get_webhook_events')]);
+    const ids = [...a.structuredContent!.events, ...b.structuredContent!.events].map((event) => event.id);
+    expect(ids).toHaveLength(5);
+    expect(new Set(ids).size).toBe(5);
   });
 
   it('delivers an authenticated text/plain post verbatim as a nudge, but wraps open posts', async () => {
@@ -261,21 +280,70 @@ describe('events shim', () => {
     expect(results.filter((r) => r.status === 429)).toHaveLength(20);
   });
 
-  it('moves delivery state only forward', async () => {
+  it('retries a temporary relay failure, and a later wake drains what an earlier one left', async () => {
     const h = createHarness();
     const shim = await h.create();
-    const posted = await h.post(shim.webhook_url, { a: 1 });
-    const record = (await h.store.findByHookTokenHash(
-      await (await import('./crypto.js')).sha256Hex(shim.webhook_url.split('/h/')[1]!)
+    const agent = await h.connect(shim.mcp_url);
+    await agent.call('link_relay_wake', RELAY_HOOK);
+    h.setRelayStatus(503);
+    expect((await h.post(shim.webhook_url, { n: 1 })).body.wake).toBe('queued');
+    const afterFirst = h.relayCalls.length;
+    expect(afterFirst).toBe(1 + 3); // link check, then three attempts
+    expect((await h.feed(shim.manage_token)).body.agent.wake).toBe('linked'); // temporary: link stays
+    h.setRelayStatus(200);
+    expect((await h.post(shim.webhook_url, { n: 2 })).body.wake).toBe('forwarded');
+    const feed = (await h.feed(shim.manage_token)).body;
+    expect(feed.events.map((event) => event.delivery)).toEqual(['woken', 'woken']);
+  });
+
+  it('does not let a late failure from an old link break the new link', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const agent = await h.connect(shim.mcp_url);
+    await agent.call('link_relay_wake', RELAY_HOOK);
+    const record = (await h.store.findByMcpTokenHash(
+      await sha256Hex(shim.mcp_url.split('/t/')[1]!.replace('/mcp', ''))
     ))!;
-    const id = posted.body.event_id as string;
-    const at = new Date().toISOString();
-    await h.store.markDelivery(record.id, [id], 'woken', at);
-    await h.store.markDelivery(record.id, [id], 'pending', at, 'late failure');
-    expect((await h.store.listRecent(record.id, 1))[0]!.delivery).toBe('woken');
-    await h.store.markDelivery(record.id, [id], 'read', at);
-    await h.store.markDelivery(record.id, [id], 'woken', at);
-    expect((await h.store.listRecent(record.id, 1))[0]!.delivery).toBe('read');
+    const oldLinkedAt = record.wake!.linkedAt;
+    h.advance(1000);
+    await agent.call('link_relay_wake', { ...RELAY_HOOK, url: `${RELAY}/v1/hooks/wh_new` });
+    await h.store.markWakeBroken(record.id, oldLinkedAt, 'late 404', new Date().toISOString());
+    expect((await h.feed(shim.manage_token)).body.agent.wake).toBe('linked');
+    await agent.call('unlink_relay_wake');
+    await h.store.markWakeBroken(record.id, oldLinkedAt, 'late 404', new Date().toISOString());
+    expect((await h.feed(shim.manage_token)).body.agent.wake).toBe('none');
+  });
+
+  it('remembers idempotency keys after the post leaves the feed', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const first = await h.post(shim.webhook_url, { a: 1 }, { 'idempotency-key': 'old-1' });
+    for (let i = 0; i < EVENTS_SHIM_LIMITS.feedSize; i += 1) await h.post(shim.webhook_url, { i });
+    const retry = await h.post(shim.webhook_url, { a: 1 }, { 'idempotency-key': 'old-1' });
+    expect(retry).toMatchObject({ status: 200, body: { duplicate: true, event_id: first.body.event_id } });
+  });
+
+  it('dedupes signed provider posts on signed content, not unsigned headers', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const auth = { authorization: `Bearer ${shim.manage_token}`, 'content-type': 'application/json' };
+    await h.app(`${BASE}/shims/current/secrets/stripe`, {
+      method: 'PUT',
+      headers: auth,
+      body: JSON.stringify({ secret: 'whsec_test123' }),
+    });
+    const body = JSON.stringify({ id: 'evt_9', type: 'invoice.paid' });
+    const t = Math.floor(Date.parse('2026-11-11T12:00:00.000Z') / 1000);
+    const sig = `t=${t},v1=${await hmacSha256Hex('whsec_test123', `${t}.${body}`)}`;
+    expect(
+      (await h.post(shim.webhook_urls.stripe!, body, { 'stripe-signature': sig, 'idempotency-key': 'a' }))
+        .status
+    ).toBe(202);
+    const replay = await h.post(shim.webhook_urls.stripe!, body, {
+      'stripe-signature': sig,
+      'idempotency-key': 'b',
+    });
+    expect(replay.body.duplicate).toBe(true);
   });
 
   it('refuses wake links outside the allowed relay origins', async () => {
@@ -398,9 +466,7 @@ describe('events shim', () => {
       (await h.post(shim.webhook_urls.bearer!, { a: 1 }, { authorization: 'Bearer wrong' })).status
     ).toBe(401);
 
-    const types = (await h.feed(shim.manage_token)).body.events.map(
-      (event: { event_type: string }) => event.event_type
-    );
+    const types = (await h.feed(shim.manage_token)).body.events.map((event) => event.event_type);
     expect(types).toEqual([null, 'Issue.create', 'invoice.paid', 'pull_request.opened']);
   });
 

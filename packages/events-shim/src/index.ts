@@ -62,5 +62,6 @@ export {
   registerEventsShimTools,
   type EventsShimMcpContext,
 } from './mcp.js';
+export { deliverPending, WAKE_RETRY_DELAYS_MS, type DeliveryDeps, type DeliveryPass } from './delivery.js';
 export { handleEventsShimRequest, type EventsShimHttpOptions } from './http.js';
 export { MemoryEventsShimStore } from './memory-store.js';

@@ -1,4 +1,4 @@
-import { hmacSha256Hex, timingSafeEqual } from './crypto.js';
+import { hmacSha256Hex, sha256Hex, timingSafeEqual } from './crypto.js';
 import { EVENTS_SHIM_LIMITS } from './limits.js';
 import type { ShimRecord, VerificationMode } from './types.js';
 
@@ -6,12 +6,16 @@ import type { ShimRecord, VerificationMode } from './types.js';
 export type HeaderReader = Pick<Headers, 'get'>;
 
 export type VerifyResult =
-  { ok: true } | { ok: false; status: 401 | 403 | 409; code: string; message: string };
+  | { ok: true }
+  | { ok: false; status: 401 | 403 | 409; code: string; message: string };
 
 /**
- * Checks a post against the shim's mode. `open` accepts anyone holding
- * the URL; the others check the sender's signature or bearer against the
- * secret stored for that mode.
+ * Checks a post against its URL's mode. `open` accepts anyone holding the URL;
+ * the others check the sender's signature or bearer against the secret stored
+ * for that mode.
+ *
+ * @param input - The mode, the inbox, the request headers, the raw body and the time.
+ * @returns `ok`, or the HTTP status, code and message to refuse with.
  */
 export async function verifyInbound(input: {
   mode: VerificationMode;
@@ -87,32 +91,43 @@ function refused(message: string): VerifyResult {
 }
 
 /**
- * The key that makes a retried post arrive once: the sender's
- * `Idempotency-Key`, else the provider's own delivery or event id.
+ * The key that makes a retried post arrive once. For signed provider modes
+ * it comes only from signed content, never from a header the signature does
+ * not cover, so a captured request cannot be replayed under a new key:
+ * Stripe's event `id`, otherwise a hash of the signed body (GitHub and
+ * Linear redeliveries resend the same body). Bearer and open posts use the
+ * sender's `Idempotency-Key`.
+ *
+ * @param mode - How the post was verified.
+ * @param headers - The request headers.
+ * @param rawBody - The raw request body the signature covered.
+ * @returns The dedupe key, or `undefined` when the post has none.
  */
-export function idempotencyKeyFor(
+export async function idempotencyKeyFor(
   mode: VerificationMode,
   headers: HeaderReader,
   rawBody: string
-): string | undefined {
-  const explicit = headers.get('idempotency-key')?.trim();
-  if (explicit) return `key:${explicit.slice(0, EVENTS_SHIM_LIMITS.maxIdempotencyKeyLength)}`;
-  if (mode === 'github') {
-    const delivery = headers.get('x-github-delivery')?.trim();
-    if (delivery) return `github:${delivery}`;
-  }
-  if (mode === 'linear') {
-    const delivery = headers.get('linear-delivery')?.trim();
-    if (delivery) return `linear:${delivery}`;
-  }
+): Promise<string | undefined> {
   if (mode === 'stripe') {
     const id = readJson(rawBody)?.id;
-    if (typeof id === 'string' && id) return `stripe:${id}`;
+    if (typeof id === 'string' && id)
+      return `stripe:${id.slice(0, EVENTS_SHIM_LIMITS.maxIdempotencyKeyLength)}`;
   }
-  return undefined;
+  if (mode === 'github' || mode === 'stripe' || mode === 'linear') {
+    return `${mode}:body:${await sha256Hex(rawBody)}`;
+  }
+  const explicit = headers.get('idempotency-key')?.trim();
+  return explicit ? `key:${explicit.slice(0, EVENTS_SHIM_LIMITS.maxIdempotencyKeyLength)}` : undefined;
 }
 
-/** A short event name for the feed and the wake message, when the sender says one. */
+/**
+ * A short event name for the feed and the wake message, when the sender gives one.
+ *
+ * @param mode - How the post was verified.
+ * @param headers - The request headers.
+ * @param rawBody - The raw request body.
+ * @returns e.g. `pull_request.opened`, or `undefined`.
+ */
 export function eventTypeFor(
   mode: VerificationMode,
   headers: HeaderReader,
@@ -147,6 +162,12 @@ const KEPT_HEADERS = [
   'idempotency-key',
 ] as const;
 
+/**
+ * The few request headers worth showing the agent; auth, cookies and addresses are dropped.
+ *
+ * @param headers - The request headers.
+ * @returns The kept headers, each at most 300 characters.
+ */
 export function keptHeaders(headers: HeaderReader): Record<string, string> {
   const kept: Record<string, string> = {};
   for (const name of KEPT_HEADERS) {

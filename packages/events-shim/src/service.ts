@@ -11,7 +11,7 @@ import type {
 } from './types.js';
 import { VERIFICATION_MODES } from './types.js';
 import { eventTypeFor, idempotencyKeyFor, keptHeaders, verifyInbound, type HeaderReader } from './verify.js';
-import { forwardWake } from './wake.js';
+import { deliverPending } from './delivery.js';
 
 export const MCP_TOKEN_PREFIX = 'esm_';
 export const HOOK_TOKEN_PREFIX = 'esh_';
@@ -27,8 +27,16 @@ export interface EventsShimDeps {
   fetchImpl?: typeof fetch;
   /** Called after a post is stored but its wake is still in flight (e.g. `ctx.waitUntil`). */
   defer?: (work: Promise<unknown>) => void;
+  /** Replaces the wait between wake retries; tests pass one that does not sleep. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
+/**
+ * Creates an inbox and its three capability tokens, stored only as hashes.
+ *
+ * @param deps - The store and clock.
+ * @returns The inbox and the tokens, shown this once.
+ */
 export async function createShim(deps: EventsShimDeps): Promise<MintedShim> {
   const now = (deps.now ?? (() => new Date()))().toISOString();
   const mcpToken = mintToken(MCP_TOKEN_PREFIX);
@@ -60,10 +68,24 @@ async function find(
   return shim && isLive(shim, now) ? shim : null;
 }
 
+/**
+ * Finds a live inbox by its MCP token.
+ *
+ * @param deps - The store and clock.
+ * @param token - The `esm_` token from the MCP URL.
+ * @returns The inbox, or `null` when unknown, malformed or expired.
+ */
 export function findShimByMcpToken(deps: EventsShimDeps, token: string): Promise<ShimRecord | null> {
   return find(token, MCP_TOKEN_PREFIX, (hash) => deps.store.findByMcpTokenHash(hash), clock(deps));
 }
 
+/**
+ * Finds a live inbox by its manage token.
+ *
+ * @param deps - The store and clock.
+ * @param token - The `esk_` token the page holds.
+ * @returns The inbox, or `null` when unknown, malformed or expired.
+ */
 export function findShimByManageToken(deps: EventsShimDeps, token: string): Promise<ShimRecord | null> {
   return find(token, MANAGE_TOKEN_PREFIX, (hash) => deps.store.findByManageTokenHash(hash), clock(deps));
 }
@@ -81,6 +103,10 @@ export interface PostOutcome {
 /**
  * Handles one post to a webhook URL: checks the sender, enforces limits,
  * stores the post (once per idempotency key), and wakes the agent.
+ *
+ * @param deps - The store, fetch, clock and optional `defer`.
+ * @param input - The hook token, mode, headers and raw body.
+ * @returns The HTTP status, JSON body and extra headers to answer with.
  */
 export async function receivePost(
   deps: EventsShimDeps,
@@ -146,9 +172,9 @@ export async function receivePost(
   await deps.store.touch(shim.id, at, false);
 
   const contentType = (input.headers.get('content-type') ?? 'application/octet-stream').slice(0, 200);
-  const idempotencyKey = idempotencyKeyFor(input.mode, input.headers, input.rawBody);
+  const idempotencyKey = await idempotencyKeyFor(input.mode, input.headers, input.rawBody);
   const eventType = eventTypeFor(input.mode, input.headers, input.rawBody);
-  const { event, duplicate } = await deps.store.appendEvent(
+  const appended = await deps.store.appendEvent(
     shim.id,
     {
       receivedAt: at,
@@ -159,46 +185,42 @@ export async function receivePost(
       ...(eventType ? { eventType } : {}),
       ...(idempotencyKey ? { idempotencyKey } : {}),
     },
-    EVENTS_SHIM_LIMITS.feedSize
+    {
+      feedSize: EVENTS_SHIM_LIMITS.feedSize,
+      dedupeSince: new Date(now.getTime() - EVENTS_SHIM_LIMITS.dedupeWindowMs).toISOString(),
+    }
   );
-  if (duplicate) {
-    return { status: 200, body: { ok: true, duplicate: true, event_id: event.id, seq: event.seq } };
+  if (appended.duplicate) {
+    return {
+      status: 200,
+      body: { ok: true, duplicate: true, event_id: appended.eventId, seq: appended.seq },
+    };
   }
+  const { event } = appended;
 
-  const wake = shim.wake && !shim.wake.brokenAt ? wakeOne(deps, shim, event) : undefined;
-  if (wake && deps.defer) deps.defer(wake);
-  else if (wake) await wake;
+  const target = shim.wake && !shim.wake.brokenAt ? shim.wake : undefined;
+  if (!target) return { status: 202, body: { ok: true, event_id: event.id, seq: event.seq, wake: 'queued' } };
+  // Forward this post, then anything an earlier failure left pending.
+  const pass = deliverPending(deps, shim.id, target, [event.id]);
+  if (deps.defer) {
+    deps.defer(pass);
+    return { status: 202, body: { ok: true, event_id: event.id, seq: event.seq, wake: 'forwarding' } };
+  }
+  const done = await pass;
   return {
     status: 202,
-    body: {
-      ok: true,
-      event_id: event.id,
-      seq: event.seq,
-      wake: shim.wake && !shim.wake.brokenAt ? 'forwarded' : 'queued',
-    },
+    body: { ok: true, event_id: event.id, seq: event.seq, wake: done.stalled ? 'queued' : 'forwarded' },
   };
 }
 
-async function wakeOne(deps: EventsShimDeps, shim: ShimRecord, event: ShimEvent): Promise<void> {
-  const target = shim.wake!;
-  const result = await forwardWake({
-    url: target.url,
-    secret: target.secret,
-    event,
-    fetchImpl: deps.fetchImpl,
-  });
-  const at = clock(deps).toISOString();
-  if (result.ok) {
-    await deps.store.markDelivery(shim.id, [event.id], 'woken', at);
-    return;
-  }
-  await deps.store.markDelivery(shim.id, [event.id], 'pending', at, result.reason);
-  if (result.permanent) {
-    await deps.store.setWakeTarget(shim.id, { ...target, brokenAt: at, brokenReason: result.reason });
-  }
-}
-
-/** What the page shows: the feed and whether an agent is connected. */
+/**
+ * What the page shows: the feed, the URLs and whether an agent is connected.
+ *
+ * @param deps - The store and clock.
+ * @param shim - The inbox.
+ * @param urls - The host's URL shapes.
+ * @returns The feed as JSON.
+ */
 export async function feedFor(
   deps: EventsShimDeps,
   shim: ShimRecord,
@@ -228,6 +250,12 @@ export async function feedFor(
   };
 }
 
+/**
+ * A post as the page and the MCP tools show it.
+ *
+ * @param event - The stored post.
+ * @returns Its JSON form.
+ */
 export function publicEvent(event: ShimEvent): Record<string, unknown> {
   return {
     id: event.id,
@@ -244,7 +272,13 @@ export function publicEvent(event: ShimEvent): Record<string, unknown> {
   };
 }
 
-/** Replaces the webhook token; the old URL stops working immediately. */
+/**
+ * Replaces the webhook token; the old URL stops working immediately.
+ *
+ * @param deps - The store and clock.
+ * @param shim - The inbox.
+ * @returns The new hook token.
+ */
 export async function rotateHook(deps: EventsShimDeps, shim: ShimRecord): Promise<string> {
   const hookToken = mintToken(HOOK_TOKEN_PREFIX);
   await deps.store.rotateHookToken(shim.id, hookToken, await sha256Hex(hookToken));
@@ -255,6 +289,12 @@ export async function rotateHook(deps: EventsShimDeps, shim: ShimRecord): Promis
 /**
  * Stores the signing secret for a mode. For `bearer`, omitting `secret`
  * generates one, which is returned once.
+ *
+ * @param deps - The store.
+ * @param shim - The inbox.
+ * @param mode - Which verified URL the secret is for.
+ * @param secret - The secret, `undefined` to generate a bearer token, or `null` to remove it.
+ * @returns The generated bearer token, when one was generated.
  */
 export async function setModeSecret(
   deps: EventsShimDeps,

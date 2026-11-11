@@ -103,7 +103,14 @@ export interface EventsShimStore {
   /** Replaces the webhook token (old URL stops working at once). */
   rotateHookToken(shimId: string, hookToken: string, hookTokenHash: string): Promise<void>;
   setSecret(shimId: string, mode: SecretMode, secret: string | null): Promise<void>;
+  /** Sets or clears the wake link (link_relay_wake / unlink_relay_wake). */
   setWakeTarget(shimId: string, target: WakeTarget | null): Promise<void>;
+  /**
+   * Marks the wake link broken, but only if the current link is still the
+   * one linked at `linkedAt`: a late failure from an old link must never
+   * overwrite a newer link or recreate a removed one.
+   */
+  markWakeBroken(shimId: string, linkedAt: string, reason: string, at: string): Promise<void>;
   /** Records that the shim was used now (extends idle expiry). */
   touch(shimId: string, now: string, agent: boolean): Promise<void>;
   /**
@@ -119,33 +126,42 @@ export interface EventsShimStore {
     windows: { since: string; limit: number; name: 'hour' | 'day' }[]
   ): Promise<{ ok: true } | { ok: false; window: 'hour' | 'day' }>;
   /**
-   * Stores a post unless one with the same idempotency key exists for the
-   * shim; then returns that one with `duplicate: true`. Assigns `seq`,
-   * starts `delivery` at `pending`, and prunes beyond `feedSize`.
+   * Stores a post unless its idempotency key was seen for this shim since
+   * `dedupeSince`; then returns the original's id and seq with
+   * `duplicate: true`. Keys are kept in their own ledger, independent of
+   * feed pruning, until they are older than `dedupeSince`. Assigns `seq`,
+   * starts `delivery` at `pending`, and prunes the feed beyond `feedSize`.
    */
   appendEvent(
     shimId: string,
     event: NewShimEvent,
-    feedSize: number
-  ): Promise<{ event: ShimEvent; duplicate: boolean }>;
+    options: { feedSize: number; dedupeSince: string }
+  ): Promise<{ duplicate: false; event: ShimEvent } | { duplicate: true; eventId: string; seq: number }>;
   /** Newest first, at most `limit`. */
   listRecent(shimId: string, limit: number): Promise<ShimEvent[]>;
-  /** Oldest first: `pending` events, plus `woken` ones when `includeWoken`. */
-  listUndelivered(shimId: string, limit: number, includeWoken: boolean): Promise<ShimEvent[]>;
+  /** How many posts are still `pending`. */
+  countPending(shimId: string): Promise<number>;
   /**
-   * Sets the delivery state, moving only forward: `pending → woken → read`.
-   * `woken` never overwrites `read`, and `pending` (a failed wake, with
-   * `wakeError`) applies only to events still `pending`, so a late or
-   * overlapping wake result can never hand a post over twice.
+   * Atomically moves `pending` events to `state` and returns exactly the
+   * events this call moved: the oldest `limit`, or only `ids` when given.
+   * Two concurrent callers never receive the same event (e.g. `UPDATE …
+   * WHERE delivery = 'pending' … RETURNING` with `FOR UPDATE SKIP LOCKED`).
    */
-  markDelivery(
+  claimPending(
     shimId: string,
-    eventIds: string[],
-    state: DeliveryState,
-    at: string,
-    wakeError?: string
-  ): Promise<void>;
-  /** Deletes shims idle since before `idleBefore`, and feed rows older than `feedBefore` on idle shims. */
+    options: { limit: number; ids?: string[] },
+    state: 'woken' | 'read',
+    at: string
+  ): Promise<ShimEvent[]>;
+  /**
+   * Returns an event claimed for a wake to `pending` after the forward
+   * failed, recording `wakeError`. Applies only while it is still `woken`.
+   */
+  releaseWake(shimId: string, eventId: string, wakeError: string): Promise<void>;
+  /**
+   * Deletes shims idle since before `idleBefore`, feed rows on shims idle
+   * since before `feedBefore`, and idempotency keys older than `feedBefore`.
+   */
   prune(input: { idleBefore: string; feedBefore: string }): Promise<void>;
 }
 

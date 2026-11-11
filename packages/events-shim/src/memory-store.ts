@@ -15,6 +15,8 @@ interface Row {
   manageTokenHash: string;
   posts: string[];
   events: ShimEvent[];
+  /** Idempotency ledger, kept apart from the feed so pruning never forgets a key. */
+  keys: Map<string, { eventId: string; seq: number; at: string }>;
   nextSeq: number;
 }
 
@@ -57,6 +59,7 @@ export class MemoryEventsShimStore implements EventsShimStore {
       manageTokenHash: input.manageTokenHash,
       posts: [],
       events: [],
+      keys: new Map(),
       nextSeq: 1,
     });
     return structuredClone(shim);
@@ -120,11 +123,19 @@ export class MemoryEventsShimStore implements EventsShimStore {
     return { ok: true as const };
   }
 
-  async appendEvent(shimId: string, input: NewShimEvent, feedSize: number) {
+  async markWakeBroken(shimId: string, linkedAt: string, reason: string, at: string) {
     const row = this.row(shimId);
+    if (row.shim.wake && row.shim.wake.linkedAt === linkedAt) {
+      row.shim.wake = { ...row.shim.wake, brokenAt: at, brokenReason: reason };
+    }
+  }
+
+  async appendEvent(shimId: string, input: NewShimEvent, options: { feedSize: number; dedupeSince: string }) {
+    const row = this.row(shimId);
+    for (const [key, entry] of row.keys) if (entry.at < options.dedupeSince) row.keys.delete(key);
     if (input.idempotencyKey) {
-      const existing = row.events.find((event) => event.idempotencyKey === input.idempotencyKey);
-      if (existing) return { event: structuredClone(existing), duplicate: true };
+      const seen = row.keys.get(input.idempotencyKey);
+      if (seen) return { duplicate: true as const, eventId: seen.eventId, seq: seen.seq };
     }
     const event: ShimEvent = {
       ...input,
@@ -135,51 +146,56 @@ export class MemoryEventsShimStore implements EventsShimStore {
     };
     row.nextSeq += 1;
     row.events.push(event);
-    if (row.events.length > feedSize) row.events.splice(0, row.events.length - feedSize);
-    return { event: structuredClone(event), duplicate: false };
+    if (input.idempotencyKey)
+      row.keys.set(input.idempotencyKey, { eventId: event.id, seq: event.seq, at: input.receivedAt });
+    if (row.events.length > options.feedSize) row.events.splice(0, row.events.length - options.feedSize);
+    return { duplicate: false as const, event: structuredClone(event) };
   }
 
   async listRecent(shimId: string, limit: number) {
     return structuredClone(this.row(shimId).events.slice(-limit).reverse());
   }
 
-  async listUndelivered(shimId: string, limit: number, includeWoken: boolean) {
-    return structuredClone(
-      this.row(shimId)
-        .events.filter(
-          (event) => event.delivery === 'pending' || (includeWoken && event.delivery === 'woken')
-        )
-        .slice(0, limit)
-    );
+  async countPending(shimId: string) {
+    return this.row(shimId).events.filter((event) => event.delivery === 'pending').length;
   }
 
-  async markDelivery(
+  async claimPending(
     shimId: string,
-    eventIds: string[],
-    state: DeliveryState,
-    at: string,
-    wakeError?: string
+    options: { limit: number; ids?: string[] },
+    state: 'woken' | 'read',
+    at: string
   ) {
+    // Synchronous from read to write, so two callers can never claim the same event.
+    const claimed: ShimEvent[] = [];
     for (const event of this.row(shimId).events) {
-      if (!eventIds.includes(event.id)) continue;
-      // Forward only: pending → woken → read. A failure (pending) applies only to a
-      // still-pending event, and woken never overwrites read.
-      if (state === 'pending' && event.delivery !== 'pending') continue;
-      if (state === 'woken' && event.delivery === 'read') continue;
+      if (claimed.length >= options.limit) break;
+      if (event.delivery !== 'pending') continue;
+      if (options.ids && !options.ids.includes(event.id)) continue;
       event.delivery = state;
-      if (state === 'pending') {
-        if (wakeError) event.wakeError = wakeError;
-      } else {
-        event.deliveredAt = at;
-        delete event.wakeError;
-      }
+      event.deliveredAt = at;
+      delete event.wakeError;
+      claimed.push(structuredClone(event));
+    }
+    return claimed;
+  }
+
+  async releaseWake(shimId: string, eventId: string, wakeError: string) {
+    const event = this.row(shimId).events.find((candidate) => candidate.id === eventId);
+    if (event && event.delivery === 'woken') {
+      event.delivery = 'pending';
+      delete event.deliveredAt;
+      event.wakeError = wakeError;
     }
   }
 
   async prune(input: { idleBefore: string; feedBefore: string }) {
     for (const [id, row] of this.rows) {
       if (row.shim.lastUsedAt < input.idleBefore) this.rows.delete(id);
-      else if (row.shim.lastUsedAt < input.feedBefore) row.events = [];
+      else {
+        if (row.shim.lastUsedAt < input.feedBefore) row.events = [];
+        for (const [key, entry] of row.keys) if (entry.at < input.feedBefore) row.keys.delete(key);
+      }
     }
   }
 }

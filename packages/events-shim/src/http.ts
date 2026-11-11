@@ -36,7 +36,11 @@ export interface EventsShimHttpOptions {
  * - `POST /h/<hook token>[/<mode>]` receives a webhook post
  * - `POST /t/<mcp token>/mcp` is the MCP endpoint (Streamable HTTP, stateless)
  *
- * Returns `null` when `path` is not one of these.
+ *
+ * @param request - The incoming request.
+ * @param path - The request path after the host's mount point, e.g. `/h/<token>`.
+ * @param options - The store, URL shapes, allowed relay origins and host hooks.
+ * @returns The response, or `null` when `path` is not one of these routes.
  */
 export async function handleEventsShimRequest(
   request: Request,

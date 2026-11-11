@@ -8,6 +8,11 @@ export type WakeTargetCheck = { ok: true; url: string } | { ok: false; message: 
 /**
  * Accepts only a Relaycast inbound-webhook URL on an allowed origin, so a
  * caller holding the MCP URL cannot make the host post to arbitrary URLs.
+ *
+ * @param rawUrl - The URL the agent's relay printed.
+ * @param secret - The `wh_live_` secret it printed.
+ * @param allowedOrigins - Origins a wake link may point at.
+ * @returns The normalized URL, or why it was refused.
  */
 export function checkWakeTarget(
   rawUrl: string,
@@ -45,8 +50,12 @@ export function checkWakeTarget(
 }
 
 /**
- * The message Agent Relay injects into the session. Agent Relay adds its
- * own frame (sender `webhook`, message ref); this is the body inside it.
+ * The message Agent Relay injects into the session. Agent Relay adds its own
+ * frame (sender `webhook`, message ref); this is the body inside it. A nudge
+ * (see `isNudge`) is returned verbatim.
+ *
+ * @param event - The post.
+ * @returns The text to deliver.
  */
 export function wakeText(event: ShimEvent): string {
   // A nudge: an authenticated sender (any mode but open) posting text/plain
@@ -74,7 +83,13 @@ export function wakeText(event: ShimEvent): string {
   return lines.join('\n');
 }
 
-/** A verbatim text post from a sender the shim authenticated. */
+/**
+ * Whether a post is a nudge: `text/plain` from a sender the shim authenticated
+ * (any mode but `open`), delivered as exactly that text.
+ *
+ * @param event - The post's mode, content type and body.
+ * @returns Whether to deliver it verbatim.
+ */
 export function isNudge(event: Pick<ShimEvent, 'mode' | 'contentType' | 'body'>): boolean {
   return event.mode !== 'open' && /^text\/plain\b/i.test(event.contentType) && event.body.trim().length > 0;
 }
@@ -95,7 +110,12 @@ export type WakeResult =
   /** `permanent`: the hook is gone or the secret is wrong; stop forwarding until relinked. */
   | { ok: false; permanent: boolean; reason: string };
 
-/** Posts one event to the agent's Relaycast inbound webhook. */
+/**
+ * Posts one event to the agent's Relaycast inbound webhook.
+ *
+ * @param input - The hook URL and secret, the event, optional replacement text, fetch and timeout.
+ * @returns `ok`, or the reason and whether the refusal is permanent.
+ */
 export async function forwardWake(input: {
   url: string;
   secret: string;

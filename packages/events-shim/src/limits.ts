@@ -26,6 +26,8 @@ export const EVENTS_SHIM_LIMITS = Object.freeze({
   wakePreviewChars: 6_000,
   /** Longest accepted Idempotency-Key header. */
   maxIdempotencyKeyLength: 200,
+  /** How long an idempotency key keeps a retried post from arriving twice. */
+  dedupeWindowMs: 24 * 60 * 60 * 1000,
   /** Accepted clock skew for timestamped signatures (Stripe, Linear). */
   signatureToleranceMs: 5 * 60 * 1000,
 });
