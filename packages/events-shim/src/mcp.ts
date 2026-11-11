@@ -132,7 +132,7 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
         state === 'linked'
           ? [
               'You are set: each post is injected into this session by Agent Relay and wakes it when idle.',
-              'Give the person (or whoever sends the webhooks) webhook_url, or the matching verified_urls entry for a sender that signs its posts or sends a bearer token.',
+              'Give the person (or whoever sends the webhooks) webhook_url: anyone holding it can post. For a sender that signs its posts (GitHub, Stripe, Linear) or sends a bearer token, use the matching verified_urls entry instead, once its secret is set on the page that created this inbox (until then that URL refuses posts with 409).',
               'Tell the person you are watching, then end your turn. Do not poll.',
             ]
           : [

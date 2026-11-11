@@ -145,14 +145,17 @@ export interface EventsShimStore {
   /** Newest first, at most `limit`. */
   listRecent(shimId: string, limit: number): Promise<ShimEvent[]>;
   /**
-   * Inboxes the recovery sweep should re-drain: a wake link that is set and
-   * not broken, and at least one claimable post (`pending`, or `sending`
-   * whose claim is older than `staleBefore`) received before
-   * `receivedBefore`. Oldest stalled post first, at most `limit`.
+   * Inboxes the recovery sweep should re-drain: used since `activeSince` (not
+   * expired), a wake link that is set and not broken, and at least one
+   * claimable post (`pending`, or `sending` whose claim is older than
+   * `staleBefore`) received before `receivedBefore`. At most `limit`, in
+   * random order (`ORDER BY random()`), so inboxes whose relay keeps failing
+   * cannot take every slot from later ones run after run.
    */
   listStalledWakes(input: {
     staleBefore: string;
     receivedBefore: string;
+    activeSince: string;
     limit: number;
   }): Promise<ShimRecord[]>;
   /** How many posts the agent has not received: `pending`, plus `sending` claims that expired before `staleBefore`. */

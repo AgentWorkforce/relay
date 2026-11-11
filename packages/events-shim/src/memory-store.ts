@@ -156,20 +156,29 @@ export class MemoryEventsShimStore implements EventsShimStore {
     return structuredClone(this.row(shimId).events.slice(-limit).reverse());
   }
 
-  async listStalledWakes(input: { staleBefore: string; receivedBefore: string; limit: number }) {
-    const stalled: { oldest: string; shim: ShimRecord }[] = [];
+  async listStalledWakes(input: {
+    staleBefore: string;
+    receivedBefore: string;
+    activeSince: string;
+    limit: number;
+  }) {
+    const stalled: ShimRecord[] = [];
     for (const row of this.rows.values()) {
-      if (!row.shim.wake || row.shim.wake.brokenAt) continue;
-      const waiting = row.events
-        .filter((event) => claimable(event, input.staleBefore) && event.receivedAt < input.receivedBefore)
-        .map((event) => event.receivedAt)
-        .sort();
-      if (waiting.length > 0) stalled.push({ oldest: waiting[0]!, shim: this.copy(row) });
+      if (!row.shim.wake || row.shim.wake.brokenAt || row.shim.lastUsedAt < input.activeSince) continue;
+      if (
+        row.events.some(
+          (event) => claimable(event, input.staleBefore) && event.receivedAt < input.receivedBefore
+        )
+      ) {
+        stalled.push(this.copy(row));
+      }
     }
-    return stalled
-      .sort((a, b) => (a.oldest < b.oldest ? -1 : a.oldest > b.oldest ? 1 : 0))
-      .slice(0, input.limit)
-      .map((entry) => entry.shim);
+    // Random order, so failing inboxes cannot hold every slot run after run.
+    for (let i = stalled.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [stalled[i], stalled[j]] = [stalled[j]!, stalled[i]!];
+    }
+    return stalled.slice(0, Math.max(0, input.limit));
   }
 
   async countPending(shimId: string, staleBefore: string) {

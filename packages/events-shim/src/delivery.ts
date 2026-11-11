@@ -169,6 +169,8 @@ export interface WakeSweep {
  * one attempt per post per sweep, without in-sweep retry delays; the next
  * sweep retries. Expired inboxes are skipped. Safe to run concurrently with
  * delivery passes: every post is claimed atomically under the current link.
+ * The store picks inboxes in random order, so inboxes whose relay keeps
+ * failing cannot keep later ones from being swept.
  *
  * @param deps - The store, fetch and clock.
  * @param options - `limit` inboxes per sweep (default `sweepShimLimit`) and `concurrency` (default 5).
@@ -182,6 +184,7 @@ export async function recoverStalledWakes(
   const shims = await deps.store.listStalledWakes({
     staleBefore: new Date(now.getTime() - EVENTS_SHIM_LIMITS.sendLeaseMs).toISOString(),
     receivedBefore: new Date(now.getTime() - EVENTS_SHIM_LIMITS.sweepSettleMs).toISOString(),
+    activeSince: new Date(now.getTime() - EVENTS_SHIM_LIMITS.idleExpiryMs).toISOString(),
     limit: options.limit ?? EVENTS_SHIM_LIMITS.sweepShimLimit,
   });
   const live = shims.filter(

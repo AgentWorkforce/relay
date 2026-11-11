@@ -754,7 +754,12 @@ describe('events shim', () => {
     await h.post(shim.webhook_url, { stalled: 1 });
     const states = async () => (await h.store.listRecent(shimId, 10)).map((e) => e.delivery);
     const shimId = (
-      await h.store.listStalledWakes({ staleBefore: '9999', receivedBefore: '9999', limit: 1 })
+      await h.store.listStalledWakes({
+        staleBefore: '9999',
+        receivedBefore: '9999',
+        activeSince: '0',
+        limit: 1,
+      })
     )[0]!.id;
     expect(await states()).toEqual(['pending']);
 
@@ -786,5 +791,60 @@ describe('events shim', () => {
     h.setRelayStatus(200);
     h.advance(EVENTS_SHIM_LIMITS.idleExpiryMs + 1);
     expect(await recoverStalledWakes(h.deps)).toEqual({ shims: 0, forwarded: 0, stalled: 0 });
+  });
+
+  describe('recovery sweep selection', () => {
+    const T = new Date('2026-11-11T12:00:00.000Z');
+    const old = new Date(T.getTime() - 5 * 60_000).toISOString();
+    async function inbox(store: MemoryEventsShimStore, hook: string, lastUsedAt = T.toISOString()) {
+      const shim = await store.createShim({
+        id: crypto.randomUUID(),
+        mcpTokenHash: `m-${hook}`,
+        hookToken: `esh_${hook}`,
+        hookTokenHash: `h-${hook}`,
+        manageTokenHash: `k-${hook}`,
+        now: lastUsedAt,
+      });
+      await store.setWakeTarget(shim.id, {
+        url: `${RELAY}/v1/hooks/${hook}`,
+        secret: RELAY_HOOK.secret,
+        linkedAt: old,
+      });
+      await store.appendEvent(
+        shim.id,
+        { receivedAt: old, mode: 'open', contentType: 'application/json', body: '{}', headers: {} },
+        { feedSize: 50, dedupeSince: new Date(0).toISOString() }
+      );
+      return shim.id;
+    }
+    const relay =
+      (failing: string[]): typeof fetch =>
+      async (input) =>
+        new Response('{}', {
+          status: failing.some((hook) => String(input).endsWith(`/${hook}`)) ? 503 : 200,
+        });
+    const delivery = async (store: MemoryEventsShimStore, id: string) =>
+      (await store.listRecent(id, 1))[0]!.delivery;
+
+    it('an inbox whose relay keeps failing cannot starve a healthy one', async () => {
+      const store = new MemoryEventsShimStore();
+      await inbox(store, 'failing');
+      const healthy = await inbox(store, 'healthy');
+      const deps = { store, now: () => T, fetchImpl: relay(['failing']) };
+      for (let sweep = 0; sweep < 40 && (await delivery(store, healthy)) !== 'woken'; sweep += 1) {
+        await recoverStalledWakes(deps, { limit: 1 });
+      }
+      expect(await delivery(store, healthy)).toBe('woken');
+    });
+
+    it('expired inboxes do not take the slots of live ones', async () => {
+      const store = new MemoryEventsShimStore();
+      const expired = new Date(T.getTime() - EVENTS_SHIM_LIMITS.idleExpiryMs - 1).toISOString();
+      for (const hook of ['gone1', 'gone2', 'gone3']) await inbox(store, hook, expired);
+      const live = await inbox(store, 'live');
+      const sweep = await recoverStalledWakes({ store, now: () => T, fetchImpl: relay([]) }, { limit: 1 });
+      expect(sweep).toEqual({ shims: 1, forwarded: 1, stalled: 0 });
+      expect(await delivery(store, live)).toBe('woken');
+    });
   });
 });
