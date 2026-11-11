@@ -10,7 +10,7 @@ use super::report_back;
 use super::wire::{HarnessId, SpawnRequest};
 use crate::relay::daemon::Core;
 use crate::relay::harness::{claude, codex};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Harnesses whose spawns can start as a copy of a session.
@@ -28,6 +28,16 @@ pub struct ForkSource {
 /// How long finding the source session's folder may take: it reads the
 /// harness's own records, which may be on a slow or sleeping volume.
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
+
+// A timed-out lookup cannot be cancelled: its permit stays with the worker
+// until the read finishes, so stalled volumes cannot pile up blocking threads
+// (the same rule as the working-folder check in `invoke`).
+static FORK_LOOKUPS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+
+/// A fork runs where its source runs, so a requested folder must be that one.
+fn folder_matches(asked: Option<&Path>, source: &Path) -> bool {
+    asked.is_none_or(|asked| asked == source)
+}
 
 impl Core {
     pub(super) async fn fork_source(
@@ -62,7 +72,12 @@ impl Core {
             .ok_or_else(|| {
                 format!("spawn_fork_not_found: @{source} is not an agent on this computer")
             })?;
-        let requester = report_back::requester(&workspace, &request.invocation_id).await;
+        let requester = report_back::requester(
+            &workspace,
+            &self.config.app_data_dir,
+            &request.invocation_id,
+        )
+        .await;
         let owner = self.verified_owner(&registration).await;
         if requester.is_none()
             || owner.is_none()
@@ -75,20 +90,24 @@ impl Core {
         }
         let spawner = self.plugins.spawner.clone();
         let (harness, target) = (request.harness, registration.target.clone());
-        let lookup = tokio::task::spawn_blocking(move || spawner.fork_directory(harness, &target));
+        let lookup = async move {
+            let permit = FORK_LOOKUPS.acquire().await.ok()?;
+            tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                spawner.fork_directory(harness, &target)
+            })
+            .await
+            .ok()
+            .flatten()
+        };
         let directory = tokio::time::timeout(LOOKUP_TIMEOUT, lookup)
             .await
             .ok()
-            .and_then(Result::ok)
             .flatten()
             .ok_or_else(|| {
                 format!("spawn_fork_unavailable: {label} on this computer cannot copy @{source}'s session")
             })?;
-        if request
-            .directory
-            .as_ref()
-            .is_some_and(|asked| *asked != directory)
-        {
+        if !folder_matches(request.directory.as_deref(), &directory) {
             return Err(
                 "spawn_invalid_input: a fork runs in the folder of the session it copies".into(),
             );
@@ -122,6 +141,14 @@ mod tests {
         assert!(supported(claude::ID));
         assert!(supported(codex::ID));
         assert!(!supported(crate::relay::harness::opencode::ID));
+    }
+
+    #[test]
+    fn a_fork_runs_only_in_its_sources_folder() {
+        let source = Path::new("/work/app");
+        assert!(folder_matches(None, source));
+        assert!(folder_matches(Some(source), source));
+        assert!(!folder_matches(Some(Path::new("/work/other")), source));
     }
 
     #[test]

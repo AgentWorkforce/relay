@@ -589,12 +589,16 @@ pub fn invoke(frame: &Value) -> Option<Result<Invoke, (String, String)>> {
         Some(path) if Path::new(path).is_absolute() => Some(PathBuf::from(path)),
         Some(_) => return fail("spawn_invalid_input: worker_cwd must be an absolute path"),
     };
-    let fork_from = match input["fork_from"].as_str() {
-        None | Some("") => None,
-        Some(source) => match valid_name(Some(source)) {
+    // A value that is present but not a name is refused, not read as a plain
+    // spawn: that would start an empty agent the caller believes is a fork.
+    let fork_from = match &input["fork_from"] {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(source) if source.is_empty() => None,
+        serde_json::Value::String(source) => match valid_name(Some(source)) {
             Some(source) if source != name => Some(source),
             _ => return fail("spawn_invalid_input: fork_from must name another agent"),
         },
+        _ => return fail("spawn_invalid_input: fork_from must name another agent"),
     };
     Some(Ok(Invoke::Spawn(SpawnRequest {
         invocation_id,
@@ -963,7 +967,14 @@ mod tests {
             panic!("not a spawn")
         };
         assert_eq!(request.fork_from.as_deref(), Some("planner"));
-        for source in ["planner-fork", "-planner", "plan ner"] {
+        for source in [
+            json!("planner-fork"),
+            json!("-planner"),
+            json!("plan ner"),
+            json!({"name": "planner"}),
+            json!(7),
+            json!(["planner"]),
+        ] {
             assert!(matches!(
                 spawn(json!({"name": "planner-fork", "fork_from": source})),
                 Some(Err((_, error))) if error.starts_with("spawn_invalid_input")
