@@ -6,8 +6,7 @@ import type { ShimRecord, VerificationMode } from './types.js';
 export type HeaderReader = Pick<Headers, 'get'>;
 
 export type VerifyResult =
-  | { ok: true }
-  | { ok: false; status: 401 | 403 | 409; code: string; message: string };
+  { ok: true } | { ok: false; status: 401 | 403 | 409; code: string; message: string };
 
 /**
  * Checks a post against its URL's mode. `open` accepts anyone holding the URL;
