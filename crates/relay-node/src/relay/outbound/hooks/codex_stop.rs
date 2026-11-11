@@ -324,6 +324,15 @@ impl Outbound {
                 .map(|(name, address)| (name.as_str(), address.as_str())),
             &commands,
         );
+        // This startup response already supplies the verified identity.
+        // The late tool fallback must not repeat it; a later resume or
+        // compaction still receives its own unconditional startup context.
+        if let (Some((_, address)), Some(inbox)) = (
+            identity.as_ref(),
+            self.core.plugins.codex_stop_hook.as_ref(),
+        ) {
+            inbox.take_registered_identity(&session.target.id, address);
+        }
         Ok(json!({"hookSpecificOutput": {
             "hookEventName": SESSION_START,
             "additionalContext": text,
