@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Agents can create a channel: `agent-relay-probe relay subscribe-channel <channel> --create [--topic <topic>]` creates the channel when it does not exist (`POST /channels`) and joins it; an existing channel is joined as before. A topic may start with a hyphen.
 - `@agent-relay/core-bridge` exposes the complete schema-v2 service-caller lifecycle: secure caller descriptors, identity checks, result-inbox open/next/settle/close helpers and disconnect.
 - `agent-relay cloud worker start --local-agent` opts into the supported Relayflows local worker, including daemon starts. TypeScript assignments use the SDK’s authored `.flow.ts` entrypoint.
 - `agent-relay cloud worker register` accepts exactly one of `--token`, `--token-file` or `--token-stdin`, so enrollment can read a projected Secret file or pipe without putting the credential in process arguments. File and stdin inputs are limited to 16 KiB; interactive stdin is refused.

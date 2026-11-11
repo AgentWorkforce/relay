@@ -203,8 +203,9 @@ pub enum RelayCommands {
         /// Create the channel when it does not exist, then join it.
         #[arg(long, conflicts_with = "remove")]
         create: bool,
-        /// The new channel's topic (with --create).
-        #[arg(long, requires = "create")]
+        /// The new channel's topic (with --create). It may start with a
+        /// hyphen (`- weekly goals`).
+        #[arg(long, requires = "create", allow_hyphen_values = true)]
         topic: Option<String>,
         /// The session socket, as the hint names it.
         #[arg(long)]
@@ -548,4 +549,38 @@ pub fn run(command: RelayCommands) -> Result<()> {
 /// The build a command's `--dev` and `--profile` name.
 fn build(development: bool, profile: Option<String>) -> Result<relay::outbound::Build> {
     relay::outbound::Build::named(development, profile.as_deref()).map_err(user_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RelayCommands;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        command: RelayCommands,
+    }
+
+    #[test]
+    fn a_topic_starting_with_a_hyphen_is_a_value_not_a_flag() {
+        let cli = Cli::try_parse_from([
+            "relay",
+            "subscribe-channel",
+            "planning",
+            "--create",
+            "--topic",
+            "- weekly goals",
+            "--socket",
+            "/tmp/session.sock",
+        ])
+        .expect("a topic may start with a hyphen");
+        match cli.command {
+            RelayCommands::SubscribeChannel { topic, create, .. } => {
+                assert!(create);
+                assert_eq!(topic.as_deref(), Some("- weekly goals"));
+            }
+            _ => panic!("subscribe-channel"),
+        }
+    }
 }
