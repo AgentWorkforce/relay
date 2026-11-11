@@ -279,20 +279,6 @@ impl Caller {
     where
         F: std::future::Future<Output = Result<SpawnControlInvocation, RpcError>>,
     {
-        self.admitted_keeping(call, run, |_| {}).await
-    }
-
-    /// [`Caller::admitted`], handing a receipt the plugin could not record
-    /// to `unrecorded`, to keep it for the retry.
-    async fn admitted_keeping<F>(
-        &self,
-        call: SpawnCall<'_>,
-        run: F,
-        unrecorded: impl FnOnce(&SpawnControlInvocation),
-    ) -> Result<SpawnControlInvocation, RpcError>
-    where
-        F: std::future::Future<Output = Result<SpawnControlInvocation, RpcError>>,
-    {
         let (caller, plugin) = match self {
             Caller::Session { recheck, .. } => {
                 if let Some(plugin) = recheck {
@@ -311,10 +297,7 @@ impl Caller {
         let permit = plugin.admit(caller, &call)?;
         let outcome = run.await;
         match (plugin.record(permit, &outcome), outcome) {
-            (Err(error), Ok(receipt)) => {
-                unrecorded(&receipt);
-                Err(error)
-            }
+            (Err(error), Ok(_)) => Err(error),
             (_, outcome) => outcome,
         }
     }
@@ -351,19 +334,22 @@ fn caller_in(
     })
 }
 
-/// The directory an external caller may launch in. Restricted paths are
-/// resolved once and the resolved path is the one sent to Relaycast, so a
-/// caller cannot swap an allowed symlink while the node lookup is in flight.
-fn scoped_directory(
-    caller: &ExternalCaller,
-    harness: &str,
-    directory: &str,
-) -> Result<std::path::PathBuf, RpcError> {
+fn scoped_harness(caller: &ExternalCaller, harness: &str) -> Result<(), RpcError> {
     if let Some(harnesses) = &caller.harnesses {
         if !harnesses.iter().any(|allowed| allowed == harness) {
             return Err(outside_scope());
         }
     }
+    Ok(())
+}
+
+/// The directory an external caller may launch in. Restricted paths are
+/// resolved once and the resolved path is the one sent to Relaycast, so a
+/// caller cannot swap an allowed symlink while the request is in flight.
+fn scoped_directory(
+    caller: &ExternalCaller,
+    directory: &str,
+) -> Result<std::path::PathBuf, RpcError> {
     let Some(roots) = &caller.directory_roots else {
         return Ok(directory.into());
     };
@@ -466,6 +452,13 @@ fn receipt(data: &Value) -> Result<SpawnControlInvocation, RpcError> {
     })
 }
 
+fn strict_spawn_receipt(data: &Value) -> Result<SpawnControlInvocation, RpcError> {
+    if data["spawn_contract_applied"] != "relay.spawn.invoke.logical/1" {
+        return Err(malformed());
+    }
+    receipt(data)
+}
+
 /// Only stable allowlisted codes cross the bridge. Legacy plain errors append
 /// free-form reasons; structured details are projected to their code alone.
 fn error_code(data: &Value) -> Option<String> {
@@ -540,27 +533,8 @@ async fn invoke(
         workspace: &workspace,
         request: SpawnRequest::Invoke(&params),
     };
-    // A receipt whose record failed is kept for this caller and key; the
-    // same request again returns it before the node's liveness is checked,
-    // since the invocation was already accepted and may not be sent again
-    // once the node went offline or lost its handlers.
-    let folder = &core.config.app_data_dir;
-    let external = caller.external().map(|external| external.agent_id.as_str());
-    let run = async {
-        let kept = external.and_then(|caller_id| {
-            claims::unrecorded_receipt(folder, &workspace, caller_id, &params)
-        });
-        match kept {
-            Some(receipt) => Ok(receipt),
-            None => invoke_as(&caller, &workspace, harness, &params).await,
-        }
-    };
     caller
-        .admitted_keeping(call, run, |receipt| {
-            if let Some(caller_id) = external {
-                claims::keep_unrecorded_receipt(folder, &workspace, caller_id, &params, receipt);
-            }
-        })
+        .admitted(call, invoke_as(&caller, &workspace, harness, &params))
         .await
 }
 
@@ -570,24 +544,76 @@ async fn invoke_as(
     harness: crate::relay::harness::HarnessId,
     params: &SpawnInvokeParams,
 ) -> Result<SpawnControlInvocation, RpcError> {
-    let directory = match caller.external() {
-        Some(external) => scoped_directory(external, &params.harness, &params.directory)?,
-        None => params.directory.clone().into(),
-    };
-    let directory = directory.to_str().ok_or_else(outside_scope)?;
     let http = caller.http(workspace)?;
-    let workspace_client = workspace_http(workspace)?;
-    let listed = targets(workspace.kind(), &workspace_client).await?;
-    if !listed.targets.iter().any(|t| {
-        t.id == params.node_id
-            && t.name == params.node_name
-            && t.live
-            && t.handlers_live
-            && !t.stale
-            && t.capabilities.contains(&harness.capability())
-    }) {
-        return Err(refused());
+    if let Some(external) = caller.external() {
+        scoped_harness(external, &params.harness)?;
+        let logical = json!({
+            "schema": "relay.spawn.invoke.logical/1",
+            "target_node_id": params.node_id,
+            "target_node": params.node_name,
+            "name": params.name,
+            "cli": params.harness,
+            "task": params.task,
+            "directory": params.directory,
+            "verify_ready": true,
+        });
+        let options = || {
+            Some(RequestOptions::with_idempotency_key(
+                params.idempotency_key.clone(),
+            ))
+        };
+        let directory = match scoped_directory(external, &params.directory) {
+            Ok(directory) => directory,
+            Err(scope_error) => {
+                let replay: relaycast::Result<Value> = http
+                    .post(
+                        "/v1/actions/spawn/replay",
+                        Some(json!({"logical_request": logical})),
+                        options(),
+                    )
+                    .await;
+                return match replay {
+                    Ok(result) => strict_spawn_receipt(&result),
+                    Err(error) if error.is_not_found() => Err(scope_error),
+                    Err(error) => Err(RpcError::from_relaycast(&error)),
+                };
+            }
+        };
+        let directory = directory.to_str().ok_or_else(outside_scope)?;
+        let body = json!({"input": {
+            "spawn_contract": "relay.spawn.invoke.logical/1",
+            "target_node_id": params.node_id,
+            "target_node": params.node_name,
+            "name": params.name,
+            "cli": params.harness,
+            "task": params.task,
+            "worker_cwd": directory,
+            "verify_ready": true,
+            "logical_request": logical,
+        }});
+        let result: Value = http
+            .post("/v1/actions/spawn/strict-invoke", Some(body), options())
+            .await
+            .map_err(|error| RpcError::from_relaycast(&error))?;
+        return strict_spawn_receipt(&result);
     }
+
+    // Session calls retain their local workspace target preflight.
+    {
+        let workspace_client = workspace_http(workspace)?;
+        let listed = targets(workspace.kind(), &workspace_client).await?;
+        if !listed.targets.iter().any(|t| {
+            t.id == params.node_id
+                && t.name == params.node_name
+                && t.live
+                && t.handlers_live
+                && !t.stale
+                && t.capabilities.contains(&harness.capability())
+        }) {
+            return Err(refused());
+        }
+    }
+    let directory = params.directory.as_str();
     let body = json!({"input": {"name": params.name, "cli": params.harness, "task": params.task, "target_node": params.node_name, "worker_cwd": directory, "verify_ready": true}});
     let result: Value = http
         .post(
