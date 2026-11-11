@@ -38,6 +38,8 @@ pub(super) struct State {
     /// unregistered chat gets (context, not a reason to keep a turn open).
     /// Bounded by [`GUIDED_LIMIT`].
     registration_guidance: HashSet<String>,
+    /// Discovery has already been nudged by a verified hook for this thread.
+    discovery_requested: HashSet<String>,
     /// By lowercase thread id.
     held: HashMap<String, VecDeque<Held>>,
     /// Handed over by the hook, by message id, with when.
@@ -60,6 +62,23 @@ pub struct StopHookInbox {
 }
 
 impl StopHookInbox {
+    /// Whether a verified hook may still request its first discovery pass.
+    pub(crate) fn needs_discovery_refresh(&self, thread: &str) -> bool {
+        !self
+            .state()
+            .discovery_requested
+            .contains(&thread.to_lowercase())
+    }
+
+    /// Only a kernel-verified hook may consume this bounded one-time nudge.
+    pub(crate) fn take_discovery_refresh(&self, thread: &str) -> bool {
+        let mut state = self.state();
+        if state.discovery_requested.len() >= GUIDED_LIMIT {
+            state.discovery_requested.clear();
+        }
+        state.discovery_requested.insert(thread.to_lowercase())
+    }
+
     pub(crate) fn needs_registration_guidance(&self, thread: &str) -> bool {
         !self
             .state()

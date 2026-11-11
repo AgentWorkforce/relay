@@ -18,6 +18,57 @@ impl CodexRuntimeProof {
         &self.thread
     }
 
+    /// New desktop builds can leave `has_user_event` unset for a real
+    /// composer or Android Remote Control turn. Trust native attribution
+    /// from this held root rollout, never a prompt's text or role alone.
+    pub(crate) fn has_native_user_turn(&self) -> bool {
+        const MAX_SCAN: u64 = 512 * 1024;
+        if file_birth_ns(&self.rollout) != Some(self.birth)
+            || rollout_proof(&self.rollout, &self.thread) != Some(RolloutProof::Root)
+        {
+            return false;
+        }
+        let Ok(file) = std::fs::File::open(&self.rollout) else {
+            return false;
+        };
+        let mut reader = std::io::BufReader::new(std::io::Read::take(file, MAX_SCAN));
+        let mut line = String::new();
+        for _ in 0..64 {
+            line.clear();
+            if reader.read_line(&mut line).ok().is_none_or(|n| n == 0) || !line.ends_with('\n') {
+                return false;
+            }
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                return false;
+            };
+            if value["type"] != "event_msg" || value["payload"]["type"] != "task_started" {
+                continue;
+            }
+            let payload = &value["payload"];
+            let attribution = &payload["turn_attribution"];
+            let Some(turn) = payload["turn_id"].as_str() else {
+                continue;
+            };
+            if crate::relay::store::is_uuid(turn)
+                && matches!(
+                    attribution["turn_trigger"].as_str(),
+                    Some("composer" | "remote_android")
+                )
+                && attribution["turn_id"].as_str() == Some(turn)
+                && attribution["root_turn_id"].as_str() == Some(turn)
+                && attribution
+                    .get("parent_turn_id")
+                    .is_some_and(serde_json::Value::is_null)
+                && attribution
+                    .get("initiating_agent_path")
+                    .is_some_and(serde_json::Value::is_null)
+            {
+                return file_birth_ns(&self.rollout) == Some(self.birth);
+            }
+        }
+        false
+    }
+
     pub(crate) fn current(&self, table: &dyn ProcessTable, uid: u32) -> bool {
         if self.process.uid != uid
             || table.process(self.process.pid) != Some(self.process)

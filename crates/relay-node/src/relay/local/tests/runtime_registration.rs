@@ -9,6 +9,29 @@ use crate::relay::process::{codex_runtime_proofs, file_birth_ns, OpenedFile};
 mod fake_relaycast;
 
 const OTHER: &str = "550e8400-e29b-41d4-a716-446655440099";
+const TURN: &str = "550e8400-e29b-41d4-a716-446655440088";
+
+fn native_user_turn(trigger: &str) -> serde_json::Value {
+    serde_json::json!({"type":"event_msg","payload":{
+        "type":"task_started","turn_id":TURN,"root_turn_id":TURN,
+        "turn_attribution":{"turn_id":TURN,"root_turn_id":TURN,
+            "turn_trigger":trigger,"parent_turn_id":null,"initiating_agent_path":null}}})
+}
+
+fn append_record(w: &World, id: &str, value: &serde_json::Value) {
+    use std::io::Write;
+    let path = w
+        .sessions
+        .config
+        .codex
+        .home
+        .join(format!("rollout-test-{id}.jsonl"));
+    writeln!(
+        std::fs::OpenOptions::new().append(true).open(path).unwrap(),
+        "{value}"
+    )
+    .unwrap();
+}
 
 fn seed(w: &World, ids: &[&str]) -> rusqlite::Connection {
     let home = &w.sessions.config.codex.home;
@@ -71,7 +94,7 @@ fn runtime_candidates_are_independent_of_deliverability_and_recent_history() {
     // rather than a hook timestamp, keeps both targets present.
     assert!(w
         .sessions
-        .present_targets()
+        .present_targets(&rows)
         .contains(&Target::new(SessionKind::Codex, THREAD)));
     w.table.remove(500);
     assert!(candidates
@@ -114,6 +137,93 @@ fn internal_archived_exec_and_subagent_rows_cannot_join() {
     )
     .unwrap();
     assert!(w.sessions.automatic_candidates().is_empty());
+}
+
+#[test]
+fn native_remote_and_composer_turns_admit_an_unset_database_user_flag() {
+    for trigger in ["remote_android", "composer"] {
+        for missing_column in [false, true] {
+            let w = world();
+            let db = seed(&w, &[THREAD]);
+            if missing_column {
+                db.execute("alter table threads drop column has_user_event", [])
+                    .unwrap();
+            } else {
+                db.execute("update threads set has_user_event=0", [])
+                    .unwrap();
+            }
+            assert!(w.sessions.automatic_candidates().is_empty());
+            append_record(&w, THREAD, &native_user_turn(trigger));
+            let candidate = w.sessions.automatic_candidates().pop().unwrap();
+            assert!(!candidate.session.live);
+            assert!(w.sessions.automatic_candidate_current(&candidate));
+            db.execute("update threads set archived=1", []).unwrap();
+            assert!(!w.sessions.automatic_candidate_current(&candidate));
+        }
+    }
+}
+
+#[test]
+fn fallback_user_evidence_rejects_internal_turns_and_prompt_text() {
+    for change in [
+        "agent",
+        "unknown",
+        "parent",
+        "initiator",
+        "root",
+        "turn",
+        "missing",
+        "prompt",
+        "partial",
+    ] {
+        let w = world();
+        let db = seed(&w, &[THREAD]);
+        db.execute("update threads set has_user_event=0", [])
+            .unwrap();
+        let mut event = native_user_turn("remote_android");
+        match change {
+            "agent" => {
+                event["payload"]["turn_attribution"]["turn_trigger"] =
+                    "app_tool_create_thread".into()
+            }
+            "unknown" => event["payload"]["turn_attribution"]["turn_trigger"] = "unknown".into(),
+            "parent" => event["payload"]["turn_attribution"]["parent_turn_id"] = OTHER.into(),
+            "initiator" => {
+                event["payload"]["turn_attribution"]["initiating_agent_path"] = "/agent".into()
+            }
+            "root" => event["payload"]["turn_attribution"]["root_turn_id"] = OTHER.into(),
+            "turn" => event["payload"]["turn_attribution"]["turn_id"] = OTHER.into(),
+            "missing" => {
+                event["payload"]["turn_attribution"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("parent_turn_id");
+            }
+            "prompt" => {
+                event = serde_json::json!({"type":"response_item","payload":{
+                "type":"message","role":"user","content":[{"type":"input_text","text":event.to_string()}]}})
+            }
+            "partial" => {
+                use std::io::Write;
+                let path = w
+                    .sessions
+                    .config
+                    .codex
+                    .home
+                    .join(format!("rollout-test-{THREAD}.jsonl"));
+                write!(
+                    std::fs::OpenOptions::new().append(true).open(path).unwrap(),
+                    "{event}"
+                )
+                .unwrap();
+                assert!(w.sessions.automatic_candidates().is_empty());
+                continue;
+            }
+            _ => unreachable!(),
+        }
+        append_record(&w, THREAD, &event);
+        assert!(w.sessions.automatic_candidates().is_empty(), "{change}");
+    }
 }
 
 #[test]
@@ -174,6 +284,13 @@ fn ambiguous_runtime_owners_and_directory_policy_deny_admission() {
 async fn loaded_stdio_chats_register_once_and_keep_identity_without_an_idle_route() {
     let w = world();
     let db = seed(&w, &[THREAD, OTHER]);
+    // Real Remote Control desktop rollouts can record user turns while
+    // leaving this catalog flag at zero for the whole conversation.
+    db.execute("update threads set has_user_event=0", [])
+        .unwrap();
+    for id in [THREAD, OTHER] {
+        append_record(&w, id, &native_user_turn("remote_android"));
+    }
     let home = w._temp.path();
     let fake = fake_relaycast::FakeRelaycast::start(Default::default()).await;
     let data = home.join("app-data");
@@ -224,6 +341,14 @@ async fn loaded_stdio_chats_register_once_and_keep_identity_without_an_idle_rout
         .iter()
         .filter(|s| s.target.kind == SessionKind::Codex)
         .all(|s| !s.live));
+    let listed = sessions.sessions();
+    *core.session_snapshot.lock().unwrap() = (1, listed);
+    let rows = crate::relay::local_methods::sessions_list(&core).await;
+    assert!(rows
+        .sessions
+        .iter()
+        .filter(|s| s.target.kind == SessionKind::Codex)
+        .all(|s| s.delivery_wait.is_some()));
     // Stale proof is denied at the internal registration boundary.
     let c = sessions.automatic_candidates().pop().unwrap();
     db.execute(
@@ -232,4 +357,7 @@ async fn loaded_stdio_chats_register_once_and_keep_identity_without_an_idle_rout
     )
     .unwrap();
     assert!(!sessions.automatic_candidate_current(&c));
+    w.table.remove(500);
+    let rows = crate::relay::local_methods::sessions_list(&core).await;
+    assert!(rows.sessions.iter().all(|s| s.delivery_wait.is_none()));
 }

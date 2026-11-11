@@ -258,14 +258,23 @@ impl Core {
             return;
         }
         let core = self.clone();
+        struct Reset(Arc<Core>);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                self.0
+                    .codex_discovery_refresh
+                    .store(false, Ordering::Release);
+            }
+        }
+        let reset = Reset(core.clone());
         tokio::spawn(async move {
+            let _reset = reset;
             for attempt in 0..3 {
                 if attempt > 0 {
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 }
                 core.activate_new_sessions().await;
             }
-            core.codex_discovery_refresh.store(false, Ordering::Release);
         });
     }
 
@@ -1500,7 +1509,7 @@ impl Core {
         let discovered = tokio::task::spawn_blocking(move || {
             sessions.pi_auto_join(pi_auto_join);
             let all = sessions.sessions();
-            let live = sessions.present_targets();
+            let live = sessions.present_targets(&all);
             let targets: Vec<Target> = registered.iter().map(|(_, t)| t.clone()).collect();
             let archived = sessions.archived(&targets);
             let archived: Vec<String> = registered

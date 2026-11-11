@@ -191,20 +191,20 @@ impl SessionDirectory for LocalSessions {
         candidate.session.target.kind == SessionKind::Codex
             && candidate.session.target.id == proof.thread()
             && proof.current(&*self.table, self.config.uid)
-            && codex::threads::read_runtime_user(&self.config.codex, proof.thread()).is_some_and(
-                |thread| {
-                    thread.directory == candidate.session.directory
-                        && self.runtime_admitted(&candidate.session)
-                },
-            )
+            && codex::threads::read_runtime_user(&self.config.codex, proof.thread(), || {
+                proof.has_native_user_turn()
+            })
+            .is_some_and(|thread| {
+                thread.directory == candidate.session.directory
+                    && self.runtime_admitted(&candidate.session)
+            })
     }
 
-    fn present_targets(&self) -> HashSet<Target> {
-        let mut targets: HashSet<_> = self
-            .sessions()
-            .into_iter()
+    fn present_targets(&self, discovered: &[DiscoveredSession]) -> HashSet<Target> {
+        let mut targets: HashSet<_> = discovered
+            .iter()
             .filter(|s| s.live)
-            .map(|s| s.target)
+            .map(|s| s.target.clone())
             .collect();
         targets.extend(
             self.codex_runtime_sessions()
@@ -476,7 +476,10 @@ impl LocalSessions {
         crate::relay::process::codex_runtime_proofs(&*self.scans, self.config.uid)
             .into_iter()
             .filter_map(|proof| {
-                let thread = codex::threads::read_runtime_user(&self.config.codex, proof.thread())?;
+                let thread =
+                    codex::threads::read_runtime_user(&self.config.codex, proof.thread(), || {
+                        proof.has_native_user_turn()
+                    })?;
                 let session = DiscoveredSession {
                     target: Target::new(SessionKind::Codex, thread.id),
                     title: thread.title,

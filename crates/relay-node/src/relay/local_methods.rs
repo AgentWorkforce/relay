@@ -243,6 +243,19 @@ async fn cached_sessions_list(core: &Arc<Core>) -> LocalSessions {
         .1
         .clone();
     let store = core.store.snapshot();
+    let present = if found.iter().any(|s| {
+        !s.live
+            && s.target.kind == crate::relay::store::SessionKind::Codex
+            && store.registration_for(&s.target).is_some()
+    }) {
+        let sessions = core.plugins.sessions.clone();
+        let rows = found.clone();
+        tokio::task::spawn_blocking(move || sessions.present_targets(&rows))
+            .await
+            .unwrap_or_default()
+    } else {
+        Default::default()
+    };
     let status = core.status();
     let machine_prefix = core.machine_prefix.clone();
     let stalls = core.inbox_stalls();
@@ -277,7 +290,7 @@ async fn cached_sessions_list(core: &Arc<Core>) -> LocalSessions {
             live: session.live,
             delivery_wait: (registration.is_some()
                 && !session.live
-                && running
+                && present.contains(&session.target)
                 && session.target.kind == crate::relay::store::SessionKind::Codex)
                 .then(|| {
                     "Registered; waiting for a verified turn hook or desktop owner.".to_string()

@@ -244,11 +244,11 @@ pub trait SessionDirectory: Send + Sync + 'static {
     }
 
     /// Runtime presence and deliverability are deliberately distinct.
-    fn present_targets(&self) -> HashSet<Target> {
-        self.sessions()
-            .into_iter()
+    fn present_targets(&self, discovered: &[DiscoveredSession]) -> HashSet<Target> {
+        discovered
+            .iter()
             .filter(|s| s.live)
-            .map(|s| s.target)
+            .map(|s| s.target.clone())
             .collect()
     }
 

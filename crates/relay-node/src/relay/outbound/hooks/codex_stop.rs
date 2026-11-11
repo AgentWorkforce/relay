@@ -110,7 +110,7 @@ impl Outbound {
                 )
             })
         });
-        let refresh = automatic && identity.is_none();
+        let refresh = automatic && identity.is_none() && inbox.needs_discovery_refresh(&thread);
         let guidance = if event == HookEvent::PostToolUse
             && automatic
             && inbox.needs_registration_guidance(&thread)
@@ -122,8 +122,11 @@ impl Outbound {
                         Some((name.as_str(),address.as_str())), &commands)}}))
             })
         } else {
+            None
+        };
+        let guidance = guidance.or_else(|| {
             (event == HookEvent::PostToolUse
-                && !automatic
+                && identity.is_none()
                 && inbox.is_ready()
                 && self.core.workspace().is_some()
                 && self.core.allows_self_registration()
@@ -140,7 +143,7 @@ impl Outbound {
                     .and_then(|send| registration_context(&send.socket))
             })
             .flatten()
-        };
+        });
         if event == HookEvent::PostToolUse
             && !inbox.turns().has_offered(&thread)
             && guidance.is_none()
@@ -165,7 +168,7 @@ impl Outbound {
             if !directory.codex_hook_turn_matches(pid, &thread, &turn) {
                 return Err(OutboundError::not_a_session());
             }
-            if refresh {
+            if refresh && inbox.take_discovery_refresh(&thread) {
                 core.request_codex_discovery();
             }
             if event == HookEvent::PostToolUse {
@@ -448,6 +451,37 @@ mod tests {
         assert_eq!(
             outbound
                 .codex_stop_hook(42, outbound.uid, &fields())
+                .await
+                .unwrap(),
+            json!({})
+        );
+    }
+
+    #[tokio::test]
+    async fn automatic_unregistered_chats_keep_manual_guidance_and_one_discovery_nudge() {
+        let (_temp, outbound, inbox) = fixture();
+        outbound
+            .core
+            .store
+            .update(|s| s.auto_activate = Some(true))
+            .unwrap();
+        assert!(outbound
+            .codex_stop_hook(99, outbound.uid, &fields())
+            .await
+            .is_err());
+        assert!(inbox.needs_discovery_refresh(THREAD));
+        let answer = outbound
+            .codex_stop_hook(42, outbound.uid, &fields())
+            .await
+            .unwrap();
+        assert!(answer.to_string().contains(" register --socket "));
+        assert!(!inbox.needs_discovery_refresh(THREAD));
+        assert!(!inbox.needs_registration_guidance(THREAD));
+        // Once there is no pending delivery, later hooks take the fast path
+        // rather than repeatedly probing affinity and scheduling discovery.
+        assert_eq!(
+            outbound
+                .codex_stop_hook(99, outbound.uid, &fields())
                 .await
                 .unwrap(),
             json!({})
