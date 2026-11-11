@@ -264,7 +264,7 @@ const SESSION_START_TIMEOUT: Duration = Duration::from_secs(8);
 pub fn codex_stop_hook(socket: Option<&Path>, build: &Build) -> Result<()> {
     let mut input = Vec::new();
     let _ = std::io::stdin().take(4 << 20).read_to_end(&mut input);
-    let answer = (|| -> Result<Value> {
+    let (answer, receipt) = (|| -> Result<(Value, Option<(std::path::PathBuf, Vec<u8>)>)> {
         let hook: Value = serde_json::from_slice(&input)?;
         let body = serde_json::to_vec(&json!({
             "session_id": hook["session_id"],
@@ -286,14 +286,48 @@ pub fn codex_stop_hook(socket: Option<&Path>, build: &Build) -> Result<()> {
             socket_response(&socket, "POST", "/codex/stop-hook", &body, timeout)?;
         anyhow::ensure!((200..300).contains(&status), "refused");
         let response: Value = serde_json::from_slice(&response)?;
-        Ok(response["data"].clone())
+        let mut answer = response["data"].clone();
+        let receipt = answer
+            .as_object_mut()
+            .and_then(|object| object.remove("relayIdentityReceipt"))
+            .and_then(|value| value.as_str().map(str::to_string))
+            .map(|receipt| {
+                let body = serde_json::to_vec(&json!({"session_id":hook["session_id"],
+                    "hook_event_name":"RelayIdentityReceipt", "receipt":receipt}))?;
+                Ok::<_, anyhow::Error>((socket, body))
+            })
+            .transpose()?;
+        Ok((answer, receipt))
     })()
     .ok()
-    .filter(Value::is_object)
-    .unwrap_or_else(|| json!({}));
+    .filter(|(answer, _)| answer.is_object())
+    .unwrap_or_else(|| (json!({}), None));
     let mut stdout = std::io::stdout();
-    stdout.write_all(&serde_json::to_vec(&answer)?)?;
+    write_codex_hook_answer(&mut stdout, &answer, || {
+        if let Some((socket, body)) = receipt {
+            // Output is already flushed; acknowledgement cannot replace it
+            // with {} or extend the normal hook budget substantially.
+            let _ = socket_response(
+                &socket,
+                "POST",
+                "/codex/stop-hook",
+                &body,
+                Duration::from_millis(250),
+            );
+        }
+    })
+}
+
+/// Flush context to the host before acknowledging the startup response.
+fn write_codex_hook_answer(
+    stdout: &mut impl Write,
+    answer: &Value,
+    acknowledge: impl FnOnce(),
+) -> Result<()> {
+    stdout.write_all(&serde_json::to_vec(answer)?)?;
     stdout.write_all(b"\n")?;
+    stdout.flush()?;
+    acknowledge();
     Ok(())
 }
 
@@ -655,6 +689,46 @@ fn socket_response_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failed writes/flushes must leave startup fallback available.
+    #[test]
+    fn codex_startup_ack_follows_successful_output_flush() {
+        struct Output {
+            bytes: Vec<u8>,
+            fail_write: bool,
+            fail_flush: bool,
+        }
+        impl Write for Output {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if self.fail_write {
+                    return Err(std::io::ErrorKind::BrokenPipe.into());
+                }
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                if self.fail_flush {
+                    Err(std::io::ErrorKind::BrokenPipe.into())
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        for (fail_write, fail_flush) in [(false, false), (true, false), (false, true)] {
+            let mut output = Output {
+                bytes: Vec::new(),
+                fail_write,
+                fail_flush,
+            };
+            let mut acknowledged = false;
+            let result =
+                write_codex_hook_answer(&mut output, &json!({"hookSpecificOutput":{}}), || {
+                    acknowledged = true
+                });
+            assert_eq!(result.is_ok(), !fail_write && !fail_flush);
+            assert_eq!(acknowledged, result.is_ok());
+        }
+    }
 
     use crate::relay::transport::{CoreListener, CoreStream};
     use std::future::Future;

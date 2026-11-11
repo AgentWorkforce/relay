@@ -90,6 +90,17 @@ impl Outbound {
                 )
             })?;
         let event_name = fields.get("hook_event_name").and_then(Value::as_str);
+        if event_name == Some("RelayIdentityReceipt") {
+            let confirmed = fields
+                .get("receipt")
+                .and_then(Value::as_str)
+                .is_some_and(|receipt| inbox.acknowledge_startup_identity(&thread, pid, receipt));
+            return if confirmed {
+                Ok(json!({}))
+            } else {
+                Err(OutboundError::not_a_session())
+            };
+        }
         if event_name == Some(SESSION_START) {
             let cwd = fields
                 .get("cwd")
@@ -324,19 +335,21 @@ impl Outbound {
                 .map(|(name, address)| (name.as_str(), address.as_str())),
             &commands,
         );
-        // This startup response already supplies the verified identity.
-        // The late tool fallback must not repeat it; a later resume or
-        // compaction still receives its own unconditional startup context.
+        let mut answer = json!({"hookSpecificOutput": {
+            "hookEventName": SESSION_START,
+            "additionalContext": text,
+        }});
+        // Only the helper's receipt acknowledgement spends the fallback.
+        // A timeout or unreadable reply must leave later tool hooks able
+        // to supply identity. Resume/compaction still gets fresh context.
         if let (Some((_, address)), Some(inbox)) = (
             identity.as_ref(),
             self.core.plugins.codex_stop_hook.as_ref(),
         ) {
-            inbox.take_registered_identity(&session.target.id, address);
+            answer["relayIdentityReceipt"] =
+                json!(inbox.startup_identity_receipt(&session.target.id, address, pid));
         }
-        Ok(json!({"hookSpecificOutput": {
-            "hookEventName": SESSION_START,
-            "additionalContext": text,
-        }}))
+        Ok(answer)
     }
 
     /// The probe commands on this core's serving session socket, naming the
@@ -539,6 +552,22 @@ mod tests {
                 .unwrap()
                 .current_address(&outbound.core.machine_prefix)
         });
+        if !automatic {
+            // Simulate a startup reply that the helper never receives.
+            // Merely constructing it must not suppress the late fallback.
+            let start = json!({"session_id":THREAD,"hook_event_name":"SessionStart"});
+            let offered = outbound
+                .codex_stop_hook(42, outbound.uid, start.as_object().unwrap())
+                .await
+                .unwrap();
+            let receipt = offered["relayIdentityReceipt"].as_str().unwrap();
+            let forged = json!({"session_id":THREAD,"hook_event_name":"RelayIdentityReceipt",
+                "receipt":receipt});
+            assert!(outbound
+                .codex_stop_hook(99, outbound.uid, forged.as_object().unwrap())
+                .await
+                .is_err());
+        }
         assert!(inbox.needs_registered_identity(THREAD, &address));
         assert!(outbound
             .codex_stop_hook(99, outbound.uid, &fields())
