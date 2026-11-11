@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `agent-relay integration subscribe` (and other relayfile integration reads) recover from a control-plane daemon that accepts requests but never answers: the CLI restarts the daemon and retries once instead of failing with a generic 30s timeout. A daemon that still hangs reports `DAEMON_STALLED` naming the endpoint; with `RELAYFILE_REQUIRE_DAEMON=1` the daemon is never restarted.
 
 ## [18.1.0] - 2026-11-11
 
