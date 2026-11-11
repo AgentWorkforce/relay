@@ -374,8 +374,36 @@ describe('events shim', () => {
     );
     expect(read!.id).toBe(posted.body.event_id);
     // The dead host's late confirmation cannot overwrite the read.
-    await h.store.confirmWake(record.id, read!.id, later.toISOString());
+    await h.store.confirmWake(record.id, read!.id, t0.toISOString(), later.toISOString());
     expect((await h.store.listRecent(record.id, 1))[0]!.delivery).toBe('read');
+  });
+
+  it('a sender whose lease expired cannot confirm or release the newer claim', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    await h.post(shim.webhook_url, { a: 1 });
+    const record = (await h.store.findByHookTokenHash(await sha256Hex(shim.webhook_url.split('/h/')[1]!)))!;
+    const t0 = new Date('2026-11-11T12:00:00.000Z');
+    const t1 = new Date(t0.getTime() + EVENTS_SHIM_LIMITS.sendLeaseMs + 1);
+    const stale = (t: Date) => new Date(t.getTime() - EVENTS_SHIM_LIMITS.sendLeaseMs).toISOString();
+    const [first] = await h.store.claimPending(
+      record.id,
+      { limit: 1, staleBefore: stale(t0) },
+      'sending',
+      t0.toISOString()
+    );
+    const [second] = await h.store.claimPending(
+      record.id,
+      { limit: 1, staleBefore: stale(t1) },
+      'sending',
+      t1.toISOString()
+    );
+    expect(second!.id).toBe(first!.id);
+    await h.store.releaseWake(record.id, first!.id, first!.deliveredAt!, 'old failure');
+    await h.store.confirmWake(record.id, first!.id, first!.deliveredAt!, t1.toISOString());
+    expect((await h.store.listRecent(record.id, 1))[0]!.delivery).toBe('sending');
+    await h.store.confirmWake(record.id, second!.id, second!.deliveredAt!, t1.toISOString());
+    expect((await h.store.listRecent(record.id, 1))[0]!.delivery).toBe('woken');
   });
 
   it('stops forwarding to a link that was removed or replaced', async () => {

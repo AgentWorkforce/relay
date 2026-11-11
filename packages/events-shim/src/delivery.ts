@@ -66,11 +66,11 @@ export async function deliverPending(
     }
     const outcome = await forwardWithRetry(deps, target, event);
     if (outcome.ok) {
-      await deps.store.confirmWake(shimId, event.id, clock().toISOString());
+      await deps.store.confirmWake(shimId, event.id, event.deliveredAt!, clock().toISOString());
       forwarded += 1;
       continue;
     }
-    await deps.store.releaseWake(shimId, event.id, outcome.reason);
+    await deps.store.releaseWake(shimId, event.id, event.deliveredAt!, outcome.reason);
     if (outcome.permanent) {
       await deps.store.markWakeBroken(shimId, target.linkedAt, outcome.reason, clock().toISOString());
     }

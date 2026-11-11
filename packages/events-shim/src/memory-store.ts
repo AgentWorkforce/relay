@@ -185,17 +185,17 @@ export class MemoryEventsShimStore implements EventsShimStore {
     return claimed;
   }
 
-  async confirmWake(shimId: string, eventId: string, at: string) {
+  async confirmWake(shimId: string, eventId: string, claimedAt: string, at: string) {
     const event = this.row(shimId).events.find((candidate) => candidate.id === eventId);
-    if (event && event.delivery === 'sending') {
+    if (event && event.delivery === 'sending' && event.deliveredAt === claimedAt) {
       event.delivery = 'woken';
       event.deliveredAt = at;
     }
   }
 
-  async releaseWake(shimId: string, eventId: string, wakeError: string) {
+  async releaseWake(shimId: string, eventId: string, claimedAt: string, wakeError: string) {
     const event = this.row(shimId).events.find((candidate) => candidate.id === eventId);
-    if (event && event.delivery === 'sending') {
+    if (event && event.delivery === 'sending' && event.deliveredAt === claimedAt) {
       event.delivery = 'pending';
       delete event.deliveredAt;
       event.wakeError = wakeError;

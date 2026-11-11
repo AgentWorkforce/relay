@@ -167,13 +167,18 @@ export interface EventsShimStore {
     state: 'sending' | 'read',
     at: string
   ): Promise<ShimEvent[]>;
-  /** A sent post: `sending` → `woken`. Applies only while it is still `sending`. */
-  confirmWake(shimId: string, eventId: string, at: string): Promise<void>;
+  /**
+   * A sent post: `sending` → `woken`. Applies only while it is still the
+   * same claim — `sending` with `deliveredAt === claimedAt` — so a sender
+   * whose lease expired cannot touch a newer claim of the same post.
+   */
+  confirmWake(shimId: string, eventId: string, claimedAt: string, at: string): Promise<void>;
   /**
    * A post whose send failed: `sending` → `pending`, recording `wakeError`.
-   * Applies only while it is still `sending`.
+   * Applies only while it is still the same claim (`sending` with
+   * `deliveredAt === claimedAt`).
    */
-  releaseWake(shimId: string, eventId: string, wakeError: string): Promise<void>;
+  releaseWake(shimId: string, eventId: string, claimedAt: string, wakeError: string): Promise<void>;
   /**
    * Deletes shims idle since before `idleBefore`, feed rows on shims idle
    * since before `feedBefore`, and idempotency keys older than `feedBefore`.
