@@ -17,6 +17,7 @@ const workspacePackages = [
   'config',
   'core-bridge',
   'events',
+  'events-shim',
   'gateway',
   'github-primitive',
   'hooks',

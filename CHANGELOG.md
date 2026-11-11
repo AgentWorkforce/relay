@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `agent-relay-probe connect extend --minutes <N>` keeps a hosted Connect room open longer (up to 7 days per call) and prints the new expiry. Joined hosts and guests stay connected past the original expiry: a core confirms a room's expiry with Cloud before closing it.
+- `@agent-relay/events-shim`: one MCP URL that turns webhook posts into Agent Relay messages. Each post wakes the agent's session even when idle (linked through its own relay webhook), or waits for `wait_for_webhook` / `get_webhook_events` when the agent runs without Agent Relay. Open, GitHub, Stripe, Linear and bearer-verified URLs; once-per-`Idempotency-Key` delivery; 60 posts/hour, 500/day and 64 KB bodies per webhook. Hosts supply storage and mount one `Request → Response` handler.
+- `agent-relay-probe webhook --socket <socket>` creates the calling session's own inbound webhook (`--revoke` deletes it). Codex asks before running it, since its secret lets the holder inject into the session.
 
 ### Fixed
 
