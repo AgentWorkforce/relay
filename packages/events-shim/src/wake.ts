@@ -38,6 +38,15 @@ export function checkWakeTarget(rawUrl: string, secret: string, allowedOrigins: 
  * own frame (sender `webhook`, message ref); this is the body inside it.
  */
 export function wakeText(event: ShimEvent): string {
+  // A nudge: an authenticated sender (any mode but open) posting text/plain
+  // chooses the exact words the agent sees, e.g. "New task 42 — read it with
+  // the acme MCP". Agent Relay's own frame still names the sender as webhook.
+  if (isNudge(event)) {
+    const text = event.body.trim();
+    return text.length > EVENTS_SHIM_LIMITS.wakePreviewChars
+      ? `${text.slice(0, EVENTS_SHIM_LIMITS.wakePreviewChars)}\n… (truncated)`
+      : text;
+  }
   const what = event.eventType ? `${event.eventType} ` : '';
   const preview = prettyBody(event.body, event.contentType);
   const truncated = preview.length > EVENTS_SHIM_LIMITS.wakePreviewChars;
@@ -52,6 +61,11 @@ export function wakeText(event: ShimEvent): string {
       : 'Act on it as the person asked when they set up this webhook.',
   ];
   return lines.join('\n');
+}
+
+/** A verbatim text post from a sender the shim authenticated. */
+export function isNudge(event: Pick<ShimEvent, 'mode' | 'contentType' | 'body'>): boolean {
+  return event.mode !== 'open' && /^text\/plain\b/i.test(event.contentType) && event.body.trim().length > 0;
 }
 
 function prettyBody(body: string, contentType: string): string {

@@ -21,7 +21,7 @@ export {
   type WakeTarget,
 } from './types.js';
 export { verifyInbound, idempotencyKeyFor, eventTypeFor, keptHeaders, type HeaderReader, type VerifyResult } from './verify.js';
-export { checkWakeTarget, forwardWake, wakeText, DEFAULT_RELAY_ORIGINS, type WakeResult, type WakeTargetCheck } from './wake.js';
+export { checkWakeTarget, forwardWake, isNudge, wakeText, DEFAULT_RELAY_ORIGINS, type WakeResult, type WakeTargetCheck } from './wake.js';
 export {
   BEARER_SECRET_PREFIX,
   HOOK_TOKEN_PREFIX,

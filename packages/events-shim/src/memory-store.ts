@@ -122,6 +122,8 @@ export class MemoryEventsShimStore implements EventsShimStore {
   async markDelivery(shimId: string, eventIds: string[], state: DeliveryState, at: string, wakeError?: string) {
     for (const event of this.row(shimId).events) {
       if (!eventIds.includes(event.id)) continue;
+      // A wake result that lands after the agent read the post must not hand it over again.
+      if (event.delivery === 'read' && state !== 'read') continue;
       event.delivery = state;
       if (state === 'pending') {
         if (wakeError) event.wakeError = wakeError;

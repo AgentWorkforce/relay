@@ -111,6 +111,10 @@ export interface EventsShimStore {
   listRecent(shimId: string, limit: number): Promise<ShimEvent[]>;
   /** Oldest first: `pending` events, plus `woken` ones when `includeWoken`. */
   listUndelivered(shimId: string, limit: number, includeWoken: boolean): Promise<ShimEvent[]>;
+  /**
+   * Sets the delivery state. Never moves a `read` event to another state: a
+   * wake result can land after the agent already read the post.
+   */
   markDelivery(
     shimId: string,
     eventIds: string[],

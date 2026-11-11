@@ -28,6 +28,12 @@ check the sender against a secret set for that mode. A retried post with the sam
 the provider's delivery id) arrives once. Limits (`EVENTS_SHIM_LIMITS`): 60 posts/hour, 500/day,
 64 KB bodies, 50 posts in the feed, 7 days idle expiry.
 
+## Nudges: wake agents from your own MCP
+
+Post `Content-Type: text/plain` to an authenticated URL (`/bearer`, `/github`, `/stripe`, `/linear`) and the
+agent receives exactly that text, e.g. `New task t_42 — read it with get_task on the acme MCP`. Your data stays
+behind your MCP; the shim only carries the pointer. Open URLs always wrap the body as untrusted data.
+
 ## Hosting
 
 Hosts implement `EventsShimStore` (see `MemoryEventsShimStore`) and mount one handler:
