@@ -33,6 +33,7 @@ fn append_record(w: &World, id: &str, value: &serde_json::Value) {
     .unwrap();
 }
 
+/// Model a desktop writer holding root rollouts while IPC has no window owner.
 fn seed(w: &World, ids: &[&str]) -> rusqlite::Connection {
     let home = &w.sessions.config.codex.home;
     std::fs::create_dir_all(home).unwrap();
@@ -71,6 +72,7 @@ fn seed(w: &World, ids: &[&str]) -> rusqlite::Connection {
 }
 
 #[test]
+/// History limits and missing delivery routes must not hide loaded user chats.
 fn runtime_candidates_are_independent_of_deliverability_and_recent_history() {
     let w = world();
     let db = seed(&w, &[THREAD, OTHER]);
@@ -104,6 +106,7 @@ fn runtime_candidates_are_independent_of_deliverability_and_recent_history() {
 }
 
 #[test]
+/// Runtime ownership alone cannot admit internal or archived catalog records.
 fn internal_archived_exec_and_subagent_rows_cannot_join() {
     for sql in [
         "has_user_event=0",
@@ -140,6 +143,7 @@ fn internal_archived_exec_and_subagent_rows_cannot_join() {
 }
 
 #[test]
+/// Native user attribution compensates for absent or stale catalog flags.
 fn native_remote_and_composer_turns_admit_an_unset_database_user_flag() {
     for trigger in ["remote_android", "composer"] {
         for missing_column in [false, true] {
@@ -164,6 +168,7 @@ fn native_remote_and_composer_turns_admit_an_unset_database_user_flag() {
 }
 
 #[test]
+/// Prompt text, incomplete records and agent-triggered turns confer no authority.
 fn fallback_user_evidence_rejects_internal_turns_and_prompt_text() {
     for change in [
         "agent",
@@ -227,6 +232,7 @@ fn fallback_user_evidence_rejects_internal_turns_and_prompt_text() {
 }
 
 #[test]
+/// A proof must fail once its process incarnation or either held file changes.
 fn proofs_reject_replaced_inodes_wrong_owner_and_process_reuse() {
     for change in [
         "pid",
@@ -283,12 +289,13 @@ fn proofs_reject_replaced_inodes_wrong_owner_and_process_reuse() {
 }
 
 #[test]
+/// Distinct owners remain ambiguous and directory admission remains enforced.
 fn ambiguous_runtime_owners_and_directory_policy_deny_admission() {
     let w = world();
     let db = seed(&w, &[THREAD]);
     let host = w.table.processes.lock().unwrap()[&500].clone();
     w.table.insert(501, FakeProcess { start: 53, ..host });
-    assert!(codex_runtime_proofs(&*w.table, UID).is_empty());
+    assert!(codex_runtime_proofs(&*w.table, UID, &w.sessions.config.codex.home).is_empty());
     w.table.remove(501);
     db.execute("update threads set cwd='/tmp/private'", [])
         .unwrap();
@@ -296,6 +303,7 @@ fn ambiguous_runtime_owners_and_directory_policy_deny_admission() {
 }
 
 #[tokio::test]
+/// Admission, retention and cached presentation must agree across a lifecycle.
 async fn loaded_stdio_chats_register_once_and_keep_identity_without_an_idle_route() {
     let w = world();
     let db = seed(&w, &[THREAD, OTHER]);
@@ -402,6 +410,73 @@ fn duplicate_descriptors_do_not_create_a_second_runtime_owner() {
         .push(host.open_files.last().unwrap().clone());
     w.table.insert(500, host);
     assert_eq!(w.sessions.automatic_candidates().len(), 1);
+}
+
+/// Reproduce a copied profile with identical thread identifiers and contents.
+fn copied_runtime_files(w: &World, host: &FakeProcess) -> Vec<std::path::PathBuf> {
+    let copy = w._temp.path().join("copied-codex-home");
+    host.open_files
+        .iter()
+        .map(|path| {
+            let destination = copy.join(path.strip_prefix(&w.sessions.config.codex.home).unwrap());
+            std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            std::fs::copy(path, &destination).unwrap();
+            destination
+        })
+        .collect()
+}
+
+#[test]
+/// Both held files must belong to the catalog's configured runtime home.
+fn copied_or_mixed_profile_files_cannot_authorize_the_configured_catalog() {
+    for moved in ["both", "lock", "rollout"] {
+        let w = world();
+        let _db = seed(&w, &[THREAD]);
+        let mut host = w.table.processes.lock().unwrap()[&500].clone();
+        let copies = copied_runtime_files(&w, &host);
+        for (path, copy) in host.open_files.iter_mut().zip(copies) {
+            let lock = path.extension().and_then(|s| s.to_str()) == Some("lock");
+            if moved == "both" || (moved == "lock") == lock {
+                *path = copy;
+            }
+        }
+        w.table.insert(500, host);
+        assert!(w.sessions.automatic_candidates().is_empty(), "{moved}");
+        assert!(w.sessions.present_targets(&[]).is_empty(), "{moved}");
+    }
+}
+
+#[test]
+/// A foreign profile cannot suppress a valid owner or replace its authority.
+fn another_profiles_same_id_does_not_ambiguate_the_configured_runtime() {
+    let mut w = world();
+    let _db = seed(&w, &[THREAD]);
+    let host = w.table.processes.lock().unwrap()[&500].clone();
+    let files = copied_runtime_files(&w, &host);
+    w.table.insert(
+        501,
+        FakeProcess {
+            start: 53,
+            open_files: files,
+            ..host
+        },
+    );
+    let candidate = w.sessions.automatic_candidates().pop().unwrap();
+    assert!(w.sessions.automatic_candidate_current(&candidate));
+    w.sessions.config.codex.home = w._temp.path().join("copied-codex-home");
+    assert!(!w.sessions.automatic_candidate_current(&candidate));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_to_the_configured_home_preserves_the_same_runtime_authority() {
+    let mut w = world();
+    let _db = seed(&w, &[THREAD]);
+    let alias = w._temp.path().join("codex-home-alias");
+    std::os::unix::fs::symlink(&w.sessions.config.codex.home, &alias).unwrap();
+    w.sessions.config.codex.home = alias;
+    let candidate = w.sessions.automatic_candidates().pop().unwrap();
+    assert!(w.sessions.automatic_candidate_current(&candidate));
 }
 
 #[test]

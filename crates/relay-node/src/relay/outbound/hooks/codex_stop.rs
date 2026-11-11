@@ -31,6 +31,7 @@ const JOIN_POLL: Duration = Duration::from_millis(250);
 #[path = "codex_stop/affinity.rs"]
 mod affinity;
 
+/// Explain consent-based self-registration using this core's actual socket.
 fn registration_context(socket: &std::path::Path) -> Option<Value> {
     let command = super::super::hints::probe_session_command(
         socket,
@@ -111,7 +112,7 @@ impl Outbound {
             })
         });
         let refresh = automatic && identity.is_none() && inbox.needs_discovery_refresh(&thread);
-        let guidance = if event == HookEvent::PostToolUse && automatic {
+        let guidance = if event == HookEvent::PostToolUse {
             identity
                 .as_ref()
                 .filter(|(_, address)| inbox.needs_registered_identity(&thread, address))
@@ -495,16 +496,15 @@ mod tests {
         );
     }
 
-    /// Registration may complete between two hooks after manual guidance.
-    #[tokio::test]
-    async fn manual_guidance_cannot_spend_later_registered_identity_context() {
+    /// A late identity must reach only its verified turn, with queued messages.
+    async fn registered_identity_after_manual_guidance(automatic: bool) {
         let (_temp, outbound, inbox) = fixture();
         let send = outbound.core.plugins.relay_send.as_ref().unwrap();
         send.serving.set(Some(send.socket.clone()));
         outbound
             .core
             .store
-            .update(|s| s.auto_activate = Some(true))
+            .update(|s| s.auto_activate = Some(automatic))
             .unwrap();
         let first = outbound
             .codex_stop_hook(42, outbound.uid, &fields())
@@ -558,6 +558,17 @@ mod tests {
                 .unwrap(),
             json!({})
         );
+    }
+
+    /// Registration may complete between two hooks after manual guidance.
+    #[tokio::test]
+    async fn manual_guidance_cannot_spend_later_registered_identity_context() {
+        registered_identity_after_manual_guidance(true).await;
+    }
+
+    #[tokio::test]
+    async fn manual_registration_gets_verified_identity_when_automatic_activation_is_off() {
+        registered_identity_after_manual_guidance(false).await;
     }
 
     #[tokio::test]

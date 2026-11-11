@@ -75,8 +75,13 @@ impl CodexRuntimeProof {
     }
 
     /// Revalidate process incarnation, executable, held lock and rollout.
-    pub(crate) fn current(&self, table: &dyn ProcessTable, uid: u32) -> bool {
-        if file_key(&self.rollout) != self.rollout_key
+    pub(crate) fn current(&self, table: &dyn ProcessTable, uid: u32, home: &Path) -> bool {
+        let Ok(home) = home.canonicalize() else {
+            return false;
+        };
+        if !self.rollout.starts_with(&home)
+            || !lock_in_home(&self.lock, &home)
+            || file_key(&self.rollout) != self.rollout_key
             || file_key(&self.lock) != self.lock_key
             || self.process.uid != uid
             || table.process(self.process.pid) != Some(self.process)
@@ -111,7 +116,14 @@ impl CodexRuntimeProof {
 }
 
 /// Enumerate hosts, not shell descendants bearing inherited thread tags.
-pub(crate) fn codex_runtime_proofs(table: &dyn ProcessTable, uid: u32) -> Vec<CodexRuntimeProof> {
+pub(crate) fn codex_runtime_proofs(
+    table: &dyn ProcessTable,
+    uid: u32,
+    home: &Path,
+) -> Vec<CodexRuntimeProof> {
+    let Ok(home) = home.canonicalize() else {
+        return Vec::new();
+    };
     let mut found: BTreeMap<String, CodexRuntimeProof> = BTreeMap::new();
     let mut ambiguous = BTreeSet::new();
     let mut trusted = BTreeMap::new();
@@ -134,6 +146,7 @@ pub(crate) fn codex_runtime_proofs(table: &dyn ProcessTable, uid: u32) -> Vec<Co
         let before = table.opened_files(pid);
         let locks: BTreeMap<_, _> = before
             .iter()
+            .filter(|f| lock_in_home(&f.path, &home))
             .filter_map(|f| Some((codex_thread_of_lock(&f.path)?, f)))
             .collect();
         if locks.is_empty() {
@@ -144,8 +157,10 @@ pub(crate) fn codex_runtime_proofs(table: &dyn ProcessTable, uid: u32) -> Vec<Co
             .filter_map(|f| {
                 let thread = rollout_thread_of_path(&f.path)?;
                 let birth = f.birth_ns?;
-                (locks.contains_key(&thread) && file_birth_ns(&f.path) == Some(birth))
-                    .then(|| f.path.clone())
+                (locks.contains_key(&thread)
+                    && f.path.canonicalize().ok()?.starts_with(&home)
+                    && file_birth_ns(&f.path) == Some(birth))
+                .then(|| f.path.clone())
             })
             .collect();
         paths.sort();
@@ -208,6 +223,13 @@ pub(crate) fn codex_runtime_proofs(table: &dyn ProcessTable, uid: u32) -> Vec<Co
         .filter(|(id, _)| !ambiguous.contains(id))
         .map(|(_, p)| p)
         .collect()
+}
+
+/// A copied profile's lock cannot confer authority on this catalog.
+fn lock_in_home(path: &Path, home: &Path) -> bool {
+    path.canonicalize()
+        .ok()
+        .is_some_and(|lock| lock.parent() == Some(home.join("thread-writer-locks").as_path()))
 }
 
 /// Unix replacements can share a creation timestamp when they happen

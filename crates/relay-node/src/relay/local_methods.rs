@@ -235,6 +235,7 @@ pub fn discovered_sessions(core: &Core) -> Vec<DiscoveredSession> {
         .clone()
 }
 
+/// Present completed discovery and unexpired presence without provider I/O.
 async fn cached_sessions_list(core: &Arc<Core>) -> LocalSessions {
     let found = core
         .session_snapshot

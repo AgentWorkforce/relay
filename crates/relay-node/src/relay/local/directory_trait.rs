@@ -192,7 +192,7 @@ impl SessionDirectory for LocalSessions {
         };
         candidate.session.target.kind == SessionKind::Codex
             && candidate.session.target.id == proof.thread()
-            && proof.current(&*self.table, self.config.uid)
+            && proof.current(&*self.table, self.config.uid, &self.config.codex.home)
             && codex::threads::read_runtime_user(&self.config.codex, proof.thread(), || {
                 proof.has_native_user_turn()
             })
@@ -483,25 +483,29 @@ impl LocalSessions {
     pub(super) fn codex_runtime_sessions(
         &self,
     ) -> Vec<(DiscoveredSession, crate::relay::process::CodexRuntimeProof)> {
-        crate::relay::process::codex_runtime_proofs(&*self.scans, self.config.uid)
-            .into_iter()
-            .filter_map(|proof| {
-                let thread =
-                    codex::threads::read_runtime_user(&self.config.codex, proof.thread(), || {
-                        proof.has_native_user_turn()
-                    })?;
-                let session = DiscoveredSession {
-                    target: Target::new(SessionKind::Codex, proof.thread().to_string()),
-                    title: thread.title,
-                    directory: thread.directory,
-                    updated_at_ms: thread.updated_at_ms,
-                    host: None,
-                    live: false,
-                    holder: None,
-                };
-                Some((session, proof))
-            })
-            .collect()
+        crate::relay::process::codex_runtime_proofs(
+            &*self.scans,
+            self.config.uid,
+            &self.config.codex.home,
+        )
+        .into_iter()
+        .filter_map(|proof| {
+            let thread =
+                codex::threads::read_runtime_user(&self.config.codex, proof.thread(), || {
+                    proof.has_native_user_turn()
+                })?;
+            let session = DiscoveredSession {
+                target: Target::new(SessionKind::Codex, proof.thread().to_string()),
+                title: thread.title,
+                directory: thread.directory,
+                updated_at_ms: thread.updated_at_ms,
+                host: None,
+                live: false,
+                holder: None,
+            };
+            Some((session, proof))
+        })
+        .collect()
     }
 
     /// Apply directory and fleet policy before automatic registration.
