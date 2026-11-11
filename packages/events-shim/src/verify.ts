@@ -97,7 +97,7 @@ function refused(message: string): VerifyResult {
  * not cover, so a captured request cannot be replayed under a new key:
  * Stripe's event `id`, otherwise a hash of the signed body (GitHub and
  * Linear redeliveries resend the same body). Bearer and open posts use the
- * sender's `Idempotency-Key`.
+ * sender's `Idempotency-Key`, each in its own namespace.
  *
  * @param mode - How the post was verified.
  * @param headers - The request headers.
@@ -117,7 +117,8 @@ export async function idempotencyKeyFor(
     return `${mode}:body:${await sha256Hex(rawBody)}`;
   }
   const explicit = headers.get('idempotency-key')?.trim();
-  return explicit ? `key:${await boundedKey(explicit)}` : undefined;
+  // Namespaced by mode, so an open post cannot suppress a verified one with the same key.
+  return explicit ? `${mode}:key:${await boundedKey(explicit)}` : undefined;
 }
 
 /** The key itself when short; otherwise a hash of all of it, so distinct long keys stay distinct. */

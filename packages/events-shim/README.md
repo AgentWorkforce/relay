@@ -25,18 +25,20 @@ and points any sender at the paired webhook URL. Each post becomes an Agent Rela
 
 `<base>/h/<token>` accepts anyone holding the URL. `/github`, `/stripe`, `/linear` and `/bearer` suffixes
 check the sender against a secret set for that mode. Limits (`EVENTS_SHIM_LIMITS`): 60 posts/hour,
-500/day, 64 KB bodies, 50 posts in the feed, 7 days idle expiry.
+500/day, 64 KB bodies, 50 posts in the feed, 7 days idle expiry. The 50-post limit covers unread posts
+too: if more than 50 arrive before the agent links or reads the inbox, the oldest are dropped for good.
 
 Deduplication: a repeated post arrives once for 24 hours (`dedupeWindowMs`), keyed by
 
 - Stripe: the event `id` in the signed body;
 - GitHub and Linear: a hash of the signed body (a redelivery resends the same body), so two distinct
   deliveries with byte-identical bodies also collapse into one;
-- bearer and open: the sender's `Idempotency-Key` header (keys over 200 characters are hashed whole);
-  posts without one are never deduplicated.
+- bearer and open: the sender's `Idempotency-Key` header, separately per URL (keys over 200 characters are
+  hashed whole); posts without one are never deduplicated.
 
-Duplicates still count toward the rate limits. Successful posts answer `202`, or `200` on `/linear`
-(Linear retries anything else).
+Duplicates still count toward the rate limits. A new post answers `202` (`200` on `/linear`, since Linear
+retries anything else); a duplicate answers `200` with `"duplicate": true` on every URL. Treat any 2xx as
+accepted.
 
 ## Nudges: wake agents from your own MCP
 

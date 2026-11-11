@@ -722,4 +722,24 @@ describe('events shim', () => {
     const again = await h.post(shim.webhook_url, { a: 1 }, { 'idempotency-key': `${long}a` });
     expect(again.body).toMatchObject({ duplicate: true, event_id: a.body.event_id });
   });
+
+  it('keeps open and bearer idempotency keys apart', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const put = await h.app(`${BASE}/shims/current/secrets/bearer`, {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${shim.manage_token}`, 'content-type': 'application/json' },
+      body: '{}',
+    });
+    const { secret } = (await put.json()) as { secret: string };
+    const open = await h.post(shim.webhook_url, { forged: true }, { 'idempotency-key': 'build-42' });
+    const verified = await h.post(
+      shim.webhook_urls.bearer!,
+      { real: true },
+      { 'idempotency-key': 'build-42', authorization: `Bearer ${secret}` }
+    );
+    expect(verified.status).toBe(202);
+    expect(verified.body.duplicate).toBeUndefined();
+    expect(verified.body.event_id).not.toBe(open.body.event_id);
+  });
 });
