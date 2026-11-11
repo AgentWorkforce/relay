@@ -481,6 +481,158 @@ describe('RecoveringControlPlane', () => {
     expect(seen).toEqual([fresh]);
   });
 
+  it('holds a write that starts after a restart took the lock until the restart finishes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rf-writes-'));
+    try {
+      const restarter = fileWriteGuard(dir);
+      const release = restarter.acquireRestart();
+      expect(release).toBeTypeOf('function');
+
+      // Another relay process begins a bind after the lock was taken.
+      let begun = false;
+      const writer = fileWriteGuard(dir)
+        .begin('bind')
+        .then((end) => {
+          begun = true;
+          return end;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(begun).toBe(false);
+      // Its marker is withdrawn while it waits, so it never blocks the restart.
+      expect(restarter.activeWrites()).toEqual([]);
+
+      release!();
+      const end = await writer;
+      expect(begun).toBe(true);
+      expect(restarter.activeWrites()).toHaveLength(1);
+      end();
+      expect(restarter.activeWrites()).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not send another process write until the replacement daemon is ready', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rf-writes-'));
+    try {
+      const stalled = { id: 'stalled' };
+      const fresh = { id: 'fresh' };
+      const stopping = deferred();
+      const stopDaemon = vi.fn(() => stopping.promise);
+      const recovering = new RecoveringControlPlane({
+        clientOptions: { autoStart: true },
+        createClient: fakeClients(stalled, fresh),
+        stopDaemon,
+        writeGuard: fileWriteGuard(dir),
+        warn: () => {},
+      });
+      // A second agent-relay process sharing the same daemon.
+      const otherProcess = new RecoveringControlPlane({
+        clientOptions: { autoStart: true },
+        createClient: fakeClients({ id: 'other' }),
+        writeGuard: fileWriteGuard(dir),
+      });
+
+      const read = recovering.run('hello', async (client) => {
+        if (client === (stalled as unknown)) throw timeoutError();
+        return 'ok';
+      });
+      await vi.waitFor(() => expect(stopDaemon).toHaveBeenCalled());
+
+      const bind = vi.fn(async () => 'bound');
+      const write = otherProcess.mutate('bind', bind);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(bind).not.toHaveBeenCalled();
+
+      stopping.resolve();
+      await expect(Promise.all([read, write])).resolves.toEqual(['ok', 'bound']);
+      expect(bind).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('waits for another process restart and uses its replacement instead of stopping it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rf-writes-'));
+    const other = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' });
+    try {
+      mkdirSync(dir, { recursive: true });
+      const lock = join(dir, '.restart.lock');
+      writeFileSync(lock, String(other.pid));
+      const stalled = { id: 'stalled' };
+      const fresh = { id: 'fresh' };
+      const stopDaemon = vi.fn();
+      const cp = new RecoveringControlPlane({
+        clientOptions: { autoStart: true },
+        createClient: fakeClients(stalled, fresh),
+        stopDaemon,
+        writeGuard: fileWriteGuard(dir),
+        warn: () => {},
+      });
+      const read = cp.run('provider-status', async (client) => {
+        if (client === (stalled as unknown)) throw timeoutError();
+        return 'ready';
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      rmSync(lock, { force: true }); // the other process finished its restart
+
+      await expect(read).resolves.toBe('ready');
+      expect(stopDaemon).not.toHaveBeenCalled();
+      expect(cp.client).toBe(fresh);
+    } finally {
+      other.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports DAEMON_STALLED when another process restart does not finish in time', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rf-writes-'));
+    const other = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' });
+    try {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, '.restart.lock'), String(other.pid));
+      const stopDaemon = vi.fn();
+      const cp = new RecoveringControlPlane({
+        clientOptions: { autoStart: true },
+        createClient: fakeClients({}),
+        stopDaemon,
+        writeGuard: fileWriteGuard(dir, 300),
+        restartWaitMs: 300,
+      });
+      await expect(
+        cp.run('provider-status', async () => {
+          throw timeoutError();
+        })
+      ).rejects.toMatchObject({
+        code: RELAYFILE_DAEMON_STALLED,
+        message: expect.stringContaining('another relay command is restarting the daemon'),
+      });
+      await expect(cp.mutate('bind', async () => 'bound')).rejects.toMatchObject({
+        code: RELAYFILE_DAEMON_STALLED,
+        message: expect.stringContaining('bind was not sent'),
+      });
+      expect(stopDaemon).not.toHaveBeenCalled();
+    } finally {
+      other.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('breaks a restart lock abandoned by a dead process', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rf-writes-'));
+    try {
+      mkdirSync(dir, { recursive: true });
+      const dead = spawnSync(process.execPath, ['-e', '0']).pid;
+      writeFileSync(join(dir, '.restart.lock'), String(dead));
+      const release = fileWriteGuard(dir).acquireRestart();
+      expect(release).toBeTypeOf('function');
+      release!();
+      expect(existsSync(join(dir, '.restart.lock'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('places write markers beside the daemon socket', () => {
     expect(writeMarkerDir('/run/user/1000/relayfile.sock')).toBe('/run/user/1000/relayfile.sock.writes');
   });
