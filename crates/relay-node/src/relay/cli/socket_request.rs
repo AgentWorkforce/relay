@@ -29,9 +29,11 @@ pub(super) fn socket_request_allowed(method: &str, path: &str) -> bool {
                 || path == "/connect/send"
                 || path.starts_with("/connect/send?")
                 || path.starts_with("/channels/subscribe?channel=")
+                || path.starts_with("/channels?channel=")
                 || matches!(
                     path,
-                    "/register"
+                    "/channels"
+                        | "/register"
                         | "/connect/leave"
                         | "/integrations/subscribe"
                         | "/setup/sign-in"

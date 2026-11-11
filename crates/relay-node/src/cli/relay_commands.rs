@@ -191,13 +191,22 @@ pub enum RelayCommands {
         body: Option<String>,
     },
     /// Join one channel as the calling session, so its posts are delivered
-    /// (`POST /channels/subscribe`), or leave it with `--remove`.
+    /// (`POST /channels/subscribe`), or leave it with `--remove`. With
+    /// `--create` a channel that does not exist yet is created and joined
+    /// (`POST /channels`); an existing one is joined.
     SubscribeChannel {
         #[arg(value_name = "CHANNEL")]
         channel: String,
         /// Leave the channel instead.
         #[arg(long)]
         remove: bool,
+        /// Create the channel when it does not exist, then join it.
+        #[arg(long, conflicts_with = "remove")]
+        create: bool,
+        /// The new channel's topic (with --create). It may start with a
+        /// hyphen (`- weekly goals`).
+        #[arg(long, requires = "create", allow_hyphen_values = true)]
+        topic: Option<String>,
         /// The session socket, as the hint names it.
         #[arg(long)]
         socket: PathBuf,
@@ -373,11 +382,20 @@ pub fn session_command(
             socket,
             channel,
             remove,
+            create,
+            topic,
         } => (
             socket.as_path(),
-            SessionCommand::SubscribeChannel {
-                channel: channel.clone(),
-                remove: *remove,
+            if *create {
+                SessionCommand::CreateChannel {
+                    channel: channel.clone(),
+                    topic: topic.clone(),
+                }
+            } else {
+                SessionCommand::SubscribeChannel {
+                    channel: channel.clone(),
+                    remove: *remove,
+                }
             },
             None,
         ),
@@ -531,4 +549,38 @@ pub fn run(command: RelayCommands) -> Result<()> {
 /// The build a command's `--dev` and `--profile` name.
 fn build(development: bool, profile: Option<String>) -> Result<relay::outbound::Build> {
     relay::outbound::Build::named(development, profile.as_deref()).map_err(user_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RelayCommands;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        command: RelayCommands,
+    }
+
+    #[test]
+    fn a_topic_starting_with_a_hyphen_is_a_value_not_a_flag() {
+        let cli = Cli::try_parse_from([
+            "relay",
+            "subscribe-channel",
+            "planning",
+            "--create",
+            "--topic",
+            "- weekly goals",
+            "--socket",
+            "/tmp/session.sock",
+        ])
+        .expect("a topic may start with a hyphen");
+        match cli.command {
+            RelayCommands::SubscribeChannel { topic, create, .. } => {
+                assert!(create);
+                assert_eq!(topic.as_deref(), Some("- weekly goals"));
+            }
+            _ => panic!("subscribe-channel"),
+        }
+    }
 }

@@ -202,10 +202,11 @@ mod sandbox_rule_reach_tests {
             "connect-send" => (&[("POST", "/connect/send")], &["to"]),
             "subscribe-channel" => (
                 &[
+                    ("POST", "/channels"),
                     ("POST", "/channels/subscribe"),
                     ("DELETE", "/channels/subscribe"),
                 ],
-                &["channel"],
+                &["channel", "topic"],
             ),
             other => panic!("{other} has a Codex rule but no intended route"),
         }
@@ -246,6 +247,8 @@ mod sandbox_rule_reach_tests {
         "settings",
         "--json",
         "--remove",
+        "--create",
+        "--topic",
         "swarm",
     ];
 

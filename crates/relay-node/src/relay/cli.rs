@@ -848,6 +848,9 @@ mod tests {
             ("PATCH", "/settings"),
             ("POST", "/channels/subscribe?channel=swarm"),
             ("DELETE", "/channels/subscribe?channel=swarm"),
+            ("POST", "/channels"),
+            ("POST", "/channels?channel=swarm"),
+            ("POST", "/channels?channel=swarm&topic=Release%20work"),
         ] {
             assert!(socket_request_allowed(method, path), "{method} {path}");
         }
@@ -873,6 +876,12 @@ mod tests {
             ("PUT", "/settings"),
             ("POST", "/channels/subscribe"),
             ("GET", "/channels/subscribe?channel=swarm"),
+            ("GET", "/channels"),
+            ("DELETE", "/channels"),
+            ("DELETE", "/channels?channel=swarm"),
+            ("POST", "/channels?extra=1"),
+            ("POST", "/channels/swarm"),
+            ("POST", "/channels?channel=a b"),
         ] {
             assert!(!socket_request_allowed(method, path), "{method} {path}");
         }
