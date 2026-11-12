@@ -79,6 +79,7 @@ export function wakeText(event: ShimEvent): string {
     truncated
       ? `Call get_webhook_events (event_id "${event.id}") on the webhooks MCP for the full body.`
       : 'Act on it as the person asked when they set up this webhook.',
+    'No reply is needed: the webhook does not read replies.',
   ];
   return lines.join('\n');
 }

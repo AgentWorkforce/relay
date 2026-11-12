@@ -19,13 +19,20 @@ agent "watch for webhooks". Each post wakes it:
   hooks (`async`, `asyncRewake`) in `~/.claude/settings.json` that run `events-shim listen --hook`. It waits for the
   next post and exits 2 with it, which wakes the idle session with the post; each turn's Stop hook re-arms it. One
   listener per session, and none for a closed session. `npx @agent-relay/events-shim uninstall --claude` removes it.
+- **Codex, with or without Agent Relay Desktop: nothing to do.** `setup --codex` installs a SessionStart hook in
+  `~/.codex/hooks.json` (trusted for you) that runs `events-shim link --codex-hook`. On the session's first message
+  it creates the session's relay webhook and links the inbox to it, so every post is injected and wakes the idle
+  session. It uses Agent Relay Desktop's core when one is running; otherwise setup downloads `agent-relay-node`
+  (this release, checksum-verified) to `~/.agentworkforce/events-shim/bin` and runs it headless on a temporary
+  workspace that is deleted after 7 days (setup says when; sign in to Agent Relay to keep one, or set
+  `RELAY_WORKSPACE_KEY`). `uninstall --codex` removes the hook. The link is logged to
+  `~/.config/agent-relay/events-shim.log`.
 - **Under Agent Relay** (Desktop or a headless relay on the machine) the agent links the inbox to its session's own
   relay webhook (`agent-relay-probe webhook --socket <socket>`, then the `link_relay_wake` tool). Every post is
   forwarded there and Agent Relay injects it into the session, **waking it even when idle**.
 - **Without Agent Relay, in Claude Code** the agent runs `npx -y @agent-relay/events-shim@latest listen` as a
   background command. It exits with the next post, which wakes the agent; the agent starts it again.
-- **Other clients** call `wait_for_webhook` in the background or `get_webhook_events` when asked. Codex wakes only
-  under Agent Relay.
+- **Other clients** call `wait_for_webhook` in the background or `get_webhook_events` when asked.
 
 ### Integrations through relayfile
 
