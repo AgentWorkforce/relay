@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, statSync } from 'node:fs';
+import { closeSync, fstatSync, mkdtempSync, openSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -72,7 +72,7 @@ describe('events-shim CLI', () => {
 
     const config = JSON.parse(readFileSync(configPath(w.io), 'utf8'));
     expect(config).toMatchObject({ mcpUrl: w.created.mcp_url, webhookUrl: w.created.webhook_url });
-    expect(statSync(configPath(w.io)).mode & 0o777).toBe(0o600);
+    expect(modeOf(configPath(w.io))).toBe(0o600);
     const skill = readFileSync(join(w.home, '.claude', 'skills', 'agent-relay-webhooks', 'SKILL.md'), 'utf8');
     expect(skill).toBe(skillText());
     expect(skill).toContain('npx -y @agent-relay/events-shim@latest listen');
@@ -285,7 +285,7 @@ describe('events-shim CLI', () => {
     const { mkdirSync, writeFileSync } = await import('node:fs');
     const cursor = join(w.home, '.cursor', 'mcp.json');
     mkdirSync(join(w.home, '.cursor'), { recursive: true });
-    writeFileSync(cursor, JSON.stringify({ mcpServers: {} }), { mode: 0o600 });
+    writeFileSync(cursor, JSON.stringify({ mcpServers: {} }), { mode: 0o644 }); // shared: setup must make it private
     w.io.readText = (path) => {
       try {
         return readFileSync(path, 'utf8');
@@ -295,10 +295,10 @@ describe('events-shim CLI', () => {
     };
     w.io.exists = (path) => path === cursor; // only the Cursor config already exists
     expect(await runCli(['setup', w.created.mcp_url, '--cursor'], w.io)).toBe(0);
-    expect(statSync(cursor).mode & 0o777).toBe(0o600);
+    expect(modeOf(cursor)).toBe(0o600);
     const fresh = join(w.home, '.config', 'muse', 'settings.json');
     expect(await runCli(['setup', w.created.mcp_url, '--muse'], w.io)).toBe(0);
-    expect(statSync(fresh).mode & 0o777).toBe(0o600);
+    expect(modeOf(fresh)).toBe(0o600);
 
     // Exists but unreadable: left alone, with the manual step.
     w.io.readText = () => null;
@@ -337,3 +337,13 @@ describe('events-shim CLI', () => {
     expect(printed.length).toBeLessThan(7_000);
   });
 });
+
+/** A file's permission bits, read through one open descriptor. */
+function modeOf(path: string): number {
+  const fd = openSync(path, 'r');
+  try {
+    return fstatSync(fd).mode & 0o777;
+  } finally {
+    closeSync(fd);
+  }
+}

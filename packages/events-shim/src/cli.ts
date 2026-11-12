@@ -16,7 +16,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -284,13 +284,8 @@ function viaJson(
     >;
     config[root] = { ...servers, [MCP_SERVER_NAME]: entry(mcpUrl) };
     mkdirSync(dirname(path), { recursive: true });
-    // Keep the file's own mode (0600 for a new one): it now holds the inbox's MCP URL, a credential.
-    let mode = 0o600;
-    try {
-      mode = statSync(path).mode & 0o777;
-    } catch {
-      /* New file. */
-    }
+    // Owner-only: the file now holds the inbox's MCP URL, which is a credential.
+    const mode = 0o600;
     const temporary = `${path}.${process.pid}.tmp`;
     writeFileSync(temporary, `${JSON.stringify(config, null, 2)}\n`, { mode });
     chmodSync(temporary, mode);
