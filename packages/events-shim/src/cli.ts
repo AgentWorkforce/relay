@@ -87,6 +87,8 @@ interface Config {
   workspaceKey?: string;
   /** When a temporary workspace expires (ISO), if it is one. */
   workspaceExpiresAt?: string;
+  /** Relay webhooks events-shim created, by agent name: the only ones it ever replaces. */
+  ownWebhooks?: Record<string, string>;
   webhookUrl?: string;
   verifiedUrls?: Record<string, string>;
 }
@@ -761,7 +763,15 @@ async function workspaceFor(
   if (bridge(io, 'status.get')) return null;
   // The inbox's own temporary workspace: Cloud keeps it alive while the inbox is used.
   const fromInbox = await io
-    .fetchImpl(mcpUrl.replace(/\/mcp$/, '/workspace'), { method: 'POST' })
+    .fetchImpl(
+      (() => {
+        const url = new URL(mcpUrl);
+        url.pathname = url.pathname.replace(/\/mcp\/?$/, '/workspace');
+        url.search = '';
+        return url.toString();
+      })(),
+      { method: 'POST' }
+    )
     .catch(() => null);
   if (fromInbox?.ok) {
     const issued = (await fromInbox.json().catch(() => null)) as {
@@ -829,6 +839,7 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
     mcpUrl,
     ...(workspace ? { workspaceKey: workspace.key } : {}),
     ...(workspace?.expiresAt ? { workspaceExpiresAt: workspace.expiresAt } : {}),
+    ...(previous?.ownWebhooks ? { ownWebhooks: previous.ownWebhooks } : {}),
     ...(typeof watched.webhook_url === 'string' ? { webhookUrl: watched.webhook_url } : {}),
     ...(watched.verified_urls && typeof watched.verified_urls === 'object'
       ? { verifiedUrls: watched.verified_urls as Record<string, string> }
@@ -1258,11 +1269,17 @@ async function linkSession(io: CliIo, flags: Record<string, string>): Promise<nu
     log('the session never appeared on the relay');
     return 1;
   }
-  let hook = bridge(io, 'agents.webhook.create', { name }) as { url?: string; secret?: string | null } | null;
+  type Hook = { id?: string; url?: string; secret?: string | null } | null;
+  let hook = bridge(io, 'agents.webhook.create', { name }) as Hook;
   if (hook && !hook.secret) {
-    // It already has one whose secret was shown earlier: make a new one.
+    // It already has one whose secret was shown earlier. Replace it only when events-shim made it:
+    // someone else's webhook has senders that a new secret would cut off.
+    if (!hook.id || readConfig(io)?.ownWebhooks?.[name] !== hook.id) {
+      log('the session already has its own relay webhook; not replacing it');
+      return 1;
+    }
     bridge(io, 'agents.webhook.revoke', { name });
-    hook = bridge(io, 'agents.webhook.create', { name }) as { url?: string; secret?: string | null } | null;
+    hook = bridge(io, 'agents.webhook.create', { name }) as Hook;
   }
   if (!hook?.url || !hook.secret) {
     log('could not create the session webhook');
@@ -1273,6 +1290,13 @@ async function linkSession(io: CliIo, flags: Record<string, string>): Promise<nu
   } catch (error) {
     log(`link_relay_wake failed: ${error instanceof Error ? error.message : 'error'}`);
     return 1;
+  }
+  const latest = readConfig(io);
+  if (latest && hook.id) {
+    writePrivate(
+      configPath(io),
+      `${JSON.stringify({ ...latest, ownWebhooks: { ...latest.ownWebhooks, [name]: hook.id } }, null, 2)}\n`
+    );
   }
   log(`linked ${name}`);
   return 0;
@@ -1605,6 +1629,7 @@ export function processIo(): CliIo {
         (message: { result?: unknown; error?: { message?: string } }) => void
       >();
       let next = 1;
+      const timers = new Set<ReturnType<typeof setTimeout>>();
       createInterface({ input: child.stdout! }).on('line', (line) => {
         try {
           const message = JSON.parse(line) as { id?: number };
@@ -1616,12 +1641,14 @@ export function processIo(): CliIo {
       const request = (method: string, params: unknown) =>
         new Promise<unknown>((resolve, reject) => {
           const id = next++;
-          const timer = setTimeout(
-            () => reject(new Error(`codex app-server did not answer ${method}`)),
-            15_000
-          );
+          const timer = setTimeout(() => {
+            timers.delete(timer);
+            reject(new Error(`codex app-server did not answer ${method}`));
+          }, 15_000);
+          timers.add(timer);
           waiting.set(id, (message) => {
             clearTimeout(timer);
+            timers.delete(timer);
             waiting.delete(id);
             if (message.error) reject(new Error(message.error.message ?? `codex refused ${method}`));
             else resolve(message.result);
@@ -1638,6 +1665,10 @@ export function processIo(): CliIo {
         if ((await Promise.race([ready, failed])) === null) return null;
         return await work(request);
       } finally {
+        // Requests still waiting (e.g. codex is not installed) must not keep this process alive.
+        for (const timer of timers) clearTimeout(timer);
+        timers.clear();
+        waiting.clear();
         child.kill();
       }
     },

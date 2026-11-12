@@ -40,6 +40,7 @@ async function setupWorld(
     addFails?: boolean;
     core?: boolean;
     badChecksum?: boolean;
+    inboxWorkspace?: boolean;
   } = {}
 ) {
   const store = new MemoryEventsShimStore();
@@ -745,7 +746,17 @@ describe('events-shim CLI', () => {
       if (text.includes('link_relay_wake')) linked = JSON.parse(text).params.arguments;
       return fetchBefore(input, init);
     };
+    // Someone else's webhook on the session is never replaced.
+    expect(await runCli(['link', '--kind', 'codex', '--session', thread], w.io)).toBe(1);
+    expect(w.logs.at(-1)).toContain('already has its own relay webhook');
+    expect(w.core.calls.map(([method]) => method)).not.toContain('agents.webhook.revoke');
+    // One events-shim made earlier is replaced (its secret was shown once).
+    const saved = JSON.parse(readFileSync(configPath(w.io), 'utf8'));
+    writeFileSync(configPath(w.io), JSON.stringify({ ...saved, ownWebhooks: { 'codex-01a1': 'wh1' } }));
+    w.core.hooks = 0;
+    w.core.calls.length = 0;
     expect(await runCli(['link', '--kind', 'codex', '--session', thread], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).ownWebhooks).toEqual({ 'codex-01a1': 'wh2' });
     const methods = w.core.calls.map(([method]) => method);
     expect(methods).toContain('agents.webhook.revoke');
     expect(w.core.calls.filter(([method]) => method === 'agents.webhook.create')).toEqual([
