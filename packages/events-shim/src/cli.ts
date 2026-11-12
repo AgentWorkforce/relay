@@ -15,6 +15,7 @@
  * The executable is `bin.ts`; this module has no side effects on import.
  */
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -589,6 +590,17 @@ async function forwardFields(io: CliIo, flags: Record<string, string>): Promise<
   return fields;
 }
 
+/**
+ * The dedupe key for one relayfile change: a hash of the exact path and
+ * revision, so it is ASCII (headers cannot carry other characters), fixed in
+ * length, and different for every change.
+ */
+function relayfileKey(path: string, revision: string): string {
+  return `relayfile:${createHash('sha256')
+    .update(JSON.stringify([path, revision]))
+    .digest('hex')}`;
+}
+
 async function forward(io: CliIo, flags: Record<string, string>): Promise<number> {
   const config = readConfig(io);
   const url = flags.url || config?.webhookUrl;
@@ -603,10 +615,10 @@ async function forward(io: CliIo, flags: Record<string, string>): Promise<number
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'x-event-type': eventType.slice(0, 100),
+      'x-event-type': eventType.replace(/[^\x20-\x7e]/g, '?').slice(0, 100),
       // The whole path and revision: the inbox hashes long keys, so no two changes collide.
       ...(fields.revision && fields.path
-        ? { 'idempotency-key': `relayfile:${fields.path}:${fields.revision}` }
+        ? { 'idempotency-key': relayfileKey(fields.path, fields.revision) }
         : {}),
     },
     body: JSON.stringify({ source: 'relayfile', ...notice }),

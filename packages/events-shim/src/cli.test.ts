@@ -257,6 +257,29 @@ describe('events-shim CLI', () => {
     expect(w.out.join('\n').match(/Webhook post #/g)).toHaveLength(2);
   });
 
+  it('forward handles non-ASCII paths, once per revision', async () => {
+    const w = await setupWorld();
+    await runCli(['setup', w.created.mcp_url], w.io);
+    const args = (revision: string) => [
+      'forward',
+      '--provider',
+      'notion',
+      '--type',
+      'file.updated',
+      '--path',
+      '/notion/pages/资料__ünïcode.json',
+      '--revision',
+      revision,
+    ];
+    expect(await runCli(args('r1'), w.io)).toBe(0);
+    expect(await runCli(args('r1'), w.io)).toBe(0); // retried: deduplicated
+    expect(await runCli(args('r2'), w.io)).toBe(0);
+    w.out.length = 0;
+    expect(await runCli(['listen', '--timeout', '1'], w.io)).toBe(0);
+    expect(w.out.join('\n').match(/Webhook post #/g)).toHaveLength(2);
+    expect(w.out.join('\n')).toContain('资料__ünïcode');
+  });
+
   it('a JSON-RPC error from the inbox fails setup instead of saving an empty inbox', async () => {
     const w = await setupWorld();
     w.io.fetchImpl = async () =>
