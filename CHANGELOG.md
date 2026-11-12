@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `npx @agent-relay/events-shim setup <mcp-url>` connects agents to a webhook inbox in one command: adds the MCP server to Claude Code, Codex, Cursor, opencode, Muse, Gemini CLI, Grok and Devin (all installed ones, or those named with `--claude`, `--codex`, …), installs the `agent-relay-webhooks` skill for Claude Code and Codex, and saves the inbox. Without Agent Relay, a Claude Code agent is woken by each post through `npx @agent-relay/events-shim listen` run in the background; `forward` turns `relayfile listen --run` events (GitHub, Slack, Linear, …) into posts that wake it the same way.
 
 ## [18.3.0] - 2026-11-12
 
