@@ -1,4 +1,5 @@
-import { closeSync, fstatSync, mkdtempSync, openSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { closeSync, fstatSync, mkdtempSync, openSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -37,6 +38,7 @@ async function setupWorld(
   const out: string[] = [];
   const err: string[] = [];
   const runs: string[][] = [];
+  const killed: number[] = [];
   const io: CliIo = {
     env: { HOME: home },
     stdout: (line) => out.push(line),
@@ -57,6 +59,16 @@ async function setupWorld(
     pid: 4242,
     pidAlive: (pid) => pid === 4242 || pid === 777,
     claudeAncestor: () => 777,
+    listDir: (path) => {
+      try {
+        return readdirSync(path);
+      } catch {
+        return [];
+      }
+    },
+    kill: (pid) => {
+      killed.push(pid);
+    },
     sleep: async () => {},
   };
   const post = (body: unknown) =>
@@ -65,7 +77,7 @@ async function setupWorld(
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
-  return { store, io, out, err, runs, home, created, post, shimFetch };
+  return { store, io, out, err, runs, killed, home, created, post, shimFetch };
 }
 
 describe('events-shim CLI', () => {
@@ -353,7 +365,7 @@ describe('events-shim CLI', () => {
     expect(await runCli(['setup', w.created.mcp_url, '--claude'], w.io)).toBe(0); // again: still one of ours
     const saved = JSON.parse(readFileSync(settings, 'utf8'));
     expect(saved.model).toBe('opus');
-    const ours = { type: 'command', command: HOOK_COMMAND, async: true, asyncRewake: true, timeout: 86400 };
+    const ours = { type: 'command', command: HOOK_COMMAND, async: true, asyncRewake: true, timeout: 604800 };
     expect(saved.hooks.SessionStart).toEqual([{ hooks: [ours] }]);
     expect(saved.hooks.Stop).toEqual([
       { hooks: [{ type: 'command', command: 'mine.sh' }] },
@@ -366,6 +378,64 @@ describe('events-shim CLI', () => {
     expect(after.hooks).toEqual({ Stop: [{ hooks: [{ type: 'command', command: 'mine.sh' }] }] });
     expect(after.permissions.allow).toEqual([]);
     expect(w.runs).toContainEqual(['claude', 'mcp', 'remove', '--scope', 'user', 'webhooks']);
+  });
+
+  it("setup and uninstall keep the person's own command in a hook group they share with ours, and uninstall stops listeners", async () => {
+    const w = await setupWorld();
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    const settings = join(w.home, '.claude', 'settings.json');
+    mkdirSync(join(w.home, '.claude'), { recursive: true });
+    const shared = {
+      matcher: 'startup',
+      hooks: [
+        { type: 'command', command: 'mine.sh' },
+        { type: 'command', command: HOOK_COMMAND },
+      ],
+    };
+    writeFileSync(settings, JSON.stringify({ hooks: { SessionStart: [shared] } }));
+    w.io.readText = (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    expect(await runCli(['setup', w.created.mcp_url, '--claude'], w.io)).toBe(0);
+    const mine = { matcher: 'startup', hooks: [{ type: 'command', command: 'mine.sh' }] };
+    expect(JSON.parse(readFileSync(settings, 'utf8')).hooks.SessionStart[0]).toEqual(mine);
+    writeFileSync(join(w.home, '.config', 'agent-relay', 'listen-0123456789abcdef.pid'), '777\n');
+    expect(await runCli(['uninstall', '--claude'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(settings, 'utf8')).hooks.SessionStart).toEqual([mine]);
+    expect(w.killed).toEqual([777]);
+  });
+
+  it('a duplicate signed delivery says so without suggesting a new key', async () => {
+    const w = await setupWorld();
+    await runCli(['setup', w.created.mcp_url], w.io);
+    const github = JSON.parse(readFileSync(configPath(w.io), 'utf8')).verifiedUrls.github as string;
+    const manage = w.created.manage_token;
+    await w.shimFetch(`${BASE}/shims/current/secrets/github`, {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${manage}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ secret: 'gh-secret-1' }),
+    });
+    const { hmacSha256Hex } = await import('./crypto.js');
+    const body = '{"action":"opened"}';
+    const send = async () =>
+      (await (
+        await w.shimFetch(github, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-hub-signature-256': `sha256=${await hmacSha256Hex('gh-secret-1', body)}`,
+          },
+          body,
+        })
+      ).json()) as { duplicate?: boolean; message?: string };
+    await send();
+    const again = await send();
+    expect(again.duplicate).toBe(true);
+    expect(again.message).toBe('This exact delivery was already received, so it was not delivered again.');
   });
 
   it('listen --hook wakes the session: exits 2 with the post on stderr', async () => {
@@ -388,7 +458,7 @@ describe('events-shim CLI', () => {
     expect(woke).toContain('untrusted data');
   });
 
-  it('listen --hook keeps one listener per session and never claims for a closed session', async () => {
+  it('listen --hook keeps one listener per inbox and never claims for a closed session', async () => {
     const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'abc-123' }) });
     w.io.readText = (path) => {
       try {
@@ -400,10 +470,16 @@ describe('events-shim CLI', () => {
     await runCli(['setup', w.created.mcp_url], w.io);
     const { writeFileSync } = await import('node:fs');
     // Another live listener (pid 777) holds this session's lock: this one leaves at once.
-    writeFileSync(join(w.home, '.config', 'agent-relay', 'listen-abc-123.pid'), '777\n');
+    const lockFile = join(
+      w.home,
+      '.config',
+      'agent-relay',
+      `listen-${createHash('sha256').update(w.created.mcp_url).digest('hex').slice(0, 16)}.pid`
+    );
+    writeFileSync(lockFile, '777\n'); // another session's live listener holds this inbox
     expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
     // The Claude session is gone: exits without taking the waiting post.
-    writeFileSync(join(w.home, '.config', 'agent-relay', 'listen-abc-123.pid'), '');
+    writeFileSync(lockFile, '');
     await w.post({ waiting: true });
     w.io.claudeAncestor = () => 99999;
     expect(await runCli(['listen', '--hook'], w.io)).toBe(0);

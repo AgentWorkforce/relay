@@ -16,7 +16,16 @@
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -47,6 +56,10 @@ export interface CliIo {
   pidAlive: (pid: number) => boolean;
   /** The nearest ancestor process whose command is Claude Code, if any. */
   claudeAncestor: () => number | null;
+  /** File names in a directory (empty when it does not exist). */
+  listDir: (path: string) => string[];
+  /** Stops a process. */
+  kill: (pid: number) => void;
 }
 
 interface Config {
@@ -316,6 +329,8 @@ function viaJson(
 /** The command Claude Code's hooks run to wake the session with each post. */
 export const HOOK_COMMAND = 'npx -y @agent-relay/events-shim@latest listen --hook';
 const HOOK_EVENTS = ['SessionStart', 'Stop'] as const;
+/** As long as an inbox lives without use (7 days), so an idle session stays watched. */
+const HOOK_TIMEOUT_SECONDS = 7 * 24 * 60 * 60;
 const LISTEN_PERMISSION = 'Bash(npx -y @agent-relay/events-shim@latest listen:*)';
 
 /** Claude Code's user settings file (\`CLAUDE_CONFIG_DIR\` or \`~/.claude\`). */
@@ -351,10 +366,26 @@ function editClaudeHooks(io: CliIo, remove = false): { ok: true } | { ok: false;
     HookGroup[]
   >;
   for (const event of HOOK_EVENTS) {
-    const kept = (Array.isArray(hooks[event]) ? hooks[event] : []).filter((group) => !isOurs(group));
+    // Take out only our command; keep the person's own commands and their group's matcher.
+    const kept: HookGroup[] = [];
+    for (const group of Array.isArray(hooks[event]) ? hooks[event] : []) {
+      const others = (group.hooks ?? []).filter(
+        (hook) => !hook.command?.includes('@agent-relay/events-shim')
+      );
+      if (others.length > 0) kept.push({ ...group, hooks: others });
+      else if (!isOurs(group)) kept.push(group);
+    }
     if (!remove) {
       kept.push({
-        hooks: [{ type: 'command', command: HOOK_COMMAND, async: true, asyncRewake: true, timeout: 86400 }],
+        hooks: [
+          {
+            type: 'command',
+            command: HOOK_COMMAND,
+            async: true,
+            asyncRewake: true,
+            timeout: HOOK_TIMEOUT_SECONDS,
+          },
+        ],
       });
     }
     if (kept.length > 0) hooks[event] = kept;
@@ -564,6 +595,7 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
   writePrivate(configPath(io), `${JSON.stringify(config, null, 2)}\n`);
 
   const failed: string[] = [];
+  let hooked = false;
   io.stdout('Webhook inbox ready.');
   if (clis.length === 0) {
     io.stdout(
@@ -580,6 +612,7 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
     const result = cli.install(io, mcpUrl);
     // Claude Code: hooks that wake each session with every post, no Agent Relay needed.
     const hooks = result.ok && cli.wakeHooks ? editClaudeHooks(io) : null;
+    if (hooks?.ok) hooked = true;
     if (hooks && !hooks.ok) {
       failed.push(`${cli.label} hooks`);
       io.stdout(`  ${cli.label}: could not add the wake hooks. Do it yourself: ${hooks.manual}`);
@@ -593,7 +626,6 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
       io.stdout(`  ${cli.label}: could not add the MCP server. Do it yourself: ${result.manual}`);
     }
   }
-  const hooked = clis.some((cli) => cli.wakeHooks) && !failed.includes('Claude Code hooks');
   const socket = desktopSocket(io);
   if (config.webhookUrl) io.stdout(`  Post to: ${config.webhookUrl}`);
   io.stdout('');
@@ -623,6 +655,13 @@ async function uninstall(io: CliIo, flags: Record<string, string>): Promise<numb
     return 2;
   }
   let failed = 0;
+  // Stop listeners still waiting in open sessions, so none takes a post after this.
+  const dir = dirname(configPath(io));
+  for (const name of io.listDir(dir).filter((file) => /^listen-[0-9a-f-]+\.pid$/.test(file))) {
+    const pid = Number(io.readText(join(dir, name))?.trim());
+    if (Number.isInteger(pid) && pid > 0 && pid !== io.pid && io.pidAlive(pid)) io.kill(pid);
+    rmSync(join(dir, name), { force: true });
+  }
   for (const cli of clis) {
     const removed = cli.remove(io);
     const hooks = cli.wakeHooks ? editClaudeHooks(io, true) : { ok: true as const };
@@ -680,24 +719,20 @@ export function describePost(event: PublicEvent): string {
  * \`listen --hook\`: run by Claude Code's SessionStart and Stop hooks with
  * \`async\` and \`asyncRewake\`. It waits for the next post and exits 2 with
  * it on stderr, which Claude Code shows the agent, waking an idle session.
- * Each turn's Stop hook starts it again. One listener per session (a lock on
- * the hook's session_id); it exits quietly once the Claude session is gone,
- * so a closed session never takes a post. Never fails the session: any
+ * Each turn's Stop hook starts it again. One listener per inbox (a lock on the
+ * inbox), so posts go to one session, not to whichever of several claims
+ * first; it stops waiting as soon as the Claude session is gone. Never fails the session: any
  * other problem exits 0.
  */
 async function listenHook(io: CliIo, flags: Record<string, string>): Promise<number> {
   const mcpUrl = mcpUrlFor(io, flags);
   if (!mcpUrl) return 0;
-  let sessionId = 'session';
-  try {
-    const input = JSON.parse((await io.readStdin()) || '{}') as { session_id?: unknown };
-    if (typeof input.session_id === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(input.session_id)) {
-      sessionId = input.session_id;
-    }
-  } catch {
-    /* No hook input: one lock for this machine. */
-  }
-  const lock = join(dirname(configPath(io)), `listen-${sessionId}.pid`);
+  // Drain the hook input; posts go to ONE session per inbox (the first to listen, until it closes).
+  await io.readStdin().catch(() => '');
+  const lock = join(
+    dirname(configPath(io)),
+    `listen-${createHash('sha256').update(mcpUrl).digest('hex').slice(0, 16)}.pid`
+  );
   const holder = Number(io.readText(lock)?.trim());
   if (Number.isInteger(holder) && holder > 0 && holder !== io.pid && io.pidAlive(holder)) return 0;
   writePrivate(lock, `${io.pid}\n`);
@@ -706,9 +741,16 @@ async function listenHook(io: CliIo, flags: Record<string, string>): Promise<num
   let backoff = 1_000;
   try {
     while (alive()) {
-      const signal = AbortSignal.timeout(65_000);
+      // Abort the wait as soon as the Claude session is gone, before the inbox can hand a post to nobody.
+      const controller = new AbortController();
+      const watch = setInterval(() => {
+        if (!alive()) controller.abort();
+      }, 2_000);
+      const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(65_000)]);
       try {
-        const batch = await callTool(io, mcpUrl, 'wait_for_webhook', { timeout_seconds: 50 }, signal);
+        const batch = await callTool(io, mcpUrl, 'wait_for_webhook', { timeout_seconds: 50 }, signal).finally(
+          () => clearInterval(watch)
+        );
         backoff = 1_000;
         const events = Array.isArray(batch.events) ? (batch.events as PublicEvent[]) : [];
         if (events.length > 0) {
@@ -927,6 +969,20 @@ export function processIo(): CliIo {
       }
     },
     pid: process.pid,
+    listDir: (path) => {
+      try {
+        return readdirSync(path);
+      } catch {
+        return [];
+      }
+    },
+    kill: (pid) => {
+      try {
+        process.kill(pid, 'SIGTERM');
+      } catch {
+        /* Already gone. */
+      }
+    },
     pidAlive: (pid) => {
       try {
         process.kill(pid, 0);

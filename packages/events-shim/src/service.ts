@@ -203,7 +203,9 @@ export async function receivePost(
         event_id: appended.eventId,
         seq: appended.seq,
         message:
-          'Already received with this idempotency key, so it was not delivered again. Use a new key to send a new post.',
+          input.mode === 'open' || input.mode === 'bearer'
+            ? 'Already received with this Idempotency-Key, so it was not delivered again. Use a new key to send a new post.'
+            : 'This exact delivery was already received, so it was not delivered again.',
       },
     };
   }
