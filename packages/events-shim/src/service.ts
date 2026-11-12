@@ -197,7 +197,14 @@ export async function receivePost(
   if (appended.duplicate) {
     return {
       status: 200,
-      body: { ok: true, duplicate: true, event_id: appended.eventId, seq: appended.seq },
+      body: {
+        ok: true,
+        duplicate: true,
+        event_id: appended.eventId,
+        seq: appended.seq,
+        message:
+          'Already received with this idempotency key, so it was not delivered again. Use a new key to send a new post.',
+      },
     };
   }
   const { event } = appended;

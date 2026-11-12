@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { configPath, runCli, skillText, type CliIo } from './cli.js';
+import { configPath, HOOK_COMMAND, runCli, skillText, type CliIo } from './cli.js';
 import { handleEventsShimRequest } from './http.js';
 import { MemoryEventsShimStore } from './memory-store.js';
 
@@ -54,6 +54,9 @@ async function setupWorld(
         ? '/tmp/agent-relay-test/relay.sock\n'
         : null,
     readStdin: async () => options.stdin ?? '',
+    pid: 4242,
+    pidAlive: (pid) => pid === 4242 || pid === 777,
+    claudeAncestor: () => 777,
     sleep: async () => {},
   };
   const post = (body: unknown) =>
@@ -87,15 +90,17 @@ describe('events-shim CLI', () => {
       'webhooks',
       w.created.mcp_url,
     ]);
-    expect(w.out.join('\n')).toContain('Agent Relay: not running here');
+    expect(w.out.join('\n')).toContain('Each post wakes it by itself; there is nothing to tell it.');
   });
 
   it('setup says when Agent Relay is running, and when no agent CLI is installed', async () => {
     const w = await setupWorld({ claude: false, socket: true });
     expect(await runCli(['setup', w.created.mcp_url], w.io)).toBe(0);
     const printed = w.out.join('\n');
-    expect(printed).toContain('Agent Relay: running here');
     expect(printed).toContain('No supported agent CLI found here');
+    w.out.length = 0;
+    expect(await runCli(['setup', w.created.mcp_url, '--codex'], w.io)).toBe(1); // codex itself is absent here
+    expect(w.out.join('\n')).toContain('Agent Relay (running here) injects each post');
   });
 
   it('setup installs the MCP server the right way for each CLI it is asked for', async () => {
@@ -323,6 +328,103 @@ describe('events-shim CLI', () => {
     expect(await runCli(['setup', w.created.mcp_url, '--cursor'], w.io)).toBe(1);
     expect(readFileSync(cursor, 'utf8')).toBe(before);
     expect(w.out.join('\n')).toContain('Cursor: could not add the MCP server');
+  });
+
+  it("setup --claude installs wake hooks once, keeping the person's own hooks; uninstall takes them out", async () => {
+    const w = await setupWorld();
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    const settings = join(w.home, '.claude', 'settings.json');
+    mkdirSync(join(w.home, '.claude'), { recursive: true });
+    writeFileSync(
+      settings,
+      JSON.stringify({
+        model: 'opus',
+        hooks: { Stop: [{ hooks: [{ type: 'command', command: 'mine.sh' }] }] },
+      })
+    );
+    w.io.readText = (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    expect(await runCli(['setup', w.created.mcp_url, '--claude'], w.io)).toBe(0);
+    expect(await runCli(['setup', w.created.mcp_url, '--claude'], w.io)).toBe(0); // again: still one of ours
+    const saved = JSON.parse(readFileSync(settings, 'utf8'));
+    expect(saved.model).toBe('opus');
+    const ours = { type: 'command', command: HOOK_COMMAND, async: true, asyncRewake: true, timeout: 86400 };
+    expect(saved.hooks.SessionStart).toEqual([{ hooks: [ours] }]);
+    expect(saved.hooks.Stop).toEqual([
+      { hooks: [{ type: 'command', command: 'mine.sh' }] },
+      { hooks: [ours] },
+    ]);
+    expect(saved.permissions.allow).toEqual(['Bash(npx -y @agent-relay/events-shim@latest listen:*)']);
+
+    expect(await runCli(['uninstall', '--claude'], w.io)).toBe(0);
+    const after = JSON.parse(readFileSync(settings, 'utf8'));
+    expect(after.hooks).toEqual({ Stop: [{ hooks: [{ type: 'command', command: 'mine.sh' }] }] });
+    expect(after.permissions.allow).toEqual([]);
+    expect(w.runs).toContainEqual(['claude', 'mcp', 'remove', '--scope', 'user', 'webhooks']);
+  });
+
+  it('listen --hook wakes the session: exits 2 with the post on stderr', async () => {
+    const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'abc-123', hook_event_name: 'Stop' }) });
+    w.io.readText = (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    await runCli(['setup', w.created.mcp_url], w.io);
+    const listening = runCli(['listen', '--hook'], w.io);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await w.post({ deploy: 'green' });
+    expect(await listening).toBe(2);
+    const woke = w.err.join('\n');
+    expect(woke).toContain('Webhook inbox (agent-relay-webhooks): a post arrived');
+    expect(woke).toContain('{"deploy":"green"}');
+    expect(woke).toContain('untrusted data');
+  });
+
+  it('listen --hook keeps one listener per session and never claims for a closed session', async () => {
+    const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'abc-123' }) });
+    w.io.readText = (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    await runCli(['setup', w.created.mcp_url], w.io);
+    const { writeFileSync } = await import('node:fs');
+    // Another live listener (pid 777) holds this session's lock: this one leaves at once.
+    writeFileSync(join(w.home, '.config', 'agent-relay', 'listen-abc-123.pid'), '777\n');
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
+    // The Claude session is gone: exits without taking the waiting post.
+    writeFileSync(join(w.home, '.config', 'agent-relay', 'listen-abc-123.pid'), '');
+    await w.post({ waiting: true });
+    w.io.claudeAncestor = () => 99999;
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
+    w.io.claudeAncestor = () => 777;
+    w.out.length = 0;
+    expect(await runCli(['listen', '--timeout', '1'], w.io)).toBe(0);
+    expect(w.out.join('\n')).toContain('{"waiting":true}');
+  });
+
+  it('a duplicate post says it was not delivered again', async () => {
+    const w = await setupWorld();
+    const send = () =>
+      w.shimFetch(w.created.webhook_url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'idempotency-key': 'demo-1' },
+        body: '{}',
+      });
+    await send();
+    const again = (await (await send()).json()) as { duplicate: boolean; message: string };
+    expect(again.duplicate).toBe(true);
+    expect(again.message).toContain('not delivered again');
   });
 
   it('a JSON-RPC error from the inbox fails setup instead of saving an empty inbox', async () => {

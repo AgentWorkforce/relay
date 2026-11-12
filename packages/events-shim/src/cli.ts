@@ -16,7 +16,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -41,6 +41,12 @@ export interface CliIo {
   readStdin: () => Promise<string>;
   /** Replaces the wait between failed polls; tests pass one that does not sleep. */
   sleep: (ms: number) => Promise<void>;
+  /** This process's id (for the per-session listener lock). */
+  pid: number;
+  /** Whether a process is still running. */
+  pidAlive: (pid: number) => boolean;
+  /** The nearest ancestor process whose command is Claude Code, if any. */
+  claudeAncestor: () => number | null;
 }
 
 interface Config {
@@ -53,6 +59,8 @@ const USAGE = `Usage:
   npx @agent-relay/events-shim setup <mcp-url> [--claude] [--codex] [--cursor] [--opencode] [--muse] [--gemini] [--grok] [--devin]
                                                  Add the inbox's MCP server to those agent CLIs (default: every one
                                                  installed here) and install the webhooks skill
+  npx @agent-relay/events-shim uninstall [--claude] [--codex] …
+                                                 Remove the MCP server, wake hooks and skill again
   npx @agent-relay/events-shim listen            Wait for the next webhook post, print it and exit
   npx @agent-relay/events-shim forward [--provider P] [--type T] [--path P] [--revision R]
                                                  Post one event notice into the inbox (for relayfile listen --run)`;
@@ -197,7 +205,13 @@ with the MCP URL from the page that made their inbox, and starts a new session.
 Call \`watch_webhooks\`. Give the person its \`webhook_url\` (anyone holding it can post) or, for a sender that signs
 its posts or sends a bearer token, the matching \`verified_urls\` entry once its secret is set on the page.
 
-## 2. Get woken: pick one
+## 2. Get woken
+
+**Claude Code after \`setup --claude\`: nothing to do.** Setup installed SessionStart and Stop hooks (\`async\`,
+\`asyncRewake\`) that wait for the next post and wake this session with it, with or without Agent Relay. Do not poll,
+and do not start a listener yourself; tell the person you are watching and end your turn.
+
+Otherwise, pick one:
 
 **A. Under Agent Relay** (your session has a relay socket: a \`[reply: … --socket …]\` hint on Agent Relay messages,
 or \`agent-relay-probe\` on the machine). Follow \`watch_webhooks\`' next_steps: make your session's relay webhook and
@@ -245,6 +259,10 @@ interface AgentCli {
   skillsDir?: (io: CliIo) => string;
   /** How a post wakes this tool's session. */
   wake: 'listener' | 'relay-only' | 'when-asked';
+  /** Removes the MCP server again (\`uninstall\`). */
+  remove: (io: CliIo) => boolean;
+  /** True for Claude Code: setup also installs the hooks that wake its sessions. */
+  wakeHooks?: boolean;
 }
 
 /** Adds through the tool's own `mcp add`; when refused (already there), removes and adds again. */
@@ -295,6 +313,92 @@ function viaJson(
   };
 }
 
+/** The command Claude Code's hooks run to wake the session with each post. */
+export const HOOK_COMMAND = 'npx -y @agent-relay/events-shim@latest listen --hook';
+const HOOK_EVENTS = ['SessionStart', 'Stop'] as const;
+const LISTEN_PERMISSION = 'Bash(npx -y @agent-relay/events-shim@latest listen:*)';
+
+/** Claude Code's user settings file (\`CLAUDE_CONFIG_DIR\` or \`~/.claude\`). */
+function claudeSettingsPath(io: CliIo): string {
+  return join(io.env.CLAUDE_CONFIG_DIR || join(home(io), '.claude'), 'settings.json');
+}
+
+type HookEntry = Record<string, unknown> & { command?: string };
+type HookGroup = { matcher?: string; hooks?: HookEntry[] };
+const isOurs = (group: HookGroup) =>
+  (group.hooks ?? []).some((hook) => hook.command?.includes('@agent-relay/events-shim'));
+
+/**
+ * Adds (or, with \`remove\`, takes out) the SessionStart and Stop hooks that
+ * wake a Claude Code session with each post (\`async\` + \`asyncRewake\`),
+ * keeping every other setting. Never replaces a settings file it cannot read.
+ */
+function editClaudeHooks(io: CliIo, remove = false): { ok: true } | { ok: false; manual: string } {
+  const path = claudeSettingsPath(io);
+  const manual = `add async+asyncRewake SessionStart and Stop hooks running "${HOOK_COMMAND}" to ${path}`;
+  const raw = io.readText(path);
+  if (raw === null && io.exists(path)) return { ok: false, manual };
+  let settings: Record<string, unknown> = {};
+  if (raw && raw.trim()) {
+    try {
+      settings = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return { ok: false, manual };
+    }
+  }
+  const hooks = (settings.hooks && typeof settings.hooks === 'object' ? settings.hooks : {}) as Record<
+    string,
+    HookGroup[]
+  >;
+  for (const event of HOOK_EVENTS) {
+    const kept = (Array.isArray(hooks[event]) ? hooks[event] : []).filter((group) => !isOurs(group));
+    if (!remove) {
+      kept.push({
+        hooks: [{ type: 'command', command: HOOK_COMMAND, async: true, asyncRewake: true, timeout: 86400 }],
+      });
+    }
+    if (kept.length > 0) hooks[event] = kept;
+    else delete hooks[event];
+  }
+  settings.hooks = hooks;
+  const permissions = (
+    settings.permissions && typeof settings.permissions === 'object' ? settings.permissions : {}
+  ) as {
+    allow?: string[];
+  };
+  const allow = (Array.isArray(permissions.allow) ? permissions.allow : []).filter(
+    (rule) => rule !== LISTEN_PERMISSION
+  );
+  if (!remove) allow.push(LISTEN_PERMISSION);
+  permissions.allow = allow;
+  settings.permissions = permissions;
+  mkdirSync(dirname(path), { recursive: true });
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temporary, path);
+  return { ok: true };
+}
+
+/** Deletes \`<root>.webhooks\` from a JSON config file (\`uninstall\`); true when it is gone. */
+function removeJson(file: (io: CliIo) => string, root: string): AgentCli['remove'] {
+  return (io) => {
+    const path = file(io);
+    const raw = io.readText(path);
+    if (raw === null) return !io.exists(path);
+    try {
+      const config = JSON.parse(raw) as Record<string, Record<string, unknown> | undefined>;
+      if (!config[root]?.[MCP_SERVER_NAME]) return true;
+      delete config[root]![MCP_SERVER_NAME];
+      const temporary = `${path}.${process.pid}.tmp`;
+      writeFileSync(temporary, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+      renameSync(temporary, path);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+}
+
 const onPath = (file: string) => (io: CliIo) => io.run(file, ['--version']);
 const xdgConfig = (io: CliIo) => io.env.XDG_CONFIG_HOME || join(home(io), '.config');
 
@@ -312,6 +416,8 @@ export const AGENT_CLIS: readonly AgentCli[] = [
       )(io, url),
     skillsDir: (io) => join(home(io), '.claude', 'skills'),
     wake: 'listener',
+    remove: (io) => io.run('claude', ['mcp', 'remove', '--scope', 'user', MCP_SERVER_NAME]),
+    wakeHooks: true,
   },
   {
     id: 'codex',
@@ -325,6 +431,7 @@ export const AGENT_CLIS: readonly AgentCli[] = [
       )(io, url),
     skillsDir: (io) => join(io.env.CODEX_HOME || join(home(io), '.codex'), 'skills'),
     wake: 'relay-only',
+    remove: (io) => io.run('codex', ['mcp', 'remove', MCP_SERVER_NAME]),
   },
   {
     id: 'cursor',
@@ -336,6 +443,7 @@ export const AGENT_CLIS: readonly AgentCli[] = [
       (url) => ({ url })
     ),
     wake: 'when-asked',
+    remove: removeJson((io) => join(home(io), '.cursor', 'mcp.json'), 'mcpServers'),
   },
   {
     id: 'opencode',
@@ -347,6 +455,7 @@ export const AGENT_CLIS: readonly AgentCli[] = [
       (url) => ({ type: 'remote', url, enabled: true })
     ),
     wake: 'relay-only',
+    remove: removeJson((io) => join(xdgConfig(io), 'opencode', 'opencode.json'), 'mcp'),
   },
   {
     id: 'muse',
@@ -358,6 +467,7 @@ export const AGENT_CLIS: readonly AgentCli[] = [
       (url) => ({ url })
     ),
     wake: 'relay-only',
+    remove: removeJson((io) => join(xdgConfig(io), 'muse', 'settings.json'), 'mcpServers'),
   },
   {
     id: 'gemini',
@@ -370,6 +480,7 @@ export const AGENT_CLIS: readonly AgentCli[] = [
         ['mcp', 'remove', '--scope', 'user', MCP_SERVER_NAME]
       )(io, url),
     wake: 'when-asked',
+    remove: (io) => io.run('gemini', ['mcp', 'remove', '--scope', 'user', MCP_SERVER_NAME]),
   },
   {
     id: 'grok',
@@ -382,6 +493,7 @@ export const AGENT_CLIS: readonly AgentCli[] = [
         ['mcp', 'remove', '--scope', 'user', MCP_SERVER_NAME]
       )(io, url),
     wake: 'relay-only',
+    remove: (io) => io.run('grok', ['mcp', 'remove', '--scope', 'user', MCP_SERVER_NAME]),
   },
   {
     id: 'devin',
@@ -394,6 +506,7 @@ export const AGENT_CLIS: readonly AgentCli[] = [
         ['mcp', 'remove', '--scope', 'user', MCP_SERVER_NAME]
       )(io, url),
     wake: 'relay-only',
+    remove: (io) => io.run('devin', ['mcp', 'remove', '--scope', 'user', MCP_SERVER_NAME]),
   },
 ];
 
@@ -412,7 +525,7 @@ function chosenClis(io: CliIo, flags: Record<string, string>): { clis: AgentCli[
 }
 
 const WAKE_TEXT: Record<AgentCli['wake'], string> = {
-  listener: 'woken by each post (Agent Relay injects it; without Agent Relay, the background listener)',
+  listener: 'each new session is woken by every post (wake hooks installed; no Agent Relay needed)',
   'relay-only': 'woken by each post under Agent Relay; without it, reads posts when asked',
   'when-asked': 'reads posts when asked (no background wake in this client)',
 };
@@ -465,6 +578,12 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
       writeFileSync(join(dir, 'SKILL.md'), skillText());
     }
     const result = cli.install(io, mcpUrl);
+    // Claude Code: hooks that wake each session with every post, no Agent Relay needed.
+    const hooks = result.ok && cli.wakeHooks ? editClaudeHooks(io) : null;
+    if (hooks && !hooks.ok) {
+      failed.push(`${cli.label} hooks`);
+      io.stdout(`  ${cli.label}: could not add the wake hooks. Do it yourself: ${hooks.manual}`);
+    }
     if (result.ok) {
       io.stdout(
         `  ${cli.label}: MCP server "${MCP_SERVER_NAME}" added${cli.skillsDir ? ', skill installed' : ''}; ${WAKE_TEXT[cli.wake]}.`
@@ -474,20 +593,46 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
       io.stdout(`  ${cli.label}: could not add the MCP server. Do it yourself: ${result.manual}`);
     }
   }
+  const hooked = clis.some((cli) => cli.wakeHooks) && !failed.includes('Claude Code hooks');
   const socket = desktopSocket(io);
-  io.stdout(
-    socket
-      ? '  Agent Relay: running here; agents link their session and each post is injected.'
-      : '  Agent Relay: not running here; Claude Code is woken by the background listener instead.'
-  );
   if (config.webhookUrl) io.stdout(`  Post to: ${config.webhookUrl}`);
   io.stdout('');
-  io.stdout('Start a new agent session and tell it: "watch for webhooks".');
+  if (hooked) {
+    io.stdout('Start a new Claude Code session. Each post wakes it by itself; there is nothing to tell it.');
+  }
+  if (clis.some((cli) => !cli.wakeHooks)) {
+    io.stdout(
+      socket
+        ? 'Other agents: start a new session and tell it "watch for webhooks"; Agent Relay (running here) injects each post.'
+        : 'Other agents: start a new session and tell it "watch for webhooks". They wake on posts only under Agent Relay.'
+    );
+  }
   if (failed.length > 0) {
     io.stderr(`${failed.join(', ')} did not accept the MCP server; see the step above.`);
     return 1;
   }
   return 0;
+}
+
+async function uninstall(io: CliIo, flags: Record<string, string>): Promise<number> {
+  const { clis, unknown } = chosenClis(io, flags);
+  if (unknown.length > 0) {
+    io.stderr(
+      `Unknown CLI: ${unknown.join(', ')}. Supported: ${AGENT_CLIS.map((cli) => cli.id).join(', ')}.`
+    );
+    return 2;
+  }
+  let failed = 0;
+  for (const cli of clis) {
+    const removed = cli.remove(io);
+    const hooks = cli.wakeHooks ? editClaudeHooks(io, true) : { ok: true as const };
+    if (cli.skillsDir) rmSync(join(cli.skillsDir(io), SKILL_NAME), { recursive: true, force: true });
+    if (!removed || !hooks.ok) failed += 1;
+    io.stdout(
+      `  ${cli.label}: ${removed && hooks.ok ? 'removed' : 'could not remove everything; check its MCP settings'}.`
+    );
+  }
+  return failed > 0 ? 1 : 0;
 }
 
 interface PublicEvent {
@@ -531,7 +676,73 @@ export function describePost(event: PublicEvent): string {
   ].join('\n');
 }
 
+/**
+ * \`listen --hook\`: run by Claude Code's SessionStart and Stop hooks with
+ * \`async\` and \`asyncRewake\`. It waits for the next post and exits 2 with
+ * it on stderr, which Claude Code shows the agent, waking an idle session.
+ * Each turn's Stop hook starts it again. One listener per session (a lock on
+ * the hook's session_id); it exits quietly once the Claude session is gone,
+ * so a closed session never takes a post. Never fails the session: any
+ * other problem exits 0.
+ */
+async function listenHook(io: CliIo, flags: Record<string, string>): Promise<number> {
+  const mcpUrl = mcpUrlFor(io, flags);
+  if (!mcpUrl) return 0;
+  let sessionId = 'session';
+  try {
+    const input = JSON.parse((await io.readStdin()) || '{}') as { session_id?: unknown };
+    if (typeof input.session_id === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(input.session_id)) {
+      sessionId = input.session_id;
+    }
+  } catch {
+    /* No hook input: one lock for this machine. */
+  }
+  const lock = join(dirname(configPath(io)), `listen-${sessionId}.pid`);
+  const holder = Number(io.readText(lock)?.trim());
+  if (Number.isInteger(holder) && holder > 0 && holder !== io.pid && io.pidAlive(holder)) return 0;
+  writePrivate(lock, `${io.pid}\n`);
+  const claude = io.claudeAncestor();
+  const alive = () => claude === null || io.pidAlive(claude);
+  let backoff = 1_000;
+  try {
+    while (alive()) {
+      const signal = AbortSignal.timeout(65_000);
+      try {
+        const batch = await callTool(io, mcpUrl, 'wait_for_webhook', { timeout_seconds: 50 }, signal);
+        backoff = 1_000;
+        const events = Array.isArray(batch.events) ? (batch.events as PublicEvent[]) : [];
+        if (events.length > 0) {
+          io.stderr(
+            [
+              `Webhook inbox (agent-relay-webhooks): ${events.length === 1 ? 'a post arrived' : `${events.length} posts arrived`}.`,
+              '',
+              events.map(describePost).join('\n\n---\n\n'),
+              '',
+              'Act on it as the person asked when they set up this webhook. You will be woken again by the next post.',
+            ].join('\n')
+          );
+          return 2;
+        }
+      } catch (error) {
+        if (error instanceof CliError) return 0;
+        await io.sleep(backoff);
+        backoff = Math.min(backoff * 2, 30_000);
+      }
+    }
+    return 0;
+  } finally {
+    if (io.readText(lock)?.trim() === String(io.pid)) {
+      try {
+        writeFileSync(lock, '');
+      } catch {
+        /* Best effort. */
+      }
+    }
+  }
+}
+
 async function listen(io: CliIo, flags: Record<string, string>): Promise<number> {
+  if (flags.hook === 'true') return listenHook(io, flags);
   const mcpUrl = mcpUrlFor(io, flags);
   if (!mcpUrl) {
     io.stderr(
@@ -676,6 +887,8 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
         return await listen(io, flags);
       case 'forward':
         return await forward(io, flags);
+      case 'uninstall':
+        return await uninstall(io, flags);
       default:
         io.stdout(USAGE);
         return command === undefined || command === 'help' || command === '--help' ? 0 : 2;
@@ -712,6 +925,34 @@ export function processIo(): CliIo {
       } catch {
         return null;
       }
+    },
+    pid: process.pid,
+    pidAlive: (pid) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch (error) {
+        return (error as NodeJS.ErrnoException).code === 'EPERM';
+      }
+    },
+    claudeAncestor: () => {
+      // Walk up with ps (Linux and macOS) to the Claude Code process running this hook.
+      let pid = process.ppid;
+      for (let depth = 0; depth < 12 && pid > 1; depth += 1) {
+        try {
+          const [ppid, ...command] = execFileSync('ps', ['-o', 'ppid=,command=', '-p', String(pid)], {
+            encoding: 'utf8',
+          })
+            .trim()
+            .split(/\s+/);
+          if (/(^|\/)claude(\s|$)/.test(command.join(' ')) || /(^|\/)claude$/.test(command[0] ?? ''))
+            return pid;
+          pid = Number(ppid);
+        } catch {
+          return null;
+        }
+      }
+      return null;
     },
     readStdin: async () => {
       const chunks: Buffer[] = [];

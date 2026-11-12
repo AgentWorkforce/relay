@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Minor]
+
+### Added
+
+- `@agent-relay/events-shim`: `setup --claude` makes every new Claude Code session wake on each webhook post by itself, with or without Agent Relay: no prompt, no polling. `events-shim uninstall` removes what setup added. A duplicate post's response now says it was not delivered again.
 
 ### Fixed
 
