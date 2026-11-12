@@ -280,6 +280,34 @@ describe('events-shim CLI', () => {
     expect(w.out.join('\n')).toContain('资料__ünïcode');
   });
 
+  it('setup keeps a JSON config private and never replaces one it cannot read', async () => {
+    const w = await setupWorld();
+    const { mkdirSync, writeFileSync, existsSync } = await import('node:fs');
+    const cursor = join(w.home, '.cursor', 'mcp.json');
+    mkdirSync(join(w.home, '.cursor'), { recursive: true });
+    writeFileSync(cursor, JSON.stringify({ mcpServers: {} }), { mode: 0o600 });
+    w.io.readText = (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    w.io.exists = (path) => existsSync(path);
+    expect(await runCli(['setup', w.created.mcp_url, '--cursor'], w.io)).toBe(0);
+    expect(statSync(cursor).mode & 0o777).toBe(0o600);
+    const fresh = join(w.home, '.config', 'muse', 'settings.json');
+    expect(await runCli(['setup', w.created.mcp_url, '--muse'], w.io)).toBe(0);
+    expect(statSync(fresh).mode & 0o777).toBe(0o600);
+
+    // Exists but unreadable: left alone, with the manual step.
+    w.io.readText = () => null;
+    const before = readFileSync(cursor, 'utf8');
+    expect(await runCli(['setup', w.created.mcp_url, '--cursor'], w.io)).toBe(1);
+    expect(readFileSync(cursor, 'utf8')).toBe(before);
+    expect(w.out.join('\n')).toContain('Cursor: could not add the MCP server');
+  });
+
   it('a JSON-RPC error from the inbox fails setup instead of saving an empty inbox', async () => {
     const w = await setupWorld();
     w.io.fetchImpl = async () =>

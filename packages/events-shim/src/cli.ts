@@ -16,7 +16,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -266,16 +266,16 @@ function viaJson(
 ): AgentCli['install'] {
   return (io, mcpUrl) => {
     const path = file(io);
+    const manual = `add "${MCP_SERVER_NAME}": ${JSON.stringify(entry(mcpUrl))} under "${root}" in ${path}`;
     const raw = io.readText(path);
+    // Start fresh only when the file is missing; never replace one that exists but cannot be read.
+    if (raw === null && io.exists(path)) return { ok: false, manual };
     let config: Record<string, unknown> = {};
     if (raw && raw.trim()) {
       try {
         config = JSON.parse(raw) as Record<string, unknown>;
       } catch {
-        return {
-          ok: false,
-          manual: `add "${MCP_SERVER_NAME}": ${JSON.stringify(entry(mcpUrl))} under "${root}" in ${path}`,
-        };
+        return { ok: false, manual };
       }
     }
     const servers = (config[root] && typeof config[root] === 'object' ? config[root] : {}) as Record<
@@ -284,8 +284,16 @@ function viaJson(
     >;
     config[root] = { ...servers, [MCP_SERVER_NAME]: entry(mcpUrl) };
     mkdirSync(dirname(path), { recursive: true });
+    // Keep the file's own mode (0600 for a new one): it now holds the inbox's MCP URL, a credential.
+    let mode = 0o600;
+    try {
+      mode = statSync(path).mode & 0o777;
+    } catch {
+      /* New file. */
+    }
     const temporary = `${path}.${process.pid}.tmp`;
-    writeFileSync(temporary, `${JSON.stringify(config, null, 2)}\n`);
+    writeFileSync(temporary, `${JSON.stringify(config, null, 2)}\n`, { mode });
+    chmodSync(temporary, mode);
     renameSync(temporary, path);
     return { ok: true };
   };
