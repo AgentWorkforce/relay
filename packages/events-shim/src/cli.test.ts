@@ -768,6 +768,14 @@ describe('events-shim CLI', () => {
       secret: 'wh_live_0123456789abcdef',
     });
     expect(w.logs.at(-1)).toContain('linked codex-01a1');
+    // The inbox call fails after the webhook was made: it is still recorded as ours, so a retry replaces it.
+    const fetchOk = w.io.fetchImpl;
+    w.io.fetchImpl = async (input, init) =>
+      typeof init?.body === 'string' && init.body.includes('link_relay_wake')
+        ? new Response('down', { status: 503 })
+        : fetchOk(input, init);
+    expect(await runCli(['link', '--kind', 'codex', '--session', thread], w.io)).toBe(1);
+    expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).ownWebhooks).toEqual({ 'codex-01a1': 'wh3' });
   });
 
   it('link gives up quietly when no core can run and the session never appears', async () => {

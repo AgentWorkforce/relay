@@ -839,7 +839,11 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
     mcpUrl,
     ...(workspace ? { workspaceKey: workspace.key } : {}),
     ...(workspace?.expiresAt ? { workspaceExpiresAt: workspace.expiresAt } : {}),
-    ...(previous?.ownWebhooks ? { ownWebhooks: previous.ownWebhooks } : {}),
+    // Read now, not before the network calls above: a link running meanwhile may have saved one.
+    ...(() => {
+      const owned = readConfig(io)?.ownWebhooks;
+      return owned ? { ownWebhooks: owned } : {};
+    })(),
     ...(typeof watched.webhook_url === 'string' ? { webhookUrl: watched.webhook_url } : {}),
     ...(watched.verified_urls && typeof watched.verified_urls === 'object'
       ? { verifiedUrls: watched.verified_urls as Record<string, string> }
@@ -1285,18 +1289,19 @@ async function linkSession(io: CliIo, flags: Record<string, string>): Promise<nu
     log('could not create the session webhook');
     return 1;
   }
-  try {
-    await callTool(io, config.mcpUrl, 'link_relay_wake', { url: hook.url, secret: hook.secret });
-  } catch (error) {
-    log(`link_relay_wake failed: ${error instanceof Error ? error.message : 'error'}`);
-    return 1;
-  }
+  // Recorded before the inbox call that can fail: a retry must still know this webhook is ours.
   const latest = readConfig(io);
   if (latest && hook.id) {
     writePrivate(
       configPath(io),
       `${JSON.stringify({ ...latest, ownWebhooks: { ...latest.ownWebhooks, [name]: hook.id } }, null, 2)}\n`
     );
+  }
+  try {
+    await callTool(io, config.mcpUrl, 'link_relay_wake', { url: hook.url, secret: hook.secret });
+  } catch (error) {
+    log(`link_relay_wake failed: ${error instanceof Error ? error.message : 'error'}`);
+    return 1;
   }
   log(`linked ${name}`);
   return 0;
