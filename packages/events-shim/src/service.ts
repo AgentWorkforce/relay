@@ -205,7 +205,9 @@ export async function receivePost(
         message:
           input.mode === 'open' || input.mode === 'bearer'
             ? 'Already received with this Idempotency-Key, so it was not delivered again. Use a new key to send a new post.'
-            : 'This exact delivery was already received, so it was not delivered again.',
+            : input.mode === 'stripe'
+              ? 'A post for this Stripe event was already received, so it was not delivered again.'
+              : 'This exact delivery was already received, so it was not delivered again.',
       },
     };
   }

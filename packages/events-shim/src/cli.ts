@@ -18,8 +18,10 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -60,6 +62,10 @@ export interface CliIo {
   listDir: (path: string) => string[];
   /** Stops a process. */
   kill: (pid: number) => void;
+  /** A running process's command line, or null when it is not running. */
+  processArgs: (pid: number) => string | null;
+  /** Creates a file only if it does not exist yet (atomic); false when it already exists. */
+  createExclusive: (path: string, contents: string) => boolean;
 }
 
 interface Config {
@@ -655,12 +661,14 @@ async function uninstall(io: CliIo, flags: Record<string, string>): Promise<numb
     return 2;
   }
   let failed = 0;
-  // Stop listeners still waiting in open sessions, so none takes a post after this.
-  const dir = dirname(configPath(io));
-  for (const name of io.listDir(dir).filter((file) => /^listen-[0-9a-f-]+\.pid$/.test(file))) {
-    const pid = Number(io.readText(join(dir, name))?.trim());
-    if (Number.isInteger(pid) && pid > 0 && pid !== io.pid && io.pidAlive(pid)) io.kill(pid);
-    rmSync(join(dir, name), { force: true });
+  // Stop Claude Code's hook listeners (only when removing Claude Code, and only real listeners).
+  if (clis.some((cli) => cli.wakeHooks)) {
+    const dir = dirname(configPath(io));
+    for (const name of io.listDir(dir).filter((file) => /^listen-[0-9a-f]+\.pid$/.test(file))) {
+      const pid = Number(io.readText(join(dir, name))?.trim());
+      if (isListener(io, pid)) io.kill(pid);
+      rmSync(join(dir, name), { force: true });
+    }
   }
   for (const cli of clis) {
     const removed = cli.remove(io);
@@ -715,6 +723,12 @@ export function describePost(event: PublicEvent): string {
   ].join('\n');
 }
 
+/** True when \`pid\` is a running \`events-shim listen --hook\` (not a reused process id). */
+function isListener(io: CliIo, pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0 || pid === io.pid) return false;
+  return /\blisten\b.*--hook\b/.test(io.processArgs(pid) ?? '');
+}
+
 /**
  * \`listen --hook\`: run by Claude Code's SessionStart and Stop hooks with
  * \`async\` and \`asyncRewake\`. It waits for the next post and exits 2 with
@@ -733,11 +747,21 @@ async function listenHook(io: CliIo, flags: Record<string, string>): Promise<num
     dirname(configPath(io)),
     `listen-${createHash('sha256').update(mcpUrl).digest('hex').slice(0, 16)}.pid`
   );
-  const holder = Number(io.readText(lock)?.trim());
-  if (Number.isInteger(holder) && holder > 0 && holder !== io.pid && io.pidAlive(holder)) return 0;
-  writePrivate(lock, `${io.pid}\n`);
   const claude = io.claudeAncestor();
   const alive = () => claude === null || io.pidAlive(claude);
+  // Take the inbox's lock exclusively. While another live listener owns it, keep waiting:
+  // when that session closes, this one takes over, so an idle session is never left unwatched.
+  for (;;) {
+    if (!alive()) return 0;
+    if (io.createExclusive(lock, `${io.pid}\n`)) break;
+    const holder = io.readText(lock);
+    if (holder !== null && !isListener(io, Number(holder.trim()))) {
+      // Stale (its listener is gone): remove it only if it is still the same file.
+      if (io.readText(lock) === holder) rmSync(lock, { force: true });
+      continue;
+    }
+    await io.sleep(3_000);
+  }
   let backoff = 1_000;
   try {
     while (alive()) {
@@ -773,13 +797,7 @@ async function listenHook(io: CliIo, flags: Record<string, string>): Promise<num
     }
     return 0;
   } finally {
-    if (io.readText(lock)?.trim() === String(io.pid)) {
-      try {
-        writeFileSync(lock, '');
-      } catch {
-        /* Best effort. */
-      }
-    }
+    if (io.readText(lock)?.trim() === String(io.pid)) rmSync(lock, { force: true });
   }
 }
 
@@ -974,6 +992,25 @@ export function processIo(): CliIo {
         return readdirSync(path);
       } catch {
         return [];
+      }
+    },
+    processArgs: (pid) => {
+      try {
+        return execFileSync('ps', ['-o', 'args=', '-p', String(pid)], { encoding: 'utf8' }).trim() || null;
+      } catch {
+        return null;
+      }
+    },
+    createExclusive: (path, contents) => {
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      try {
+        const fd = openSync(path, 'wx', 0o600);
+        writeFileSync(fd, contents);
+        closeSync(fd);
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+        throw error;
       }
     },
     kill: (pid) => {

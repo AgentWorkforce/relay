@@ -1,7 +1,16 @@
 import { createHash } from 'node:crypto';
-import { closeSync, fstatSync, mkdtempSync, openSync, readdirSync, readFileSync } from 'node:fs';
+import {
+  closeSync,
+  fstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { configPath, HOOK_COMMAND, runCli, skillText, type CliIo } from './cli.js';
@@ -39,6 +48,7 @@ async function setupWorld(
   const err: string[] = [];
   const runs: string[][] = [];
   const killed: number[] = [];
+  const listeners = new Set<number>([777]);
   const io: CliIo = {
     env: { HOME: home },
     stdout: (line) => out.push(line),
@@ -69,6 +79,17 @@ async function setupWorld(
     kill: (pid) => {
       killed.push(pid);
     },
+    processArgs: (pid) =>
+      listeners.has(pid) ? 'node /x/dist/bin.js listen --hook' : pid === 555 ? 'vim notes.txt' : null,
+    createExclusive: (path, contents) => {
+      try {
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, contents, { flag: 'wx' });
+        return true;
+      } catch {
+        return false;
+      }
+    },
     sleep: async () => {},
   };
   const post = (body: unknown) =>
@@ -77,7 +98,7 @@ async function setupWorld(
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
-  return { store, io, out, err, runs, killed, home, created, post, shimFetch };
+  return { store, io, out, err, runs, killed, listeners, home, created, post, shimFetch };
 }
 
 describe('events-shim CLI', () => {
@@ -404,6 +425,9 @@ describe('events-shim CLI', () => {
     const mine = { matcher: 'startup', hooks: [{ type: 'command', command: 'mine.sh' }] };
     expect(JSON.parse(readFileSync(settings, 'utf8')).hooks.SessionStart[0]).toEqual(mine);
     writeFileSync(join(w.home, '.config', 'agent-relay', 'listen-0123456789abcdef.pid'), '777\n');
+    writeFileSync(join(w.home, '.config', 'agent-relay', 'listen-fedcba9876543210.pid'), '555\n'); // a reused pid, not a listener
+    expect(await runCli(['uninstall', '--codex'], w.io)).toBe(0);
+    expect(w.killed).toEqual([]); // removing Codex leaves Claude's listener running
     expect(await runCli(['uninstall', '--claude'], w.io)).toBe(0);
     expect(JSON.parse(readFileSync(settings, 'utf8')).hooks.SessionStart).toEqual([mine]);
     expect(w.killed).toEqual([777]);
@@ -458,7 +482,7 @@ describe('events-shim CLI', () => {
     expect(woke).toContain('untrusted data');
   });
 
-  it('listen --hook keeps one listener per inbox and never claims for a closed session', async () => {
+  it('listen --hook: one listener per inbox; a waiting session takes over when the owner is gone; a closed one claims nothing', async () => {
     const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'abc-123' }) });
     w.io.readText = (path) => {
       try {
@@ -468,25 +492,34 @@ describe('events-shim CLI', () => {
       }
     };
     await runCli(['setup', w.created.mcp_url], w.io);
-    const { writeFileSync } = await import('node:fs');
-    // Another live listener (pid 777) holds this session's lock: this one leaves at once.
     const lockFile = join(
       w.home,
       '.config',
       'agent-relay',
       `listen-${createHash('sha256').update(w.created.mcp_url).digest('hex').slice(0, 16)}.pid`
     );
-    writeFileSync(lockFile, '777\n'); // another session's live listener holds this inbox
-    expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
-    // The Claude session is gone: exits without taking the waiting post.
-    writeFileSync(lockFile, '');
+    writeFileSync(lockFile, '777\n'); // another session's live listener owns this inbox
     await w.post({ waiting: true });
-    w.io.claudeAncestor = () => 99999;
+
+    // This session's Claude closes while it waits for ownership: exits, claims nothing.
+    let sleeps = 0;
+    w.io.sleep = async () => {
+      sleeps += 1;
+      if (sleeps === 2) w.io.pidAlive = (pid) => pid === 4242; // this session's Claude (777) exits
+    };
     expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
-    w.io.claudeAncestor = () => 777;
-    w.out.length = 0;
-    expect(await runCli(['listen', '--timeout', '1'], w.io)).toBe(0);
-    expect(w.out.join('\n')).toContain('{"waiting":true}');
+    expect(readFileSync(lockFile, 'utf8')).toBe('777\n');
+
+    // A waiting session takes over once the owner is gone, then receives the post.
+    w.io.pidAlive = (pid) => pid === 4242 || pid === 777;
+    sleeps = 0;
+    w.io.sleep = async () => {
+      sleeps += 1;
+      if (sleeps === 1) w.listeners.delete(777); // the owner's listener exits
+    };
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(2);
+    expect(w.err.join('\n')).toContain('{"waiting":true}');
+    expect(() => readFileSync(lockFile, 'utf8')).toThrow(); // released on exit
   });
 
   it('a duplicate post says it was not delivered again', async () => {
