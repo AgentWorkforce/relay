@@ -80,10 +80,17 @@ async function setupWorld(
     running: options.core ?? false,
     calls: [] as [string, unknown][],
     agents: [] as { name: string; target: { kind: string; id: string } }[],
+    sessions: [] as {
+      target: { kind: string; id: string };
+      live: boolean;
+      updated_at_ms: number;
+      registration: { name: string } | null;
+    }[],
     hooks: 0,
   };
   const logs: string[] = [];
   const mints: unknown[] = [];
+  const services: string[][] = [];
   const downloads: string[] = [];
   const io: CliIo = {
     env: { HOME: home },
@@ -148,21 +155,33 @@ async function setupWorld(
       const result =
         args[1] === 'agents.list'
           ? { agents: core.agents }
-          : args[1] === 'agents.webhook.create'
-            ? (core.hooks += 1) === 1
-              ? { id: 'wh1', url: 'https://cast.agentrelay.com/v1/hooks/wh1', secret: null, created: false }
-              : {
-                  id: `wh${core.hooks}`,
-                  url: `https://cast.agentrelay.com/v1/hooks/wh${core.hooks}`,
-                  secret: 'wh_live_0123456789abcdef',
-                  created: true,
-                }
-            : {};
+          : args[1] === 'sessions.list'
+            ? { sessions: core.sessions }
+            : args[1] === 'agents.webhook.create'
+              ? (core.hooks += 1) === 1
+                ? { id: 'wh1', url: 'https://cast.agentrelay.com/v1/hooks/wh1', secret: null, created: false }
+                : {
+                    id: `wh${core.hooks}`,
+                    url: `https://cast.agentrelay.com/v1/hooks/wh${core.hooks}`,
+                    secret: 'wh_live_0123456789abcdef',
+                    created: true,
+                  }
+              : {};
       return JSON.stringify({ result });
     }),
     appendLog: vi.fn((line: string) => {
       logs.push(line);
     }),
+    userService: {
+      install: vi.fn((args: string[]) => {
+        services.push(['install', ...args]);
+        return true;
+      }),
+      remove: vi.fn(() => {
+        services.push(['remove']);
+        return true;
+      }),
+    },
     codexAppServer: async (work) =>
       work(async (method, params) => {
         appServerCalls.push([method, params]);
@@ -235,6 +254,7 @@ async function setupWorld(
     logs,
     mints,
     downloads,
+    services,
   };
 }
 
@@ -326,7 +346,7 @@ describe('events-shim CLI', () => {
       url,
       enabled: true,
     });
-    expect(json(['.config', 'muse', 'settings.json']).mcpServers.webhooks).toEqual({ url });
+    expect(w.runs).toContainEqual(['muse', 'mcp', 'add', 'webhooks', '--url', url, '--user']);
     expect(readFileSync(join(w.home, '.codex', 'skills', 'agent-relay-webhooks', 'SKILL.md'), 'utf8')).toBe(
       skillText()
     );
@@ -488,8 +508,8 @@ describe('events-shim CLI', () => {
     w.io.exists = (path) => path === cursor; // only the Cursor config already exists
     expect(await runCli(['setup', w.created.mcp_url, '--cursor'], w.io)).toBe(0);
     expect(modeOf(cursor)).toBe(0o600);
-    const fresh = join(w.home, '.config', 'muse', 'settings.json');
-    expect(await runCli(['setup', w.created.mcp_url, '--muse'], w.io)).toBe(0);
+    const fresh = join(w.home, '.config', 'opencode', 'opencode.json');
+    expect(await runCli(['setup', w.created.mcp_url, '--opencode'], w.io)).toBe(0);
     expect(modeOf(fresh)).toBe(0o600);
 
     // Exists but unreadable: left alone, with the manual step.
@@ -692,6 +712,113 @@ describe('events-shim CLI', () => {
       workspaceExpiresAt: '2026-11-20T00:00:00.000Z',
     });
     expect(w.out.join('\n')).toContain('deleted 2026-11-20');
+  });
+
+  it('setup wakes Devin, opencode and Codex through one core and runs the watcher as a user service', async () => {
+    const w = await setupWorld({ core: true });
+    // events-shim's own core is the one running: its settings are made to fit.
+    const runCapture = w.io.runCapture;
+    w.io.runCapture = vi.fn((file: string, args: string[]) =>
+      args[1] === 'status.get' ? JSON.stringify({ result: { daemon: { pid: 991 } } }) : runCapture(file, args)
+    );
+    w.io.processArgs = (pid) =>
+      pid === 991
+        ? `${join(w.home, '.agentworkforce', 'events-shim', 'bin', `agent-relay-node-${VERSION}`)} serve --headless`
+        : null;
+    expect(await runCli(['setup', w.created.mcp_url, '--devin', '--opencode', '--codex'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).wakeKinds).toEqual([
+      'codex',
+      'devin',
+      'opencode-open',
+    ]);
+    expect(w.services).toEqual([['install', 'serve']]);
+    expect(w.core.calls).toContainEqual([
+      'settings.set',
+      { auto_activate: true, opencode_auto_activate: true },
+    ]);
+    const said = w.out.join('\n');
+    expect(said).toContain(
+      'opencode, Devin: open a session; the newest one is woken by each post by itself.'
+    );
+    expect(said).toContain(
+      'Devin: MCP server "webhooks" added; its newest open session is woken by every post'
+    );
+
+    // Adding Muse later keeps the others.
+    expect(await runCli(['setup', w.created.mcp_url, '--muse'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).wakeKinds).toEqual([
+      'codex',
+      'devin',
+      'muse-open',
+      'opencode-open',
+    ]);
+
+    // Removing some keeps the watcher; removing the last stops it and the core.
+    expect(await runCli(['uninstall', '--devin', '--muse', '--opencode'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).wakeKinds).toEqual(['codex']);
+    expect(w.services).toEqual([
+      ['install', 'serve'],
+      ['install', 'serve'],
+    ]);
+    expect(await runCli(['uninstall', '--codex'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).wakeKinds).toBeUndefined();
+    expect(w.services.at(-1)).toEqual(['remove']);
+    expect(w.killed).toContain(991);
+  });
+
+  it("never changes Desktop's core settings", async () => {
+    const w = await setupWorld({ core: true });
+    expect(await runCli(['setup', w.created.mcp_url, '--opencode'], w.io)).toBe(0);
+    expect(w.core.calls.some(([method]) => method === 'settings.set')).toBe(false);
+  });
+
+  it('serve links the newest open session, hands the link to a newer one, and moves it when that one closes', async () => {
+    const w = await setupWorld({ core: true });
+    await runCli(['setup', w.created.mcp_url, '--opencode', '--devin'], w.io);
+    const linked: string[] = [];
+    const fetchBefore = w.io.fetchImpl;
+    w.io.fetchImpl = async (input, init) => {
+      const text = typeof init?.body === 'string' ? init.body : '';
+      if (text.includes('link_relay_wake')) linked.push(JSON.parse(text).params.arguments.url);
+      return fetchBefore(input, init);
+    };
+    const session = (kind: string, id: string, at: number, live = true) => ({
+      target: { kind, id },
+      live,
+      updated_at_ms: at,
+      registration: { name: `${kind}-${id}` },
+    });
+    // A Claude session (not set up here), a closed one, and two open ones: the newer open one wins.
+    w.core.sessions.push(
+      session('claude', 'c1', 900),
+      session('opencode-open', 'ses_old', 500, false),
+      session('opencode-open', 'ses_a', 100),
+      session('devin', 'dv_b', 200)
+    );
+    // One serve process; between its passes the sessions change.
+    const steps = [
+      // A newer session opens (even though its activity time is older): it takes the link.
+      () => w.core.sessions.push(session('opencode-open', 'ses_c', 50)),
+      // Nothing changes: the link stays.
+      () => undefined,
+      // The linked session closes: the link moves to the most recent one still open.
+      () => {
+        w.core.sessions.find((s) => s.target.id === 'ses_c')!.live = false;
+      },
+    ];
+    w.io.sleep = vi.fn(async () => {
+      const step = steps.shift();
+      if (!step) throw new Error('stop');
+      step();
+    });
+    await runCli(['serve'], w.io).catch(() => 0);
+    const names = () =>
+      w.core.calls
+        .filter(([m]) => m === 'agents.webhook.create')
+        .map(([, p]) => (p as { name: string }).name);
+    // The first webhook had no secret (shown earlier), so it was made again.
+    expect(names()).toEqual(['devin-dv_b', 'devin-dv_b', 'opencode-open-ses_c', 'devin-dv_b']);
+    expect(linked).toHaveLength(3);
   });
 
   it('setup --codex refuses a core download that does not match its checksum', async () => {

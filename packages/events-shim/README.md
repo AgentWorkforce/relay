@@ -10,8 +10,8 @@ npx @agent-relay/events-shim@latest setup '<mcp url>'
 
 It adds the inbox's MCP server to every supported agent CLI on the machine, or only the ones you name:
 `--claude`, `--codex`, `--cursor`, `--opencode`, `--muse`, `--gemini`, `--grok`, `--devin` (or `--cli claude,codex`).
-Each tool gets it its own way (`claude`/`codex`/`gemini`/`grok`/`devin mcp add` at user scope; Cursor's
-`~/.cursor/mcp.json`, opencode's and Muse's config files), re-running replaces it, and Claude Code and Codex also get
+Each tool gets it its own way (`claude`/`codex`/`gemini`/`grok`/`devin`/`muse mcp add` at user scope; Cursor's
+`~/.cursor/mcp.json`, opencode's config file), re-running replaces it, and Claude Code and Codex also get
 the `agent-relay-webhooks` skill. The inbox is saved to `~/.config/agent-relay/webhooks.json` (0600). Then tell the
 agent "watch for webhooks". Each post wakes it:
 
@@ -27,6 +27,13 @@ agent "watch for webhooks". Each post wakes it:
   workspace that is deleted after 7 days (setup says when; sign in to Agent Relay to keep one, or set
   `RELAY_WORKSPACE_KEY`). The newest Codex session gets the posts. `uninstall --codex` removes the hook and stops that core. The link is logged to
   `~/.config/agent-relay/events-shim.log`.
+- **Devin, Grok, opencode and Muse, the same way.** Their sessions are woken through the same Agent Relay core
+  (Desktop's or setup's own). Setup also runs `events-shim serve` as a user service (systemd `--user` on Linux, a
+  LaunchAgent on macOS): it keeps the core running and links the inbox to the newest open session of the CLIs you set
+  up. A session opened later takes the link, and when the linked one closes the link moves to the most recent one
+  still open. Setup turns on opencode's auto-join on its own core, and the core turns on Grok's leader mode, so start
+  a new Grok session after setup. `uninstall` stops the service and the core once no CLI uses them.
+- **Cursor and Copilot** get a post on their next turn (Agent Relay's hooks); they cannot be woken while idle.
 - **Under Agent Relay** (Desktop or a headless relay on the machine) the agent links the inbox to its session's own
   relay webhook (`agent-relay-probe webhook --socket <socket>`, then the `link_relay_wake` tool). Every post is
   forwarded there and Agent Relay injects it into the session, **waking it even when idle**.
