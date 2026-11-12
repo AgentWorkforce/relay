@@ -282,7 +282,7 @@ describe('events-shim CLI', () => {
 
   it('setup keeps a JSON config private and never replaces one it cannot read', async () => {
     const w = await setupWorld();
-    const { mkdirSync, writeFileSync, existsSync } = await import('node:fs');
+    const { mkdirSync, writeFileSync } = await import('node:fs');
     const cursor = join(w.home, '.cursor', 'mcp.json');
     mkdirSync(join(w.home, '.cursor'), { recursive: true });
     writeFileSync(cursor, JSON.stringify({ mcpServers: {} }), { mode: 0o600 });
@@ -293,7 +293,7 @@ describe('events-shim CLI', () => {
         return null;
       }
     };
-    w.io.exists = (path) => existsSync(path);
+    w.io.exists = (path) => path === cursor; // only the Cursor config already exists
     expect(await runCli(['setup', w.created.mcp_url, '--cursor'], w.io)).toBe(0);
     expect(statSync(cursor).mode & 0o777).toBe(0o600);
     const fresh = join(w.home, '.config', 'muse', 'settings.json');
