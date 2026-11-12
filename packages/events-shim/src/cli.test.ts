@@ -80,7 +80,11 @@ async function setupWorld(
       killed.push(pid);
     },
     processArgs: (pid) =>
-      listeners.has(pid) ? 'node /x/dist/bin.js listen --hook' : pid === 555 ? 'vim notes.txt' : null,
+      listeners.has(pid)
+        ? 'node /x/node_modules/@agent-relay/events-shim/dist/bin.js listen --hook'
+        : pid === 555
+          ? 'grep listen --hook notes.txt'
+          : null,
     createExclusive: (path, contents) => {
       try {
         mkdirSync(dirname(path), { recursive: true });
@@ -431,6 +435,27 @@ describe('events-shim CLI', () => {
     expect(await runCli(['uninstall', '--claude'], w.io)).toBe(0);
     expect(JSON.parse(readFileSync(settings, 'utf8')).hooks.SessionStart).toEqual([mine]);
     expect(w.killed).toEqual([777]);
+  });
+
+  it('listen --hook runs one hook process per session; uninstall also stops a waiting hook', async () => {
+    const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'sess-1' }) });
+    w.io.readText = (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    await runCli(['setup', w.created.mcp_url], w.io);
+    const dir = join(w.home, '.config', 'agent-relay');
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 16);
+    // An earlier turn's hook of this same session (pid 777) is still waiting: this one leaves at once.
+    writeFileSync(join(dir, `wait-${digest(`${w.created.mcp_url}\nsess-1`)}.pid`), '777\n');
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
+    // Uninstalling Claude Code stops waiting hooks too, not only the inbox owner.
+    expect(await runCli(['uninstall', '--claude'], w.io)).toBe(0);
+    expect(w.killed).toEqual([777]);
+    expect(readdirSync(dir).filter((file) => file.endsWith('.pid'))).toEqual([]);
   });
 
   it('a duplicate signed delivery says so without suggesting a new key', async () => {

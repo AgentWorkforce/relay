@@ -18,10 +18,9 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
-  closeSync,
   existsSync,
+  linkSync,
   mkdirSync,
-  openSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -664,7 +663,7 @@ async function uninstall(io: CliIo, flags: Record<string, string>): Promise<numb
   // Stop Claude Code's hook listeners (only when removing Claude Code, and only real listeners).
   if (clis.some((cli) => cli.wakeHooks)) {
     const dir = dirname(configPath(io));
-    for (const name of io.listDir(dir).filter((file) => /^listen-[0-9a-f]+\.pid$/.test(file))) {
+    for (const name of io.listDir(dir).filter((file) => /^(listen|wait)-[0-9a-f]+\.pid$/.test(file))) {
       const pid = Number(io.readText(join(dir, name))?.trim());
       if (isListener(io, pid)) io.kill(pid);
       rmSync(join(dir, name), { force: true });
@@ -723,81 +722,126 @@ export function describePost(event: PublicEvent): string {
   ].join('\n');
 }
 
-/** True when \`pid\` is a running \`events-shim listen --hook\` (not a reused process id). */
+/** True when \`pid\` is a running \`events-shim … listen --hook\` (its own executable, not a reused process id). */
 function isListener(io: CliIo, pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0 || pid === io.pid) return false;
-  return /\blisten\b.*--hook\b/.test(io.processArgs(pid) ?? '');
+  const args = io.processArgs(pid) ?? '';
+  return /events-shim/.test(args) && /\blisten\b/.test(args) && /(^|\s)--hook(\s|$)/.test(args);
+}
+
+/**
+ * Takes a lock file holding our pid. The pid is published atomically (a
+ * complete temp file hard-linked into place), so the lock is never seen
+ * empty. A lock whose holder is not a running listener is reclaimed by
+ * renaming it aside (only one waiter can); if what was renamed turns out to be
+ * a live owner's fresh lock, it is put back.
+ */
+function tryLock(io: CliIo, lock: string): boolean {
+  if (io.createExclusive(lock, `${io.pid}\n`)) return true;
+  const holder = io.readText(lock);
+  if (holder === null || isListener(io, Number(holder.trim()))) return false;
+  const aside = `${lock}.${io.pid}.reclaim`;
+  try {
+    renameSync(lock, aside);
+  } catch {
+    return false; // another waiter reclaimed it first
+  }
+  const moved = io.readText(aside);
+  if (moved !== null && isListener(io, Number(moved.trim()))) {
+    try {
+      linkSync(aside, lock); // a live owner's lock: put it back
+    } catch {
+      /* A newer owner exists; this one notices on its next check and steps back. */
+    }
+  }
+  rmSync(aside, { force: true });
+  return io.createExclusive(lock, `${io.pid}\n`);
+}
+
+/** Removes a lock only while it is still ours. */
+function unlock(io: CliIo, lock: string): void {
+  if (io.readText(lock)?.trim() === String(io.pid)) rmSync(lock, { force: true });
 }
 
 /**
  * \`listen --hook\`: run by Claude Code's SessionStart and Stop hooks with
  * \`async\` and \`asyncRewake\`. It waits for the next post and exits 2 with
  * it on stderr, which Claude Code shows the agent, waking an idle session.
- * Each turn's Stop hook starts it again. One listener per inbox (a lock on the
- * inbox), so posts go to one session, not to whichever of several claims
- * first; it stops waiting as soon as the Claude session is gone. Never fails the session: any
- * other problem exits 0.
+ * Each turn's Stop hook starts it again. At most one hook process per session
+ * (a session lock), and one listener per inbox (an inbox lock): posts go to
+ * one session, and a session that finds the inbox owned waits to take over
+ * when the owner closes. It stops as soon as its Claude session is gone.
  */
 async function listenHook(io: CliIo, flags: Record<string, string>): Promise<number> {
   const mcpUrl = mcpUrlFor(io, flags);
   if (!mcpUrl) return 0;
-  // Drain the hook input; posts go to ONE session per inbox (the first to listen, until it closes).
-  await io.readStdin().catch(() => '');
-  const lock = join(
-    dirname(configPath(io)),
-    `listen-${createHash('sha256').update(mcpUrl).digest('hex').slice(0, 16)}.pid`
-  );
+  let session = '';
+  try {
+    const input = JSON.parse((await io.readStdin()) || '{}') as { session_id?: unknown };
+    if (typeof input.session_id === 'string') session = input.session_id;
+  } catch {
+    /* No hook input. */
+  }
   const claude = io.claudeAncestor();
   const alive = () => claude === null || io.pidAlive(claude);
-  // Take the inbox's lock exclusively. While another live listener owns it, keep waiting:
-  // when that session closes, this one takes over, so an idle session is never left unwatched.
-  for (;;) {
-    if (!alive()) return 0;
-    if (io.createExclusive(lock, `${io.pid}\n`)) break;
-    const holder = io.readText(lock);
-    if (holder !== null && !isListener(io, Number(holder.trim()))) {
-      // Stale (its listener is gone): remove it only if it is still the same file.
-      if (io.readText(lock) === holder) rmSync(lock, { force: true });
-      continue;
-    }
-    await io.sleep(3_000);
-  }
-  let backoff = 1_000;
+  const dir = dirname(configPath(io));
+  const digest = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 16);
+  const inboxLock = join(dir, `listen-${digest(mcpUrl)}.pid`);
+  const sessionLock = join(dir, `wait-${digest(`${mcpUrl}\n${session || String(claude ?? 'machine')}`)}.pid`);
+  // One hook process per session: a later turn's hook leaves while this one waits or listens.
+  if (!tryLock(io, sessionLock)) return 0;
   try {
-    while (alive()) {
-      // Abort the wait as soon as the Claude session is gone, before the inbox can hand a post to nobody.
-      const controller = new AbortController();
-      const watch = setInterval(() => {
-        if (!alive()) controller.abort();
-      }, 2_000);
-      const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(65_000)]);
+    let backoff = 1_000;
+    for (;;) {
+      // Wait for the inbox: while another session's listener owns it, keep waiting to take over.
+      while (!tryLock(io, inboxLock)) {
+        if (!alive()) return 0;
+        await io.sleep(3_000);
+      }
       try {
-        const batch = await callTool(io, mcpUrl, 'wait_for_webhook', { timeout_seconds: 50 }, signal).finally(
-          () => clearInterval(watch)
-        );
-        backoff = 1_000;
-        const events = Array.isArray(batch.events) ? (batch.events as PublicEvent[]) : [];
-        if (events.length > 0) {
-          io.stderr(
-            [
-              `Webhook inbox (agent-relay-webhooks): ${events.length === 1 ? 'a post arrived' : `${events.length} posts arrived`}.`,
-              '',
-              events.map(describePost).join('\n\n---\n\n'),
-              '',
-              'Act on it as the person asked when they set up this webhook. You will be woken again by the next post.',
-            ].join('\n')
-          );
-          return 2;
+        // Listen while this session lives and the inbox lock is still ours.
+        while (alive() && io.readText(inboxLock)?.trim() === String(io.pid)) {
+          // Abort the wait as soon as the Claude session is gone, before the inbox can hand a post to nobody.
+          const controller = new AbortController();
+          const watch = setInterval(() => {
+            if (!alive()) controller.abort();
+          }, 2_000);
+          const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(65_000)]);
+          try {
+            const batch = await callTool(
+              io,
+              mcpUrl,
+              'wait_for_webhook',
+              { timeout_seconds: 50 },
+              signal
+            ).finally(() => clearInterval(watch));
+            backoff = 1_000;
+            const events = Array.isArray(batch.events) ? (batch.events as PublicEvent[]) : [];
+            if (events.length > 0) {
+              io.stderr(
+                [
+                  `Webhook inbox (agent-relay-webhooks): ${events.length === 1 ? 'a post arrived' : `${events.length} posts arrived`}.`,
+                  '',
+                  events.map(describePost).join('\n\n---\n\n'),
+                  '',
+                  'Act on it as the person asked when they set up this webhook. You will be woken again by the next post.',
+                ].join('\n')
+              );
+              return 2;
+            }
+          } catch (error) {
+            if (error instanceof CliError) return 0;
+            await io.sleep(backoff);
+            backoff = Math.min(backoff * 2, 30_000);
+          }
         }
-      } catch (error) {
-        if (error instanceof CliError) return 0;
-        await io.sleep(backoff);
-        backoff = Math.min(backoff * 2, 30_000);
+        if (!alive()) return 0;
+      } finally {
+        unlock(io, inboxLock);
       }
     }
-    return 0;
   } finally {
-    if (io.readText(lock)?.trim() === String(io.pid)) rmSync(lock, { force: true });
+    unlock(io, sessionLock);
   }
 }
 
@@ -1002,15 +1046,18 @@ export function processIo(): CliIo {
       }
     },
     createExclusive: (path, contents) => {
+      // A complete temp file hard-linked into place: atomic, and never seen empty.
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      const temporary = `${path}.${process.pid}.new`;
+      writeFileSync(temporary, contents, { mode: 0o600 });
       try {
-        const fd = openSync(path, 'wx', 0o600);
-        writeFileSync(fd, contents);
-        closeSync(fd);
+        linkSync(temporary, path);
         return true;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
         throw error;
+      } finally {
+        rmSync(temporary, { force: true });
       }
     },
     kill: (pid) => {
