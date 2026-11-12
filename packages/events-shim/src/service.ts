@@ -197,7 +197,18 @@ export async function receivePost(
   if (appended.duplicate) {
     return {
       status: 200,
-      body: { ok: true, duplicate: true, event_id: appended.eventId, seq: appended.seq },
+      body: {
+        ok: true,
+        duplicate: true,
+        event_id: appended.eventId,
+        seq: appended.seq,
+        message:
+          input.mode === 'open' || input.mode === 'bearer'
+            ? 'Already received with this Idempotency-Key, so it was not delivered again. Use a new key to send a new post.'
+            : input.mode === 'stripe'
+              ? 'A post for this Stripe event was already received, so it was not delivered again.'
+              : 'This exact delivery was already received, so it was not delivered again.',
+      },
     };
   }
   const { event } = appended;

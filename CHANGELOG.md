@@ -5,7 +5,15 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `@agent-relay/events-shim`: `setup --claude` makes every new Claude Code session wake on each webhook post by itself, with or without Agent Relay: no prompt, no polling. `events-shim uninstall` removes what setup added. A duplicate post's response now says it was not delivered again.
+
+### Fixed
+
+- `@agent-relay/events-shim`: relayfile provider events (GitHub, Slack, Linear, …) now reach webhook inboxes and wake agents when forwarded as the `agent-relay-webhooks` skill shows (`relayfile listen --path '/github/**'`).
 
 ## [18.4.0] - 2026-11-12
 

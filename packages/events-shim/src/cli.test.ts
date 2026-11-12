@@ -1,9 +1,19 @@
-import { closeSync, fstatSync, mkdtempSync, openSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  closeSync,
+  fstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { configPath, runCli, skillText, type CliIo } from './cli.js';
+import { configPath, HOOK_COMMAND, runCli, skillText, type CliIo } from './cli.js';
 import { handleEventsShimRequest } from './http.js';
 import { MemoryEventsShimStore } from './memory-store.js';
 
@@ -37,6 +47,8 @@ async function setupWorld(
   const out: string[] = [];
   const err: string[] = [];
   const runs: string[][] = [];
+  const killed: number[] = [];
+  const listeners = new Set<number>([777]);
   const io: CliIo = {
     env: { HOME: home },
     stdout: (line) => out.push(line),
@@ -54,6 +66,34 @@ async function setupWorld(
         ? '/tmp/agent-relay-test/relay.sock\n'
         : null,
     readStdin: async () => options.stdin ?? '',
+    pid: 4242,
+    pidAlive: (pid) => pid === 4242 || pid === 777,
+    claudeAncestor: () => 777,
+    listDir: (path) => {
+      try {
+        return readdirSync(path);
+      } catch {
+        return [];
+      }
+    },
+    kill: (pid) => {
+      killed.push(pid);
+    },
+    processArgs: (pid) =>
+      listeners.has(pid)
+        ? 'node /x/node_modules/@agent-relay/events-shim/dist/bin.js listen --hook'
+        : pid === 555
+          ? 'grep listen --hook notes.txt'
+          : null,
+    createExclusive: (path, contents) => {
+      try {
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, contents, { flag: 'wx' });
+        return true;
+      } catch {
+        return false;
+      }
+    },
     sleep: async () => {},
   };
   const post = (body: unknown) =>
@@ -62,7 +102,7 @@ async function setupWorld(
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
-  return { store, io, out, err, runs, home, created, post, shimFetch };
+  return { store, io, out, err, runs, killed, listeners, home, created, post, shimFetch };
 }
 
 describe('events-shim CLI', () => {
@@ -87,15 +127,17 @@ describe('events-shim CLI', () => {
       'webhooks',
       w.created.mcp_url,
     ]);
-    expect(w.out.join('\n')).toContain('Agent Relay: not running here');
+    expect(w.out.join('\n')).toContain('Each post wakes it by itself; there is nothing to tell it.');
   });
 
   it('setup says when Agent Relay is running, and when no agent CLI is installed', async () => {
     const w = await setupWorld({ claude: false, socket: true });
     expect(await runCli(['setup', w.created.mcp_url], w.io)).toBe(0);
     const printed = w.out.join('\n');
-    expect(printed).toContain('Agent Relay: running here');
     expect(printed).toContain('No supported agent CLI found here');
+    w.out.length = 0;
+    expect(await runCli(['setup', w.created.mcp_url, '--codex'], w.io)).toBe(1); // codex itself is absent here
+    expect(w.out.join('\n')).toContain('Agent Relay (running here) injects each post');
   });
 
   it('setup installs the MCP server the right way for each CLI it is asked for', async () => {
@@ -230,6 +272,23 @@ describe('events-shim CLI', () => {
     expect(w.out.join('\n')).toContain('rm -rf ~');
   });
 
+  it('forward takes the provider from the path when relayfile leaves it out', async () => {
+    const w = await setupWorld({
+      stdin: JSON.stringify({
+        type: 'file.updated',
+        path: '/github/repos/a/b/commits/c1/metadata.json',
+        revision: 'rev_1',
+      }),
+    });
+    await runCli(['setup', w.created.mcp_url], w.io);
+    expect(skillText()).toContain("listen --path '/github/**'");
+    expect(skillText()).not.toContain('listen --provider');
+    expect(await runCli(['forward', '--stdin'], w.io)).toBe(0);
+    w.out.length = 0;
+    expect(await runCli(['listen', '--timeout', '1'], w.io)).toBe(0);
+    expect(w.out.join('\n')).toContain('github.file.updated');
+  });
+
   it('forward keeps every revision of a long path distinct', async () => {
     const w = await setupWorld();
     await runCli(['setup', w.created.mcp_url], w.io);
@@ -306,6 +365,200 @@ describe('events-shim CLI', () => {
     expect(await runCli(['setup', w.created.mcp_url, '--cursor'], w.io)).toBe(1);
     expect(readFileSync(cursor, 'utf8')).toBe(before);
     expect(w.out.join('\n')).toContain('Cursor: could not add the MCP server');
+  });
+
+  it("setup --claude installs wake hooks once, keeping the person's own hooks; uninstall takes them out", async () => {
+    const w = await setupWorld();
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    const settings = join(w.home, '.claude', 'settings.json');
+    mkdirSync(join(w.home, '.claude'), { recursive: true });
+    writeFileSync(
+      settings,
+      JSON.stringify({
+        model: 'opus',
+        hooks: { Stop: [{ hooks: [{ type: 'command', command: 'mine.sh' }] }] },
+      })
+    );
+    w.io.readText = (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    expect(await runCli(['setup', w.created.mcp_url, '--claude'], w.io)).toBe(0);
+    expect(await runCli(['setup', w.created.mcp_url, '--claude'], w.io)).toBe(0); // again: still one of ours
+    const saved = JSON.parse(readFileSync(settings, 'utf8'));
+    expect(saved.model).toBe('opus');
+    const ours = { type: 'command', command: HOOK_COMMAND, async: true, asyncRewake: true, timeout: 604800 };
+    expect(saved.hooks.SessionStart).toEqual([{ hooks: [ours] }]);
+    expect(saved.hooks.Stop).toEqual([
+      { hooks: [{ type: 'command', command: 'mine.sh' }] },
+      { hooks: [ours] },
+    ]);
+    expect(saved.permissions.allow).toEqual(['Bash(npx -y @agent-relay/events-shim@latest listen:*)']);
+
+    expect(await runCli(['uninstall', '--claude'], w.io)).toBe(0);
+    const after = JSON.parse(readFileSync(settings, 'utf8'));
+    expect(after.hooks).toEqual({ Stop: [{ hooks: [{ type: 'command', command: 'mine.sh' }] }] });
+    expect(after.permissions.allow).toEqual([]);
+    expect(w.runs).toContainEqual(['claude', 'mcp', 'remove', '--scope', 'user', 'webhooks']);
+  });
+
+  it("setup and uninstall keep the person's own command in a hook group they share with ours, and uninstall stops listeners", async () => {
+    const w = await setupWorld();
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    const settings = join(w.home, '.claude', 'settings.json');
+    mkdirSync(join(w.home, '.claude'), { recursive: true });
+    const shared = {
+      matcher: 'startup',
+      hooks: [
+        { type: 'command', command: 'mine.sh' },
+        { type: 'command', command: HOOK_COMMAND },
+      ],
+    };
+    writeFileSync(settings, JSON.stringify({ hooks: { SessionStart: [shared] } }));
+    w.io.readText = (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    expect(await runCli(['setup', w.created.mcp_url, '--claude'], w.io)).toBe(0);
+    const mine = { matcher: 'startup', hooks: [{ type: 'command', command: 'mine.sh' }] };
+    expect(JSON.parse(readFileSync(settings, 'utf8')).hooks.SessionStart[0]).toEqual(mine);
+    writeFileSync(join(w.home, '.config', 'agent-relay', 'listen-0123456789abcdef.pid'), '777\n');
+    writeFileSync(join(w.home, '.config', 'agent-relay', 'listen-fedcba9876543210.pid'), '555\n'); // a reused pid, not a listener
+    expect(await runCli(['uninstall', '--codex'], w.io)).toBe(0);
+    expect(w.killed).toEqual([]); // removing Codex leaves Claude's listener running
+    expect(await runCli(['uninstall', '--claude'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(settings, 'utf8')).hooks.SessionStart).toEqual([mine]);
+    expect(w.killed).toEqual([777]);
+  });
+
+  it('listen --hook runs one hook process per session; uninstall also stops a waiting hook', async () => {
+    const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'sess-1' }) });
+    w.io.readText = (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    await runCli(['setup', w.created.mcp_url], w.io);
+    const dir = join(w.home, '.config', 'agent-relay');
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 16);
+    // An earlier turn's hook of this same session (pid 777) is still waiting: this one leaves at once.
+    writeFileSync(join(dir, `wait-${digest(`${w.created.mcp_url}\nsess-1`)}.pid`), '777\n');
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
+    // Uninstalling Claude Code stops waiting hooks too, not only the inbox owner.
+    expect(await runCli(['uninstall', '--claude'], w.io)).toBe(0);
+    expect(w.killed).toEqual([777]);
+    expect(readdirSync(dir).filter((file) => file.endsWith('.pid'))).toEqual([]);
+  });
+
+  it('a duplicate signed delivery says so without suggesting a new key', async () => {
+    const w = await setupWorld();
+    await runCli(['setup', w.created.mcp_url], w.io);
+    const github = JSON.parse(readFileSync(configPath(w.io), 'utf8')).verifiedUrls.github as string;
+    const manage = w.created.manage_token;
+    await w.shimFetch(`${BASE}/shims/current/secrets/github`, {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${manage}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ secret: 'gh-secret-1' }),
+    });
+    const { hmacSha256Hex } = await import('./crypto.js');
+    const body = '{"action":"opened"}';
+    const send = async () =>
+      (await (
+        await w.shimFetch(github, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-hub-signature-256': `sha256=${await hmacSha256Hex('gh-secret-1', body)}`,
+          },
+          body,
+        })
+      ).json()) as { duplicate?: boolean; message?: string };
+    await send();
+    const again = await send();
+    expect(again.duplicate).toBe(true);
+    expect(again.message).toBe('This exact delivery was already received, so it was not delivered again.');
+  });
+
+  it('listen --hook wakes the session: exits 2 with the post on stderr', async () => {
+    const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'abc-123', hook_event_name: 'Stop' }) });
+    w.io.readText = (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    await runCli(['setup', w.created.mcp_url], w.io);
+    const listening = runCli(['listen', '--hook'], w.io);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await w.post({ deploy: 'green' });
+    expect(await listening).toBe(2);
+    const woke = w.err.join('\n');
+    expect(woke).toContain('Webhook inbox (agent-relay-webhooks): a post arrived');
+    expect(woke).toContain('{"deploy":"green"}');
+    expect(woke).toContain('untrusted data');
+  });
+
+  it('listen --hook: one listener per inbox; a waiting session takes over when the owner is gone; a closed one claims nothing', async () => {
+    const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'abc-123' }) });
+    w.io.readText = (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    await runCli(['setup', w.created.mcp_url], w.io);
+    const lockFile = join(
+      w.home,
+      '.config',
+      'agent-relay',
+      `listen-${createHash('sha256').update(w.created.mcp_url).digest('hex').slice(0, 16)}.pid`
+    );
+    writeFileSync(lockFile, '777\n'); // another session's live listener owns this inbox
+    await w.post({ waiting: true });
+
+    // This session's Claude closes while it waits for ownership: exits, claims nothing.
+    let sleeps = 0;
+    w.io.sleep = async () => {
+      sleeps += 1;
+      if (sleeps === 2) w.io.pidAlive = (pid) => pid === 4242; // this session's Claude (777) exits
+    };
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
+    expect(readFileSync(lockFile, 'utf8')).toBe('777\n');
+
+    // A waiting session takes over once the owner is gone, then receives the post.
+    w.io.pidAlive = (pid) => pid === 4242 || pid === 777;
+    sleeps = 0;
+    w.io.sleep = async () => {
+      sleeps += 1;
+      if (sleeps === 1) w.listeners.delete(777); // the owner's listener exits
+    };
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(2);
+    expect(w.err.join('\n')).toContain('{"waiting":true}');
+    expect(() => readFileSync(lockFile, 'utf8')).toThrow(); // released on exit
+  });
+
+  it('a duplicate post says it was not delivered again', async () => {
+    const w = await setupWorld();
+    const send = () =>
+      w.shimFetch(w.created.webhook_url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'idempotency-key': 'demo-1' },
+        body: '{}',
+      });
+    await send();
+    const again = (await (await send()).json()) as { duplicate: boolean; message: string };
+    expect(again.duplicate).toBe(true);
+    expect(again.message).toContain('not delivered again');
   });
 
   it('a JSON-RPC error from the inbox fails setup instead of saving an empty inbox', async () => {
