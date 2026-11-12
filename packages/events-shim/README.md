@@ -83,5 +83,9 @@ Pass `deps.defer` (e.g. `ctx.waitUntil`) where background work must be kept aliv
 acknowledged before it is forwarded; if the relay fails temporarily, the post is retried in the background and
 again on the next post, feed read or `watch_webhooks` call.
 
+Run `recoverStalledWakes({ store, fetchImpl })` on a schedule (every minute is plenty). It re-drains inboxes
+whose posts a relay outage left pending, so an idle agent still gets them when no new post arrives. Each run
+makes one attempt per inbox; posts younger than 30 seconds are left to their own delivery pass.
+
 Wake links may only point at an allowed Relaycast origin (`relayOrigins`, default
 `https://cast.agentrelay.com`), so a holder of the MCP URL cannot make the host post elsewhere.

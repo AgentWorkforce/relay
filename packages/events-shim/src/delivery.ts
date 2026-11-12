@@ -151,3 +151,62 @@ export function deliverInBackground(
   if (deps.defer) deps.defer(work);
   return work;
 }
+
+/** What a recovery sweep did. */
+export interface WakeSweep {
+  /** Inboxes the sweep re-drained. */
+  shims: number;
+  /** Posts forwarded across them. */
+  forwarded: number;
+  /** Inboxes whose relay still refused; the next sweep tries again (or the link is now marked broken). */
+  stalled: number;
+}
+
+/**
+ * Re-drains inboxes whose posts a temporary relay failure left pending, across
+ * all inboxes, so a stalled post reaches an idle agent without waiting for the
+ * next post. Hosts call it on a schedule (e.g. every minute). Each inbox gets
+ * one attempt per post per sweep, without in-sweep retry delays; the next
+ * sweep retries. Expired inboxes are skipped. Safe to run concurrently with
+ * delivery passes: every post is claimed atomically under the current link.
+ * The store picks inboxes in random order, so inboxes whose relay keeps
+ * failing cannot keep later ones from being swept.
+ *
+ * @param deps - The store, fetch and clock.
+ * @param options - `limit` inboxes per sweep (default `sweepShimLimit`) and `concurrency` (default 5).
+ * @returns How many inboxes were re-drained, posts forwarded and inboxes still stalled.
+ */
+export async function recoverStalledWakes(
+  deps: DeliveryDeps,
+  options: { limit?: number; concurrency?: number } = {}
+): Promise<WakeSweep> {
+  const now = (deps.now ?? (() => new Date()))();
+  const shims = await deps.store.listStalledWakes({
+    staleBefore: new Date(now.getTime() - EVENTS_SHIM_LIMITS.sendLeaseMs).toISOString(),
+    receivedBefore: new Date(now.getTime() - EVENTS_SHIM_LIMITS.sweepSettleMs).toISOString(),
+    activeSince: new Date(now.getTime() - EVENTS_SHIM_LIMITS.idleExpiryMs).toISOString(),
+    limit: options.limit ?? EVENTS_SHIM_LIMITS.sweepShimLimit,
+  });
+  const live = shims.filter(
+    (shim) =>
+      shim.wake &&
+      !shim.wake.brokenAt &&
+      now.getTime() - Date.parse(shim.lastUsedAt) < EVENTS_SHIM_LIMITS.idleExpiryMs
+  );
+  const sweep: WakeSweep = { shims: live.length, forwarded: 0, stalled: 0 };
+  const single = { ...deps, retryDelaysMs: [0] };
+  const queue = [...live];
+  const workers = Array.from({ length: Math.max(1, options.concurrency ?? 5) }, async () => {
+    for (let shim = queue.shift(); shim; shim = queue.shift()) {
+      try {
+        const pass = await deliverPending(single, shim.id, shim.wake!);
+        sweep.forwarded += pass.forwarded;
+        if (pass.stalled) sweep.stalled += 1;
+      } catch {
+        sweep.stalled += 1;
+      }
+    }
+  });
+  await Promise.all(workers);
+  return sweep;
+}
