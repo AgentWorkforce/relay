@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `@agent-relay/events-shim`: the `agent-relay-webhooks` skill and README forward relayfile events with `relayfile listen --path '/github/**'`; `--provider` matched no events because relayfile's events carry the provider only in their path. `forward` now reads the provider from the path when the event leaves it out.
+- `@agent-relay/events-shim`: relayfile provider events (GitHub, Slack, Linear, …) now reach webhook inboxes and wake agents when forwarded as the `agent-relay-webhooks` skill shows (`relayfile listen --path '/github/**'`).
 
 ## [18.4.0] - 2026-11-12
 
