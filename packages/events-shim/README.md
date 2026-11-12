@@ -30,11 +30,12 @@ webhook: connect the provider once with `npx relayfile@latest setup --provider g
 the inbox:
 
 ```sh
-npx relayfile@latest listen --provider github --background \
+npx relayfile@latest listen --path '/github/**' --background \
   --run 'npx -y @agent-relay/events-shim@latest forward --stdin'
 ```
 
-relayfile hands each event to `forward` as JSON on stdin, so no event field is ever put into a shell command. Each
+Filter by path: relayfile's events do not carry the provider, so `--provider` matches none of them. relayfile hands
+each event to `forward` as JSON on stdin, so no event field is ever put into a shell command. Each
 event arrives as a post naming the changed file (deduplicated per path and revision).
 
 ## Tools

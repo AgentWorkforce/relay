@@ -227,7 +227,8 @@ To be woken by provider events without setting up each provider's webhook:
    \`npx relayfile@latest setup --provider github --local-dir ./relayfile-mount\` (or \`slack\`, \`linear\`, \`notion\`, …).
 2. Forward its events into the inbox, in the background (relayfile hands each event to the command on stdin; no
    event field is ever put into the shell command):
-   \`npx relayfile@latest listen --provider github --background --run 'npx -y @agent-relay/events-shim@latest forward --stdin'\`
+   \`npx relayfile@latest listen --path '/github/**' --background --run 'npx -y @agent-relay/events-shim@latest forward --stdin'\`
+   (filter by path: relayfile's events do not carry the provider, so \`--provider\` would match none)
 3. Each event then wakes you like any other post, naming the file that changed; read it under \`./relayfile-mount\`.
 `;
 }
@@ -589,6 +590,11 @@ async function forwardFields(io: CliIo, flags: Record<string, string>): Promise<
   for (const key of ['provider', 'type', 'path', 'revision']) {
     const value = flags[key]?.trim();
     if (value && value !== 'true') fields[key] = value;
+  }
+  // relayfile's events name the provider only in their path (/github/…).
+  if (!fields.provider && fields.path) {
+    const provider = /^\/([a-z0-9][a-z0-9-]*)\//i.exec(fields.path)?.[1];
+    if (provider) fields.provider = provider.toLowerCase();
   }
   return fields;
 }

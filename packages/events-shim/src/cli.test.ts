@@ -230,6 +230,23 @@ describe('events-shim CLI', () => {
     expect(w.out.join('\n')).toContain('rm -rf ~');
   });
 
+  it('forward takes the provider from the path when relayfile leaves it out', async () => {
+    const w = await setupWorld({
+      stdin: JSON.stringify({
+        type: 'file.updated',
+        path: '/github/repos/a/b/commits/c1/metadata.json',
+        revision: 'rev_1',
+      }),
+    });
+    await runCli(['setup', w.created.mcp_url], w.io);
+    expect(skillText()).toContain("listen --path '/github/**'");
+    expect(skillText()).not.toContain('listen --provider');
+    expect(await runCli(['forward', '--stdin'], w.io)).toBe(0);
+    w.out.length = 0;
+    expect(await runCli(['listen', '--timeout', '1'], w.io)).toBe(0);
+    expect(w.out.join('\n')).toContain('github.file.updated');
+  });
+
   it('forward keeps every revision of a long path distinct', async () => {
     const w = await setupWorld();
     await runCli(['setup', w.created.mcp_url], w.io);
