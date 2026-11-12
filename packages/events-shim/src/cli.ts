@@ -1015,6 +1015,14 @@ async function uninstall(io: CliIo, flags: Record<string, string>): Promise<numb
       `${JSON.stringify(left.length > 0 ? { ...rest, wakeKinds: left } : rest, null, 2)}\n`
     );
     if (left.length === 0) {
+      // The inbox stops forwarding to the session it was linked to (Desktop's core keeps running).
+      try {
+        await callTool(io, config.mcpUrl, 'unlink_relay_wake');
+      } catch {
+        io.stdout(
+          '  Could not unlink the inbox from its relay session; run unlink_relay_wake from an agent.'
+        );
+      }
       if (!io.userService.remove()) failed += 1;
       const lock = join(dirname(configPath(io)), 'serve.pid');
       const pid = Number(io.readText(lock)?.trim());
@@ -1420,7 +1428,9 @@ const SERVE_POLL_MS = 5_000;
  * \`serve\`: keeps this machine's Agent Relay core running and the inbox linked
  * to the newest live session of the agent CLIs setup woke through the core
  * (\`wakeKinds\`). A session that opens later takes the link; when the linked
- * one closes, the link moves to the most recent one still open. One per
+ * one closes, the link moves to the most recently opened one still open (by
+ * when serve saw it open, not by activity). A failed link is retried a minute
+ * later, and a new inbox in the config is linked afresh. One per
  * machine (a lock); setup runs it as a user service so it survives reboots.
  * \`--once\` makes a single pass (tests).
  */
@@ -1428,13 +1438,24 @@ async function serve(io: CliIo, flags: Record<string, string>): Promise<number> 
   const once = flags.once === 'true';
   const lock = join(dirname(configPath(io)), 'serve.pid');
   if (!once && !tryLock(io, lock)) return 0;
-  const seen = new Set<string>();
+  // The order sessions were first seen open in: the newest open one gets the posts.
+  const opened = new Map<string, number>();
+  let counter = 0;
   let linked: string | null = null;
+  let inbox: string | null = null;
+  // A link that failed is tried again, but not on every pass.
+  const retryAt = new Map<string, number>();
   try {
     for (;;) {
       const config = readConfig(io);
       const kinds = new Set(config?.wakeKinds ?? []);
       if (!config || kinds.size === 0) return 0;
+      // Another inbox: link it afresh.
+      if (config.mcpUrl !== inbox) {
+        inbox = config.mcpUrl;
+        linked = null;
+        retryAt.clear();
+      }
       const log = (line: string) => io.appendLog(`${new Date().toISOString()} serve: ${line}`);
       const problem = await ensureCore(io, config);
       if (problem) {
@@ -1448,19 +1469,25 @@ async function serve(io: CliIo, flags: Record<string, string>): Promise<number> 
             session.target?.id &&
             session.registration?.name
         );
-        const fresh = live.filter((session) => !seen.has(session.target!.id!));
-        const newest = (list: CoreSession[]) =>
-          [...list].sort((a, b) => (b.updated_at_ms ?? 0) - (a.updated_at_ms ?? 0))[0];
-        // A newly opened session takes the link; otherwise keep the linked one while it is open.
-        const pick: CoreSession | null | undefined =
-          linked && fresh.length === 0 && live.some((session) => session.target!.id === linked)
-            ? null
-            : newest(fresh.length > 0 && seen.size > 0 ? fresh : live);
-        for (const session of live) seen.add(session.target!.id!);
-        if (pick && pick.target!.id !== linked) {
-          if (await linkAgent(io, config, pick.registration!.name!, log)) linked = pick.target!.id!;
+        // Sessions open when serve starts are ordered by their last activity; later ones by when they appear.
+        for (const session of [...live].sort((a, b) => (a.updated_at_ms ?? 0) - (b.updated_at_ms ?? 0))) {
+          if (!opened.has(session.target!.id!)) opened.set(session.target!.id!, (counter += 1));
         }
-        if (linked && !live.some((session) => session.target!.id === linked)) linked = null;
+        const pick = live.reduce<CoreSession | null>(
+          (best, session) =>
+            !best || opened.get(session.target!.id!)! > opened.get(best.target!.id!)! ? session : best,
+          null
+        );
+        const id = pick?.target?.id ?? null;
+        if (!id) linked = null;
+        else if (id !== linked && (retryAt.get(id) ?? 0) <= Date.now()) {
+          if (await linkAgent(io, config, pick!.registration!.name!, log)) {
+            linked = id;
+            retryAt.delete(id);
+          } else {
+            retryAt.set(id, Date.now() + 60_000);
+          }
+        }
       }
       if (once) return 0;
       await io.sleep(SERVE_POLL_MS);

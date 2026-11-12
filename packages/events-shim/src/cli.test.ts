@@ -775,11 +775,16 @@ describe('events-shim CLI', () => {
   it('serve links the newest open session, hands the link to a newer one, and moves it when that one closes', async () => {
     const w = await setupWorld({ core: true });
     await runCli(['setup', w.created.mcp_url, '--opencode', '--devin'], w.io);
+    w.core.hooks = 1; // every webhook made from here on comes with its secret
     const linked: string[] = [];
+    let linkFails = false;
     const fetchBefore = w.io.fetchImpl;
     w.io.fetchImpl = async (input, init) => {
       const text = typeof init?.body === 'string' ? init.body : '';
-      if (text.includes('link_relay_wake')) linked.push(JSON.parse(text).params.arguments.url);
+      if (text.includes('link_relay_wake')) {
+        if (linkFails) return new Response('down', { status: 503 });
+        linked.push(JSON.parse(text).params.arguments.url);
+      }
       return fetchBefore(input, init);
     };
     const session = (kind: string, id: string, at: number, live = true) => ({
@@ -788,22 +793,44 @@ describe('events-shim CLI', () => {
       updated_at_ms: at,
       registration: { name: `${kind}-${id}` },
     });
-    // A Claude session (not set up here), a closed one, and two open ones: the newer open one wins.
+    const byId = (id: string) => w.core.sessions.find((s) => s.target.id === id)!;
+    // A Claude session (not set up here), a closed one, and two open ones: the more recently active open one wins.
     w.core.sessions.push(
       session('claude', 'c1', 900),
       session('opencode-open', 'ses_old', 500, false),
       session('opencode-open', 'ses_a', 100),
       session('devin', 'dv_b', 200)
     );
+    let now = Date.parse('2026-11-12T10:00:00Z');
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const names = () =>
+      w.core.calls
+        .filter(([m]) => m === 'agents.webhook.create')
+        .map(([, p]) => (p as { name: string }).name);
     // One serve process; between its passes the sessions change.
     const steps = [
-      // A newer session opens (even though its activity time is older): it takes the link.
+      // A newer session opens (its activity time is older): it takes the link.
       () => w.core.sessions.push(session('opencode-open', 'ses_c', 50)),
       // Nothing changes: the link stays.
       () => undefined,
-      // The linked session closes: the link moves to the most recent one still open.
+      // Another opens while linking fails: the old link stays for now…
       () => {
-        w.core.sessions.find((s) => s.target.id === 'ses_c')!.live = false;
+        linkFails = true;
+        w.core.sessions.push(session('devin', 'dv_d', 10));
+      },
+      // …and the link is tried again a minute later.
+      () => {
+        linkFails = false;
+        now += 61_000;
+      },
+      // The linked one closes: the most recently opened still-open one (ses_c, not the more active dv_b) gets it.
+      () => {
+        byId('dv_d').live = false;
+      },
+      // The inbox changes: the same open session is linked again for it.
+      () => {
+        const saved = JSON.parse(readFileSync(configPath(w.io), 'utf8'));
+        writeFileSync(configPath(w.io), JSON.stringify({ ...saved, mcpUrl: `${saved.mcpUrl}/` }));
       },
     ];
     w.io.sleep = vi.fn(async () => {
@@ -812,13 +839,30 @@ describe('events-shim CLI', () => {
       step();
     });
     await runCli(['serve'], w.io).catch(() => 0);
-    const names = () =>
-      w.core.calls
-        .filter(([m]) => m === 'agents.webhook.create')
-        .map(([, p]) => (p as { name: string }).name);
-    // The first webhook had no secret (shown earlier), so it was made again.
-    expect(names()).toEqual(['devin-dv_b', 'devin-dv_b', 'opencode-open-ses_c', 'devin-dv_b']);
-    expect(linked).toHaveLength(3);
+    vi.restoreAllMocks();
+    expect(names()).toEqual([
+      'devin-dv_b',
+      'opencode-open-ses_c',
+      'devin-dv_d', // failed
+      'devin-dv_d',
+      'opencode-open-ses_c',
+      'opencode-open-ses_c', // new inbox
+    ]);
+    expect(linked).toHaveLength(5);
+  });
+
+  it('uninstalling the last CLI woken through the core unlinks the inbox', async () => {
+    const w = await setupWorld({ core: true });
+    await runCli(['setup', w.created.mcp_url, '--opencode'], w.io);
+    const calls: string[] = [];
+    const fetchBefore = w.io.fetchImpl;
+    w.io.fetchImpl = async (input, init) => {
+      const text = typeof init?.body === 'string' ? init.body : '';
+      if (text.includes('"tools/call"')) calls.push(JSON.parse(text).params.name);
+      return fetchBefore(input, init);
+    };
+    expect(await runCli(['uninstall', '--opencode'], w.io)).toBe(0);
+    expect(calls).toContain('unlink_relay_wake');
   });
 
   it('setup --codex refuses a core download that does not match its checksum', async () => {
