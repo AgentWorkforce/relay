@@ -602,16 +602,8 @@ mod tests {
             ),
             (SessionCommand::Agents, "GET", "/agents"),
             (SessionCommand::Whoami, "GET", "/whoami"),
-            (
-                SessionCommand::Webhook { revoke: false },
-                "POST",
-                "/webhooks",
-            ),
-            (
-                SessionCommand::Webhook { revoke: true },
-                "DELETE",
-                "/webhooks",
-            ),
+            (SessionCommand::Webhook { revoke: false }, "POST", "/webhooks"),
+            (SessionCommand::Webhook { revoke: true }, "DELETE", "/webhooks"),
             (
                 SessionCommand::Register {
                     name: None,

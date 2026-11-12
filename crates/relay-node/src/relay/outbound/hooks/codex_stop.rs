@@ -415,6 +415,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_session_start_context_route_answers_only_this_user_by_kind() {
+        let (_temp, outbound, _) = fixture_with(Some(Arc::new(Teammates)));
+        let kind = |kind: &str| vec![("kind".to_string(), kind.to_string())];
+        assert_eq!(
+            outbound
+                .session_start_context_route(outbound.uid, &kind("codex"))
+                .unwrap(),
+            json!({"text": "Check teammates first."})
+        );
+        // The fixture's plugin says nothing for Devin; an unknown kind or
+        // none at all is no text either.
+        for query in [kind("devin"), kind("nonsense"), Vec::new()] {
+            assert_eq!(
+                outbound
+                    .session_start_context_route(outbound.uid, &query)
+                    .unwrap(),
+                json!({"text": null})
+            );
+        }
+        assert!(outbound
+            .session_start_context_route(outbound.uid + 1, &kind("codex"))
+            .is_err());
+    }
+
     #[tokio::test]
     async fn verified_unregistered_codex_gets_one_registration_command_without_joining() {
         let (_temp, outbound, _) = fixture();
