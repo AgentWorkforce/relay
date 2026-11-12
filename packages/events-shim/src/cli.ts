@@ -15,7 +15,7 @@
  * The executable is `bin.ts`; this module has no side effects on import.
  */
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -78,10 +78,13 @@ function readConfig(io: CliIo): Config | null {
   }
 }
 
+/** Writes a 0600 file atomically (temp file, then rename), so a reader never sees it half-written. */
 function writePrivate(path: string, contents: string): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, contents, { mode: 0o600 });
-  chmodSync(path, 0o600);
+  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(temporary, contents, { mode: 0o600 });
+  chmodSync(temporary, 0o600);
+  renameSync(temporary, path);
 }
 
 /** The inbox's MCP URL from `--mcp-url`, `AGENT_RELAY_WEBHOOKS_MCP_URL`, or the saved config. */
