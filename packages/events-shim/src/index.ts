@@ -75,3 +75,4 @@ export {
 } from './delivery.js';
 export { handleEventsShimRequest, type EventsShimHttpOptions } from './http.js';
 export { MemoryEventsShimStore } from './memory-store.js';
+export { describePost, runCli, skillText, SKILL_NAME, MCP_SERVER_NAME, type CliIo } from './cli.js';

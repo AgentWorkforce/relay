@@ -2,14 +2,35 @@
 
 One MCP URL that wakes your agent when a webhook arrives.
 
-A person adds a single MCP server to their agent (`claude mcp add --transport http webhooks <mcp url>`)
-and points any sender at the paired webhook URL. Each post becomes an Agent Relay message:
+One command connects an agent to an inbox and installs what it needs to be woken:
 
-- **Under Agent Relay** the agent links the inbox to its session's own relay webhook
-  (`agent-relay-probe webhook --socket <socket>`, then the `link_relay_wake` tool). Every later post is
+```sh
+npx @agent-relay/events-shim@latest setup '<mcp url>'
+```
+
+It adds the inbox's MCP server to Claude Code (user scope), installs the `agent-relay-webhooks` skill and saves the
+inbox to `~/.config/agent-relay/webhooks.json` (0600). Then tell the agent "watch for webhooks". Each post wakes it:
+
+- **Under Agent Relay** (Desktop or a headless relay on the machine) the agent links the inbox to its session's own
+  relay webhook (`agent-relay-probe webhook --socket <socket>`, then the `link_relay_wake` tool). Every post is
   forwarded there and Agent Relay injects it into the session, **waking it even when idle**.
-- **Without Agent Relay** the agent runs `wait_for_webhook` in the background (it blocks until a post
-  arrives) or reads with `get_webhook_events`.
+- **Without Agent Relay, in Claude Code** the agent runs `npx -y @agent-relay/events-shim@latest listen` as a
+  background command. It exits with the next post, which wakes the agent; the agent starts it again.
+- **Other clients** call `wait_for_webhook` in the background or `get_webhook_events` when asked. Codex wakes only
+  under Agent Relay.
+
+### Integrations through relayfile
+
+GitHub, Slack, Linear, Notion and other provider events can wake the agent without setting up each provider's
+webhook: connect the provider once with `npx relayfile@latest setup --provider github`, then forward its events into
+the inbox:
+
+```sh
+npx relayfile@latest listen --provider github --background \
+  --run 'npx -y @agent-relay/events-shim@latest forward --provider {{provider}} --type {{type}} --path {{path}} --revision {{revision}}'
+```
+
+Each event arrives as a post naming the changed file (deduplicated per path and revision).
 
 ## Tools
 
