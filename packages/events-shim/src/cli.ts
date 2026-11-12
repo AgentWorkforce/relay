@@ -49,7 +49,9 @@ interface Config {
 }
 
 const USAGE = `Usage:
-  npx @agent-relay/events-shim setup <mcp-url>   Add the inbox to Claude Code and install the webhooks skill
+  npx @agent-relay/events-shim setup <mcp-url> [--claude] [--codex] [--cursor] [--opencode] [--muse] [--gemini] [--grok] [--devin]
+                                                 Add the inbox's MCP server to those agent CLIs (default: every one
+                                                 installed here) and install the webhooks skill
   npx @agent-relay/events-shim listen            Wait for the next webhook post, print it and exit
   npx @agent-relay/events-shim forward [--provider P] [--type T] [--path P] [--revision R]
                                                  Post one event notice into the inbox (for relayfile listen --run)`;
@@ -229,10 +231,193 @@ To be woken by provider events without setting up each provider's webhook:
 `;
 }
 
+/** A tool `setup` can connect: how to find it, install the MCP server and where its skills live. */
+interface AgentCli {
+  id: string;
+  label: string;
+  /** True when the tool is on this machine. */
+  present: (io: CliIo) => boolean;
+  /** Installs (or replaces) the MCP server; returns the manual step when it cannot. */
+  install: (io: CliIo, mcpUrl: string) => { ok: true } | { ok: false; manual: string };
+  /** The tool's skills directory, when it reads Agent Skills. */
+  skillsDir?: (io: CliIo) => string;
+  /** How a post wakes this tool's session. */
+  wake: 'listener' | 'relay-only' | 'when-asked';
+}
+
+/** Adds through the tool's own `mcp add`; when refused (already there), removes and adds again. */
+function viaCommand(file: string, add: string[], remove: string[]): AgentCli['install'] {
+  return (io) => {
+    if (io.run(file, add)) return { ok: true };
+    if (io.run(file, remove) && io.run(file, add)) return { ok: true };
+    return {
+      ok: false,
+      manual: [file, ...add].map((part) => (/[\s'"$]/.test(part) ? `'${part}'` : part)).join(' '),
+    };
+  };
+}
+
+/** Sets `<root>.webhooks` in a JSON config file, keeping everything else (atomic write). */
+function viaJson(
+  file: (io: CliIo) => string,
+  root: string,
+  entry: (url: string) => unknown
+): AgentCli['install'] {
+  return (io, mcpUrl) => {
+    const path = file(io);
+    const raw = io.readText(path);
+    let config: Record<string, unknown> = {};
+    if (raw && raw.trim()) {
+      try {
+        config = JSON.parse(raw) as Record<string, unknown>;
+      } catch {
+        return {
+          ok: false,
+          manual: `add "${MCP_SERVER_NAME}": ${JSON.stringify(entry(mcpUrl))} under "${root}" in ${path}`,
+        };
+      }
+    }
+    const servers = (config[root] && typeof config[root] === 'object' ? config[root] : {}) as Record<
+      string,
+      unknown
+    >;
+    config[root] = { ...servers, [MCP_SERVER_NAME]: entry(mcpUrl) };
+    mkdirSync(dirname(path), { recursive: true });
+    const temporary = `${path}.${process.pid}.tmp`;
+    writeFileSync(temporary, `${JSON.stringify(config, null, 2)}\n`);
+    renameSync(temporary, path);
+    return { ok: true };
+  };
+}
+
+const onPath = (file: string) => (io: CliIo) => io.run(file, ['--version']);
+const xdgConfig = (io: CliIo) => io.env.XDG_CONFIG_HOME || join(home(io), '.config');
+
+/** Every tool Agent Relay runs that `setup` can connect, in `--cli` order. */
+export const AGENT_CLIS: readonly AgentCli[] = [
+  {
+    id: 'claude',
+    label: 'Claude Code',
+    present: onPath('claude'),
+    install: (io, url) =>
+      viaCommand(
+        'claude',
+        ['mcp', 'add', '--scope', 'user', '--transport', 'http', MCP_SERVER_NAME, url],
+        ['mcp', 'remove', '--scope', 'user', MCP_SERVER_NAME]
+      )(io, url),
+    skillsDir: (io) => join(home(io), '.claude', 'skills'),
+    wake: 'listener',
+  },
+  {
+    id: 'codex',
+    label: 'Codex',
+    present: onPath('codex'),
+    install: (io, url) =>
+      viaCommand(
+        'codex',
+        ['mcp', 'add', MCP_SERVER_NAME, '--url', url],
+        ['mcp', 'remove', MCP_SERVER_NAME]
+      )(io, url),
+    skillsDir: (io) => join(io.env.CODEX_HOME || join(home(io), '.codex'), 'skills'),
+    wake: 'relay-only',
+  },
+  {
+    id: 'cursor',
+    label: 'Cursor',
+    present: (io) => io.run('cursor-agent', ['--version']) || io.exists(join(home(io), '.cursor')),
+    install: viaJson(
+      (io) => join(home(io), '.cursor', 'mcp.json'),
+      'mcpServers',
+      (url) => ({ url })
+    ),
+    wake: 'when-asked',
+  },
+  {
+    id: 'opencode',
+    label: 'opencode',
+    present: onPath('opencode'),
+    install: viaJson(
+      (io) => join(xdgConfig(io), 'opencode', 'opencode.json'),
+      'mcp',
+      (url) => ({ type: 'remote', url, enabled: true })
+    ),
+    wake: 'relay-only',
+  },
+  {
+    id: 'muse',
+    label: 'Muse',
+    present: onPath('muse'),
+    install: viaJson(
+      (io) => join(xdgConfig(io), 'muse', 'settings.json'),
+      'mcpServers',
+      (url) => ({ url })
+    ),
+    wake: 'relay-only',
+  },
+  {
+    id: 'gemini',
+    label: 'Gemini CLI',
+    present: onPath('gemini'),
+    install: (io, url) =>
+      viaCommand(
+        'gemini',
+        ['mcp', 'add', '--scope', 'user', '--transport', 'http', MCP_SERVER_NAME, url],
+        ['mcp', 'remove', '--scope', 'user', MCP_SERVER_NAME]
+      )(io, url),
+    wake: 'when-asked',
+  },
+  {
+    id: 'grok',
+    label: 'Grok',
+    present: onPath('grok'),
+    install: (io, url) =>
+      viaCommand(
+        'grok',
+        ['mcp', 'add', '--scope', 'user', '--transport', 'http', MCP_SERVER_NAME, url],
+        ['mcp', 'remove', '--scope', 'user', MCP_SERVER_NAME]
+      )(io, url),
+    wake: 'relay-only',
+  },
+  {
+    id: 'devin',
+    label: 'Devin',
+    present: onPath('devin'),
+    install: (io, url) =>
+      viaCommand(
+        'devin',
+        ['mcp', 'add', '--scope', 'user', MCP_SERVER_NAME, '--url', url],
+        ['mcp', 'remove', '--scope', 'user', MCP_SERVER_NAME]
+      )(io, url),
+    wake: 'relay-only',
+  },
+];
+
+/** The tools `setup` should connect: `--<id>` flags and `--cli a,b`, else every supported tool on this machine. */
+function chosenClis(io: CliIo, flags: Record<string, string>): { clis: AgentCli[]; unknown: string[] } {
+  const named = new Set<string>();
+  for (const id of (flags.cli ?? '')
+    .split(',')
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean))
+    named.add(id);
+  for (const cli of AGENT_CLIS) if (flags[cli.id] === 'true') named.add(cli.id);
+  const unknown = [...named].filter((id) => !AGENT_CLIS.some((cli) => cli.id === id));
+  if (named.size > 0) return { clis: AGENT_CLIS.filter((cli) => named.has(cli.id)), unknown };
+  return { clis: AGENT_CLIS.filter((cli) => cli.present(io)), unknown };
+}
+
+const WAKE_TEXT: Record<AgentCli['wake'], string> = {
+  listener: 'woken by each post (Agent Relay injects it; without Agent Relay, the background listener)',
+  'relay-only': 'woken by each post under Agent Relay; without it, reads posts when asked',
+  'when-asked': 'reads posts when asked (no background wake in this client)',
+};
+
 async function setup(io: CliIo, positional: string[], flags: Record<string, string>): Promise<number> {
   const raw = positional[0] ?? flags['mcp-url'];
   if (!raw) {
-    io.stderr('Pass the MCP URL from the page: npx @agent-relay/events-shim setup <mcp-url>');
+    io.stderr(
+      `Pass the MCP URL from the page: npx @agent-relay/events-shim setup <mcp-url> [--${AGENT_CLIS.map((cli) => cli.id).join(' --')}]`
+    );
     return 2;
   }
   const mcpUrl = checkMcpUrl(raw);
@@ -242,7 +427,14 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
     );
     return 2;
   }
-  // Learn the webhook URLs now so `forward` works offline of the agent.
+  const { clis, unknown } = chosenClis(io, flags);
+  if (unknown.length > 0) {
+    io.stderr(
+      `Unknown CLI: ${unknown.join(', ')}. Supported: ${AGENT_CLIS.map((cli) => cli.id).join(', ')}.`
+    );
+    return 2;
+  }
+  // Learn the webhook URLs now so `forward` works without the agent.
   const watched = await callTool(io, mcpUrl, 'watch_webhooks');
   const config: Config = {
     mcpUrl,
@@ -253,42 +445,41 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
   };
   writePrivate(configPath(io), `${JSON.stringify(config, null, 2)}\n`);
 
-  const skillDir = join(home(io), '.claude', 'skills', SKILL_NAME);
-  mkdirSync(skillDir, { recursive: true });
-  writeFileSync(join(skillDir, 'SKILL.md'), skillText());
-
-  let added: 'added' | 'failed' | 'skipped' = 'skipped';
-  if (flags['no-claude'] !== 'true' && io.run('claude', ['--version'])) {
-    const add = ['mcp', 'add', '--scope', 'user', '--transport', 'http', MCP_SERVER_NAME, mcpUrl];
-    if (io.run('claude', add)) added = 'added';
-    // Already there (an older inbox): replace it, and say so plainly if that fails.
-    else if (
-      io.run('claude', ['mcp', 'remove', '--scope', 'user', MCP_SERVER_NAME]) &&
-      io.run('claude', add)
-    ) {
-      added = 'added';
-    } else added = 'failed';
-  }
-
-  const socket = desktopSocket(io);
+  const failed: string[] = [];
   io.stdout('Webhook inbox ready.');
-  io.stdout(`  Skill:    ${join(skillDir, 'SKILL.md')}`);
-  const manual = `claude mcp add --scope user --transport http ${MCP_SERVER_NAME} '${mcpUrl}'`;
-  io.stdout(
-    added === 'added'
-      ? `  MCP:      added to Claude Code as "${MCP_SERVER_NAME}" (user scope)`
-      : `  MCP:      add it to your agent: ${manual}`
-  );
+  if (clis.length === 0) {
+    io.stdout(
+      `  No supported agent CLI found here. Name one: --${AGENT_CLIS.map((cli) => cli.id).join(', --')}`
+    );
+  }
+  for (const cli of clis) {
+    // Skill first: it also creates the tool's home (e.g. a fresh CODEX_HOME), which its own `mcp add` needs.
+    if (cli.skillsDir) {
+      const dir = join(cli.skillsDir(io), SKILL_NAME);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'SKILL.md'), skillText());
+    }
+    const result = cli.install(io, mcpUrl);
+    if (result.ok) {
+      io.stdout(
+        `  ${cli.label}: MCP server "${MCP_SERVER_NAME}" added${cli.skillsDir ? ', skill installed' : ''}; ${WAKE_TEXT[cli.wake]}.`
+      );
+    } else {
+      failed.push(cli.label);
+      io.stdout(`  ${cli.label}: could not add the MCP server. Do it yourself: ${result.manual}`);
+    }
+  }
+  const socket = desktopSocket(io);
   io.stdout(
     socket
-      ? '  Wake:     Agent Relay is running here; the agent links its session and each post is injected.'
-      : '  Wake:     no Agent Relay here; the agent runs the listener in the background and each post wakes it (Claude Code).'
+      ? '  Agent Relay: running here; agents link their session and each post is injected.'
+      : '  Agent Relay: not running here; Claude Code is woken by the background listener instead.'
   );
-  if (config.webhookUrl) io.stdout(`  Post to:  ${config.webhookUrl}`);
+  if (config.webhookUrl) io.stdout(`  Post to: ${config.webhookUrl}`);
   io.stdout('');
   io.stdout('Start a new agent session and tell it: "watch for webhooks".');
-  if (added === 'failed') {
-    io.stderr(`Claude Code did not accept the MCP server. Add it yourself: ${manual}`);
+  if (failed.length > 0) {
+    io.stderr(`${failed.join(', ')} did not accept the MCP server; see the step above.`);
     return 1;
   }
   return 0;

@@ -8,8 +8,12 @@ One command connects an agent to an inbox and installs what it needs to be woken
 npx @agent-relay/events-shim@latest setup '<mcp url>'
 ```
 
-It adds the inbox's MCP server to Claude Code (user scope), installs the `agent-relay-webhooks` skill and saves the
-inbox to `~/.config/agent-relay/webhooks.json` (0600). Then tell the agent "watch for webhooks". Each post wakes it:
+It adds the inbox's MCP server to every supported agent CLI on the machine, or only the ones you name:
+`--claude`, `--codex`, `--cursor`, `--opencode`, `--muse`, `--gemini`, `--grok`, `--devin` (or `--cli claude,codex`).
+Each tool gets it its own way (`claude`/`codex`/`gemini`/`grok`/`devin mcp add` at user scope; Cursor's
+`~/.cursor/mcp.json`, opencode's and Muse's config files), re-running replaces it, and Claude Code and Codex also get
+the `agent-relay-webhooks` skill. The inbox is saved to `~/.config/agent-relay/webhooks.json` (0600). Then tell the
+agent "watch for webhooks". Each post wakes it:
 
 - **Under Agent Relay** (Desktop or a headless relay on the machine) the agent links the inbox to its session's own
   relay webhook (`agent-relay-probe webhook --socket <socket>`, then the `link_relay_wake` tool). Every post is

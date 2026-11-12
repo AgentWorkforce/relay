@@ -68,7 +68,7 @@ async function setupWorld(
 describe('events-shim CLI', () => {
   it('setup saves the inbox privately, installs the skill and adds the MCP server to Claude Code', async () => {
     const w = await setupWorld();
-    expect(await runCli(['setup', w.created.mcp_url], w.io)).toBe(0);
+    expect(await runCli(['setup', w.created.mcp_url, '--claude'], w.io)).toBe(0);
 
     const config = JSON.parse(readFileSync(configPath(w.io), 'utf8'));
     expect(config).toMatchObject({ mcpUrl: w.created.mcp_url, webhookUrl: w.created.webhook_url });
@@ -87,15 +87,76 @@ describe('events-shim CLI', () => {
       'webhooks',
       w.created.mcp_url,
     ]);
-    expect(w.out.join('\n')).toContain('no Agent Relay here');
+    expect(w.out.join('\n')).toContain('Agent Relay: not running here');
   });
 
-  it('setup says when Agent Relay is running, and prints the manual MCP step without Claude Code', async () => {
+  it('setup says when Agent Relay is running, and when no agent CLI is installed', async () => {
     const w = await setupWorld({ claude: false, socket: true });
     expect(await runCli(['setup', w.created.mcp_url], w.io)).toBe(0);
     const printed = w.out.join('\n');
-    expect(printed).toContain('Agent Relay is running here');
-    expect(printed).toContain('claude mcp add --scope user --transport http webhooks');
+    expect(printed).toContain('Agent Relay: running here');
+    expect(printed).toContain('No supported agent CLI found here');
+  });
+
+  it('setup installs the MCP server the right way for each CLI it is asked for', async () => {
+    const w = await setupWorld();
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    mkdirSync(join(w.home, '.cursor'), { recursive: true });
+    writeFileSync(
+      join(w.home, '.cursor', 'mcp.json'),
+      JSON.stringify({ mcpServers: { other: { url: 'https://o' } } })
+    );
+    w.io.readText = (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    const flags = ['--codex', '--cursor', '--opencode', '--muse', '--gemini', '--grok', '--devin'];
+    expect(await runCli(['setup', w.created.mcp_url, ...flags], w.io)).toBe(0);
+    const url = w.created.mcp_url;
+    expect(w.runs).toContainEqual(['codex', 'mcp', 'add', 'webhooks', '--url', url]);
+    expect(w.runs).toContainEqual([
+      'gemini',
+      'mcp',
+      'add',
+      '--scope',
+      'user',
+      '--transport',
+      'http',
+      'webhooks',
+      url,
+    ]);
+    expect(w.runs).toContainEqual([
+      'grok',
+      'mcp',
+      'add',
+      '--scope',
+      'user',
+      '--transport',
+      'http',
+      'webhooks',
+      url,
+    ]);
+    expect(w.runs).toContainEqual(['devin', 'mcp', 'add', '--scope', 'user', 'webhooks', '--url', url]);
+    expect(w.runs.some((run) => run[0] === 'claude' && run[1] === 'mcp')).toBe(false);
+    const json = (path: string[]) => JSON.parse(readFileSync(join(w.home, ...path), 'utf8'));
+    expect(json(['.cursor', 'mcp.json']).mcpServers).toEqual({
+      other: { url: 'https://o' },
+      webhooks: { url },
+    });
+    expect(json(['.config', 'opencode', 'opencode.json']).mcp.webhooks).toEqual({
+      type: 'remote',
+      url,
+      enabled: true,
+    });
+    expect(json(['.config', 'muse', 'settings.json']).mcpServers.webhooks).toEqual({ url });
+    expect(readFileSync(join(w.home, '.codex', 'skills', 'agent-relay-webhooks', 'SKILL.md'), 'utf8')).toBe(
+      skillText()
+    );
+    expect(await runCli(['setup', url, '--cli', 'claude,nope'], w.io)).toBe(2);
+    expect(w.err.join('\n')).toContain('Unknown CLI: nope');
   });
 
   it('setup refuses anything that is not an inbox MCP URL', async () => {
@@ -207,8 +268,8 @@ describe('events-shim CLI', () => {
 
   it('setup reports a failed MCP add instead of claiming success', async () => {
     const w = await setupWorld({ addFails: true });
-    expect(await runCli(['setup', w.created.mcp_url], w.io)).toBe(1);
-    expect(w.err.join('\n')).toContain('did not accept the MCP server');
+    expect(await runCli(['setup', w.created.mcp_url, '--claude'], w.io)).toBe(1);
+    expect(w.err.join('\n')).toContain('Claude Code did not accept the MCP server');
     // It only removed the old server after the add was refused, and tried again.
     const mcp = w.runs.filter((run) => run[1] === 'mcp').map((run) => run[2]);
     expect(mcp).toEqual(['add', 'remove']);
