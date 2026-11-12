@@ -249,7 +249,7 @@ and do not start a listener yourself; tell the person you are watching and end y
 
 **Codex after \`setup --codex\`: nothing to do.** Setup installed a SessionStart hook that links this session to the
 inbox through Agent Relay (Desktop's, or its own headless core when Desktop is not running) on its first message.
-Each post is then injected and wakes the session; no reply is needed. Tell the person you are watching and end your
+Each post is then injected and wakes the session; no reply is needed. The newest Codex session gets the posts. Tell the person you are watching and end your
 turn.
 
 Otherwise, pick one:
@@ -499,13 +499,12 @@ function editCodexHooksFile(io: CliIo, remove: boolean): { ok: true } | { ok: fa
   else delete hooks.SessionStart;
   if (remove) {
     // The hooks events-shim's own core added (its binary lives only in events-shim's directory).
-    const core = coreBinaryPath(io);
     for (const [event, groups] of Object.entries(hooks)) {
       if (!Array.isArray(groups)) continue;
       const left = groups
         .map((group) => ({
           ...group,
-          hooks: (group.hooks ?? []).filter((hook) => !hook.command?.startsWith(core)),
+          hooks: (group.hooks ?? []).filter((hook) => !runsOwnCore(io, hook.command ?? '')),
         }))
         .filter((group, index) => group.hooks.length > 0 || (groups[index]!.hooks ?? []).length === 0);
       if (left.length > 0) hooks[event] = left;
@@ -563,7 +562,7 @@ async function installCodexHook(io: CliIo): Promise<{ ok: true } | { ok: false; 
 function stopOwnCore(io: CliIo): void {
   const daemon = bridge(io, 'status.get')?.daemon as { pid?: unknown } | undefined;
   const pid = typeof daemon?.pid === 'number' ? daemon.pid : 0;
-  if (pid > 0 && (io.processArgs(pid) ?? '').startsWith(coreBinaryPath(io))) io.kill(pid);
+  if (pid > 0 && runsOwnCore(io, io.processArgs(pid) ?? '')) io.kill(pid);
 }
 
 async function removeCodexHook(io: CliIo): Promise<boolean> {
@@ -801,9 +800,16 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
   // Learn the webhook URLs now so `forward` works without the agent.
   const watched = await callTool(io, mcpUrl, 'watch_webhooks');
   // Codex is woken through an Agent Relay core: Desktop's, or a standalone one on its own workspace.
+  // Setting up another CLI keeps the workspace an earlier \`setup --codex\` made.
+  const previous = readConfig(io);
   const workspace = clis.some((cli) => cli.id === 'codex')
-    ? await workspaceFor(io, mcpUrl, readConfig(io))
-    : null;
+    ? await workspaceFor(io, mcpUrl, previous)
+    : previous?.mcpUrl === mcpUrl && previous.workspaceKey
+      ? {
+          key: previous.workspaceKey,
+          ...(previous.workspaceExpiresAt ? { expiresAt: previous.workspaceExpiresAt } : {}),
+        }
+      : null;
   const config: Config = {
     mcpUrl,
     ...(workspace ? { workspaceKey: workspace.key } : {}),
@@ -1106,9 +1112,19 @@ async function listenHook(io: CliIo, flags: Record<string, string>): Promise<num
   );
 }
 
-/** Where events-shim keeps its own Agent Relay core binary. */
-function coreBinaryPath(io: CliIo): string {
-  return join(home(io), '.agentworkforce', 'events-shim', 'bin', 'agent-relay-node');
+/** Where events-shim keeps its own Agent Relay core binary (one per release). */
+function coreDir(io: CliIo): string {
+  return join(home(io), '.agentworkforce', 'events-shim', 'bin');
+}
+
+/** events-shim's own core binary for one release. */
+function coreBinaryPath(io: CliIo, version: string): string {
+  return join(coreDir(io), `agent-relay-node-${version}`);
+}
+
+/** True when a command line runs events-shim's own core, however the path is quoted. */
+function runsOwnCore(io: CliIo, command: string): boolean {
+  return command.replace(/["'\\]/g, '').includes(coreDir(io));
 }
 
 /** This package's version: the core release it runs (relay releases them together). */
@@ -1123,7 +1139,14 @@ function ownVersion(): string {
   }
 }
 
-/** The release asset of \`agent-relay-node\` for this machine, or null where none is built. */
+/**
+ * The release asset of \`agent-relay-node\` for a machine.
+ *
+ * @param version - The relay release, e.g. \`18.5.0\`.
+ * @param platform - \`process.platform\`.
+ * @param arch - \`process.arch\`.
+ * @returns The asset name, or null where no core is built.
+ */
 export function coreAssetName(version: string, platform: string, arch: string): string | null {
   if (arch !== 'x64' && arch !== 'arm64') return null;
   if (platform === 'linux') return `agent-relay-node-${version}-linux-${arch}`;
@@ -1158,11 +1181,11 @@ function bridge(io: CliIo, method: string, params: unknown = {}): Record<string,
 async function ensureCore(io: CliIo, config: Config): Promise<string | null> {
   if (bridge(io, 'status.get')) return null;
   if (!config.workspaceKey) return 'no Agent Relay workspace: sign in to Agent Relay, or run setup again';
-  const binary = coreBinaryPath(io);
+  const version = ownVersion();
+  const asset = coreAssetName(version, process.platform, process.arch);
+  if (!version || !asset) return `no Agent Relay core is built for ${process.platform}-${process.arch}`;
+  const binary = coreBinaryPath(io, version);
   if (!io.exists(binary)) {
-    const version = ownVersion();
-    const asset = coreAssetName(version, process.platform, process.arch);
-    if (!version || !asset) return `no Agent Relay core is built for ${process.platform}-${process.arch}`;
     const base = `https://github.com/AgentWorkforce/relay/releases/download/v${version}/${asset}`;
     const [response, sums] = await Promise.all([io.fetchImpl(base), io.fetchImpl(`${base}.sha256`)]);
     if (!response.ok || !sums.ok) {
@@ -1177,6 +1200,12 @@ async function ensureCore(io: CliIo, config: Config): Promise<string | null> {
     const temporary = `${binary}.${io.pid}.download`;
     writeFileSync(temporary, bytes, { mode: 0o700 });
     renameSync(temporary, binary);
+    // Earlier releases' cores are not used again.
+    for (const name of io.listDir(coreDir(io))) {
+      if (/^agent-relay-node(-[0-9][0-9A-Za-z.+-]*)?$/.test(name) && join(coreDir(io), name) !== binary) {
+        rmSync(join(coreDir(io), name), { force: true });
+      }
+    }
   }
   io.spawnDetached(binary, ['serve', '--headless'], { RELAY_WORKSPACE_KEY: config.workspaceKey });
   for (let waited = 0; waited < 30_000; waited += 500) {
@@ -1518,8 +1547,18 @@ export function processIo(): CliIo {
     },
     coreBinaries: () => {
       const home = process.env.HOME || homedir();
+      const own = join(home, '.agentworkforce', 'events-shim', 'bin');
+      let mine: string[] = [];
+      try {
+        mine = readdirSync(own)
+          .filter((name) => /^agent-relay-node-[0-9]/.test(name) && !name.endsWith('.download'))
+          .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+          .map((name) => join(own, name));
+      } catch {
+        /* No core of our own yet. */
+      }
       const candidates = [
-        join(home, '.agentworkforce', 'events-shim', 'bin', 'agent-relay-node'),
+        ...mine,
         join(home, '.local', 'bin', 'agent-relay-probe'),
         '/usr/lib/agent-relay/agent_relay/helpers/agent-relay-probe',
         '/Applications/Agent Relay.app/Contents/Helpers/agent-relay-probe',

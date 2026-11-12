@@ -11,7 +11,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   CODEX_HOOK_COMMAND,
@@ -24,6 +24,10 @@ import {
 } from './cli.js';
 import { handleEventsShimRequest } from './http.js';
 import { MemoryEventsShimStore } from './memory-store.js';
+
+const VERSION = (
+  JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }
+).version;
 
 const BASE = 'https://shim.test/api/v1/events-shim';
 
@@ -123,12 +127,12 @@ async function setupWorld(
     pid: 4242,
     pidAlive: (pid) => pid === 4242 || pid === 777,
     ancestor: () => 777,
-    spawnDetached: (file, args) => {
+    spawnDetached: vi.fn((file: string, args: string[]) => {
       spawned.push([file, ...args]);
       if (args[0] === 'serve') core.running = true;
-    },
-    coreBinaries: () => ['/core/agent-relay-node'],
-    runCapture: (_file, args) => {
+    }),
+    coreBinaries: vi.fn(() => ['/core/agent-relay-node']),
+    runCapture: vi.fn((_file: string, args: string[]) => {
       if (!core.running) return null;
       const params = JSON.parse(args[3] ?? '{}') as { name?: string };
       core.calls.push([args[1], params]);
@@ -146,10 +150,10 @@ async function setupWorld(
                 }
             : {};
       return JSON.stringify({ result });
-    },
-    appendLog: (line) => {
+    }),
+    appendLog: vi.fn((line: string) => {
       logs.push(line);
-    },
+    }),
     codexAppServer: async (work) =>
       work(async (method, params) => {
         appServerCalls.push([method, params]);
@@ -601,7 +605,12 @@ describe('events-shim CLI', () => {
         return false;
       }
     };
+    // An earlier release's core: replaced by this release's.
+    const bin = join(w.home, '.agentworkforce', 'events-shim', 'bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, 'agent-relay-node-0.0.1'), 'old');
     expect(await runCli(['setup', w.created.mcp_url, '--codex'], w.io)).toBe(0);
+    expect(readdirSync(bin)).toEqual([`agent-relay-node-${VERSION}`]);
     const hooks = JSON.parse(readFileSync(join(w.home, '.codex', 'hooks.json'), 'utf8')).hooks;
     expect(hooks.Stop).toEqual([{ hooks: [{ type: 'command', command: 'mine' }] }]);
     expect(hooks.SessionStart).toEqual([
@@ -622,7 +631,7 @@ describe('events-shim CLI', () => {
     expect(config.workspaceExpiresAt).toBe('2026-11-19T14:00:00.000Z');
     expect(w.downloads).toHaveLength(1);
     expect(w.spawned.find((run) => run[1] === 'serve')).toEqual([
-      join(w.home, '.agentworkforce', 'events-shim', 'bin', 'agent-relay-node'),
+      join(w.home, '.agentworkforce', 'events-shim', 'bin', `agent-relay-node-${VERSION}`),
       'serve',
       '--headless',
     ]);
@@ -636,11 +645,15 @@ describe('events-shim CLI', () => {
     expect(await runCli(['setup', w.created.mcp_url, '--codex'], w.io)).toBe(0);
     expect(w.mints).toHaveLength(1);
     expect(w.downloads).toHaveLength(1);
+    // Setting up another CLI on the same inbox keeps the Codex workspace.
+    expect(await runCli(['setup', w.created.mcp_url, '--claude'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).workspaceKey).toBe('rk_live_temp1');
 
     // The core adds its own Codex hooks; uninstall removes them and stops the core it started.
-    const core = join(w.home, '.agentworkforce', 'events-shim', 'bin', 'agent-relay-node');
+    const core = join(w.home, '.agentworkforce', 'events-shim', 'bin', `agent-relay-node-${VERSION}`);
     const withCore = JSON.parse(readFileSync(join(w.home, '.codex', 'hooks.json'), 'utf8'));
     withCore.hooks.Stop.push({ hooks: [{ type: 'command', command: `${core} codex-stop-hook` }] });
+    withCore.hooks.PostToolUse = [{ hooks: [{ type: 'command', command: `'${core}' codex-stop-hook` }] }];
     writeFileSync(join(w.home, '.codex', 'hooks.json'), JSON.stringify(withCore));
     const runCapture = w.io.runCapture;
     w.io.runCapture = (file, args) =>
@@ -653,6 +666,7 @@ describe('events-shim CLI', () => {
     const left = JSON.parse(readFileSync(join(w.home, '.codex', 'hooks.json'), 'utf8')).hooks;
     expect(left.SessionStart).toBeUndefined();
     expect(left.Stop).toEqual([{ hooks: [{ type: 'command', command: 'mine' }] }]);
+    expect(left.PostToolUse).toBeUndefined(); // a shell-quoted core path too
     expect(w.appServerCalls).toContainEqual([
       'config/value/write',
       { keyPath: 'hooks.state."/h/hooks.json:session_start:0:0"', mergeStrategy: 'replace', value: null },

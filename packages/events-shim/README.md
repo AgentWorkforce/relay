@@ -23,9 +23,9 @@ agent "watch for webhooks". Each post wakes it:
   `~/.codex/hooks.json` (trusted for you) that runs `events-shim link --codex-hook`. On the session's first message
   it creates the session's relay webhook and links the inbox to it, so every post is injected and wakes the idle
   session. It uses Agent Relay Desktop's core when one is running; otherwise setup downloads `agent-relay-node`
-  (this release, checksum-verified) to `~/.agentworkforce/events-shim/bin` and runs it headless on a temporary
+  (this release, checksum-verified) to `~/.agentworkforce/events-shim/bin` (replaced when the package updates) and runs it headless on a temporary
   workspace that is deleted after 7 days (setup says when; sign in to Agent Relay to keep one, or set
-  `RELAY_WORKSPACE_KEY`). `uninstall --codex` removes the hook. The link is logged to
+  `RELAY_WORKSPACE_KEY`). The newest Codex session gets the posts. `uninstall --codex` removes the hook and stops that core. The link is logged to
   `~/.config/agent-relay/events-shim.log`.
 - **Under Agent Relay** (Desktop or a headless relay on the machine) the agent links the inbox to its session's own
   relay webhook (`agent-relay-probe webhook --socket <socket>`, then the `link_relay_wake` tool). Every post is
