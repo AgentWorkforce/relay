@@ -27,10 +27,11 @@ the inbox:
 
 ```sh
 npx relayfile@latest listen --provider github --background \
-  --run 'npx -y @agent-relay/events-shim@latest forward --provider {{provider}} --type {{type}} --path {{path}} --revision {{revision}}'
+  --run 'npx -y @agent-relay/events-shim@latest forward --stdin'
 ```
 
-Each event arrives as a post naming the changed file (deduplicated per path and revision).
+relayfile hands each event to `forward` as JSON on stdin, so no event field is ever put into a shell command. Each
+event arrives as a post naming the changed file (deduplicated per path and revision).
 
 ## Tools
 

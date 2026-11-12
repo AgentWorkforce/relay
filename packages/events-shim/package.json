@@ -48,6 +48,6 @@
   },
   "license": "Apache-2.0",
   "bin": {
-    "events-shim": "dist/cli.js"
+    "events-shim": "dist/bin.js"
   }
 }

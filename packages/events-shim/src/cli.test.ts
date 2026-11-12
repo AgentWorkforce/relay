@@ -10,7 +10,9 @@ import { MemoryEventsShimStore } from './memory-store.js';
 const BASE = 'https://shim.test/api/v1/events-shim';
 
 /** A real inbox served in-process, and a CLI environment pointed at a temp HOME. */
-async function setupWorld(options: { claude?: boolean; socket?: boolean } = {}) {
+async function setupWorld(
+  options: { claude?: boolean; socket?: boolean; stdin?: string; addFails?: boolean } = {}
+) {
   const store = new MemoryEventsShimStore();
   const shimFetch: typeof fetch = async (input, init) => {
     const request = input instanceof Request ? input : new Request(String(input), init);
@@ -42,9 +44,16 @@ async function setupWorld(options: { claude?: boolean; socket?: boolean } = {}) 
     fetchImpl: shimFetch,
     run: (file, args) => {
       runs.push([file, ...args]);
-      return options.claude ?? true;
+      if (options.claude === false) return false;
+      if (options.addFails && args[0] === 'mcp') return false;
+      return true;
     },
-    exists: (path) => Boolean(options.socket) && path.endsWith('relay.sock'),
+    exists: (path) => Boolean(options.socket) && path === '/tmp/agent-relay-test/relay.sock',
+    readText: (path) =>
+      options.socket && path.endsWith(join('.agentworkforce', 'desktop', 'relay-socket'))
+        ? '/tmp/agent-relay-test/relay.sock\n'
+        : null,
+    readStdin: async () => options.stdin ?? '',
     sleep: async () => {},
   };
   const post = (body: unknown) =>
@@ -145,20 +154,74 @@ describe('events-shim CLI', () => {
     expect(printed.match(/Webhook post #/g)).toHaveLength(1);
   });
 
-  it('the relayfile command in the skill runs forward with the flags it passes', async () => {
-    const w = await setupWorld();
+  it("forward --stdin reads relayfile's event, and a hostile file name stays data", async () => {
+    const path = "/github/repos/a/b/pulls/1/$(touch /tmp/pwned)'; rm -rf ~;.json";
+    const w = await setupWorld({
+      stdin: JSON.stringify({ provider: 'github', type: 'file.created', path, revision: 'r1' }),
+    });
     await runCli(['setup', w.created.mcp_url], w.io);
-    const run = /--run '([^']+)'/.exec(skillText())![1]!;
-    const filled = run
-      .replace('{{provider}}', 'slack')
-      .replace('{{type}}', 'file.created')
-      .replace('{{path}}', '/slack/channels/C1/messages/1.json')
-      .replace('{{revision}}', 'r1');
-    const argv = filled.split(' ').slice(filled.split(' ').indexOf('forward'));
-    expect(await runCli(argv, w.io)).toBe(0);
+    expect(skillText()).toContain("--run 'npx -y @agent-relay/events-shim@latest forward --stdin'");
+    expect(skillText()).not.toContain('{{path}}');
+    expect(await runCli(['forward', '--stdin'], w.io)).toBe(0);
     w.out.length = 0;
     expect(await runCli(['listen', '--timeout', '1'], w.io)).toBe(0);
-    expect(w.out.join('\n')).toContain('slack.file.created');
-    expect(w.out.join('\n')).toContain('/slack/channels/C1/messages/1.json');
+    expect(w.out.join('\n')).toContain('github.file.created');
+    expect(w.out.join('\n')).toContain('rm -rf ~');
+  });
+
+  it('forward keeps every revision of a long path distinct', async () => {
+    const w = await setupWorld();
+    await runCli(['setup', w.created.mcp_url], w.io);
+    const path = `/github/repos/${'x'.repeat(250)}/meta.json`;
+    for (const revision of ['r1', 'r2']) {
+      expect(
+        await runCli(
+          [
+            'forward',
+            '--provider',
+            'github',
+            '--type',
+            'file.updated',
+            '--path',
+            path,
+            '--revision',
+            revision,
+          ],
+          w.io
+        )
+      ).toBe(0);
+    }
+    w.out.length = 0;
+    expect(await runCli(['listen', '--timeout', '1'], w.io)).toBe(0);
+    expect(w.out.join('\n').match(/Webhook post #/g)).toHaveLength(2);
+  });
+
+  it('a JSON-RPC error from the inbox fails setup instead of saving an empty inbox', async () => {
+    const w = await setupWorld();
+    w.io.fetchImpl = async () =>
+      Response.json({ jsonrpc: '2.0', id: 1, error: { code: -32603, message: 'boom' } });
+    expect(await runCli(['setup', w.created.mcp_url], w.io)).toBe(1);
+    expect(w.err.join('\n')).toContain('boom');
+    expect(() => readFileSync(configPath(w.io))).toThrow();
+  });
+
+  it('setup reports a failed MCP add instead of claiming success', async () => {
+    const w = await setupWorld({ addFails: true });
+    expect(await runCli(['setup', w.created.mcp_url], w.io)).toBe(1);
+    expect(w.err.join('\n')).toContain('did not accept the MCP server');
+    // It only removed the old server after the add was refused, and tried again.
+    const mcp = w.runs.filter((run) => run[1] === 'mcp').map((run) => run[2]);
+    expect(mcp).toEqual(['add', 'remove']);
+  });
+
+  it('listen cuts long bodies and names the event id', async () => {
+    const w = await setupWorld();
+    await runCli(['setup', w.created.mcp_url], w.io);
+    await w.post({ big: 'y'.repeat(9_000) });
+    w.out.length = 0;
+    expect(await runCli(['listen', '--timeout', '1'], w.io)).toBe(0);
+    const printed = w.out.join('\n');
+    expect(printed).toContain('truncated; call get_webhook_events with event_id');
+    expect(printed.length).toBeLessThan(7_000);
   });
 });
