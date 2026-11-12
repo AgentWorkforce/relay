@@ -90,6 +90,14 @@ async function setupWorld(
     stderr: (line) => err.push(line),
     fetchImpl: async (input, init) => {
       const url = String(input instanceof Request ? input.url : input);
+      if (url.endsWith('/workspace') && options.inboxWorkspace) {
+        return Response.json({
+          workspace_id: '1',
+          workspace_key: 'rk_live_frominbox',
+          workspace_expires_at: '2026-11-20T00:00:00.000Z',
+          temporary: true,
+        });
+      }
       if (url === 'https://cast.agentrelay.com/v1/workspaces') {
         mints.push(JSON.parse(String(init?.body)));
         return Response.json({
@@ -671,6 +679,18 @@ describe('events-shim CLI', () => {
       'config/value/write',
       { keyPath: 'hooks.state."/h/hooks.json:session_start:0:0"', mergeStrategy: 'replace', value: null },
     ]);
+  });
+
+  it("setup --codex uses the inbox's own temporary workspace when the inbox service has one", async () => {
+    const w = await setupWorld({ inboxWorkspace: true });
+    expect(await runCli(['setup', w.created.mcp_url, '--codex'], w.io)).toBe(0);
+    expect(w.mints).toEqual([]);
+    const config = JSON.parse(readFileSync(configPath(w.io), 'utf8'));
+    expect(config).toMatchObject({
+      workspaceKey: 'rk_live_frominbox',
+      workspaceExpiresAt: '2026-11-20T00:00:00.000Z',
+    });
+    expect(w.out.join('\n')).toContain('deleted 2026-11-20');
   });
 
   it('setup --codex refuses a core download that does not match its checksum', async () => {

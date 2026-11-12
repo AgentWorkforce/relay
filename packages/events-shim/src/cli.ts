@@ -740,7 +740,8 @@ export const TEMP_WORKSPACE_SECONDS = 7 * 24 * 60 * 60;
 /**
  * The workspace for the standalone core: \`RELAY_WORKSPACE_KEY\`, the one
  * setup made before, none when a core (Desktop's) already serves this
- * machine, or a new
+ * machine, the inbox's own temporary workspace (Cloud keeps it alive while
+ * the inbox is used), or a new
  * temporary Relaycast workspace that deletes itself after
  * \`TEMP_WORKSPACE_SECONDS\` (sign in to Agent Relay to keep one).
  */
@@ -758,6 +759,20 @@ async function workspaceFor(
     }
   }
   if (bridge(io, 'status.get')) return null;
+  // The inbox's own temporary workspace: Cloud keeps it alive while the inbox is used.
+  const fromInbox = await io
+    .fetchImpl(mcpUrl.replace(/\/mcp$/, '/workspace'), { method: 'POST' })
+    .catch(() => null);
+  if (fromInbox?.ok) {
+    const issued = (await fromInbox.json().catch(() => null)) as {
+      workspace_key?: unknown;
+      workspace_expires_at?: unknown;
+    } | null;
+    if (typeof issued?.workspace_key === 'string' && typeof issued.workspace_expires_at === 'string') {
+      return { key: issued.workspace_key, expiresAt: issued.workspace_expires_at };
+    }
+  }
+  // An inbox service without one: a Relaycast workspace of our own, deleted after 7 days.
   const digest = createHash('sha256').update(mcpUrl).digest('hex').slice(0, 10);
   const response = await io.fetchImpl('https://cast.agentrelay.com/v1/workspaces', {
     method: 'POST',
