@@ -211,8 +211,14 @@ impl Outbound {
         .ok()
         .flatten()
         .ok_or_else(OutboundError::not_a_session)?;
+        // The build's extra guidance (`session_start_context`), added to
+        // whatever this answers, or alone where it says nothing else.
+        let extra = self.core.session_start_context(SessionKind::Codex);
+        let quiet = || {
+            crate::relay::session_start_context::append(json!({}), SESSION_START, extra.as_deref())
+        };
         let Some(commands) = self.codex_socket_commands() else {
-            return Ok(json!({}));
+            return Ok(quiet());
         };
         // Its one current name, as `GET /whoami` and its sends use: the
         // alias once the session renamed itself.
@@ -237,7 +243,7 @@ impl Outbound {
                 .and(registered());
         } else if identity.is_none() {
             if !self.setup.auto_activates(&session).await {
-                return Ok(json!({}));
+                return Ok(quiet());
             }
             // The pass that puts it on the relay, now rather than at the
             // next poll. It goes on by itself if the answer stops waiting.
@@ -255,10 +261,14 @@ impl Outbound {
                 .map(|(name, address)| (name.as_str(), address.as_str())),
             &commands,
         );
-        Ok(json!({"hookSpecificOutput": {
-            "hookEventName": SESSION_START,
-            "additionalContext": text,
-        }}))
+        Ok(crate::relay::session_start_context::append(
+            json!({"hookSpecificOutput": {
+                "hookEventName": SESSION_START,
+                "additionalContext": text,
+            }}),
+            SESSION_START,
+            extra.as_deref(),
+        ))
     }
 
     /// The probe commands on this core's serving session socket, naming the

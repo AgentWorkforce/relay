@@ -97,7 +97,14 @@ impl Outbound {
         {
             return Err(OutboundError::not_a_session());
         }
-        Ok(answer)
+        // The build's extra guidance (`session_start_context`), once, as
+        // the chat starts.
+        Ok(crate::relay::session_start_context::append_flat(
+            answer,
+            self.core
+                .session_start_context(SessionKind::Copilot)
+                .as_deref(),
+        ))
     }
 
     // Registration can finish after SessionStart's bounded wait. The next

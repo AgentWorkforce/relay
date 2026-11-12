@@ -333,16 +333,30 @@ pub fn claude_session_hook(socket: Option<&Path>, build: &Build) -> Result<()> {
     let interactive = crate::relay::claude::session_hook::has_person(&table, parent);
     let output = match session_hook_socket(socket, build).filter(|_| claude.is_some()) {
         Some(socket) => {
-            let (registered, probe) = session_registered(&socket);
+            let (registered, probe, extra) = session_registered(&socket);
             // The core names its rules' probe; an older one does not, and
             // this probe is the one it runs.
             let probe = probe.or_else(crate::relay::outbound::fetch::probe_executable);
-            crate::relay::claude::session_hook::hook_output(
+            let answered = registered.is_some();
+            let output = crate::relay::claude::session_hook::hook_output(
                 registered,
                 &socket,
                 interactive,
                 probe.as_deref(),
-            )
+            );
+            // The build's extra guidance (`session_start_context`), for a
+            // session with a person, or one the hook already tells
+            // something; a `claude -p` run it would otherwise leave alone
+            // keeps its one reply for its task.
+            if answered && (interactive || output != json!({})) {
+                crate::relay::session_start_context::append(
+                    output,
+                    "SessionStart",
+                    extra.as_deref(),
+                )
+            } else {
+                output
+            }
         }
         None => json!({}),
     };
@@ -371,7 +385,23 @@ pub fn devin_hook(development: bool) -> Result<()> {
     };
     let config = crate::relay::devin::DevinConfig::from_env(&|key| std::env::var(key).ok(), &home)
         .development(development);
-    if let Some((output, consumed)) = crate::relay::devin::hook_answer(&config, &payload) {
+    let mut answer = crate::relay::devin::hook_answer(&config, &payload);
+    // At SessionStart, the build's extra guidance (`session_start_context`)
+    // from the core, beside any pending messages or alone.
+    if payload["hook_event_name"] == "SessionStart" {
+        if let Some(extra) = devin_session_start_context(development) {
+            let (output, consumed) = answer.unwrap_or_else(|| (json!({}), Vec::new()));
+            answer = Some((
+                crate::relay::session_start_context::append(
+                    output,
+                    "SessionStart",
+                    Some(&extra),
+                ),
+                consumed,
+            ));
+        }
+    }
+    if let Some((output, consumed)) = answer {
         let mut stdout = std::io::stdout();
         let written = serde_json::to_vec(&output)
             .map_err(std::io::Error::other)
@@ -385,6 +415,32 @@ pub fn devin_hook(development: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The core's extra session-start guidance for Devin
+/// (`GET /session-start-context?kind=devin`), or `None` when there is none
+/// or the core cannot be reached within the hook's budget.
+fn devin_session_start_context(development: bool) -> Option<String> {
+    let build = if development {
+        crate::relay::outbound::Build::Development
+    } else {
+        crate::relay::outbound::Build::Production
+    };
+    let socket = session_hook_socket(None, &build)?;
+    let (status, body) = socket_response(
+        &socket,
+        "GET",
+        "/session-start-context?kind=devin",
+        b"",
+        SESSION_HOOK_TIMEOUT,
+    )
+    .ok()?;
+    if status != 200 {
+        return None;
+    }
+    let value = serde_json::from_slice::<Value>(&body).ok()?;
+    let text = value["data"]["text"].as_str()?.trim();
+    (!text.is_empty()).then(|| text.to_string())
 }
 
 /// Agent Relay's Cursor CLI hook (`cursor_cli::CursorSettings` installs it
@@ -483,15 +539,18 @@ fn session_registered(
 ) -> (
     Option<crate::relay::claude::session_hook::StatusRead>,
     Option<std::path::PathBuf>,
+    Option<String>,
 ) {
     let mut probe = None;
-    let status = session_status(socket, &mut probe);
-    (status, probe)
+    let mut extra = None;
+    let status = session_status(socket, &mut probe, &mut extra);
+    (status, probe, extra)
 }
 
 fn session_status(
     socket: &Path,
     probe: &mut Option<std::path::PathBuf>,
+    extra: &mut Option<String>,
 ) -> Option<crate::relay::claude::session_hook::StatusRead> {
     let mut attempts = 0;
     loop {
@@ -509,6 +568,7 @@ fn session_status(
         )
         .ok()?;
         *probe = crate::relay::claude::session_hook::read_probe(&body);
+        *extra = crate::relay::claude::session_hook::read_session_start_context(&body);
         match crate::relay::claude::session_hook::read_status(status, &body) {
             registered @ (crate::relay::claude::session_hook::StatusRead::Registered { .. }
             | crate::relay::claude::session_hook::StatusRead::Joining

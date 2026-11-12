@@ -103,6 +103,25 @@ pub trait SessionPolicy: Send + Sync + 'static {
     fn leaving_after_clear(&self, agents: &[String]) -> Option<String>;
 }
 
+/// Extra guidance a build of the core adds to what every session is told
+/// as it starts, whatever its provider: one short paragraph appended to the
+/// session-start text the core's own hooks already give (Claude Code's and
+/// Codex's SessionStart hooks, Copilot's and Devin's session-start hooks,
+/// the Pi and OpenCode plugins). The core never decides what it says or
+/// whether it is on; a build without one adds nothing. Coverage is the
+/// core's: a provider whose session start the core does not reach is
+/// reported by [`session_start_context_reach`], never silently skipped.
+/// An unsupported internal seam, like [`SessionPolicy`].
+///
+/// [`session_start_context_reach`]: crate::relay::session_start_context::reach
+pub trait SessionStartContext: Send + Sync + 'static {
+    /// The paragraph for a session of `kind` that is starting, or `None` to
+    /// add nothing. Called on the hook's path: it must return promptly and
+    /// not block on I/O. Its text is data the session reads, so it must not
+    /// carry secrets.
+    fn context(&self, kind: crate::relay::store::SessionKind) -> Option<String>;
+}
+
 /// Callers of the native spawn controls (`spawn.invoke`, `spawn.status`,
 /// `spawn.release`) that are not session registrations. A service caller is
 /// whoever its bridge connection authenticated as: the plugin owns the
@@ -306,6 +325,8 @@ pub struct Plugins {
     pub account: Option<Arc<dyn AccountPlugin>>,
     /// Which sessions may join the relay, be asked to, and publish activity.
     pub session_policy: Option<Arc<dyn SessionPolicy>>,
+    /// Extra guidance added to every session's start; none adds nothing.
+    pub session_start_context: Option<Arc<dyn SessionStartContext>>,
     /// Native spawn control callers that are not session registrations;
     /// without it every bridge connection takes the session path.
     pub spawn_callers: Option<Arc<dyn SpawnCallers>>,
@@ -338,6 +359,7 @@ impl Default for Plugins {
             relay_send: None,
             account: None,
             session_policy: None,
+            session_start_context: None,
             spawn_callers: None,
             codex_stop_hook: None,
             spawner: Arc::new(crate::relay::spawn::launch::NoSpawner),

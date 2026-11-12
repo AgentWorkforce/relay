@@ -42,6 +42,15 @@ pub enum StatusRead {
     Unknown,
 }
 
+/// The extra session-start guidance the core's build adds
+/// (`session_start_context` in its `GET /setup/status` answer), or `None`
+/// from a core without any, or an older one.
+pub fn read_session_start_context(body: &[u8]) -> Option<String> {
+    let value = serde_json::from_slice::<Value>(body).ok()?;
+    let text = value["data"]["session_start_context"].as_str()?.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
 /// The probe the core's rules and hints name (`probe` in its
 /// `GET /setup/status` answer): the space-free link when it is in use.
 /// `None` from an older core, or for anything but an absolute path.

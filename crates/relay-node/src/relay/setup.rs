@@ -717,6 +717,12 @@ impl Setup {
                 .collect::<Vec<_>>(),
             "unreadable_session_files": unreadable_session_files,
         });
+        // The build's extra session-start guidance for this session's
+        // provider, which the Claude Code SessionStart hook appends
+        // (`session_start_context`). Absent when there is none.
+        if let Some(context) = self.core.session_start_context(session.target.kind) {
+            result["session_start_context"] = json!(context);
+        }
         if ["expired", "denied", "error"].contains(&state.as_str()) {
             if let Some(message) = account["error"].as_str() {
                 result["sign_in_message"] = json!(message);

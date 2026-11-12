@@ -137,6 +137,7 @@ pub mod sdk_http;
 pub mod server;
 pub mod session_cli;
 pub mod session_sources;
+pub mod session_start_context;
 pub mod session_titles;
 pub mod sessions;
 pub mod settings_cli;

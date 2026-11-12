@@ -49,7 +49,8 @@ mod permission_tests;
 mod permissions;
 mod rollback;
 pub use output::{
-    claude_ancestor, has_person, hook_output, joining, nudge, read_probe, read_status,
+    claude_ancestor, has_person, hook_output, joining, nudge, read_probe,
+    read_session_start_context, read_status,
     registration_off, StatusRead, JOINING_FOR_PERSON, NUDGE_FOR_PERSON, OBSERVE_HEADER,
     OBSERVE_VALUE,
 };

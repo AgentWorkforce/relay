@@ -464,6 +464,9 @@ impl Outbound {
             ("GET", "/connect/status") => self.connect_status(pid, uid).await,
             ("POST", "/connect/leave") => self.connect_leave(pid, uid).await,
             ("GET", "/whoami") => self.whoami(pid, uid).await,
+            ("GET", "/session-start-context") => {
+                self.session_start_context_route(uid, &request.query)
+            }
             ("GET", "/agents") => self.agents(pid, uid, &request.query).await,
             ("POST", "/attachments/fetch") => self.fetch_attachment(pid, uid, &request.query).await,
             ("GET", "/messages") => self.read_message(pid, uid, &request.query).await,
@@ -1383,6 +1386,28 @@ impl Outbound {
     /// `GET /agents`: the workspace the caller's own registration is in,
     /// read with that registration's key (so a session never sees a
     /// workspace the app switched to later), cached for 30 s.
+    /// `GET /session-start-context?kind=<kind>`: the build's extra
+    /// session-start guidance for that provider
+    /// (`session_start_context`), for a hook the core does not answer
+    /// itself (Devin's, which reads its inbox from files). `{"text": null}`
+    /// when there is none. The text names no session or person, so the
+    /// route asks only that the caller is this user.
+    fn session_start_context_route(
+        &self,
+        uid: u32,
+        query: &[(String, String)],
+    ) -> Result<Value, OutboundError> {
+        if uid != self.uid {
+            return Err(OutboundError::not_this_user());
+        }
+        let kind = query
+            .iter()
+            .find(|(key, _)| key == "kind")
+            .and_then(|(_, kind)| serde_json::from_value(json!(kind)).ok());
+        let text = kind.and_then(|kind| self.core.session_start_context(kind));
+        Ok(json!({ "text": text }))
+    }
+
     pub async fn agents(
         &self,
         pid: i32,
