@@ -830,6 +830,7 @@ its stage lands.
 | `outbound::RelaySend`            | `src/relay/outbound.rs`          | The relay-send socket's path, pointer and Claude Code's direct-delivery setting (`setup::DirectDelivery`)       | `None`: not served                                            | 2b       |
 | `daemon::Plugins::account`       | `src/relay/daemon/plugins.rs`    | Sign-in and telemetry, from the build that has them                                                             | none: account, uploader and telemetry methods are not offered | 2c       |
 | `daemon::Plugins::session_policy` | `src/relay/daemon/plugins.rs`   | Which sessions join by themselves, may be asked to join, and publish activity                                   | every session may join by itself; none is asked; none publishes | 4      |
+| `daemon::Plugins::session_start_context` | `src/relay/daemon/plugins.rs` | One extra paragraph appended to every provider's session-start text the core gives (`session_start_context::reach` lists which providers it reaches) | none: nothing is added | — |
 | `session_sources::SessionSources` | `src/relay/session_sources.rs`  | Remote sessions (Devin Cloud, Claude Code on the web) a build lists and delivers into; Hermes's homes           | none: only this computer's sessions                           | 2b       |
 
 `serve` builds its plugins with `local::plugins`: `LocalSessions`

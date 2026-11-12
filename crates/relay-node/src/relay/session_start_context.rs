@@ -3,7 +3,7 @@
 //! the paragraph is appended, so one setting reaches every provider whose
 //! session start the core answers. The core decides nothing about the text;
 //! it only carries it, bounded, and says which providers it cannot reach.
-use crate::relay::daemon::{Core, SessionStartContext};
+use crate::relay::daemon::Core;
 use crate::relay::store::SessionKind;
 use serde_json::{json, Value};
 
@@ -15,7 +15,12 @@ impl Core {
     /// The extra paragraph for a session of `kind` that is starting: the
     /// build's [`SessionStartContext`], trimmed and bounded, or `None`.
     pub fn session_start_context(&self, kind: SessionKind) -> Option<String> {
-        bounded(self.plugins.session_start_context.as_deref()?.context(kind)?)
+        bounded(
+            self.plugins
+                .session_start_context
+                .as_deref()?
+                .context(kind)?,
+        )
     }
 }
 
@@ -161,6 +166,7 @@ pub fn reach_report() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::relay::daemon::SessionStartContext;
 
     struct Fixed(&'static str);
     impl SessionStartContext for Fixed {

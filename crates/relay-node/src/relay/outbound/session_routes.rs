@@ -12,6 +12,7 @@ pub const SESSION_ROUTES: &[(&str, &str)] = &[
     ("GET", "/connect/status"),
     ("POST", "/connect/leave"),
     ("GET", "/whoami"),
+    ("GET", "/session-start-context"),
     ("GET", "/agents"),
     ("POST", "/attachments/fetch"),
     ("GET", "/messages"),

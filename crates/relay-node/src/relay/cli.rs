@@ -392,11 +392,7 @@ pub fn devin_hook(development: bool) -> Result<()> {
         if let Some(extra) = devin_session_start_context(development) {
             let (output, consumed) = answer.unwrap_or_else(|| (json!({}), Vec::new()));
             answer = Some((
-                crate::relay::session_start_context::append(
-                    output,
-                    "SessionStart",
-                    Some(&extra),
-                ),
+                crate::relay::session_start_context::append(output, "SessionStart", Some(&extra)),
                 consumed,
             ));
         }

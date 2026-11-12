@@ -50,9 +50,8 @@ mod permissions;
 mod rollback;
 pub use output::{
     claude_ancestor, has_person, hook_output, joining, nudge, read_probe,
-    read_session_start_context, read_status,
-    registration_off, StatusRead, JOINING_FOR_PERSON, NUDGE_FOR_PERSON, OBSERVE_HEADER,
-    OBSERVE_VALUE,
+    read_session_start_context, read_status, registration_off, StatusRead, JOINING_FOR_PERSON,
+    NUDGE_FOR_PERSON, OBSERVE_HEADER, OBSERVE_VALUE,
 };
 #[cfg(test)]
 pub use permissions::covers;
@@ -1939,6 +1938,16 @@ mod probe_tests {
         );
         assert_eq!(read_probe(br#"{"data":{"probe":"relative/probe"}}"#), None);
         assert_eq!(read_probe(br#"{"data":{}}"#), None);
+        assert_eq!(
+            read_session_start_context(br#"{"data":{"session_start_context":" Check. "}}"#)
+                .as_deref(),
+            Some("Check.")
+        );
+        assert_eq!(read_session_start_context(br#"{"data":{}}"#), None);
+        assert_eq!(
+            read_session_start_context(br#"{"data":{"session_start_context":"  "}}"#),
+            None
+        );
         let socket = Path::new("/Users/me/Library/Application Support/x/run/relay.sock");
         let rules = PermissionRules {
             probe: probe.clone(),

@@ -327,6 +327,12 @@ mod tests {
         }
     }
     fn fixture() -> (tempfile::TempDir, Outbound, Arc<StopHookInbox>) {
+        fixture_with(None)
+    }
+
+    fn fixture_with(
+        session_start_context: Option<Arc<dyn crate::relay::daemon::SessionStartContext>>,
+    ) -> (tempfile::TempDir, Outbound, Arc<StopHookInbox>) {
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().to_path_buf();
         let config = Config {
@@ -346,6 +352,7 @@ mod tests {
         let plugins = Plugins {
             sessions: Arc::new(Sessions),
             codex_stop_hook: Some(inbox.clone()),
+            session_start_context,
             relay_send: Some(RelaySend {
                 socket: home.join("relay.sock"),
                 pointer: home.join("pointer"),
@@ -370,6 +377,42 @@ mod tests {
             .as_object()
             .unwrap()
             .clone()
+    }
+
+    struct Teammates;
+    impl crate::relay::daemon::SessionStartContext for Teammates {
+        fn context(&self, kind: SessionKind) -> Option<String> {
+            (kind == SessionKind::Codex).then(|| "Check teammates first.".to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn session_start_carries_the_builds_extra_guidance_only_when_it_has_one() {
+        let start = json!({"session_id": THREAD, "hook_event_name": "SessionStart"})
+            .as_object()
+            .unwrap()
+            .clone();
+        let (_temp, outbound, _) = fixture_with(Some(Arc::new(Teammates)));
+        let answer = outbound
+            .codex_stop_hook(42, outbound.uid, &start)
+            .await
+            .unwrap();
+        assert_eq!(
+            answer,
+            json!({"hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": "Check teammates first.",
+            }})
+        );
+        // Without the plugin, the same start is told nothing.
+        let (_temp, outbound, _) = fixture();
+        assert_eq!(
+            outbound
+                .codex_stop_hook(42, outbound.uid, &start)
+                .await
+                .unwrap(),
+            json!({})
+        );
     }
 
     #[tokio::test]
