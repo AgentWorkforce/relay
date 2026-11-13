@@ -67,6 +67,11 @@ export interface CliIo {
   coreBinaries: () => string[];
   /** Appends a line to events-shim's log. */
   appendLog: (line: string) => void;
+  /** Runs \`events-shim <args>\` as a user service that restarts with the machine (systemd --user, launchd). */
+  userService: {
+    install: (args: string[]) => boolean;
+    remove: () => boolean;
+  };
   /** Runs JSON-RPC requests against a short-lived \`codex app-server\`; null when Codex is not there. */
   codexAppServer: <T>(
     work: (request: (method: string, params: unknown) => Promise<unknown>) => Promise<T>
@@ -89,6 +94,8 @@ interface Config {
   workspaceExpiresAt?: string;
   /** Relay webhooks events-shim created, by agent name: the only ones it ever replaces. */
   ownWebhooks?: Record<string, string>;
+  /** The core's session kinds \`serve\` links the inbox to (the CLIs setup woke through the core). */
+  wakeKinds?: string[];
   webhookUrl?: string;
   verifiedUrls?: Record<string, string>;
 }
@@ -249,9 +256,9 @@ its posts or sends a bearer token, the matching \`verified_urls\` entry once its
 \`asyncRewake\`) that wait for the next post and wake this session with it, with or without Agent Relay. Do not poll,
 and do not start a listener yourself; tell the person you are watching and end your turn.
 
-**Codex after \`setup --codex\`: nothing to do.** Setup installed a SessionStart hook that links this session to the
-inbox through Agent Relay (Desktop's, or its own headless core when Desktop is not running) on its first message.
-Each post is then injected and wakes the session; no reply is needed. The newest Codex session gets the posts. Tell the person you are watching and end your
+**Codex, Devin, Grok, opencode or Muse after \`setup\`: nothing to do.** Setup links the inbox to the newest
+open session of those tools through Agent Relay (Desktop's, or its own headless core when Desktop is not running),
+so each post is injected and wakes the session; no reply is needed. Tell the person you are watching and end your
 turn.
 
 Otherwise, pick one:
@@ -301,6 +308,8 @@ interface AgentCli {
   skillsDir?: (io: CliIo) => string;
   /** How a post wakes this tool's session. */
   wake: 'listener' | 'core' | 'relay-only' | 'when-asked';
+  /** With \`wake: 'core'\`: the session kind the Agent Relay core lists it as. */
+  coreKind?: string;
   /** Removes the MCP server again (\`uninstall\`). */
   remove: (io: CliIo) => boolean;
   /** Hooks that wake this tool's sessions by themselves (Claude Code, Codex). */
@@ -560,6 +569,21 @@ async function installCodexHook(io: CliIo): Promise<{ ok: true } | { ok: false; 
 }
 
 /** Takes the hook out of \`hooks.json\` and its trust out of Codex's config, keeping the person's own. */
+/**
+ * Settings events-shim's own core needs for the CLIs it wakes (never changed
+ * on Desktop's core, which the person configures): sessions join by
+ * themselves, opencode's included.
+ */
+function prepareOwnCore(io: CliIo, clis: readonly AgentCli[]): void {
+  const daemon = bridge(io, 'status.get')?.daemon as { pid?: unknown } | undefined;
+  const pid = typeof daemon?.pid === 'number' ? daemon.pid : 0;
+  if (!(pid > 0 && runsOwnCore(io, io.processArgs(pid) ?? ''))) return;
+  bridge(io, 'settings.set', {
+    auto_activate: true,
+    ...(clis.some((cli) => cli.id === 'opencode') ? { opencode_auto_activate: true } : {}),
+  });
+}
+
 /** Stops the headless core events-shim started, if it is the one running (never Desktop's). */
 function stopOwnCore(io: CliIo): void {
   const daemon = bridge(io, 'status.get')?.daemon as { pid?: unknown } | undefined;
@@ -568,7 +592,6 @@ function stopOwnCore(io: CliIo): void {
 }
 
 async function removeCodexHook(io: CliIo): Promise<boolean> {
-  stopOwnCore(io);
   let keys: string[] = [];
   try {
     keys =
@@ -635,6 +658,7 @@ export const AGENT_CLIS: readonly AgentCli[] = [
       )(io, url),
     skillsDir: (io) => join(codexHome(io), 'skills'),
     wake: 'core',
+    coreKind: 'codex',
     remove: (io) => io.run('codex', ['mcp', 'remove', MCP_SERVER_NAME]),
     hooks: { install: installCodexHook, remove: removeCodexHook, listener: '--session' },
   },
@@ -659,20 +683,23 @@ export const AGENT_CLIS: readonly AgentCli[] = [
       'mcp',
       (url) => ({ type: 'remote', url, enabled: true })
     ),
-    wake: 'relay-only',
+    wake: 'core',
+    coreKind: 'opencode-open',
     remove: removeJson((io) => join(xdgConfig(io), 'opencode', 'opencode.json'), 'mcp'),
   },
   {
     id: 'muse',
     label: 'Muse',
     present: onPath('muse'),
-    install: viaJson(
-      (io) => join(xdgConfig(io), 'muse', 'settings.json'),
-      'mcpServers',
-      (url) => ({ url })
-    ),
-    wake: 'relay-only',
-    remove: removeJson((io) => join(xdgConfig(io), 'muse', 'settings.json'), 'mcpServers'),
+    install: (io, url) =>
+      viaCommand(
+        'muse',
+        ['mcp', 'add', MCP_SERVER_NAME, '--url', url, '--user'],
+        ['mcp', 'remove', MCP_SERVER_NAME, '--user']
+      )(io, url),
+    wake: 'core',
+    coreKind: 'muse-open',
+    remove: (io) => io.run('muse', ['mcp', 'remove', MCP_SERVER_NAME, '--user']),
   },
   {
     id: 'gemini',
@@ -697,7 +724,8 @@ export const AGENT_CLIS: readonly AgentCli[] = [
         ['mcp', 'add', '--scope', 'user', '--transport', 'http', MCP_SERVER_NAME, url],
         ['mcp', 'remove', '--scope', 'user', MCP_SERVER_NAME]
       )(io, url),
-    wake: 'relay-only',
+    wake: 'core',
+    coreKind: 'grok-open',
     remove: (io) => io.run('grok', ['mcp', 'remove', '--scope', 'user', MCP_SERVER_NAME]),
   },
   {
@@ -710,7 +738,8 @@ export const AGENT_CLIS: readonly AgentCli[] = [
         ['mcp', 'add', '--scope', 'user', MCP_SERVER_NAME, '--url', url],
         ['mcp', 'remove', '--scope', 'user', MCP_SERVER_NAME]
       )(io, url),
-    wake: 'relay-only',
+    wake: 'core',
+    coreKind: 'devin',
     remove: (io) => io.run('devin', ['mcp', 'remove', '--scope', 'user', MCP_SERVER_NAME]),
   },
 ];
@@ -731,7 +760,7 @@ function chosenClis(io: CliIo, flags: Record<string, string>): { clis: AgentCli[
 
 const WAKE_TEXT: Record<AgentCli['wake'], string> = {
   listener: 'each new session is woken by every post (wake hooks installed; no Agent Relay needed)',
-  core: 'from its first message on, each session is woken by every post (wake hook installed; runs its own Agent Relay core if Desktop is not running)',
+  core: 'its newest open session is woken by every post (through Agent Relay: Desktop, or its own headless core)',
   'relay-only': 'woken by each post under Agent Relay; without it, reads posts when asked',
   'when-asked': 'reads posts when asked (no background wake in this client)',
 };
@@ -827,14 +856,16 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
   // Codex is woken through an Agent Relay core: Desktop's, or a standalone one on its own workspace.
   // Setting up another CLI keeps the workspace an earlier \`setup --codex\` made.
   const previous = readConfig(io);
-  const workspace = clis.some((cli) => cli.id === 'codex')
-    ? await workspaceFor(io, mcpUrl, previous)
-    : previous?.mcpUrl === mcpUrl && previous.workspaceKey
-      ? {
-          key: previous.workspaceKey,
-          ...(previous.workspaceExpiresAt ? { expiresAt: previous.workspaceExpiresAt } : {}),
-        }
-      : null;
+  const throughCore = clis.filter((cli) => cli.coreKind);
+  const workspace =
+    throughCore.length > 0
+      ? await workspaceFor(io, mcpUrl, previous)
+      : previous?.mcpUrl === mcpUrl && previous.workspaceKey
+        ? {
+            key: previous.workspaceKey,
+            ...(previous.workspaceExpiresAt ? { expiresAt: previous.workspaceExpiresAt } : {}),
+          }
+        : null;
   const config: Config = {
     mcpUrl,
     ...(workspace ? { workspaceKey: workspace.key } : {}),
@@ -843,6 +874,13 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
     ...(() => {
       const owned = readConfig(io)?.ownWebhooks;
       return owned ? { ownWebhooks: owned } : {};
+    })(),
+    ...(() => {
+      const kinds = new Set([
+        ...(previous?.mcpUrl === mcpUrl ? (previous.wakeKinds ?? []) : []),
+        ...throughCore.map((cli) => cli.coreKind!),
+      ]);
+      return kinds.size > 0 ? { wakeKinds: [...kinds].sort() } : {};
     })(),
     ...(typeof watched.webhook_url === 'string' ? { webhookUrl: watched.webhook_url } : {}),
     ...(watched.verified_urls && typeof watched.verified_urls === 'object'
@@ -889,13 +927,31 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
   if (hooked.includes('claude')) {
     io.stdout('Start a new Claude Code session. Each post wakes it by itself; there is nothing to tell it.');
   }
-  if (hooked.includes('codex')) {
+  if (throughCore.length > 0) {
     const problem = await ensureCore(io, config);
+    const labels = throughCore.map((cli) => cli.label).join(', ');
     if (problem) {
-      failed.push('Codex wake');
-      io.stdout(`Codex: ${problem}.`);
+      failed.push(`${labels} wake`);
+      io.stdout(`${labels}: ${problem}.`);
     } else {
-      io.stdout('Start a new Codex session. From its first message on, each post wakes it by itself.');
+      prepareOwnCore(io, throughCore);
+      // The watcher that links the inbox to the newest open session, kept running across reboots.
+      if (!io.userService.install(['serve'])) {
+        const bin = process.argv[1];
+        if (bin) io.spawnDetached(process.execPath, [bin, 'serve']);
+      }
+      if (hooked.includes('codex')) {
+        io.stdout('Start a new Codex session. From its first message on, each post wakes it by itself.');
+      }
+      const others = throughCore.filter((cli) => cli.id !== 'codex');
+      if (others.length > 0) {
+        io.stdout(
+          `${others.map((cli) => cli.label).join(', ')}: open a session; the newest one is woken by each post by itself.`
+        );
+      }
+      if (throughCore.some((cli) => cli.id === 'grok')) {
+        io.stdout('  Grok: start a new session; ones opened before this setup are not seen.');
+      }
     }
     if (config.workspaceExpiresAt) {
       io.stdout(
@@ -903,7 +959,7 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
       );
     }
   }
-  if (clis.some((cli) => !cli.hooks)) {
+  if (clis.some((cli) => !cli.hooks && !cli.coreKind)) {
     io.stdout(
       socket
         ? 'Other agents: start a new session and tell it "watch for webhooks"; Agent Relay (running here) injects each post.'
@@ -947,6 +1003,33 @@ async function uninstall(io: CliIo, flags: Record<string, string>): Promise<numb
     io.stdout(
       `  ${cli.label}: ${removed && hooks.ok ? 'removed' : 'could not remove everything; check its MCP settings'}.`
     );
+  }
+  // CLIs woken through the core: stop linking them, and when none is left stop the watcher and our core.
+  const removedKinds = new Set(clis.flatMap((cli) => (cli.coreKind ? [cli.coreKind] : [])));
+  const config = readConfig(io);
+  if (removedKinds.size > 0 && config) {
+    const left = (config.wakeKinds ?? []).filter((kind) => !removedKinds.has(kind));
+    const { wakeKinds: _dropped, ...rest } = config;
+    writePrivate(
+      configPath(io),
+      `${JSON.stringify(left.length > 0 ? { ...rest, wakeKinds: left } : rest, null, 2)}\n`
+    );
+    if (left.length === 0) {
+      // The inbox stops forwarding to the session it was linked to (Desktop's core keeps running).
+      try {
+        await callTool(io, config.mcpUrl, 'unlink_relay_wake');
+      } catch {
+        io.stdout(
+          '  Could not unlink the inbox from its relay session; run unlink_relay_wake from an agent.'
+        );
+      }
+      if (!io.userService.remove()) failed += 1;
+      const lock = join(dirname(configPath(io)), 'serve.pid');
+      const pid = Number(io.readText(lock)?.trim());
+      if (isListener(io, pid)) io.kill(pid);
+      rmSync(lock, { force: true });
+      stopOwnCore(io);
+    }
   }
   return failed > 0 ? 1 : 0;
 }
@@ -997,7 +1080,9 @@ function isListener(io: CliIo, pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0 || pid === io.pid) return false;
   const args = io.processArgs(pid) ?? '';
   return (
-    /events-shim/.test(args) && /\b(listen|link)\b/.test(args) && /(^|\s)--(hook|session)(\s|$)/.test(args)
+    /events-shim/.test(args) &&
+    ((/\b(listen|link)\b/.test(args) && /(^|\s)--(hook|session)(\s|$)/.test(args)) ||
+      /(^|\s)serve(\s|$)/.test(args))
   );
 }
 
@@ -1142,6 +1227,11 @@ async function listenHook(io: CliIo, flags: Record<string, string>): Promise<num
   );
 }
 
+/** The user service that runs \`events-shim serve\` (systemd unit name). */
+const USER_SERVICE = 'agent-relay-webhooks';
+/** The same on macOS (launchd label). */
+const LAUNCHD_LABEL = 'com.agentrelay.webhooks';
+
 /** Where events-shim keeps its own Agent Relay core binary (one per release). */
 function coreDir(io: CliIo): string {
   return join(home(io), '.agentworkforce', 'events-shim', 'bin');
@@ -1273,6 +1363,22 @@ async function linkSession(io: CliIo, flags: Record<string, string>): Promise<nu
     log('the session never appeared on the relay');
     return 1;
   }
+  return (await linkAgent(io, config, name, log)) ? 0 : 1;
+}
+
+/**
+ * Creates the agent's relay webhook through the core's bridge (a new one when
+ * its secret was shown earlier) and links the inbox to it with
+ * \`link_relay_wake\`, so every post is injected into that agent's session.
+ *
+ * @returns Whether the inbox is now linked to it.
+ */
+async function linkAgent(
+  io: CliIo,
+  config: Config,
+  name: string,
+  log: (line: string) => void
+): Promise<boolean> {
   type Hook = { id?: string; url?: string; secret?: string | null } | null;
   let hook = bridge(io, 'agents.webhook.create', { name }) as Hook;
   if (hook && !hook.secret) {
@@ -1280,14 +1386,14 @@ async function linkSession(io: CliIo, flags: Record<string, string>): Promise<nu
     // someone else's webhook has senders that a new secret would cut off.
     if (!hook.id || readConfig(io)?.ownWebhooks?.[name] !== hook.id) {
       log('the session already has its own relay webhook; not replacing it');
-      return 1;
+      return false;
     }
     bridge(io, 'agents.webhook.revoke', { name });
     hook = bridge(io, 'agents.webhook.create', { name }) as Hook;
   }
   if (!hook?.url || !hook.secret) {
     log('could not create the session webhook');
-    return 1;
+    return false;
   }
   // Recorded before the inbox call that can fail: a retry must still know this webhook is ours.
   const latest = readConfig(io);
@@ -1301,10 +1407,94 @@ async function linkSession(io: CliIo, flags: Record<string, string>): Promise<nu
     await callTool(io, config.mcpUrl, 'link_relay_wake', { url: hook.url, secret: hook.secret });
   } catch (error) {
     log(`link_relay_wake failed: ${error instanceof Error ? error.message : 'error'}`);
-    return 1;
+    return false;
   }
   log(`linked ${name}`);
-  return 0;
+  return true;
+}
+
+/** A session as the core's \`sessions.list\` reports it. */
+interface CoreSession {
+  target?: { kind?: string; id?: string };
+  live?: boolean;
+  updated_at_ms?: number;
+  registration?: { name?: string } | null;
+}
+
+/** How often \`serve\` looks at the core's sessions. */
+const SERVE_POLL_MS = 5_000;
+
+/**
+ * \`serve\`: keeps this machine's Agent Relay core running and the inbox linked
+ * to the newest live session of the agent CLIs setup woke through the core
+ * (\`wakeKinds\`). A session that opens later takes the link; when the linked
+ * one closes, the link moves to the most recently opened one still open (by
+ * when serve saw it open, not by activity). A failed link is retried a minute
+ * later, and a new inbox in the config is linked afresh. One per
+ * machine (a lock); setup runs it as a user service so it survives reboots.
+ * \`--once\` makes a single pass (tests).
+ */
+async function serve(io: CliIo, flags: Record<string, string>): Promise<number> {
+  const once = flags.once === 'true';
+  const lock = join(dirname(configPath(io)), 'serve.pid');
+  if (!once && !tryLock(io, lock)) return 0;
+  // The order sessions were first seen open in: the newest open one gets the posts.
+  const opened = new Map<string, number>();
+  let counter = 0;
+  let linked: string | null = null;
+  let inbox: string | null = null;
+  // A link that failed is tried again, but not on every pass.
+  const retryAt = new Map<string, number>();
+  try {
+    for (;;) {
+      const config = readConfig(io);
+      const kinds = new Set(config?.wakeKinds ?? []);
+      if (!config || kinds.size === 0) return 0;
+      // Another inbox: link it afresh.
+      if (config.mcpUrl !== inbox) {
+        inbox = config.mcpUrl;
+        linked = null;
+        retryAt.clear();
+      }
+      const log = (line: string) => io.appendLog(`${new Date().toISOString()} serve: ${line}`);
+      const problem = await ensureCore(io, config);
+      if (problem) {
+        log(problem);
+      } else {
+        const listed = (bridge(io, 'sessions.list')?.sessions ?? []) as CoreSession[];
+        const live = listed.filter(
+          (session) =>
+            session.live === true &&
+            kinds.has(session.target?.kind ?? '') &&
+            session.target?.id &&
+            session.registration?.name
+        );
+        // Sessions open when serve starts are ordered by their last activity; later ones by when they appear.
+        for (const session of [...live].sort((a, b) => (a.updated_at_ms ?? 0) - (b.updated_at_ms ?? 0))) {
+          if (!opened.has(session.target!.id!)) opened.set(session.target!.id!, (counter += 1));
+        }
+        const pick = live.reduce<CoreSession | null>(
+          (best, session) =>
+            !best || opened.get(session.target!.id!)! > opened.get(best.target!.id!)! ? session : best,
+          null
+        );
+        const id = pick?.target?.id ?? null;
+        if (!id) linked = null;
+        else if (id !== linked && (retryAt.get(id) ?? 0) <= Date.now()) {
+          if (await linkAgent(io, config, pick!.registration!.name!, log)) {
+            linked = id;
+            retryAt.delete(id);
+          } else {
+            retryAt.set(id, Date.now() + 60_000);
+          }
+        }
+      }
+      if (once) return 0;
+      await io.sleep(SERVE_POLL_MS);
+    }
+  } finally {
+    if (!once) unlock(io, lock);
+  }
 }
 
 /**
@@ -1473,6 +1663,8 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
         return await uninstall(io, flags);
       case 'link':
         return await link(io, flags);
+      case 'serve':
+        return await serve(io, flags);
       default:
         io.stdout(USAGE);
         return command === undefined || command === 'help' || command === '--help' ? 0 : 2;
@@ -1608,6 +1800,133 @@ export function processIo(): CliIo {
         '/Applications/Agent Relay.app/Contents/Helpers/agent-relay-probe',
       ];
       return candidates.filter((path) => existsSync(path));
+    },
+    userService: {
+      install: (args) => {
+        const home = process.env.HOME || homedir();
+        const npx = join(dirname(process.execPath), 'npx');
+        if (!existsSync(npx)) return false;
+        const command = [npx, '-y', '@agent-relay/events-shim@latest', ...args];
+        const path = `${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`;
+        const keep = Object.fromEntries(
+          ['XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_RUNTIME_DIR', 'CODEX_HOME']
+            .filter((name) => process.env[name])
+            .map((name) => [name, process.env[name]!])
+        );
+        try {
+          if (process.platform === 'linux') {
+            const dir = join(process.env.XDG_CONFIG_HOME || join(home, '.config'), 'systemd', 'user');
+            mkdirSync(dir, { recursive: true });
+            const quote = (value: string) => `"${value.replace(/["\\]/g, '\\$&')}"`;
+            writeFileSync(
+              join(dir, `${USER_SERVICE}.service`),
+              [
+                '[Unit]',
+                'Description=Agent Relay webhook inbox: wakes agent sessions on each post (events-shim)',
+                '',
+                '[Service]',
+                `ExecStart=${command.map(quote).join(' ')}`,
+                `Environment=${quote(`PATH=${path}`)}`,
+                ...Object.entries(keep).map(([name, value]) => `Environment=${quote(`${name}=${value}`)}`),
+                'Restart=always',
+                'RestartSec=10',
+                '',
+                '[Install]',
+                'WantedBy=default.target',
+                '',
+              ].join('\n'),
+              { mode: 0o600 }
+            );
+            execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore', timeout: 20_000 });
+            execFileSync('systemctl', ['--user', 'enable', '--now', `${USER_SERVICE}.service`], {
+              stdio: 'ignore',
+              timeout: 20_000,
+            });
+            return true;
+          }
+          if (process.platform === 'darwin') {
+            const plist = join(home, 'Library', 'LaunchAgents', `${LAUNCHD_LABEL}.plist`);
+            mkdirSync(dirname(plist), { recursive: true });
+            const xml = (value: string) =>
+              value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const env = { PATH: path, HOME: home, ...keep };
+            writeFileSync(
+              plist,
+              [
+                '<?xml version="1.0" encoding="UTF-8"?>',
+                '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+                '<plist version="1.0"><dict>',
+                `<key>Label</key><string>${LAUNCHD_LABEL}</string>`,
+                '<key>ProgramArguments</key><array>',
+                ...command.map((part) => `<string>${xml(part)}</string>`),
+                '</array>',
+                '<key>EnvironmentVariables</key><dict>',
+                ...Object.entries(env).map(
+                  ([name, value]) => `<key>${name}</key><string>${xml(value)}</string>`
+                ),
+                '</dict>',
+                '<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>',
+                '</dict></plist>',
+                '',
+              ].join('\n'),
+              { mode: 0o600 }
+            );
+            const domain = `gui/${process.getuid?.() ?? 501}`;
+            try {
+              execFileSync('launchctl', ['bootout', domain, plist], { stdio: 'ignore', timeout: 20_000 });
+            } catch {
+              /* Not loaded yet. */
+            }
+            execFileSync('launchctl', ['bootstrap', domain, plist], { stdio: 'ignore', timeout: 20_000 });
+            return true;
+          }
+        } catch {
+          return false;
+        }
+        return false;
+      },
+      remove: () => {
+        const home = process.env.HOME || homedir();
+        try {
+          if (process.platform === 'linux') {
+            const unit = join(
+              process.env.XDG_CONFIG_HOME || join(home, '.config'),
+              'systemd',
+              'user',
+              `${USER_SERVICE}.service`
+            );
+            if (!existsSync(unit)) return true;
+            try {
+              execFileSync('systemctl', ['--user', 'disable', '--now', `${USER_SERVICE}.service`], {
+                stdio: 'ignore',
+                timeout: 20_000,
+              });
+            } catch {
+              /* Already stopped. */
+            }
+            rmSync(unit, { force: true });
+            execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore', timeout: 20_000 });
+            return true;
+          }
+          if (process.platform === 'darwin') {
+            const plist = join(home, 'Library', 'LaunchAgents', `${LAUNCHD_LABEL}.plist`);
+            if (!existsSync(plist)) return true;
+            try {
+              execFileSync('launchctl', ['bootout', `gui/${process.getuid?.() ?? 501}`, plist], {
+                stdio: 'ignore',
+                timeout: 20_000,
+              });
+            } catch {
+              /* Not loaded. */
+            }
+            rmSync(plist, { force: true });
+            return true;
+          }
+        } catch {
+          return false;
+        }
+        return true;
+      },
     },
     appendLog: (line) => {
       try {
