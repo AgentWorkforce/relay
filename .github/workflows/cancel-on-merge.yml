@@ -11,6 +11,7 @@ jobs:
     if: github.event.pull_request.merged == true
     permissions:
       actions: write
+      pull-requests: read
     runs-on: ubuntu-latest
     steps:
       - name: Cancel running workflows for this PR
@@ -18,7 +19,8 @@ jobs:
         with:
           script: |
             const { owner, repo } = context.repo;
-            const headSha = context.payload.pull_request.head.sha;
+            const pr = context.payload.pull_request;
+            const headSha = pr.head.sha;
 
             // Collect all pages before cancelling, since cancellations change
             // the result set. Include queued jobs as well as running ones.
@@ -26,15 +28,42 @@ jobs:
             for (const status of ['queued', 'in_progress']) {
               const matches = await github.paginate(
                 github.rest.actions.listWorkflowRunsForRepo,
-                { owner, repo, status, head_sha: headSha, per_page: 100 },
+                { owner, repo, status, event: 'pull_request', head_sha: headSha, per_page: 100 },
               );
               for (const run of matches) {
                 if (run.id !== context.runId) runs.set(run.id, run);
               }
             }
 
+            let uniqueHeadPr;
+            async function belongsToMergedPr(run) {
+              if (run.event !== 'pull_request' || run.head_sha !== headSha) return false;
+              if (run.pull_requests?.length) {
+                return run.pull_requests.some(candidate => candidate.number === pr.number);
+              }
+              // GitHub omits pull_requests for fork runs. Confirm the exact
+              // head repository/branch, then require this to be its ONLY PR
+              // across all states and bases. Ambiguity must leave runs alone.
+              const headRepo = pr.head.repo;
+              if (!headRepo?.owner?.login || run.head_repository?.id !== headRepo.id ||
+                  run.head_branch !== pr.head.ref) return false;
+              if (uniqueHeadPr === undefined) {
+                const candidates = await github.paginate(github.rest.pulls.list, {
+                  owner, repo, state: 'all',
+                  head: `${headRepo.owner.login}:${pr.head.ref}`, per_page: 100,
+                });
+                uniqueHeadPr = candidates.length === 1 && candidates[0].number === pr.number &&
+                  candidates[0].head.repo?.id === headRepo.id;
+              }
+              return uniqueHeadPr;
+            }
+
             let cancelled = 0;
             for (const run of runs.values()) {
+              if (!await belongsToMergedPr(run)) {
+                console.log(`Skipping workflow run ${run.id}: PR association not confirmed`);
+                continue;
+              }
               console.log(`Cancelling workflow run ${run.id} (${run.name})`);
               try {
                 await github.rest.actions.cancelWorkflowRun({
