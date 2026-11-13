@@ -5,6 +5,7 @@ use serde_json::Value;
 
 mod codex_stop;
 mod copilot;
+mod turn_end;
 
 impl Outbound {
     pub(super) async fn hook_route(
