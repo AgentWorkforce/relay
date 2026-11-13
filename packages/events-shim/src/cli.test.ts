@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   closeSync,
+  existsSync,
   fstatSync,
   mkdirSync,
   mkdtempSync,
@@ -15,6 +16,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   CODEX_HOOK_COMMAND,
+  codexHookCommand,
   configPath,
   HOOK_COMMAND,
   runCli,
@@ -639,11 +641,28 @@ describe('events-shim CLI', () => {
     mkdirSync(bin, { recursive: true });
     writeFileSync(join(bin, 'agent-relay-node-0.0.1'), 'old');
     expect(await runCli(['setup', w.created.mcp_url, '--codex'], w.io)).toBe(0);
-    expect(readdirSync(bin)).toEqual([`agent-relay-node-${VERSION}`]);
+    // An earlier release's per-release core stays (hooks may still name it) until uninstall.
+    expect(readdirSync(bin).sort()).toEqual([
+      'agent-relay-node',
+      'agent-relay-node-0.0.1',
+      'agent-relay-node.version',
+    ]);
+    expect(readFileSync(join(bin, 'agent-relay-node.version'), 'utf8').trim()).toBe(VERSION);
     const hooks = JSON.parse(readFileSync(join(w.home, '.codex', 'hooks.json'), 'utf8')).hooks;
     expect(hooks.Stop).toEqual([{ hooks: [{ type: 'command', command: 'mine' }] }]);
     expect(hooks.SessionStart).toEqual([
-      { hooks: [{ type: 'command', command: CODEX_HOOK_COMMAND, timeout: 30 }] },
+      {
+        hooks: [
+          {
+            type: 'command',
+            command: codexHookCommand(
+              dirname(process.execPath),
+              existsSync(join(dirname(process.execPath), 'npx'))
+            ),
+            timeout: 30,
+          },
+        ],
+      },
     ]);
     expect(w.appServerCalls).toContainEqual([
       'config/value/write',
@@ -660,7 +679,7 @@ describe('events-shim CLI', () => {
     expect(config.workspaceExpiresAt).toBe('2026-11-19T14:00:00.000Z');
     expect(w.downloads).toHaveLength(1);
     expect(w.spawned.find((run) => run[1] === 'serve')).toEqual([
-      join(w.home, '.agentworkforce', 'events-shim', 'bin', `agent-relay-node-${VERSION}`),
+      join(w.home, '.agentworkforce', 'events-shim', 'bin', 'agent-relay-node'),
       'serve',
       '--headless',
     ]);
@@ -679,7 +698,7 @@ describe('events-shim CLI', () => {
     expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).workspaceKey).toBe('rk_live_temp1');
 
     // The core adds its own Codex hooks; uninstall removes them and stops the core it started.
-    const core = join(w.home, '.agentworkforce', 'events-shim', 'bin', `agent-relay-node-${VERSION}`);
+    const core = join(w.home, '.agentworkforce', 'events-shim', 'bin', 'agent-relay-node');
     const withCore = JSON.parse(readFileSync(join(w.home, '.codex', 'hooks.json'), 'utf8'));
     withCore.hooks.Stop.push({ hooks: [{ type: 'command', command: `${core} codex-stop-hook` }] });
     withCore.hooks.PostToolUse = [{ hooks: [{ type: 'command', command: `'${core}' codex-stop-hook` }] }];
@@ -692,6 +711,7 @@ describe('events-shim CLI', () => {
     w.io.processArgs = (pid) => (pid === 991 ? `${core} serve --headless` : null);
     expect(await runCli(['uninstall', '--codex'], w.io)).toBe(0);
     expect(w.killed).toEqual([991]);
+    expect(existsSync(join(w.home, '.agentworkforce', 'events-shim', 'bin'))).toBe(false);
     const left = JSON.parse(readFileSync(join(w.home, '.codex', 'hooks.json'), 'utf8')).hooks;
     expect(left.SessionStart).toBeUndefined();
     expect(left.Stop).toEqual([{ hooks: [{ type: 'command', command: 'mine' }] }]);
@@ -723,7 +743,7 @@ describe('events-shim CLI', () => {
     );
     w.io.processArgs = (pid) =>
       pid === 991
-        ? `${join(w.home, '.agentworkforce', 'events-shim', 'bin', `agent-relay-node-${VERSION}`)} serve --headless`
+        ? `${join(w.home, '.agentworkforce', 'events-shim', 'bin', 'agent-relay-node')} serve --headless`
         : null;
     expect(await runCli(['setup', w.created.mcp_url, '--devin', '--opencode', '--codex'], w.io)).toBe(0);
     expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).wakeKinds).toEqual([
@@ -863,6 +883,14 @@ describe('events-shim CLI', () => {
     };
     expect(await runCli(['uninstall', '--opencode'], w.io)).toBe(0);
     expect(calls).toContain('unlink_relay_wake');
+  });
+
+  it('the Codex hook names npx by path and puts its node first on PATH (Codex hooks run in a login shell)', () => {
+    expect(codexHookCommand('/opt/node 22/bin', true)).toBe(
+      "PATH='/opt/node 22/bin':\"$PATH\" '/opt/node 22/bin/npx' -y @agent-relay/events-shim@latest link --codex-hook"
+    );
+    expect(codexHookCommand("/it's/bin", true)).toContain("'/it'\\''s/bin/npx'");
+    expect(codexHookCommand('/x', false)).toBe(CODEX_HOOK_COMMAND);
   });
 
   it('setup --codex refuses a core download that does not match its checksum', async () => {

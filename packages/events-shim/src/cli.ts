@@ -478,13 +478,41 @@ function codexHome(io: CliIo): string {
   return io.env.CODEX_HOME || join(home(io), '.codex');
 }
 
-/** The command Codex's SessionStart hook runs to start this session's listener. */
+/** The command Codex's SessionStart hook runs, when no npx is found next to this node. */
 export const CODEX_HOOK_COMMAND = 'npx -y @agent-relay/events-shim@latest link --codex-hook';
+
+/**
+ * The command Codex's SessionStart hook runs to link the session. Codex runs
+ * hooks in a login shell, which often lacks the node that setup ran with (mise,
+ * nvm and the like activate it in an interactive shell only): a bare \`npx\`
+ * is then "command not found" (exit 127). So the hook names this node's npx
+ * by its path and puts its directory first on PATH.
+ *
+ * @param nodeDir - The directory holding the node (and npx) setup runs with.
+ * @param hasNpx - Whether npx is there; without it, the bare command.
+ */
+export function codexHookCommand(nodeDir: string, hasNpx: boolean): string {
+  if (!hasNpx) return CODEX_HOOK_COMMAND;
+  const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+  return `PATH=${quote(nodeDir)}:"$PATH" ${quote(join(nodeDir, 'npx'))} -y @agent-relay/events-shim@latest link --codex-hook`;
+}
+
+/** The hook command for this process's node. */
+function ourCodexHookCommand(io: CliIo): string {
+  const nodeDir = dirname(process.execPath);
+  return codexHookCommand(nodeDir, io.exists(join(nodeDir, 'npx')));
+}
+
+/** True for any events-shim Codex hook command, old (bare npx) or new (npx by path). */
+function isOurCodexHook(command: string | undefined): boolean {
+  return Boolean(command?.includes('@agent-relay/events-shim') && command.includes('--codex-hook'));
+}
 
 /** Adds (or takes out) our SessionStart hook in Codex's \`hooks.json\`, keeping every other hook. */
 function editCodexHooksFile(io: CliIo, remove: boolean): { ok: true } | { ok: false; manual: string } {
   const path = join(codexHome(io), 'hooks.json');
-  const manual = `add a SessionStart hook running "${CODEX_HOOK_COMMAND}" to ${path}, then trust it with /hooks in Codex`;
+  const command = ourCodexHookCommand(io);
+  const manual = `add a SessionStart hook running "${command}" to ${path}, then trust it with /hooks in Codex`;
   const raw = io.readText(path);
   if (raw === null && io.exists(path)) return { ok: false, manual };
   let file: Record<string, unknown> = {};
@@ -505,7 +533,7 @@ function editCodexHooksFile(io: CliIo, remove: boolean): { ok: true } | { ok: fa
     if (others.length > 0) kept.push({ ...group, hooks: others });
     else if (!isOurs(group)) kept.push(group);
   }
-  if (!remove) kept.push({ hooks: [{ type: 'command', command: CODEX_HOOK_COMMAND, timeout: 30 }] });
+  if (!remove) kept.push({ hooks: [{ type: 'command', command, timeout: 30 }] });
   if (kept.length > 0) hooks.SessionStart = kept;
   else delete hooks.SessionStart;
   if (remove) {
@@ -536,7 +564,7 @@ type ListedHooks = {
 const ourCodexHooks = (listed: unknown) =>
   ((listed as ListedHooks)?.data ?? [])
     .flatMap((entry) => entry.hooks ?? [])
-    .filter((hook) => hook.command === CODEX_HOOK_COMMAND);
+    .filter((hook) => isOurCodexHook(hook.command));
 
 /**
  * Installs Codex's SessionStart hook and trusts it the way Codex's own /hooks
@@ -1029,6 +1057,8 @@ async function uninstall(io: CliIo, flags: Record<string, string>): Promise<numb
       if (isListener(io, pid)) io.kill(pid);
       rmSync(lock, { force: true });
       stopOwnCore(io);
+      // No CLI uses events-shim's core any more: its binaries go too.
+      rmSync(coreDir(io), { recursive: true, force: true });
     }
   }
   return failed > 0 ? 1 : 0;
@@ -1237,9 +1267,20 @@ function coreDir(io: CliIo): string {
   return join(home(io), '.agentworkforce', 'events-shim', 'bin');
 }
 
-/** events-shim's own core binary for one release. */
-function coreBinaryPath(io: CliIo, version: string): string {
-  return join(coreDir(io), `agent-relay-node-${version}`);
+/**
+ * events-shim's own core binary. One stable path, whatever the release: the
+ * core writes its own path into the hooks it installs (Codex's among them), so
+ * a path that changed with each release would leave those hooks pointing at a
+ * deleted file ("command not found", exit 127). The release it holds is in
+ * \`coreVersionPath\`.
+ */
+function coreBinaryPath(io: CliIo): string {
+  return join(coreDir(io), 'agent-relay-node');
+}
+
+/** The release \`coreBinaryPath\` holds. */
+function coreVersionPath(io: CliIo): string {
+  return join(coreDir(io), 'agent-relay-node.version');
 }
 
 /** True when a command line runs events-shim's own core, however the path is quoted. */
@@ -1304,8 +1345,8 @@ async function ensureCore(io: CliIo, config: Config): Promise<string | null> {
   const version = ownVersion();
   const asset = coreAssetName(version, process.platform, process.arch);
   if (!version || !asset) return `no Agent Relay core is built for ${process.platform}-${process.arch}`;
-  const binary = coreBinaryPath(io, version);
-  if (!io.exists(binary)) {
+  const binary = coreBinaryPath(io);
+  if (!io.exists(binary) || io.readText(coreVersionPath(io))?.trim() !== version) {
     const base = `https://github.com/AgentWorkforce/relay/releases/download/v${version}/${asset}`;
     const [response, sums] = await Promise.all([io.fetchImpl(base), io.fetchImpl(`${base}.sha256`)]);
     if (!response.ok || !sums.ok) {
@@ -1319,13 +1360,11 @@ async function ensureCore(io: CliIo, config: Config): Promise<string | null> {
     mkdirSync(dirname(binary), { recursive: true, mode: 0o700 });
     const temporary = `${binary}.${io.pid}.download`;
     writeFileSync(temporary, bytes, { mode: 0o700 });
+    // Replaced in place (a running core keeps the file it started from).
     renameSync(temporary, binary);
-    // Earlier releases' cores are not used again.
-    for (const name of io.listDir(coreDir(io))) {
-      if (/^agent-relay-node(-[0-9][0-9A-Za-z.+-]*)?$/.test(name) && join(coreDir(io), name) !== binary) {
-        rmSync(join(coreDir(io), name), { force: true });
-      }
-    }
+    writeFileSync(coreVersionPath(io), `${version}\n`, { mode: 0o600 });
+    // Cores an earlier events-shim kept under per-release names stay until uninstall: hooks
+    // their core installed may still name them, and a missing file would fail those hooks.
   }
   io.spawnDetached(binary, ['serve', '--headless'], { RELAY_WORKSPACE_KEY: config.workspaceKey });
   for (let waited = 0; waited < 30_000; waited += 500) {
@@ -1783,18 +1822,8 @@ export function processIo(): CliIo {
     },
     coreBinaries: () => {
       const home = process.env.HOME || homedir();
-      const own = join(home, '.agentworkforce', 'events-shim', 'bin');
-      let mine: string[] = [];
-      try {
-        mine = readdirSync(own)
-          .filter((name) => /^agent-relay-node-[0-9]/.test(name) && !name.endsWith('.download'))
-          .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
-          .map((name) => join(own, name));
-      } catch {
-        /* No core of our own yet. */
-      }
       const candidates = [
-        ...mine,
+        join(home, '.agentworkforce', 'events-shim', 'bin', 'agent-relay-node'),
         join(home, '.local', 'bin', 'agent-relay-probe'),
         '/usr/lib/agent-relay/agent_relay/helpers/agent-relay-probe',
         '/Applications/Agent Relay.app/Contents/Helpers/agent-relay-probe',

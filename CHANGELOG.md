@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `@agent-relay/events-shim`: the Codex SessionStart hook no longer fails with "command not found" (exit 127) when node is not on the login shell's PATH (mise, nvm): it names this node's `npx` by its path. Run `setup --codex` again to update the hook. events-shim's own Agent Relay core keeps one path across releases, so the hooks it installs keep working after an upgrade.
 - `@agent-relay/events-shim`: `setup --muse` adds the MCP server with `muse mcp add`; it used to write a settings file Muse refuses to start with.
 
 ## [18.5.0] - 2026-11-12
