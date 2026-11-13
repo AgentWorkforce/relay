@@ -34,6 +34,27 @@ impl Outbound {
                 })
             });
         payload["relayBinding"] = json!(binding);
+        // The build's turn-end advisory (`TurnEndAdvisories`), for a turn
+        // that ended on its own. The hook's client re-asks every second while
+        // a stop waits and Copilot sends no `stop_hook_active`, so this
+        // relies on `take` being one-shot. Taking it first lets an idle wait
+        // keep its cheap check: only a stop that carries one is sent through
+        // the full native proof (`relayTurnEndAdvisory`). One taken for a
+        // stop that then fails that proof is never acknowledged, so the
+        // plugin may hand it again.
+        let advisory = fields
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .filter(|sid| crate::relay::store::is_uuid(sid))
+            .filter(|_| {
+                fields.get("relayEvent").and_then(Value::as_str) == Some("stop")
+                    && fields.get("stopReason").and_then(Value::as_str) == Some("end_turn")
+            })
+            .and_then(|sid| {
+                let target = Target::new(SessionKind::Copilot, sid);
+                Some((self.core.take_turn_end_advisory(&target)?, target))
+            });
+        payload["relayTurnEndAdvisory"] = json!(advisory.is_some());
         let answer = tokio::task::spawn_blocking(move || directory.copilot_hook(pid, &payload))
             .await
             .ok()
@@ -44,6 +65,17 @@ impl Outbound {
         {
             return Err(OutboundError::not_a_session());
         }
+        let answer = match advisory {
+            Some((advisory, target)) => {
+                let merged =
+                    crate::relay::turn_end_advisories::merge_stop(answer.clone(), &advisory.text);
+                if merged != answer {
+                    self.core.turn_end_advisory_shown(&target, &advisory.ids);
+                }
+                merged
+            }
+            None => answer,
+        };
         let Some(sid) = fields.get("sessionId").and_then(Value::as_str) else {
             return Ok(json!({}));
         };

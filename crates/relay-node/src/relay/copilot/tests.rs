@@ -395,6 +395,26 @@ fn missed_start_is_recovered_by_a_verified_idle_stop() {
 }
 
 #[test]
+fn a_stop_carrying_a_turn_end_advisory_always_takes_the_full_native_proof() {
+    let (_home, config, table, _) = proof::tests::fixture();
+    CopilotSettings::new(&config, "/opt/agent-relay-desktop-probe".into())
+        .set_enabled(true)
+        .unwrap();
+    named_hook(&table, "stop");
+    let sid = "1069773c-0824-4fad-b7f9-d3dc3c4ed148";
+    let idle = json!({"sessionId":sid,"relayEvent":"stop","stopReason":"end_turn"});
+    let carrying = json!({"sessionId":sid,"relayEvent":"stop","stopReason":"end_turn",
+        "relayTurnEndAdvisory":true});
+    // The first stop records the verified runtime.
+    assert_eq!(hook_answer(&config, &table, 501, 103, &idle), Some(json!({})));
+    // Without the runtime's held session file, an idle poll is still
+    // answered from that record, but a stop carrying an advisory is not.
+    std::fs::remove_file(config.sessions().join(sid).join("inuse.102.hold")).unwrap();
+    assert_eq!(hook_answer(&config, &table, 501, 103, &idle), Some(json!({})));
+    assert_eq!(hook_answer(&config, &table, 501, 103, &carrying), None);
+}
+
+#[test]
 fn a_stale_runtime_record_is_recovered_only_with_full_native_proof() {
     for old_pid in [102, 999] {
         let (_home, config, table, _) = proof::tests::fixture();
