@@ -44,7 +44,7 @@ pub mod key_rotation;
 mod plugins;
 pub use plugins::{
     AccountPlugin, CallContext, ConnectionCaller, ExternalCaller, MethodExtension, Permit, Plugins,
-    SessionPolicy, SpawnCall, SpawnCallers, SpawnRequest,
+    SessionPolicy, SpawnCall, SpawnCallers, SpawnRequest, TurnEndAdvisories, TurnEndAdvisory,
 };
 mod relaycast_writes;
 mod workspace_verification;
