@@ -1140,3 +1140,158 @@ fn every_build_edits_hooks_under_one_lock_and_turning_off_makes_none() {
     assert_eq!(settings(&config).set(SETTING, &json!(false)), Some(Ok(())));
     assert!(!settings(&config).lock_path().exists());
 }
+
+/// A one-shot turn-end advisory for `SESSION`, and the ids acknowledged.
+struct Advisories {
+    pending: std::cell::RefCell<Option<crate::relay::daemon::TurnEndAdvisory>>,
+    asked: std::cell::Cell<usize>,
+    shown: std::cell::RefCell<Vec<Vec<String>>>,
+}
+
+impl Advisories {
+    fn one(text: &str) -> Advisories {
+        Advisories {
+            pending: std::cell::RefCell::new(Some(crate::relay::daemon::TurnEndAdvisory {
+                text: text.into(),
+                ids: vec!["a-1".into()],
+            })),
+            asked: std::cell::Cell::new(0),
+            shown: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    /// `run_hook_with` for `payload` in `pid`, carrying these advisories;
+    /// `watch` set as the waiting `stop` entry runs it.
+    fn run(
+        &self,
+        config: &CursorConfig,
+        table: &FakeProcesses,
+        pid: i32,
+        payload: &Value,
+        waits: bool,
+        writes: bool,
+    ) -> (bool, Vec<Value>) {
+        let take = |session: &str| {
+            assert_eq!(session, SESSION);
+            self.asked.set(self.asked.get() + 1);
+            self.pending.borrow_mut().take()
+        };
+        let shown = |session: &str, ids: &[String]| {
+            assert_eq!(session, SESSION);
+            self.shown.borrow_mut().push(ids.to_vec());
+        };
+        let turn_end = TurnEnd {
+            take: &take,
+            shown: &shown,
+        };
+        let never = || false;
+        let always = || true;
+        let claiming = |claim: &mut dyn FnMut() -> Option<wait::Ended>| claim();
+        let watch = wait::Watch {
+            pid,
+            until: std::time::Instant::now() + Duration::from_millis(300),
+            poll: Duration::from_millis(10),
+            stopping: &never,
+            installed: &always,
+            claiming: &claiming,
+        };
+        let mut written = Vec::new();
+        let answered = run_hook_with(
+            config,
+            table,
+            pid,
+            payload,
+            waits.then_some(&watch),
+            Some(&turn_end),
+            &mut |output| {
+                written.push(output.clone());
+                writes
+            },
+        );
+        (answered, written)
+    }
+}
+
+fn completed(generation: &str) -> Value {
+    json!({
+        "hook_event_name": "stop",
+        "conversation_id": SESSION,
+        "status": "completed",
+        "generation_id": generation,
+        "loop_count": 0,
+    })
+}
+
+#[test]
+fn a_completed_turn_carries_the_turn_end_advisory_once_after_its_messages() {
+    let (_temp, config, table) = world();
+    table.insert(501, shell(400));
+    send(&config, &table, uid(), SESSION, "m-1", "ping");
+    let advisories = Advisories::one("Heads up.");
+    // A turn the person stopped asks for nothing.
+    let aborted = json!({"hook_event_name": "stop", "conversation_id": SESSION, "status": "aborted"});
+    assert!(!advisories.run(&config, &table, 501, &aborted, false, true).0);
+    assert_eq!(advisories.asked.get(), 0);
+    // A tool call neither.
+    let tool = json!({"hook_event_name": "postToolUse", "conversation_id": SESSION});
+    let _ = advisories.run(&config, &table, 501, &tool, false, true);
+    assert_eq!(advisories.asked.get(), 0);
+    send(&config, &table, uid(), SESSION, "m-2", "pong");
+    assert_eq!(
+        advisories.run(&config, &table, 501, &completed("gen-1"), false, true),
+        (true, vec![json!({"followup_message": "pong\n\nHeads up."})])
+    );
+    assert_eq!(*advisories.shown.borrow(), vec![vec!["a-1".to_string()]]);
+    // The follow-up's own turn ends with nothing left to carry.
+    assert_eq!(
+        advisories.run(&config, &table, 501, &completed("gen-2"), false, true),
+        (false, Vec::new())
+    );
+    assert_eq!(advisories.asked.get(), 2);
+    assert_eq!(advisories.shown.borrow().len(), 1);
+}
+
+#[test]
+fn an_unwritten_turn_end_advisory_is_not_acknowledged() {
+    let (_temp, config, table) = world();
+    table.insert(501, shell(400));
+    let advisories = Advisories::one("Heads up.");
+    assert_eq!(
+        advisories.run(&config, &table, 501, &completed("gen-1"), false, false),
+        (false, vec![json!({"followup_message": "Heads up."})])
+    );
+    assert!(advisories.shown.borrow().is_empty());
+}
+
+#[test]
+fn a_waiting_stop_carries_the_advisory_at_once_and_never_while_it_waits() {
+    let (_temp, config, table) = world();
+    table.insert(501, shell(400));
+    let prompt = json!({
+        "hook_event_name": "beforeSubmitPrompt",
+        "conversation_id": SESSION,
+        "generation_id": "gen-1",
+    });
+    assert!(!run_hook(&config, &table, 501, &prompt, None, &mut |_| true));
+    let advisories = Advisories::one("Heads up.");
+    assert_eq!(
+        advisories.run(&config, &table, 501, &completed("gen-1"), true, true),
+        (true, vec![json!({"followup_message": "Heads up."})])
+    );
+    assert_eq!(*advisories.shown.borrow(), vec![vec!["a-1".to_string()]]);
+    assert!(!cli_waiting(&config));
+    // The next turn's stop waits as before: nothing is pending, the
+    // advisory is spent, and the wait runs out without an answer.
+    let prompt = json!({
+        "hook_event_name": "beforeSubmitPrompt",
+        "conversation_id": SESSION,
+        "generation_id": "gen-2",
+    });
+    assert!(!run_hook(&config, &table, 501, &prompt, None, &mut |_| true));
+    *advisories.pending.borrow_mut() = None;
+    assert_eq!(
+        advisories.run(&config, &table, 501, &completed("gen-2"), true, true),
+        (false, Vec::new())
+    );
+    assert_eq!(advisories.shown.borrow().len(), 1);
+}
