@@ -503,9 +503,13 @@ function ourCodexHookCommand(io: CliIo): string {
   return codexHookCommand(nodeDir, io.exists(join(nodeDir, 'npx')));
 }
 
-/** True for any events-shim Codex hook command, old (bare npx) or new (npx by path). */
-function isOurCodexHook(command: string | undefined): boolean {
-  return Boolean(command?.includes('@agent-relay/events-shim') && command.includes('--codex-hook'));
+/**
+ * True only for exactly the hook command setup writes now, or the bare one an
+ * earlier release wrote: Codex is told to trust these without asking, so a
+ * command that merely mentions events-shim (and could run anything else) never is.
+ */
+function isOurCodexHook(io: CliIo, command: string | undefined): boolean {
+  return command === ourCodexHookCommand(io) || command === CODEX_HOOK_COMMAND;
 }
 
 /** Adds (or takes out) our SessionStart hook in Codex's \`hooks.json\`, keeping every other hook. */
@@ -561,10 +565,10 @@ function editCodexHooksFile(io: CliIo, remove: boolean): { ok: true } | { ok: fa
 type ListedHooks = {
   data?: { hooks?: { command?: string; key?: string; currentHash?: string; trustStatus?: string }[] }[];
 };
-const ourCodexHooks = (listed: unknown) =>
+const ourCodexHooks = (io: CliIo, listed: unknown) =>
   ((listed as ListedHooks)?.data ?? [])
     .flatMap((entry) => entry.hooks ?? [])
-    .filter((hook) => isOurCodexHook(hook.command));
+    .filter((hook) => isOurCodexHook(io, hook.command));
 
 /**
  * Installs Codex's SessionStart hook and trusts it the way Codex's own /hooks
@@ -578,7 +582,7 @@ async function installCodexHook(io: CliIo): Promise<{ ok: true } | { ok: false; 
   const manual = 'start Codex and trust the events-shim hook with /hooks';
   try {
     const trusted = await io.codexAppServer(async (request) => {
-      const hooks = ourCodexHooks(await request('hooks/list', { cwds: [codexHome(io)] }));
+      const hooks = ourCodexHooks(io, await request('hooks/list', { cwds: [codexHome(io)] }));
       if (hooks.length === 0) return false;
       const value: Record<string, { trusted_hash: string }> = {};
       for (const hook of hooks) {
@@ -624,7 +628,7 @@ async function removeCodexHook(io: CliIo): Promise<boolean> {
   try {
     keys =
       (await io.codexAppServer(async (request) =>
-        ourCodexHooks(await request('hooks/list', { cwds: [codexHome(io)] }))
+        ourCodexHooks(io, await request('hooks/list', { cwds: [codexHome(io)] }))
           .map((hook) => hook.key)
           .filter((key): key is string => Boolean(key))
       )) ?? [];
@@ -1057,8 +1061,15 @@ async function uninstall(io: CliIo, flags: Record<string, string>): Promise<numb
       if (isListener(io, pid)) io.kill(pid);
       rmSync(lock, { force: true });
       stopOwnCore(io);
-      // No CLI uses events-shim's core any more: its binaries go too.
-      rmSync(coreDir(io), { recursive: true, force: true });
+      // No CLI uses events-shim's core any more: the hooks it added to Codex go first (they name
+      // its binary), then its binaries. Codex is not set up through the core either by now.
+      if (io.exists(join(codexHome(io), 'hooks.json')) && !editCodexHooksFile(io, true).ok) {
+        io.stdout(
+          "  Could not edit Codex's hooks.json; events-shim's core is kept so its hooks keep working."
+        );
+      } else {
+        rmSync(coreDir(io), { recursive: true, force: true });
+      }
     }
   }
   return failed > 0 ? 1 : 0;
@@ -1822,8 +1833,21 @@ export function processIo(): CliIo {
     },
     coreBinaries: () => {
       const home = process.env.HOME || homedir();
+      const own = join(home, '.agentworkforce', 'events-shim', 'bin');
+      // Cores an earlier release kept under per-release names, newest first: still how a core
+      // started by them is reached (and stopped) until the stable one is installed.
+      let older: string[] = [];
+      try {
+        older = readdirSync(own)
+          .filter((name) => /^agent-relay-node-[0-9]/.test(name) && !name.endsWith('.download'))
+          .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+          .map((name) => join(own, name));
+      } catch {
+        /* No core of our own. */
+      }
       const candidates = [
-        join(home, '.agentworkforce', 'events-shim', 'bin', 'agent-relay-node'),
+        join(own, 'agent-relay-node'),
+        ...older,
         join(home, '.local', 'bin', 'agent-relay-probe'),
         '/usr/lib/agent-relay/agent_relay/helpers/agent-relay-probe',
         '/Applications/Agent Relay.app/Contents/Helpers/agent-relay-probe',
