@@ -281,10 +281,11 @@ pub(super) fn transcript_records(config: &CursorConfig, session_id: &str, text: 
 pub const HOOK_SUBCOMMAND: &str = "cursor-hook";
 
 /// The hook events Agent Relay installs: a tool call mid-turn and the end
-/// of a turn, which hand messages over, and a prompt about to start a
-/// turn, which only retires a hook still waiting after the last one
-/// (`wait::turn_seen`).
-pub const HOOK_EVENTS: [&str; 3] = ["postToolUse", "stop", "beforeSubmitPrompt"];
+/// of a turn, which hand messages over, a prompt about to start a turn,
+/// which only retires a hook still waiting after the last one
+/// (`wait::turn_seen`), and a new conversation's start, which adds only the
+/// build's session-start guidance (`super::session_start_answer`).
+pub const HOOK_EVENTS: [&str; 4] = ["postToolUse", "stop", "beforeSubmitPrompt", "sessionStart"];
 
 /// One queued message, still in the inbox.
 pub(super) struct Pending {

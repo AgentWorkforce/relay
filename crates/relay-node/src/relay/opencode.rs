@@ -44,7 +44,7 @@ pub const SETTING: &str = "opencode_plugin";
 
 /// Bumped whenever the plugin's behavior changes; turning the setting on
 /// again rewrites an older copy.
-pub const PLUGIN_VERSION: u32 = 7;
+pub const PLUGIN_VERSION: u32 = 8;
 
 /// The line every copy of the plugin carries, so only our file is replaced
 /// or removed.

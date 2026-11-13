@@ -106,15 +106,16 @@ pub fn reach(kind: SessionKind) -> Reach {
         SessionKind::ClaudeCloud => {
             Unavailable("Claude desktop app and claude.ai/code sessions run no local hooks")
         }
-        SessionKind::CursorCli => Unavailable(
-            "Agent Relay's Cursor hooks run at tool calls and turn ends, not at session start",
+        SessionKind::CursorCli => Available("cursor_direct_delivery sessionStart hook"),
+        SessionKind::Pi => Available("pi_extension before_agent_start, once per session"),
+        SessionKind::Omp => Available("Oh My Pi extension before_agent_start, once per session"),
+        SessionKind::OpenCode | SessionKind::OpenCodeOpen => {
+            Available("opencode_plugin system prompt transform (OpenCode 1.x)")
+        }
+        SessionKind::MuseOpen => Unavailable(
+            "Muse runs session-start hooks only from a plugin bundle the person installs and \
+             approves, and Agent Relay installs none",
         ),
-        SessionKind::Pi | SessionKind::Omp => {
-            Unavailable("the Pi extension injects messages, not session-start context")
-        }
-        SessionKind::OpenCode | SessionKind::OpenCodeOpen | SessionKind::MuseOpen => {
-            Unavailable("the OpenCode plugin injects messages, not session-start context")
-        }
         SessionKind::Grok | SessionKind::GrokOpen => {
             Unavailable("Grok ACP sessions take prompts only, with no session-start context")
         }
@@ -239,5 +240,12 @@ mod tests {
         assert_eq!(report.as_object().unwrap().len(), KINDS.len());
         assert_eq!(report["claude-terminal"]["available"], true);
         assert_eq!(report["codex"]["via"], "codex_stop_hook");
+        for kind in ["cursor-cli", "pi", "omp", "opencode", "opencode-open"] {
+            assert_eq!(report[kind]["available"], true, "{kind}");
+        }
+        assert_eq!(report["muse-open"]["available"], false);
+        assert!(report["muse-open"]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("plugin bundle")));
     }
 }

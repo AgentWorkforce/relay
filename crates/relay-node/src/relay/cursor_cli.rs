@@ -566,6 +566,28 @@ pub fn run_hook(
     }
 }
 
+/// The answer to a `sessionStart` payload, which Cursor runs once when a
+/// new conversation starts (not when one is resumed): the build's extra
+/// guidance from `context` as `additional_context`, or `{}` when there is
+/// none. `None` for every other event, and for a background (cloud) agent,
+/// which is not a person's session. `context` is asked only for a
+/// `sessionStart` this answers.
+pub fn session_start_answer(
+    payload: &Value,
+    context: impl FnOnce() -> Option<String>,
+) -> Option<Value> {
+    if payload["hook_event_name"] != "sessionStart" {
+        return None;
+    }
+    if payload["is_background_agent"] == true {
+        return Some(serde_json::json!({}));
+    }
+    Some(match context() {
+        Some(text) => serde_json::json!({ "additional_context": text }),
+        None => serde_json::json!({}),
+    })
+}
+
 /// What the hook prints when it hands nothing over: `beforeSubmitPrompt`
 /// must say the prompt may go on.
 pub fn no_answer(payload: &Value) -> Value {

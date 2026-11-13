@@ -296,3 +296,51 @@ test('native uncertain submission is not replayed or matched to another delivery
   assert.equal(f.sent.length, 1, 'new runtime never migrates an old uncertain claim');
   assert.equal(f.record().state, 'claimed');
 });
+
+async function core(t, root, text, name = 'relay-socket') {
+  const { createServer } = await import('node:http');
+  const asked = [];
+  const socket = join(root, `${name}.sock`);
+  const server = createServer((req, res) => {
+    asked.push(req.url);
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ ok: true, data: { text } }));
+  });
+  await new Promise(resolve => server.listen(socket, resolve));
+  fs.writeFileSync(join(root, name), `${socket}\n`);
+  t.after(() => server.close());
+  return asked;
+}
+
+test('the session-start guidance is added once per session, hidden, from the core', async t => {
+  const f = await fixture(t);
+  const asked = await core(t, f.root, ' Check teammates first. ');
+  const start = f.handlers.get('before_agent_start');
+  const first = await start({ messageType: 'user', prompt: 'hi' }, f.ctx);
+  assert.deepEqual(first, { message: { customType: 'agent-relay-session-start',
+    content: 'Check teammates first.', display: false } });
+  assert.deepEqual(asked, ['/session-start-context?kind=pi']);
+  assert.equal(await start({ messageType: 'user', prompt: 'again' }, f.ctx), undefined);
+  assert.equal(asked.length, 1, 'the core is asked once per session');
+  // A resumed session that already carries it is not told twice.
+  f.switchTo('22345678-1234-4234-8234-123456789abc');
+  f.branch.push({ type: 'custom_message', customType: 'agent-relay-session-start', content: 'x' });
+  assert.equal(await start({ messageType: 'user', prompt: 'hi' }, f.ctx), undefined);
+  assert.equal(asked.length, 1);
+  // A run a custom message starts is left alone; a print run is told.
+  f.switchTo('32345678-1234-4234-8234-123456789abc');
+  f.branch.length = 0;
+  assert.equal(await start({ messageType: 'custom' }, f.ctx), undefined);
+  assert.equal(asked.length, 1);
+  assert.ok(await start({ messageType: 'user' }, { ...f.ctx, hasUI: false }));
+  assert.equal(asked.length, 2);
+});
+
+test('omp asks for its own kind; no core or no guidance adds nothing', async t => {
+  const omp = await fixture(t, { harness: 'omp' });
+  const asked = await core(t, omp.root, null, 'relay-socket.dev');
+  assert.equal(await omp.handlers.get('before_agent_start')({ prompt: 'hi' }, omp.ctx), undefined);
+  assert.deepEqual(asked, ['/session-start-context?kind=omp']);
+  const none = await fixture(t);
+  assert.equal(await none.handlers.get('before_agent_start')({ prompt: 'hi' }, none.ctx), undefined);
+});

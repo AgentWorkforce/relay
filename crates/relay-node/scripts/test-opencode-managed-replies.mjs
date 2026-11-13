@@ -284,3 +284,59 @@ test('native V1 and V2 capabilities keep raw user IDs and leave permissions and 
     fs.rmSync(folder, { recursive: true, force: true });
   }
 });
+
+test('top-level sessions get the core session-start guidance in their system prompt, asked once', async (t) => {
+  const http = await import('node:http');
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-opencode-context-'));
+  t.after(() => fs.rmSync(folder, { recursive: true, force: true }));
+  const runtime = path.join(folder, 'runtime');
+  const modulePath = path.join(folder, 'plugin.mjs');
+  fs.writeFileSync(
+    modulePath,
+    template.replaceAll('__RUNTIME__', JSON.stringify(runtime)).replaceAll('__VERSION__', String(version))
+  );
+  const asked = [];
+  const socket = path.join(folder, 'core.sock');
+  const server = http.createServer((req, res) => {
+    asked.push(req.url);
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ ok: true, data: { text: ' Check teammates first. ' } }));
+  });
+  await new Promise((resolve) => server.listen(socket, resolve));
+  t.after(() => server.close());
+  fs.writeFileSync(path.join(folder, 'relay-socket'), `${socket}\n`);
+  const sessions = { ses_root1: {}, ses_child1: { parentID: 'ses_root1' } };
+  const client = { _client: { getConfig: () => ({ baseUrl: 'http://opencode', fetch: async (request) => {
+    const id = new URL(request.url).pathname.split('/').pop();
+    return sessions[id] ? Response.json({ id, ...sessions[id] }) : new Response(null, { status: 404 });
+  } }) } };
+  const plugin = (await import(pathToFileURL(modulePath).href)).default;
+  const previous = process.env.AGENT_RELAY_MANAGED_SESSION_MARKER;
+  process.env.AGENT_RELAY_MANAGED_SESSION_MARKER = 'synthetic-test-marker';
+  try {
+    const hooks = await plugin.server({ client, directory: folder });
+    const transform = hooks['experimental.chat.system.transform'];
+    const first = { system: ['You are OpenCode.'] };
+    await transform({ sessionID: 'ses_root1' }, first);
+    assert.deepEqual(first.system, ['You are OpenCode.', 'Check teammates first.']);
+    const again = { system: ['You are OpenCode.'] };
+    await transform({ sessionID: 'ses_root1' }, again);
+    assert.deepEqual(again.system, ['You are OpenCode.', 'Check teammates first.']);
+    assert.deepEqual(asked, ['/session-start-context?kind=opencode'], 'asked once per session, as a managed session');
+    const title = { system: ['You are a title generator. You output ONLY a thread title.'] };
+    await transform({ sessionID: 'ses_root1' }, title);
+    assert.deepEqual(title.system, ['You are a title generator. You output ONLY a thread title.']);
+    const child = { system: ['You are OpenCode.'] };
+    await transform({ sessionID: 'ses_child1' }, child);
+    const unknown = { system: [] };
+    await transform({ sessionID: 'ses_gone1' }, unknown);
+    await transform({ sessionID: 'not a session' }, unknown);
+    assert.deepEqual(child.system, ['You are OpenCode.'], 'a subagent session is left alone');
+    assert.deepEqual(unknown.system, []);
+    assert.equal(asked.length, 1);
+    await hooks.dispose?.();
+  } finally {
+    if (previous === undefined) delete process.env.AGENT_RELAY_MANAGED_SESSION_MARKER;
+    else process.env.AGENT_RELAY_MANAGED_SESSION_MARKER = previous;
+  }
+});

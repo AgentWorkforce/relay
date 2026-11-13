@@ -669,6 +669,10 @@ fn an_earlier_install_is_brought_up_to_date() {
         written["hooks"]["beforeSubmitPrompt"],
         json!([{"command": ours, "timeout": 10}])
     );
+    assert_eq!(
+        written["hooks"]["sessionStart"],
+        json!([{"command": ours, "timeout": 10}])
+    );
     assert!(settings.waits());
     // Up to date, it is not written again; turned off, it stays off.
     let current = std::fs::read(config.hooks_file()).unwrap();
@@ -1139,4 +1143,33 @@ fn every_build_edits_hooks_under_one_lock_and_turning_off_makes_none() {
     assert_eq!(settings(&config).lock_path(), settings(&dev).lock_path());
     assert_eq!(settings(&config).set(SETTING, &json!(false)), Some(Ok(())));
     assert!(!settings(&config).lock_path().exists());
+}
+
+#[test]
+fn a_new_conversation_gets_only_the_builds_session_start_guidance() {
+    let start = json!({"hook_event_name": "sessionStart", "conversation_id": SESSION,
+        "is_background_agent": false});
+    assert_eq!(
+        super::session_start_answer(&start, || Some("Check teammates.".into())),
+        Some(json!({"additional_context": "Check teammates."}))
+    );
+    // Nothing to add says nothing, and never falls through to the inbox.
+    assert_eq!(
+        super::session_start_answer(&start, || None),
+        Some(json!({}))
+    );
+    // A background agent is not a person's session: the core is not asked.
+    let background = json!({"hook_event_name": "sessionStart", "is_background_agent": true});
+    assert_eq!(
+        super::session_start_answer(&background, || panic!("asked")),
+        Some(json!({}))
+    );
+    // Every other event is the inbox's, and the core is not asked.
+    for event in ["postToolUse", "stop", "beforeSubmitPrompt"] {
+        let payload = json!({"hook_event_name": event, "conversation_id": SESSION});
+        assert_eq!(
+            super::session_start_answer(&payload, || panic!("asked")),
+            None
+        );
+    }
 }

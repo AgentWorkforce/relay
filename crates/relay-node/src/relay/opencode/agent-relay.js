@@ -13,8 +13,13 @@
 //   GET  /session/<id>/message
 //   GET  /session/<id>/message/<message id>
 //   POST /session/<id>/prompt_async   (one text part, a msg_relay_ id)
+//
+// With a V1 client it also adds the core's session-start guidance
+// (GET /session-start-context on Agent Relay's session socket) to the system
+// prompt of each top-level session, asking once per session.
 
 import fs from "node:fs";
+import { request } from "node:http";
 import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 
@@ -484,15 +489,85 @@ async function serve({ api, directory, release }) {
   return { remember, touch, sessions, save, dispose };
 }
 
+// The core's session-start guidance (`GET /session-start-context`, the same
+// text Claude Code, Codex, Copilot, Devin and Cursor get at session start),
+// asked of the build whose socket pointer sits beside the runtime: the app,
+// then Agent Relay Dev. `undefined` when no core answers within the budget.
+const CONTEXT_POINTERS = ["relay-socket", "relay-socket.dev"];
+function askCore(socketPath, kind) {
+  return new Promise((resolve) => {
+    const req = request({ socketPath, path: `/session-start-context?kind=${kind}`, method: "GET", timeout: 1500 }, (res) => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => { if (body.length < 65536) body += chunk; });
+      res.on("end", () => {
+        try {
+          const text = res.statusCode === 200 ? JSON.parse(body)?.data?.text : undefined;
+          resolve(typeof text === "string" && text.trim() ? text.trim() : undefined);
+        } catch { resolve(undefined); }
+      });
+      res.on("error", () => resolve(undefined));
+    });
+    req.on("timeout", () => req.destroy());
+    req.on("error", () => resolve(undefined));
+    req.end();
+  });
+}
+async function sessionStartContext(kind) {
+  for (const name of CONTEXT_POINTERS) {
+    let socket;
+    try { socket = fs.readFileSync(path.join(RUNTIME, "..", name), "utf8").trim(); } catch { continue; }
+    if (!socket.startsWith("/")) continue;
+    const text = await askCore(socket, kind);
+    if (text) return text;
+  }
+}
+
+// `experimental.chat.system.transform`: the guidance joins the system prompt
+// of a top-level session. The core is asked once per session; its answer
+// stays for every request of that session, so the model reads it from the
+// first turn on, and a subagent's session is left alone. OpenCode names no
+// agent here, so its hidden title generator, which also passes the session,
+// is told apart by its fixed prompt.
+const TITLE_PROMPT = "You are a title generator.";
+function systemContext(kind, api) {
+  const asked = new Map();
+  return async (input, output) => {
+    try {
+      const id = input?.sessionID;
+      if (typeof id !== "string" || !SESSION.test(id) || !Array.isArray(output?.system)) return;
+      if (typeof output.system[0] === "string" && output.system[0].startsWith(TITLE_PROMPT)) return;
+      if (!asked.has(id)) {
+        asked.set(id, (async () => {
+          try {
+            const session = await api.getSession(id);
+            if (!session || session.parentID) return;
+          } catch {
+            return;
+          }
+          return sessionStartContext(kind);
+        })());
+      }
+      const text = await asked.get(id);
+      if (text && !output.system.includes(text)) output.system.push(text);
+    } catch {}
+  };
+}
+
 const AgentRelay = async ({ client, directory }) => {
   const release = claimInstance();
   if (!release) return {};
+  const managed = !!process.env.AGENT_RELAY_MANAGED_SESSION_MARKER;
+  const api = client?._client?.getConfig ? v1Adapter(client) : undefined;
   const tagging = { "shell.env": tagV1 };
-  if (process.env.AGENT_RELAY_MANAGED_SESSION_MARKER) {
+  if (api) {
+    tagging["experimental.chat.system.transform"] = systemContext(managed ? "opencode" : "opencode-open", api);
+  }
+  if (managed) {
     return {...tagging, dispose: managedTagging(release)};
   }
-  if (!client?._client?.getConfig) return tagging;
-  const runtime = await serve({ api: v1Adapter(client), directory, release });
+  if (!api) return tagging;
+  const runtime = await serve({ api, directory, release });
   if (!runtime.dispose) return tagging;
   return {
     ...tagging,

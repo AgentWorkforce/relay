@@ -379,7 +379,9 @@ pub fn devin_hook(development: bool) -> Result<()> {
     // At SessionStart, the build's extra guidance (`session_start_context`)
     // from the core, beside any pending messages or alone.
     if payload["hook_event_name"] == "SessionStart" {
-        if let Some(extra) = devin_session_start_context(development) {
+        if let Some(extra) =
+            hook_session_start_context(crate::relay::store::SessionKind::Devin, development)
+        {
             let (output, consumed) = answer.unwrap_or_else(|| (json!({}), Vec::new()));
             answer = Some((
                 crate::relay::session_start_context::append(output, "SessionStart", Some(&extra)),
@@ -403,10 +405,14 @@ pub fn devin_hook(development: bool) -> Result<()> {
     Ok(())
 }
 
-/// The core's extra session-start guidance for Devin
-/// (`GET /session-start-context?kind=devin`), or `None` when there is none
+/// The core's extra session-start guidance for a hook of `kind` that the
+/// core does not answer itself (Devin's, Cursor's)
+/// (`GET /session-start-context?kind=<kind>`), or `None` when there is none
 /// or the core cannot be reached within the hook's budget.
-fn devin_session_start_context(development: bool) -> Option<String> {
+fn hook_session_start_context(
+    kind: crate::relay::store::SessionKind,
+    development: bool,
+) -> Option<String> {
     let build = if development {
         crate::relay::outbound::Build::Development
     } else {
@@ -416,7 +422,7 @@ fn devin_session_start_context(development: bool) -> Option<String> {
     let (status, body) = socket_response(
         &socket,
         "GET",
-        "/session-start-context?kind=devin",
+        &format!("/session-start-context?kind={}", kind.as_str()),
         b"",
         SESSION_HOOK_TIMEOUT,
     )
@@ -430,7 +436,9 @@ fn devin_session_start_context(development: bool) -> Option<String> {
 }
 
 /// Agent Relay's Cursor CLI hook (`cursor_cli::CursorSettings` installs it
-/// for `postToolUse`, `stop` and `beforeSubmitPrompt`). Reads Cursor's hook
+/// for `postToolUse`, `stop`, `beforeSubmitPrompt` and `sessionStart`). At
+/// `sessionStart` it answers only the build's extra guidance
+/// (`cursor_cli::session_start_answer`). Reads Cursor's hook
 /// payload and, only when this process runs under the `cursor-agent`
 /// holding the payload's conversation or directly under a Cursor editor
 /// window's extension host (which it records as running that
@@ -450,6 +458,15 @@ pub fn cursor_hook(development: bool, wait: bool) -> Result<()> {
     let _ = std::io::stdin().take(4 << 20).read_to_end(&mut input);
     let payload = serde_json::from_slice::<Value>(&input).unwrap_or_else(|_| json!({}));
     let mut stdout = std::io::stdout();
+    // A new conversation's `sessionStart`: only the build's extra guidance
+    // (`session_start_context`), with no inbox or wait of its own.
+    if let Some(output) = crate::relay::cursor_cli::session_start_answer(&payload, || {
+        hook_session_start_context(crate::relay::store::SessionKind::CursorCli, development)
+    }) {
+        stdout.write_all(output.to_string().as_bytes())?;
+        stdout.write_all(b"\n")?;
+        return Ok(());
+    }
     let mut answered = false;
     if let Ok(home) = paths::home() {
         let config =

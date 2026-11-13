@@ -2,6 +2,7 @@
 // No Pi package imports: works with both package names, older extension APIs,
 // and omp (oh-my-pi), which shares this API.
 import * as fs from 'node:fs';
+import { request } from 'node:http';
 import { join } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 
@@ -37,6 +38,42 @@ function write(path, value) {
   fs.renameSync(tmp, path);
   const dir = fs.openSync(join(path, '..'), 'r');
   try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
+}
+
+// The core's session-start guidance (`GET /session-start-context`, the same
+// text Claude Code, Codex, Copilot, Devin and Cursor get at session start),
+// asked of the build whose socket pointer sits beside the runtime: the app,
+// then Agent Relay Dev. `undefined` when no core answers within the budget.
+const contextType = 'agent-relay-session-start';
+const pointers = ['relay-socket', 'relay-socket.dev'];
+function askCore(socketPath) {
+  return new Promise(resolve => {
+    const req = request({ socketPath, path: `/session-start-context?kind=${harness}`, method: 'GET',
+      timeout: 1500 }, res => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => { if (body.length < 64 * 1024) body += chunk; });
+      res.on('end', () => {
+        try {
+          const text = res.statusCode === 200 ? JSON.parse(body)?.data?.text : undefined;
+          resolve(typeof text === 'string' && text.trim() ? text.trim() : undefined);
+        } catch { resolve(undefined); }
+      });
+      res.on('error', () => resolve(undefined));
+    });
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => resolve(undefined));
+    req.end();
+  });
+}
+async function sessionStartContext() {
+  for (const name of pointers) {
+    let socket;
+    try { socket = fs.readFileSync(join(runtime, '..', name), 'utf8').trim(); } catch { continue; }
+    if (!socket.startsWith('/')) continue;
+    const text = await askCore(socket);
+    if (text) return text;
+  }
 }
 
 // Older Pi releases defer creating the JSONL until the first assistant reply.
@@ -222,6 +259,29 @@ export default function (pi) {
         : 'Agent Relay extension loaded. Enable Receives messages for this session in Agent Relay.', 'info');
     } catch { stop(); }
   }
+
+  // Once per session, before its first run: the core's session-start
+  // guidance as a hidden custom message, kept in the session's history, so
+  // the model reads it once and a resumed session is not told again.
+  const told = new Set();
+  pi.on('before_agent_start', async (event, ctx) => {
+    try {
+      // Runs another extension's custom message starts are not the person's.
+      // Print runs get it too, as Claude Code's `claude -p` does.
+      if (event?.messageType === 'custom') return;
+      const id = ctx.sessionManager?.getSessionId?.();
+      if (typeof id !== 'string' || told.has(id)) return;
+      told.add(id);
+      const branch = ctx.sessionManager.getBranch?.() ?? [];
+      if (branch.some(entry => entry?.customType === contextType ||
+          entry?.message?.customType === contextType)) return;
+      const text = await sessionStartContext();
+      if (!text) return;
+      return { message: { customType: contextType, content: text, display: false } };
+    } catch {
+      // Never disrupt the person's Pi session.
+    }
+  });
 
   pi.on('session_start', (_event, ctx) => start(ctx));
   // omp keeps its first session_start and reports /new, /resume and forks as
