@@ -272,9 +272,10 @@ pub enum RelayCommands {
         event: String,
     },
     /// Agent Relay's Cursor CLI hook, which Cursor runs after each tool call,
-    /// when a turn ends and before a prompt starts one: hands the session
-    /// the relay messages waiting for it (`additional_context`, or
-    /// `followup_message` at the end).
+    /// when a turn ends, before a prompt starts one and when a new chat
+    /// starts: hands the session the relay messages waiting for it
+    /// (`additional_context`, or `followup_message` at the end), and at a
+    /// new chat's start only the build's session-start guidance.
     CursorHook {
         /// Read Agent Relay Dev's inbox instead of Agent Relay's.
         #[arg(long)]
