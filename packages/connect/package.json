@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/connect",
-  "version": "18.6.1",
+  "version": "18.7.0",
   "description": "Accountless Relay Connect hand-over for Claude Code and Codex",
   "type": "module",
   "bin": {
