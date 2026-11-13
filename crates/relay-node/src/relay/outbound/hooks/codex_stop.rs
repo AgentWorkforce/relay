@@ -31,6 +31,7 @@ const JOIN_POLL: Duration = Duration::from_millis(250);
 #[path = "codex_stop/affinity.rs"]
 mod affinity;
 
+/// Explain consent-based self-registration using this core's actual socket.
 fn registration_context(socket: &std::path::Path) -> Option<Value> {
     let command = super::super::hints::probe_session_command(
         socket,
@@ -89,6 +90,17 @@ impl Outbound {
                 )
             })?;
         let event_name = fields.get("hook_event_name").and_then(Value::as_str);
+        if event_name == Some("RelayIdentityReceipt") {
+            let confirmed = fields
+                .get("receipt")
+                .and_then(Value::as_str)
+                .is_some_and(|receipt| inbox.acknowledge_startup_identity(&thread, pid, receipt));
+            return if confirmed {
+                Ok(json!({}))
+            } else {
+                Err(OutboundError::not_a_session())
+            };
+        }
         if event_name == Some(SESSION_START) {
             let cwd = fields
                 .get("cwd")
@@ -101,26 +113,53 @@ impl Outbound {
             return Ok(json!({}));
         };
         let target = crate::relay::store::Target::new(SessionKind::Codex, thread.clone());
-        let guidance = (event == HookEvent::PostToolUse
-            && inbox.is_ready()
-            && self.core.workspace().is_some()
-            && self.core.allows_self_registration()
-            && self
-                .core
-                .store
-                .read(|store| store.registration_for(&target).is_none())
-            && inbox.needs_registration_guidance(&thread))
-        .then(|| {
-            self.core
-                .plugins
-                .relay_send
+        let automatic = self.core.store.read(|s| s.auto_activate == Some(true));
+        let identity = self.core.store.read(|s| {
+            s.registration_for(&target).map(|r| {
+                (
+                    r.display_name().to_string(),
+                    r.current_address(&self.core.machine_prefix),
+                )
+            })
+        });
+        let refresh = automatic && identity.is_none() && inbox.needs_discovery_refresh(&thread);
+        let guidance = if event == HookEvent::PostToolUse {
+            identity
                 .as_ref()
-                .and_then(|send| registration_context(&send.socket))
-        })
-        .flatten();
+                .filter(|(_, address)| inbox.needs_registered_identity(&thread, address))
+                .and_then(|(name, address)| {
+                    let commands = self.codex_socket_commands()?;
+                    Some(json!({"hookSpecificOutput":{"hookEventName":"PostToolUse",
+                    "additionalContext": crate::relay::hosted_mcp::codex_preamble(
+                        Some((name.as_str(),address.as_str())), &commands)}}))
+                })
+        } else {
+            None
+        };
+        let guidance = guidance.or_else(|| {
+            (event == HookEvent::PostToolUse
+                && identity.is_none()
+                && inbox.is_ready()
+                && self.core.workspace().is_some()
+                && self.core.allows_self_registration()
+                && self
+                    .core
+                    .store
+                    .read(|store| store.registration_for(&target).is_none())
+                && inbox.needs_registration_guidance(&thread))
+            .then(|| {
+                self.core
+                    .plugins
+                    .relay_send
+                    .as_ref()
+                    .and_then(|send| registration_context(&send.socket))
+            })
+            .flatten()
+        });
         if event == HookEvent::PostToolUse
             && !inbox.turns().has_offered(&thread)
             && guidance.is_none()
+            && !refresh
         {
             return Ok(json!({}));
         }
@@ -136,17 +175,42 @@ impl Outbound {
             .to_string();
         let directory = self.core.plugins.sessions.clone();
         let injector = self.core.plugins.injector.clone();
+        let core = self.core.clone();
         tokio::task::spawn_blocking(move || {
             if !directory.codex_hook_turn_matches(pid, &thread, &turn) {
                 return Err(OutboundError::not_a_session());
             }
+            if refresh && inbox.take_discovery_refresh(&thread) {
+                core.request_codex_discovery();
+            }
             if event == HookEvent::PostToolUse {
+                let mut answer = inbox.turns().answer(&thread, event);
                 if let Some(guidance) = guidance {
-                    if inbox.take_registration_guidance(&thread) {
-                        return Ok(guidance);
+                    let take = match identity.as_ref() {
+                        Some((_, address)) => inbox.take_registered_identity(&thread, address),
+                        None => inbox.take_registration_guidance(&thread),
+                    };
+                    if take {
+                        if let Some(text) = answer
+                            .pointer("/hookSpecificOutput/additionalContext")
+                            .and_then(Value::as_str)
+                        {
+                            let mut combined = guidance;
+                            if let Some(context) =
+                                combined.pointer_mut("/hookSpecificOutput/additionalContext")
+                            {
+                                *context = json!(format!(
+                                    "{}\n\n{text}",
+                                    context.as_str().unwrap_or_default()
+                                ));
+                            }
+                            answer = combined;
+                        } else {
+                            answer = guidance;
+                        }
                     }
                 }
-                return Ok(inbox.turns().answer(&thread, event));
+                return Ok(answer);
             }
             let target = crate::relay::store::Target::new(SessionKind::Codex, thread.clone());
             let shown = !turn.is_empty() && !injector.relay_started_turn(&target, &turn);
@@ -187,6 +251,14 @@ impl Outbound {
         cwd: Option<String>,
     ) -> Result<Value, OutboundError> {
         let directory = self.core.plugins.sessions.clone();
+        let trusted_host =
+            tokio::task::spawn_blocking(move || directory.trusted_codex_discovery_signal(pid))
+                .await
+                .unwrap_or(false);
+        if trusted_host {
+            self.core.request_codex_discovery();
+        }
+        let directory = self.core.plugins.sessions.clone();
         let session = tokio::task::spawn_blocking(move || {
             if !directory.holds_codex_thread(pid, &thread) {
                 return None;
@@ -209,8 +281,16 @@ impl Outbound {
         })
         .await
         .ok()
-        .flatten()
-        .ok_or_else(OutboundError::not_a_session)?;
+        .flatten();
+        // A multiplexing host can request discovery without proving which
+        // chat will receive this response. Return no identity or context.
+        let Some(session) = session else {
+            return if trusted_host {
+                Ok(json!({}))
+            } else {
+                Err(OutboundError::not_a_session())
+            };
+        };
         let Some(commands) = self.codex_socket_commands() else {
             return Ok(json!({}));
         };
@@ -255,10 +335,21 @@ impl Outbound {
                 .map(|(name, address)| (name.as_str(), address.as_str())),
             &commands,
         );
-        Ok(json!({"hookSpecificOutput": {
+        let mut answer = json!({"hookSpecificOutput": {
             "hookEventName": SESSION_START,
             "additionalContext": text,
-        }}))
+        }});
+        // Only the helper's receipt acknowledgement spends the fallback.
+        // A timeout or unreadable reply must leave later tool hooks able
+        // to supply identity. Resume/compaction still gets fresh context.
+        if let (Some((_, address)), Some(inbox)) = (
+            identity.as_ref(),
+            self.core.plugins.codex_stop_hook.as_ref(),
+        ) {
+            answer["relayIdentityReceipt"] =
+                json!(inbox.startup_identity_receipt(&session.target.id, address, pid));
+        }
+        Ok(answer)
     }
 
     /// The probe commands on this core's serving session socket, naming the
@@ -330,7 +421,9 @@ mod tests {
             push_timing: PushTiming::default(),
             delivery_timing: DeliveryTiming::default(),
         };
-        let inbox = Arc::new(StopHookInbox::default());
+        let inbox = Arc::new(StopHookInbox::with_turns(
+            crate::relay::codex::turn_hook::TurnInbox::open(home.join("turns.json")),
+        ));
         inbox.set_ready(true);
         let direct = Arc::new(Direct);
         let plugins = Plugins {
@@ -392,6 +485,128 @@ mod tests {
                 .unwrap(),
             json!({})
         );
+    }
+
+    #[tokio::test]
+    async fn automatic_unregistered_chats_keep_manual_guidance_and_one_discovery_nudge() {
+        let (_temp, outbound, inbox) = fixture();
+        outbound
+            .core
+            .store
+            .update(|s| s.auto_activate = Some(true))
+            .unwrap();
+        assert!(outbound
+            .codex_stop_hook(99, outbound.uid, &fields())
+            .await
+            .is_err());
+        assert!(inbox.needs_discovery_refresh(THREAD));
+        let answer = outbound
+            .codex_stop_hook(42, outbound.uid, &fields())
+            .await
+            .unwrap();
+        assert!(answer.to_string().contains(" register --socket "));
+        assert!(!inbox.needs_discovery_refresh(THREAD));
+        assert!(!inbox.needs_registration_guidance(THREAD));
+        // Once there is no pending delivery, later hooks take the fast path
+        // rather than repeatedly probing affinity and scheduling discovery.
+        assert_eq!(
+            outbound
+                .codex_stop_hook(99, outbound.uid, &fields())
+                .await
+                .unwrap(),
+            json!({})
+        );
+    }
+
+    /// A late identity must reach only its verified turn, with queued messages.
+    async fn registered_identity_after_manual_guidance(automatic: bool) {
+        let (_temp, outbound, inbox) = fixture();
+        let send = outbound.core.plugins.relay_send.as_ref().unwrap();
+        send.serving.set(Some(send.socket.clone()));
+        outbound
+            .core
+            .store
+            .update(|s| s.auto_activate = Some(automatic))
+            .unwrap();
+        let first = outbound
+            .codex_stop_hook(42, outbound.uid, &fields())
+            .await
+            .unwrap();
+        assert!(first.to_string().contains(" register --socket "));
+        assert!(!inbox.needs_registration_guidance(THREAD));
+        let registration = serde_json::from_value(json!({
+            "name":"codex-api", "agentID":"agent-1",
+            "target":{"kind":"codex", "id":THREAD}, "title":"API",
+            "baseURL":"https://cast.test", "registeredAt":"2026-11-02T00:00:00Z"
+        }))
+        .unwrap();
+        outbound
+            .core
+            .store
+            .update(|s| {
+                assert!(s.add(registration, Secret::new("fixture-only")));
+            })
+            .unwrap();
+        let address = outbound.core.store.read(|s| {
+            s.registration_for(&Target::new(SessionKind::Codex, THREAD))
+                .unwrap()
+                .current_address(&outbound.core.machine_prefix)
+        });
+        if !automatic {
+            // Simulate a startup reply that the helper never receives.
+            // Merely constructing it must not suppress the late fallback.
+            let start = json!({"session_id":THREAD,"hook_event_name":"SessionStart"});
+            let offered = outbound
+                .codex_stop_hook(42, outbound.uid, start.as_object().unwrap())
+                .await
+                .unwrap();
+            let receipt = offered["relayIdentityReceipt"].as_str().unwrap();
+            let forged = json!({"session_id":THREAD,"hook_event_name":"RelayIdentityReceipt",
+                "receipt":receipt});
+            assert!(outbound
+                .codex_stop_hook(99, outbound.uid, forged.as_object().unwrap())
+                .await
+                .is_err());
+        }
+        assert!(inbox.needs_registered_identity(THREAD, &address));
+        assert!(outbound
+            .codex_stop_hook(99, outbound.uid, &fields())
+            .await
+            .is_err());
+        assert!(inbox.needs_registered_identity(THREAD, &address));
+        inbox
+            .turns()
+            .offer(THREAD, "late-message", "late delivery fixture")
+            .unwrap();
+        let answer = outbound
+            .codex_stop_hook(42, outbound.uid, &fields())
+            .await
+            .unwrap();
+        let context = answer["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(context.contains("codex-api"));
+        assert!(context.contains("late delivery fixture"));
+        assert!(!context.contains("This Codex chat is not registered"));
+        assert!(!inbox.needs_registered_identity(THREAD, &address));
+        assert_eq!(
+            outbound
+                .codex_stop_hook(99, outbound.uid, &fields())
+                .await
+                .unwrap(),
+            json!({})
+        );
+    }
+
+    /// Registration may complete between two hooks after manual guidance.
+    #[tokio::test]
+    async fn manual_guidance_cannot_spend_later_registered_identity_context() {
+        registered_identity_after_manual_guidance(true).await;
+    }
+
+    #[tokio::test]
+    async fn manual_registration_gets_verified_identity_when_automatic_activation_is_off() {
+        registered_identity_after_manual_guidance(false).await;
     }
 
     #[tokio::test]

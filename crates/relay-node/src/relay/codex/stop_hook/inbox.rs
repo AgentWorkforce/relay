@@ -38,6 +38,14 @@ pub(super) struct State {
     /// unregistered chat gets (context, not a reason to keep a turn open).
     /// Bounded by [`GUIDED_LIMIT`].
     registration_guidance: HashSet<String>,
+    /// Registered address last announced to each thread; manual guidance
+    /// cannot spend this marker, and a new registration can be announced.
+    registered_identity: HashMap<String, String>,
+    /// Startup replies awaiting the same helper's acknowledgement: thread,
+    /// address, kernel peer pid and issue time, keyed by an opaque receipt.
+    startup_receipts: HashMap<String, (String, String, i32, Instant)>,
+    /// Discovery has already been nudged by a verified hook for this thread.
+    discovery_requested: HashSet<String>,
     /// By lowercase thread id.
     held: HashMap<String, VecDeque<Held>>,
     /// Handed over by the hook, by message id, with when.
@@ -60,6 +68,99 @@ pub struct StopHookInbox {
 }
 
 impl StopHookInbox {
+    /// Offering startup context does not prove the helper received it.
+    pub(crate) fn startup_identity_receipt(&self, thread: &str, address: &str, pid: i32) -> String {
+        let mut state = self.state();
+        let thread = thread.to_lowercase();
+        // Resume/compaction starts a new context lifetime. An old receipt
+        // must not acknowledge a later startup whose output was lost.
+        state.registered_identity.remove(&thread);
+        state.startup_receipts.retain(|_, (owner, _, _, at)| {
+            owner != &thread && at.elapsed() < Duration::from_secs(30)
+        });
+        if state.startup_receipts.len() >= GUIDED_LIMIT {
+            state.startup_receipts.clear();
+        }
+        let receipt = crate::relay::store::random_hex(16);
+        state.startup_receipts.insert(
+            receipt.clone(),
+            (thread, address.to_string(), pid, Instant::now()),
+        );
+        receipt
+    }
+
+    /// Only the original helper can confirm its unexpired startup response.
+    pub(crate) fn acknowledge_startup_identity(
+        &self,
+        thread: &str,
+        pid: i32,
+        receipt: &str,
+    ) -> bool {
+        let mut state = self.state();
+        let Some((owner, address, peer, at)) = state.startup_receipts.get(receipt) else {
+            return false;
+        };
+        if owner != &thread.to_lowercase()
+            || *peer != pid
+            || at.elapsed() >= Duration::from_secs(30)
+        {
+            return false;
+        }
+        let address = address.clone();
+        state.startup_receipts.remove(receipt);
+        // Confirm atomically with receipt validation, so a concurrent
+        // startup cannot clear the marker between validation and storage.
+        if state.registered_identity.len() >= GUIDED_LIMIT {
+            state.registered_identity.clear();
+        }
+        state
+            .registered_identity
+            .insert(thread.to_lowercase(), address);
+        true
+    }
+
+    /// Whether this actual registered address still needs its preamble.
+    pub(crate) fn needs_registered_identity(&self, thread: &str, address: &str) -> bool {
+        self.state()
+            .registered_identity
+            .get(&thread.to_lowercase())
+            .map(String::as_str)
+            != Some(address)
+    }
+
+    /// Consume identity context only after the receiving turn is verified.
+    pub(crate) fn take_registered_identity(&self, thread: &str, address: &str) -> bool {
+        let mut state = self.state();
+        let thread = thread.to_lowercase();
+        if state.registered_identity.get(&thread).map(String::as_str) == Some(address) {
+            return false;
+        }
+        if state.registered_identity.len() >= GUIDED_LIMIT {
+            state.registered_identity.clear();
+        }
+        state
+            .registered_identity
+            .insert(thread, address.to_string());
+        true
+    }
+
+    /// Whether a verified hook may still request its first discovery pass.
+    pub(crate) fn needs_discovery_refresh(&self, thread: &str) -> bool {
+        !self
+            .state()
+            .discovery_requested
+            .contains(&thread.to_lowercase())
+    }
+
+    /// Only a kernel-verified hook may consume this bounded one-time nudge.
+    pub(crate) fn take_discovery_refresh(&self, thread: &str) -> bool {
+        let mut state = self.state();
+        if state.discovery_requested.len() >= GUIDED_LIMIT {
+            state.discovery_requested.clear();
+        }
+        state.discovery_requested.insert(thread.to_lowercase())
+    }
+
     pub(crate) fn needs_registration_guidance(&self, thread: &str) -> bool {
         !self
             .state()
@@ -306,4 +407,39 @@ pub(super) fn recap(answered: &[(Unseen, String)]) -> String {
         ));
     }
     text
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+
+    /// Missing, forged, expired and replayed receipts cannot spend context.
+    #[test]
+    fn startup_receipts_are_private_bounded_and_replay_safe() {
+        let inbox = StopHookInbox::default();
+        let receipt = inbox.startup_identity_receipt("THREAD", "agent@host", 42);
+        assert!(inbox.needs_registered_identity("thread", "agent@host"));
+        assert!(!inbox.acknowledge_startup_identity("other", 42, &receipt));
+        assert!(!inbox.acknowledge_startup_identity("thread", 99, &receipt));
+        assert!(!inbox.acknowledge_startup_identity("thread", 42, "forged"));
+        assert!(inbox.needs_registered_identity("thread", "agent@host"));
+        assert!(inbox.acknowledge_startup_identity("thread", 42, &receipt));
+        assert!(!inbox.needs_registered_identity("thread", "agent@host"));
+        assert!(!inbox.acknowledge_startup_identity("thread", 42, &receipt));
+        let old = inbox.startup_identity_receipt("thread", "agent@host", 42);
+        let resumed = inbox.startup_identity_receipt("thread", "agent@host", 42);
+        assert!(inbox.needs_registered_identity("thread", "agent@host"));
+        assert!(!inbox.acknowledge_startup_identity("thread", 42, &old));
+        assert!(inbox.acknowledge_startup_identity("thread", 42, &resumed));
+        assert!(!inbox.needs_registered_identity("thread", "agent@host"));
+        let expired = inbox.startup_identity_receipt("other", "new@host", 42);
+        inbox.state().startup_receipts.get_mut(&expired).unwrap().3 =
+            Instant::now() - Duration::from_secs(31);
+        assert!(!inbox.acknowledge_startup_identity("other", 42, &expired));
+        assert!(inbox.needs_registered_identity("other", "new@host"));
+        for n in 0..=GUIDED_LIMIT {
+            inbox.startup_identity_receipt(&n.to_string(), "new@host", 42);
+        }
+        assert!(inbox.state().startup_receipts.len() <= GUIDED_LIMIT);
+    }
 }

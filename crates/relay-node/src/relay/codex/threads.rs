@@ -349,6 +349,46 @@ fn read_thread(config: &CodexConfig, id: &str, any_source: bool) -> Option<Codex
     })
 }
 
+/// A root user chat held by a trusted runtime, outside the recent-history
+/// page. Internal/prewarmed and exec sessions never become automatic agents.
+pub(crate) fn read_runtime_user(
+    config: &CodexConfig,
+    id: &str,
+    native_user_turn: impl FnOnce() -> bool,
+) -> Option<CodexThread> {
+    if !crate::relay::store::is_uuid(id) {
+        return None;
+    }
+    with_connection(config, Duration::from_secs(2), |connection| {
+        let columns = columns(connection)?;
+        let user_event = if columns.contains("has_user_event") {
+            "coalesce(has_user_event, 0)"
+        } else {
+            "0"
+        };
+        let root = if columns.contains("thread_source") {
+            " and +thread_source = 'user'"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "select {}, {user_event} from threads where {ID_MATCHES} and +archived = 0 \
+            and +source in ('cli', 'vscode'){root} limit 1",
+            select_list(&columns)?
+        );
+        let (found, has_user_event) = connection
+            .query_row(&sql, [id], |r| Ok((row(r)?, r.get::<_, i64>(5)? == 1)))
+            .ok()?;
+        if !has_user_event && !native_user_turn() {
+            return None;
+        }
+        if is_relay_spawned_title(found.1.as_deref().unwrap_or_default()) {
+            return None;
+        }
+        Some(thread(found))
+    })
+}
+
 /// Whether this exact thread has a live catalog row, regardless of Codex's
 /// source label. Used before resuming a registered native spawn; it must
 /// not broaden the
