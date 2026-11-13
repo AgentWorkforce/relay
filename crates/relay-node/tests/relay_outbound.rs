@@ -2064,6 +2064,9 @@ async fn a_starting_codex_session_is_told_who_it_is_and_its_local_route() {
 }
 
 /// The real helper strips private metadata and acknowledges after output.
+/// The helper binary exists only with `production-binaries` (it is not built
+/// for the `--no-default-features` library CI job).
+#[cfg(feature = "production-binaries")]
 #[tokio::test]
 async fn a_codex_startup_helper_confirms_its_received_identity() {
     use std::io::Write;
