@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "id": "1818-installer-broker-version",
+  "kind": "bugfix",
+  "title": "Installer rejects a stale broker instead of reporting success",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1818-installer-broker-version/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 60,
+  "expected": {
+    "base": { "outcome": "bug", "signature": "stale_broker_accepted" },
+    "head": { "outcome": "fixed", "signature": "stale_broker_rejected" }
+  }
+}
