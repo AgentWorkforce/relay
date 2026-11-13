@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Desktop spawns accept `fork_from` to start a new agent from an existing Claude or Codex agent's conversation, in the same folder, without stopping the original. Nodes advertise it as `relay:spawn-fork:v1`.
+- Desktop spawns accept `fork_from` to continue an existing Claude or Codex agent's conversation in a new agent, without stopping the original.
 
 ### Changed
 
@@ -74,10 +74,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `agent-relay-probe connect create` starts a new room when Cloud has already closed the saved one, even before its saved expiry, instead of refusing with "already has a pending or active room". `connect end` clears a room that has expired, ended or no longer exists instead of failing; `end` and `extend` let Cloud, not the local clock, decide whether a room is over.
-
-### Added
-
-- Desktop spawns accept `fork_from` to start a new agent from an existing Claude or Codex agent's conversation, in the same folder, without stopping the original. Nodes advertise it as `relay:spawn-fork:v1`.
 
 ## [18.1.0] - 2026-11-11
 

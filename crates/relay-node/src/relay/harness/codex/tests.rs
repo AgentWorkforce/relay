@@ -20,6 +20,49 @@ fn config(home: &Path) -> CodexConfig {
     CodexConfig::from_env(&env, home)
 }
 
+/// An app-server thread is not an interactive session, so the session list
+/// skips it. A fork still copies it, and never an archived one.
+#[test]
+fn a_fork_reads_an_unarchived_thread_of_any_source() {
+    let home = tempfile::tempdir().unwrap();
+    let directory = if cfg!(windows) {
+        r"C:\work\repo"
+    } else {
+        "/work/repo"
+    };
+    let codex_home = home.path().join(".codex");
+    std::fs::create_dir_all(&codex_home).unwrap();
+    let db = rusqlite::Connection::open(codex_home.join("state_5.sqlite")).unwrap();
+    db.execute_batch(
+        "create table threads (id text, name text, title text, cwd text, updated_at integer, archived integer, source text, rollout_path text)",
+    )
+    .unwrap();
+    let insert = |id: &str, archived: i64| {
+        db.execute(
+            "insert into threads values (?1, '', 'Work', ?2, 1, ?3, 'appServer', null)",
+            (id, directory, archived),
+        )
+        .unwrap();
+    };
+    let live = "10000000-0000-0000-0000-000000000010";
+    let archived = "10000000-0000-0000-0000-000000000011";
+    insert(live, 0);
+    insert(archived, 1);
+    drop(db);
+    let codex = config(home.path());
+    let adapter = adapter(codex.clone(), Arc::new(FakeRunner::default()));
+    assert_eq!(
+        adapter
+            .fork_directory(&Target::new(SessionKind::Codex, live))
+            .as_deref(),
+        Some(Path::new(directory))
+    );
+    assert!(adapter
+        .fork_directory(&Target::new(SessionKind::Codex, archived))
+        .is_none());
+    assert!(threads::read_one(&codex, live).is_none());
+}
+
 fn launch(home: &Path) -> Launch {
     Launch {
         harness: ID,

@@ -73,6 +73,33 @@ fn claude_runs_headless_with_the_session_named_and_access_as_chosen() {
 }
 
 #[test]
+fn a_fork_reads_the_folder_recorded_in_the_source_transcript() {
+    let home = tempfile::tempdir().unwrap();
+    let directory = if cfg!(windows) {
+        r"C:\work\repo"
+    } else {
+        "/work/repo"
+    };
+    let projects = home.path().join("claude").join("projects").join("app");
+    std::fs::create_dir_all(&projects).unwrap();
+    std::fs::write(
+        projects.join(format!("{SESSION}.jsonl")),
+        serde_json::json!({"cwd": directory}).to_string(),
+    )
+    .unwrap();
+    let adapter = adapter(home.path(), Arc::new(FakeProcesses::default()));
+    assert_eq!(
+        adapter
+            .fork_directory(&Target::new(SessionKind::ClaudeTerminal, SESSION))
+            .as_deref(),
+        Some(Path::new(directory))
+    );
+    assert!(adapter
+        .fork_directory(&Target::new(SessionKind::Codex, SESSION))
+        .is_none());
+}
+
+#[test]
 fn a_fork_resumes_the_source_transcript_into_its_own_named_session() {
     let fork = arguments("s2", Some("s1"), true);
     let at = fork
