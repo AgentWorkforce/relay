@@ -537,6 +537,34 @@ pub fn run_hook(
     watch: Option<&wait::Watch<'_>>,
     write: &mut dyn FnMut(&Value) -> bool,
 ) -> bool {
+    run_hook_with(config, table, pid, payload, watch, None, write)
+}
+
+/// The build's turn-end advisory (`TurnEndAdvisories`) for a hook that runs
+/// outside the core: `take` asks the core for the conversation's advisory,
+/// `shown` acknowledges the ids once the answer carrying them is written.
+pub struct TurnEnd<'a> {
+    pub take: &'a dyn Fn(&str) -> Option<crate::relay::daemon::TurnEndAdvisory>,
+    pub shown: &'a dyn Fn(&str, &[String]),
+}
+
+/// [`run_hook`], also handing a completed turn the build's turn-end
+/// advisory through `turn_end`. It is asked for only once the hook is
+/// proven to run under the conversation's holder, and only for a `stop`
+/// whose turn completed. It goes with the answer given at once as the turn
+/// ends (`answer_now`, or the first claim of a waiting `stop`), never with
+/// one a wait gives later, and is acknowledged only once that answer is
+/// written. Its `followup_message` starts a new turn, whose own stop asks
+/// again; the plugin's `take` is one-shot, so that stop finds none.
+pub fn run_hook_with(
+    config: &CursorConfig,
+    table: &dyn ProcessTable,
+    pid: i32,
+    payload: &Value,
+    watch: Option<&wait::Watch<'_>>,
+    turn_end: Option<&TurnEnd<'_>>,
+    write: &mut dyn FnMut(&Value) -> bool,
+) -> bool {
     wait::turn_seen(config, payload);
     let Some(session) = payload_session(payload) else {
         return false;
@@ -558,12 +586,22 @@ pub fn run_hook(
         }
     };
     wait::stop_seen(config, payload);
-    match watch {
+    let mut advisory = turn_end
+        .filter(|_| payload["hook_event_name"] == "stop" && payload["status"] == "completed")
+        .and_then(|turn_end| (turn_end.take)(session));
+    let ids = advisory.as_ref().map(|advisory| advisory.ids.clone());
+    let answered = match watch {
         Some(watch) if wait::waits_after(payload) => {
-            wait::wait(config, table, holder, payload, watch, write) == wait::Ended::Answered
+            wait::wait(config, table, holder, payload, watch, &mut advisory, write)
+                == wait::Ended::Answered
         }
-        _ => answer_now(config, payload, write),
+        _ => answer_now(config, payload, &mut advisory, write),
+    };
+    // Taken out of the option only once an answer carrying it was written.
+    if let (Some(ids), None, Some(turn_end)) = (ids, &advisory, turn_end) {
+        (turn_end.shown)(session, &ids);
     }
+    answered
 }
 
 /// What the hook prints when it hands nothing over: `beforeSubmitPrompt`
@@ -579,14 +617,17 @@ pub fn no_answer(payload: &Value) -> Value {
 fn answer_now(
     config: &CursorConfig,
     payload: &Value,
+    advisory: &mut Option<crate::relay::daemon::TurnEndAdvisory>,
     write: &mut dyn FnMut(&Value) -> bool,
 ) -> bool {
-    let Some(answer) = hook_answer(config, payload) else {
+    let text = advisory.as_ref().map(|advisory| advisory.text.as_str());
+    let Some(answer) = inbox::hook_answer_with(config, payload, text) else {
         return false;
     };
     let written = write(&answer.output);
     if written {
         drain(&answer.claimed);
+        advisory.take();
     } else {
         unclaim(config, &answer.claimed);
     }
