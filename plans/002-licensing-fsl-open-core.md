@@ -12,13 +12,15 @@
 - **Depends on**: none
 - **Category**: licensing / business model
 - **Planned at**: 2026-11-12
-- **State**: PROPOSED (decision made, legal review pending)
+- **State**: IN PROGRESS. Phase 1, AgentWorkforce/infra (which also answers to the
+  old helm-charts name), is relicensed in AgentWorkforce/infra#278, effective
+  from agent-relay-2026.11.2. Service repos and relay-desktop follow.
 
 ## Outcome
 
 - **Free to self-host for everyone.** The self-hosted stack and the desktop app
   move to the [Functional Source License](https://fsl.software),
-  `FSL-1.1-Apache-2.0`. Any organization can self-host and modify it for its own
+  `FSL-1.1-ALv2`. Any organization can self-host and modify it for its own
   use, at any size. Nobody can offer it as a competing hosted service. Each
   release becomes Apache-2.0 two years after it ships.
 - **Enterprise features under a commercial license.** An `ee/` area (per repo)
@@ -46,13 +48,12 @@
 
 ## Scope
 
-| Repo                                                                                               | Today                | Target                                                 |
-| -------------------------------------------------------------------------------------------------- | -------------------- | ------------------------------------------------------ |
-| AgentWorkforce/infra                                                                               | Apache-2.0           | FSL-1.1-Apache-2.0                                     |
-| AgentWorkforce/helm-charts                                                                         | Apache-2.0           | FSL-1.1-Apache-2.0                                     |
-| Services shipped in the self-host images (relaycast, relayhistory-pipeline, control plane, others) | Apache-2.0           | FSL-1.1-Apache-2.0, with `ee/` for Enterprise features |
-| relay-desktop                                                                                      | Apache-2.0 (private) | FSL-1.1-Apache-2.0 when it opens                       |
-| AgentWorkforce/relay (SDK, CLI, broker)                                                            | Apache-2.0           | Unchanged                                              |
+| Repo                                                                                               | Today                | Target                                              |
+| -------------------------------------------------------------------------------------------------- | -------------------- | --------------------------------------------------- |
+| AgentWorkforce/infra (formerly helm-charts)                                                        | Apache-2.0           | FSL-1.1-ALv2 from agent-relay-2026.11.2 (infra#278) |
+| Services shipped in the self-host images (relaycast, relayhistory-pipeline, control plane, others) | Apache-2.0           | FSL-1.1-ALv2, with `ee/` for Enterprise features    |
+| relay-desktop                                                                                      | Apache-2.0 (private) | FSL-1.1-ALv2 when it opens                          |
+| AgentWorkforce/relay (SDK, CLI, broker)                                                            | Apache-2.0           | Unchanged                                           |
 
 Releases already published keep Apache-2.0. The new license applies from the
 first release after the change.
