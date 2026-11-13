@@ -9,6 +9,7 @@ use crate::relay::outbound::Build;
 use crate::relay::paths::{self, CorePaths};
 use crate::relay::peer::current_uid;
 use crate::relay::protocol::{Response, BRIDGE_VERSION, MAX_REPLY_BYTES};
+use crate::relay::store::SessionKind;
 use crate::relay::transport::BlockingCoreStream;
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -405,7 +406,26 @@ pub fn devin_hook(development: bool) -> Result<()> {
     };
     let config = crate::relay::devin::DevinConfig::from_env(&|key| std::env::var(key).ok(), &home)
         .development(development);
-    if let Some((output, consumed)) = crate::relay::devin::hook_answer(&config, &payload) {
+    let mut answer = crate::relay::devin::hook_answer(&config, &payload);
+    // At a Stop not already continuing from a block, the build's turn-end
+    // advisory from the core, after any pending messages or alone.
+    let session = payload["session_id"].as_str().unwrap_or("");
+    let turn_end = (payload["hook_event_name"] == "Stop"
+        && !payload["stop_hook_active"].as_bool().unwrap_or(false))
+    .then(|| {
+        let socket = session_hook_socket(None, &hook_build(development))?;
+        let advisory = turn_end_take(&socket, SessionKind::Devin, session)?;
+        Some((socket, advisory))
+    })
+    .flatten();
+    if let Some((_, advisory)) = &turn_end {
+        let (output, consumed) = answer.unwrap_or_else(|| (json!({}), Vec::new()));
+        answer = Some((
+            crate::relay::turn_end_advisories::merge_stop(output, &advisory.text),
+            consumed,
+        ));
+    }
+    if let Some((output, consumed)) = answer {
         let mut stdout = std::io::stdout();
         let written = serde_json::to_vec(&output)
             .map_err(std::io::Error::other)
@@ -416,9 +436,65 @@ pub fn devin_hook(development: bool) -> Result<()> {
             });
         if written.is_ok() {
             crate::relay::devin::settle(&consumed);
+            if let Some((socket, advisory)) = &turn_end {
+                turn_end_shown(socket, SessionKind::Devin, session, &advisory.ids);
+            }
         }
     }
     Ok(())
+}
+
+fn hook_build(development: bool) -> Build {
+    if development {
+        Build::Development
+    } else {
+        Build::Production
+    }
+}
+
+/// The core's turn-end advisory for `kind`'s session `session`
+/// (`POST /turn-end/take`), or `None` when there is none or the core cannot
+/// be reached within the hook's budget.
+fn turn_end_take(
+    socket: &Path,
+    kind: SessionKind,
+    session: &str,
+) -> Option<crate::relay::daemon::TurnEndAdvisory> {
+    if session.is_empty() {
+        return None;
+    }
+    let body = serde_json::to_vec(&json!({"kind": kind, "session_id": session})).ok()?;
+    let (status, body) = socket_response(
+        socket,
+        "POST",
+        "/turn-end/take",
+        &body,
+        SESSION_HOOK_TIMEOUT,
+    )
+    .ok()?;
+    if status != 200 {
+        return None;
+    }
+    crate::relay::turn_end_advisories::read_take(&body)
+}
+
+/// Tells the core the answer carrying `ids` was written
+/// (`POST /turn-end/shown`). Best effort: the answer is already out.
+fn turn_end_shown(socket: &Path, kind: SessionKind, session: &str, ids: &[String]) {
+    if ids.is_empty() {
+        return;
+    }
+    if let Ok(body) =
+        serde_json::to_vec(&json!({"kind": kind, "session_id": session, "ids": ids}))
+    {
+        let _ = socket_response(
+            socket,
+            "POST",
+            "/turn-end/shown",
+            &body,
+            SESSION_HOOK_TIMEOUT,
+        );
+    }
 }
 
 /// Agent Relay's Cursor CLI hook (`cursor_cli::CursorSettings` installs it
@@ -484,12 +560,32 @@ pub fn cursor_hook(development: bool, wait: bool) -> Result<()> {
                 })
                 .is_ok()
         };
-        crate::relay::cursor_cli::run_hook(
+        // The build's turn-end advisory, asked of the core only once
+        // `run_hook_with` has proved this hook runs under the conversation's
+        // holder and its turn completed.
+        let socket = std::cell::OnceCell::new();
+        let socket = || {
+            socket
+                .get_or_init(|| session_hook_socket(None, &hook_build(development)))
+                .clone()
+        };
+        let take = |session: &str| turn_end_take(&socket()?, SessionKind::CursorCli, session);
+        let shown = |session: &str, ids: &[String]| {
+            if let Some(socket) = socket() {
+                turn_end_shown(&socket, SessionKind::CursorCli, session, ids);
+            }
+        };
+        let turn_end = crate::relay::cursor_cli::TurnEnd {
+            take: &take,
+            shown: &shown,
+        };
+        crate::relay::cursor_cli::run_hook_with(
             &config,
             &table,
             pid,
             &payload,
             watch.as_ref(),
+            Some(&turn_end),
             &mut write,
         );
     }
