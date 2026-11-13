@@ -34,7 +34,7 @@
   "keyFindings": [],
   "filesAffected": [],
   "commits": [],
-  "narrative": "Completed OpenIDEA-hosted Codex sidecar recognition in relay-node. Added platform-specific OpenIDEA executable recognition and bounded, same-user ancestor checks; connected trusted Codex app-server processes to queue-drainer discovery. Preserved generic app-server liveness behavior, existing writer-lock evidence, and rejection of nested Codex tool runs. Associated working-tree paths: crates/relay-node/src/relay/openidea.rs, crates/relay-node/src/relay/codex.rs, crates/relay-node/src/relay/codex/processes.rs, crates/relay-node/src/relay.rs, and CHANGELOG.md. Trajectory metadata recorded no file changes or commits, so implementation attribution relies on session summary and supplied working-tree context. Four OpenIDEA regressions passed, covering writer-lock behavior and idle stop/resume discovery. Full relay-node suite passed with RUST_MIN_STACK=16777216: 2793 passed, 21 ignored. Release build and isolated engine/Core readback confirmed automatic registration and activation of a real OpenIDEA task, with live push, through a separate local profile Core. Production Core remained unchanged. User-assisted DM round-trip verification remains pending; default formatting and Clippy checks exposed issues reported as unrelated baseline problems.",
+  "narrative": "Completed OpenIDEA-hosted Codex sidecar recognition in relay-node. Added platform-specific OpenIDEA executable recognition and bounded, same-user ancestor checks; connected trusted Codex app-server processes to queue-drainer discovery. Preserved generic app-server liveness behavior, existing writer-lock evidence, and rejection of nested Codex tool runs. Associated working-tree paths: crates/relay-node/src/relay/openidea.rs, crates/relay-node/src/relay/codex.rs, crates/relay-node/src/relay/codex/processes.rs, crates/relay-node/src/relay.rs, and CHANGELOG.md. Trajectory metadata recorded no file changes or commits, so implementation attribution relies on session summary and supplied working-tree context. Four OpenIDEA regressions passed, covering writer-lock behavior and idle stop/resume discovery. Full relay-node suite passed with RUST_MIN_STACK=16777216: 2793 passed, 21 ignored. Release build and isolated engine/Core readback confirmed automatic registration and activation of a real OpenIDEA task, with live push, through a separate local profile Core. Production Core remained unchanged. User-assisted DM round-trip verification subsequently passed: the actual OpenIDEA task received a probe from a temporary sender on the isolated engine and replied with the matching random marker. The sender, test profile hook/trust/rules and isolated engine/Core were cleaned up afterwards. Production Core kept running; hashes of the production helper, production socket pointer, Codex config, hooks and Relay rules all match their pre-test values. Implementation was committed as 7aa3c15f2b0850f0da9d89677ff9c33169efdae0 in PR #2163. Default formatting remains blocked by unchanged session_cli.rs:602; default Clippy by unchanged sdk_http.rs:158 (unused_io_amount).",
   "decisions": [
     {
       "question": "How should OpenIDEA-hosted Codex app-servers become discoverable?",
@@ -52,7 +52,7 @@
       "question": "How should live validation run without replacing production Core?",
       "chosen": "Use release build with isolated engine and separate local profile Core.",
       "reasoning": "Validate real task activation and live push while preserving production Core.",
-      "impact": "Discovery and activation received live validation; DM round-trip remains separate, unfinished check."
+      "impact": "Discovery, automatic activation and a user-triggered DM/reply round-trip passed in isolation; test resources were removed and production configuration hashes restored."
     }
   ],
   "conventions": [
@@ -95,9 +95,6 @@
     }
   ],
   "openQuestions": [
-    "Does user-assisted DM round-trip succeed for automatically discovered OpenIDEA task?",
-    "Which exact formatting and Clippy diagnostics remain, and what evidence establishes them as baseline issues?",
-    "What caused need for RUST_MIN_STACK=16777216, and should test tooling encode that setting?",
-    "Where will reported implementation be committed? Supplied trajectory records no commit."
+    "What caused need for RUST_MIN_STACK=16777216, and should test tooling encode that setting?"
   ]
 }
