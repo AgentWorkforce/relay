@@ -930,10 +930,10 @@ describe('events-shim CLI', () => {
 
   it('the Codex hook names npx by path and puts its node first on PATH (Codex hooks run in a login shell)', () => {
     expect(codexHookCommand('/opt/node 22/bin', true)).toBe(
-      "PATH='/opt/node 22/bin':\"$PATH\" '/opt/node 22/bin/npx' -y @agent-relay/events-shim@latest link --codex-hook"
+      'cd "$HOME" && PATH=\'/opt/node 22/bin\':"$PATH" \'/opt/node 22/bin/npx\' -y @agent-relay/events-shim@latest link --codex-hook'
     );
     expect(codexHookCommand("/it's/bin", true)).toContain("'/it'\\''s/bin/npx'");
-    expect(codexHookCommand('/x', false)).toBe(CODEX_HOOK_COMMAND);
+    expect(codexHookCommand('/x', false)).toBe(`cd "$HOME" && ${CODEX_HOOK_COMMAND}`);
   });
 
   it('setup --codex refuses a core download that does not match its checksum', async () => {

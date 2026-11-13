@@ -370,7 +370,12 @@ function viaJson(
 }
 
 /** The command Claude Code's hooks run to wake the session with each post. */
-export const HOOK_COMMAND = 'npx -y @agent-relay/events-shim@latest listen --hook';
+/**
+ * Claude Code's wake hook. It runs from \`$HOME\`: a session opened inside a
+ * checkout that has this package as a workspace (the relay repo) would
+ * otherwise make npx resolve the unbuilt local copy, "command not found".
+ */
+export const HOOK_COMMAND = 'cd "$HOME" && npx -y @agent-relay/events-shim@latest listen --hook';
 const HOOK_EVENTS = ['SessionStart', 'Stop'] as const;
 /** As long as an inbox lives without use (7 days), so an idle session stays watched. */
 const HOOK_TIMEOUT_SECONDS = 7 * 24 * 60 * 60;
@@ -478,7 +483,7 @@ function codexHome(io: CliIo): string {
   return io.env.CODEX_HOME || join(home(io), '.codex');
 }
 
-/** The command Codex's SessionStart hook runs, when no npx is found next to this node. */
+/** The bare Codex hook command an earlier release wrote (still recognised as ours). */
 export const CODEX_HOOK_COMMAND = 'npx -y @agent-relay/events-shim@latest link --codex-hook';
 
 /**
@@ -486,15 +491,17 @@ export const CODEX_HOOK_COMMAND = 'npx -y @agent-relay/events-shim@latest link -
  * hooks in a login shell, which often lacks the node that setup ran with (mise,
  * nvm and the like activate it in an interactive shell only): a bare \`npx\`
  * is then "command not found" (exit 127). So the hook names this node's npx
- * by its path and puts its directory first on PATH.
+ * by its path and puts its directory first on PATH. It runs from \`$HOME\`, so
+ * a session opened inside a checkout of this package (the relay repo) does
+ * not make npx resolve the unbuilt local copy, also "command not found".
  *
  * @param nodeDir - The directory holding the node (and npx) setup runs with.
- * @param hasNpx - Whether npx is there; without it, the bare command.
+ * @param hasNpx - Whether npx is there; without it, plain \`npx\` from PATH.
  */
 export function codexHookCommand(nodeDir: string, hasNpx: boolean): string {
-  if (!hasNpx) return CODEX_HOOK_COMMAND;
+  if (!hasNpx) return `cd "$HOME" && ${CODEX_HOOK_COMMAND}`;
   const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
-  return `PATH=${quote(nodeDir)}:"$PATH" ${quote(join(nodeDir, 'npx'))} -y @agent-relay/events-shim@latest link --codex-hook`;
+  return `cd "$HOME" && PATH=${quote(nodeDir)}:"$PATH" ${quote(join(nodeDir, 'npx'))} -y @agent-relay/events-shim@latest link --codex-hook`;
 }
 
 /** The hook command for this process's node. */
