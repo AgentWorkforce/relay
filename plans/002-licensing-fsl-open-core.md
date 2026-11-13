@@ -48,12 +48,17 @@
 
 ## Scope
 
-| Repo                                                                                               | Today                | Target                                              |
-| -------------------------------------------------------------------------------------------------- | -------------------- | --------------------------------------------------- |
-| AgentWorkforce/infra (formerly helm-charts)                                                        | Apache-2.0           | FSL-1.1-ALv2 from agent-relay-2026.11.2 (infra#278) |
-| Services shipped in the self-host images (relaycast, relayhistory-pipeline, control plane, others) | Apache-2.0           | FSL-1.1-ALv2, with `ee/` for Enterprise features    |
-| relay-desktop                                                                                      | Apache-2.0 (private) | FSL-1.1-ALv2 when it opens                          |
-| AgentWorkforce/relay (SDK, CLI, broker)                                                            | Apache-2.0           | Unchanged                                           |
+What self-hosted installs actually run (the legacy relayhistory-cloud component is disabled and being removed; relaycast-cloud is hosted only).
+
+| Repo                                                                      | Today                | Target                                                       | PR                        |
+| ------------------------------------------------------------------------- | -------------------- | ------------------------------------------------------------ | ------------------------- |
+| AgentWorkforce/infra (formerly helm-charts)                               | Apache-2.0           | FSL-1.1-ALv2                                                 | infra#278                 |
+| AgentWorkforce/relay-control (control plane; SSO lives here)              | Apache-2.0           | FSL-1.1-ALv2, then `ee/` for Enterprise features             | relay-control#125         |
+| AgentWorkforce/relayhistory-pipeline (sessions; `96bulls-services` image) | Apache-2.0           | FSL-1.1-ALv2                                                 | relayhistory-pipeline#594 |
+| AgentWorkforce/relaycast                                                  | Apache-2.0           | Server packages FSL-1.1-ALv2; SDKs, CLI, MCP stay Apache-2.0 | relaycast#662             |
+| AgentWorkforce/relay-web (dashboard)                                      | Apache-2.0           | FSL-1.1-ALv2                                                 | relay-web#138             |
+| relay-desktop                                                             | Apache-2.0 (private) | FSL-1.1-ALv2 when it opens                                   | —                         |
+| relay (SDK, CLI, broker), relayauth, relayfile, flows                     | Apache-2.0           | Unchanged                                                    | —                         |
 
 Releases already published keep Apache-2.0. The new license applies from the
 first release after the change.
