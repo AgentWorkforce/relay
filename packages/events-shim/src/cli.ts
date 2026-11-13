@@ -842,6 +842,13 @@ async function workspaceFor(
       { method: 'POST' }
     )
     .catch(() => null);
+  // A claimed inbox belongs to an Agent Relay account: its agents are woken through a signed-in
+  // core, never a new temporary workspace of their own.
+  if (fromInbox?.status === 409) {
+    throw new CliError(
+      "This inbox belongs to an Agent Relay account. Sign this machine's Agent Relay in to that account (Agent Relay Desktop, or `agent-relay-node` signed in), then run setup again."
+    );
+  }
   if (fromInbox?.ok) {
     const issued = (await fromInbox.json().catch(() => null)) as {
       workspace_key?: unknown;
