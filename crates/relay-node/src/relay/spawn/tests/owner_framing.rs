@@ -227,3 +227,35 @@ async fn opted_in_native_input_replaces_the_owner_line() {
         assert_eq!(text.contains(OWNER_LINE), !native, "{text}");
     }
 }
+
+// The requester's message read from Relaycast's delivery queue names the
+// DM's channel, and its reply in a thread of the DM is a `thread-reply` in
+// that channel: both are still native turns, never peer messages.
+#[tokio::test]
+async fn a_queued_or_threaded_requester_dm_is_still_a_native_turn() {
+    let registration = spawned("codex", "codex");
+    let queued = Delivery {
+        channel_id: Some("dmch_pair".into()),
+        ..from_requester("Next step")
+    };
+    let threaded = Delivery {
+        reason: Some("thread-reply".into()),
+        thread_id: Some("m_parent".into()),
+        ..queued.clone()
+    };
+    for message in [queued, threaded] {
+        let home = tempfile::tempdir().unwrap();
+        let core = core(
+            home.path(),
+            Arc::new(FakeSpawner {
+                native: true,
+                ..FakeSpawner::default()
+            }),
+        );
+        let (text, _, turn) = core
+            .session_text(&registration, (&message, None), false, false)
+            .await;
+        assert_eq!(turn, InputSource::Requester, "{message:?}");
+        assert!(!text.contains(OWNER_LINE), "{text}");
+    }
+}
