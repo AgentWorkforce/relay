@@ -535,9 +535,9 @@ impl<'a> Waiting<'a> {
             }
             if !pending(self.config, self.session).is_empty() {
                 let taken = locked(self.config, self.session, || {
-                    self.gone()
-                        .or_else(|| self.shared())
-                        .or_else(|| (watch.claiming)(&mut || answer(self.config, payload, &mut None, write)))
+                    self.gone().or_else(|| self.shared()).or_else(|| {
+                        (watch.claiming)(&mut || answer(self.config, payload, &mut None, write))
+                    })
                 });
                 match taken {
                     None => return Ended::Failed,

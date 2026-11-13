@@ -46,10 +46,12 @@ impl Outbound {
             }
             return Ok(json!({}));
         }
-        Ok(match target.and_then(|t| self.core.take_turn_end_advisory(&t)) {
-            Some(advisory) => json!({"text": advisory.text, "ids": advisory.ids}),
-            None => json!({"text": null, "ids": []}),
-        })
+        Ok(
+            match target.and_then(|t| self.core.take_turn_end_advisory(&t)) {
+                Some(advisory) => json!({"text": advisory.text, "ids": advisory.ids}),
+                None => json!({"text": null, "ids": []}),
+            },
+        )
     }
 
     /// The session a turn-end request names, once the caller is allowed to
@@ -219,14 +221,26 @@ mod tests {
         let (_temp, outbound) = fixture(Some(queue.clone()));
         // Not inside that session, or inside no session: nothing, and the
         // advisory stays queued.
-        assert_eq!(take(&outbound, 20, "claude-terminal", CLAUDE).await, NOTHING());
-        assert_eq!(take(&outbound, 30, "claude-terminal", CLAUDE).await, NOTHING());
-        assert_eq!(take(&outbound, 10, "claude-terminal", "other").await, NOTHING());
+        assert_eq!(
+            take(&outbound, 20, "claude-terminal", CLAUDE).await,
+            NOTHING()
+        );
+        assert_eq!(
+            take(&outbound, 30, "claude-terminal", CLAUDE).await,
+            NOTHING()
+        );
+        assert_eq!(
+            take(&outbound, 10, "claude-terminal", "other").await,
+            NOTHING()
+        );
         assert_eq!(
             take(&outbound, 10, "claude-terminal", CLAUDE).await,
             json!({"text": "Heads up.", "ids": ["x"]})
         );
-        assert_eq!(take(&outbound, 10, "claude-terminal", CLAUDE).await, NOTHING());
+        assert_eq!(
+            take(&outbound, 10, "claude-terminal", CLAUDE).await,
+            NOTHING()
+        );
         let shown = |pid, ids: Value| {
             let request = request(
                 "/turn-end/shown",
@@ -304,7 +318,10 @@ mod tests {
             .is_err());
         assert_eq!(queue.pending.lock().unwrap().len(), 1);
         let (_temp, outbound) = fixture(None);
-        assert_eq!(take(&outbound, 10, "claude-terminal", CLAUDE).await, NOTHING());
+        assert_eq!(
+            take(&outbound, 10, "claude-terminal", CLAUDE).await,
+            NOTHING()
+        );
     }
 
     #[tokio::test]
