@@ -1,12 +1,16 @@
 name: Cancel PR Jobs on Merge
 
 on:
-  pull_request:
+  # Use the base repository's token for fork PRs. This workflow only calls
+  # the Actions API; it must never check out or execute PR code.
+  pull_request_target:
     types: [closed]
 
 jobs:
   cancel:
     if: github.event.pull_request.merged == true
+    permissions:
+      actions: write
     runs-on: ubuntu-latest
     steps:
       - name: Cancel running workflows for this PR
@@ -16,22 +20,34 @@ jobs:
             const { owner, repo } = context.repo;
             const headSha = context.payload.pull_request.head.sha;
 
-            // Get all running workflow runs for this commit
-            const runs = await github.rest.actions.listWorkflowRunsForRepo({
-              owner,
-              repo,
-              status: 'in_progress',
-              head_sha: headSha,
-            });
-
-            // Cancel each running workflow
-            for (const run of runs.data.workflow_runs) {
-              console.log(`Cancelling workflow run ${run.id} (${run.name})`);
-              await github.rest.actions.cancelWorkflowRun({
-                owner,
-                repo,
-                run_id: run.id,
-              });
+            // Collect all pages before cancelling, since cancellations change
+            // the result set. Include queued jobs as well as running ones.
+            const runs = new Map();
+            for (const status of ['queued', 'in_progress']) {
+              const matches = await github.paginate(
+                github.rest.actions.listWorkflowRunsForRepo,
+                { owner, repo, status, head_sha: headSha, per_page: 100 },
+              );
+              for (const run of matches) {
+                if (run.id !== context.runId) runs.set(run.id, run);
+              }
             }
 
-            console.log(`Cancelled ${runs.data.workflow_runs.length} workflow runs`);
+            let cancelled = 0;
+            for (const run of runs.values()) {
+              console.log(`Cancelling workflow run ${run.id} (${run.name})`);
+              try {
+                await github.rest.actions.cancelWorkflowRun({
+                  owner,
+                  repo,
+                  run_id: run.id,
+                });
+                cancelled++;
+              } catch (error) {
+                // A run may finish between listing it and cancelling it.
+                if (error.status !== 409) throw error;
+                console.log(`Workflow run ${run.id} is no longer cancellable`);
+              }
+            }
+
+            console.log(`Cancelled ${cancelled} workflow runs`);
