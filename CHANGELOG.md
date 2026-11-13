@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay-node`: a spawned agent now takes its spawning agent's and its owner's direct messages as native input when they reply in a thread of the DM, or when the message was read from the delivery queue instead of pushed. Both used to arrive as peer messages. Group DMs, channel posts and mentions are unchanged.
+- `agent-relay-node`: a spawned Codex, Claude, Grok, Devin or OpenCode agent now takes its spawning agent's and its owner's direct messages as native input when they reply in a thread of the DM, or when the message was read from the delivery queue instead of pushed. Both used to arrive as peer messages. A spawned Muse agent now gives such messages from its spawning agent the owner framing instead of the peer framing. Group DMs, channel posts and mentions are unchanged.
 
 ## [18.6.0] - 2026-11-13
 
