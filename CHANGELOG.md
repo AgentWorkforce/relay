@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay-node`: a restarted core no longer drops a joined Connect room whose saved expiry passed more than 15 minutes earlier without asking Cloud. The room stays joined until the first poll checks with Cloud, so a room the host extended while the computer was off keeps working; it closes with the expired notice when Cloud says it is over, or when Cloud cannot answer. Messages queued for it are held back until then.
 - `agent-relay-node`: a spawned Codex, Claude, Grok, Devin or OpenCode agent now takes its spawning agent's and its owner's direct messages as native input when they reply in a thread of the DM, or when the message was read from the delivery queue instead of pushed. Both used to arrive as peer messages. A spawned Muse agent now gives such messages from its spawning agent the owner framing instead of the peer framing. Group DMs, channel posts and mentions are unchanged.
+- `agent-relay-node`: loaded Codex user chats join and stay registered automatically without a desktop window owner. Registration does not add an idle delivery route: messages still arrive at the chat's next hook.
+- `agent-relay-node`: session hooks keep receiving messages when the session-socket pointer directory is a user-owned symlink to private runtime storage; shared or inaccessible symlink targets are still refused.
 
 ## [18.6.1] - 2026-11-13
 
@@ -76,9 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Session hooks keep receiving messages when the session-socket pointer directory is a user-owned symlink to private runtime storage; inaccessible or shared symlink targets remain refused.
 - `agent-relay-probe connect create` starts a new room when Cloud has already closed the saved one, even before its saved expiry, instead of refusing with "already has a pending or active room". `connect end` clears a room that has expired, ended or no longer exists instead of failing; `end` and `extend` let Cloud, not the local clock, decide whether a room is over.
-- Loaded Codex user chats automatically join and stay registered without a desktop window owner; registration presence no longer implies an idle message-delivery route.
 
 ## [18.1.0] - 2026-11-11
 
