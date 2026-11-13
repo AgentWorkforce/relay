@@ -351,16 +351,7 @@ pub fn claude_session_hook(socket: Option<&Path>, build: &Build) -> Result<()> {
     let _ = std::io::stdin().take(4 << 20).read_to_end(&mut input);
     drop(input);
     let table = crate::relay::process::SystemProcesses::default();
-    #[cfg(unix)]
-    let parent = std::os::unix::process::parent_id() as i32;
-    // std has no parent id on Windows; the process table records it.
-    #[cfg(not(unix))]
-    let parent = {
-        use crate::relay::process::ProcessTable;
-        table
-            .process(std::process::id() as i32)
-            .map_or(0, |process| process.parent)
-    };
+    let parent = hook_parent(&table);
     // Cursor CLI also runs the hooks in Claude's settings.json: a hook that
     // no Claude Code process owns says nothing, even when a Claude session
     // further up started that agent.
@@ -384,6 +375,67 @@ pub fn claude_session_hook(socket: Option<&Path>, build: &Build) -> Result<()> {
     let mut stdout = std::io::stdout();
     stdout.write_all(&serde_json::to_vec(&output)?)?;
     stdout.write_all(b"\n")?;
+    Ok(())
+}
+
+/// This hook process's parent.
+fn hook_parent(_table: &crate::relay::process::SystemProcesses) -> i32 {
+    #[cfg(unix)]
+    let parent = std::os::unix::process::parent_id() as i32;
+    // std has no parent id on Windows; the process table records it.
+    #[cfg(not(unix))]
+    let parent = {
+        use crate::relay::process::ProcessTable;
+        _table
+            .process(std::process::id() as i32)
+            .map_or(0, |process| process.parent)
+    };
+    parent
+}
+
+/// Agent Relay's Claude Code Stop hook (`claude::session_hook` installs it
+/// beside the SessionStart hook). Reads Claude's Stop input and, when the
+/// stop is not already continuing from a stop hook's block
+/// (`stop_hook_active`) and a Claude Code process owns this hook, asks the
+/// core for the session's turn-end advisory (`POST /turn-end/take`, which
+/// the core answers only for the Claude Code session this process runs
+/// in). With one it prints `{"decision":"block","reason":<advisory>}`, so
+/// Claude goes on with it, and acknowledges it (`POST /turn-end/shown`)
+/// only once that is written; otherwise `{}`. Any failure prints `{}` and
+/// exits 0, so the turn still ends.
+pub fn claude_stop_hook(socket: Option<&Path>, build: &Build) -> Result<()> {
+    let mut input = Vec::new();
+    let _ = std::io::stdin().take(4 << 20).read_to_end(&mut input);
+    let hook = serde_json::from_slice::<Value>(&input).unwrap_or_else(|_| json!({}));
+    let active = hook["stop_hook_active"].as_bool().unwrap_or(false);
+    let session = hook["session_id"].as_str().unwrap_or("").to_string();
+    let table = crate::relay::process::SystemProcesses::default();
+    let found = (!active)
+        .then(|| {
+            // Cursor CLI also runs the hooks in Claude's settings.json.
+            crate::relay::claude::session_hook::claude_ancestor(&table, hook_parent(&table))?;
+            let socket = session_hook_socket(socket, build)?;
+            let advisory = turn_end_take(&socket, SessionKind::ClaudeTerminal, &session)?;
+            Some((socket, advisory))
+        })
+        .flatten();
+    let output = match &found {
+        Some((_, advisory)) => {
+            crate::relay::turn_end_advisories::merge_stop(json!({}), &advisory.text)
+        }
+        None => json!({}),
+    };
+    let mut stdout = std::io::stdout();
+    let written = serde_json::to_vec(&output)
+        .map_err(std::io::Error::other)
+        .and_then(|bytes| {
+            stdout.write_all(&bytes)?;
+            stdout.write_all(b"\n")?;
+            stdout.flush()
+        });
+    if let (Ok(()), Some((socket, advisory))) = (written, &found) {
+        turn_end_shown(socket, SessionKind::ClaudeTerminal, &session, &advisory.ids);
+    }
     Ok(())
 }
 
