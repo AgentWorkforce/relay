@@ -479,6 +479,9 @@ impl Outbound {
                 self.hook_route(pid, uid, request).await
             }
             ("POST", "/copilot/mcp") => self.hook_route(pid, uid, request).await,
+            ("POST", "/turn-end/take" | "/turn-end/shown") => {
+                self.turn_end_route(pid, uid, request).await
+            }
             ("GET", "/setup/status") => {
                 // The SessionStart hook only reads. Applying the agent-led
                 // defaults here would turn automatic activation on, which is

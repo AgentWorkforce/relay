@@ -24,6 +24,11 @@
 //! also clear it from a watched login that has since been unshared
 //! (`watched_logins`). A directory the desktop does not watch is left alone.
 //!
+//! A `Stop` hook ([`STOP_SUBCOMMAND`]) comes and goes with it, under the
+//! same setting and ownership rules: at the end of a turn it hands the
+//! session the build's turn-end advisory (`turn_end_advisories`), once, and
+//! prints `{}` otherwise.
+//!
 //! With the hook come Claude Code permission rules ([`PermissionRules`],
 //! in `permissions`) that let the session run this probe's self-limiting
 //! session commands (`read`, `send`, `agents`, `whoami`,
@@ -67,6 +72,13 @@ pub const SETTING: &str = "claude_session_hook";
 
 /// The subcommand the hook runs; also how the hook is recognized as ours.
 pub const SUBCOMMAND: &str = "claude-session-hook";
+
+/// The subcommand of the Stop hook installed and removed with it, which
+/// hands a session the build's turn-end advisory (`turn_end_advisories`).
+pub const STOP_SUBCOMMAND: &str = "claude-stop-hook";
+
+/// The hook events this setting owns an entry in.
+const EVENTS: [&str; 2] = ["SessionStart", "Stop"];
 
 /// Installs and removes the hook. The files are the source of truth, so the
 /// setting is on when any known login has this build's hook.
@@ -315,9 +327,11 @@ impl ClaudeSessionHookSettings {
     /// Whether `value` holds this build's hook. Its permission rules come
     /// and go with it; a rule alone may be the person's own.
     fn holds_ours(&self, value: &Value) -> bool {
-        value["hooks"]["SessionStart"]
-            .as_array()
-            .is_some_and(|groups| !self.our_commands(groups).is_empty())
+        EVENTS.iter().any(|event| {
+            value["hooks"][*event]
+                .as_array()
+                .is_some_and(|groups| !self.our_commands(event, groups).is_empty())
+        })
     }
 
     /// `value` with this build's hook and its permission rules (the current
@@ -342,28 +356,52 @@ impl ClaudeSessionHookSettings {
     /// Helper" hook, say) as a displaced copy of its own, at `refresh`; a
     /// profile build never matches it, nor a hook naming another build's
     /// socket.
-    fn is_ours(&self, command: &str) -> bool {
+    /// The same for the Stop hook (`event` "Stop"), which runs
+    /// [`STOP_SUBCOMMAND`] with this build's marker.
+    fn is_ours(&self, event: &str, command: &str) -> bool {
+        if event == "Stop" {
+            return crate::relay::hook_owner::same_build(command, &self.stop_command(), |body| {
+                body.ends_with(STOP_SUBCOMMAND)
+            });
+        }
         crate::relay::hook_owner::same_build(command, &self.command, |body| {
             body.ends_with(SUBCOMMAND)
         })
     }
 
-    fn our_commands<'a>(&self, groups: &'a [Value]) -> Vec<&'a str> {
+    /// The Stop hook's command: the SessionStart hook's, running
+    /// [`STOP_SUBCOMMAND`] with the same executable and marker.
+    fn stop_command(&self) -> String {
+        match self.command.rfind(SUBCOMMAND) {
+            Some(at) => format!(
+                "{}{STOP_SUBCOMMAND}{}",
+                &self.command[..at],
+                &self.command[at + SUBCOMMAND.len()..]
+            ),
+            None => self.command.clone(),
+        }
+    }
+
+    fn our_commands<'a>(&self, event: &str, groups: &'a [Value]) -> Vec<&'a str> {
         groups
             .iter()
             .flat_map(|group| group["hooks"].as_array().into_iter().flatten())
             .filter_map(|hook| hook["command"].as_str())
-            .filter(|command| self.is_ours(command))
+            .filter(|command| self.is_ours(event, command))
             .collect()
     }
 
-    /// Removes this build's hooks from `groups`, and any group that held
-    /// only them. Whether anything changed.
-    fn take_out(&self, groups: &mut Vec<Value>) -> bool {
+    /// Removes this build's `event` hooks from `groups`, and any group that
+    /// held only them. Whether anything changed.
+    fn take_out(&self, event: &str, groups: &mut Vec<Value>) -> bool {
         let before = groups.clone();
         for group in groups.iter_mut() {
             if let Some(hooks) = group["hooks"].as_array_mut() {
-                hooks.retain(|hook| !hook["command"].as_str().is_some_and(|c| self.is_ours(c)));
+                hooks.retain(|hook| {
+                    !hook["command"]
+                        .as_str()
+                        .is_some_and(|c| self.is_ours(event, c))
+                });
             }
         }
         groups.retain(|group| {
@@ -374,17 +412,24 @@ impl ClaudeSessionHookSettings {
         *groups != before
     }
 
-    fn entry(&self) -> Value {
+    /// This build's entry for `event`. The Stop hook's own client gives up
+    /// after 2 s, so its timeout is short.
+    fn entry(&self, event: &str) -> Value {
+        if event == "Stop" {
+            return json!({"hooks": [{"type": "command", "command": self.stop_command(), "timeout": 5}]});
+        }
         json!({"hooks": [{"type": "command", "command": self.command, "timeout": 10}]})
     }
 
     fn file_has_hook(&self, path: &Path) -> bool {
         self.read_object(path).is_ok_and(|object| {
-            object
-                .get("hooks")
-                .and_then(|hooks| hooks.get("SessionStart"))
-                .and_then(Value::as_array)
-                .is_some_and(|groups| !self.our_commands(groups).is_empty())
+            EVENTS.iter().any(|event| {
+                object
+                    .get("hooks")
+                    .and_then(|hooks| hooks.get(*event))
+                    .and_then(Value::as_array)
+                    .is_some_and(|groups| !self.our_commands(event, groups).is_empty())
+            })
         })
     }
 
@@ -408,18 +453,26 @@ impl ClaudeSessionHookSettings {
                 "has a hooks value that is not an object, so it was left unchanged",
             ));
         };
-        let start = hooks.entry("SessionStart").or_insert_with(|| json!([]));
-        let Some(groups) = start.as_array_mut() else {
-            return Err(Self::fail(
-                path,
-                "has a SessionStart value that is not a list, so it was left unchanged",
-            ));
-        };
-        let entry = self.entry();
-        let current = groups.contains(&entry) && self.our_commands(groups).len() == 1;
-        if !current {
-            self.take_out(groups);
-            groups.push(entry);
+        // Both lists are checked before either is changed.
+        for event in EVENTS {
+            if hooks.get(event).is_some_and(|value| !value.is_array()) {
+                return Err(Self::fail(
+                    path,
+                    &format!("has a {event} value that is not a list, so it was left unchanged"),
+                ));
+            }
+        }
+        for event in EVENTS {
+            let value = hooks.entry(event).or_insert_with(|| json!([]));
+            let Some(groups) = value.as_array_mut() else {
+                continue;
+            };
+            let entry = self.entry(event);
+            let current = groups.contains(&entry) && self.our_commands(event, groups).len() == 1;
+            if !current {
+                self.take_out(event, groups);
+                groups.push(entry);
+            }
         }
         Ok(())
     }
@@ -428,16 +481,20 @@ impl ClaudeSessionHookSettings {
         let Some(hooks) = object.get_mut("hooks").and_then(Value::as_object_mut) else {
             return;
         };
-        let Some(groups) = hooks.get_mut("SessionStart").and_then(Value::as_array_mut) else {
-            return;
-        };
-        if !self.take_out(groups) {
-            return;
+        let mut changed = false;
+        for event in EVENTS {
+            let Some(groups) = hooks.get_mut(event).and_then(Value::as_array_mut) else {
+                continue;
+            };
+            if !self.take_out(event, groups) {
+                continue;
+            }
+            changed = true;
+            if groups.is_empty() {
+                hooks.remove(event);
+            }
         }
-        if groups.is_empty() {
-            hooks.remove("SessionStart");
-        }
-        if hooks.is_empty() {
+        if changed && hooks.is_empty() {
             object.remove("hooks");
         }
     }
@@ -1169,6 +1226,137 @@ mod tests {
         let kept = std::fs::read(&primary).unwrap();
         assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
         assert_eq!(std::fs::read(&primary).unwrap(), kept);
+    }
+
+    fn commands_of<'a>(value: &'a Value, event: &str) -> Vec<&'a str> {
+        value["hooks"][event]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|group| group["hooks"].as_array().into_iter().flatten())
+            .filter_map(|hook| hook["command"].as_str())
+            .collect()
+    }
+
+    #[test]
+    fn the_stop_hook_comes_and_goes_with_the_session_start_hook() {
+        let root = tempfile::tempdir().unwrap();
+        login(root.path(), ".claude");
+        let path = root.path().join(".claude/settings.json");
+        let dev_stop = format!("/old/probe {STOP_SUBCOMMAND} --dev");
+        let old_stop = format!("/old/probe {STOP_SUBCOMMAND}");
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&json!({"hooks": {"Stop": [
+                {"hooks": [
+                    {"type": "command", "command": "echo theirs"},
+                    {"type": "command", "command": old_stop},
+                    {"type": "command", "command": dev_stop}
+                ]}
+            ]}}))
+            .unwrap(),
+        )
+        .unwrap();
+        let settings = settings(root.path());
+        assert_eq!(
+            settings.stop_command(),
+            "'/Apps/Agent Relay.app/probe' claude-stop-hook"
+        );
+        assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+        let installed = read(&path);
+        assert_eq!(
+            commands_of(&installed, "SessionStart"),
+            vec!["'/Apps/Agent Relay.app/probe' claude-session-hook"]
+        );
+        // The person's own Stop hook and another build's stay; this build's
+        // older copy is replaced by the current one.
+        assert_eq!(
+            commands_of(&installed, "Stop"),
+            vec![
+                "echo theirs",
+                dev_stop.as_str(),
+                "'/Apps/Agent Relay.app/probe' claude-stop-hook"
+            ]
+        );
+        let ours = installed["hooks"]["Stop"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()
+            .clone();
+        assert_eq!(ours["hooks"][0]["timeout"], 5);
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+
+        // A Stop hook taken out by hand comes back at the next refresh.
+        let mut edited = installed.clone();
+        edited["hooks"]["Stop"].as_array_mut().unwrap().pop();
+        std::fs::write(&path, serde_json::to_vec_pretty(&edited).unwrap()).unwrap();
+        settings.refresh();
+        assert_eq!(read(&path), installed);
+
+        assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+        let removed = read(&path);
+        assert!(removed["hooks"].get("SessionStart").is_none(), "{removed}");
+        assert_eq!(
+            commands_of(&removed, "Stop"),
+            vec!["echo theirs", dev_stop.as_str()]
+        );
+        // A leftover Stop hook alone still counts as on, so turning off
+        // takes it out.
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&json!({"hooks": {"Stop": [ours]}})).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(settings.get()[SETTING], true);
+        assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+        // Nothing of the person's was left in it, so the file goes.
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_stop_value_that_is_not_a_list_leaves_the_file_unchanged() {
+        let root = tempfile::tempdir().unwrap();
+        login(root.path(), ".claude");
+        let path = root.path().join(".claude/settings.json");
+        std::fs::write(&path, "{\"hooks\":{\"Stop\":\"echo\"}}\n").unwrap();
+        let settings = settings(root.path());
+        assert!(settings.set(SETTING, &json!(true)).unwrap().is_err());
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"{\"hooks\":{\"Stop\":\"echo\"}}\n"
+        );
+    }
+
+    #[test]
+    fn a_profile_builds_stop_hook_keeps_its_marker() {
+        let root = tempfile::tempdir().unwrap();
+        let config = ClaudeConfig {
+            home: root.path().join(".claude"),
+            executable: None,
+            app_sessions: None,
+            dirs: ClaudeDirs::default(),
+        };
+        let settings = ClaudeSessionHookSettings::new(
+            &config,
+            ClaudeSessionHookSettings::command_for_build(
+                Path::new("/Apps/Acme.app/probe"),
+                &Build::Profile("acme".into()),
+                Path::new("/s/relay.sock"),
+            ),
+        );
+        let stop = settings.stop_command();
+        assert!(
+            stop.starts_with("/Apps/Acme.app/probe claude-stop-hook "),
+            "{stop}"
+        );
+        assert!(stop.contains("--profile=acme"), "{stop}");
+        assert!(stop.ends_with("/s/relay.sock"), "{stop}");
+        assert!(settings.is_ours("Stop", &stop));
+        assert!(!settings.is_ours("SessionStart", &stop));
+        assert!(!settings.is_ours("Stop", "/Apps/Acme.app/probe claude-stop-hook"));
     }
 
     #[test]

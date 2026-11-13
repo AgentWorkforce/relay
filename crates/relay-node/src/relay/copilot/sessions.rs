@@ -245,8 +245,14 @@ fn observe(
     }
     Some(())
 }
+/// A stop with nothing offered for its binding, which an earlier verified
+/// incarnation may answer `{}` without the full native proof. A stop the core
+/// carries a turn-end advisory for (`relayTurnEndAdvisory`, set only by the
+/// session-socket route) is never idle: that is a data claim, so it takes the
+/// full proof.
 fn idle_stop(config: &CopilotConfig, payload: &Value, sid: &str, event: &str) -> bool {
     event == "stop"
+        && payload["relayTurnEndAdvisory"] != true
         && payload["relayBinding"]
             .as_str()
             .is_none_or(|binding| !config.inbox.has_offered(&format!("{sid}:{binding}")))

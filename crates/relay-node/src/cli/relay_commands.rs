@@ -302,6 +302,21 @@ pub enum RelayCommands {
         #[arg(long, conflicts_with = "dev")]
         profile: Option<String>,
     },
+    /// Agent Relay's Claude Code Stop hook, installed with the SessionStart
+    /// hook. Hands the session the turn-end advisory the core has for it, as
+    /// a stop hook's block, once; prints `{}` otherwise.
+    ClaudeStopHook {
+        /// Ask Agent Relay Dev instead of Agent Relay.
+        #[arg(long, conflicts_with = "socket")]
+        dev: bool,
+        /// The session socket; default is the one the running app points to.
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        /// Ask the profile build with this id instead of Agent Relay, as
+        /// `claude-session-hook` does.
+        #[arg(long, conflicts_with = "dev")]
+        profile: Option<String>,
+    },
     /// Print Agent Relay's settings, as the app's Settings shows them, or
     /// change them with KEY=VALUE pairs (`auto_join_general=true`). Every
     /// change is recorded with this session's name and listed in Settings.
@@ -544,6 +559,11 @@ pub fn run(command: RelayCommands) -> Result<()> {
             socket,
             profile,
         } => relay::cli::claude_session_hook(socket.as_deref(), &build(dev, profile)?),
+        RelayCommands::ClaudeStopHook {
+            dev,
+            socket,
+            profile,
+        } => relay::cli::claude_stop_hook(socket.as_deref(), &build(dev, profile)?),
         RelayCommands::Settings {
             changes,
             dev,

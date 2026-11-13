@@ -151,6 +151,7 @@ pub mod store_settings;
 pub mod test_account;
 pub mod transport;
 pub mod trusted;
+pub mod turn_end_advisories;
 pub mod usage;
 pub mod websocket_tls;
 pub mod workspace;

@@ -221,10 +221,31 @@ impl Outbound {
                 &|message_ref| injector.codex_recorded(&target, message_ref),
                 &|message_ref| injector.final_answer(&target, message_ref),
             );
-            if conductor != json!({}) {
-                return Ok(conductor);
+            let answer = if conductor != json!({}) {
+                conductor
+            } else {
+                inbox.turns().answer(&thread, event)
+            };
+            // The build's turn-end advisory (`TurnEndAdvisories`), once, on
+            // a Stop that is not already continuing from a stop hook's block
+            // and whose turn the person sees. The hook has no write
+            // callback, so it is acknowledged as the answer is built.
+            if stop_hook_active || !shown {
+                return Ok(answer);
             }
-            Ok(inbox.turns().answer(&thread, event))
+            match core.take_turn_end_advisory(&target) {
+                Some(advisory) => {
+                    let merged = crate::relay::turn_end_advisories::merge_stop(
+                        answer.clone(),
+                        &advisory.text,
+                    );
+                    if merged != answer {
+                        core.turn_end_advisory_shown(&target, &advisory.ids);
+                    }
+                    Ok(merged)
+                }
+                None => Ok(answer),
+            }
         })
         .await
         .unwrap_or_else(|_| Ok(json!({})))
@@ -408,6 +429,12 @@ mod tests {
         }
     }
     fn fixture() -> (tempfile::TempDir, Outbound, Arc<StopHookInbox>) {
+        fixture_with(None)
+    }
+
+    fn fixture_with(
+        turn_end_advisories: Option<Arc<dyn crate::relay::daemon::TurnEndAdvisories>>,
+    ) -> (tempfile::TempDir, Outbound, Arc<StopHookInbox>) {
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().to_path_buf();
         let config = Config {
@@ -429,6 +456,7 @@ mod tests {
         let plugins = Plugins {
             sessions: Arc::new(Sessions),
             codex_stop_hook: Some(inbox.clone()),
+            turn_end_advisories,
             relay_send: Some(RelaySend {
                 socket: home.join("relay.sock"),
                 pointer: home.join("pointer"),
@@ -453,6 +481,73 @@ mod tests {
             .as_object()
             .unwrap()
             .clone()
+    }
+
+    fn stop(active: bool) -> Map<String, Value> {
+        json!({"session_id": THREAD, "hook_event_name": "Stop", "turn_id": "fixture-turn",
+            "stop_hook_active": active})
+        .as_object()
+        .unwrap()
+        .clone()
+    }
+
+    #[tokio::test]
+    async fn a_stop_carries_the_turn_end_advisory_once() {
+        use crate::relay::turn_end_advisories::fake::Queue;
+        let target = Target::new(SessionKind::Codex, THREAD);
+        let queue = Arc::new(Queue::with(
+            target.clone(),
+            " Heads up: @b edits auth.rs. ",
+            &["a1", "a2"],
+        ));
+        let (_temp, outbound, _) = fixture_with(Some(queue.clone()));
+        // A stop already continuing from a stop hook's block takes nothing.
+        assert_eq!(
+            outbound
+                .codex_stop_hook(42, outbound.uid, &stop(true))
+                .await
+                .unwrap(),
+            json!({})
+        );
+        assert!(queue.taken.lock().unwrap().is_empty());
+        assert!(queue.shown().is_empty());
+        assert_eq!(
+            outbound
+                .codex_stop_hook(42, outbound.uid, &stop(false))
+                .await
+                .unwrap(),
+            json!({"decision": "block", "reason": "Heads up: @b edits auth.rs."})
+        );
+        assert_eq!(
+            queue.shown(),
+            vec![(target, vec!["a1".to_string(), "a2".to_string()])]
+        );
+        // The next stop has nothing left to carry.
+        assert_eq!(
+            outbound
+                .codex_stop_hook(42, outbound.uid, &stop(false))
+                .await
+                .unwrap(),
+            json!({})
+        );
+        assert_eq!(queue.shown().len(), 1);
+        // A tool call never takes it.
+        let (_temp, outbound, _) = fixture_with(Some(queue.clone()));
+        let taken = queue.taken.lock().unwrap().len();
+        let _ = outbound.codex_stop_hook(42, outbound.uid, &fields()).await;
+        assert_eq!(queue.taken.lock().unwrap().len(), taken);
+    }
+
+    #[tokio::test]
+    async fn without_the_plugin_a_quiet_stop_says_nothing() {
+        let (_temp, outbound, _) = fixture();
+        assert_eq!(
+            outbound
+                .codex_stop_hook(42, outbound.uid, &stop(false))
+                .await
+                .unwrap(),
+            json!({})
+        );
     }
 
     #[tokio::test]

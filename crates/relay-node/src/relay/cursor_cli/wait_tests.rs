@@ -131,6 +131,7 @@ fn park(
         Holder::Editor { host: HOST_PID },
         payload,
         &watch,
+        &mut None,
         &mut |output| {
             written.push(output.clone());
             writes
@@ -353,6 +354,7 @@ fn a_newer_hook_answering_at_once_retires_the_older_one_first() {
                 Holder::Editor { host: HOST_PID },
                 &stop("gen-1"),
                 &watch,
+                &mut None,
                 &mut |output| {
                     written.push(output.clone());
                     true
@@ -1011,6 +1013,7 @@ fn what_is_pending_is_left_when_the_window_went_away_before_the_claim() {
             Holder::Editor { host: HOST_PID },
             &stop("gen-1"),
             &watch,
+            &mut None,
             &mut |output| {
                 written.push(output.clone());
                 true
