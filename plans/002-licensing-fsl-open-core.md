@@ -46,13 +46,13 @@
 
 ## Scope
 
-| Repo | Today | Target |
-|---|---|---|
-| AgentWorkforce/infra | Apache-2.0 | FSL-1.1-Apache-2.0 |
-| AgentWorkforce/helm-charts | Apache-2.0 | FSL-1.1-Apache-2.0 |
-| Services shipped in the self-host images (relaycast, relayhistory-pipeline, control plane, others) | Apache-2.0 | FSL-1.1-Apache-2.0, with `ee/` for Enterprise features |
-| relay-desktop | Apache-2.0 (private) | FSL-1.1-Apache-2.0 when it opens |
-| AgentWorkforce/relay (SDK, CLI, broker) | Apache-2.0 | Unchanged |
+| Repo                                                                                               | Today                | Target                                                 |
+| -------------------------------------------------------------------------------------------------- | -------------------- | ------------------------------------------------------ |
+| AgentWorkforce/infra                                                                               | Apache-2.0           | FSL-1.1-Apache-2.0                                     |
+| AgentWorkforce/helm-charts                                                                         | Apache-2.0           | FSL-1.1-Apache-2.0                                     |
+| Services shipped in the self-host images (relaycast, relayhistory-pipeline, control plane, others) | Apache-2.0           | FSL-1.1-Apache-2.0, with `ee/` for Enterprise features |
+| relay-desktop                                                                                      | Apache-2.0 (private) | FSL-1.1-Apache-2.0 when it opens                       |
+| AgentWorkforce/relay (SDK, CLI, broker)                                                            | Apache-2.0           | Unchanged                                              |
 
 Releases already published keep Apache-2.0. The new license applies from the
 first release after the change.
