@@ -103,6 +103,32 @@ pub trait SessionPolicy: Send + Sync + 'static {
     fn leaving_after_clear(&self, agents: &[String]) -> Option<String>;
 }
 
+/// One turn-end delivery: the text to show and the advisory ids it carries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TurnEndAdvisory {
+    pub text: String,
+    pub ids: Vec<String>,
+}
+
+/// Low-urgency advisories a build of the core hands a session as its turn
+/// ends, through the core's own stop hooks (Codex's, Copilot's, Devin's,
+/// Cursor CLI's and Claude Code's). The build gathers and caches them; the
+/// core decides nothing about their content, only carries one answer per
+/// turn end, bounded, and says which providers it cannot reach
+/// ([`turn_end_advisories::reach`]). A build without one hands nothing.
+/// An unsupported internal seam, like [`SessionPolicy`].
+///
+/// [`turn_end_advisories::reach`]: crate::relay::turn_end_advisories::reach
+pub trait TurnEndAdvisories: Send + Sync + 'static {
+    /// What `target`'s session should see as its turn ends, or None. Called on the hook path:
+    /// must return promptly, never block on I/O. Taking is one-shot: the plugin must not
+    /// return the same ids again for this target until it decides to redeliver.
+    fn take(&self, target: &crate::relay::store::Target) -> Option<TurnEndAdvisory>;
+    /// The answer carrying `ids` was handed to `target`'s session (answered over the socket,
+    /// or written by the hook process). The plugin acks them upstream.
+    fn shown(&self, target: &crate::relay::store::Target, ids: &[String]);
+}
+
 /// Callers of the native spawn controls (`spawn.invoke`, `spawn.status`,
 /// `spawn.release`) that are not session registrations. A service caller is
 /// whoever its bridge connection authenticated as: the plugin owns the
@@ -306,6 +332,8 @@ pub struct Plugins {
     pub account: Option<Arc<dyn AccountPlugin>>,
     /// Which sessions may join the relay, be asked to, and publish activity.
     pub session_policy: Option<Arc<dyn SessionPolicy>>,
+    /// Advisories handed to a session as its turn ends; none hands nothing.
+    pub turn_end_advisories: Option<Arc<dyn TurnEndAdvisories>>,
     /// Native spawn control callers that are not session registrations;
     /// without it every bridge connection takes the session path.
     pub spawn_callers: Option<Arc<dyn SpawnCallers>>,
@@ -338,6 +366,7 @@ impl Default for Plugins {
             relay_send: None,
             account: None,
             session_policy: None,
+            turn_end_advisories: None,
             spawn_callers: None,
             codex_stop_hook: None,
             spawner: Arc::new(crate::relay::spawn::launch::NoSpawner),
