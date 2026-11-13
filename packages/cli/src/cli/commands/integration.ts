@@ -29,13 +29,13 @@ import { UNBOUND_CREDENTIAL_ORIGIN } from '../lib/relaycast-origin-binding.js';
 import type { SdkClientOptions } from '../lib/sdk-client.js';
 import {
   MIN_RELAYFILE_VERSION,
-  RelayfileControlPlaneClient,
   RelayfileControlPlaneError,
   assertRelayfileVersion,
   type RelayfileClientOptions,
 } from '@relayfile/client';
 import { resolveBaseUrl, resolveWorkspaceKey, resolveWorkspaceTransport } from '../lib/sdk-client.js';
 import { describeError } from '../lib/describe-error.js';
+import { RELAYFILE_DAEMON_STALLED, RecoveringControlPlane } from '../lib/relayfile-stall-recovery.js';
 
 // Re-export the version gate so existing tests importing it from this module
 // (and any callers) keep working after it moved to the published client package.
@@ -178,7 +178,7 @@ export type IntegrationCommandDependencies = SdkCommandDeps & {
  * socket connection / daemon auto-start happens on first integration op, not at
  * import time. One instance is enough — it negotiates the daemon version once.
  */
-let sharedClient: RelayfileControlPlaneClient | undefined;
+let sharedClient: RecoveringControlPlane | undefined;
 const RELAYFILE_WEBHOOK_BINDINGS_API_VERSION = 3;
 const RELAYFILE_INTEGRATION_REQUEST_TIMEOUT_MS = 30_000;
 
@@ -195,13 +195,15 @@ export function resetSharedRelayfileControlPlaneClientForTests(): void {
   sharedClient = undefined;
 }
 
-function controlPlaneClient(options?: RelayfileClientOptions): RelayfileControlPlaneClient {
-  if (options) return new RelayfileControlPlaneClient(relayfileIntegrationClientOptions(options));
+function controlPlaneClient(options?: RelayfileClientOptions): RecoveringControlPlane {
+  if (options) {
+    return new RecoveringControlPlane({ clientOptions: relayfileIntegrationClientOptions(options) });
+  }
   if (!sharedClient) {
     // Provider status can include a Cloud request plus optional runtime
     // enrichment. Keep subscription provisioning tolerant of a slow upstream
     // while the daemon independently bounds that optional enrichment.
-    sharedClient = new RelayfileControlPlaneClient(relayfileIntegrationClientOptions());
+    sharedClient = new RecoveringControlPlane({ clientOptions: relayfileIntegrationClientOptions() });
   }
   return sharedClient;
 }
@@ -252,12 +254,18 @@ function readProviderConnected(payload: unknown, provider: string): boolean {
  * no stdout parsing. The daemon is auto-started on first use (or required running
  * under RELAYFILE_REQUIRE_DAEMON=1). The wire contract is version-negotiated, so
  * field/method drift is a typed error, not a silent runtime surprise.
+ *
+ * Read-only / idempotent calls go through `cp.run`, which restarts a daemon
+ * that accepted the request but never answered and retries once (#1952).
+ * Mutations (connect, bind, unbind, webhook create/delete) go through
+ * `cp.mutate`: never retried, and recorded so no recovery stops the daemon
+ * while they are in flight.
  */
 export function defaultRelayfileBridge(options?: RelayfileClientOptions): RelayfileBridge {
-  const client = controlPlaneClient(options);
+  const cp = controlPlaneClient(options);
   return {
     async isConnected(provider) {
-      const entry = await client.providerStatus(provider);
+      const entry = await cp.run('provider-status', (c) => c.providerStatus(provider));
       if (!entry) return false;
       // provider-status returns the connection entry only when it's in the
       // connected set, but re-check its state to honor non-connected states.
@@ -266,25 +274,27 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
     async connect(provider) {
       // OAuth runs in the daemon; on a local daemon the browser still opens
       // (noOpen defaults false). The returned output carries any connect URL.
-      const { output } = await client.connect({ provider });
+      const { output } = await cp.mutate('connect', (c) => c.connect({ provider }));
       if (output?.trim()) process.stderr.write(output.endsWith('\n') ? output : `${output}\n`);
     },
     async bind(input) {
-      await client.bind({
-        provider: input.provider,
-        resource: input.resource,
-        channel: input.channel,
-        webhookId: input.webhookId,
-        webhookToken: input.webhookToken,
-        subscriptionId: input.subscriptionId,
-        webhookSubscriptionId: input.webhookSubscriptionId,
-        ...(input.webhookSubscriptionWorkspaceId
-          ? { webhookSubscriptionWorkspaceId: input.webhookSubscriptionWorkspaceId }
-          : {}),
-      });
+      await cp.mutate('bind', (c) =>
+        c.bind({
+          provider: input.provider,
+          resource: input.resource,
+          channel: input.channel,
+          webhookId: input.webhookId,
+          webhookToken: input.webhookToken,
+          subscriptionId: input.subscriptionId,
+          webhookSubscriptionId: input.webhookSubscriptionId,
+          ...(input.webhookSubscriptionWorkspaceId
+            ? { webhookSubscriptionWorkspaceId: input.webhookSubscriptionWorkspaceId }
+            : {}),
+        })
+      );
     },
     async listBindings() {
-      const bindings = await client.listBindings();
+      const bindings = await cp.run('list-bindings', (c) => c.listBindings());
       // relayfile keys bindings on `pathGlob`; surface it as `resource` so callers
       // (find/unbind) match on the canonical glob.
       return bindings.map((b): RelayfileBinding => {
@@ -301,10 +311,10 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
       });
     },
     async unbind(provider, resource) {
-      await client.unbind(provider, resource);
+      await cp.mutate('unbind', (c) => c.unbind(provider, resource));
     },
     async resolveResourcePath(provider, resource) {
-      const resolved = await client.resolvePath(provider, resource);
+      const resolved = await cp.run('resolve-path', (c) => c.resolvePath(provider, resource));
       const pathGlob = resolved.pathGlob?.trim();
       if (!pathGlob) {
         throw new Error(`relayfile could not resolve a path glob for ${provider} "${resource}".`);
@@ -315,8 +325,10 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
     async ensureCompatible() {
       // Connecting negotiates the daemon version via /v1/hello; a too-old daemon
       // (or one that can't start) throws a typed, actionable error here.
-      await client.ensureReady();
-      const hello = await client.hello();
+      const hello = await cp.run('hello', async (c) => {
+        await c.ensureReady();
+        return c.hello();
+      });
       if (!hello.supportedApiVersions?.includes(RELAYFILE_WEBHOOK_BINDINGS_API_VERSION)) {
         throw new RelayfileControlPlaneError(
           'VERSION_INCOMPATIBLE',
@@ -326,7 +338,9 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
     },
     async resolveWritebackBinding(channel) {
       try {
-        const { url, secret, workspaceId } = await client.writebackSecret(channel);
+        const { url, secret, workspaceId } = await cp.run('writeback-secret', (c) =>
+          c.writebackSecret(channel)
+        );
         if (!url?.trim() || !secret?.trim()) return undefined;
         return { url: url.trim(), secret: secret.trim(), workspaceId: workspaceId?.trim() || undefined };
       } catch (err) {
@@ -336,7 +350,9 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
         // failure instead of a misleading "log in / pass --bridge-url" remedy.
         if (
           err instanceof RelayfileControlPlaneError &&
-          (err.code === 'DAEMON_UNAVAILABLE' || err.code === 'VERSION_INCOMPATIBLE')
+          (err.code === 'DAEMON_UNAVAILABLE' ||
+            err.code === RELAYFILE_DAEMON_STALLED ||
+            err.code === 'VERSION_INCOMPATIBLE')
         ) {
           throw err;
         }
@@ -344,13 +360,15 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
       }
     },
     async createWebhookSubscription(input) {
-      return client.createWebhookSubscription(input);
+      return cp.mutate('create-webhook-subscription', (c) => c.createWebhookSubscription(input));
     },
     async deleteWebhookSubscription(subscriptionId, workspace) {
-      await client.deleteWebhookSubscription(subscriptionId, workspace);
+      await cp.mutate('delete-webhook-subscription', (c) =>
+        c.deleteWebhookSubscription(subscriptionId, workspace)
+      );
     },
     async listWebhookSubscriptions(workspace?: string) {
-      return client.listWebhookSubscriptions(workspace);
+      return cp.run('webhook-subscriptions', (c) => c.listWebhookSubscriptions(workspace));
     },
   };
 }
