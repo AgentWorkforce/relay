@@ -94,6 +94,7 @@ mod socket_request_tests {
             vec!["read", "m1", build.flag().as_str()],
             [&["codex-stop-hook", "--profile=-acme"][..], &socket].concat(),
             [&["claude-session-hook", "--profile=-acme"][..], &socket].concat(),
+            [&["claude-stop-hook", "--profile=-acme"][..], &socket].concat(),
             vec![
                 "devin-spawn-host",
                 "--executable",
