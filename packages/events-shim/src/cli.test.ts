@@ -11,17 +11,37 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { configPath, HOOK_COMMAND, runCli, skillText, type CliIo } from './cli.js';
+import {
+  CODEX_HOOK_COMMAND,
+  configPath,
+  HOOK_COMMAND,
+  runCli,
+  skillText,
+  TEMP_WORKSPACE_SECONDS,
+  type CliIo,
+} from './cli.js';
 import { handleEventsShimRequest } from './http.js';
 import { MemoryEventsShimStore } from './memory-store.js';
+
+const VERSION = (
+  JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }
+).version;
 
 const BASE = 'https://shim.test/api/v1/events-shim';
 
 /** A real inbox served in-process, and a CLI environment pointed at a temp HOME. */
 async function setupWorld(
-  options: { claude?: boolean; socket?: boolean; stdin?: string; addFails?: boolean } = {}
+  options: {
+    claude?: boolean;
+    socket?: boolean;
+    stdin?: string;
+    addFails?: boolean;
+    core?: boolean;
+    badChecksum?: boolean;
+    inboxWorkspace?: boolean;
+  } = {}
 ) {
   const store = new MemoryEventsShimStore();
   const shimFetch: typeof fetch = async (input, init) => {
@@ -29,7 +49,11 @@ async function setupWorld(
     const path = new URL(request.url).pathname.replace('/api/v1/events-shim', '');
     return (
       (await handleEventsShimRequest(request, path, {
-        deps: { store, sleep: async () => {} },
+        deps: {
+          store,
+          sleep: async () => {},
+          fetchImpl: async () => Response.json({ ok: true }, { status: 202 }),
+        },
         urls: {
           mcpUrl: (token) => `${BASE}/t/${token}/mcp`,
           hookUrl: (token, mode) => `${BASE}/h/${token}${mode === 'open' ? '' : `/${mode}`}`,
@@ -48,12 +72,62 @@ async function setupWorld(
   const err: string[] = [];
   const runs: string[][] = [];
   const killed: number[] = [];
+  const spawned: string[][] = [];
+  const appServerCalls: [string, unknown][] = [];
   const listeners = new Set<number>([777]);
+  /** A fake Agent Relay core: its bridge calls, whether it runs, the agents it lists. */
+  const core = {
+    running: options.core ?? false,
+    calls: [] as [string, unknown][],
+    agents: [] as { name: string; target: { kind: string; id: string } }[],
+    sessions: [] as {
+      target: { kind: string; id: string };
+      live: boolean;
+      updated_at_ms: number;
+      registration: { name: string } | null;
+    }[],
+    hooks: 0,
+  };
+  const logs: string[] = [];
+  const mints: unknown[] = [];
+  const services: string[][] = [];
+  const downloads: string[] = [];
   const io: CliIo = {
     env: { HOME: home },
     stdout: (line) => out.push(line),
     stderr: (line) => err.push(line),
-    fetchImpl: shimFetch,
+    fetchImpl: async (input, init) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.endsWith('/workspace') && options.inboxWorkspace) {
+        return Response.json({
+          workspace_id: '1',
+          workspace_key: 'rk_live_frominbox',
+          workspace_expires_at: '2026-11-20T00:00:00.000Z',
+          temporary: true,
+        });
+      }
+      if (url === 'https://cast.agentrelay.com/v1/workspaces') {
+        mints.push(JSON.parse(String(init?.body)));
+        return Response.json({
+          ok: true,
+          data: {
+            workspace_id: 'ws1',
+            api_key: `rk_live_temp${mints.length}`,
+            expires_at: '2026-11-19T14:00:00.000Z',
+          },
+        });
+      }
+      if (url.startsWith('https://github.com/AgentWorkforce/relay/releases/download/')) {
+        const binary = new Uint8Array([0x7f, 0x45, 0x4c, 0x46]);
+        if (!url.endsWith('.sha256')) {
+          downloads.push(url);
+          return new Response(binary);
+        }
+        const sum = options.badChecksum ? '0'.repeat(64) : createHash('sha256').update(binary).digest('hex');
+        return new Response(`${sum}  agent-relay-node\n`);
+      }
+      return shimFetch(input, init);
+    },
     run: (file, args) => {
       runs.push([file, ...args]);
       if (options.claude === false) return false;
@@ -68,7 +142,67 @@ async function setupWorld(
     readStdin: async () => options.stdin ?? '',
     pid: 4242,
     pidAlive: (pid) => pid === 4242 || pid === 777,
-    claudeAncestor: () => 777,
+    ancestor: () => 777,
+    spawnDetached: vi.fn((file: string, args: string[]) => {
+      spawned.push([file, ...args]);
+      if (args[0] === 'serve') core.running = true;
+    }),
+    coreBinaries: vi.fn(() => ['/core/agent-relay-node']),
+    runCapture: vi.fn((_file: string, args: string[]) => {
+      if (!core.running) return null;
+      const params = JSON.parse(args[3] ?? '{}') as { name?: string };
+      core.calls.push([args[1], params]);
+      const result =
+        args[1] === 'agents.list'
+          ? { agents: core.agents }
+          : args[1] === 'sessions.list'
+            ? { sessions: core.sessions }
+            : args[1] === 'agents.webhook.create'
+              ? (core.hooks += 1) === 1
+                ? { id: 'wh1', url: 'https://cast.agentrelay.com/v1/hooks/wh1', secret: null, created: false }
+                : {
+                    id: `wh${core.hooks}`,
+                    url: `https://cast.agentrelay.com/v1/hooks/wh${core.hooks}`,
+                    secret: 'wh_live_0123456789abcdef',
+                    created: true,
+                  }
+              : {};
+      return JSON.stringify({ result });
+    }),
+    appendLog: vi.fn((line: string) => {
+      logs.push(line);
+    }),
+    userService: {
+      install: vi.fn((args: string[]) => {
+        services.push(['install', ...args]);
+        return true;
+      }),
+      remove: vi.fn(() => {
+        services.push(['remove']);
+        return true;
+      }),
+    },
+    codexAppServer: async (work) =>
+      work(async (method, params) => {
+        appServerCalls.push([method, params]);
+        if (method === 'hooks/list') {
+          return {
+            data: [
+              {
+                hooks: [
+                  {
+                    command: 'npx -y @agent-relay/events-shim@latest link --codex-hook',
+                    key: '/h/hooks.json:session_start:0:0',
+                    currentHash: 'sha256:abc',
+                    trustStatus: 'untrusted',
+                  },
+                ],
+              },
+            ],
+          };
+        }
+        return {};
+      }),
     listDir: (path) => {
       try {
         return readdirSync(path);
@@ -102,7 +236,26 @@ async function setupWorld(
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
-  return { store, io, out, err, runs, killed, listeners, home, created, post, shimFetch };
+  return {
+    store,
+    io,
+    out,
+    err,
+    runs,
+    killed,
+    listeners,
+    spawned,
+    appServerCalls,
+    home,
+    created,
+    post,
+    shimFetch,
+    core,
+    logs,
+    mints,
+    downloads,
+    services,
+  };
 }
 
 describe('events-shim CLI', () => {
@@ -136,7 +289,7 @@ describe('events-shim CLI', () => {
     const printed = w.out.join('\n');
     expect(printed).toContain('No supported agent CLI found here');
     w.out.length = 0;
-    expect(await runCli(['setup', w.created.mcp_url, '--codex'], w.io)).toBe(1); // codex itself is absent here
+    expect(await runCli(['setup', w.created.mcp_url, '--cursor'], w.io)).toBe(0);
     expect(w.out.join('\n')).toContain('Agent Relay (running here) injects each post');
   });
 
@@ -193,7 +346,7 @@ describe('events-shim CLI', () => {
       url,
       enabled: true,
     });
-    expect(json(['.config', 'muse', 'settings.json']).mcpServers.webhooks).toEqual({ url });
+    expect(w.runs).toContainEqual(['muse', 'mcp', 'add', 'webhooks', '--url', url, '--user']);
     expect(readFileSync(join(w.home, '.codex', 'skills', 'agent-relay-webhooks', 'SKILL.md'), 'utf8')).toBe(
       skillText()
     );
@@ -355,8 +508,8 @@ describe('events-shim CLI', () => {
     w.io.exists = (path) => path === cursor; // only the Cursor config already exists
     expect(await runCli(['setup', w.created.mcp_url, '--cursor'], w.io)).toBe(0);
     expect(modeOf(cursor)).toBe(0o600);
-    const fresh = join(w.home, '.config', 'muse', 'settings.json');
-    expect(await runCli(['setup', w.created.mcp_url, '--muse'], w.io)).toBe(0);
+    const fresh = join(w.home, '.config', 'opencode', 'opencode.json');
+    expect(await runCli(['setup', w.created.mcp_url, '--opencode'], w.io)).toBe(0);
     expect(modeOf(fresh)).toBe(0o600);
 
     // Exists but unreadable: left alone, with the manual step.
@@ -456,6 +609,352 @@ describe('events-shim CLI', () => {
     expect(await runCli(['uninstall', '--claude'], w.io)).toBe(0);
     expect(w.killed).toEqual([777]);
     expect(readdirSync(dir).filter((file) => file.endsWith('.pid'))).toEqual([]);
+  });
+
+  it('setup --codex installs and trusts the SessionStart hook, starts its own core on a temporary workspace; uninstall untrusts it', async () => {
+    const w = await setupWorld();
+    w.io.readText = (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    mkdirSync(join(w.home, '.codex'), { recursive: true });
+    writeFileSync(
+      join(w.home, '.codex', 'hooks.json'),
+      JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'mine' }] }] } })
+    );
+    w.io.exists = (path) => {
+      try {
+        readFileSync(path);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    // An earlier release's core: replaced by this release's.
+    const bin = join(w.home, '.agentworkforce', 'events-shim', 'bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, 'agent-relay-node-0.0.1'), 'old');
+    expect(await runCli(['setup', w.created.mcp_url, '--codex'], w.io)).toBe(0);
+    expect(readdirSync(bin)).toEqual([`agent-relay-node-${VERSION}`]);
+    const hooks = JSON.parse(readFileSync(join(w.home, '.codex', 'hooks.json'), 'utf8')).hooks;
+    expect(hooks.Stop).toEqual([{ hooks: [{ type: 'command', command: 'mine' }] }]);
+    expect(hooks.SessionStart).toEqual([
+      { hooks: [{ type: 'command', command: CODEX_HOOK_COMMAND, timeout: 30 }] },
+    ]);
+    expect(w.appServerCalls).toContainEqual([
+      'config/value/write',
+      {
+        keyPath: 'hooks.state',
+        mergeStrategy: 'upsert',
+        value: { '/h/hooks.json:session_start:0:0': { trusted_hash: 'sha256:abc' } },
+      },
+    ]);
+    // No core was running: a 7-day workspace was made and a core started on it.
+    expect(w.mints).toEqual([expect.objectContaining({ expires_in_seconds: TEMP_WORKSPACE_SECONDS })]);
+    const config = JSON.parse(readFileSync(configPath(w.io), 'utf8'));
+    expect(config.workspaceKey).toBe('rk_live_temp1');
+    expect(config.workspaceExpiresAt).toBe('2026-11-19T14:00:00.000Z');
+    expect(w.downloads).toHaveLength(1);
+    expect(w.spawned.find((run) => run[1] === 'serve')).toEqual([
+      join(w.home, '.agentworkforce', 'events-shim', 'bin', `agent-relay-node-${VERSION}`),
+      'serve',
+      '--headless',
+    ]);
+    const said = w.out.join('\n');
+    expect(said).toContain(
+      'Start a new Codex session. From its first message on, each post wakes it by itself.'
+    );
+    expect(said).toContain('temporary Agent Relay workspace, deleted 2026-11-19');
+
+    // Setup again: the same workspace, no new download.
+    expect(await runCli(['setup', w.created.mcp_url, '--codex'], w.io)).toBe(0);
+    expect(w.mints).toHaveLength(1);
+    expect(w.downloads).toHaveLength(1);
+    // Setting up another CLI on the same inbox keeps the Codex workspace.
+    expect(await runCli(['setup', w.created.mcp_url, '--claude'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).workspaceKey).toBe('rk_live_temp1');
+
+    // The core adds its own Codex hooks; uninstall removes them and stops the core it started.
+    const core = join(w.home, '.agentworkforce', 'events-shim', 'bin', `agent-relay-node-${VERSION}`);
+    const withCore = JSON.parse(readFileSync(join(w.home, '.codex', 'hooks.json'), 'utf8'));
+    withCore.hooks.Stop.push({ hooks: [{ type: 'command', command: `${core} codex-stop-hook` }] });
+    withCore.hooks.PostToolUse = [{ hooks: [{ type: 'command', command: `'${core}' codex-stop-hook` }] }];
+    writeFileSync(join(w.home, '.codex', 'hooks.json'), JSON.stringify(withCore));
+    const runCapture = w.io.runCapture;
+    w.io.runCapture = (file, args) =>
+      args[1] === 'status.get'
+        ? JSON.stringify({ result: { daemon: { pid: 991 } } })
+        : runCapture(file, args);
+    w.io.processArgs = (pid) => (pid === 991 ? `${core} serve --headless` : null);
+    expect(await runCli(['uninstall', '--codex'], w.io)).toBe(0);
+    expect(w.killed).toEqual([991]);
+    const left = JSON.parse(readFileSync(join(w.home, '.codex', 'hooks.json'), 'utf8')).hooks;
+    expect(left.SessionStart).toBeUndefined();
+    expect(left.Stop).toEqual([{ hooks: [{ type: 'command', command: 'mine' }] }]);
+    expect(left.PostToolUse).toBeUndefined(); // a shell-quoted core path too
+    expect(w.appServerCalls).toContainEqual([
+      'config/value/write',
+      { keyPath: 'hooks.state."/h/hooks.json:session_start:0:0"', mergeStrategy: 'replace', value: null },
+    ]);
+  });
+
+  it("setup --codex uses the inbox's own temporary workspace when the inbox service has one", async () => {
+    const w = await setupWorld({ inboxWorkspace: true });
+    expect(await runCli(['setup', w.created.mcp_url, '--codex'], w.io)).toBe(0);
+    expect(w.mints).toEqual([]);
+    const config = JSON.parse(readFileSync(configPath(w.io), 'utf8'));
+    expect(config).toMatchObject({
+      workspaceKey: 'rk_live_frominbox',
+      workspaceExpiresAt: '2026-11-20T00:00:00.000Z',
+    });
+    expect(w.out.join('\n')).toContain('deleted 2026-11-20');
+  });
+
+  it('setup wakes Devin, opencode and Codex through one core and runs the watcher as a user service', async () => {
+    const w = await setupWorld({ core: true });
+    // events-shim's own core is the one running: its settings are made to fit.
+    const runCapture = w.io.runCapture;
+    w.io.runCapture = vi.fn((file: string, args: string[]) =>
+      args[1] === 'status.get' ? JSON.stringify({ result: { daemon: { pid: 991 } } }) : runCapture(file, args)
+    );
+    w.io.processArgs = (pid) =>
+      pid === 991
+        ? `${join(w.home, '.agentworkforce', 'events-shim', 'bin', `agent-relay-node-${VERSION}`)} serve --headless`
+        : null;
+    expect(await runCli(['setup', w.created.mcp_url, '--devin', '--opencode', '--codex'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).wakeKinds).toEqual([
+      'codex',
+      'devin',
+      'opencode-open',
+    ]);
+    expect(w.services).toEqual([['install', 'serve']]);
+    expect(w.core.calls).toContainEqual([
+      'settings.set',
+      { auto_activate: true, opencode_auto_activate: true },
+    ]);
+    const said = w.out.join('\n');
+    expect(said).toContain(
+      'opencode, Devin: open a session; the newest one is woken by each post by itself.'
+    );
+    expect(said).toContain(
+      'Devin: MCP server "webhooks" added; its newest open session is woken by every post'
+    );
+
+    // Adding Muse later keeps the others.
+    expect(await runCli(['setup', w.created.mcp_url, '--muse'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).wakeKinds).toEqual([
+      'codex',
+      'devin',
+      'muse-open',
+      'opencode-open',
+    ]);
+
+    // Removing some keeps the watcher; removing the last stops it and the core.
+    expect(await runCli(['uninstall', '--devin', '--muse', '--opencode'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).wakeKinds).toEqual(['codex']);
+    expect(w.services).toEqual([
+      ['install', 'serve'],
+      ['install', 'serve'],
+    ]);
+    expect(await runCli(['uninstall', '--codex'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).wakeKinds).toBeUndefined();
+    expect(w.services.at(-1)).toEqual(['remove']);
+    expect(w.killed).toContain(991);
+  });
+
+  it("never changes Desktop's core settings", async () => {
+    const w = await setupWorld({ core: true });
+    expect(await runCli(['setup', w.created.mcp_url, '--opencode'], w.io)).toBe(0);
+    expect(w.core.calls.some(([method]) => method === 'settings.set')).toBe(false);
+  });
+
+  it('serve links the newest open session, hands the link to a newer one, and moves it when that one closes', async () => {
+    const w = await setupWorld({ core: true });
+    await runCli(['setup', w.created.mcp_url, '--opencode', '--devin'], w.io);
+    w.core.hooks = 1; // every webhook made from here on comes with its secret
+    const linked: string[] = [];
+    let linkFails = false;
+    const fetchBefore = w.io.fetchImpl;
+    w.io.fetchImpl = async (input, init) => {
+      const text = typeof init?.body === 'string' ? init.body : '';
+      if (text.includes('link_relay_wake')) {
+        if (linkFails) return new Response('down', { status: 503 });
+        linked.push(JSON.parse(text).params.arguments.url);
+      }
+      return fetchBefore(input, init);
+    };
+    const session = (kind: string, id: string, at: number, live = true) => ({
+      target: { kind, id },
+      live,
+      updated_at_ms: at,
+      registration: { name: `${kind}-${id}` },
+    });
+    const byId = (id: string) => w.core.sessions.find((s) => s.target.id === id)!;
+    // A Claude session (not set up here), a closed one, and two open ones: the more recently active open one wins.
+    w.core.sessions.push(
+      session('claude', 'c1', 900),
+      session('opencode-open', 'ses_old', 500, false),
+      session('opencode-open', 'ses_a', 100),
+      session('devin', 'dv_b', 200)
+    );
+    let now = Date.parse('2026-11-12T10:00:00Z');
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const names = () =>
+      w.core.calls
+        .filter(([m]) => m === 'agents.webhook.create')
+        .map(([, p]) => (p as { name: string }).name);
+    // One serve process; between its passes the sessions change.
+    const steps = [
+      // A newer session opens (its activity time is older): it takes the link.
+      () => w.core.sessions.push(session('opencode-open', 'ses_c', 50)),
+      // Nothing changes: the link stays.
+      () => undefined,
+      // Another opens while linking fails: the old link stays for now…
+      () => {
+        linkFails = true;
+        w.core.sessions.push(session('devin', 'dv_d', 10));
+      },
+      // …and the link is tried again a minute later.
+      () => {
+        linkFails = false;
+        now += 61_000;
+      },
+      // The linked one closes: the most recently opened still-open one (ses_c, not the more active dv_b) gets it.
+      () => {
+        byId('dv_d').live = false;
+      },
+      // The inbox changes: the same open session is linked again for it.
+      () => {
+        const saved = JSON.parse(readFileSync(configPath(w.io), 'utf8'));
+        writeFileSync(configPath(w.io), JSON.stringify({ ...saved, mcpUrl: `${saved.mcpUrl}/` }));
+      },
+    ];
+    w.io.sleep = vi.fn(async () => {
+      const step = steps.shift();
+      if (!step) throw new Error('stop');
+      step();
+    });
+    await runCli(['serve'], w.io).catch(() => 0);
+    vi.restoreAllMocks();
+    expect(names()).toEqual([
+      'devin-dv_b',
+      'opencode-open-ses_c',
+      'devin-dv_d', // failed
+      'devin-dv_d',
+      'opencode-open-ses_c',
+      'opencode-open-ses_c', // new inbox
+    ]);
+    expect(linked).toHaveLength(5);
+  });
+
+  it('uninstalling the last CLI woken through the core unlinks the inbox', async () => {
+    const w = await setupWorld({ core: true });
+    await runCli(['setup', w.created.mcp_url, '--opencode'], w.io);
+    const calls: string[] = [];
+    const fetchBefore = w.io.fetchImpl;
+    w.io.fetchImpl = async (input, init) => {
+      const text = typeof init?.body === 'string' ? init.body : '';
+      if (text.includes('"tools/call"')) calls.push(JSON.parse(text).params.name);
+      return fetchBefore(input, init);
+    };
+    expect(await runCli(['uninstall', '--opencode'], w.io)).toBe(0);
+    expect(calls).toContain('unlink_relay_wake');
+  });
+
+  it('setup --codex refuses a core download that does not match its checksum', async () => {
+    const w = await setupWorld({ badChecksum: true });
+    expect(await runCli(['setup', w.created.mcp_url, '--codex'], w.io)).toBe(1);
+    expect(w.out.join('\n')).toContain('did not match its checksum');
+    expect(w.spawned).toEqual([]);
+  });
+
+  it('setup --codex uses a core that is already running (Desktop) and makes no workspace', async () => {
+    const w = await setupWorld({ core: true });
+    expect(await runCli(['setup', w.created.mcp_url, '--codex'], w.io)).toBe(0);
+    expect(w.mints).toEqual([]);
+    expect(w.spawned).toEqual([]);
+    expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).workspaceKey).toBeUndefined();
+    expect(w.out.join('\n')).not.toContain('temporary');
+    // Desktop's core is never stopped by uninstall.
+    w.io.runCapture = () => JSON.stringify({ result: { daemon: { pid: 992 } } });
+    w.io.processArgs = (pid) => (pid === 992 ? '/usr/lib/agent-relay/agent-relay-desktop' : null);
+    expect(await runCli(['uninstall', '--codex'], w.io)).toBe(0);
+    expect(w.killed).toEqual([]);
+  });
+
+  it('the Codex hook starts a detached link; link makes the session webhook through the core and links the inbox', async () => {
+    const thread = '01a1d1a0-39f8-7491-8408-45def74d5a7c';
+    const w = await setupWorld({
+      core: true,
+      stdin: JSON.stringify({ session_id: thread, hook_event_name: 'SessionStart' }),
+    });
+    w.io.readText = (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    await runCli(['setup', w.created.mcp_url, '--claude'], w.io);
+    expect(await runCli(['link', '--codex-hook'], w.io)).toBe(0);
+    expect(w.spawned).toHaveLength(1);
+    expect(w.spawned[0]!.slice(2)).toEqual(['link', '--kind', 'codex', '--session', thread]);
+
+    // The session shows up on the relay after a while; it already had a webhook, so a new one is made.
+    let polls = 0;
+    w.io.sleep = async () => {
+      polls += 1;
+      if (polls === 2) w.core.agents.push({ name: 'codex-01a1', target: { kind: 'codex', id: thread } });
+    };
+    let linked: unknown = null;
+    const fetchBefore = w.io.fetchImpl;
+    w.io.fetchImpl = async (input, init) => {
+      const text = typeof init?.body === 'string' ? init.body : '';
+      if (text.includes('link_relay_wake')) linked = JSON.parse(text).params.arguments;
+      return fetchBefore(input, init);
+    };
+    // Someone else's webhook on the session is never replaced.
+    expect(await runCli(['link', '--kind', 'codex', '--session', thread], w.io)).toBe(1);
+    expect(w.logs.at(-1)).toContain('already has its own relay webhook');
+    expect(w.core.calls.map(([method]) => method)).not.toContain('agents.webhook.revoke');
+    // One events-shim made earlier is replaced (its secret was shown once).
+    const saved = JSON.parse(readFileSync(configPath(w.io), 'utf8'));
+    writeFileSync(configPath(w.io), JSON.stringify({ ...saved, ownWebhooks: { 'codex-01a1': 'wh1' } }));
+    w.core.hooks = 0;
+    w.core.calls.length = 0;
+    expect(await runCli(['link', '--kind', 'codex', '--session', thread], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).ownWebhooks).toEqual({ 'codex-01a1': 'wh2' });
+    const methods = w.core.calls.map(([method]) => method);
+    expect(methods).toContain('agents.webhook.revoke');
+    expect(w.core.calls.filter(([method]) => method === 'agents.webhook.create')).toEqual([
+      ['agents.webhook.create', { name: 'codex-01a1' }],
+      ['agents.webhook.create', { name: 'codex-01a1' }],
+    ]);
+    expect(linked).toEqual({
+      url: 'https://cast.agentrelay.com/v1/hooks/wh2',
+      secret: 'wh_live_0123456789abcdef',
+    });
+    expect(w.logs.at(-1)).toContain('linked codex-01a1');
+    // The inbox call fails after the webhook was made: it is still recorded as ours, so a retry replaces it.
+    const fetchOk = w.io.fetchImpl;
+    w.io.fetchImpl = async (input, init) =>
+      typeof init?.body === 'string' && init.body.includes('link_relay_wake')
+        ? new Response('down', { status: 503 })
+        : fetchOk(input, init);
+    expect(await runCli(['link', '--kind', 'codex', '--session', thread], w.io)).toBe(1);
+    expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).ownWebhooks).toEqual({ 'codex-01a1': 'wh3' });
+  });
+
+  it('link gives up quietly when no core can run and the session never appears', async () => {
+    const w = await setupWorld();
+    await runCli(['setup', w.created.mcp_url, '--claude'], w.io);
+    expect(await runCli(['link', '--kind', 'codex', '--session', 'sess-123456'], w.io)).toBe(1);
+    expect(w.logs.at(-1)).toContain('no Agent Relay workspace');
+    expect(await runCli(['link', '--kind', 'Codex!', '--session', 'x'], w.io)).toBe(2);
   });
 
   it('a duplicate signed delivery says so without suggesting a new key', async () => {

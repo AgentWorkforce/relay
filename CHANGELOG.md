@@ -5,7 +5,16 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `@agent-relay/events-shim`: `setup --codex` makes every new Codex session wake on each webhook post by itself from its first message, without Agent Relay Desktop: setup runs a headless Agent Relay core (Desktop's when running, else a checksum-verified `agent-relay-node` on a 7-day temporary workspace) and a SessionStart hook links each session to the inbox. Wake messages for provider posts now say no reply is needed.
+- `@agent-relay/events-shim`: `setup --devin`, `--grok`, `--opencode` and `--muse` wake those CLIs' newest open session on each post the same way, through one Agent Relay core; `events-shim serve` (run by setup as a systemd user service or LaunchAgent) keeps the core running and moves the link to the newest open session.
+
+### Fixed
+
+- `@agent-relay/events-shim`: `setup --muse` adds the MCP server with `muse mcp add`; it used to write a settings file Muse refuses to start with.
 
 ## [18.5.0] - 2026-11-12
 
