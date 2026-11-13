@@ -306,6 +306,11 @@ impl SpawnFacet for OpenCodeAdapter {
         target.kind == SessionKind::OpenCode
     }
 
+    /// Its server's `prompt_async` is the session's own user input.
+    fn native_input(&self, target: &Target) -> bool {
+        self.owns(target)
+    }
+
     fn launch(&self, launch: &Launch, started: Started) -> Result<Launched, LaunchError> {
         let executable = self.usable()?;
         let directory = std::fs::canonicalize(&launch.directory).map_err(|error| {

@@ -382,6 +382,11 @@ impl SpawnFacet for GrokAdapter {
         target.kind == SessionKind::Grok
     }
 
+    /// Its ACP `session/prompt` is the session's own user input.
+    fn native_input(&self, target: &Target) -> bool {
+        self.owns(target)
+    }
+
     fn launch(&self, launch: &Launch, started: Started) -> Result<Launched, LaunchError> {
         let executable = self.usable()?;
         let failed = |what: &str, error: &dyn std::fmt::Display| {

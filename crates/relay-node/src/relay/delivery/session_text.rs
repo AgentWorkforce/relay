@@ -225,10 +225,13 @@ impl Core {
     /// The text for `delivery` (as `saved`, with its attachments saved,
     /// when they were), the reply hint in it, and whether it is a native
     /// turn (`DeliveryRoute::native`). The verified owner's
-    /// message is a plain user turn, as they wrote it; everyone else's, the
-    /// spawn's requester unless opted in, keeps the attribution, the reply
-    /// hint and the host's note. Opted-in requester input retains reply
-    /// context, as does a teammate's direct message that the session's
+    /// message is a plain user turn, as they wrote it, in Codex and Claude;
+    /// to any other agent spawned here whose harness takes native input
+    /// (Grok, Devin, OpenCode) it is native input that keeps the reply
+    /// context. Everyone else's, the spawn's requester unless opted in,
+    /// keeps the attribution, the reply hint and the host's note. Opted-in
+    /// requester input retains reply context, as does a teammate's direct
+    /// message that the session's
     /// Claude plugin starts as a user turn. The requester's other direct
     /// messages (`spawn::from_requester`) also carry `policy::OWNER_LINE`
     /// under their attribution; everyone else's is a peer's.
@@ -267,8 +270,10 @@ impl Core {
             (Some(hint), Some(note)) => Some(format!("{hint}\n{note}")),
             (hint, note) => hint.map(str::to_string).or(note),
         };
-        let native =
-            !via_webhook && !via_integration && self.spawner_native_turn(registration, delivery);
+        let native = !via_webhook
+            && !via_integration
+            && (self.spawner_native_turn(registration, delivery)
+                || self.owner_to_spawned(registration, delivery).await);
         let teammate = !native
             && !via_webhook
             && !via_integration

@@ -5,7 +5,15 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Changed
+
+- `agent-relay-node`: spawned Grok, Devin and OpenCode agents now take direct messages from the agent that spawned them, and from the machine owner (desktop or phone), as native input over their own prompt channel (ACP `session/prompt`, OpenCode `prompt_async`), with the reply context kept, instead of as peer messages. Codex and Claude already did. Muse still gets owner framing: its spawned TUI can only be reached through Muse's peer-message courier.
+
+### Fixed
+
+- `agent-relay-node`: a spawned Codex, Claude, Grok, Devin or OpenCode agent now takes its spawning agent's and its owner's direct messages as native input when they reply in a thread of the DM, or when the message was read from the delivery queue instead of pushed. Both used to arrive as peer messages. A spawned Muse agent now gives such messages from its spawning agent the owner framing instead of the peer framing. Group DMs, channel posts and mentions are unchanged.
 
 ## [18.6.1] - 2026-11-13
 

@@ -351,6 +351,12 @@ impl SpawnFacet for DevinAdapter {
     fn owns(&self, target: &Target) -> bool {
         target.kind == SessionKind::Devin && is_session_id(&target.id)
     }
+
+    /// Its ACP host's `session/prompt` is the session's own user input.
+    fn native_input(&self, target: &Target) -> bool {
+        self.owns(target)
+    }
+
     fn launch(&self, launch: &Launch, started: Started) -> Result<Launched, LaunchError> {
         // Refused with the sentence alone: there is no launch to diagnose.
         if let Some(reason) = platform::unsupported(DESCRIPTOR.label) {
