@@ -1388,11 +1388,15 @@ impl ConnectState {
     /// pending message ids remain available for this startup reconciliation.
     /// Startup reconciliation of joined sessions whose saved expiry passed
     /// while the core was stopped. A host may have extended the room
-    /// meanwhile, and only Cloud knows, so a session is closed here only once
-    /// it is past the grace an unreachable Cloud is given: the first poll
-    /// confirms the rest with Cloud (`Core::confirm_connect_expiry`) before it
-    /// reads, injects or settles anything for them, and closes them, with
-    /// their pending handoffs, if Cloud says they are over.
+    /// meanwhile, and only Cloud knows, so no session is closed here: the
+    /// first poll confirms each with Cloud (`Core::confirm_connect_expiry`)
+    /// before it reads, injects or settles anything for it, and closes it,
+    /// with the expired-room notice, only when Cloud says it is over, or when
+    /// Cloud cannot answer and the session is past [`CONNECT_EXPIRY_GRACE_MS`].
+    /// A session already past that grace has its unaccepted terminal handoffs
+    /// cancelled now, so none becomes a turn before Cloud answers; their
+    /// ledger entries stay, so a room Cloud says was extended gets them
+    /// handed over again.
     pub(crate) fn reconcile_expired(&mut self, injector: &dyn crate::relay::inject::Injector) {
         let now = Utc::now().timestamp_millis();
         let expired: Vec<_> = self
@@ -1406,20 +1410,9 @@ impl ConnectState {
             .cloned()
             .collect();
         for session in expired {
-            let pending = self.cancellable_pending_for(&session.agent_id);
-            if self
-                .remove(&session.target, Some(&session.agent_id))
-                .ok()
-                .flatten()
-                .is_none()
-            {
-                continue;
-            }
-            for message_id in pending {
+            for message_id in self.cancellable_pending_for(&session.agent_id) {
                 injector.cancel_connect(&session.target, &message_id);
             }
-            let (message_id, text) = connect_notice(&session, "connect_expired");
-            let _ = injector.inject_connect(&session.target, &message_id, text);
         }
     }
 
@@ -2885,6 +2878,12 @@ mod tests {
         assert!(!state.expiry_retry_pending("agent-1", 1_000));
     }
 
+    // Past the grace, the host may still have extended the room while this
+    // core was stopped and Cloud may be reachable: the session stays for the
+    // first poll to confirm with Cloud, which closes it, with its notice, only
+    // if Cloud says it is over or cannot answer. Only its unaccepted terminal
+    // handoffs are cancelled now, so none becomes a turn first; their ledger
+    // entries stay to be handed over again if the room is still open.
     #[test]
     fn restart_cancels_only_unaccepted_handoffs_from_an_expired_connect() {
         let temp = tempfile::tempdir().unwrap();
@@ -2932,17 +2931,19 @@ mod tests {
         assert!(restarted.sessions.contains_key(&target.key()));
         restarted.reconcile_expired(&injector);
 
-        assert!(restarted.sessions.is_empty());
-        assert!(restarted.pending_for("agent-guest").is_empty());
+        assert!(restarted.sessions.contains_key(&target.key()));
+        assert_eq!(restarted.pending_for("agent-guest").len(), 2);
         assert_eq!(
             *injector.cancelled.lock().unwrap(),
             [(target.clone(), "message-1".into())]
         );
         assert!(injector.injected.lock().unwrap().is_empty());
-        assert_eq!(injector.connect_injected.lock().unwrap().len(), 1);
-        assert!(injector.connect_injected.lock().unwrap()[0]
-            .2
-            .contains("This Connect expired."));
-        assert!(ConnectState::load(path).sessions.is_empty());
+        assert!(
+            injector.connect_injected.lock().unwrap().is_empty(),
+            "no expired notice before Cloud confirms"
+        );
+        assert!(ConnectState::load(path)
+            .sessions
+            .contains_key(&target.key()));
     }
 }
