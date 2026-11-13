@@ -417,6 +417,42 @@ pub fn hook_answer(config: &CursorConfig, payload: &Value) -> Option<HookAnswer>
     Some(HookAnswer { output, claimed })
 }
 
+/// [`hook_answer`] for a completed turn that also carries `advisory`, the
+/// build's turn-end advisory (`TurnEndAdvisories`): it follows the pending
+/// messages in `followup_message` as a paragraph of its own, or is the
+/// follow-up alone when nothing is pending. A follow-up starts a new turn
+/// and Cursor sends no `stop_hook_active`, so the caller takes it once per
+/// completed stop and never while waiting (`wait`). Without one this is
+/// [`hook_answer`].
+pub fn hook_answer_with(
+    config: &CursorConfig,
+    payload: &Value,
+    advisory: Option<&str>,
+) -> Option<HookAnswer> {
+    let found = hook_answer(config, payload);
+    let Some(advisory) = advisory.filter(|text| {
+        !text.is_empty()
+            && payload["hook_event_name"] == "stop"
+            && payload["status"] == "completed"
+    }) else {
+        return found;
+    };
+    Some(match found {
+        Some(mut answer) => {
+            let joined = match answer.output["followup_message"].as_str() {
+                Some(text) if !text.is_empty() => format!("{text}\n\n{advisory}"),
+                _ => advisory.to_string(),
+            };
+            answer.output["followup_message"] = json!(joined);
+            answer
+        }
+        None => HookAnswer {
+            output: json!({ "followup_message": advisory }),
+            claimed: Vec::new(),
+        },
+    })
+}
+
 /// Moves claimed files back into the inbox: the answer was not written, so
 /// Cursor has none of them and a later boundary may hand them over.
 pub fn unclaim(config: &CursorConfig, claimed: &[PathBuf]) {
