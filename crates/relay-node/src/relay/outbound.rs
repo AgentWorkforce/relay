@@ -2361,6 +2361,9 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let state = tempfile::tempdir().unwrap();
         let runtime = tempfile::tempdir().unwrap();
+        // tempdir() takes the process umask (0755 under 022); the private
+        // runtime target this test models is 0700.
+        fs::set_permissions(runtime.path(), fs::Permissions::from_mode(0o700)).unwrap();
         symlink(state.path(), home.path().join(".agentworkforce")).unwrap();
         symlink(runtime.path(), state.path().join("desktop")).unwrap();
         let pointer = pointer_directory(home.path()).join("relay-socket");
