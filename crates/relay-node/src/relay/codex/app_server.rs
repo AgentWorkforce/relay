@@ -389,6 +389,9 @@ pub struct StartOptions<'a> {
     /// For a spawned thread: whether its first turn ended, given the
     /// thread's id (`drive::Ended`).
     pub ended: Option<&'a dyn Fn(&str) -> drive::Ended>,
+    /// A thread to copy (`thread/fork`) rather than starting an empty one:
+    /// the new thread has its history, and the first turn continues it.
+    pub fork: Option<&'a str>,
 }
 
 /// Starts a new thread in `directory` on the app-server and its first turn
@@ -425,19 +428,24 @@ fn start_thread_state(
         Access::Workspace => "workspace-write",
         Access::Full => "danger-full-access",
     };
-    client.send(
-        &json!({"method": "thread/start", "id": THREAD_ID, "params": {
+    let request = match options.fork {
+        Some(source) => json!({"method": "thread/fork", "id": THREAD_ID, "params": {
+            "threadId": source, "cwd": directory, "approvalPolicy": "on-request",
+            "sandbox": sandbox, "excludeTurns": true,
+        }}),
+        None => json!({"method": "thread/start", "id": THREAD_ID, "params": {
             "cwd": directory, "approvalPolicy": "on-request", "sandbox": sandbox,
             "serviceName": "agent-relay-desktop",
         }}),
-        deadline,
-    )?;
+    };
+    client.send(&request, deadline)?;
     let response = client.response(THREAD_ID, deadline)?;
     if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
-        return Err(io::Error::other(refusal(
-            error,
-            "Codex refused to start a thread",
-        )));
+        let fallback = match options.fork {
+            Some(_) => "Codex refused to fork the thread",
+            None => "Codex refused to start a thread",
+        };
+        return Err(io::Error::other(refusal(error, fallback)));
     }
     let thread_id = response["result"]["thread"]["id"]
         .as_str()
@@ -1021,6 +1029,7 @@ pub(crate) mod tests {
             let answer = |result: Value| Some(server_frame(&json!({"id": id, "result": result})));
             match request["method"].as_str() {
                 Some("thread/start") => answer(json!({"thread": {"id": THREAD}})),
+                Some("thread/fork") => answer(json!({"thread": {"id": "forked"}})),
                 Some("thread/archive") => answer(json!({})),
                 Some("turn/start") => answer(json!({"turn": {"id": "t"}})),
                 _ => None,
@@ -1051,7 +1060,7 @@ pub(crate) mod tests {
             SEND_TIMEOUT,
             StartOptions {
                 created: Some(&report),
-                ended: None,
+                ..StartOptions::default()
             },
         )
         .unwrap();
@@ -1060,6 +1069,34 @@ pub(crate) mod tests {
         assert_eq!(thread, THREAD);
         assert!(!before.iter().any(|m| m == "turn/start"));
         assert!(started.turn.is_ok());
+    }
+
+    #[test]
+    fn a_fork_copies_the_source_thread_and_continues_it_in_the_copy() {
+        let mut server = spawning_server();
+        let seen = server.seen.clone();
+        let started = start_thread(
+            &mut server,
+            "/tmp/repo",
+            Access::Full,
+            "carry on",
+            "m1",
+            SEND_TIMEOUT,
+            StartOptions {
+                fork: Some(THREAD),
+                ..StartOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(started.thread_id, "forked");
+        let seen = seen.lock().unwrap();
+        assert!(!seen.iter().any(|r| r["method"] == "thread/start"));
+        let fork = seen.iter().find(|r| r["method"] == "thread/fork").unwrap();
+        assert_eq!(fork["params"]["threadId"], THREAD);
+        assert_eq!(fork["params"]["cwd"], "/tmp/repo");
+        assert_eq!(fork["params"]["sandbox"], "danger-full-access");
+        let turn = seen.iter().find(|r| r["method"] == "turn/start").unwrap();
+        assert_eq!(turn["params"]["threadId"], "forked");
     }
 
     #[test]

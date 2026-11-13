@@ -133,6 +133,7 @@ fn real_grok_owned_adapter_initial_followup_idempotency_and_cleanup() {
         text: format!("This is an authorized disposable local smoke test. Write exactly {nonce} to first.txt in this working folder. Do not edit other files, read credentials, use external messaging, or change any configuration. Then finish."),
         directory: workspace.clone(), full_access: grok::DESCRIPTOR.full_access.unwrap().default,
         message_id: format!("{nonce}_initial"), session_id: "5f7c1f64-8f53-4c33-9d2f-7c1d2f1f0a11".into(),
+        fork: None,
     };
     let started = |target: &Target, process: Option<SpawnedProcess>| {
         if let Some(process) = process {

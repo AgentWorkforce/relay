@@ -294,10 +294,17 @@ impl Core {
         let workspace = self
             .workspace()
             .ok_or("spawn_failed: this computer has no Agent Relay workspace")?;
-        let directory = request
-            .directory
-            .clone()
-            .unwrap_or_else(|| self.config.home.clone());
+        let fork = match &request.fork_from {
+            Some(source) => Some(self.fork_source(request, source).await?),
+            None => None,
+        };
+        let directory = match &fork {
+            Some(fork) => fork.directory.clone(),
+            None => request
+                .directory
+                .clone()
+                .unwrap_or_else(|| self.config.home.clone()),
+        };
         // TCC approval and unavailable volumes can stall filesystem calls.
         // Check before registering an agent, without blocking node heartbeats
         // or the desktop socket. A timed-out check has no launch side effects.
@@ -429,14 +436,19 @@ impl Core {
                 .and_then(|relay_send| relay_send.serving.get()),
             settings.full_access(request.harness),
         );
+        let task = match &request.fork_from {
+            Some(source) => super::fork::first_task(source, &request.task),
+            None => request.task.clone(),
+        };
         let launch = Launch {
             harness: request.harness,
             name: request.name.clone(),
-            text: first_text(&request.name, &address, &request.task, &report),
+            text: first_text(&request.name, &address, &task, &report),
             directory: directory.clone(),
             full_access: settings.full_access(request.harness),
             message_id: in_flight.intent.message_id.clone(),
             session_id: in_flight.intent.session_id.clone(),
+            fork: fork.map(|fork| fork.session_id),
         };
         let launched = match self.launch_registered(launch, &mut in_flight).await {
             Ok(launched) => launched,

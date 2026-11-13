@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Minor]
 
+### Added
+
+- Desktop spawns accept `fork_from` to continue an existing Claude or Codex agent's conversation in a new agent, without stopping the original.
+
 ### Changed
 
 - `agent-relay-node`: spawned Grok, Devin and OpenCode agents now take direct messages from the agent that spawned them, and from the machine owner (desktop or phone), as native input over their own prompt channel (ACP `session/prompt`, OpenCode `prompt_async`), with the reply context kept, instead of as peer messages. Codex and Claude already did. Muse still gets owner framing: its spawned TUI can only be reached through Muse's peer-message courier.

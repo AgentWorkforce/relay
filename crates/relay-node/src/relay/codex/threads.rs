@@ -177,10 +177,16 @@ const ORDER: &str = "order by 5 desc";
 /// (`archived` would walk every unarchived thread) instead of the key's.
 const ID_MATCHES: &str = "id in (?1, lower(?1), upper(?1))";
 
-/// [`read_one`]'s statement.
-fn read_one_sql(columns: &HashSet<String>) -> Option<String> {
+/// [`read_one`]'s statement; `any_source` drops its source filter for
+/// [`read_unarchived`].
+fn read_one_sql(columns: &HashSet<String>, any_source: bool) -> Option<String> {
+    let source = if any_source {
+        ""
+    } else {
+        " and +source in ('cli', 'vscode', 'exec')"
+    };
     Some(format!(
-        "select {} from threads where {ID_MATCHES} and +archived = 0 and +source in ('cli', 'vscode', 'exec') limit 1",
+        "select {} from threads where {ID_MATCHES} and +archived = 0{source} limit 1",
         select_list(columns)?
     ))
 }
@@ -321,12 +327,23 @@ pub fn created_since(config: &CodexConfig, since_ms: i64, scan: usize) -> Option
 /// bounded recent list: missing, archived and sub-agent threads are not
 /// found. `codex exec` threads count here.
 pub fn read_one(config: &CodexConfig, id: &str) -> Option<CodexThread> {
+    read_thread(config, id, false)
+}
+
+/// The unarchived thread `id` of any source, for forking: a session an app
+/// server created is listed under its own source label, which
+/// [`read_one`] leaves out.
+pub fn read_unarchived(config: &CodexConfig, id: &str) -> Option<CodexThread> {
+    read_thread(config, id, true)
+}
+
+fn read_thread(config: &CodexConfig, id: &str, any_source: bool) -> Option<CodexThread> {
     if !crate::relay::store::is_uuid(id) {
         return None;
     }
     with_connection(config, Duration::from_secs(2), |connection| {
         let columns = columns(connection)?;
-        let sql = read_one_sql(&columns)?;
+        let sql = read_one_sql(&columns, any_source)?;
         let found = connection.query_row(&sql, [id], row).ok()?;
         Some(thread(found))
     })
@@ -611,6 +628,12 @@ pub(crate) mod tests {
         );
         assert!(read_one(&config, "10000000-0000-0000-0000-000000000004").is_some());
         assert_eq!(
+            read_unarchived(&config, "10000000-0000-0000-0000-000000000003").map(|t| t.id),
+            Some("10000000-0000-0000-0000-000000000003".to_string()),
+            "a fork reads a thread of any source"
+        );
+        assert!(read_unarchived(&config, "10000000-0000-0000-0000-000000000002").is_none());
+        assert_eq!(
             contains_unarchived(&config, "10000000-0000-0000-0000-000000000003"),
             Some(true),
             "an exact unarchived row is recognized with any source"
@@ -752,7 +775,7 @@ pub(crate) mod tests {
             rollout_sql(),
             exists_sql(false),
             exists_sql(true),
-            read_one_sql(&columns).unwrap(),
+            read_one_sql(&columns, false).unwrap(),
         ] {
             let plan = plan(&db, &sql);
             assert!(plan.contains("sqlite_autoindex_threads_1"), "{sql}: {plan}");
