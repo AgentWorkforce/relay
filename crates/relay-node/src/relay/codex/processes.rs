@@ -93,8 +93,8 @@ pub fn process_sessions(
 }
 
 /// Whether a Codex that drains `codex queue` runs `thread` now: the
-/// interactive TUI, or the app-server Conductor runs for one of its
-/// sessions. A shared app-server's writer lock is not enough.
+/// interactive TUI, or a per-session app-server hosted by Conductor, Paseo
+/// or OpenIDEA. A shared app-server's writer lock is not enough.
 pub fn terminal_thread_is_live(table: &dyn ProcessTable, uid: u32, thread: &str) -> bool {
     let thread = thread.to_lowercase();
     if !crate::relay::store::is_uuid(&thread) {
@@ -115,11 +115,27 @@ pub fn thread_is_live(table: &dyn ProcessTable, uid: u32, thread: &str) -> bool 
 }
 
 /// Whether `pid` is a trusted Codex that runs queued messages for the
-/// threads it holds: the TUI, or a Conductor session's app-server.
+/// threads it holds: the TUI, or a Conductor, Paseo or OpenIDEA app-server.
 pub fn drains_queue(table: &dyn ProcessTable, uid: u32, pid: i32) -> bool {
     is_terminal_codex(table, pid)
         || is_conductor_codex(table, uid, pid)
         || is_paseo_codex(table, uid, pid)
+        || is_openidea_codex(table, uid, pid)
+}
+
+/// A trusted Codex app-server started by this user's OpenIDEA. OpenIDEA
+/// keeps one stdio server per task; process_sessions supplies the thread's
+/// writer-lock evidence before discovery checks whether it drains queues.
+pub fn is_openidea_codex(table: &dyn ProcessTable, uid: u32, pid: i32) -> bool {
+    let Some(process) = table.process(pid).filter(|p| p.uid == uid) else {
+        return false;
+    };
+    table
+        .executable(pid)
+        .is_some_and(|exe| table.is_trusted_codex(&exe))
+        && table.arguments(pid).iter().any(|a| a == "app-server")
+        && crate::relay::openidea::under_app(table, uid, pid)
+        && table.process(pid) == Some(process)
 }
 
 /// A trusted Codex app-server owned by Paseo. Paseo keeps one such server
@@ -766,6 +782,72 @@ pub(crate) mod tests {
                 ..process(1, 5)
             },
         );
+        assert!(!terminal_thread_is_live(&table, UID, SESSION));
+    }
+
+    #[test]
+    fn an_openidea_app_server_drains_only_its_locked_threads() {
+        let table = trusted_table();
+        table.insert(
+            500,
+            FakeProcess {
+                executable: Some(crate::relay::openidea::tests::app()),
+                ..process(1, 5)
+            },
+        );
+        let server = |parent| FakeProcess {
+            parent,
+            open_files: vec![lock(SESSION)],
+            ..codex_process(10, &["codex", "app-server"])
+        };
+        table.insert(600, server(500));
+        assert!(is_openidea_codex(&table, UID, 600));
+        assert!(drains_queue(&table, UID, 600));
+        assert!(terminal_thread_is_live(&table, UID, SESSION));
+        assert!(!terminal_thread_is_live(&table, UID, OTHER));
+        // A launcher between the host and its app-server also counts.
+        table.insert(550, process(500, 6));
+        table.insert(600, server(550));
+        assert!(terminal_thread_is_live(&table, UID, SESSION));
+        table.insert(
+            600,
+            FakeProcess {
+                open_files: vec![],
+                ..server(550)
+            },
+        );
+        assert!(!terminal_thread_is_live(&table, UID, SESSION));
+        table.insert(600, server(550));
+        table.trusted_codex.lock().unwrap().clear();
+        assert!(!drains_queue(&table, UID, 600), "an untrusted binary");
+        assert!(!terminal_thread_is_live(&table, UID, SESSION));
+        table.trust(codex());
+        table.insert(
+            500,
+            FakeProcess {
+                arguments: vec!["openidea".into()],
+                executable: Some("/bin/sh".into()),
+                ..process(1, 5)
+            },
+        );
+        assert!(!drains_queue(&table, UID, 600), "argv is not host proof");
+        table.insert(
+            500,
+            FakeProcess {
+                executable: Some(crate::relay::openidea::tests::app()),
+                ..process(1, 5)
+            },
+        );
+        table.insert(
+            600,
+            FakeProcess {
+                parent: 500,
+                open_files: vec![lock(SESSION)],
+                ..codex_process(10, &["codex", "exec", "resume", SESSION])
+            },
+        );
+        assert!(!drains_queue(&table, UID, 600), "exec is not a chat");
+        table.remove(600);
         assert!(!terminal_thread_is_live(&table, UID, SESSION));
     }
 
