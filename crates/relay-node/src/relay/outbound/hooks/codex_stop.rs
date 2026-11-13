@@ -495,23 +495,39 @@ mod tests {
     async fn a_stop_carries_the_turn_end_advisory_once() {
         use crate::relay::turn_end_advisories::fake::Queue;
         let target = Target::new(SessionKind::Codex, THREAD);
-        let queue = Arc::new(Queue::with(target.clone(), " Heads up: @b edits auth.rs. ", &["a1", "a2"]));
+        let queue = Arc::new(Queue::with(
+            target.clone(),
+            " Heads up: @b edits auth.rs. ",
+            &["a1", "a2"],
+        ));
         let (_temp, outbound, _) = fixture_with(Some(queue.clone()));
         // A stop already continuing from a stop hook's block takes nothing.
         assert_eq!(
-            outbound.codex_stop_hook(42, outbound.uid, &stop(true)).await.unwrap(),
+            outbound
+                .codex_stop_hook(42, outbound.uid, &stop(true))
+                .await
+                .unwrap(),
             json!({})
         );
         assert!(queue.taken.lock().unwrap().is_empty());
         assert!(queue.shown().is_empty());
         assert_eq!(
-            outbound.codex_stop_hook(42, outbound.uid, &stop(false)).await.unwrap(),
+            outbound
+                .codex_stop_hook(42, outbound.uid, &stop(false))
+                .await
+                .unwrap(),
             json!({"decision": "block", "reason": "Heads up: @b edits auth.rs."})
         );
-        assert_eq!(queue.shown(), vec![(target, vec!["a1".to_string(), "a2".to_string()])]);
+        assert_eq!(
+            queue.shown(),
+            vec![(target, vec!["a1".to_string(), "a2".to_string()])]
+        );
         // The next stop has nothing left to carry.
         assert_eq!(
-            outbound.codex_stop_hook(42, outbound.uid, &stop(false)).await.unwrap(),
+            outbound
+                .codex_stop_hook(42, outbound.uid, &stop(false))
+                .await
+                .unwrap(),
             json!({})
         );
         assert_eq!(queue.shown().len(), 1);
@@ -526,7 +542,10 @@ mod tests {
     async fn without_the_plugin_a_quiet_stop_says_nothing() {
         let (_temp, outbound, _) = fixture();
         assert_eq!(
-            outbound.codex_stop_hook(42, outbound.uid, &stop(false)).await.unwrap(),
+            outbound
+                .codex_stop_hook(42, outbound.uid, &stop(false))
+                .await
+                .unwrap(),
             json!({})
         );
     }

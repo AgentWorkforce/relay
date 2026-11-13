@@ -1348,7 +1348,10 @@ mod tests {
             ),
         );
         let stop = settings.stop_command();
-        assert!(stop.starts_with("/Apps/Acme.app/probe claude-stop-hook "), "{stop}");
+        assert!(
+            stop.starts_with("/Apps/Acme.app/probe claude-stop-hook "),
+            "{stop}"
+        );
         assert!(stop.contains("--profile=acme"), "{stop}");
         assert!(stop.ends_with("/s/relay.sock"), "{stop}");
         assert!(settings.is_ours("Stop", &stop));

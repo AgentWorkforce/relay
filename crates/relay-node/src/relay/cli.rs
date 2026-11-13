@@ -536,8 +536,7 @@ fn turn_end_shown(socket: &Path, kind: SessionKind, session: &str, ids: &[String
     if ids.is_empty() {
         return;
     }
-    if let Ok(body) =
-        serde_json::to_vec(&json!({"kind": kind, "session_id": session, "ids": ids}))
+    if let Ok(body) = serde_json::to_vec(&json!({"kind": kind, "session_id": session, "ids": ids}))
     {
         let _ = socket_response(
             socket,
