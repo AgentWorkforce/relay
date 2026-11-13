@@ -337,26 +337,16 @@ pub fn claude_session_hook(socket: Option<&Path>, build: &Build) -> Result<()> {
             // The core names its rules' probe; an older one does not, and
             // this probe is the one it runs.
             let probe = probe.or_else(crate::relay::outbound::fetch::probe_executable);
-            let answered = registered.is_some();
             let output = crate::relay::claude::session_hook::hook_output(
                 registered,
                 &socket,
                 interactive,
                 probe.as_deref(),
             );
-            // The build's extra guidance (`session_start_context`), for a
-            // session with a person, or one the hook already tells
-            // something; a `claude -p` run it would otherwise leave alone
-            // keeps its one reply for its task.
-            if answered && (interactive || output != json!({})) {
-                crate::relay::session_start_context::append(
-                    output,
-                    "SessionStart",
-                    extra.as_deref(),
-                )
-            } else {
-                output
-            }
+            // The build's extra guidance (`session_start_context`), for every
+            // session the core answered, `claude -p` and Agent SDK runs
+            // included; absent when the core could not be read.
+            crate::relay::session_start_context::append(output, "SessionStart", extra.as_deref())
         }
         None => json!({}),
     };
