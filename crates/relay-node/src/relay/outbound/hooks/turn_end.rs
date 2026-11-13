@@ -115,10 +115,16 @@ mod tests {
 
     /// pid 10 is inside the Claude Code session `CLAUDE`, pid 20 inside the
     /// Devin session `DEVIN`, pid 30 inside no session.
-    struct Sessions;
+    /// Also answers Copilot's hook `{}`, recording each payload it saw.
+    #[derive(Default)]
+    struct Sessions(std::sync::Mutex<Vec<Value>>);
     impl SessionDirectory for Sessions {
         fn sessions(&self) -> Vec<DiscoveredSession> {
             Vec::new()
+        }
+        fn copilot_hook(&self, _pid: i32, payload: &Value) -> Option<Value> {
+            self.0.lock().unwrap().push(payload.clone());
+            Some(json!({}))
         }
         fn caller(&self, pid: i32) -> Result<DiscoveredSession, CallerMiss> {
             let target = match pid {
@@ -154,6 +160,12 @@ mod tests {
     }
 
     fn fixture(queue: Option<Arc<Queue>>) -> (tempfile::TempDir, Outbound) {
+        let (temp, outbound, _) = fixture_with(queue);
+        (temp, outbound)
+    }
+
+    fn fixture_with(queue: Option<Arc<Queue>>) -> (tempfile::TempDir, Outbound, Arc<Sessions>) {
+        let sessions = Arc::new(Sessions::default());
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().to_path_buf();
         let config = Config {
@@ -168,13 +180,13 @@ mod tests {
             delivery_timing: DeliveryTiming::default(),
         };
         let plugins = Plugins {
-            sessions: Arc::new(Sessions),
+            sessions: sessions.clone(),
             turn_end_advisories: queue
                 .map(|q| q as Arc<dyn crate::relay::daemon::TurnEndAdvisories>),
             ..Plugins::default()
         };
         let (core, _) = Core::with_plugins(config, plugins);
-        (temp, Outbound::new(core, Arc::new(Direct)))
+        (temp, Outbound::new(core, Arc::new(Direct)), sessions)
     }
 
     fn request(path: &str, body: Value) -> Request {
@@ -293,5 +305,37 @@ mod tests {
         assert_eq!(queue.pending.lock().unwrap().len(), 1);
         let (_temp, outbound) = fixture(None);
         assert_eq!(take(&outbound, 10, "claude-terminal", CLAUDE).await, NOTHING());
+    }
+
+    #[tokio::test]
+    async fn a_copilot_end_turn_stop_carries_the_advisory_once_after_full_proof() {
+        const SID: &str = "1069773c-0824-4fad-b7f9-d3dc3c4ed148";
+        let target = Target::new(SessionKind::Copilot, SID);
+        let queue = Arc::new(Queue::with(target.clone(), "Heads up.", &["k"]));
+        let (_temp, outbound, sessions) = fixture_with(Some(queue.clone()));
+        let hook = |reason: &str| {
+            json!({"sessionId": SID, "relayEvent": "stop", "stopReason": reason,
+                "relayTurnEndAdvisory": true})
+        };
+        let ask = |fields: Value| {
+            let outbound = &outbound;
+            let request = request("/copilot/hook", fields);
+            async move { outbound.handle(10, outbound.uid, &request).await.unwrap() }
+        };
+        // A turn the person cancelled takes nothing, whatever the input says.
+        assert_eq!(ask(hook("cancelled")).await, json!({}));
+        assert_eq!(sessions.0.lock().unwrap()[0]["relayTurnEndAdvisory"], false);
+        assert_eq!(queue.pending.lock().unwrap().len(), 1);
+        assert_eq!(
+            ask(hook("end_turn")).await,
+            json!({"decision": "block", "reason": "Heads up."})
+        );
+        assert_eq!(sessions.0.lock().unwrap()[1]["relayTurnEndAdvisory"], true);
+        assert_eq!(queue.shown(), vec![(target, vec!["k".to_string()])]);
+        // The hook's client asks again every second: the advisory is gone,
+        // and the idle check is cheap again.
+        assert_eq!(ask(hook("end_turn")).await, json!({}));
+        assert_eq!(sessions.0.lock().unwrap()[2]["relayTurnEndAdvisory"], false);
+        assert_eq!(queue.shown().len(), 1);
     }
 }
