@@ -248,7 +248,10 @@ mod tests {
             json!({"decision": "block", "reason": "Heads up."})
         );
         assert_eq!(
-            merge_stop(json!({"decision": "block", "reason": "From @a: hi"}), "Heads up."),
+            merge_stop(
+                json!({"decision": "block", "reason": "From @a: hi"}),
+                "Heads up."
+            ),
             json!({"decision": "block", "reason": "From @a: hi\n\nHeads up."})
         );
         assert_eq!(
@@ -288,7 +291,11 @@ mod tests {
             let row = &report[kind.as_str()];
             let available = row["available"].as_bool().unwrap();
             assert_eq!(available, matches!(reach(kind), Reach::Available(_)));
-            let text = if available { &row["via"] } else { &row["reason"] };
+            let text = if available {
+                &row["via"]
+            } else {
+                &row["reason"]
+            };
             assert!(!text.as_str().unwrap().is_empty(), "{kind:?}");
         }
         for available in ["codex", "copilot", "devin", "cursor-cli", "claude-terminal"] {

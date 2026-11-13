@@ -431,9 +431,7 @@ pub fn hook_answer_with(
 ) -> Option<HookAnswer> {
     let found = hook_answer(config, payload);
     let Some(advisory) = advisory.filter(|text| {
-        !text.is_empty()
-            && payload["hook_event_name"] == "stop"
-            && payload["status"] == "completed"
+        !text.is_empty() && payload["hook_event_name"] == "stop" && payload["status"] == "completed"
     }) else {
         return found;
     };

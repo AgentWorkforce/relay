@@ -123,6 +123,9 @@ mod socket_request_tests {
                     profile,
                     ..
                 })
+                | Commands::Node(relay_commands::RelayCommands::ClaudeStopHook {
+                    profile, ..
+                })
                 | Commands::Node(relay_commands::RelayCommands::DevinSpawnHost {
                     profile, ..
                 }) => profile,

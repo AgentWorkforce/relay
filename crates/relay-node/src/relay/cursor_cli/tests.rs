@@ -1229,8 +1229,13 @@ fn a_completed_turn_carries_the_turn_end_advisory_once_after_its_messages() {
     send(&config, &table, uid(), SESSION, "m-1", "ping");
     let advisories = Advisories::one("Heads up.");
     // A turn the person stopped asks for nothing.
-    let aborted = json!({"hook_event_name": "stop", "conversation_id": SESSION, "status": "aborted"});
-    assert!(!advisories.run(&config, &table, 501, &aborted, false, true).0);
+    let aborted =
+        json!({"hook_event_name": "stop", "conversation_id": SESSION, "status": "aborted"});
+    assert!(
+        !advisories
+            .run(&config, &table, 501, &aborted, false, true)
+            .0
+    );
     assert_eq!(advisories.asked.get(), 0);
     // A tool call neither.
     let tool = json!({"hook_event_name": "postToolUse", "conversation_id": SESSION});
@@ -1272,7 +1277,9 @@ fn a_waiting_stop_carries_the_advisory_at_once_and_never_while_it_waits() {
         "conversation_id": SESSION,
         "generation_id": "gen-1",
     });
-    assert!(!run_hook(&config, &table, 501, &prompt, None, &mut |_| true));
+    assert!(!run_hook(&config, &table, 501, &prompt, None, &mut |_| {
+        true
+    }));
     let advisories = Advisories::one("Heads up.");
     assert_eq!(
         advisories.run(&config, &table, 501, &completed("gen-1"), true, true),
@@ -1287,7 +1294,9 @@ fn a_waiting_stop_carries_the_advisory_at_once_and_never_while_it_waits() {
         "conversation_id": SESSION,
         "generation_id": "gen-2",
     });
-    assert!(!run_hook(&config, &table, 501, &prompt, None, &mut |_| true));
+    assert!(!run_hook(&config, &table, 501, &prompt, None, &mut |_| {
+        true
+    }));
     *advisories.pending.borrow_mut() = None;
     assert_eq!(
         advisories.run(&config, &table, 501, &completed("gen-2"), true, true),
