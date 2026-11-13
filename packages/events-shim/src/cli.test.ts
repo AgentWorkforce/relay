@@ -829,6 +829,30 @@ describe('events-shim CLI', () => {
     expect(existsSync(bin)).toBe(false);
   });
 
+  it("keeps events-shim's core and fails the uninstall when Codex's hooks.json cannot be edited", async () => {
+    const w = await setupWorld({ core: true });
+    w.io.readText = (path) =>
+      path.endsWith('hooks.json')
+        ? null
+        : (() => {
+            try {
+              return readFileSync(path, 'utf8');
+            } catch {
+              return null;
+            }
+          })();
+    w.io.exists = (path) => existsSync(path);
+    expect(await runCli(['setup', w.created.mcp_url, '--opencode'], w.io)).toBe(0);
+    const bin = join(w.home, '.agentworkforce', 'events-shim', 'bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, 'agent-relay-node'), 'core');
+    mkdirSync(join(w.home, '.codex'), { recursive: true });
+    writeFileSync(join(w.home, '.codex', 'hooks.json'), '{}'); // exists, but cannot be read
+    expect(await runCli(['uninstall', '--opencode'], w.io)).toBe(1);
+    expect(existsSync(join(bin, 'agent-relay-node'))).toBe(true);
+    expect(w.out.join('\n')).toContain("events-shim's core is kept");
+  });
+
   it("never changes Desktop's core settings", async () => {
     const w = await setupWorld({ core: true });
     expect(await runCli(['setup', w.created.mcp_url, '--opencode'], w.io)).toBe(0);

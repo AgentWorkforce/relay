@@ -497,6 +497,7 @@ export const CODEX_HOOK_COMMAND = 'npx -y @agent-relay/events-shim@latest link -
  *
  * @param nodeDir - The directory holding the node (and npx) setup runs with.
  * @param hasNpx - Whether npx is there; without it, plain \`npx\` from PATH.
+ * @returns The shell command for the hook: npx by its path (or plain npx when absent), run from \`$HOME\`.
  */
 export function codexHookCommand(nodeDir: string, hasNpx: boolean): string {
   if (!hasNpx) return `cd "$HOME" && ${CODEX_HOOK_COMMAND}`;
@@ -1034,11 +1035,14 @@ async function uninstall(io: CliIo, flags: Record<string, string>): Promise<numb
       } else if (!args) rmSync(join(dir, name), { force: true });
     }
   }
+  // A hook that could not be taken out may still name events-shim's core binary.
+  let hooksLeft = false;
   for (const cli of clis) {
     const removed = cli.remove(io);
     const hooks = { ok: cli.hooks ? await cli.hooks.remove(io) : true };
     if (cli.skillsDir) rmSync(join(cli.skillsDir(io), SKILL_NAME), { recursive: true, force: true });
     if (!removed || !hooks.ok) failed += 1;
+    if (!hooks.ok) hooksLeft = true;
     io.stdout(
       `  ${cli.label}: ${removed && hooks.ok ? 'removed' : 'could not remove everything; check its MCP settings'}.`
     );
@@ -1070,9 +1074,10 @@ async function uninstall(io: CliIo, flags: Record<string, string>): Promise<numb
       stopOwnCore(io);
       // No CLI uses events-shim's core any more: the hooks it added to Codex go first (they name
       // its binary), then its binaries. Codex is not set up through the core either by now.
-      if (io.exists(join(codexHome(io), 'hooks.json')) && !editCodexHooksFile(io, true).ok) {
+      if (hooksLeft || (io.exists(join(codexHome(io), 'hooks.json')) && !editCodexHooksFile(io, true).ok)) {
+        failed += 1;
         io.stdout(
-          "  Could not edit Codex's hooks.json; events-shim's core is kept so its hooks keep working."
+          "  Could not take every hook out of Codex's hooks.json; events-shim's core is kept so those hooks keep working."
         );
       } else {
         rmSync(coreDir(io), { recursive: true, force: true });
