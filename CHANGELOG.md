@@ -159,6 +159,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A Cursor editor chat can put itself on the relay during its first turn, before Cursor has written its transcript.
 - An idle Cursor editor chat is woken by Relay messages after a turn Cursor started itself, such as one reporting that a background task finished.
 
+### Added
+
+- `agent-relay cloud run` and `cloud schedule` now send a bounded sandbox/bootstrap budget, inferred safely from a script RelayFlow's literal `.timeout()` or set explicitly with `--launch-timeout-ms`.
+
 ## [17.2.1] - 2026-11-07
 
 ### Fixed
