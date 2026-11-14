@@ -421,6 +421,7 @@ impl SpawnFacet for DroidAdapter {
             for name in [
                 format!("{}.json", record.session_id),
                 format!("{}.ready.json", record.launch_id),
+                format!("{}.deliveries.db", record.launch_id),
             ] {
                 let _ = std::fs::remove_file(dir.join(name));
             }

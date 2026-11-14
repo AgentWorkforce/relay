@@ -151,6 +151,7 @@ fn restart_finds_only_its_live_host_and_never_adopts_a_reused_pid() {
         title: "Test".into(),
         base_url: "https://cast.example".into(),
         workspace_key: crate::relay::workspace::Secret::new("rk_test_synthetic"),
+        control_url: None,
         workspace_id: None,
         machine_prefix: "test".into(),
         message_id: "test-initial".into(),
@@ -271,6 +272,11 @@ fn restart_finds_only_its_live_host_and_never_adopts_a_reused_pid() {
         Err(crate::relay::sessions::CallerMiss::NotASession)
     ));
     // A dead host must not free its still-owned child or block cleanup.
+    std::fs::write(
+        dir.join(format!("{}.deliveries.db", record.launch_id)),
+        b"receipt journal",
+    )
+    .unwrap();
     table.remove(40);
     assert!(registry::child_owned(&record, &*table));
     assert!(!verified(&record, &*table));
@@ -281,6 +287,9 @@ fn restart_finds_only_its_live_host_and_never_adopts_a_reused_pid() {
     assert!(!dir.join(format!("{}.json", record.session_id)).exists());
     assert!(!dir
         .join(format!("{}.ready.json", record.launch_id))
+        .exists());
+    assert!(!dir
+        .join(format!("{}.deliveries.db", record.launch_id))
         .exists());
     write_record(&dir.join(format!("{}.json", record.session_id)), &record).unwrap();
     write_record(

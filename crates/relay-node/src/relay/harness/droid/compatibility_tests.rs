@@ -89,6 +89,7 @@ fn a_failed_initial_file_create_never_deletes_another_launch_handoff() {
         full_access: false,
         message_id: "new".into(),
         session_id: crate::relay::store::random_uuid(),
+        fork: None,
     };
     registry::write_initial(&dir, &launch.session_id, "original", "original task").unwrap();
     assert!(adapter
@@ -188,6 +189,7 @@ fn unverified_mcp_isolation_refuses_before_any_host_or_provider_side_effect() {
         full_access: false,
         message_id: "one".into(),
         session_id: crate::relay::store::random_uuid(),
+        fork: None,
     };
     assert!(matches!(
         adapter.launch(&launch, &|_, _| panic!("a held host must not start")),
