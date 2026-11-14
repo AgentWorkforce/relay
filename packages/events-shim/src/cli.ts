@@ -310,6 +310,8 @@ interface AgentCli {
   wake: 'listener' | 'core' | 'relay-only' | 'when-asked';
   /** With \`wake: 'core'\`: the session kind the Agent Relay core lists it as. */
   coreKind?: string;
+  /** Replaces the wake text when this tool's sessions are linked but not yet woken in practice. */
+  caveat?: string;
   /** Removes the MCP server again (\`uninstall\`). */
   remove: (io: CliIo) => boolean;
   /** Hooks that wake this tool's sessions by themselves (Claude Code, Codex). */
@@ -739,6 +741,9 @@ export const AGENT_CLIS: readonly AgentCli[] = [
       )(io, url),
     wake: 'core',
     coreKind: 'muse-open',
+    // Linked like the others, so it works as soon as the core delivers; it does not yet (relay#2174).
+    caveat:
+      'not woken yet: Agent Relay cannot deliver into a Muse session today (relay#2174), so the agent reads posts when asked',
     remove: (io) => io.run('muse', ['mcp', 'remove', MCP_SERVER_NAME, '--user']),
   },
   {
@@ -961,7 +966,7 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
     }
     if (result.ok) {
       io.stdout(
-        `  ${cli.label}: MCP server "${MCP_SERVER_NAME}" added${cli.skillsDir ? ', skill installed' : ''}; ${WAKE_TEXT[cli.wake]}.`
+        `  ${cli.label}: MCP server "${MCP_SERVER_NAME}" added${cli.skillsDir ? ', skill installed' : ''}; ${cli.caveat ?? WAKE_TEXT[cli.wake]}.`
       );
     } else {
       failed.push(cli.label);
@@ -994,7 +999,7 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
           'Start a Codex session and send it a first message, e.g. "Watch for webhooks". A Codex session can be woken only once it has started; a new window with no message yet cannot be reached.'
         );
       }
-      const others = throughCore.filter((cli) => cli.id !== 'codex');
+      const others = throughCore.filter((cli) => cli.id !== 'codex' && !cli.caveat);
       if (others.length > 0) {
         io.stdout(
           `${others.map((cli) => cli.label).join(', ')}: open a session; the newest one is woken by each post by itself.`

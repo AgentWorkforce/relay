@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `@agent-relay/events-shim`: `setup --muse` no longer says Muse sessions are woken by each post: Agent Relay cannot deliver into a Muse session yet (relay#2174). The session is still linked, so it starts working once that is fixed.
+
 ## [18.7.2] - 2026-11-14
 
 ### Added
