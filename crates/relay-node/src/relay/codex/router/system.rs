@@ -126,10 +126,11 @@ impl CodexRoutes for SystemCodexRoutes {
         if !queue::is_thread_id(thread) {
             return Err(QueueError::Failed("not a Codex thread id".into()));
         }
-        // A Conductor session's thread is queued with Conductor's own Codex,
-        // the one draining it, which may be the only Codex installed.
-        let conductor = processes::conductor_executable(self.table.as_ref(), self.uid, thread);
-        let Some(executable) = conductor
+        // A hosted thread is queued with its own verified Codex, which
+        // may be the only queue-capable binary installed.
+        let hosted = processes::conductor_executable(self.table.as_ref(), self.uid, thread)
+            .or_else(|| processes::openidea_executable(self.table.as_ref(), self.uid, thread));
+        let Some(executable) = hosted
             .as_deref()
             .filter(|executable| self.supports_queue(executable))
             .or(self.config.executable.as_deref())

@@ -1766,6 +1766,100 @@ mod tests {
         assert_eq!(runs[0].1, ["queue", "--help"]);
     }
 
+    #[test]
+    fn an_openidea_thread_uses_its_lock_holders_codex_without_a_configured_cli() {
+        use crate::relay::codex::processes::tests::{lock, process, OTHER};
+        let home = tempfile::tempdir().unwrap();
+        let table = trusted_table();
+        let bundled = PathBuf::from("/private/openidea/task-runtime/codex");
+        table.trust(&bundled);
+        table.insert(
+            500,
+            FakeProcess {
+                executable: Some(crate::relay::openidea::tests::app()),
+                ..process(1, 5)
+            },
+        );
+        // The first trusted app-server belongs to a different task. It
+        // must not supply the executable for THREAD's queue.
+        table.insert(
+            600,
+            FakeProcess {
+                parent: 500,
+                open_files: vec![lock(OTHER)],
+                ..codex_process(10, &["codex", "app-server"])
+            },
+        );
+        table.insert(
+            700,
+            FakeProcess {
+                parent: 500,
+                executable: Some(bundled.clone()),
+                open_files: vec![lock(THREAD)],
+                ..codex_process(11, &["codex", "app-server"])
+            },
+        );
+        let ok = || RunOutcome::Exited {
+            code: 0,
+            stdout: format!("Queued message q1 for thread {THREAD}.\n"),
+            stderr: String::new(),
+        };
+        let runner = Arc::new(FakeRunner::answering([ok(), ok()]));
+        let mut config = config(home.path());
+        config.executable = None;
+        let routes = SystemCodexRoutes::with_runner(config, Arc::new(table), UID, runner.clone());
+        assert!(routes.terminal_live(THREAD));
+        assert_eq!(routes.queue_send(THREAD, "hello"), Ok(()));
+        let runs = runner.runs.lock().unwrap();
+        assert_eq!(runs.len(), 2);
+        assert!(runs.iter().all(|run| run.0 == bundled));
+        assert_eq!(runs[0].1, ["queue", "--help"]);
+        assert_eq!(runs[1].1, ["queue", "--thread", THREAD, "--message=hello"]);
+        assert_eq!(
+            *runner.run_homes.lock().unwrap(),
+            vec![home.path().to_path_buf(); 2]
+        );
+    }
+
+    #[test]
+    fn an_openidea_queue_without_support_falls_back_to_the_configured_cli() {
+        use crate::relay::codex::processes::tests::{lock, process};
+        let home = tempfile::tempdir().unwrap();
+        let table = trusted_table();
+        table.insert(
+            500,
+            FakeProcess {
+                executable: Some(crate::relay::openidea::tests::app()),
+                ..process(1, 5)
+            },
+        );
+        table.insert(
+            600,
+            FakeProcess {
+                parent: 500,
+                open_files: vec![lock(THREAD)],
+                ..codex_process(10, &["codex", "app-server"])
+            },
+        );
+        let exited = |code| RunOutcome::Exited {
+            code,
+            stdout: format!("Queued message q1 for thread {THREAD}.\n"),
+            stderr: String::new(),
+        };
+        let runner = Arc::new(FakeRunner::answering([exited(2), exited(0), exited(0)]));
+        let routes = system(home.path(), runner.clone(), table);
+        assert_eq!(routes.queue_send(THREAD, "hello"), Ok(()));
+        let runs = runner.runs.lock().unwrap();
+        assert_eq!(runs.len(), 3);
+        assert_eq!(runs[0].0, codex());
+        assert_eq!(runs[0].1, ["queue", "--help"]);
+        let configured = home.path().join("bin/codex");
+        assert_eq!(runs[1].0, configured);
+        assert_eq!(runs[1].1, ["queue", "--help"]);
+        assert_eq!(runs[2].0, configured);
+        assert_eq!(runs[2].1, ["queue", "--thread", THREAD, "--message=hello"]);
+    }
+
     // CodexQueueBridge: an older Codex without `queue`, a slow one, a
     // missing one, and Codex's refusal.
     #[test]

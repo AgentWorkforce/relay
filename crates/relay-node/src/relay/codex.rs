@@ -863,6 +863,62 @@ mod tests {
         let _ = &mut config;
     }
 
+    #[test]
+    fn discovery_follows_an_openidea_tasks_writer_lock_lifecycle() {
+        let home = tempfile::tempdir().unwrap();
+        let config = config(home.path());
+        let db = seed(home.path(), "wal");
+        add_thread(&db, SECOND, 1_790_659_487);
+        let table = trusted_table();
+        table.insert(
+            500,
+            FakeProcess {
+                executable: Some(crate::relay::openidea::tests::app()),
+                ..process(1, 5)
+            },
+        );
+        let server = FakeProcess {
+            parent: 500,
+            open_files: vec![lock(THREAD)],
+            ..codex_process(10, &["codex", "app-server"])
+        };
+        table.insert(600, server.clone());
+        // No proxy or IPC router can vouch for these stdio threads.
+        let discover = || {
+            try_discover_with(
+                &config,
+                &table,
+                UID,
+                &LoadedThreads::default(),
+                &FakeRunner::default(),
+            )
+            .unwrap()
+            .into_iter()
+            .map(|session| (session.target.id, session.live))
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(discover(), [(SECOND.into(), false), (THREAD.into(), true)]);
+        table.insert(
+            600,
+            FakeProcess {
+                open_files: vec![],
+                ..server.clone()
+            },
+        );
+        assert!(discover().iter().all(|(_, live)| !live));
+        table.remove(600);
+        assert!(discover().iter().all(|(_, live)| !live));
+        // OpenIDEA restarts its idle app-server and resumes the same task.
+        table.insert(
+            601,
+            FakeProcess {
+                start: 11,
+                ..server
+            },
+        );
+        assert_eq!(discover(), [(SECOND.into(), false), (THREAD.into(), true)]);
+    }
+
     /// A runner whose proxies answer `loaded` in turn.
     fn runner_answering(loaded: &[&[&str]]) -> FakeRunner {
         let runner = FakeRunner::default();
