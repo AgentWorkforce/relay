@@ -15,7 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Messages to an open Muse session are delivered again: the core's courier answers the terminal queries Muse sends at startup, gets 60s instead of 20s to start its session (120s per delivery), and logs its last screen to `core.log` when it still cannot start.
 
-
 ## [18.7.2] - 2026-11-14
 
 ### Added
