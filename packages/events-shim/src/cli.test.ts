@@ -699,7 +699,7 @@ describe('events-shim CLI', () => {
     ]);
     const said = w.out.join('\n');
     expect(said).toContain(
-      "Start Codex with an opening prompt so it is woken from the start: codex 'Watch for webhooks.'"
+      'Start a Codex session and send it a first message, e.g. "Watch for webhooks". A Codex session can be woken only once it has started; a new window with no message yet cannot be reached.'
     );
     expect(said).toContain('temporary Agent Relay workspace, deleted 2026-11-19');
 

@@ -27,9 +27,9 @@ agent "watch for webhooks". Each post wakes it:
   workspace that is deleted after 7 days (setup says when; sign in to Agent Relay to keep one, or set
   `RELAY_WORKSPACE_KEY`). The newest Codex session gets the posts. `uninstall --codex` removes the hook and stops that core. The link is logged to
   `~/.config/agent-relay/events-shim.log`.
-  Codex writes a session's thread only on its first turn, so a session started with no prompt can be woken
-  from its first message on (before that, there is nothing to deliver to; even `codex queue` refuses it). Start
-  Codex with an opening prompt, `codex 'Watch for webhooks.'`, to have it woken from the start.
+  **The session has to be started:** open Codex and send it a first message, such as "Watch for webhooks".
+  Codex creates a session only on its first turn, so a new window with no message yet cannot be woken (even
+  `codex queue` refuses it).
 - **Devin, Grok, opencode and Muse, the same way.** Their sessions are woken through the same Agent Relay core
   (Desktop's or setup's own). Setup also runs `events-shim serve` as a user service (systemd `--user` on Linux, a
   LaunchAgent on macOS): it keeps the core running and links the inbox to the newest open session of the CLIs you set
