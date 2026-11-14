@@ -17,6 +17,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   CODEX_HOOK_COMMAND,
   codexHookCommand,
+  desktopCoreBinaries,
   configPath,
   HOOK_COMMAND,
   runCli,
@@ -975,6 +976,20 @@ describe('events-shim CLI', () => {
     const w = await setupWorld({ inboxClaimed: true, core: true });
     expect(await runCli(['setup', w.created.mcp_url, '--codex'], w.io)).toBe(0);
     expect(w.mints).toEqual([]);
+  });
+
+  it("finds Agent Relay Desktop's bridge client where the app and its installs keep it", () => {
+    const list = (dir: string) =>
+      dir === '/u/.local/lib/agent-relay/versions' ? ['2026.11.4-beta.10', '2026.11.4-beta.11'] : [];
+    expect(desktopCoreBinaries('/u', list)).toEqual([
+      '/Applications/Agent Relay.app/Contents/Helpers/Agent Relay Helper',
+      '/u/Applications/Agent Relay.app/Contents/Helpers/Agent Relay Helper',
+      '/Applications/Agent Relay.app/Contents/Helpers/agent-relay-probe',
+      '/usr/lib/agent-relay/agent_relay/helpers/agent-relay-probe',
+      '/u/.local/lib/agent-relay/versions/2026.11.4-beta.11/agent-relay-probe',
+      '/u/.local/lib/agent-relay/versions/2026.11.4-beta.10/agent-relay-probe',
+      '/u/.local/bin/agent-relay-probe',
+    ]);
   });
 
   it('setup --codex refuses a core download that does not match its checksum', async () => {
