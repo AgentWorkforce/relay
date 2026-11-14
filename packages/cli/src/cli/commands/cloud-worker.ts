@@ -92,7 +92,8 @@ function safePathSegment(value: string): string {
   return base.replace(/[^A-Za-z0-9._-]/g, '_') || 'path';
 }
 
-function buildWorkerRuntimeEnv(
+/** Exported for tests. */
+export function buildWorkerRuntimeEnv(
   payload: WorkerWorkflowPayload,
   deps: CloudWorkerDependencies,
   cliCredentialEnv: Record<string, string> = {}

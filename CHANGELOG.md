@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `agent-relay cloud worker` runs flow assignments from a self-hosted control plane without Relayfile. Such assignments omit the Relayfile token, and the worker used to reject every one as "Resolved worker workflow payload is invalid." It now runs them without `RELAYFILE_URL`/`RELAYFILE_TOKEN`, and drops any stale values inherited from its environment.
+
 ### Changed
 
 - `@agent-relay/events-shim`: `setup --muse` no longer says Muse sessions are woken by each post: Agent Relay cannot deliver into a Muse session yet (relay#2174). The session is still linked, so it starts working once that is fixed.
