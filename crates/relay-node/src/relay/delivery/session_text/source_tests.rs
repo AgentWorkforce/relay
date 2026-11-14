@@ -163,6 +163,8 @@ async fn fixture(kind: SessionKind, mobile: bool) -> Fixture {
     let harness = match kind {
         SessionKind::ClaudeTerminal => "claude",
         SessionKind::Codex => "codex",
+        SessionKind::Grok => "grok",
+        SessionKind::Devin => "devin",
         _ => "opencode",
     };
     let mut registration: Registration = serde_json::from_value(json!({
@@ -274,8 +276,12 @@ async fn requester_native_source_keeps_spawn_route_for_all_supported_kinds_and_m
     }
 }
 
+// The owner's message to a spawned OpenCode is native either way: with
+// mobile continuation on it is the plain owner turn that route takes; off,
+// it is native input through the spawn route, reply context kept, never a
+// peer message.
 #[tokio::test]
-async fn managed_opencode_owner_source_requires_separate_mobile_opt_in() {
+async fn spawned_opencode_owner_is_native_with_or_without_mobile_continuation() {
     for mobile in [false, true] {
         let f = fixture(SessionKind::OpenCode, mobile).await;
         let (source, text) = deliver(&f, &f.owner).await;
@@ -284,16 +290,63 @@ async fn managed_opencode_owner_source_requires_separate_mobile_opt_in() {
             if mobile {
                 InputSource::Owner
             } else {
-                InputSource::Peer
+                InputSource::Requester
             }
         );
         assert_eq!(f.routes.owner.lock().unwrap().len(), usize::from(mobile));
-        assert_eq!(f.routes.peer.lock().unwrap().len(), usize::from(!mobile));
-        assert!(f.routes.requester.lock().unwrap().is_empty());
+        assert_eq!(
+            f.routes.requester.lock().unwrap().len(),
+            usize::from(!mobile)
+        );
+        assert!(f.routes.peer.lock().unwrap().is_empty());
         if mobile {
             assert_eq!(text, f.owner.text.clone().unwrap());
+        } else {
+            assert!(text.starts_with("[Agent Relay native input — from @owner"));
         }
     }
+}
+
+// The owner's direct message, from the desktop or a phone, reaches every
+// spawned harness that takes native input over its own input, never as a
+// peer message: a plain user turn in Codex and Claude, native input that
+// keeps the reply context in the others. A reply in a thread of the DM, or
+// a DM read from the delivery queue, is the same.
+#[tokio::test]
+async fn owner_messages_to_every_spawned_harness_are_native() {
+    for kind in [
+        SessionKind::Grok,
+        SessionKind::Devin,
+        SessionKind::OpenCode,
+        SessionKind::Codex,
+        SessionKind::ClaudeTerminal,
+    ] {
+        let threaded = |f: &Fixture| Delivery {
+            id: "delivery-owner-thread".into(),
+            message_id: "message-owner-thread".into(),
+            reason: Some("thread-reply".into()),
+            channel_id: Some("dmch_pair".into()),
+            thread_id: Some("message-child".into()),
+            ..f.owner.clone()
+        };
+        let f = fixture(kind, false).await;
+        for message in [f.owner.clone(), threaded(&f)] {
+            let (source, text) = deliver(&f, &message).await;
+            assert_ne!(source, InputSource::Peer, "{kind:?}: {text}");
+            assert!(!text.starts_with("[via Agent Relay"), "{kind:?}: {text}");
+        }
+        assert!(f.routes.peer.lock().unwrap().is_empty(), "{kind:?}");
+    }
+}
+
+// A requester or owner of a spawned agent the person took over is a peer
+// again, like everyone else.
+#[tokio::test]
+async fn a_taken_over_spawn_takes_no_native_input_from_the_owner_route() {
+    let mut f = fixture(SessionKind::Grok, false).await;
+    f.registration.spawn.as_mut().unwrap().taken_over_at = Some("2026-11-12T00:00:00Z".into());
+    assert_eq!(deliver(&f, &f.owner).await.0, InputSource::Peer);
+    assert_eq!(f.routes.peer.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]

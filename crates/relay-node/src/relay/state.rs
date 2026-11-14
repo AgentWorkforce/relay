@@ -739,6 +739,7 @@ mod tests {
             base_url: "https://cast.agentrelay.com".into(),
             workspace_id: Some("rw_1".into()),
             source: Default::default(),
+            control_url: None,
         };
         let hub = hub();
         hub.update(|status| status.workspace = WorkspaceStatus::discovered(Some(&workspace)));

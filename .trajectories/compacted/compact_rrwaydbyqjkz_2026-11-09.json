@@ -1,0 +1,37 @@
+{
+  "id": "compact_rrwaydbyqjkz",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-11-09T18:33:04.705Z",
+  "sourceTrajectories": [
+    "traj_rw7uzavy3yrg"
+  ],
+  "dateRange": {
+    "start": "2026-11-09T18:32:33.029Z",
+    "end": "2026-11-09T18:33:04.246Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "security",
+      "decisions": [
+        {
+          "question": "Keep source refusal codes and add fixed flag guidance",
+          "chosen": "Keep source refusal codes and add fixed flag guidance",
+          "reasoning": "Missing or conflicting token sources should name the three supported flags without echoing values or paths. The same rejection still occurs before file/stdin consumption and registration, and the existing no-source Commander case asserts the actionable guidance.",
+          "fromTrajectory": "traj_rw7uzavy3yrg"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}

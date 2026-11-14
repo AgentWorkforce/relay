@@ -1537,8 +1537,16 @@ impl LocalInjector {
                     paseo_muse::PaseoCourier::system(agent_id, endpoint, open.store.clone());
                 (Arc::new(courier), Arc::new(receipts))
             } else {
+                let private_base = journal
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| journal.to_path_buf());
                 (
-                    Arc::new(muse_open::SystemCourier::new(open.store.clone(), None)),
+                    Arc::new(muse_open::SystemCourier::isolated(
+                        open.store.clone(),
+                        None,
+                        private_base,
+                    )),
                     Arc::new(muse_open::SystemReceipts::new(&open.store)),
                 )
             };
@@ -1870,6 +1878,7 @@ pub use plugins::{
 #[cfg(unix)]
 mod tests {
     mod automatic_admission;
+    mod runtime_registration;
 
     mod spawned_delivery;
     use super::*;
@@ -5896,26 +5905,14 @@ printf '{{"jsonrpc":"2.0","id":"%s","result":{{"stopReason":"end_turn","outputTo
         config.uid = uid;
         let sessions = LocalSessions::new(config.clone(), world.table.clone());
         let target = Target::new(SessionKind::CursorCli, conversation);
-        // Before a hook of the conversation ran in this window, nobody.
-        assert!(matches!(
-            sessions.caller_target(710),
-            Err(CallerMiss::NotASession)
-        ));
-        // Cursor is writing the conversation's transcript: it is running now.
-        let transcript = config
-            .cursor
-            .home
-            .join(".cursor/projects/api/agent-transcripts")
-            .join(conversation)
-            .join(format!("{conversation}.jsonl"));
-        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
-        std::fs::write(&transcript, b"").unwrap();
-        assert!(cursor_cli::record_editor_hook(
+        // Before Cursor wrote the conversation's transcript, a hook naming
+        // no conversation may not take it up; its tool naming it does.
+        assert!(!cursor_cli::record_editor_hook(
             &config.cursor,
             world.table.as_ref(),
             700,
             700,
-            &serde_json::json!({"hook_event_name": "postToolUse", "conversation_id": conversation}),
+            &serde_json::json!({"hook_event_name": "beforeSubmitPrompt", "conversation_id": conversation}),
         ));
         assert_eq!(sessions.caller_target(710).ok(), Some(target.clone()));
         // Without the conversation's own id, an inherited Codex thread or
@@ -5931,6 +5928,8 @@ printf '{{"jsonrpc":"2.0","id":"%s","result":{{"stopReason":"end_turn","outputTo
             ServingPath::default(),
         );
         assert!(injector.can_reply(&target));
+        // Apple's curl hides the variable naming it: its replies take the probe.
+        assert!(injector.needs_probe_client(&target));
         // A tool under the window's session-less `cursor-agent … worker
         // start` is walked past the worker to the host.
         let worker = |pid: i32, parent: i32| FakeProcess {

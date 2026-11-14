@@ -10,13 +10,10 @@
       "entry": ["src/cli/bootstrap.ts"],
       "project": ["src/**/*.ts"]
     },
+    "packages/core-bridge": {
+      "project": ["src/**/*.ts"]
+    },
     "packages/sdk": {
-      "project": ["src/**/*.ts"]
-    },
-    "packages/harness-driver": {
-      "project": ["src/**/*.ts"]
-    },
-    "packages/harnesses": {
       "project": ["src/**/*.ts"]
     },
     "packages/config": {
@@ -28,12 +25,5 @@
   },
   "ignore": ["**/*.test.ts", "scripts/**", "plugins/**", "tests/**", "packages/openclaw/bridge/**"],
   "ignoreDependencies": ["turbo"],
-  "ignoreWorkspaces": [
-    "packages/broker-darwin-arm64",
-    "packages/broker-darwin-x64",
-    "packages/broker-linux-arm64",
-    "packages/broker-linux-x64",
-    "packages/broker-win32-x64",
-    "packages/cloud"
-  ]
+  "ignoreWorkspaces": ["packages/cloud"]
 }

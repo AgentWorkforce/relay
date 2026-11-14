@@ -9,19 +9,17 @@ paths:
 
 - Package: `@agent-relay/sdk` (NOT `@agent-relay/broker-sdk`)
 - Scope: communication primitives only — messaging, delivery, actions,
-  session/capabilities. No broker startup, spawning, or harness lifecycle.
+  session/capabilities. No process spawning or harness lifecycle.
 - Main facade: `AgentRelay` in `packages/sdk/src/agent-relay.ts`
 
 ## What lives elsewhere
 
-- Broker client: `HarnessDriverClient` in `@agent-relay/harness-driver`
-  (`packages/harness-driver/src/client.ts`) — owns broker startup, spawn/release,
-  PTY/headless transports, and `connection.json` discovery.
-- Workflows: the `relayflows` package (`../relayflows`), which consumes the
-  broker through `@agent-relay/sdk`.
-
-Keep application-level messaging on `@agent-relay/sdk`; reach for
-`@agent-relay/harness-driver` only at the boundary that owns local agent processes.
+- Local agent processes: the Agent Relay core (`crates/relay-node`, started by
+  `relay init`) spawns, injects into and releases agents on a machine.
+- Workflows: the `relayflows` package (`../relayflows`).
+- `@agent-relay/harness-driver` (the retired broker client) is no longer built
+  here; older published versions stay on npm for existing consumers. Do not
+  add it back as a dependency.
 
 ## Facade API
 

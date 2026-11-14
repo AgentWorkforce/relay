@@ -79,6 +79,7 @@ pub(super) fn of_workspace(mut intent: Intent, workspace: &Workspace) -> Option<
     }
     // A kept agent's registration pins the key in use now.
     intent.workspace_key = workspace.key.clone();
+    intent.control_url = workspace.control_url.clone();
     Some(intent)
 }
 
@@ -319,6 +320,7 @@ impl Core {
             harness: intent.harness,
             task: String::new(),
             directory: None,
+            fork_from: None,
         };
         let error = super::invoke::SpawnError::from(
             "spawn_failed: Agent Relay recovered an ended launch without a recorded result; the original harness reason is unavailable.");

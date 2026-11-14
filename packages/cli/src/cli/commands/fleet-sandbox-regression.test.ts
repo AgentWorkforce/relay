@@ -240,7 +240,6 @@ describe('fleet sandbox command regressions', () => {
     const spawn = fleet?.commands.find((command) => command.name() === 'spawn');
     const cwd = spawn?.options.find((option) => option.long === '--cwd');
 
-    expect(cwd?.description).toContain('caller directory for local spawn');
     expect(cwd?.description).toContain('maps a local repo-relative path with --sandbox');
     expect(cwd?.description).toContain('selects a path on the remote node');
   });

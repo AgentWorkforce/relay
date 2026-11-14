@@ -133,8 +133,8 @@ pub fn is_editor_worker(table: &dyn ProcessTable, pid: i32) -> bool {
 /// wherever its data folder is (`super::held_anywhere`, so the caller's
 /// `CURSOR_DATA_DIR` cannot hide one), no record gives it to another
 /// window's host that still runs (however long it has been idle), and the processes between `pid` and `host` vouch for it
-/// (`path_vouches`). The first hook of a conversation's window establishes
-/// its record.
+/// (`path_vouches`). The first hook or tool of a conversation's window to
+/// claim it establishes its record.
 pub(super) fn may_claim(
     config: &CursorConfig,
     table: &dyn ProcessTable,

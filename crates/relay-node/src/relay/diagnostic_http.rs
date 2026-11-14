@@ -1,5 +1,8 @@
 //! Observes the SDK boundary without changing its authentication or retry policy.
-use relaycast::{ClientOptions, RequestOptions};
+use relaycast::ClientOptions;
+// Keep options on the same SDK version as this transport. An embedding app
+// may also use a registry SDK, whose RequestOptions is a different Rust type.
+pub use relaycast::RequestOptions;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 
@@ -12,7 +15,7 @@ impl HttpClient {
     pub fn new(options: ClientOptions) -> relaycast::Result<Self> {
         let credential = super::workspace::Secret::new(options.api_key.clone());
         Ok(Self {
-            inner: relaycast::HttpClient::new(options)?,
+            inner: super::sdk_http::client(options)?,
             credential,
         })
     }
@@ -27,7 +30,13 @@ impl HttpClient {
             &format!("{}{}", self.inner.base_url(), path),
             serde_json::to_value(query).unwrap_or(Value::Null),
             self.credential.expose(),
-            self.inner.get(path, query, options),
+            async {
+                super::sdk_http::environment_is_safe()?;
+                self.inner
+                    .get(path, query, options)
+                    .await
+                    .map_err(|error| self.broker_error(error))
+            },
         )
         .await
     }
@@ -42,8 +51,65 @@ impl HttpClient {
             &format!("{}{}", self.inner.base_url(), path),
             serde_json::to_value(&body).unwrap_or(Value::Null),
             self.credential.expose(),
-            self.inner.post(path, body, options),
+            async {
+                super::sdk_http::environment_is_safe()?;
+                self.inner
+                    .post(path, body, options)
+                    .await
+                    .map_err(|error| self.broker_error(error))
+            },
         )
+        .await
+    }
+    /// `error` as read from a Control broker ([`super::node_credential::broker_error`])
+    /// when this client carries a node-scoped credential; as it is otherwise.
+    fn broker_error(&self, error: relaycast::RelayError) -> relaycast::RelayError {
+        if self.node_scoped() {
+            super::node_credential::broker_error(error)
+        } else {
+            error
+        }
+    }
+    /// Whether this client carries a node-scoped credential (`sh_wk_…`),
+    /// so it reaches a Control broker.
+    pub fn node_scoped(&self) -> bool {
+        super::workspace::is_node_key(self.credential.expose())
+    }
+    /// `GET path` at a Control broker, its answer read by
+    /// [`super::node_credential::broker_data`] rather than the SDK, which
+    /// cannot read the bare bodies of broker images older than relay-control
+    /// 01614898. One attempt, no retry. It goes once every deployed broker
+    /// image carries 01614898.
+    pub async fn get_broker(&self, path: &str) -> relaycast::Result<Value> {
+        let url = format!("{}{}", self.inner.base_url(), path);
+        super::request_log::observe("GET", &url, Value::Null, self.credential.expose(), async {
+            let options =
+                ClientOptions::new(self.inner.api_key()).with_base_url(self.inner.base_url());
+            let transport = super::sdk_http::guarded_transport(&options)?;
+            let response = transport
+                .get(&url)
+                .bearer_auth(self.inner.api_key())
+                .header("X-Relaycast-Origin-Client", self.inner.origin_client())
+                .header("X-Relaycast-Origin-Version", self.inner.origin_version())
+                .send()
+                .await?;
+            let status = response.status().as_u16();
+            let header = |name: &str| {
+                response
+                    .headers()
+                    .get(name)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            };
+            let request_id = header("x-request-id").or_else(|| header("x-correlation-id"));
+            let retry_after_ms = header("retry-after")
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(|seconds| seconds.saturating_mul(1_000));
+            let body = response.bytes().await?;
+            super::node_credential::broker_data(status, &body, request_id, retry_after_ms)
+        })
         .await
     }
     pub async fn delete(
@@ -56,7 +122,13 @@ impl HttpClient {
             &format!("{}{}", self.inner.base_url(), path),
             Value::Null,
             self.credential.expose(),
-            self.inner.delete(path, options),
+            async {
+                super::sdk_http::environment_is_safe()?;
+                self.inner
+                    .delete(path, options)
+                    .await
+                    .map_err(|error| self.broker_error(error))
+            },
         )
         .await
     }

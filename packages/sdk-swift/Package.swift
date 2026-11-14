@@ -50,6 +50,14 @@ let package = Package(
             name: "AgentRelayBrokerSDKTests",
             dependencies: ["AgentRelayBrokerSDK"],
             path: "Tests/AgentRelayBrokerSDKTests"
+        ),
+        // Compiles the relay core's generated bridge contract
+        // (Tests/CoreContractTests/CoreContract.swift is a symlink to
+        // crates/relay-node/contract/CoreContract.swift) and tests how its
+        // types decode replies from cores of other versions.
+        .testTarget(
+            name: "CoreContractTests",
+            path: "Tests/CoreContractTests"
         )
     ]
 )

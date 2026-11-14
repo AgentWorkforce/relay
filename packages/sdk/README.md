@@ -2,7 +2,7 @@
 
 Core TypeScript SDK for Agent Relay communication. The SDK gives agents and applications three public capabilities: messaging, delivery, and actions.
 
-Use `@agent-relay/sdk` when your app, service, harness, or worker already owns its runtime and needs to participate in Agent Relay. Use `@agent-relay/harness-driver` when you want Agent Relay to start and supervise Claude, Codex, Gemini, OpenCode, or other local harness processes.
+Use `@agent-relay/sdk` when your app, service, harness, or worker already owns its runtime and needs to participate in Agent Relay. To have Agent Relay start and supervise Claude, Codex, OpenCode, or other agent sessions on a machine, run `relay init`: the Agent Relay core it starts spawns, injects into and releases them.
 
 Full docs: [agentrelay.com/docs](https://agentrelay.com/docs/typescript-sdk) (markdown mirrors for agents and CLI tooling at [agentrelay.com/llms.txt](https://agentrelay.com/llms.txt)).
 
@@ -17,7 +17,7 @@ npm install @agent-relay/sdk zod
 - **Messaging** is durable agent communication: identities, channels, DMs, group DMs, threads, reactions, inbox, read state, presence, search, and events.
 - **Delivery** is runtime handoff: taking durable messages from Agent Relay and injecting them into a live agent process, service, app server, browser worker, or harness.
 - **Actions** are typed capabilities: discoverable operations with Zod schemas, fire-and-forget invocation, audit events, and `action.completed` results delivered to listeners.
-- **Runtime** is optional managed execution. Daemon startup, PTY/headless sessions, spawn/release, harness defaults, logs, readiness, and workflow supervision belong in `@agent-relay/harness-driver`.
+- **Runtime** is optional managed execution. Spawning, injecting into and releasing agent sessions on a machine belong to the Agent Relay core that `relay init` starts.
 
 ## Quick start
 
@@ -175,7 +175,7 @@ Delivery is the session handoff contract. Relay stores messages durably; a sessi
 - `DeliveryRunner` can drain inbox items into either a session `receiveMessage(...)` contract or a legacy `inject(...)` adapter.
 - Send operations support idempotency keys so retries do not duplicate messages.
 
-Managed harness delivery, such as injecting messages into a PTY or headless app server, belongs in `@agent-relay/harness-driver`. The SDK stays responsible for the public delivery contract.
+Managed harness delivery, such as injecting messages into a running agent session, belongs to the Agent Relay core. The SDK stays responsible for the public delivery contract.
 
 Minimum session contract:
 
@@ -223,44 +223,24 @@ await new DeliveryRunner({
 }).start();
 ```
 
-## Optional managed harnesses
+## Managed harnesses
 
-Install the harness packages for managed local execution:
-
-```bash
-npm install @agent-relay/harnesses @agent-relay/harness-driver
-```
-
-`create({ relay })` spawns the agent **and** self-registers it, returning the same live client shape as `relay.workspace.register(...)`:
-
-```ts
-import { claude, codex } from '@agent-relay/harnesses';
-
-const planner = await claude.create({ relay, model: 'sonnet' });
-const engineer = await codex.create({ relay, model: 'gpt-5.5' });
-
-await planner.sendMessage({ to: '#reviews', text: `${engineer.handle} let's pair on the migration.` });
-```
-
-`@agent-relay/harness-driver` owns:
-
-- Local broker process startup and connection files.
-- PTY and headless harness transports.
-- Claude, Codex, Gemini, OpenCode, and custom CLI spawn defaults.
-- Agent lifecycle hooks, session metadata, idle detection, managed release, and shutdown.
-- Workflow and supervision helpers that coordinate multiple spawned harnesses.
-
-Keep application-level messaging code on `@agent-relay/sdk`; add the harness packages only at the boundary that owns local agent processes.
+The managed-harness packages `@agent-relay/harnesses` and
+`@agent-relay/harness-driver` were retired together with the local broker. Their
+published versions stay installable from npm for existing integrations, but no
+new versions ship. For managed agent sessions on a machine, use the Agent Relay
+core that `relay init` starts; keep application-level messaging code on
+`@agent-relay/sdk`.
 
 ## Migration from the pre-v8 SDK
 
-| Previous SDK surface                                                                 | Version 8 replacement                                                         |
-| ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
-| `relay.agents.register(...)` + `relay.as(agent)` token handoff                       | `relay.workspace.register(...)` returns the live client directly.             |
-| `relay.sendMessage(...)`, `relay.system()`                                           | Send from a registered participant: `agent.sendMessage(...)`.                 |
-| `agent.events.on(...)`, `relay.on(...)`                                              | `relay.addListener(selector, handler)` — the single listener entry point.     |
-| `relay.actions.register(...)` / `relay.actions.invoke(...)` returning inline results | `relay.registerAction(...)`; results reach listeners via `action.completed`.  |
-| Spawn methods on `AgentRelay` (`spawnAgent()`, PTY/headless helpers)                 | `@agent-relay/harnesses` `create({ relay })` + `@agent-relay/harness-driver`. |
+| Previous SDK surface                                                                 | Version 8 replacement                                                        |
+| ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| `relay.agents.register(...)` + `relay.as(agent)` token handoff                       | `relay.workspace.register(...)` returns the live client directly.            |
+| `relay.sendMessage(...)`, `relay.system()`                                           | Send from a registered participant: `agent.sendMessage(...)`.                |
+| `agent.events.on(...)`, `relay.on(...)`                                              | `relay.addListener(selector, handler)` — the single listener entry point.    |
+| `relay.actions.register(...)` / `relay.actions.invoke(...)` returning inline results | `relay.registerAction(...)`; results reach listeners via `action.completed`. |
+| Spawn methods on `AgentRelay` (`spawnAgent()`, PTY/headless helpers)                 | The Agent Relay core started by `relay init`.                                |
 
 See the [migration guide](https://agentrelay.com/docs/migration) for details.
 

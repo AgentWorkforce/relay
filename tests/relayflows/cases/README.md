@@ -54,10 +54,10 @@ The runner receives:
 The variable names predate this corpus and are kept so existing cases run
 unchanged.
 
-Rust broker behavior cases can declare `"requirements": ["broker-linux-x64"]`.
-The runner then receives the broker executable as
-`RELAY_PR_PROOF_BROKER_BINARY` and should invoke that binary directly instead
-of rebuilding it. Cases without this requirement receive no broker binary.
+> The Rust broker was retired. The case contract still parses a legacy
+> `broker-linux-x64` requirement so older case files load, but nothing can
+> satisfy it any more. A new case must not declare it, and a case that does
+> cannot run.
 
 The runner must finish with exit code zero after observing behavior and write:
 

@@ -13,6 +13,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
+const NPM_INSTALL_TIMEOUT_MS = 120_000;
+const PEER_COMPAT_TIMEOUT_MS = 2 * NPM_INSTALL_TIMEOUT_MS + 30_000;
 
 function readCliPackage(): {
   version: string;
@@ -87,7 +89,7 @@ function firstUnsupportedMajor(version: string, peerRanges: string[]): string {
   throw new Error(`@relayflows/sdk peers ${peerRanges.join(', ')} accept every major up to ${major + 10}`);
 }
 
-function writeWorkspacePackage(root: string, name: 'sdk' | 'harness-driver', version: string): void {
+function writeWorkspacePackage(root: string, name: 'sdk', version: string): void {
   const dir = path.join(root, 'pkgs', name);
   mkdirSync(dir, { recursive: true });
   writeFileSync(
@@ -111,69 +113,72 @@ describe('published CLI @relayflows/sdk peer compatibility', () => {
     expect(pin).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
-  // Fresh registry install of @relayflows/sdk routinely exceeds vitest's 5s
-  // default under CI load; keep the proof but budget for a cold npm resolve.
-  it('installs cleanly beside workspace packages at the released CLI version', () => {
-    const cli = readCliPackage();
-    const pin = cli.dependencies?.['@relayflows/sdk'];
-    expect(pin).toBeTruthy();
-    const current = cli.version;
+  // Budget for both cold npm resolutions (supported and rejected peers),
+  // bounding each child process and leaving time for assertions and cleanup.
+  it(
+    'installs cleanly beside workspace packages at the released CLI version',
+    () => {
+      const cli = readCliPackage();
+      const pin = cli.dependencies?.['@relayflows/sdk'];
+      expect(pin).toBeTruthy();
+      const current = cli.version;
 
-    const root = mkdtempSync(path.join(tmpdir(), 'relayflows-peer-compat-'));
-    try {
-      writeWorkspacePackage(root, 'sdk', current);
-      writeWorkspacePackage(root, 'harness-driver', current);
-
-      writeFileSync(
-        path.join(root, 'package.json'),
-        JSON.stringify(
-          {
-            name: 'relayflows-peer-compat-consumer',
-            private: true,
-            dependencies: {
-              '@agent-relay/sdk': 'file:pkgs/sdk',
-              '@agent-relay/harness-driver': 'file:pkgs/harness-driver',
-              '@relayflows/sdk': pin,
-            },
-          },
-          null,
-          2
-        )
-      );
-
-      execFileSync('npm', ['install', '--no-fund', '--no-audit'], {
-        cwd: root,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-
-      // Unsupported Relay majors must fail resolution instead of being accepted
-      // because a development-only override hid the published peer contract.
-      const installedSdk = JSON.parse(
-        readFileSync(path.join(root, 'node_modules/@relayflows/sdk/package.json'), 'utf8')
-      ) as { peerDependencies?: Record<string, string> };
-      const peerRanges = ['@agent-relay/sdk', '@agent-relay/harness-driver'].map(
-        (name) => installedSdk.peerDependencies?.[name] ?? '*'
-      );
-      const unsupported = firstUnsupportedMajor(current, peerRanges);
-      rmSync(path.join(root, 'node_modules'), { recursive: true, force: true });
-      rmSync(path.join(root, 'package-lock.json'));
-      writeWorkspacePackage(root, 'sdk', unsupported);
-      writeWorkspacePackage(root, 'harness-driver', unsupported);
-      let rejected: { status?: number; stderr?: string } | undefined;
+      const root = mkdtempSync(path.join(tmpdir(), 'relayflows-peer-compat-'));
       try {
+        // @agent-relay/harness-driver is no longer a workspace package; npm
+        // resolves the frozen registry release that @relayflows/sdk peers on.
+        writeWorkspacePackage(root, 'sdk', current);
+
+        writeFileSync(
+          path.join(root, 'package.json'),
+          JSON.stringify(
+            {
+              name: 'relayflows-peer-compat-consumer',
+              private: true,
+              dependencies: {
+                '@agent-relay/sdk': 'file:pkgs/sdk',
+                '@relayflows/sdk': pin,
+              },
+            },
+            null,
+            2
+          )
+        );
+
         execFileSync('npm', ['install', '--no-fund', '--no-audit'], {
           cwd: root,
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: NPM_INSTALL_TIMEOUT_MS,
         });
-      } catch (error) {
-        rejected = error as typeof rejected;
+
+        // Unsupported Relay majors must fail resolution instead of being accepted
+        // because a development-only override hid the published peer contract.
+        const installedSdk = JSON.parse(
+          readFileSync(path.join(root, 'node_modules/@relayflows/sdk/package.json'), 'utf8')
+        ) as { peerDependencies?: Record<string, string> };
+        const peerRanges = [installedSdk.peerDependencies?.['@agent-relay/sdk'] ?? '*'];
+        const unsupported = firstUnsupportedMajor(current, peerRanges);
+        rmSync(path.join(root, 'node_modules'), { recursive: true, force: true });
+        rmSync(path.join(root, 'package-lock.json'));
+        writeWorkspacePackage(root, 'sdk', unsupported);
+        let rejected: { status?: number; stderr?: string } | undefined;
+        try {
+          execFileSync('npm', ['install', '--no-fund', '--no-audit'], {
+            cwd: root,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+            timeout: NPM_INSTALL_TIMEOUT_MS,
+          });
+        } catch (error) {
+          rejected = error as typeof rejected;
+        }
+        expect(rejected?.status).not.toBe(0);
+        expect(rejected?.stderr).toContain('ERESOLVE');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
       }
-      expect(rejected?.status).not.toBe(0);
-      expect(rejected?.stderr).toContain('ERESOLVE');
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  }, 60_000);
+    },
+    PEER_COMPAT_TIMEOUT_MS
+  );
 });

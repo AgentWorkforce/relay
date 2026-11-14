@@ -147,6 +147,7 @@ fn fixture(
         base_url: "https://cast.test".into(),
         workspace_id: Some("workspace".into()),
         source: WorkspaceSource::Cloud,
+        control_url: None,
     });
     core.store
         .update(|store| store.allow_self_registration = Some(guidance))?;
@@ -264,10 +265,14 @@ async fn consuming_hook_thread_affinity_preserves_registration_guidance() {
         .unwrap()
         .environment
         .insert("CODEX_THREAD_ID".into(), PARENT.into());
-    assert!(outbound
-        .codex_stop_hook(CHILD_PID, outbound.uid, &fields(PARENT, "SessionStart"))
-        .await
-        .is_err());
+    assert_eq!(
+        outbound
+            .codex_stop_hook(CHILD_PID, outbound.uid, &fields(PARENT, "SessionStart"))
+            .await
+            .unwrap(),
+        json!({}),
+        "a trusted host can request a global scan, never parent context"
+    );
     assert!(inbox.needs_registration_guidance(PARENT));
     assert!(outbound
         .core
@@ -283,16 +288,23 @@ async fn consuming_hook_thread_affinity_preserves_registration_guidance() {
         .is_err());
     assert!(inbox.needs_registration_guidance(PARENT));
     for (pid, thread) in [(PARENT_PID, PARENT), (CHILD_PID, CHILD)] {
-        assert!(outbound
-            .codex_stop_hook(pid, outbound.uid, &fields(thread, "SessionStart"))
-            .await
-            .is_err());
+        assert_eq!(
+            outbound
+                .codex_stop_hook(pid, outbound.uid, &fields(thread, "SessionStart"))
+                .await
+                .unwrap(),
+            json!({})
+        );
         assert!(inbox.needs_registration_guidance(thread));
         let answer = outbound
             .codex_stop_hook(pid, outbound.uid, &fields(thread, "PostToolUse"))
             .await
             .unwrap();
-        assert!(answer.to_string().contains("/register"));
+        let context = answer["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(context.contains(" register --socket "));
+        assert!(!context.contains("socket-request"));
         assert!(!inbox.needs_registration_guidance(thread));
         assert_eq!(
             outbound

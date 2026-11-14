@@ -177,7 +177,7 @@ fn is_invite(word: &str) -> bool {
     let word = lower.trim_start_matches(|c: char| !c.is_ascii_alphanumeric());
     // A key anywhere in the word, as in `RELAY_API_KEY=rk_live_…`.
     if word.starts_with("agentrelay://")
-        || ["rk_live_", "rk_test_", "ar_ws_", "ar_ag_"]
+        || ["rk_live_", "rk_test_", "ar_ws_", "ar_ag_", "sh_wk_"]
             .iter()
             .any(|prefix| word.contains(prefix))
     {
@@ -513,6 +513,10 @@ mod tests {
         assert_eq!(
             without_invites("Set RELAY_API_KEY=rk_live_secret and api_token:abc then run"),
             "Set and then run"
+        );
+        assert_eq!(
+            without_invites("use sh_wk_fixture1234 or \"sh_wk_quoted12345\" then run"),
+            "use or then run"
         );
         assert_eq!(
             without_invites("Fix key handling: done"),

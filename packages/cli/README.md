@@ -1,6 +1,6 @@
 # agent-relay
 
-A thin operator console for a local agent workforce: stand up the broker, staff it with off-the-shelf agent CLIs, and watch/steer them from the terminal. Each command is a shallow wrapper over a backing package (`@agent-relay/sdk`, `@agent-relay/harness-driver`, `@agent-relay/cloud`).
+A thin operator console for an agent workforce: connect your agent tools with `relay init`, message and coordinate the agents in a workspace, and place workers on fleet nodes or Cloud sandboxes. Each command is a shallow wrapper over a backing package (`@agent-relay/sdk`, `@agent-relay/cloud`).
 
 ## Install
 
@@ -13,112 +13,47 @@ npm install -g agent-relay
 ## Common commands
 
 ```bash
-agent-relay status                 # workspace + cloud login + local broker
+agent-relay init                   # set up Relay, your agent tools, and the Agent Relay core
+agent-relay status                 # workspace + cloud login
 agent-relay mcp                    # MCP stdio server
 
 agent-relay message post --channel general --text "hello"
 agent-relay workspace list
 ```
 
-## This machine's node
+## Agents on this machine
 
-The `node` command group manages the broker on your machine and the agents it runs:
+`relay init` installs and starts the Agent Relay core, which injects messages
+into running Claude Code, Codex, OpenCode, Grok, Pi, Devin and Cursor sessions
+and spawns, lists and releases agents on this machine. Spawn agents through the
+Agent Relay MCP spawn tools (or the desktop app).
+
+The local Rust broker and the commands that drove it were retired:
+`node up|down|status|metrics|deadletters|redeliver`, `node tail`, and every
+`node agent …` subcommand (and the same verbs on the deprecated `local` alias)
+now print a removal notice that points to `relay init`. `fleet status` was
+retired the same way.
+
+The `node` group still carries the local workflow commands:
 
 ```bash
-agent-relay node up                          # serves an auto-discovered agent-relay.{ts,js,…} node file,
-                                             # or the implicit local node from teams.json
-agent-relay node up --config ./my-node.ts    # serve a specific defineNode(...) file
-agent-relay node status
-agent-relay node down
-
 agent-relay node workflow run workflows/my-workflow.ts
 agent-relay node workflow logs <run-id> --follow
 agent-relay node workflow sync <run-id>
-
-agent-relay node agent new claude            # spawn + attach
-agent-relay node agent new codex --runtime native
-agent-relay node agent spawn opencode --runtime pty
-agent-relay node agent spawn devin --name reviewer --task "Review the current diff"
-agent-relay node agent list
-agent-relay node agent list --status            # + inbound delivery mode and pending-queue contents per agent
-agent-relay node agent attach <name> --mode view
-agent-relay node agent release <name>
 ```
 
-Local-broker `node agent` subcommands and `node tail` accept `--state-dir <dir>`, `--broker-url <url>`, and `--api-key <key>` to target a broker other than the current project's — for example a fleet node started with `node up --state-dir`. `--state-dir` may name the broker state dir or a fleet node directory whose broker state lives in `state/`. An explicit `--state-dir` reads only that broker's `connection.json` (`--broker-url` may still override its URL), ignoring `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY`. Without flags, a nonblank `RELAY_BROKER_URL` or `RELAY_BROKER_API_KEY` selects the local broker; otherwise the enclosing project's broker is used, except that flag-free `attach` and `message flush|hold|auto` may auto-route to a live fleet placement. Remote routes differ: `attach --node` rejects these flags, `attach --ssh-host` rejects `--broker-url` / `--api-key`, and `message … --node` ignores them.
+## Headless server in an existing Cloud workspace
 
-`node agent spawn` and `node agent new` accept `--runtime auto|native|pty`. `auto` is the default and keeps experimental dual-runtime adapters on PTY. Claude Code, Codex, and OpenCode support explicit native or PTY selection; Pi and Deep Agents are experimental native-only harnesses and require `--runtime native`.
+For an Ubuntu server that should appear beside your Mac as a spawn target,
+follow [the headless server guide](https://agentrelay.com/docs/headless-server). Use the Linux
+account-aware package and device sign-in to the exact workspace. A v18
+`cloud enroll` node ID alone does not start that service. Older v18.0.0 output
+recommended the removed `node up` command; newer builds link to the guide. `init --hosted` can create a different workspace.
 
-For AI SDK native harnesses, attach renders structured activity, text, tools, approvals, files, usage, and lifecycle events. Add `--json` for NDJSON, `--reasoning` for reasoning events, or `--diagnostics` for sidecar diagnostics. Native harness `drive` is line-oriented and acknowledged; native harness `passthrough` is unsupported because no terminal stream exists. PTY attach behavior is unchanged.
+### Workspace selection
 
-### Local operation during a Relaycast outage
-
-```bash
-agent-relay node up --local-only
-agent-relay node status
-agent-relay node agent spawn claude --runtime pty
-agent-relay node agent attach <name> --mode view
-```
-
-`--local-only` deliberately starts a **DEGRADED** broker without waiting for
-Relaycast. Startup, `/health`, `/api/status`, and `node status` report that mode.
-The authenticated `/api/session` exposes `operation_mode: "local_only"` and
-`degraded: true`; its existing `mode` still describes persistence.
-The standalone broker accepts `init --local-only --persist`; SDK callers can
-set `AGENT_RELAY_LOCAL_ONLY=1` and enable persistence. The API must bind to a
-loopback IP, and the mode supports a single workspace key.
-
-Local spawn, terminal view/input, and the durable automatic delivery queue
-remain available. `POST /api/send` accepts only a worker currently running on
-this broker; channel, cross-workspace, and remote destinations are rejected.
-It reports `delivery_status: "queued_local"`, `local: true`, and
-`relaycast_published: false`. Acceptance means the work was saved, not that an
-agent has read it. Pending work survives restart and waits for an absent local
-recipient to respawn without exhausting retries. A restarted recipient gets a
-fresh transport retry budget. Explicit release and exhausted transport failures
-while the recipient is present still use the dead-letter lifecycle. Manual-flush mode is
-unavailable and returns `capability_disabled` explicitly.
-
-Fleet routing, worker presence, remote terminal attachment, node capability
-providers, and injected Relaycast messaging tools are disabled. Local agents
-receive a degraded-mode notice. Their model provider and any tools they
-configure themselves still have their own connectivity requirements.
-
-When a workspace key is configured through the normal workspace selection,
-the broker retries an independent audit connection in the background. Audit
-endpoints require HTTPS, with HTTP allowed only for literal loopback IPs used
-in local development. Audit records never follow HTTP redirects. Queued
-local delivery records are persisted in `state-<name>.local-outbox.json` beside
-broker state, then reconciled as `local.delivery.queued` events under a separate
-broker audit identity when Relaycast responds. These events contain the
-original delivery/event IDs, sender, recipient, body, and queue timestamp.
-They record local acceptance, not model completion. They are **audit replay**,
-not re-sent messages: replay must never execute the work twice or address a
-local worker name on another machine. Reconciliation is at least once; consumers
-can deduplicate by `event_id` after an ambiguous response or crash.
-
-`node status` reports the reconciliation backlog and the last connection
-result. Without a workspace key, local work still runs and records remain on
-disk with no upload destination; no workspace is created. A nonempty unscoped
-backlog cannot acquire a destination on restart. Keep its state directory and
-continue without a key, or select a different state directory for new work
-with a configured destination. The outbox
-is bounded to 10,000 records / 32 MiB and rejects new sends when full. A digest
-pins a configured backlog to its original workspace key and Relaycast base URL;
-restore that configuration to drain it before rotating keys or changing the
-destination. Corrupt outboxes cause an explicit startup failure rather than
-being discarded. Preserve the state directory until reconciliation completes.
-
-Recovery never silently enables fleet capabilities. Stop the broker and start
-normally (without the flag or environment opt-in) to enable them; a normal
-restart drains retained audit backlog only when its configured destination and
-digest match; an unscoped backlog remains on disk. Restart local workers as needed
-to give them Relaycast messaging tools and registered identities.
-
-### Workspace binding and recovery
-
-`agent-relay up` and `agent-relay node up` resolve the workspace through one
-precedence ladder. The first source that resolves wins:
+Commands resolve the workspace through one precedence ladder. The first source
+that resolves wins:
 
 | #   | Source                          | Where it comes from                                                           |
 | --- | ------------------------------- | ----------------------------------------------------------------------------- |
@@ -126,105 +61,10 @@ precedence ladder. The first source that resolves wins:
 | 2   | Environment                     | `RELAY_WORKSPACE_KEY`, then `AGENT_RELAY_WORKSPACE_KEY`, then `RELAY_API_KEY` |
 | 3   | Repository pin                  | `<project>/.agentworkforce/relay/workspace-key.json`                          |
 | 4   | Machine-global active workspace | the `active` entry in `~/.agentworkforce/relay/workspaces.json`               |
-| 5   | Created workspace               | created only when nothing above resolves                                      |
 
 The repository pin always beats the machine-global active workspace, so
 `agent-relay workspace switch <name>` never silently re-homes a checkout that
-already pinned one. A new workspace is a last resort: a fresh directory joins
-the machine-global active workspace when one exists, and startup explicitly
-announces creation when none of the first four sources resolves.
-
-Startup and `node status` report the winning source without printing key
-material. Status uses the same five labels: command-line flag, environment,
-repository pin, machine-global active workspace, or created — but the two
-commands print different strings: startup shows the resolved origin
-(an absolute path for a repository pin), `node status` shows a fixed,
-relative-path label.
-
-Startup output:
-
-```text
-Workspace source: repository pin (/repo/.agentworkforce/relay/workspace-key.json)
-Workspace: joined rw_7ccfea89
-```
-
-`node status` output:
-
-```text
-Workspace source: repository pin (.agentworkforce/relay/workspace-key.json)
-```
-
-A Cloud enrollment (`RELAY_NODE_TOKEN`, or a record in the Fleet enrollment
-store) selects the node's _identity_, not its workspace, so it never appears on
-the ladder. If a stored enrollment addresses a different workspace than the
-repository pin, `node up` refuses to start and names both source files and
-workspace IDs, never their keys.
-
-### One live broker per enrolled node
-
-The Fleet enrollment store is machine-global and is not scoped to a broker state
-directory, so a second `node up` — another checkout, or the same one with a
-different `--state-dir` — used to adopt the same node id. Both brokers then
-registered as that node, the engine handed the node-control delivery socket to
-whichever registered last, and the first broker kept running and reporting
-healthy while messages silently stopped arriving.
-
-A start now takes machine-global ownership of its enrolled node id in
-`~/.agentworkforce/relay/node-claims/<node-id>.<generation>.json` (pid, state
-dir, API port, broker name, claim time) **before** it spawns a broker, because
-the broker registers with the engine from its own startup — anything claimed
-afterwards is claimed after the delivery socket could already have moved.
-Ownership is handed to the broker process once its identity is verified, and is
-released only after that process is observed to exit.
-
-Ownership _is_ the exclusive creation of the next generation file, so concurrent
-starts cannot both win and no start ever deletes a record another one might have
-replaced: whoever creates `…000002.json` first owns the node, and the others
-re-read and refuse. Releasing a claim retires its generation number instead of
-freeing it, so a number is never handed out twice and a start that was suspended
-across a full release-and-restart cycle cannot wake up and win a node id that
-now belongs to somebody else. A crashed start leaves a generation whose pids are
-dead, which is stale rather than blocking.
-
-Each generation also has a `…000002.hold` file that the supervising CLI opens
-before it spawns a broker and the broker child inherits. Whether anything still
-holds it open is answered by the kernel, not by a file either process has to
-survive long enough to write — so a supervisor killed anywhere between the spawn
-and the broker's first write still leaves a node id that reads as held, instead
-of one that looks free right up until the orphan registers. `node up` refuses to adopt a node id that a
-live claim names, printing the holding broker's pid and state directory:
-
-```text
-Refusing to start: node node_2230437463 is already served by a live broker on this machine.
-  holding broker      pid 48211, state dir /repo/.agentworkforce/relay, API port 3891
-```
-
-A claim whose pids are gone — or whose pids have since been recycled by other
-processes — is stale, so an ordinary restart after a crash or reboot is never
-refused. Two exceptions keep a crash from unguarding a running broker: if the
-supervising CLI was killed before it could record its broker's pid, the broker's
-own `connection.json` in the claimed state directory still names a live process,
-and that reads as held; and until a start has recorded which child it spawned,
-anything still holding that generation's `.hold` file keeps the node guarded,
-because a process that has since `exec`d into another binary is no longer
-anything the claim could identify. To run a second node on this machine alongside the live one, enroll a
-distinct node (`agent-relay cloud enroll --name <other-node>`) and start from
-that enrollment; `node up --force` takes the node over instead, evicting the
-live broker's delivery socket.
-
-An explicit `RELAY_NODE_ID` is the identity the broker sends in `node.register`,
-so it is guarded on that basis alone — the CLI does not try to predict which of
-the broker's credential routes will resolve. A node token in the environment, one
-the broker has already cached, and one it mints for itself from workspace
-credentials all end in the same registration, and only `--local-only`, which
-registers nothing, is exempt. A start that turns out to have had no credential at
-all is refused for a node somebody else is serving, which costs one `--force`.
-
-Because the claims are machine-global, they also give `node down` a way to point
-at a live broker it cannot see: run from the wrong directory it still reports
-`Not running`, but now lists the live nodes and the state directories serving
-them. Two brokers on _different_ machines sharing one enrollment store (a synced
-home directory) are out of scope — nothing local can see the other host's pids.
+already pinned one.
 
 `workspace create`, `join`, and `switch` select a named workspace globally and
 pin it to the current project. A changed selection records the old name, so an
@@ -234,27 +74,39 @@ accidental create can be undone:
 agent-relay workspace restore
 ```
 
-To change only the workspace this project's broker will use on its next start,
-without changing the machine-global active workspace, use:
+To change only the workspace this project uses, without changing the
+machine-global active workspace, use:
 
 ```bash
 agent-relay workspace rebind default
-agent-relay node down
-agent-relay node up
 ```
 
-`rebind` is also the supported recovery command for the conflict above: it
-writes the repository pin (which outranks the machine-global active workspace)
-and clears the project's stale enrolled-node association so the next start does
-not fight the conflict guard. It does not stop a running broker; restart the
-broker when you are ready to apply the new pin.
+## Cloud worker enrollment
 
-For detached startup failures, `node up --background` reports the child error
-when available and otherwise tells you to retry without `--background`; a child
-that already exited is no longer misreported as an unkillable half-started
-broker.
+`agent-relay cloud worker register` accepts exactly one token source. To read
+an enrollment token from a projected Secret file:
 
-## Local and remote fleet agents
+```bash
+agent-relay cloud worker register --name worker --base-url https://control.example.com \
+  --token-file /var/run/worker-enrollment/token
+```
+
+Piped or redirected stdin is also supported:
+
+```bash
+agent-relay cloud worker register --name worker --base-url https://control.example.com \
+  --token-stdin < /var/run/worker-enrollment/token
+```
+
+The existing `--token <token>` option remains supported. Token inputs are
+limited to 16 KiB, must contain nonempty UTF-8 text, and have surrounding
+whitespace trimmed. File input follows projected Secret symlinks and requires
+the opened target to be a regular file. Stdin refuses an interactive terminal.
+Input failures occur before registration; the CLI does not echo the token or
+include file paths in input errors. Successful enrollment uses the existing
+worker credential store and start protocol.
+
+## Fleet agents
 
 The `fleet` command group lists and controls agents across all live nodes in
 the active project workspace:
@@ -278,9 +130,6 @@ agent-relay fleet spawn codex \
   --node sf-mini \
   --session-ref <actual-codex-thread-id>
 
-# No placement options: use the local broker and this exact working directory.
-agent-relay fleet spawn codex --name api-worker --task "Review the current diff."
-
 # Opt into automatic eligible-node placement.
 agent-relay fleet spawn codex --name api-worker --task "Review the current diff." --auto-place
 
@@ -292,8 +141,6 @@ agent-relay fleet spawn codex \
   --name e2b-worker \
   --task "Review the current workspace and wait for follow-up."
 
-# A uniquely placed sandbox worker can be attached without node or route flags.
-agent-relay node agent attach e2b-worker --mode drive
 
 agent-relay message dm send api-worker "Detailed task instructions"
 # wait is the default: it queues for the recipient's next safe idle boundary and
@@ -334,17 +181,14 @@ confirmed), `failed` (the node reported a terminal failure), `accepted`
 still has not reported — not evidence that nothing started). Polling never
 dispatches another agent.
 
-Without placement options, `fleet spawn` connects to the local project's broker
-and passes the caller's exact directory, including a nested package, to the
-worker. Start the local broker with `agent-relay node up` if it is not running;
-a local connection failure never falls back to remote placement. `--cwd` selects
-a different local directory on this path. Model and channel options stay local.
-`--auto-place`, `--node`, and `--sandbox` select remote placement explicitly.
-Legacy invocations with an explicit `--workspace-key`/`--wk`, `--token`,
-`--base-url`, or `--persona` retain automatic fleet placement when no node or
-sandbox is selected. Ambient credentials and persisted Cloud routing do not
-change the local default. Workforce reporting metadata requires remote placement.
-Automatic placement and release need only the workspace key.
+`fleet spawn` needs a placement: `--node`, `--auto-place`, or `--sandbox`.
+Spawning on this machine without one went away with the local broker; the
+command now says so and points to `relay init`, whose core spawns agents here.
+Invocations with an explicit `--workspace-key`/`--wk`, `--token`,
+`--base-url`, or `--persona` keep automatic fleet placement when no node or
+sandbox is selected. Ambient credentials and persisted Cloud routing never turn
+a flag-free spawn remote. Automatic placement and release need only the
+workspace key.
 
 The sandbox path provisions a fresh hosted instance. Inside a GitHub checkout,
 Relay infers the Git root, repository identity, exact pushed `HEAD`, and caller-relative
@@ -395,17 +239,6 @@ push-and-retry error. The temporary isolated
 Relaycast credential stays in the machine store under
 `~/.agentworkforce/relay`; the project file stores only a non-secret reference.
 
-`node agent attach <name>` automatically routes to the unique live fleet node
-advertising that worker. If more than one live node advertises the name, the
-command refuses to guess; pass `--node <node>` explicitly. Supplying
-`--broker-url`, `--api-key`, or `--state-dir`, or setting a nonblank
-`RELAY_BROKER_URL` or `RELAY_BROKER_API_KEY`, keeps attach local and bypasses
-automatic Fleet routing. `node agent message flush|hold|auto <name>` uses the
-same unique-node lookup when no local broker selection is supplied. Fleet list and
-release commands reuse the persisted project route; if that remote session is
-unavailable, the command reports the routing failure instead of selecting a
-same-named local worker.
-
 From a clean repository already pinned to a Relay workspace, the checkout-first
 path is:
 
@@ -414,7 +247,6 @@ agent-relay fleet spawn codex \
   --name cloud-zero-config \
   --task "Inspect this repository and report its current commit" \
   --sandbox
-agent-relay node agent attach cloud-zero-config --mode drive
 agent-relay fleet agent list
 agent-relay fleet release cloud-zero-config
 ```
@@ -460,9 +292,7 @@ placing `.git` in the mirror. When a live mount is requested at startup, workspa
 CLIs' usual skill directories, and the worker's task context identifies the
 mirror and exact source revision.
 
-Detaching leaves the worker running. Only one drive session can own a worker
-at a time; detach the current driver before driving it in another shell, or
-use `--mode view` to observe. Releasing a worker does not delete its sandbox.
+Releasing a worker does not delete its sandbox.
 To resume its retained sandbox, repeat spawn with the reported
 `--sandbox-id <id>`; when using `--checkout`, the retained clone must still have
 the same clean HEAD.
@@ -516,32 +346,6 @@ node rejects the spawn if that directory cannot be resolved; it never falls
 back to the node process's own working directory.
 Omit it to start a new CLI session. The project’s Agent Relay workspace remains
 pinned independently until you explicitly create or select another workspace.
-
-To run as a Cloud-managed node, first redeem a one-time enrollment token, then start the node:
-
-```bash
-agent-relay cloud enroll --token ocl_node_enr_...
-agent-relay node up
-```
-
-With a stored `agent-relay cloud login` you can mint the token yourself instead.
-`cloud workspaces` lists the workspaces the login can use, and `--workspace`
-takes a name, a Cloud workspace UUID, or a unified `rw_` ID:
-
-```bash
-agent-relay cloud workspaces
-# 50587328-441d-4acb-b8f3-dbe1b3c5de99  chief  Chief HQ
-
-agent-relay cloud enroll --workspace "Chief HQ"
-agent-relay node up
-```
-
-If `/api/session` reports node control as `terminal` with reason
-`env_override_rejected`, the active `RELAY_NODE_TOKEN` is stale and shadows a
-different credential in the broker's scoped cache. Re-enroll the Cloud node and
-restart it, or unset a manually exported `RELAY_NODE_TOKEN`. Deleting only the
-Relaycast node row is not enough for a Cloud-enrolled node: its Fleet enrollment
-record restores the stored token on the next `agent-relay node up`.
 
 `agent-relay cloud whoami` also prints the current organization and workspace IDs.
 
@@ -613,9 +417,9 @@ RELAYFILE_LOCAL_DIR="$PWD/.integrations" relayfile status
 RELAYFILE_LOCAL_DIR="$PWD/.integrations" relayfile writeback status
 ```
 
-Fleet workers can subscribe to provider feedback using their broker-assigned
-identity, including workers that the desktop session socket rejects with
-`not_a_relay_session`:
+Relay workers can subscribe to provider feedback using their own identity
+(`RELAY_AGENT_NAME`), including workers that the desktop session socket rejects
+with `not_a_relay_session`:
 
 ```bash
 agent-relay integration subscribe github \
@@ -625,14 +429,15 @@ agent-relay integration subscribe github \
 
 `--to self` resolves `RELAY_AGENT_NAME` and uses the existing server-side agent
 subscription channel. It requires a connected provider, a compatible Relayfile
-daemon, and workspace-owner credentials, supplied to broker workers through their
+daemon, and workspace-owner credentials, supplied to the worker through its
 environment. An agent token alone cannot provision subscriptions. This route does
 not depend on desktop Claude/Codex session discovery. From outside the worker,
-use `--to @worker-name` with the same workspace credentials. Events reach the
-worker through Relay's normal broker delivery; wait for pushed feedback instead
-of polling `gh`. `--to self` cannot be combined with `--spawn`.
+use `--to @worker-name` with the same workspace credentials; the recipient must
+already exist (`--spawn`, which launched it through the local broker, was
+removed). Events reach the worker through Relay's normal delivery; wait for
+pushed feedback instead of polling `gh`.
 
-`local` remains as a deprecated hidden alias of `node` (it prints a one-time warning).
+`local` remains as a deprecated hidden alias of `node` for `local run|logs|sync` (it prints a one-time warning).
 
 Node workflow runs use Relayflows for YAML and TypeScript workflow files.
 
@@ -641,8 +446,11 @@ Hosted equivalents live under `agent-relay cloud …`.
 ## Packages
 
 - `@agent-relay/sdk`: messaging, delivery contracts, and actions.
-- `@agent-relay/harness-driver`: optional managed harness runtime.
 - `agent-relay`: CLI and MCP entry point.
+
+`@agent-relay/harness-driver`, `@agent-relay/harnesses`, `@agent-relay/fleet`
+and the `@agent-relay/broker-<platform>` packages were retired with the broker.
+Their published versions stay installable from npm; no new versions ship.
 
 ### Pending fleet spawns and name reuse
 

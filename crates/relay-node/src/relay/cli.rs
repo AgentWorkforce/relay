@@ -5,6 +5,7 @@ use crate::relay::daemon::SafeError;
 use crate::relay::delivery::policy::relayfile_glob;
 use crate::relay::files::FETCH_TIMEOUT;
 use crate::relay::integrations::CONNECT_WAIT;
+use crate::relay::outbound::Build;
 use crate::relay::paths::{self, CorePaths};
 use crate::relay::peer::current_uid;
 use crate::relay::protocol::{Response, BRIDGE_VERSION, MAX_REPLY_BYTES};
@@ -89,10 +90,10 @@ pub fn call(
 /// pointer, then its note (`message_pointer::read_note`). Like the other
 /// session commands (`session_cli`), the session is told from this process,
 /// so it reads only its own messages.
-pub fn read_message(socket: Option<&Path>, development: bool, message_ref: &str) -> Result<()> {
+pub fn read_message(socket: Option<&Path>, build: &Build, message_ref: &str) -> Result<()> {
     let socket = match socket {
         Some(socket) => socket.to_path_buf(),
-        None => pointed_socket(&paths::home()?, development)?,
+        None => pointed_socket(&paths::home()?, build)?,
     };
     let text = read_text(&socket, message_ref)?;
     let note = crate::relay::message_pointer::read_note(&text);
@@ -190,29 +191,54 @@ fn pull_subscription(pull: &str) -> Result<Vec<u8>> {
     )?)
 }
 
-/// The session socket named by the app's pointer file: Agent Relay's, or
-/// with `development` Agent Relay Dev's (`outbound::pointer_path`). Which
-/// build a session belongs to cannot be told from here, so the other
-/// build's pointer is never tried in its place.
-pub fn pointed_socket(home: &Path, development: bool) -> Result<std::path::PathBuf> {
-    let directory = home.join(".agentworkforce/desktop");
-    let (name, other, hint) = if development {
-        ("relay-socket.dev", "relay-socket", "Omit --dev")
-    } else {
-        ("relay-socket", "relay-socket.dev", "Pass --dev")
-    };
-    let path = std::fs::read_to_string(directory.join(name)).map_err(|_| {
-        SafeError(if directory.join(other).exists() {
-            format!("This build of Agent Relay is not running, but the other one is. {hint} to subscribe through it.")
-        } else {
-            "Agent Relay is not running: its session socket pointer is missing. Start the app or service.".to_string()
-        })
-    })?;
+/// The session socket named by `build`'s pointer file
+/// (`outbound::pointer_path`): Agent Relay's `relay-socket`, Agent Relay
+/// Dev's `relay-socket.dev` or a profile build's `relay-socket.<id>`. Which
+/// build a session belongs to cannot be told from here, so another build's
+/// pointer is never tried in its place; when this build's is missing, the
+/// error names the build asked for and the builds that are running.
+pub fn pointed_socket(home: &Path, build: &Build) -> Result<std::path::PathBuf> {
+    let directory = crate::relay::outbound::pointer_directory(home);
+    let path = std::fs::read_to_string(directory.join(build.pointer_name()))
+        .map_err(|_| SafeError(missing_pointer(&directory, build)))?;
     let path = Path::new(path.trim());
     if !path.is_absolute() {
-        return Err(SafeError("Agent Relay's session socket pointer is unreadable.".into()).into());
+        return Err(SafeError(format!(
+            "{}'s session socket pointer is unreadable.",
+            build.describe()
+        ))
+        .into());
     }
     Ok(path.to_path_buf())
+}
+
+fn missing_pointer(directory: &Path, build: &Build) -> String {
+    let mut others: Vec<Build> = std::fs::read_dir(directory)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| Build::of_pointer(entry.file_name().to_str()?))
+        .filter(|other| other != build)
+        .collect();
+    others.sort_by_key(|other| other.pointer_name());
+    let mut message = format!(
+        "{} is not running: its session socket pointer {} is missing.",
+        build.describe(),
+        build.pointer_name()
+    );
+    if others.is_empty() {
+        message.push_str(" Start the app or service.");
+    } else {
+        let running = others
+            .iter()
+            .map(|other| format!("{} ({})", other.describe(), other.flag()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        message.push_str(&format!(
+            " Another build has a pointer: {running}. Pass that build's flag to go through it."
+        ));
+    }
+    message
 }
 
 /// `agent-relay-node subscribe <pull>`: subscribes (or, with
@@ -235,10 +261,10 @@ const SESSION_START_TIMEOUT: Duration = Duration::from_secs(8);
 /// working folder and whether the turn already continued are sent, so a
 /// long tool output or last message cannot exceed the socket's body limit.
 /// Any failure prints `{}`, so Codex goes on as it would without the hook.
-pub fn codex_stop_hook(socket: Option<&Path>, development: bool) -> Result<()> {
+pub fn codex_stop_hook(socket: Option<&Path>, build: &Build) -> Result<()> {
     let mut input = Vec::new();
     let _ = std::io::stdin().take(4 << 20).read_to_end(&mut input);
-    let answer = (|| -> Result<Value> {
+    let (answer, receipt) = (|| -> Result<(Value, Option<(std::path::PathBuf, Vec<u8>)>)> {
         let hook: Value = serde_json::from_slice(&input)?;
         let body = serde_json::to_vec(&json!({
             "session_id": hook["session_id"],
@@ -254,20 +280,54 @@ pub fn codex_stop_hook(socket: Option<&Path>, development: bool) -> Result<()> {
         };
         let socket = match socket {
             Some(socket) => socket.to_path_buf(),
-            None => pointed_socket(&paths::home()?, development)?,
+            None => pointed_socket(&paths::home()?, build)?,
         };
         let (status, response) =
             socket_response(&socket, "POST", "/codex/stop-hook", &body, timeout)?;
         anyhow::ensure!((200..300).contains(&status), "refused");
         let response: Value = serde_json::from_slice(&response)?;
-        Ok(response["data"].clone())
+        let mut answer = response["data"].clone();
+        let receipt = answer
+            .as_object_mut()
+            .and_then(|object| object.remove("relayIdentityReceipt"))
+            .and_then(|value| value.as_str().map(str::to_string))
+            .map(|receipt| {
+                let body = serde_json::to_vec(&json!({"session_id":hook["session_id"],
+                    "hook_event_name":"RelayIdentityReceipt", "receipt":receipt}))?;
+                Ok::<_, anyhow::Error>((socket, body))
+            })
+            .transpose()?;
+        Ok((answer, receipt))
     })()
     .ok()
-    .filter(Value::is_object)
-    .unwrap_or_else(|| json!({}));
+    .filter(|(answer, _)| answer.is_object())
+    .unwrap_or_else(|| (json!({}), None));
     let mut stdout = std::io::stdout();
-    stdout.write_all(&serde_json::to_vec(&answer)?)?;
+    write_codex_hook_answer(&mut stdout, &answer, || {
+        if let Some((socket, body)) = receipt {
+            // Output is already flushed; acknowledgement cannot replace it
+            // with {} or extend the normal hook budget substantially.
+            let _ = socket_response(
+                &socket,
+                "POST",
+                "/codex/stop-hook",
+                &body,
+                Duration::from_millis(250),
+            );
+        }
+    })
+}
+
+/// Flush context to the host before acknowledging the startup response.
+fn write_codex_hook_answer(
+    stdout: &mut impl Write,
+    answer: &Value,
+    acknowledge: impl FnOnce(),
+) -> Result<()> {
+    stdout.write_all(&serde_json::to_vec(answer)?)?;
     stdout.write_all(b"\n")?;
+    stdout.flush()?;
+    acknowledge();
     Ok(())
 }
 
@@ -285,7 +345,7 @@ const SESSION_HOOK_TIMEOUT: Duration = Duration::from_secs(2);
 /// a structured pipe) is not told that. A session already on the relay gets
 /// the preamble (`hosted_mcp::preamble`). This command never registers it.
 /// Any failure prints `{}`, so the session still starts.
-pub fn claude_session_hook(socket: Option<&Path>, development: bool) -> Result<()> {
+pub fn claude_session_hook(socket: Option<&Path>, build: &Build) -> Result<()> {
     let mut input = Vec::new();
     let _ = std::io::stdin().take(4 << 20).read_to_end(&mut input);
     drop(input);
@@ -305,7 +365,7 @@ pub fn claude_session_hook(socket: Option<&Path>, development: bool) -> Result<(
     // further up started that agent.
     let claude = crate::relay::claude::session_hook::claude_ancestor(&table, parent);
     let interactive = crate::relay::claude::session_hook::has_person(&table, parent);
-    let output = match session_hook_socket(socket, development).filter(|_| claude.is_some()) {
+    let output = match session_hook_socket(socket, build).filter(|_| claude.is_some()) {
         Some(socket) => {
             let (registered, probe) = session_registered(&socket);
             // The core names its rules' probe; an older one does not, and
@@ -368,8 +428,9 @@ pub fn devin_hook(development: bool) -> Result<()> {
 /// window's extension host (which it records as running that
 /// conversation), claims that session's staged messages and prints them:
 /// `additional_context` after a tool call, `followup_message` when the turn
-/// completes. With `--wait` (the `stop` entry) an editor conversation's
-/// completed turn with nothing pending waits for its next message instead
+/// completes. With `--wait` (the `stop` entry) a completed turn with
+/// nothing pending, in the editor or a CLI session, waits for its next
+/// message instead
 /// (`cursor_cli::wait`). A claim is tombstoned once the answer is written
 /// and put back if it is not (`cursor_cli::run_hook`). Anything else exits 0
 /// with `cursor_cli::no_answer`'s output (`{}`, or `{"continue":true}` for
@@ -440,10 +501,10 @@ pub fn cursor_hook(development: bool, wait: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn session_hook_socket(socket: Option<&Path>, development: bool) -> Option<std::path::PathBuf> {
+pub fn session_hook_socket(socket: Option<&Path>, build: &Build) -> Option<std::path::PathBuf> {
     match socket {
         Some(socket) => Some(socket.to_path_buf()),
-        None => pointed_socket(&paths::home().ok()?, development).ok(),
+        None => pointed_socket(&paths::home().ok()?, build).ok(),
     }
 }
 
@@ -497,11 +558,11 @@ fn session_status(
     }
 }
 
-pub fn subscribe(socket: Option<&Path>, development: bool, pull: &str, remove: bool) -> Result<()> {
+pub fn subscribe(socket: Option<&Path>, build: &Build, pull: &str, remove: bool) -> Result<()> {
     let body = pull_subscription(pull)?;
     let socket = match socket {
         Some(socket) => socket.to_path_buf(),
-        None => pointed_socket(&paths::home()?, development)?,
+        None => pointed_socket(&paths::home()?, build)?,
     };
     let method = if remove { "DELETE" } else { "POST" };
     socket_exchange(
@@ -628,6 +689,46 @@ fn socket_response_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failed writes/flushes must leave startup fallback available.
+    #[test]
+    fn codex_startup_ack_follows_successful_output_flush() {
+        struct Output {
+            bytes: Vec<u8>,
+            fail_write: bool,
+            fail_flush: bool,
+        }
+        impl Write for Output {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if self.fail_write {
+                    return Err(std::io::ErrorKind::BrokenPipe.into());
+                }
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                if self.fail_flush {
+                    Err(std::io::ErrorKind::BrokenPipe.into())
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        for (fail_write, fail_flush) in [(false, false), (true, false), (false, true)] {
+            let mut output = Output {
+                bytes: Vec::new(),
+                fail_write,
+                fail_flush,
+            };
+            let mut acknowledged = false;
+            let result =
+                write_codex_hook_answer(&mut output, &json!({"hookSpecificOutput":{}}), || {
+                    acknowledged = true
+                });
+            assert_eq!(result.is_ok(), !fail_write && !fail_flush);
+            assert_eq!(acknowledged, result.is_ok());
+        }
+    }
 
     use crate::relay::transport::{CoreListener, CoreStream};
     use std::future::Future;
@@ -821,6 +922,9 @@ mod tests {
             ("PATCH", "/settings"),
             ("POST", "/channels/subscribe?channel=swarm"),
             ("DELETE", "/channels/subscribe?channel=swarm"),
+            ("POST", "/channels"),
+            ("POST", "/channels?channel=swarm"),
+            ("POST", "/channels?channel=swarm&topic=Release%20work"),
         ] {
             assert!(socket_request_allowed(method, path), "{method} {path}");
         }
@@ -846,6 +950,12 @@ mod tests {
             ("PUT", "/settings"),
             ("POST", "/channels/subscribe"),
             ("GET", "/channels/subscribe?channel=swarm"),
+            ("GET", "/channels"),
+            ("DELETE", "/channels"),
+            ("DELETE", "/channels?channel=swarm"),
+            ("POST", "/channels?extra=1"),
+            ("POST", "/channels/swarm"),
+            ("POST", "/channels?channel=a b"),
         ] {
             assert!(!socket_request_allowed(method, path), "{method} {path}");
         }
@@ -896,7 +1006,8 @@ mod tests {
         ] {
             let error = pull_subscription(bad).unwrap_err().to_string();
             assert!(error.contains("owner/repo#123"), "{bad}: {error}");
-            let error = subscribe(Path::new("/unused").into(), false, bad, false).unwrap_err();
+            let error =
+                subscribe(Path::new("/unused").into(), &Build::Production, bad, false).unwrap_err();
             assert!(error.to_string().contains("owner/repo#123"), "{bad}");
         }
     }
@@ -920,12 +1031,26 @@ mod tests {
     #[test]
     fn subscribe_finds_the_socket_through_its_own_builds_pointer() {
         let home = tempfile::tempdir().unwrap();
-        let missing = pointed_socket(home.path(), false).unwrap_err().to_string();
-        assert!(missing.contains("is not running: its"), "{missing}");
+        let production = Build::Production;
+        let development = Build::Development;
+        let devaws = Build::Profile("devaws".into());
+        let missing = pointed_socket(home.path(), &production)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            missing,
+            "Agent Relay is not running: its session socket pointer relay-socket is missing. Start the app or service."
+        );
         let directory = home.path().join(".agentworkforce/desktop");
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(directory.join("relay-socket"), "relative.sock\n").unwrap();
-        assert!(pointed_socket(home.path(), false).is_err());
+        let relative = pointed_socket(home.path(), &production)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            relative,
+            "Agent Relay's session socket pointer is unreadable."
+        );
         // Absolute on this platform.
         let absolute = |path: &str| {
             if cfg!(windows) {
@@ -937,18 +1062,47 @@ mod tests {
         let live = absolute("/run/user/1/relay.sock");
         std::fs::write(directory.join("relay-socket"), format!("{live}\n")).unwrap();
         assert_eq!(
-            pointed_socket(home.path(), false).unwrap(),
+            pointed_socket(home.path(), &production).unwrap(),
             Path::new(&live)
         );
-        // The other build's pointer is named, never used in its place.
-        let other = pointed_socket(home.path(), true).unwrap_err().to_string();
-        assert!(other.contains("Omit --dev"), "{other}");
+        // Another build's pointer is named, never used in its place.
+        let other = pointed_socket(home.path(), &development)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            other,
+            "Agent Relay Dev is not running: its session socket pointer relay-socket.dev is missing. Another build has a pointer: Agent Relay (neither --dev nor --profile). Pass that build's flag to go through it."
+        );
         let dev = absolute("/tmp/dev/relay.sock");
         std::fs::write(directory.join("relay-socket.dev"), format!("{dev}\n")).unwrap();
-        assert_eq!(pointed_socket(home.path(), true).unwrap(), Path::new(&dev));
+        assert_eq!(
+            pointed_socket(home.path(), &development).unwrap(),
+            Path::new(&dev)
+        );
+        let profile = pointed_socket(home.path(), &devaws)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            profile.starts_with("the devaws profile build of Agent Relay is not running: its session socket pointer relay-socket.devaws is missing."),
+            "{profile}"
+        );
+        let aws = absolute("/tmp/aws/relay.sock");
+        std::fs::write(directory.join("relay-socket.devaws"), format!("{aws}\n")).unwrap();
+        assert_eq!(
+            pointed_socket(home.path(), &devaws).unwrap(),
+            Path::new(&aws)
+        );
+        // A profile build's pointer never answers for Agent Relay, and the
+        // temporary files a write leaves are not builds.
         std::fs::remove_file(directory.join("relay-socket")).unwrap();
-        let other = pointed_socket(home.path(), false).unwrap_err().to_string();
-        assert!(other.contains("Pass --dev"), "{other}");
+        std::fs::write(directory.join(".relay-socket.abc123"), "x").unwrap();
+        let other = pointed_socket(home.path(), &production)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            other,
+            "Agent Relay is not running: its session socket pointer relay-socket is missing. Another build has a pointer: Agent Relay Dev (--dev), the devaws profile build of Agent Relay (--profile=devaws). Pass that build's flag to go through it."
+        );
     }
 }
 

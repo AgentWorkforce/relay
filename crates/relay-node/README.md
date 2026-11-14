@@ -4,9 +4,9 @@
 discovers the coding-agent sessions running on a computer (Claude Code, Codex,
 Devin, OpenCode, Grok, Pi, Cursor CLI, OpenClaw, Hermes, Muse, …), puts them
 on the relay, and injects Relay messages into them through each harness's own
-native route (hooks, app servers, plugins and sockets, not a PTY). It is
-messaging only. It builds one binary, `agent-relay-node`, which runs as one
-long-lived process per user:
+native route (hooks, app servers, plugins and sockets, not a PTY). It provides
+messaging and native agent spawning. It builds one binary, `agent-relay-node`,
+which runs as one long-lived process per user:
 
 ```sh
 agent-relay-node serve [--socket PATH] [--app-data-dir PATH] [--headless]
@@ -19,6 +19,11 @@ with what they add through its plugins.
 
 - [`docs/relay-core.md`](docs/relay-core.md): the daemon, its bridge
   contract, delivery and the relay-send socket.
+
+For a headless server joining the same Cloud workspace as Desktop, use the
+[account-aware Linux service setup](../../docs/headless-server.md). The
+standalone core has no account sign-in plugin: `serve --headless` alone does
+not turn a CLI Cloud enrollment into a live Desktop spawn target.
 
 ## Layout
 
@@ -55,6 +60,22 @@ setup and hooks, Relaycast and the workspace, spawning, the bridge and its
 contract), `call`, the harness hooks and `connect`. The account methods
 answer `method_not_found`, and the core uses the workspace the `agent-relay`
 CLI selects (`src/relay/workspace/cli.rs`), with no sign-in needed.
+
+## Register the calling session
+
+After the person authorizes joining, a native chat can use the exact probe and
+session socket provided by its core:
+
+```sh
+agent-relay-node register --socket /path/to/relay.sock --name review-bot --description 'Reviews releases'
+```
+
+The core identifies the native chat from the connecting process, not a supplied
+session ID. Its self-registration setting and ownership checks still apply.
+`--mcp agent-relay-sessions` or `--mcp none` optionally declares whether that
+chat has the hosted session tools. Registration takes no raw JSON or stdin.
+Codex's generated allow rule permits this typed command only on the core's own
+socket; generic `socket-request` remains outside those rules.
 
 ## Claude mobile continuation
 

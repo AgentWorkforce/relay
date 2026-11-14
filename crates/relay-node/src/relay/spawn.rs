@@ -42,6 +42,7 @@ mod completions;
 pub(crate) mod control;
 pub(crate) mod drive;
 mod failed;
+pub mod fork;
 pub mod handover;
 mod host;
 pub mod intents;
@@ -69,6 +70,11 @@ pub use settings::{configured_values, ConfiguredChange, SpawnSettings, CONFIGURE
 use crate::relay::daemon::Core;
 use crate::relay::store::{Registration, Target};
 use std::collections::HashSet;
+
+/// How long a spawned session's own registration waits for its spawn to
+/// save the registration it binds to.
+const SPAWN_SAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+const SPAWN_SAVE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// The spawn node's name, distinct from a broker node this computer may
 /// also run: `<machine prefix>-desktop`.
@@ -114,16 +120,60 @@ impl Core {
     }
 
     /// The sessions this computer spawned, so discovery never registers
-    /// them a second time.
+    /// them a second time: those with a saved spawn registration, and those
+    /// a spawn in flight has started but not yet saved. A spawned session
+    /// can start (and Codex run its SessionStart hook) before its spawn's
+    /// registration is saved; it is never given an identity of its own in
+    /// that window.
     pub(crate) fn spawned_targets(&self) -> HashSet<Target> {
-        self.store.read(|store| {
+        let mut targets: HashSet<Target> = self.store.read(|store| {
             store
                 .registrations
                 .iter()
                 .filter(|r| r.spawn.is_some())
                 .map(|r| r.target.clone())
                 .collect()
+        });
+        targets.extend(self.spawning_targets());
+        targets
+    }
+
+    /// The spawn registration saved for `target`, if any.
+    pub(crate) fn saved_spawn_registration_now(&self, target: &Target) -> Option<Registration> {
+        self.store.read(|store| {
+            store
+                .registration_for(target)
+                .filter(|registration| registration.spawn.is_some())
+                .cloned()
         })
+    }
+
+    /// The spawn registration saved for `target`, waiting briefly while a
+    /// spawn in flight has started the session and not yet saved it.
+    pub(crate) async fn saved_spawn_registration(&self, target: &Target) -> Option<Registration> {
+        let deadline = tokio::time::Instant::now() + SPAWN_SAVE_WAIT;
+        loop {
+            // In flight first, the registration second: a spawn that saves
+            // and settles between the two reads is then found saved, never
+            // taken for one that is neither saved nor in flight.
+            let spawning = self.spawning_targets().contains(target);
+            if let Some(registration) = self.saved_spawn_registration_now(target) {
+                return Some(registration);
+            }
+            if !spawning || tokio::time::Instant::now() >= deadline {
+                return None;
+            }
+            tokio::time::sleep(SPAWN_SAVE_POLL).await;
+        }
+    }
+
+    /// The sessions spawns in flight here have started and not yet saved.
+    pub(crate) fn spawning_targets(&self) -> HashSet<Target> {
+        intents::load(&self.config.app_data_dir)
+            .into_iter()
+            .filter(|intent| !intent.ended && !intent.launch_failed)
+            .filter_map(|intent| intent.target)
+            .collect()
     }
 
     /// Saves a spawned agent's receipt before it is taken off the relay
@@ -217,6 +267,7 @@ mod tests {
     use crate::relay::state::{ProcessLiveness, SpawnSlots, SpawnState, SpawnStatus};
     use crate::relay::store::SessionKind;
     use crate::relay::store::Store;
+    use crate::relay::workspace::{Secret, Workspace};
     use serde_json::{json, Value};
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -229,6 +280,10 @@ mod tests {
     struct FakeSpawner {
         launched: Mutex<Vec<Launch>>,
         stopped: Mutex<Vec<Target>>,
+        /// Every `available` call announces itself when set.
+        available_calls: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+        /// The first `available` call waits for this receiver when set.
+        pause_first_available: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
         refuse: bool,
         unconfirmed: bool,
         /// Every session it is asked about has ended.
@@ -243,6 +298,9 @@ mod tests {
         pause: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
         /// Its agents take native user turns.
         native: bool,
+        /// A paused launch starts its session (`THREAD`) before it pauses,
+        /// as Codex starts a thread before its first turn is confirmed.
+        starts_before_pause: bool,
     }
 
     /// Answers each agent by name; `Running`/`Idle` for one not set.
@@ -280,6 +338,13 @@ mod tests {
 
     impl Spawner for FakeSpawner {
         fn available(&self) -> Vec<HarnessId> {
+            let pause = self.pause_first_available.lock().unwrap().take();
+            if let Some(calls) = self.available_calls.lock().unwrap().as_ref() {
+                calls.send(()).unwrap();
+            }
+            if let Some(proceed) = pause {
+                proceed.recv().unwrap();
+            }
             vec![codex::ID]
         }
 
@@ -299,7 +364,11 @@ mod tests {
                 started_session(&Target::new(SessionKind::Codex, THREAD), None);
                 return Err(LaunchError::Failed("Codex refused the first turn".into()));
             }
+            let started_thread = self.starts_before_pause;
             if let Some((started, proceed)) = self.pause.lock().unwrap().take() {
+                if started_thread {
+                    started_session(&Target::new(SessionKind::Codex, THREAD), None);
+                }
                 started.send(()).unwrap();
                 proceed.recv().unwrap();
             }
@@ -308,7 +377,11 @@ mod tests {
                 return Err(LaunchError::Failed("Codex refused the first turn".into()));
             }
             // A thread of its own for each launch.
-            let thread = format!("{}{:012x}", &THREAD[..24], launched.len());
+            let thread = if started_thread {
+                THREAD.to_string()
+            } else {
+                format!("{}{:012x}", &THREAD[..24], launched.len())
+            };
             Ok(Launched {
                 target: Target::new(SessionKind::Codex, thread),
                 process: None,
@@ -350,6 +423,7 @@ mod tests {
     mod requester_approvals;
     mod restart_reasons;
     mod session_end;
+    mod spawned_binding;
     mod unanswered_register;
 
     #[tokio::test]
@@ -400,6 +474,77 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+        core.stop_spawn_node().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stale_sync_cannot_replace_a_newer_workspace() {
+        let home = tempfile::tempdir().unwrap();
+        let config = crate::relay::daemon::Config {
+            paths: crate::relay::paths::CorePaths::for_socket(home.path().join("core.sock"))
+                .unwrap(),
+            home: home.path().into(),
+            app_data_dir: home.path().join("app-data"),
+            env: Default::default(),
+            version: "0.0.0-test".into(),
+            host_name: "Test Desk.local".into(),
+            rediscover_every: Duration::from_secs(3600),
+            push_timing: crate::relay::push::PushTiming::default(),
+            delivery_timing: crate::relay::delivery::DeliveryTiming::default(),
+        };
+        let (calls, called) = std::sync::mpsc::channel();
+        let (proceed, paused) = std::sync::mpsc::channel();
+        let spawner = Arc::new(FakeSpawner {
+            available_calls: Mutex::new(Some(calls)),
+            pause_first_available: Mutex::new(Some(paused)),
+            ..Default::default()
+        });
+        let plugins = crate::relay::daemon::Plugins {
+            spawner,
+            ..crate::relay::daemon::Plugins::default()
+        };
+        let (core, _signals) = Core::with_plugins(config, plugins);
+        core.store
+            .update(|store| store.accept_spawns = Some(true))
+            .unwrap();
+        let workspace = |key: &str| Workspace {
+            key: Secret::new(key),
+            base_url: "http://localhost:9".into(),
+            workspace_id: None,
+            source: Default::default(),
+            control_url: None,
+        };
+        *core.workspace.lock().unwrap() = Some(workspace("rk_live_before"));
+
+        let stale = tokio::spawn({
+            let core = core.clone();
+            async move { core.sync_spawn_node().await }
+        });
+        called.recv_timeout(Duration::from_secs(1)).unwrap();
+        *core.workspace.lock().unwrap() = Some(workspace("rk_live_after"));
+        let fresh = tokio::spawn({
+            let core = core.clone();
+            async move { core.sync_spawn_node().await }
+        });
+
+        // Before the fix, the fresh pass reaches `available` and starts the
+        // new node while the stale pass is paused. With serialization before
+        // the snapshot, it waits without reading any workspace state.
+        let _ = called.recv_timeout(Duration::from_millis(200));
+        proceed.send(()).unwrap();
+        stale.await.unwrap();
+        fresh.await.unwrap();
+
+        assert_eq!(
+            core.spawn_node
+                .lock()
+                .await
+                .as_ref()
+                .unwrap()
+                .config()
+                .workspace_key,
+            Secret::new("rk_live_after")
+        );
         core.stop_spawn_node().await;
     }
 
@@ -525,6 +670,7 @@ mod tests {
             name: name.into(),
             task: "Fix CI".into(),
             directory: None,
+            fork_from: None,
         }
     }
 
@@ -1636,6 +1782,7 @@ mod tests {
             requester: None,
             target,
             process: None,
+            control_url: None,
         }
     }
 
@@ -1912,6 +2059,7 @@ mod tests {
             base_url: "http://localhost:9".into(),
             workspace_id: id.map(str::to_string),
             source: Default::default(),
+            control_url: None,
         };
         let mut intent = interrupted("w1", true, None);
         intent.workspace_id = Some("rw_1".into());

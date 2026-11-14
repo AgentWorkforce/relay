@@ -79,6 +79,49 @@ pub fn read_cloud_roster(
     })
 }
 
+/// Cloud's current expiry for this Connect, read from the same
+/// participant-authenticated roster. A host can extend a room after its
+/// participants joined, so the expiry saved at join is only a lower bound.
+/// `Ok(None)` when Cloud answered without a readable expiry.
+pub fn read_cloud_expiry(
+    url: &str,
+    connect_id: &str,
+    token: &Secret,
+) -> Result<Option<String>, OutboundError> {
+    let answer = cloud_http::send_blocking_with_headers(
+        "GET",
+        url,
+        Some(token.expose()),
+        &[],
+        None,
+        CONNECT_ROSTER_TIMEOUT,
+    )
+    .map_err(|error| {
+        log_connect_failure("expiry", connect_id, "connect_unreachable", error.cause());
+        OutboundError::new(
+            503,
+            "connect_unreachable",
+            "Relay Connect could not be reached.",
+        )
+    })?;
+    if !answer.ok() {
+        let code = answer.body["error"]["code"]
+            .as_str()
+            .unwrap_or("connect_roster_failed");
+        return Err(OutboundError::new(
+            answer.status,
+            code,
+            answer
+                .message()
+                .unwrap_or_else(|| "Relay Connect did not return its participants.".into()),
+        ));
+    }
+    Ok(answer.inner()["expires_at"]
+        .as_str()
+        .filter(|at| chrono::DateTime::parse_from_rfc3339(at).is_ok())
+        .map(str::to_owned))
+}
+
 /// Whether `name` is online, or `None` while presence is unknown.
 pub fn recipient_online(roster: Option<&[RosterEntry]>, name: &str) -> Option<bool> {
     roster.map(|roster| {

@@ -770,56 +770,227 @@ fn a_setting_whose_lock_cannot_be_taken_is_left_as_it_is() {
     assert_eq!(settings.while_waiting(|| ()), None);
 }
 
-#[test]
-fn a_cursor_cli_session_answers_its_turn_at_once() {
-    let (_temp, config, table) = world();
-    // hook (501) → cursor-agent (400), which holds `SESSION`.
-    table.insert(501, shell(400));
+/// Agent Relay's waiting `stop` hook in `pid` for `SESSION`'s turn gen-1,
+/// started as its prompt's `beforeSubmitPrompt` names it.
+fn cli_stop(
+    config: &CursorConfig,
+    table: &FakeProcesses,
+    pid: i32,
+    loop_count: u64,
+) -> (bool, Vec<Value>) {
+    let prompt = json!({
+        "hook_event_name": "beforeSubmitPrompt",
+        "conversation_id": SESSION,
+        "generation_id": "gen-1",
+    });
+    assert!(!run_hook(config, table, pid, &prompt, None, &mut |_| true));
+    cli_turn_stop(config, table, pid, "gen-1", loop_count)
+}
+
+/// That hook for turn `generation`, whatever named it.
+fn cli_turn_stop(
+    config: &CursorConfig,
+    table: &FakeProcesses,
+    pid: i32,
+    generation: &str,
+    loop_count: u64,
+) -> (bool, Vec<Value>) {
     let never = || false;
     let always = || true;
     let claiming = |claim: &mut dyn FnMut() -> Option<wait::Ended>| claim();
     let watch = wait::Watch {
-        pid: 501,
+        pid,
         until: std::time::Instant::now() + Duration::from_secs(30),
         poll: Duration::from_millis(10),
         stopping: &never,
         installed: &always,
         claiming: &claiming,
     };
-    let stop = |loop_count: u64| {
-        json!({
-            "hook_event_name": "stop",
-            "conversation_id": SESSION,
-            "status": "completed",
-            "generation_id": "gen-1",
-            "loop_count": loop_count,
-        })
-    };
-    let run = |payload: &Value| {
-        let mut written = Vec::new();
-        let answered = run_hook(&config, &table, 501, payload, Some(&watch), &mut |output| {
-            written.push(output.clone());
-            true
-        });
-        (answered, written)
-    };
-    // With nothing pending it says nothing at once, rather than waiting.
-    let started = std::time::Instant::now();
-    assert_eq!(run(&stop(0)), (false, vec![]));
-    assert!(started.elapsed() < Duration::from_secs(5));
-    assert!(!config
+    let stop = json!({
+        "hook_event_name": "stop",
+        "conversation_id": SESSION,
+        "status": "completed",
+        "generation_id": generation,
+        "loop_count": loop_count,
+    });
+    let mut written = Vec::new();
+    let answered = run_hook(config, table, pid, &stop, Some(&watch), &mut |output| {
+        written.push(output.clone());
+        true
+    });
+    (answered, written)
+}
+
+fn cli_waiting(config: &CursorConfig) -> bool {
+    config
         .inbox()
         .join("waiting")
         .join(format!("{SESSION}.wait"))
-        .exists());
-    send(&config, &table, uid(), SESSION, "m-1", "ping");
-    // Cursor's own limit of follow-ups in a row, which the waiting entry
-    // lifts, still holds for a Cursor CLI session.
-    assert_eq!(run(&stop(5)), (false, vec![]));
+        .exists()
+}
+
+fn eventually(what: &str, check: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !check() {
+        assert!(std::time::Instant::now() < deadline, "{what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn a_cursor_cli_session_idle_after_its_turn_is_woken_by_its_next_message() {
+    let (_temp, config, table) = world();
+    // hook (501) → cursor-agent (400), which holds `SESSION`.
+    table.insert(501, shell(400));
+    std::thread::scope(|scope| {
+        // Past Cursor's default of five follow-ups in a row: the waiting
+        // entry has no limit, so a busy conversation is still woken.
+        let hook = scope.spawn(|| cli_stop(&config, &table, 501, 5));
+        eventually("the hook waits", || cli_waiting(&config));
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!hook.is_finished());
+        let sent = std::time::Instant::now();
+        assert!(matches!(
+            send(&config, &table, uid(), SESSION, "m-1", "ping"),
+            InjectOutcome::Accepted(_)
+        ));
+        assert_eq!(
+            hook.join().unwrap(),
+            (true, vec![json!({"followup_message": "ping"})])
+        );
+        assert!(sent.elapsed() < Duration::from_secs(5));
+    });
     assert_eq!(
-        run(&stop(4)),
-        (true, vec![json!({"followup_message": "ping"})])
+        send(&config, &table, uid(), SESSION, "m-1", "ping"),
+        InjectOutcome::Delivered
     );
+    assert!(!cli_waiting(&config));
+}
+
+#[test]
+fn the_turn_a_cursor_cli_follow_up_starts_waits_for_the_next_message() {
+    let (_temp, config, table) = world();
+    table.insert(501, shell(400));
+    table.insert(502, shell(400));
+    let wake = |hook: &(dyn Fn() -> (bool, Vec<Value>) + Sync), id: &str| {
+        std::thread::scope(|scope| {
+            let hook = scope.spawn(hook);
+            eventually("the hook waits", || cli_waiting(&config));
+            send(&config, &table, uid(), SESSION, id, id);
+            assert_eq!(
+                hook.join().unwrap(),
+                (true, vec![json!({"followup_message": id})])
+            );
+        });
+    };
+    wake(&|| cli_stop(&config, &table, 501, 0), "m-1");
+    // The CLI runs no `beforeSubmitPrompt` for the follow-up's turn gen-2:
+    // its `stop` is the first hook to name it.
+    wake(&|| cli_turn_stop(&config, &table, 502, "gen-2", 1), "m-2");
+    std::thread::scope(|scope| {
+        let hook = scope.spawn(|| cli_turn_stop(&config, &table, 502, "gen-3", 1));
+        eventually("the hook waits", || cli_waiting(&config));
+        // A late `stop` of gen-2, while gen-3's hook waits, neither takes
+        // gen-3's place nor waits.
+        let started = std::time::Instant::now();
+        assert_eq!(
+            cli_turn_stop(&config, &table, 501, "gen-2", 1),
+            (false, vec![])
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+        send(&config, &table, uid(), SESSION, "m-3", "m-3");
+        assert_eq!(
+            hook.join().unwrap(),
+            (true, vec![json!({"followup_message": "m-3"})])
+        );
+    });
+}
+
+#[test]
+fn a_follow_ups_stop_run_after_a_newer_prompt_leaves_that_prompts_turn() {
+    let (_temp, config, table) = world();
+    for pid in 501..=503 {
+        table.insert(pid, shell(400));
+    }
+    // gen-1's hook wakes the session: the follow-up starts gen-2.
+    std::thread::scope(|scope| {
+        let hook = scope.spawn(|| cli_stop(&config, &table, 501, 0));
+        eventually("the hook waits", || cli_waiting(&config));
+        send(&config, &table, uid(), SESSION, "m-1", "m-1");
+        assert_eq!(
+            hook.join().unwrap(),
+            (true, vec![json!({"followup_message": "m-1"})])
+        );
+    });
+    // Its person submits gen-3 before gen-2's `stop` hook runs.
+    let prompt = json!({
+        "hook_event_name": "beforeSubmitPrompt",
+        "conversation_id": SESSION,
+        "generation_id": "gen-3",
+    });
+    assert!(!run_hook(&config, &table, 503, &prompt, None, &mut |_| {
+        true
+    }));
+    send(&config, &table, uid(), SESSION, "m-2", "m-2");
+    // gen-2's `stop` then neither takes gen-3's place nor waits.
+    let started = std::time::Instant::now();
+    assert_eq!(
+        cli_turn_stop(&config, &table, 502, "gen-2", 1),
+        (false, vec![])
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert_eq!(pending(&config, SESSION).len(), 1);
+    // gen-3's own `stop` takes the message.
+    assert_eq!(
+        cli_turn_stop(&config, &table, 503, "gen-3", 0),
+        (true, vec![json!({"followup_message": "m-2"})])
+    );
+}
+
+#[test]
+fn a_cursor_cli_hook_takes_nothing_once_a_second_agent_resumes_its_conversation() {
+    let (_temp, config, table) = world();
+    table.insert(501, shell(400));
+    std::thread::scope(|scope| {
+        let hook = scope.spawn(|| cli_stop(&config, &table, 501, 0));
+        eventually("the hook waits", || cli_waiting(&config));
+        // `cursor-agent --resume` in another terminal holds the same store.
+        table.insert(401, cursor_process(1, vec![store(&config, SESSION)]));
+        place(&config, &format!("{SESSION}.m-1.msg"), "ping");
+        assert_eq!(hook.join().unwrap(), (false, vec![]));
+    });
+    assert!(!cli_waiting(&config));
+    assert_eq!(pending(&config, SESSION).len(), 1);
+}
+
+#[test]
+fn a_cursor_cli_hook_stops_waiting_once_its_agent_quits() {
+    let (_temp, config, table) = world();
+    table.insert(501, shell(400));
+    std::thread::scope(|scope| {
+        let hook = scope.spawn(|| cli_stop(&config, &table, 501, 0));
+        eventually("the hook waits", || cli_waiting(&config));
+        // The `cursor-agent` quit: its hook is handed to launchd.
+        table.remove(400);
+        table.insert(501, shell(1));
+        assert_eq!(hook.join().unwrap(), (false, vec![]));
+    });
+    assert!(!cli_waiting(&config));
+}
+
+#[test]
+fn a_cursor_cli_hook_stops_waiting_once_its_agent_runs_another_conversation() {
+    let (_temp, config, table) = world();
+    table.insert(501, shell(400));
+    std::thread::scope(|scope| {
+        let hook = scope.spawn(|| cli_stop(&config, &table, 501, 0));
+        eventually("the hook waits", || cli_waiting(&config));
+        // `/new` or `/resume`: the same process now holds another store.
+        let other = store(&config, OTHER);
+        table.insert(400, cursor_process(1, vec![other]));
+        assert_eq!(hook.join().unwrap(), (false, vec![]));
+    });
+    assert!(!cli_waiting(&config));
 }
 
 #[test]

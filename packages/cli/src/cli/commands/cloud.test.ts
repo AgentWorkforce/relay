@@ -73,7 +73,7 @@ import {
 import { track } from '../telemetry/index.js';
 
 import { buildCloudSyncPatchExcludeArgs, registerCloudCommands, type CloudDependencies } from './cloud.js';
-import { createDefaultAssignmentRunner } from './cloud-worker.js';
+import { createDefaultAssignmentRunner, registerCloudWorkerCommands } from './cloud-worker.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -344,6 +344,60 @@ describe('registerCloudCommands', () => {
     );
   });
 
+  it('re-enters the standalone executable directly for a worker daemon', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-worker-daemon-'));
+    const worker = {
+      baseUrl: 'https://cloud.test',
+      workerId: 'wrk_1',
+      workerToken: 'ocl_wrk_secret',
+      name: 'demo',
+      heartbeatIntervalMs: 30_000,
+      registeredAt: '2026-06-13T00:00:00.000Z',
+      updatedAt: '2026-06-13T00:00:00.000Z',
+    };
+    cloudMocks.resolveCloudWorkerRecord.mockReturnValueOnce(worker);
+    const child = new EventEmitter() as EventEmitter & { pid: number; unref: ReturnType<typeof vi.fn> };
+    child.pid = 4242;
+    child.unref = vi.fn();
+    const spawnProcess = vi.fn(() => child) as never;
+    const program = new Command();
+    program.exitOverride();
+    registerCloudWorkerCommands(program, {
+      log: vi.fn(),
+      error: vi.fn(),
+      exit: vi.fn() as never,
+      env: { AGENT_RELAY_HOME: tmpHome },
+      spawnProcess,
+      now: () => new Date('2026-06-13T00:00:00.000Z'),
+      cwd: () => '/checkout',
+      fetchImpl: vi.fn() as never,
+      resolveAgentRelayCliEntrypoint: () => '/$bunfs/root/packages/cli/dist/cli/index.js',
+    });
+
+    try {
+      await program.parseAsync(['worker', 'start', '--daemon', '--once'], { from: 'user' });
+
+      expect(spawnProcess).toHaveBeenCalledWith(
+        process.execPath,
+        [
+          'cloud',
+          'worker',
+          'start',
+          '--worker-id',
+          'wrk_1',
+          '--base-url',
+          'https://cloud.test',
+          '--foreground-child',
+          '--once',
+        ],
+        expect.objectContaining({ detached: true })
+      );
+      expect(child.unref).toHaveBeenCalledOnce();
+    } finally {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
   it('materializes Cloud assignments into relayflows args and child env without persisting secrets', async () => {
     const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-worker-relayflows-'));
     const spawnCalls: Array<{
@@ -408,7 +462,7 @@ describe('registerCloudCommands', () => {
         now: () => new Date('2026-06-13T00:00:00.000Z'),
         cwd: () => tmpHome,
         fetchImpl: vi.fn() as never,
-        resolveRelayflowsCliEntrypoint: () => '/opt/relayflows/dist/cli.js',
+        resolveAgentRelayCliEntrypoint: () => '/opt/agent-relay/dist/cli/index.js',
       });
 
       await runner({
@@ -421,7 +475,7 @@ describe('registerCloudCommands', () => {
           relaycastBaseUrl: 'https://relaycast.test',
           relayfileUrl: 'https://relayfile.test',
           relayfileToken: 'relayfile_secret',
-          workflow: 'version: "1.0"\nworkflows: []\n',
+          workflow: 'version: "0.1.0"\nname: cloud-worker-test\nsteps: []\n',
           fileType: 'yaml',
           sourceFileType: 'yaml',
           workflowFileName: '../workflow.yaml',
@@ -435,9 +489,6 @@ describe('registerCloudCommands', () => {
           envSecrets: {
             OPENAI_API_KEY: 'sk-secret',
           },
-          resumeRunId: 'run_previous',
-          startFrom: 'repair',
-          previousRunId: 'run_cache',
         },
         worker,
         signal: new AbortController().signal,
@@ -461,17 +512,7 @@ describe('registerCloudCommands', () => {
       const call = spawnCalls[0]!;
       const workflowPath = path.join(tmpHome, 'cloud-workers', 'runs', 'run_relayflows', 'workflow.yaml');
       expect(call.command).toBe(process.execPath);
-      expect(call.args).toEqual([
-        '/opt/relayflows/dist/cli.js',
-        'run',
-        workflowPath,
-        '--resume',
-        'run_previous',
-        '--start-from',
-        'repair',
-        '--previous-run-id',
-        'run_cache',
-      ]);
+      expect(call.args).toEqual(['/opt/agent-relay/dist/cli/index.js', 'flows', 'run', workflowPath]);
       expect(call.cwd).toBe(path.dirname(workflowPath));
       expect(call.env).toMatchObject({
         BASE_ENV: 'kept',
@@ -486,7 +527,7 @@ describe('registerCloudCommands', () => {
       });
 
       const workflowFile = fs.readFileSync(workflowPath, 'utf-8');
-      expect(workflowFile).toBe('version: "1.0"\nworkflows: []\n');
+      expect(workflowFile).toBe('version: "0.1.0"\nname: cloud-worker-test\nsteps: []\n');
       expect(fs.readFileSync(path.join(path.dirname(workflowPath), 'lib', 'helper.txt'), 'utf-8')).toBe(
         'helper from main archive'
       );
@@ -497,6 +538,126 @@ describe('registerCloudCommands', () => {
       expect(persisted).not.toContain('sk-secret');
       expect(persisted).not.toContain('relayfile_secret');
       expect(persisted).not.toContain('rk_live_secret');
+    } finally {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses state-bearing assignments before invoking the v2 worker runtime', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-worker-state-selector-'));
+    const spawnProcess = vi.fn();
+    const fetchImpl = vi.fn();
+    const runner = createDefaultAssignmentRunner({
+      log: vi.fn(),
+      error: vi.fn(),
+      exit: vi.fn() as never,
+      env: { AGENT_RELAY_HOME: tmpHome },
+      spawnProcess: spawnProcess as never,
+      now: () => new Date('2026-06-13T00:00:00.000Z'),
+      cwd: () => tmpHome,
+      fetchImpl: fetchImpl as never,
+      resolveAgentRelayCliEntrypoint: () => '/opt/agent-relay/dist/cli/index.js',
+    });
+
+    try {
+      await expect(
+        runner({
+          assignment: { runId: 'run_stateful' } as never,
+          payload: {
+            runId: 'run_stateful',
+            workspaceId: 'rw_1',
+            relayWorkspaceId: 'rw_relay',
+            relaycastApiKey: 'rk_live_secret',
+            relayfileUrl: 'https://relayfile.test',
+            relayfileToken: 'relayfile_secret',
+            workflow: 'version: "0.1.0"\nname: cloud-worker-test\nsteps: []\n',
+            fileType: 'yaml',
+            sourceFileType: 'yaml',
+            workflowFileName: 'workflow.yaml',
+            s3CodeKey: 'code/archive.tgz',
+            cliCredentials: {
+              ref: 'sh_clicred_ref',
+              path: '/api/v1/workers/{workerId}/assignments/run_stateful/cli-credentials',
+            },
+            resumeRunId: 'run_previous',
+            startFrom: 'repair',
+            previousRunId: 'run_cache',
+          },
+          worker: {
+            baseUrl: 'https://cloud.test',
+            workerId: 'wrk_1',
+            workerToken: 'ocl_wrk_secret',
+            name: 'demo',
+            heartbeatIntervalMs: 30_000,
+            registeredAt: '2026-06-13T00:00:00.000Z',
+            updatedAt: '2026-06-13T00:00:00.000Z',
+          },
+          signal: new AbortController().signal,
+        })
+      ).rejects.toThrow(/state-bearing v2 assignment selectors: resumeRunId, startFrom, previousRunId/);
+      expect(spawnProcess).not.toHaveBeenCalled();
+      expect(cloudMocks.downloadCloudWorkerAssignmentStorage).not.toHaveBeenCalled();
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(tmpHome, 'cloud-workers', 'runs', 'run_stateful'))).toBe(false);
+    } finally {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  it('supplies explicit empty input to TypeScript Cloud worker flows', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-worker-typescript-'));
+    const spawnProcess = vi.fn((_command: string, _args: string[]) => {
+      const child = new EventEmitter() as EventEmitter & { killed: boolean; kill: () => boolean };
+      child.killed = false;
+      child.kill = () => true;
+      queueMicrotask(() => child.emit('exit', 0, null));
+      return child;
+    }) as never;
+    const runner = createDefaultAssignmentRunner({
+      log: vi.fn(),
+      error: vi.fn(),
+      exit: vi.fn() as never,
+      env: { AGENT_RELAY_HOME: tmpHome },
+      spawnProcess,
+      now: () => new Date('2026-06-13T00:00:00.000Z'),
+      cwd: () => '/checkout',
+      fetchImpl: vi.fn() as never,
+      resolveAgentRelayCliEntrypoint: () => 'packages/cli/dist/cli/index.js',
+    });
+
+    try {
+      await runner({
+        assignment: { runId: 'run_typescript' } as never,
+        payload: {
+          runId: 'run_typescript',
+          workspaceId: 'rw_1',
+          relayWorkspaceId: 'rw_relay',
+          relaycastApiKey: 'rk_live_secret',
+          relayfileUrl: 'https://relayfile.test',
+          relayfileToken: 'relayfile_secret',
+          workflow: 'export default async function flow() {}\n',
+          fileType: 'ts',
+          sourceFileType: 'ts',
+          workflowFileName: 'review.flow.ts',
+        },
+        worker: {
+          baseUrl: 'https://cloud.test',
+          workerId: 'wrk_1',
+          workerToken: 'ocl_wrk_secret',
+          name: 'demo',
+          heartbeatIntervalMs: 30_000,
+          registeredAt: '2026-06-13T00:00:00.000Z',
+          updatedAt: '2026-06-13T00:00:00.000Z',
+        },
+        signal: new AbortController().signal,
+      });
+
+      const workflowPath = path.join(tmpHome, 'cloud-workers', 'runs', 'run_typescript', 'review.flow.ts');
+      expect(spawnProcess).toHaveBeenCalledWith(
+        process.execPath,
+        ['/checkout/packages/cli/dist/cli/index.js', 'flows', 'run', workflowPath, '--input', '{}'],
+        expect.objectContaining({ cwd: path.dirname(workflowPath) })
+      );
     } finally {
       fs.rmSync(tmpHome, { recursive: true, force: true });
     }
@@ -1795,7 +1956,9 @@ describe('registerCloudCommands', () => {
 
     const output = log.mock.calls.flat().join('\n');
     expect(output).toContain('Enrolled node "kjglaptop" (node_abc) in workspace rw_123');
-    expect(output).toContain("Run 'relay node up'");
+    expect(output).not.toContain('node up');
+    expect(output).toContain('no runtime was started');
+    expect(output).toContain('https://agentrelay.com/docs/headless-server');
     expect(output).not.toContain('nt_secret');
   });
 
@@ -1829,6 +1992,7 @@ describe('registerCloudCommands', () => {
     expect(stderr).toContain('persisting credentials failed');
     expect(stderr).toContain('EACCES');
     expect(stderr).toContain('/tmp/recovery-123.json');
+    expect(stderr).not.toContain('node up');
     expect(stderr).not.toContain('nt_secret');
     expect(log.mock.calls.flat().join('\n')).not.toContain('Enrolled node');
   });
@@ -1858,6 +2022,7 @@ describe('registerCloudCommands', () => {
     // Last resort: a printed token beats a lost one.
     const stderr = error.mock.calls.flat().join('\n');
     expect(stderr).toContain('SAVE THESE CREDENTIALS');
+    expect(stderr).not.toContain('node up');
     expect(stderr).toContain('nt_secret');
   });
 
@@ -1931,7 +2096,7 @@ describe('registerCloudCommands', () => {
     expect(output).toContain('node_abc');
     // The pinned key holds a workspace *key* and the enrollment holds a
     // workspace *id*, so the link cannot be verified locally. Say which
-    // workspace will actually be served and do not claim more than that.
+    // workspace the enrollment names without claiming a runtime is serving it.
     expect(output).toContain('rw_123');
     expect(output).toContain('was not verified');
   });
@@ -1960,6 +2125,7 @@ describe('registerCloudCommands', () => {
     const warned = warn.mock.calls.flat().join('\n');
     expect(warned).toContain('already linked to node node_existing');
     expect(warned).toContain('node_new');
+    expect(warned).not.toContain('node up');
   });
 
   it('cloud enroll survives a pin write failure without failing the redeemed enrollment', async () => {

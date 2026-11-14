@@ -29,6 +29,15 @@ function repoPath(path: string): string {
   return resolve(repoRoot, path);
 }
 
+// The harness driver and the per-platform broker packages are no longer built
+// in this repository. They stay pinned to the last version on npm, so the
+// release chain neither publishes nor rewrites them.
+const FROZEN_RELEASE_VERSION = '17.2.1';
+
+function isFrozenRelease(name: string): boolean {
+  return name === '@agent-relay/harness-driver' || name.startsWith('@agent-relay/broker-');
+}
+
 function loadPublishWorkflow(): PublishWorkflow {
   return parse(readFileSync(repoPath('.github/workflows/publish.yml'), 'utf8')) as PublishWorkflow;
 }
@@ -42,7 +51,11 @@ describe('package=main publish dependency chain', () => {
     };
 
     const directInternalDependencies = Object.entries(cliPackage.dependencies ?? {})
-      .filter(([name]) => name.startsWith('@agent-relay/'))
+      .filter(([name, version]) => {
+        if (!isFrozenRelease(name)) return name.startsWith('@agent-relay/');
+        expect(version).toBe(FROZEN_RELEASE_VERSION);
+        return false;
+      })
       .map(([name, version]) => {
         expect(version).toBe(cliPackage.version);
         return name;
@@ -59,35 +72,57 @@ describe('package=main publish dependency chain', () => {
     const publishedByMainChain = [
       ...sdkInternalDepsPackages.map((name) => `@agent-relay/${name}`),
       ...parallelRuntimePackages.map((name) => `@agent-relay/${name}`),
-      '@agent-relay/harnesses',
-      '@agent-relay/fleet',
     ].sort();
 
     expect(publishedByMainChain).toEqual(directInternalDependencies);
   });
 
-  it('orders harnesses and fleet after their exact-version dependencies', () => {
+  it('publishes every CLI dependency before the root CLI on package=all too', () => {
+    const jobs = loadPublishWorkflow().jobs;
+    const cliPackage = JSON.parse(readFileSync(repoPath('packages/cli/package.json'), 'utf8')) as {
+      dependencies?: Record<string, string>;
+    };
+    const published = new Set(
+      [
+        ...(jobs['publish-sdk-internal-deps']?.strategy?.matrix?.package ?? []),
+        ...(jobs['publish-packages']?.strategy?.matrix?.package ?? []),
+      ].map((name) => `@agent-relay/${name}`)
+    );
+    for (const name of Object.keys(cliPackage.dependencies ?? {}).filter(
+      (dep) => dep.startsWith('@agent-relay/') && !isFrozenRelease(dep)
+    )) {
+      expect(published.has(name), name).toBe(true);
+    }
+    expect(jobs['publish-packages']?.needs).toContain('publish-sdk-internal-deps');
+  });
+
+  it('gates the root CLI on its dependency publish jobs', () => {
     const jobs = loadPublishWorkflow().jobs;
 
-    expect(jobs['publish-main-harnesses']?.needs).toContain('publish-main-runtime-deps');
-    expect(jobs['publish-main-fleet']?.needs).toContain('publish-main-harnesses');
-    expect(jobs['publish-main-harnesses']?.steps).toEqual(jobs['publish-harnesses']?.steps);
-    expect(jobs['publish-main-fleet']?.steps).toEqual(jobs['publish-fleet']?.steps);
+    expect(jobs['publish-main-runtime-deps']?.needs).toContain('publish-sdk-internal-deps');
     expect(jobs['publish-main']?.needs).toEqual(
-      expect.arrayContaining(['publish-main-runtime-deps', 'publish-main-harnesses', 'publish-main-fleet'])
+      expect.arrayContaining(['publish-packages', 'publish-main-runtime-deps'])
     );
 
     const publishMainIf = jobs['publish-main']?.if;
-    for (const job of ['publish-packages', 'publish-fleet']) {
-      expect(publishMainIf).toContain(
-        `(needs.${job}.result == 'success' || ((github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease') && needs.${job}.result == 'skipped'))`
-      );
-    }
-    for (const job of ['publish-main-runtime-deps', 'publish-main-harnesses', 'publish-main-fleet']) {
-      expect(publishMainIf).toContain(
-        `(needs.${job}.result == 'success' || (github.event.inputs.package == 'all' && needs.${job}.result == 'skipped'))`
-      );
-    }
+    expect(publishMainIf).toContain(
+      "(needs.publish-packages.result == 'success' || ((github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease') && needs.publish-packages.result == 'skipped'))"
+    );
+    expect(publishMainIf).toContain(
+      "(needs.publish-main-runtime-deps.result == 'success' || (github.event.inputs.package == 'all' && needs.publish-main-runtime-deps.result == 'skipped'))"
+    );
+  });
+
+  it('no longer builds, stages or publishes the retired broker packages', () => {
+    const text = readFileSync(repoPath('.github/workflows/publish.yml'), 'utf8');
+    expect(text).not.toMatch(
+      /agent-relay-broker|@agent-relay\/(harnesses|fleet|evals)|broker-(darwin|linux|win32)|(build|smoke|publish)-broker|verify-publish-sdk/
+    );
+    const jobs = loadPublishWorkflow().jobs;
+    const cargoJobs = Object.entries(jobs)
+      .filter(([, job]) => (job.steps ?? []).some((step) => (step.run ?? '').includes('cargo')))
+      .map(([name]) => name);
+    expect(cargoJobs).toEqual(['build-node']);
   });
 
   it('passes the untrusted npm tag to publish commands through a quoted environment variable', () => {
@@ -124,7 +159,9 @@ describe('package=main publish dependency chain', () => {
 
     expect(run).toContain("rootPkg.overrides['@relayflows/sdk']");
     expect(run).toContain("'@agent-relay/sdk': version");
-    expect(run).toContain("'@agent-relay/harness-driver': version");
+    expect(run).not.toContain("'@agent-relay/harness-driver': version");
+    expect(run).toContain("dep === '@agent-relay/harness-driver' || dep.startsWith('@agent-relay/broker-')");
+    expect(run).toContain('!isFrozenRelease(dep)');
 
     const cleanReinstall = loadPublishWorkflow().jobs.build?.steps?.find(
       (step) => step.name === 'Clean reinstall after version bump'
@@ -277,7 +314,8 @@ describe('unified relay-node release', () => {
     (mode) => {
       const release = loadPublishWorkflow().jobs['create-release'];
       expect(needsOf(release)).toContain('build-node');
-      expect(needsOf(release)).toContain('smoke-broker-packages');
+      expect(needsOf(release)).not.toContain('smoke-broker-packages');
+      expect(needsOf(release)).not.toContain('build-broker');
       const results = {
         'build-standalone': mode === 'sdk' || mode === 'cli-prerelease' ? 'skipped' : 'success',
         'verify-binaries': mode === 'sdk' || mode === 'cli-prerelease' ? 'skipped' : 'success',
@@ -301,13 +339,6 @@ describe('unified relay-node release', () => {
           ).toBe(false);
         }
         for (const failed of ['failure', 'cancelled', 'skipped']) {
-          expect(
-            jobRuns(
-              release,
-              { package: mode, dry_run: dryRun },
-              { ...results, 'smoke-broker-packages': failed }
-            )
-          ).toBe(false);
           expect(
             condition(release.if, { package: mode, dry_run: dryRun }, { ...results, 'build-node': failed })
           ).toBe(false);
@@ -583,7 +614,7 @@ describe('release finalization', () => {
     (mode) => {
       const job = loadPublishWorkflow().jobs['finalize-release'];
       expect(job).toBeDefined();
-      const results: Record<string, string> = mode === 'main' ? { 'verify-publish-sdk': 'skipped' } : {};
+      const results: Record<string, string> = {};
       for (const prerelease of [false, true]) {
         for (const dryRun of ['false', 'true']) {
           const inputs = { package: mode, dry_run: dryRun, hotfix: 'false' };
@@ -594,12 +625,9 @@ describe('release finalization', () => {
             'build',
             'create-release',
             'publish-sdk-internal-deps',
-            'publish-broker-packages',
             'publish-main',
             'verify-publish',
-            ...(mode === 'all'
-              ? ['publish-packages', 'publish-harnesses', 'publish-fleet', 'verify-publish-sdk']
-              : ['publish-main-runtime-deps', 'publish-main-harnesses', 'publish-main-fleet']),
+            ...(mode === 'all' ? ['publish-packages'] : ['publish-main-runtime-deps']),
           ];
           for (const dependency of required) {
             expect(needsOf(job)).toContain(dependency);
@@ -619,18 +647,6 @@ describe('release finalization', () => {
       expect(condition(promote?.if, {}, {}, true)).toBe(false);
     }
   );
-
-  it('permits intentionally skipped SDK verification only for main or explicit all hotfix', () => {
-    const job = loadPublishWorkflow().jobs['finalize-release'];
-    const skipped = { 'verify-publish-sdk': 'skipped' };
-    expect(jobRuns(job, { package: 'all', dry_run: 'false', hotfix: 'false' }, skipped)).toBe(false);
-    expect(jobRuns(job, { package: 'all', dry_run: 'false', hotfix: 'true' }, skipped)).toBe(true);
-    for (const status of ['failure', 'cancelled']) {
-      expect(
-        jobRuns(job, { package: 'all', dry_run: 'false', hotfix: 'true' }, { 'verify-publish-sdk': status })
-      ).toBe(false);
-    }
-  });
 
   it('preserves an existing release latest status and uploads only missing assets on retries', () => {
     const release = loadPublishWorkflow().jobs['create-release'];

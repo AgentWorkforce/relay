@@ -27,20 +27,7 @@ relay message dm send <session-name> 'hello' --as alice
 
 The session must join on its own and receive the message as a new turn, without checking an inbox.
 
-## Path 3: Local Broker Lifecycle (legacy)
-
-```bash
-relay node up --background --no-spawn
-relay node status
-relay node metrics
-relay node deadletters --json
-relay node down
-relay node status
-```
-
-The first status must report running and the last must report stopped. Use an isolated project/state directory and never stop all brokers system-wide.
-
-## Path 4: Cross-Agent Channel Message
+## Path 3: Cross-Agent Channel Message
 
 **Prerequisite:** disposable hosted workspace; `TOKEN_A` must be the token returned for
 `critical-a`, and `TOKEN_B` must be the token returned for `critical-b`.
@@ -55,23 +42,7 @@ RELAY_AGENT_TOKEN="$TOKEN_A" relay channel archive critical-path
 
 Agent B must see the exact text from A. Remove both test identities after archiving the channel.
 
-## Path 5: Managed Local Agent (legacy)
-
-**Prerequisite:** a locally installed and authenticated provider CLI.
-
-```bash
-PROVIDER="${PROVIDER:-claude}" # installed and authenticated fixture provider
-relay node up --background --no-spawn
-relay node agent spawn "$PROVIDER" --name critical-worker --task 'Reply critical-ok' --spawn-mode task-exit --exit-after-task
-relay node agent list
-relay node agent message hold critical-worker
-relay node agent message auto critical-worker
-relay node agent release critical-worker
-```
-
-Assert that the worker appears, receives its bounded task, and is released. Provider credentials/cost make this a pre-provisioned integration check, not a generic CI test.
-
-## Path 6: MCP Stdio Round Trip
+## Path 4: MCP Stdio Round Trip
 
 **Prerequisite:** disposable hosted workspace and an MCP JSON-RPC client.
 
@@ -85,9 +56,9 @@ send_dm → list_dms → check_inbox → mark_message_read → get_message_reade
 close the stdio child
 ```
 
-Assert every static MCP tool in the manifest is listed and that the returned content reflects the values written by the test. The server itself does not require a local broker, but the messaging tools require a workspace and agent identities.
+Assert every static MCP tool in the manifest is listed and that the returned content reflects the values written by the test. The messaging tools require a workspace and agent identities.
 
-## Path 7: Local Workflow Run, Logs, and Sync
+## Path 5: Local Workflow Run, Logs, and Sync
 
 ```bash
 echo 'console.log("critical-workflow-ok")' > workflow.js
@@ -99,7 +70,7 @@ relay node workflow sync "$RUN_ID" --dry-run --json
 
 Assert completed status and the sentinel output. Run it in a disposable project because local workflow records are retained.
 
-## Path 8: Direct Message and Read Receipt
+## Path 6: Direct Message and Read Receipt
 
 **Prerequisite:** disposable hosted workspace; `TOKEN_A` must be the token returned for
 `critical-a`, and `TOKEN_B` must be the token returned for `critical-b`.
@@ -123,4 +94,4 @@ relay status
 relay agent list
 ```
 
-If any command fails, diagnose that subsystem before testing higher-level paths. For a change to the legacy broker path, also run `relay node up --background --no-spawn`, `relay node status` and `relay node metrics`. Top-level `relay status` is not the broker statistics command; `relay node status` is the direct broker check.
+If any command fails, diagnose that subsystem before testing higher-level paths.

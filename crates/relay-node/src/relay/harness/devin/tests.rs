@@ -149,6 +149,7 @@ fn restart_finds_only_its_live_host_and_never_adopts_a_reused_pid() {
         requester: None,
         target: None,
         process: None,
+        control_url: None,
     };
     let env = std::collections::HashMap::from([(MARKER.into(), intent.session_id.clone())]);
     table.insert(
@@ -250,6 +251,7 @@ fn timeout_host_fixture() {
         Path::new(&runtime),
         &marker,
         false,
+        &crate::relay::outbound::Build::Production,
     );
 }
 
@@ -318,6 +320,7 @@ fn startup_timeout_stops_owned_acp_child_even_when_it_ignores_stdin_eof() {
             full_access: false,
             message_id: "timeout-initial".into(),
             session_id: launch_id.clone(),
+            fork: None,
         },
         &|_, process| *started.lock().unwrap() = process,
     );

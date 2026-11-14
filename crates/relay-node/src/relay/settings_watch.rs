@@ -39,6 +39,12 @@ pub trait SettingsExtension: Send + Sync + 'static {
     /// Settings invalidation.
     fn attach(&self, _changed: SettingsChanged) {}
 
+    /// Puts back this build's own hook when another process displaced it,
+    /// on setup and on every rediscovery tick. Writes nothing when the
+    /// hook is current, the person turned it off, or it belongs to another
+    /// build: a build never touches another build's hook.
+    fn reclaim(&self) {}
+
     /// A setup failure that must remain visible to clients connecting after startup.
     fn startup_error(&self) -> Option<String> {
         None

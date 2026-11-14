@@ -260,6 +260,11 @@ pub trait SpawnFacet: Send + Sync {
     /// Starts one agent, for up to about half a minute. The spawner has
     /// checked that `launch.directory` is a folder.
     fn launch(&self, launch: &Launch, started: Started) -> Result<Launched, LaunchError>;
+    /// The folder of `target`'s session, when this harness can start an
+    /// agent as a copy of it (`Launch::fork`). Blocking.
+    fn fork_directory(&self, _target: &Target) -> Option<PathBuf> {
+        None
+    }
     /// The session and process of a spawn a restart interrupted, from what
     /// its intent recorded.
     fn find(&self, intent: &Intent) -> Option<(Target, Option<SpawnedProcess>)> {

@@ -271,7 +271,7 @@ Events are notifications on the connection that subscribed:
 | `shutdown`    | `{}`                                                                                                                                         | Sent to every greeted client, subscribed or not; the connection then closes                                                                                                                                      |
 | `invalidated` | `{"what":"sessions"\|"agents"\|"roster"\|"fleet"\|"messages"\|"people"\|"activity"\|"uploader"\|"chat"\|"projects"\|"settings"}` | Re-fetch that collection (2a; `sessions`, `fleet` 2b — compared every 5 s —; `uploader`, `chat`, `projects`, `incoming` 2c; `settings` when an agent changed one through the session socket's `PATCH /settings`) |
 | `sign_in`     | `status.account` plus `{"verification_url","verification_url_complete","user_code","expires_at","interval"}` (null when no link is waiting)  | After every sign-in step; the UI opens `verification_url_complete` when it appears                                                                                                                          |
-| `notify`      | `{"title","body","link"}`                                                                                                                    | The UI shows a notification; `link` (nullable) opens on click, e.g. a provider's connect page                                                                                                               |
+| `notify`      | `{"title","body","link"}`                                                                                                                    | The UI shows a notification; `link` (nullable) opens on click, e.g. a provider's connect page, or a person alert's link (see Delivery)                                                                           |
 
 `seq` increases by one per event across all topics, so a client sees gaps
 for topics it is not subscribed to. A client that falls more than 256 events
@@ -330,9 +330,9 @@ behind skips the backlog: if subscribed to `status`, it receives one fresh
 | `roster.list`                                | `{"where"?, "include_idle"?, "q"?}`                                                                                                  | `{"agents":[{"name","address","kind","where":"this_computer"\|"cloud"\|"other_desktop","status":"active"\|"idle","liveness":"live"\|"idle"\|"offline","last_seen_ms","description","host","owner_hash","session_id","is_self","provider","activity"?:{"turn"?:"working"\|"idle","repo"?,"branch"?,"doing"?,"updated_ms"?}}],"unread_statuses":[…],"fetched_at_ms"}`; without `include_idle`, the running agents (`live`, `idle`), one Relaycast read per running status; with it, every agent; a status whose read fails leaves out only its agents and is listed in `unread_statuses` (every read failing fails the list); see People and their agents (relay-desktop `agents-people.md`) | 2a       |
 | `roster.get`                                 | `{"to"\|"address","message_id"?}`                                                                                                    | `{"known","agent":{…roster.list's agent}\|null,"message":"queued"\|"delivered"\|"picked_up"\|"no_such_agent"\|null}`: one recipient (`GET /v1/agents/{name}`) and, with `message_id`, its row in Relaycast's `pending_deliveries`; `known: false` (and nothing else) when the key's workspace is not the one your messages go to                                                                                                                                                                                                                                                                                                                                                           | 2a       |
 | `spawn.targets`                              | —                                                                                                                                    | Typed online node identities, known spawn capabilities and capacity; no credentials or delivery configuration                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | 2b       |
-| `spawn.invoke`                               | `{"caller_name","node_id","node_name","name","harness","task","directory","idempotency_key"}`                                        | Typed native invocation receipt; exact advertised target, which must be this computer's own spawn node (status and release can only bind a worker spawned here), and absolute folder required                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | 2b       |
-| `spawn.status`                               | `{"caller_name","action":"spawn"\|"release","invocation_id"}`                                                                        | Typed native invocation status; agent_id/name/node are enriched only from an exact same-workspace local spawn invocation, whether or not the worker still runs; raw input/output and provider error text are omitted                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | 2b       |
-| `spawn.release`                              | `{"caller_name","node_id","node_name","name","expected_agent_id","idempotency_key"}`                                                 | Typed exact-release receipt; first release proves a local spawn by its exact saved identity (a crashed or ended worker included), private credential-free claims permit identical replay after removal                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | 2b       |
+| `spawn.invoke`                               | `{"caller_name"?,"node_id","node_name","name","harness","task","directory","idempotency_key"}`                                        | Typed native invocation receipt; exact advertised target, which must be this computer's own spawn node (status and release can only bind a worker spawned here), and absolute folder required                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | 2b       |
+| `spawn.status`                               | `{"caller_name"?,"action":"spawn"\|"release","invocation_id"}`                                                                        | Typed native invocation status; agent_id/name/node are enriched only from an exact same-workspace local spawn invocation, whether or not the worker still runs; raw input/output and provider error text are omitted                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | 2b       |
+| `spawn.release`                              | `{"caller_name"?,"node_id","node_name","name","expected_agent_id","idempotency_key"}`                                                 | Typed exact-release receipt; first release proves a local spawn by its exact saved identity (a crashed or ended worker included), private credential-free claims permit identical replay after removal; `released` is true only when the provider reported the exact agent released, never inferred from `status`                                                                                                                                                                                                                                                                                                                                                                            | 2b       |
 | `spawn.claim.retry`                          | —                                                                                                                                    | Asks Agent Relay Cloud at once to record this computer's spawn node as the signed-in person's, whatever the backoff after a failed claim (`status.spawn.claim`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | 2b       |
 | `fleet.list`                                 | —                                                                                                                                    | `{"brokers":[{"node_id","name","workspace_id"?,"error"?,"workers":[{"id":"<node>\|<name>","name","provider","provider_label","model","runtime_kind","session_id","channels","generation","state":"starting"\|"working"\|"idle"\|"waiting"\|"unknown","pending_messages","last_activity_ms","target":{"kind","id"}\|null}]}]}`; a broker that cannot be read has an `error`, never an empty list                                                                                                                                                                                                                                                                                            | 2b       |
 | `fleet.release`                              | `{"node_id","name","generation"}`                                                                                                    | `{}`; generation-checked (`conflict` when the broker's worker is another generation, `not_found` when gone)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | 2b       |
@@ -366,6 +366,30 @@ kernel pid and process ancestry, not just uid. The core serves both sockets;
 the bridge socket is for UIs, the relay-send socket for sessions
 (`relay::outbound`).
 
+- **One pointer per build.** The build is named by its app data directory
+  (`outbound::Build::of`): `com.agentrelay.desktop` is Agent Relay,
+  a name ending `.dev` is Agent Relay Dev, and anything else is a profile
+  build. A profile's id is the suffix after `com.agentrelay.desktop.` when it
+  is 1-40 characters of `[a-z0-9-]` (and not `dev`), else `_` and twelve hex
+  digits of the name's SHA-256. A profile build advertises its socket in
+  `relay-socket.<id>`, uses `agent-relay-<id>` for its socket directory and
+  `agent-relay-probe-<id>` for its probe alias. Readers take `--dev` or
+  `--profile <id>` and never fall back to another build's pointer; a missing
+  pointer is an error naming the build.
+- **Hook ownership.** Agent Relay's Claude `SessionStart` and Codex hooks are
+  unmarked, Dev's carry ` --dev`, a profile build's carry
+  ` --socket <its socket>`. A build installs, refreshes and removes only hooks
+  carrying its own marker (`hook_owner`). An unmarked hook is Agent Relay's
+  slot, so Agent Relay replaces a legacy one; a profile build leaves it, and
+  leaves any hook naming another build's socket.
+- **Reclaim.** `workspace.verify` (setup, status, repair) and every refresh
+  tick rewrite this build's pointer when it no longer names the socket being
+  served and reinstall this build's hooks when they are enabled but missing.
+  Neither touches another build's pointer or hooks.
+- **Shared single-file integrations.** Pi, OMP, OpenCode, Grok, Devin, Cursor
+  and Copilot hooks, OpenClaw, Hermes and the default-follow setting live in
+  one file per user, so only Agent Relay and Agent Relay Dev install them; a
+  profile build skips them.
 - **Caller.** `SessionDirectory::caller(pid)` names the session from kernel
   evidence alone. A present `CODEX_THREAD_ID` decides alone: it is accepted
   only when the nearest trusted Codex ancestor (same user; on macOS OpenAI's
@@ -639,6 +663,37 @@ agents into its session (through the `Injector`) and settles it:
 - Your relay identity (for messaging) belongs to one signed-in person in
   one Cloud workspace on one site; when the account changes, it and
   everything read with it are forgotten.
+- **Person alerts.** A DM to your own relay identity may ask for a
+  notification by carrying this marker in its `data` (Relaycast keeps it as
+  the message's `metadata`):
+
+  ```json
+  {"relay_alert": {"title": "<string, 1-120 characters>", "link": "https://..."}}
+  ```
+
+  When such a DM is pushed to your identity on this computer, the core
+  raises one `notify` event: `title` from the marker (whitespace collapsed
+  to one line), `body` the first 200 characters of the message text on one
+  trimmed line (an ellipsis marks a cut), and `link` from the marker. An
+  ordinary DM never notifies, and the marker on a message to one of this
+  computer's agents is ignored. A malformed marker (not an object, title
+  missing, empty, longer than 120 characters or not a string, link missing,
+  not a string or not an `https` URL with a host and no credentials) is
+  ignored with a diagnostic line naming the reason; the sender is never told.
+  The title's 120 characters are counted before whitespace is collapsed.
+  Each sender, by agent id (by name when the message carries no id),
+  raises at most 3 alerts in 10 minutes; further alerts are dropped and
+  counted, with one diagnostic line per sender per window, and their DMs
+  still arrive. A DM from your own identity never alerts. A DM redelivered
+  before it is read alerts once, as long as it is among the last 4096
+  alerted messages; an older one redelivered alerts again (within its
+  sender's cap). The caps and remembered messages belong to the identity
+  they were counted for and start over when another account's identity is
+  current. They are kept in memory only: a core restart forgets them, so
+  after a restart an unread redelivery alerts once more and a sender's
+  three alerts count from zero again. The DM's delivery is unchanged: it is read and acknowledged
+  with its conversation as before. Alerts come from pushed frames only; a
+  DM read while the push socket is down does not alert.
 - Pushed `deliver` frames for DMs and thread replies are handled from the
   frame; anything else, and every socket that comes up or goes down, reads
   the queue. Each agent's work runs in order, one delivery at a time. The
@@ -905,6 +960,7 @@ agent-relay-node call agents.list --json
 agent-relay-node call roster.list --json
 agent-relay-node call sessions.list --json
 agent-relay-node call fleet.list --json
+# relay-socket.dev for Agent Relay Dev, relay-socket.<profile id> for a profile build
 curl -s --unix-socket "$(cat ~/.agentworkforce/desktop/relay-socket)" http://relay/whoami
 agent-relay-node call daemon.shutdown --json
 ```

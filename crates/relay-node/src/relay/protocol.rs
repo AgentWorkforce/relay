@@ -3,7 +3,10 @@
 //! See `docs/relay-core.md` for the method and event catalogue. Everything a
 //! client can observe is here: request and response envelopes, the event
 //! notification, and the error model. Error messages are fixed, user-safe
-//! sentences; provider bodies, keys and tokens never reach them.
+//! sentences; provider bodies, keys and tokens never reach them. The one
+//! exception is Relaycast's own 403 passed through to a node-scoped
+//! credential, whose code and redacted, bounded message are shown
+//! ([`RpcError::from_relaycast_for`]).
 
 use crate::relay::contract::plan::PlanLimitExceeded;
 use schemars::JsonSchema;
@@ -119,6 +122,39 @@ pub struct ErrorData {
     /// is, when Relaycast's refusal said. Absent on every other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_limit: Option<PlanLimitExceeded>,
+    /// With `refused`: why, when the refusal has a typed reason. Absent on
+    /// every other kind and on refusals without one, so a client that does
+    /// not know the field reads the error as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<RefusalReason>,
+}
+
+/// Why a native spawn control refused its caller. `kind` stays `refused`;
+/// this only says which rule refused it. None of them is retryable.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(extend("x-fallback" = "other"))]
+pub enum RefusalReason {
+    /// No such caller, or its secret does not match; the two read alike so
+    /// a name cannot be probed.
+    ServiceUnknown,
+    /// The caller is turned off.
+    ServiceDisabled,
+    /// The caller's credential expired; rotate it.
+    ServiceExpired,
+    /// The caller belongs to another workspace than the active one, or the
+    /// active one has no workspace id.
+    WorkspaceMismatch,
+    /// The invocation or agent was not started by this caller.
+    NotOwner,
+    /// The harness or folder is outside the caller's limits.
+    OutsideScope,
+    /// A management call from a spawned or session process tree, or from a
+    /// client whose process could not be read.
+    ManagementPeer,
+    /// A reason this build does not know.
+    #[serde(other)]
+    Other,
 }
 
 /// Every error a method can return.
@@ -203,8 +239,17 @@ impl RpcError {
                 kind,
                 retryable: kind.retryable(),
                 plan_limit: None,
+                reason: None,
             },
         }
+    }
+
+    /// A refusal with a typed reason (`data.reason`); `kind` stays
+    /// `refused`, so clients that do not know the reason read it as before.
+    pub fn refused_because(reason: RefusalReason, message: impl Into<String>) -> RpcError {
+        let mut error = RpcError::new(ErrorKind::Refused, message);
+        error.data.reason = Some(reason);
+        error
     }
 
     /// A plan cap reached, with Relaycast's counters when it sent them.
@@ -243,6 +288,37 @@ impl RpcError {
         RpcError::new(kind, error.to_string())
     }
 
+    /// [`RpcError::from_relaycast`] for a call made with a workspace
+    /// credential of `kind`. A workspace key maps exactly as there. A
+    /// node-scoped credential is not rejected by a 403 other than the
+    /// broker's own (`scope_denied`, `node_mismatch`): such a 403 is
+    /// Relaycast's, passed through (a suspended workspace, a node another
+    /// owner holds), and leaves the workspace `Pending`, so its answer is
+    /// shown rather than "rejected the workspace credential".
+    pub fn from_relaycast_for(
+        kind: crate::relay::workspace::KeyKind,
+        error: &relaycast::RelayError,
+    ) -> RpcError {
+        use crate::relay::node_credential::{is_node_mismatch, is_scope_denied};
+        match error {
+            relaycast::RelayError::Api {
+                code,
+                message,
+                status: 403,
+                ..
+            } if kind == crate::relay::workspace::KeyKind::NodeScoped
+                && !is_scope_denied(error)
+                && !is_node_mismatch(error) =>
+            {
+                RpcError::new(
+                    ErrorKind::RelaycastRefused,
+                    relaycast_answer(403, code, message),
+                )
+            }
+            error => RpcError::from_relaycast(error),
+        }
+    }
+
     /// Maps an SDK failure to a safe error. The SDK's own message can carry a
     /// response body, so it is never forwarded.
     pub fn from_relaycast(error: &relaycast::RelayError) -> RpcError {
@@ -252,6 +328,17 @@ impl RpcError {
             relaycast::RelayError::Api { code, .. } if code == "plan_limit_exceeded" => {
                 RpcError::plan_limit(PlanLimitExceeded::from_relaycast(error))
             }
+            // A call outside a node credential's scope is unavailable, and a
+            // node credential bound to another node name is refused; neither
+            // rejects the credential itself.
+            error if crate::relay::node_credential::is_scope_denied(error) => RpcError::new(
+                ErrorKind::Refused,
+                crate::relay::node_credential::UNAVAILABLE,
+            ),
+            error if crate::relay::node_credential::is_node_mismatch(error) => RpcError::new(
+                ErrorKind::Refused,
+                "The node credential belongs to another node name.",
+            ),
             error if error.is_auth_rejection() => RpcError::new(
                 ErrorKind::Unauthorized,
                 "Agent Relay rejected the workspace credential.",
@@ -293,6 +380,38 @@ impl RpcError {
             ),
         }
     }
+}
+
+/// Relaycast's answer, passed through Control's broker to a node-scoped
+/// credential: its status, its code and its message. The code is kept to a
+/// bounded single-line token; the message is redacted of anything shaped
+/// like a credential, URL or secret field and bounded, and is left out when
+/// it quotes a body the SDK could not read (`invalid_response_body`).
+fn relaycast_answer(status: u16, code: &str, message: &str) -> String {
+    let code: String = code
+        .chars()
+        .take(64)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') {
+                c
+            } else {
+                '?'
+            }
+        })
+        .collect();
+    let message = if code == "invalid_response_body" {
+        String::new()
+    } else {
+        let redacted = crate::relay::harness::diagnostics::redact(message);
+        let bounded: String = redacted.chars().take(200).collect();
+        let trimmed = bounded.trim().trim_end_matches('.');
+        if trimmed.is_empty() {
+            String::new()
+        } else {
+            format!(": {trimmed}")
+        }
+    };
+    format!("Agent Relay answered {status} {code}{message}. The node credential is not rejected; Agent Relay checks again.")
 }
 
 #[cfg(test)]
@@ -360,6 +479,89 @@ mod tests {
         assert!(!mapped.message.contains("rk_live_"));
         let server = relaycast::RelayError::api("oops", "stack trace", 503);
         assert!(RpcError::from_relaycast(&server).data.retryable);
+    }
+
+    #[test]
+    fn broker_refusals_of_a_node_credential_do_not_reject_it() {
+        let scope = relaycast::RelayError::api("scope_denied", "sh_wk_secret out of scope", 403);
+        let mapped = RpcError::from_relaycast(&scope);
+        assert_eq!(mapped.data.kind, ErrorKind::Refused);
+        assert!(!mapped.message.contains("sh_wk_"));
+        let mismatch = relaycast::RelayError::api("node_mismatch", "other node", 403);
+        assert_eq!(
+            RpcError::from_relaycast(&mismatch).data.kind,
+            ErrorKind::Refused
+        );
+        let invalid = relaycast::RelayError::api("token_invalid", "revoked", 401);
+        assert_eq!(
+            RpcError::from_relaycast(&invalid).data.kind,
+            ErrorKind::Unauthorized
+        );
+        let outage = relaycast::RelayError::api("relaycast_unavailable", "down", 502);
+        assert!(RpcError::from_relaycast(&outage).data.retryable);
+    }
+
+    /// A 403 Relaycast passed through to a node credential (a suspended
+    /// workspace) leaves it `Pending`, so it reads as Relaycast's answer,
+    /// never as a rejected credential; a workspace key maps as before.
+    #[test]
+    fn a_passed_through_403_shows_relaycasts_answer_to_a_node_credential() {
+        use crate::relay::workspace::KeyKind;
+        let suspended = relaycast::RelayError::api(
+            "workspace_suspended",
+            "Workspace is suspended. key=sh_wk_secret",
+            403,
+        );
+        let mapped = RpcError::from_relaycast_for(KeyKind::NodeScoped, &suspended);
+        assert_eq!(mapped.data.kind, ErrorKind::RelaycastRefused);
+        assert!(!mapped.data.retryable);
+        assert!(
+            mapped.message.starts_with(
+                "Agent Relay answered 403 workspace_suspended: Workspace is suspended."
+            ),
+            "{}",
+            mapped.message
+        );
+        assert!(
+            !mapped.message.contains("rejected the"),
+            "{}",
+            mapped.message
+        );
+        assert!(!mapped.message.contains("sh_wk_"), "{}", mapped.message);
+
+        // The broker's own 403s and a 401 map as from_relaycast does.
+        for (code, status) in [
+            ("scope_denied", 403),
+            ("node_mismatch", 403),
+            ("token_invalid", 401),
+        ] {
+            let error = relaycast::RelayError::api(code, "synthetic", status);
+            let node = RpcError::from_relaycast_for(KeyKind::NodeScoped, &error);
+            let plain = RpcError::from_relaycast(&error);
+            assert_eq!(
+                (node.data.kind, node.message),
+                (plain.data.kind, plain.message)
+            );
+        }
+
+        // A workspace key: unchanged.
+        let workspace = RpcError::from_relaycast_for(KeyKind::Workspace, &suspended);
+        let plain = RpcError::from_relaycast(&suspended);
+        assert_eq!(workspace.data.kind, ErrorKind::Unauthorized);
+        assert_eq!(
+            workspace.message,
+            "Agent Relay rejected the workspace credential."
+        );
+        assert_eq!(workspace.message, plain.message);
+
+        // A body the SDK could not read is not quoted.
+        let unreadable = relaycast::RelayError::api(
+            "invalid_response_body",
+            "unexpected; body: <html>secret</html>",
+            403,
+        );
+        let mapped = RpcError::from_relaycast_for(KeyKind::NodeScoped, &unreadable);
+        assert!(!mapped.message.contains("html"), "{}", mapped.message);
     }
 
     #[test]

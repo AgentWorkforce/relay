@@ -22,7 +22,6 @@ use crate::relay::backoff::{BackoffNotice, RelaycastBackoff, WorkspaceScope};
 use crate::relay::machine::machine_name;
 use crate::relay::sdk_gaps::{self, NODE_HEARTBEAT_SECONDS};
 use crate::relay::workspace::Secret;
-use relaycast::AgentClient;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -266,7 +265,7 @@ async fn connect_once(
     stopped: &mut watch::Receiver<bool>,
     attempt: &mut u32,
 ) -> Ended {
-    let Ok(agent) = AgentClient::new(target.token.expose(), Some(target.base_url.clone())) else {
+    let Ok(agent) = super::client::agent_client(&target.base_url, &target.token) else {
         return Ended::Closed;
     };
     let node = tokio::select! {

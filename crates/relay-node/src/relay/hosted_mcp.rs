@@ -17,7 +17,7 @@
 use crate::relay::daemon::Core;
 use crate::relay::delivery::policy::one_line;
 use crate::relay::outbound::shell_quote;
-use crate::relay::store::Target;
+use crate::relay::store::{SessionKind, Target};
 use serde::Serialize;
 use std::path::Path;
 
@@ -67,10 +67,12 @@ impl McpAccess {
 
 impl Core {
     /// What the session `target` can use: socket commands alone for a
-    /// Relay Connect guest, the tools when Cloud reported a hosted MCP link
-    /// to it, otherwise what its registration declared.
+    /// Relay Connect guest or a Cursor session, the tools when Cloud
+    /// reported a hosted MCP link to it, otherwise what its registration
+    /// declared. Cursor's MCP calls name no chat, so Cloud refuses to act as
+    /// any Cursor session's desktop identity, whatever it declared.
     pub fn relay_mcp_access(&self, target: &Target) -> McpAccess {
-        if self.connect_for(target).is_some() {
+        if self.connect_for(target).is_some() || target.kind == SessionKind::CursorCli {
             return McpAccess::SocketOnly;
         }
         let Some((agent_id, registered_at, declared)) = self.store.read(|store| {
@@ -391,7 +393,7 @@ pub fn preamble(
                 "On the Agent Relay session socket: list peers with {agents}; send with \
                  {send} (--channel <name> instead of --to posts to a channel; add --thread \
                  <id> to reply in a post's thread); subscribe to a channel with {subscribe} \
-                 (add --remove to stop)."
+                 (add --remove to stop, or --create to create a channel that does not exist)."
             ),
         ),
         None => (
@@ -406,7 +408,8 @@ pub fn preamble(
                  (\"channel\" instead of \"to\" posts to a channel; add \"thread_id\" to reply \
                  in a post's thread); subscribe to a channel with curl -s -X POST \
                  --unix-socket {shown} 'http://relay/channels/subscribe?channel=<name>' \
-                 (DELETE to stop)."
+                 (DELETE to stop; POST to /channels instead creates a channel that does not \
+                 exist)."
             ),
         ),
     };

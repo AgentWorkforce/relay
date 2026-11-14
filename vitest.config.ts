@@ -12,14 +12,14 @@ import path from 'node:path';
 // When you add a new workspace package, add it here too.
 const workspacePackages = [
   'agent',
+  'chief-execution-bridge',
   'cloud',
   'config',
+  'core-bridge',
   'events',
-  'fleet',
+  'events-shim',
   'gateway',
   'github-primitive',
-  'harness-driver',
-  'harnesses',
   'hooks',
   'integration-prompts',
   'memory',
@@ -47,6 +47,10 @@ const workspaceAliases = workspacePackages.flatMap((packageName) => {
   ];
 });
 
+const [nodeMajor = 0, nodeMinor = 0] = process.versions.node.split('.').map(Number);
+// The root engines range starts below the version that ships node:sqlite without a flag.
+const hasNodeSqlite = nodeMajor > 22 || (nodeMajor === 22 && nodeMinor >= 13);
+
 export default defineConfig({
   resolve: {
     alias: workspaceAliases,
@@ -58,8 +62,6 @@ export default defineConfig({
     include: [
       '.agentworkforce/agents/**/*.test.ts',
       'tests/fixtures/**/*.test.ts',
-      'tests/integration/ai-sdk-harnesses/**/*.test.ts',
-      'tests/integration/broker/evals/**/*.unit.test.ts',
       'packages/**/src/**/*.test.ts',
       'packages/**/src/**/*.test.tsx',
       'packages/**/tests/**/*.test.ts',
@@ -69,6 +71,7 @@ export default defineConfig({
       '**/dist/**',
       'packages/sdk-swift/.build/**',
       'packages/sdk/**', // Uses Node.js test runner, not vitest
+      ...(hasNodeSqlite ? [] : ['packages/chief-execution-bridge/**']),
     ],
     coverage: {
       provider: 'v8',
@@ -79,7 +82,7 @@ export default defineConfig({
         '**/*.test.tsx',
         '**/dist/**',
         'packages/sdk-swift/.build/**',
-        'packages/sdk/**', // SDK uses Node.js test runner in tests/integration/broker
+        'packages/sdk/**', // SDK uses the Node.js test runner
         // Transitively loaded via barrel re-exports but not exercised by the
         // root test suite. Previously these resolved to dist/*.js and were
         // excluded via **/dist/**; the src alias migration started reporting

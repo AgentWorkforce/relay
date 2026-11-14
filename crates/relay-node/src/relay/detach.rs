@@ -30,13 +30,24 @@ pub(crate) fn record_exit(path: &Path, status: &str) -> std::io::Result<()> {
     std::fs::rename(&temporary, path)
 }
 
+/// `environment` for a detached process, without the workspace credential
+/// variables ([`WORKSPACE_KEY_ENV`], in any case): every detached launch
+/// (Devin's helper, Muse, OpenCode, Grok, managed providers) goes through
+/// [`start`], so no process it starts inherits the node's credential.
+///
+/// [`WORKSPACE_KEY_ENV`]: crate::relay::workspace::WORKSPACE_KEY_ENV
+fn child_environment(environment: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    crate::relay::workspace::without_workspace_key_env(environment.clone())
+}
+
 /// Starts `executable arguments` in `directory` with exactly `environment`,
 /// in a new process session through a short-lived shell, so it is
 /// reparented before this returns, and returns its pid. Its input is empty
 /// and its output goes to `log` (`/dev/null` for none). With `scope` (the
 /// `systemd-run` path and a unit name) the shell, and so the process, run
 /// in that transient scope, outside the core's cgroup. Arguments are passed
-/// through `"$@"`, never interpolated into shell text.
+/// through `"$@"`, never interpolated into shell text. The workspace
+/// credential variables are never passed (`child_environment`).
 #[cfg(unix)]
 pub(crate) fn start(
     scope: Option<(&Path, &str)>,
@@ -46,6 +57,7 @@ pub(crate) fn start(
     directory: &Path,
     environment: &BTreeMap<String, String>,
 ) -> Result<i32, String> {
+    let environment = &child_environment(environment);
     const SCRIPT: &str = r#"umask 077
 log=$1; exit_file=$2; shift 2
 (
@@ -104,7 +116,8 @@ log=$1; exit_file=$2; shift 2
 /// `.cmd` through `cmd.exe` with its arguments escaped by Rust. Its exit
 /// status is written beside the log (`.exit`) by a thread of this core, so
 /// it is recorded only while the core still runs. `scope` is a `systemd-run`
-/// scope, which Windows has no counterpart for; it is ignored.
+/// scope, which Windows has no counterpart for; it is ignored. The
+/// workspace credential variables are never passed (`child_environment`).
 #[cfg(windows)]
 pub(crate) fn start(
     scope: Option<(&Path, &str)>,
@@ -114,6 +127,7 @@ pub(crate) fn start(
     directory: &Path,
     environment: &BTreeMap<String, String>,
 ) -> Result<i32, String> {
+    let environment = &child_environment(environment);
     use crate::platform::process::{CREATE_BREAKAWAY_FROM_JOB, NULL_DEVICE};
     use std::os::windows::process::CommandExt;
     let _ = scope;
@@ -177,6 +191,41 @@ pub(crate) fn start(
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    /// A detached process (Devin's helper among them) never inherits a
+    /// workspace credential variable, in any case, whatever its caller put
+    /// in its environment.
+    #[test]
+    fn a_detached_process_never_inherits_a_workspace_credential_variable() {
+        let folder = tempfile::tempdir().unwrap();
+        let log = folder.path().join("env.log");
+        let environment: BTreeMap<String, String> = [
+            ("RELAY_WORKSPACE_KEY", "fixture-one"),
+            ("AGENT_RELAY_WORKSPACE_KEY", "fixture-two"),
+            ("RELAY_API_KEY", "fixture-three"),
+            ("Relay_Api_Key", "fixture-four"),
+            ("KEPT_VARIABLE", "kept"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+        start(
+            None,
+            Path::new("/usr/bin/env"),
+            &[],
+            &log,
+            folder.path(),
+            &environment,
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !log.with_extension("exit").exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let printed = std::fs::read_to_string(&log).unwrap();
+        assert!(printed.contains("KEPT_VARIABLE=kept"), "{printed}");
+        assert!(!printed.contains("fixture-"), "{printed}");
+    }
 
     #[test]
     fn a_detached_process_writes_its_log_with_only_the_environment_given() {

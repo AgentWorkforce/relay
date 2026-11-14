@@ -1,0 +1,46 @@
+{
+  "schema": "agent-relay-service-caller/2",
+  "auth": {
+    "scheme": "challenge-hmac-sha256/v1",
+    "challenge": "spawn_callers.challenge",
+    "authenticate": "spawn_callers.authenticate"
+  },
+  "caller_id": "sc_0123456789abcdef",
+  "caller_name": "fixture-caller",
+  "publisher": {
+    "id": "agent_fixture0001",
+    "name": "fixture-caller"
+  },
+  "workspace": {
+    "site_url": "https://agentrelay.example",
+    "base_url": "https://api.relaycast.example",
+    "workspace_id": "ws_fixture0001",
+    "relaycast_workspace_id": "rw_fixture0001"
+  },
+  "account": {
+    "user_id": "user_fixture0001"
+  },
+  "secret": "rsc_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "created_at": "2026-10-07T00:00:00Z",
+  "rotated_at": "2026-11-01T00:00:00Z",
+  "expires_at": "2027-01-30T00:00:00Z",
+  "harnesses": [
+    "claude",
+    "codex"
+  ],
+  "directory_scope": [
+    "/home/fixture/projects/fixture"
+  ],
+  "owns_only": true,
+  "socket": "/fixture/agent-relay/core.sock",
+  "inbox": {
+    "transport": "core-bridge",
+    "open": "spawn_callers.inbox.open",
+    "next": "spawn_callers.inbox.next",
+    "ack": "spawn_callers.inbox.ack",
+    "fail": "spawn_callers.inbox.fail",
+    "close": "spawn_callers.inbox.close",
+    "disconnect": "spawn_callers.disconnect"
+  },
+  "desktop_version": "2026.11.4"
+}

@@ -42,7 +42,6 @@ describe('diagnosis source provenance', () => {
     // same guarantee is now carried by a `:check` script per flow.
     const packageJson = JSON.parse(await readFile('package.json', 'utf8'));
     for (const script of [
-      'verify:fleet-daytona:check',
       'verify:cleanroom:check',
       'diagnose:orchestration:check',
       'audit:feature-manifest:check',

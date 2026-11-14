@@ -14,17 +14,21 @@ use crate::relay::workspace::{Secret, Workspace};
 use relaycast::types::{
     CreateChannelRequest, CreateWebhookRequest, EventSubscription, FailDeliveryRequest, Webhook,
 };
-use relaycast::{AgentClient, DmOptions, RelayCast, RelayCastOptions, RelayError};
+use relaycast::{AgentClient, ClientOptions, DmOptions, RelayCast, RelayError};
 use serde_json::{Map, Value};
 
 /// A workspace-key client for `base_url`.
 pub fn workspace_client(base_url: &str, key: &Secret) -> relaycast::Result<RelayCast> {
-    RelayCast::new(RelayCastOptions::new(key.expose()).with_base_url(base_url))
+    RelayCast::from_client(super::sdk_http::client(
+        ClientOptions::new(key.expose()).with_base_url(base_url),
+    )?)
 }
 
 /// An agent-token client for `base_url`.
 pub fn agent_client(base_url: &str, token: &Secret) -> relaycast::Result<AgentClient> {
-    AgentClient::new(token.expose(), Some(base_url.to_string()))
+    Ok(AgentClient::from_client(super::sdk_http::client(
+        ClientOptions::new(token.expose()).with_base_url(base_url),
+    )?))
 }
 
 /// The workspace a key belongs to, as Relaycast reports it.
@@ -38,8 +42,9 @@ pub struct WorkspaceInfo {
 /// `GET /v1/workspace` with the workspace key. Read through `sdk_gaps`,
 /// since the SDK's `Workspace` requires `api_key_hash`, which the server no
 /// longer sends.
+/// A node-scoped credential asks its Control broker.
 pub async fn workspace_info(workspace: &Workspace) -> relaycast::Result<WorkspaceInfo> {
-    let http = sdk_gaps::http(&workspace.base_url, &workspace.key)?;
+    let http = sdk_gaps::workspace_http(workspace)?;
     let info = sdk_gaps::workspace_identity(&http).await?;
     Ok(WorkspaceInfo {
         id: info.id,
@@ -246,6 +251,35 @@ pub async fn ensure_channel(
                 })
                 .await?;
             Ok(agent.get_channel(name).await?.channel.id)
+        },
+    )
+    .await
+}
+
+/// Creates the channel as the agent holding `token` and joins it; a
+/// channel of that name that already exists is joined instead, and a
+/// membership it already holds is kept. Returns whether this call created
+/// the channel.
+pub async fn create_channel(
+    base_url: &str,
+    token: &Secret,
+    name: &str,
+    topic: Option<&str>,
+) -> relaycast::Result<bool> {
+    crate::relay::request_log::observe(
+        "SDK: create_channel",
+        base_url,
+        serde_json::json!({"name": name}),
+        token.expose(),
+        async {
+            let outcome = agent_client(base_url, token)?
+                .ensure_joined_channel(CreateChannelRequest {
+                    name: name.into(),
+                    topic: topic.map(str::to_string),
+                    metadata: None,
+                })
+                .await?;
+            Ok(outcome.created)
         },
     )
     .await

@@ -1815,6 +1815,108 @@ async fn connect_sender_attribution_is_one_line_and_precedes_untrusted_body() {
     h.stop().await;
 }
 
+/// Joins as the guest of a Connect whose saved expiry passes in two seconds,
+/// then waits for it to pass.
+async fn join_then_pass_saved_expiry(h: &Harness) {
+    let guest = h.connect_fake.agent("connect-guest").unwrap();
+    let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(2))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    h.join.set_response(JoinResponse {
+        connect_id: "connect-1".into(),
+        task: "Extended".into(),
+        expires_at,
+        host: ConnectHost {
+            person: "Alice".into(),
+            agent_name: "connect-host".into(),
+        },
+        participant: JoinedParticipant {
+            agent_name: guest.name,
+            agent_id: guest.id,
+            role: "guest".into(),
+            token: Secret::new(guest.token),
+            relay_base_url: h.connect_fake.base_url.clone(),
+        },
+        participants: vec![Participant {
+            agent_name: "connect-guest".into(),
+            role: "guest".into(),
+        }],
+    });
+    h.call(
+        IN_CODEX,
+        "POST",
+        "/connect/join",
+        json!({"link": "connect-1"}),
+    )
+    .await
+    .expect("the guest joins");
+    tokio::time::sleep(std::time::Duration::from_millis(2_500)).await;
+}
+
+#[tokio::test]
+async fn a_connect_the_host_extended_stays_open_past_its_join_expiry() {
+    let h = Harness::start().await;
+    h.join
+        .set_expiry(Ok(Some("2099-10-01T12:00:00.000Z".into())));
+    join_then_pass_saved_expiry(&h).await;
+    let status = h
+        .call(IN_CODEX, "GET", "/connect/status", Value::Null)
+        .await
+        .expect("an extended Connect stays joined");
+    assert_eq!(status["expires_at"], "2099-10-01T12:00:00.000Z");
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn a_connect_cloud_reports_expired_closes_at_its_saved_expiry() {
+    let h = Harness::start().await;
+    h.join.set_expiry(Err(OutboundError::new(
+        410,
+        "connect_expired",
+        "This Relay Connect expired.",
+    )));
+    join_then_pass_saved_expiry(&h).await;
+    // Either the poll loop or this request confirms the expiry first; both
+    // close the credential and tell the session the Connect expired.
+    let first = code(
+        h.call(IN_CODEX, "GET", "/connect/status", Value::Null)
+            .await,
+    );
+    assert!(
+        first == (410, "connect_expired".into()) || first == (404, "connect_not_joined".into()),
+        "{first:?}"
+    );
+    assert_eq!(
+        code(
+            h.call(IN_CODEX, "GET", "/connect/status", Value::Null)
+                .await
+        ),
+        (404, "connect_not_joined".into())
+    );
+    eventually("the Connect expired notice", || {
+        h.injector
+            .injected()
+            .iter()
+            .any(|notice| notice.text.contains("This Connect expired."))
+    })
+    .await;
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn an_unreachable_cloud_keeps_a_just_expired_connect_open() {
+    let h = Harness::start().await;
+    h.join.set_expiry(Err(OutboundError::new(
+        503,
+        "connect_unreachable",
+        "Relay Connect could not be reached.",
+    )));
+    join_then_pass_saved_expiry(&h).await;
+    h.call(IN_CODEX, "GET", "/connect/status", Value::Null)
+        .await
+        .expect("Cloud's silence alone does not close a Connect");
+    h.stop().await;
+}
+
 #[tokio::test]
 async fn an_expired_connect_is_never_adopted() {
     let h = Harness::start().await;
@@ -1936,12 +2038,91 @@ async fn a_starting_codex_session_is_told_who_it_is_and_its_local_route() {
     let other = json!({"session_id": "11111111-2222-3333-4444-555555555555", "hook_event_name": "SessionStart"});
     let (status, _) = code(h.call(IN_CODEX, "POST", "/codex/stop-hook", other).await);
     assert_eq!(status, 403);
-    // The other events still carry only relayed messages.
+    // The helper acknowledges only after flushing its startup output.
+    let receipt = renamed["relayIdentityReceipt"].as_str().unwrap();
+    let ack =
+        json!({"session_id":CODEX,"hook_event_name":"RelayIdentityReceipt", "receipt":receipt});
+    let (status, _) = code(
+        h.call(OUTSIDE, "POST", "/codex/stop-hook", ack.clone())
+            .await,
+    );
+    assert_eq!(status, 403);
+    h.call(IN_CODEX, "POST", "/codex/stop-hook", ack.clone())
+        .await
+        .unwrap();
+    let (status, _) = code(h.call(IN_CODEX, "POST", "/codex/stop-hook", ack).await);
+    assert_eq!(status, 403, "a startup receipt is consumed only once");
+    // A confirmed startup suppresses redundant tool context.
     let tool = json!({"session_id": CODEX, "hook_event_name": "PostToolUse"});
     assert_eq!(
         h.call(IN_CODEX, "POST", "/codex/stop-hook", tool)
             .await
             .unwrap(),
+        json!({})
+    );
+    h.stop().await;
+}
+
+/// The real helper strips private metadata and acknowledges after output.
+/// The helper binary exists only with `production-binaries` (it is not built
+/// for the `--no-default-features` library CI job).
+#[cfg(feature = "production-binaries")]
+#[tokio::test]
+async fn a_codex_startup_helper_confirms_its_received_identity() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let h = Harness::start().await;
+    h.register(IN_CODEX, json!({"name":"codex-api"})).await;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_agent-relay-node"))
+        .arg("codex-stop-hook")
+        .arg("--socket")
+        .arg(&h.relay_socket)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    h.sessions.call_from(
+        child.id() as i32,
+        session(SessionKind::Codex, CODEX, "/Users/me/Projects/relay"),
+    );
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            json!({"session_id":CODEX,"hook_event_name":"SessionStart"})
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
+    let output = tokio::task::spawn_blocking(move || child.wait_with_output().unwrap())
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let answer: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        answer["hookSpecificOutput"]["hookEventName"],
+        "SessionStart"
+    );
+    assert!(answer["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap()
+        .contains("codex-api"));
+    assert!(answer.get("relayIdentityReceipt").is_none());
+    assert_eq!(
+        h.call(
+            IN_CODEX,
+            "POST",
+            "/codex/stop-hook",
+            json!({"session_id":CODEX,"hook_event_name":"PostToolUse"})
+        )
+        .await
+        .unwrap(),
         json!({})
     );
     h.stop().await;
@@ -3072,6 +3253,84 @@ async fn whoami_names_the_caller_registered_or_not() {
         code(h.call(OUTSIDE, "GET", "/whoami", Value::Null).await),
         (403, "not_a_relay_session".into())
     );
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn typed_registration_keeps_peer_identity_and_self_registration_guards() {
+    use agent_relay_node::relay::session_cli::SessionCommand;
+    let h = Harness::start().await;
+    let command = SessionCommand::Register {
+        name: Some("review-bot".into()),
+        description: Some("Reviews releases".into()),
+        mcp: Some("none".into()),
+    };
+    let request = command.request().unwrap();
+    let body: Value = serde_json::from_slice(&command.typed_body().unwrap().unwrap()).unwrap();
+    assert_eq!(
+        code(
+            h.call(OUTSIDE, request.method, &request.path, body.clone())
+                .await
+        ),
+        (403, "not_a_relay_session".into())
+    );
+    assert_eq!(
+        code(
+            h.call_as(
+                IN_CODEX,
+                h.me + 1,
+                request.method,
+                &request.path,
+                body.clone()
+            )
+            .await
+        ),
+        (403, "not_this_user".into())
+    );
+    *h.sessions.2.lock().unwrap() = Ok(vec![Target::new(SessionKind::Codex, CODEX)]);
+    assert_eq!(
+        code(
+            h.call(IN_CODEX, request.method, &request.path, body.clone())
+                .await
+        ),
+        (403, "not_a_relay_session".into())
+    );
+    *h.sessions.2.lock().unwrap() = Ok(Vec::new());
+    h.core
+        .set_settings(&serde_json::from_value(json!({"allow_self_registration": false})).unwrap())
+        .unwrap();
+    assert_eq!(
+        code(
+            h.call(IN_CODEX, request.method, &request.path, body.clone())
+                .await
+        ),
+        (403, "not_allowed".into())
+    );
+    assert!(h.fake.calls("POST", "/v1/agents").is_empty());
+    h.core
+        .set_settings(&serde_json::from_value(json!({"allow_self_registration": true})).unwrap())
+        .unwrap();
+    let registered = h
+        .call(IN_CODEX, request.method, &request.path, body.clone())
+        .await
+        .unwrap();
+    assert_eq!(registered["session_id"], CODEX);
+    assert_eq!(registered["name"], "review-bot");
+    let repeated = h
+        .call(IN_CODEX, request.method, &request.path, body)
+        .await
+        .unwrap();
+    assert_eq!(repeated["already_registered"], true);
+    assert_eq!(h.fake.calls("POST", "/v1/agents").len(), 1);
+    for key in ["target", "pid", "uid", "native_thread_id", "session_id"] {
+        assert_eq!(
+            code(
+                h.call(IN_CLAUDE, "POST", "/register", json!({key: "other"}))
+                    .await
+            ),
+            (400, "invalid_request".into())
+        );
+    }
     h.stop().await;
 }
 
@@ -4421,6 +4680,97 @@ async fn a_session_subscribes_to_and_leaves_a_channel_on_the_socket() {
 }
 
 #[tokio::test]
+async fn a_session_creates_a_missing_channel_and_creating_it_again_joins_it() {
+    let h = Harness::start().await;
+    h.register(IN_CODEX, json!({"name": "codex-api"})).await;
+    // Subscribing to a channel that does not exist says how to create it.
+    let missing = h
+        .call(
+            IN_CODEX,
+            "POST",
+            "/channels/subscribe",
+            json!({"channel": "launch"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (missing.status, missing.code.as_str()),
+        (404, "channel_not_found")
+    );
+    assert!(missing.message.contains("--create"), "{}", missing.message);
+    let created = h
+        .call(
+            IN_CODEX,
+            "POST",
+            "/channels",
+            json!({"channel": "#launch", "topic": "Release work"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        created,
+        json!({"from": "codex-api", "channel": "launch", "created": true, "subscribed": true})
+    );
+    assert_eq!(h.fake.channel_members("launch"), ["codex-api"]);
+    let creates = h.fake.calls("POST", "/v1/channels");
+    assert_eq!(creates.len(), 1);
+    assert_eq!(creates[0].body["name"], "launch");
+    assert_eq!(creates[0].body["topic"], "Release work");
+    // Asking again, in the query form, joins what is there.
+    let again = h
+        .call(IN_CODEX, "POST", "/channels?channel=launch", Value::Null)
+        .await
+        .unwrap();
+    assert_eq!(again["created"], false);
+    assert_eq!(again["subscribed"], true);
+    assert_eq!(h.fake.channel_members("launch"), ["codex-api"]);
+    // A channel someone else made is joined, not refused.
+    h.fake.seed_channel("swarm", &["alice"]);
+    let joined = h
+        .call(IN_CODEX, "POST", "/channels", json!({"channel": "swarm"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        (joined["created"].clone(), joined["subscribed"].clone()),
+        (json!(false), json!(true))
+    );
+    assert!(h
+        .fake
+        .channel_members("swarm")
+        .contains(&"codex-api".to_string()));
+    // Bad names and topics never reach Relaycast.
+    let before = h.fake.calls("POST", "/v1/channels").len();
+    for (body, code) in [
+        (json!({"channel": "a b"}), "invalid_channel"),
+        (
+            json!({"channel": "x", "topic": "two\nlines"}),
+            "invalid_topic",
+        ),
+        (
+            json!({"channel": "x", "topic": "t".repeat(501)}),
+            "invalid_topic",
+        ),
+    ] {
+        let error = h
+            .call(IN_CODEX, "POST", "/channels", body)
+            .await
+            .unwrap_err();
+        assert_eq!((error.status, error.code.as_str()), (400, code));
+    }
+    // A session that is not on the relay cannot create one.
+    let stranger = h
+        .call(IN_CLAUDE, "POST", "/channels", json!({"channel": "x"}))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (stranger.status, stranger.code.as_str()),
+        (403, "not_a_relay_session")
+    );
+    assert_eq!(h.fake.calls("POST", "/v1/channels").len(), before);
+    h.stop().await;
+}
+
+#[tokio::test]
 async fn the_mcp_a_session_declares_picks_its_reply_instructions() {
     use agent_relay_node::relay::hosted_mcp::McpAccess;
     let h = Harness::start().await;
@@ -4478,6 +4828,40 @@ async fn the_mcp_a_session_declares_picks_its_reply_instructions() {
     h.register(IN_CODEX, json!({"name": "codex-api", "mcp": "none"}))
         .await;
     assert_eq!(h.core.relay_mcp_access(&target), McpAccess::SocketOnly);
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn a_cursor_session_is_handed_the_socket_whatever_it_declares() {
+    use agent_relay_node::relay::hosted_mcp::McpAccess;
+    let h = Harness::start().await;
+    let chat = session(
+        SessionKind::CursorCli,
+        "b72f559d-7023-4a67-944f-57f923f54ba7",
+        "/Users/me/Projects/api",
+    );
+    h.sessions.0.lock().unwrap().push(chat.clone());
+    h.sessions.call_from(4600, chat.clone());
+    // Cloud's hosted MCP acts as no Cursor chat's desktop identity, so the
+    // tools a Cursor session can see would send as nobody.
+    let declared = h
+        .register(
+            4600,
+            json!({"name": "cursor-api", "mcp": "agent-relay-sessions"}),
+        )
+        .await;
+    assert_eq!(declared["mcp"], "agent-relay-sessions");
+    assert_eq!(h.core.relay_mcp_access(&chat.target), McpAccess::SocketOnly);
+    h.fake.seed_agent("alice", "agent", json!({}));
+    *h.injector.hint.lock().unwrap() = Some("[reply: probe send]".into());
+    let (delivery, _) = h.fake.send_dm("alice", "cursor-api", "ping");
+    eventually("delivered", || {
+        h.fake.delivery_state(&delivery).map(|d| d.state).as_deref() == Some("acked")
+    })
+    .await;
+    let text = &h.injector.injected()[0].text;
+    assert!(text.contains("[reply: probe send]"), "{text}");
+    assert!(!text.contains("send_relay_message"), "{text}");
     h.stop().await;
 }
 

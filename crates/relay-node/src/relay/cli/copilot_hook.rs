@@ -27,7 +27,14 @@ pub fn copilot_hook(development: bool, event: &str) -> Result<()> {
         }
     }
     let input = serde_json::to_vec(&value)?;
-    let Some(socket) = session_hook_socket(None, development) else {
+    let Some(socket) = session_hook_socket(
+        None,
+        &if development {
+            crate::relay::outbound::Build::Development
+        } else {
+            crate::relay::outbound::Build::Production
+        },
+    ) else {
         return Ok(());
     };
     let wait = waits(&value);

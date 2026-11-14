@@ -22,12 +22,12 @@
 //! That is: read a message handed to this session, reply (a DM, a channel
 //! thread or a Relay Connect room), fetch an attachment it was sent, and
 //! list who it can message and who it is, and join or leave a channel (the
-//! SessionStart preamble and a channel post's stop line). These are the same self-limiting commands
-//! Codex's sandbox rules allow (`session_cli`): each fixes its own method
+//! SessionStart preamble and a channel post's stop line). These are self-limiting
+//! session commands (`session_cli`): each fixes its own method
 //! and route and checks every other argument, so nothing after the `*`
-//! reaches another route. Every other session route (`/register`,
-//! `PATCH /settings`, `/integrations/subscribe`, …) is reached only through
-//! `socket-request`, which no rule allows, so it still asks.
+//! reaches another route. Claude's rules do not allow `register` (which has a
+//! separate Codex sandbox rule), `settings`, or generic `socket-request`;
+//! registration and other settings changes still ask here.
 //!
 //! Claude Code matches the text before a rule's `*` as written, after it
 //! splits compound commands and strips a few wrappers (verified against
@@ -333,6 +333,7 @@ mod tests {
             format!("{probe} agents {on}"),
             format!("{probe} whoami {on}"),
             format!("{probe} read {on} 0123456789ab"),
+            format!("{probe} subscribe-channel {on} swarm"),
         ] {
             assert!(allowed(&command), "{command}");
         }
@@ -357,6 +358,7 @@ mod tests {
             );
         }
         for command in [
+            format!("{probe} register {on} --name review-bot"),
             format!("{probe} settings {on} auto_join_general=true"),
             format!("{probe} subscribe {on} acme/api#1"),
             format!("{probe} agents {on} --body x"),
@@ -382,10 +384,9 @@ mod tests {
             probe: PathBuf::from("/Apps/Bob's Relay/probe"),
             socket: PathBuf::from("/s/relay.sock"),
         };
-        assert_eq!(
-            rules.rules().len(),
-            crate::relay::session_cli::ALLOWED_SUBCOMMANDS.len()
-        );
+        // Claude's seven permissions intentionally exclude Codex-only
+        // registration. Do not couple this check to Codex's rule count.
+        assert_eq!(rules.rules().len(), 7);
     }
 
     #[test]

@@ -81,7 +81,7 @@ pub use session_routes::SESSION_ROUTES;
 pub(crate) use socket_path::is_development;
 #[cfg(test)]
 use socket_path::socket_for;
-pub use socket_path::{default_socket, pointer_path};
+pub use socket_path::{default_socket, pointer_directory, pointer_path, Build};
 
 pub const SOCKET_NAME: &str = "relay.sock";
 /// The largest request body.
@@ -145,17 +145,86 @@ pub struct RelaySend {
     pub agent_led_defaults_at_start: bool,
 }
 
-/// The socket path a session is told to use, once the socket serves.
+/// The socket path a session is told to use, once the socket serves, and
+/// this build's pointer to it.
 #[derive(Clone, Default)]
-pub struct ServingPath(Arc<Mutex<Option<PathBuf>>>);
+pub struct ServingPath(Arc<Mutex<Serving>>);
+
+#[derive(Default)]
+struct Serving {
+    path: Option<PathBuf>,
+    /// This build's own pointer file and the identity of the copy this
+    /// core last wrote (`None` when it could not be written).
+    pointer: Option<(PathBuf, Option<Identity>)>,
+}
+
+/// What [`ServingPath::reclaim_pointer`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reclaimed {
+    /// The socket is not serving, so there is no pointer to keep.
+    NotServing,
+    /// The pointer already names this core's socket.
+    Current,
+    /// The pointer was missing or named another socket and was rewritten.
+    Rewritten,
+    /// The pointer needed rewriting and could not be written.
+    Failed,
+}
 
 impl ServingPath {
     pub fn get(&self) -> Option<PathBuf> {
-        self.0.lock().unwrap().clone()
+        self.0.lock().unwrap().path.clone()
     }
 
     fn set(&self, path: Option<PathBuf>) {
-        *self.0.lock().unwrap() = path;
+        let mut serving = self.0.lock().unwrap();
+        serving.path = path;
+        if serving.path.is_none() {
+            serving.pointer = None;
+        }
+    }
+
+    fn start(&self, path: &Path, pointer: &Path, identity: Option<Identity>) {
+        let mut serving = self.0.lock().unwrap();
+        serving.path = Some(path.to_path_buf());
+        serving.pointer = Some((pointer.to_path_buf(), identity));
+    }
+
+    fn pointer_identity(&self) -> Option<Identity> {
+        self.0
+            .lock()
+            .unwrap()
+            .pointer
+            .as_ref()
+            .and_then(|(_, identity)| *identity)
+    }
+
+    /// Rewrites this build's own pointer when it no longer names the socket
+    /// this core serves: another process (an older copy of this build, or a
+    /// build that wrote the wrong pointer before builds had their own)
+    /// replaced or removed it. Only this build's pointer file is ever
+    /// written; another build's pointer is never read or touched.
+    pub fn reclaim_pointer(&self) -> Reclaimed {
+        let mut serving = self.0.lock().unwrap();
+        let Serving {
+            path: Some(socket),
+            pointer: Some((pointer, identity)),
+        } = &mut *serving
+        else {
+            return Reclaimed::NotServing;
+        };
+        let names_ours = fs::read_to_string(&*pointer)
+            .is_ok_and(|text| text.trim() == socket.display().to_string());
+        if names_ours {
+            return Reclaimed::Current;
+        }
+        match write_pointer(pointer, socket) {
+            Ok(written) => {
+                *identity = Some(written);
+                Reclaimed::Rewritten
+            }
+            Err(_) => Reclaimed::Failed,
+        }
     }
 }
 
@@ -400,6 +469,7 @@ impl Outbound {
             ("GET", "/messages") => self.read_message(pid, uid, &request.query).await,
             ("POST", "/send") => self.send_route(pid, uid, request).await,
             ("POST", "/register") => self.register_route(pid, uid, request).await,
+            ("POST", "/channels") => self.create_channel_route(pid, uid, request).await,
             ("POST" | "DELETE", "/channels/subscribe") => {
                 self.channel_subscription(pid, uid, request).await
             }
@@ -434,8 +504,22 @@ impl Outbound {
                 let route = format!("{} {}", request.method, request.path);
                 self.setup_route(pid, uid, &route, fields).await
             }
-            _ => self.mobile_handoff_route(pid, uid, request).await,
+            _ => self.boxed_mobile_handoff_route(pid, uid, request).await,
         }
+    }
+
+    /// [`Self::mobile_handoff_route`], built outside [`Self::handle`]'s poll
+    /// frame and awaited boxed. Its permission long-poll is the deepest call
+    /// under `handle`; built inline, its future's temporaries sat in that
+    /// frame and took a test thread's 2 MiB stack past its end in debug
+    /// builds.
+    fn boxed_mobile_handoff_route<'a>(
+        &'a self,
+        pid: i32,
+        uid: u32,
+        request: &'a Request,
+    ) -> futures_util::future::BoxFuture<'a, Result<Value, OutboundError>> {
+        Box::pin(self.mobile_handoff_route(pid, uid, request))
     }
 
     /// The supported live session the caller runs inside, registered or
@@ -521,14 +605,26 @@ impl Outbound {
         self.admit(&session.target.key())?;
         let lock = self.core.target_locks.get(&session.target.key());
         let _changing = lock.lock().await;
-        if let Some(current) = self.core.connect_for(&session.target) {
+        if let Some(mut current) = self.core.connect_for(&session.target) {
+            // A host may have extended the room since this session joined:
+            // confirm a passed expiry with Cloud before discarding it.
+            let mut gone = false;
             if current.expired() {
                 let delivery = self
                     .core
                     .agent_locks
                     .get(&format!("connect:{}", current.agent_id));
                 let _delivery = delivery.lock().await;
-                self.core.close_connect(&current, "connect_expired");
+                match self.core.confirm_connect_expiry(&current).await {
+                    crate::relay::connect::ExpiryCheck::Open(open) => current = *open,
+                    crate::relay::connect::ExpiryCheck::Gone(code) => {
+                        self.core.close_connect(&current, &code);
+                        gone = true;
+                    }
+                }
+            }
+            if gone {
+                // Closed: join the requested Connect below.
             } else if current.connect_id == requested_id {
                 return Ok(current.join_public());
             } else {
@@ -654,15 +750,29 @@ impl Outbound {
                 "This session has not joined a Connect.",
             )
         })?;
-        if joined.expired() {
-            self.close_connect_serialized(&joined, "connect_expired")
-                .await;
-            return Err(OutboundError::new(
-                410,
-                "connect_expired",
-                "This Connect has expired.",
-            ));
+        if !joined.expired() {
+            return Ok((session, joined));
         }
+        // Confirm and close under the credential's lock, as the poll loop
+        // does, so an overlapping check cannot close a room the other just
+        // found extended.
+        let lock = self
+            .core
+            .agent_locks
+            .get(&format!("connect:{}", joined.agent_id));
+        let _checking = lock.lock().await;
+        let joined = match self.core.confirm_connect_expiry(&joined).await {
+            crate::relay::connect::ExpiryCheck::Open(joined) => *joined,
+            crate::relay::connect::ExpiryCheck::Gone(code) => {
+                self.core.close_connect(&joined, &code);
+                let (status, message) = match code.as_str() {
+                    "connect_not_found" => (404, "This Connect no longer exists."),
+                    "connect_ended" => (410, "This Connect has ended."),
+                    _ => (410, "This Connect has expired."),
+                };
+                return Err(OutboundError::new(status, &code, message));
+            }
+        };
         Ok((session, joined))
     }
 
@@ -1747,6 +1857,23 @@ fn private_directory(path: &Path) -> Result<(), String> {
         .create(path)
         .map_err(|e| e.to_string())?;
     let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if metadata.file_type().is_symlink() {
+        // A private runtime directory may be reached through a user-owned
+        // link (for example when volatile state lives on tmpfs). Never
+        // chmod through it, or accept a target another user can access.
+        let target = fs::metadata(path).map_err(|e| e.to_string())?;
+        if metadata.uid() == current_uid()
+            && target.is_dir()
+            && target.uid() == current_uid()
+            && target.mode() & 0o077 == 0
+        {
+            return Ok(());
+        }
+        return Err(format!(
+            "{} must link to a private directory this user owns.",
+            path.display()
+        ));
+    }
     if !metadata.is_dir() || metadata.uid() != current_uid() {
         return Err(format!(
             "{} must be a directory this user owns.",
@@ -1808,7 +1935,8 @@ pub struct RelaySocket {
     path: PathBuf,
     pointer: PathBuf,
     socket_identity: Identity,
-    pointer_identity: Option<Identity>,
+    /// Kept in `serving`, which a reclaim updates when it rewrites the
+    /// pointer.
     serving: ServingPath,
     stopping: tokio::sync::watch::Sender<bool>,
     task: Option<tokio::task::JoinHandle<()>>,
@@ -1887,14 +2015,13 @@ impl RelaySocket {
         // even when ~/.agentworkforce cannot be written.
         let pointer_identity = write_pointer(pointer, path).ok();
         drop(lock);
-        serving.set(Some(path.to_path_buf()));
+        serving.start(path, pointer, pointer_identity);
         let (stopping, stop) = tokio::sync::watch::channel(false);
         let task = Some(tokio::spawn(accept_loop(listener, outbound, stop)));
         Ok(RelaySocket {
             path: path.to_path_buf(),
             pointer: pointer.to_path_buf(),
             socket_identity,
-            pointer_identity,
             serving,
             stopping,
             task,
@@ -1920,9 +2047,10 @@ impl Drop for RelaySocket {
         if let Some(task) = &self.task {
             task.abort();
         }
+        let pointer_identity = self.serving.pointer_identity();
         self.serving.set(None);
         remove_socket(&self.path, self.socket_identity);
-        if let Some(identity) = self.pointer_identity {
+        if let Some(identity) = pointer_identity {
             remove_pointer(&self.pointer, &self.path, identity);
         }
     }
@@ -2113,6 +2241,230 @@ mod tests {
             ),
             PathBuf::from("/run/user/1000/agent-relay-dev/relay.sock")
         );
+    }
+
+    // The coexisting-build incident: a profile build (`build-app.sh
+    // --coexist`, data directory `com.agentrelay.desktop.devaws`) wrote
+    // Agent Relay's `relay-socket`. Each build names its own pointer, socket
+    // directory and probe from its data directory.
+    #[test]
+    fn each_build_names_its_own_pointer_and_socket_directory() {
+        let home = Path::new("/home/a");
+        let support = Path::new("/Users/a/Library/Application Support");
+        let cases = [
+            (
+                "com.agentrelay.desktop",
+                Build::Production,
+                "relay-socket",
+                "agent-relay",
+            ),
+            (
+                "com.agentrelay.desktop.dev",
+                Build::Development,
+                "relay-socket.dev",
+                "agent-relay-dev",
+            ),
+            (
+                "com.agentrelay.desktop.devaws",
+                Build::Profile("devaws".into()),
+                "relay-socket.devaws",
+                "agent-relay-devaws",
+            ),
+            (
+                "com.agentrelay.desktop.acme-2",
+                Build::Profile("acme-2".into()),
+                "relay-socket.acme-2",
+                "agent-relay-acme-2",
+            ),
+        ];
+        let runtime = |key: &str| (key == "XDG_RUNTIME_DIR").then(|| "/run/user/1000".to_string());
+        for (name, build, pointer, directory) in cases {
+            let app = support.join(name);
+            assert_eq!(Build::of(&app), build, "{name}");
+            assert_eq!(
+                pointer_path(home, &app),
+                PathBuf::from(format!("/home/a/.agentworkforce/desktop/{pointer}"))
+            );
+            assert_eq!(Build::of_pointer(pointer), Some(build.clone()));
+            assert_eq!(
+                socket_for(true, &runtime, &app, 1000),
+                PathBuf::from(format!("/run/user/1000/{directory}/relay.sock"))
+            );
+        }
+        // A name the id grammar cannot carry (upper case, `_`, dots) is
+        // hashed; the hash is stable, distinct and accepted by `--profile`.
+        for name in [
+            "com.agentrelay.desktop.DevAWS",
+            "com.example.relay",
+            "app-data_2",
+        ] {
+            let Build::Profile(id) = Build::of(&support.join(name)) else {
+                panic!("{name} is a profile build");
+            };
+            assert!(id.starts_with('_') && id.len() == 13, "{id}");
+            assert_eq!(Build::profile_id(name), id);
+            assert_eq!(
+                Build::named(false, Some(&id)),
+                Ok(Build::Profile(id.clone()))
+            );
+        }
+        assert_ne!(
+            Build::profile_id("com.agentrelay.desktop.DevAWS"),
+            Build::profile_id("com.agentrelay.desktop.DEVAWS")
+        );
+        // Only a name with the `com.agentrelay.desktop.` prefix keeps its
+        // readable id: a bare `foo` (a valid id on its own) is hashed, so it
+        // never shares `com.agentrelay.desktop.foo`'s pointer or socket.
+        let prefixed = Build::of(&support.join("com.agentrelay.desktop.foo"));
+        let bare = Build::of(&support.join("foo"));
+        assert_eq!(prefixed, Build::Profile("foo".into()));
+        let Build::Profile(bare_id) = &bare else {
+            panic!("foo is a profile build");
+        };
+        assert!(bare_id.starts_with('_') && bare_id.len() == 13, "{bare_id}");
+        assert_ne!(prefixed, bare);
+        assert_ne!(prefixed.pointer_name(), bare.pointer_name());
+        assert_ne!(
+            socket_for(
+                true,
+                &runtime,
+                &support.join("com.agentrelay.desktop.foo"),
+                1000
+            ),
+            socket_for(true, &runtime, &support.join("foo"), 1000)
+        );
+        // A hyphen-leading id is a valid profile id too.
+        assert_eq!(
+            Build::of(&support.join("com.agentrelay.desktop.-acme")),
+            Build::Profile("-acme".into())
+        );
+        // Only Agent Relay's own data directory is Agent Relay.
+        assert_eq!(
+            Build::of(Path::new("/x/com.agentrelay.desktop.")),
+            Build::Profile(Build::profile_id("com.agentrelay.desktop."))
+        );
+        assert_eq!(Build::of_pointer(".relay-socket.abc123"), None);
+        assert_eq!(Build::of_pointer("relay-socket.Bad"), None);
+        assert_eq!(
+            Build::named(true, Some("devaws")),
+            Err("Pass --dev or --profile, not both.")
+        );
+        assert!(Build::named(false, Some("../x")).is_err());
+        assert!(Build::named(false, Some("dev")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_socket_pointer_works_through_private_runtime_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let home = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        // tempdir() takes the process umask (0755 under 022); the private
+        // runtime target this test models is 0700.
+        fs::set_permissions(runtime.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        symlink(state.path(), home.path().join(".agentworkforce")).unwrap();
+        symlink(runtime.path(), state.path().join("desktop")).unwrap();
+        let pointer = pointer_directory(home.path()).join("relay-socket");
+        let socket = runtime.path().join("relay.sock");
+        let mode = fs::metadata(runtime.path()).unwrap().mode();
+
+        let identity = write_pointer(&pointer, &socket).unwrap();
+        assert_eq!(
+            crate::relay::cli::pointed_socket(home.path(), &Build::Production).unwrap(),
+            socket,
+            "unqualified session hooks must find the serving socket"
+        );
+        assert_eq!(fs::metadata(&pointer).unwrap().mode() & 0o777, 0o600);
+        assert_eq!(fs::metadata(runtime.path()).unwrap().mode(), mode);
+        assert!(fs::symlink_metadata(pointer.parent().unwrap())
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        let serving = ServingPath::default();
+        serving.start(&socket, &pointer, Some(identity));
+        fs::remove_file(&pointer).unwrap();
+        assert_eq!(serving.reclaim_pointer(), Reclaimed::Rewritten);
+        assert_eq!(serving.reclaim_pointer(), Reclaimed::Current);
+        remove_pointer(&pointer, &socket, serving.pointer_identity().unwrap());
+        assert!(!pointer.exists());
+        assert!(runtime.path().is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn socket_pointer_refuses_accessible_symlink_targets_without_chmod() {
+        use std::os::unix::fs::symlink;
+
+        let home = tempfile::tempdir().unwrap();
+        for mode in [0o755, 0o770, 0o777] {
+            let target = tempfile::tempdir().unwrap();
+            fs::set_permissions(target.path(), fs::Permissions::from_mode(mode)).unwrap();
+            let link = home.path().join(format!("runtime-{mode:o}"));
+            symlink(target.path(), &link).unwrap();
+            let pointer = link.join("relay-socket");
+            assert!(write_pointer(&pointer, Path::new("/private/relay.sock")).is_err());
+            assert!(!pointer.exists());
+            assert_eq!(fs::metadata(target.path()).unwrap().mode() & 0o777, mode);
+        }
+        let file = home.path().join("ordinary-file");
+        fs::write(&file, b"keep").unwrap();
+        let file_link = home.path().join("file-link");
+        symlink(&file, &file_link).unwrap();
+        assert!(private_directory(&file_link).is_err());
+        assert_eq!(fs::read(&file).unwrap(), b"keep");
+        let broken = home.path().join("broken-link");
+        symlink(home.path().join("absent"), &broken).unwrap();
+        assert!(private_directory(&broken).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_build_reclaims_only_its_own_pointer() {
+        let home = tempfile::tempdir().unwrap();
+        let directory = pointer_directory(home.path());
+        let ours = directory.join("relay-socket.devaws");
+        let production = directory.join("relay-socket");
+        let socket = home.path().join("devaws/run/relay.sock");
+        let serving = ServingPath::default();
+        assert_eq!(serving.reclaim_pointer(), Reclaimed::NotServing);
+
+        let identity = write_pointer(&ours, &socket).unwrap();
+        serving.start(&socket, &ours, Some(identity));
+        // Agent Relay's pointer, naming its own socket, is never read or
+        // written by the profile build.
+        fs::write(&production, "/run/user/1000/agent-relay/relay.sock\n").unwrap();
+        assert_eq!(serving.reclaim_pointer(), Reclaimed::Current);
+
+        // Hijacked: another process wrote a different socket into it.
+        fs::write(&ours, "/tmp/elsewhere/relay.sock\n").unwrap();
+        assert_eq!(serving.reclaim_pointer(), Reclaimed::Rewritten);
+        assert_eq!(
+            fs::read_to_string(&ours).unwrap().trim(),
+            socket.display().to_string()
+        );
+        // Removed: written back.
+        fs::remove_file(&ours).unwrap();
+        assert_eq!(serving.reclaim_pointer(), Reclaimed::Rewritten);
+        assert_eq!(serving.reclaim_pointer(), Reclaimed::Current);
+        assert_eq!(
+            fs::read_to_string(&production).unwrap(),
+            "/run/user/1000/agent-relay/relay.sock\n"
+        );
+        // The rewritten copy is the one this core removes when it stops.
+        let rewritten = serving.pointer_identity().unwrap();
+        assert_eq!(
+            rewritten,
+            Identity::of(&fs::symlink_metadata(&ours).unwrap())
+        );
+        remove_pointer(&ours, &socket, rewritten);
+        assert!(!ours.exists());
+        assert!(production.exists());
+
+        serving.set(None);
+        assert_eq!(serving.reclaim_pointer(), Reclaimed::NotServing);
     }
 
     // OutboundTests.testHintPercentEncodesRecipientAndShellQuotesArguments,

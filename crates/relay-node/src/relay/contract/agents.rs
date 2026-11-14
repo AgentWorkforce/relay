@@ -52,6 +52,10 @@ pub struct LocalSession {
     /// Whether the session can take a message now; a registered session
     /// discovery no longer finds is listed with `false`.
     pub live: bool,
+    /// Registration/transport presence is not proof that the model can
+    /// receive a message. Absent on older cores and when no wait is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_wait: Option<String>,
     /// Whether discovery found the session's process on this computer:
     /// `false` for a registered session that has ended. A session that runs
     /// but is not `live` cannot take a message yet (a Grok TUI without its

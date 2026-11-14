@@ -11,6 +11,7 @@ fn request() -> SpawnRequest {
         harness: codex::ID,
         task: "private task must not be stored".into(),
         directory: Some("/private/task/directory".into()),
+        fork_from: None,
     }
 }
 

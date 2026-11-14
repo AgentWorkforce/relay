@@ -3,7 +3,6 @@ import path from 'node:path';
 
 import type { CoreDependencies, CoreFileSystem } from '../commands/core.js';
 import { track } from '../telemetry/index.js';
-import { readBrokerConnection } from './broker-lifecycle.js';
 import { describeError } from './describe-error.js';
 import {
   type InstallMethod,
@@ -11,7 +10,6 @@ import {
   detectInstallMethod,
   isInstallableVersion,
   manualUpdateCommand,
-  standaloneBrokerVersion,
   updateNpmInstall,
   updateStandaloneInstall,
 } from './self-update.js';
@@ -169,9 +167,8 @@ function removeZedConfig(
  * `agent-relay update [--check]`: install the newest `latest` release with the
  * method the running CLI was installed with (see self-update.ts), verify that
  * the binary that ran now reports the new version, and exit non-zero on any
- * failure. A standalone install whose broker is at a different version than
- * its CLI is repaired by reinstalling the CLI's version. Prerelease builds are
- * not moved along their channel: `update` tracks npm's `latest` dist-tag.
+ * failure. Prerelease builds are not moved along their channel: `update`
+ * tracks npm's `latest` dist-tag.
  * @param options - `check` only reports, without installing
  * @param deps - Core dependencies
  */
@@ -195,7 +192,6 @@ export async function runUpdateCommand(options: { check?: boolean }, deps: CoreD
           `${info.latestVersion ? ` (currently ${info.latestVersion})` : ''}.`
       );
     }
-    await repairStandaloneBroker(options, deps, currentVersion);
     return;
   }
 
@@ -208,34 +204,6 @@ export async function runUpdateCommand(options: { check?: boolean }, deps: CoreD
   }
 
   await installVersion(deps, detectInstallMethod(deps), currentVersion, toVersion);
-}
-
-/**
- * A standalone CLI that is already current but whose broker reports another
- * version (a broker download that failed during an earlier update) reinstalls
- * its own version so the pair matches again.
- */
-async function repairStandaloneBroker(
-  options: { check?: boolean },
-  deps: CoreDependencies,
-  currentVersion: string
-): Promise<void> {
-  const method = detectInstallMethod(deps);
-  if (method.kind !== 'standalone' || !isInstallableVersion(currentVersion)) {
-    return;
-  }
-  const broker = await standaloneBrokerVersion(deps, method);
-  if (!broker || broker.version === currentVersion) {
-    return;
-  }
-  deps.log(
-    `The broker at ${broker.path} reports ${broker.version ?? 'no version'}, but the CLI is ${currentVersion}.`
-  );
-  if (options.check) {
-    deps.log('Run `agent-relay update` to reinstall a matching broker.');
-    return;
-  }
-  await installVersion(deps, method, currentVersion, currentVersion);
 }
 
 async function installVersion(
@@ -330,16 +298,6 @@ export async function runUninstallCommand(
 ): Promise<void> {
   const paths = deps.getProjectPaths();
   const connectionPath = path.join(paths.dataDir, 'connection.json');
-
-  // Kill the broker if running
-  const conn = readBrokerConnection(paths.dataDir);
-  if (conn && conn.pid > 0) {
-    try {
-      deps.killProcess(conn.pid, 'SIGTERM');
-    } catch {
-      // Ignore dead processes.
-    }
-  }
 
   const isDryRun = options.dryRun === true;
 

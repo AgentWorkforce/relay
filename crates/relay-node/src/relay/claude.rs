@@ -958,6 +958,7 @@ impl CommandRunner for SystemRunner {
                 .env_clear()
                 .envs(environment(&cli, std::env::vars().collect()));
         }
+        crate::relay::workspace::remove_workspace_key_env(&mut command);
         let spawned = command
             .args(arguments)
             .current_dir(std::env::temp_dir())

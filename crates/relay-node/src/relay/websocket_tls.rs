@@ -1,4 +1,4 @@
-//! The TLS client configuration every WebSocket the core opens shares.
+//! The platform TLS client configuration shared by HTTP and WebSocket clients.
 //!
 //! Trust comes from the platform's root certificates. Reading them walks the
 //! keychain and evaluates each certificate's trust settings on macOS, so they
@@ -22,6 +22,13 @@ pub async fn connect(
     request: impl IntoClientRequest + Unpin,
     config: Option<WebSocketConfig>,
 ) -> Result<(WebSocketStream<MaybeTlsStream<TcpStream>>, Response), Error> {
+    if !platform_root_environment_is_safe() {
+        report_file_root_override();
+        return Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "file-selected TLS roots are unsupported; use the operating system trust store",
+        )));
+    }
     tokio_tungstenite::connect_async_tls_with_config(request, config, false, Some(connector()))
         .await
 }
@@ -36,25 +43,73 @@ const PARTIAL_REFRESH_AFTER: Duration = Duration::from_secs(60);
 
 /// The connector for a `wss://` (or plain `ws://`) connect.
 pub fn connector() -> Connector {
+    Connector::Rustls(client_config())
+}
+
+/// Strict platform trust shared by HTTP and WebSocket clients. Certificate
+/// chains and hostnames retain rustls's normal verification.
+pub fn client_config() -> Arc<rustls::ClientConfig> {
     static SHARED: Shared = Shared::new();
-    Connector::Rustls(SHARED.config(native_roots))
+    SHARED.config(native_roots)
+}
+
+/// The shared Cloud HTTP/WebSocket clients never use file-selected roots.
+pub fn platform_root_environment_is_safe() -> bool {
+    platform_root_environment_is_safe_with(|name| std::env::var_os(name))
+}
+
+fn platform_root_environment_is_safe_with(
+    get: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> bool {
+    ["SSL_CERT_FILE", "SSL_CERT_DIR"]
+        .iter()
+        .all(|name| get(name).is_none_or(|value| value.is_empty()))
+}
+
+fn report_file_root_override() {
+    static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        crate::relay::diagnostics::write(format_args!(
+            "relay: file-selected TLS roots are unsupported; unset SSL_CERT_FILE and SSL_CERT_DIR and install the CA in the operating system trust store"
+        ));
+    }
 }
 
 /// The platform's roots, and whether they were all read: a load error or a
 /// certificate that would not parse is logged, once per read.
 fn native_roots() -> Roots {
-    let loaded = rustls_native_certs::load_native_certs();
+    // The cache is shared with WebSockets. Refuse here too, so a WebSocket
+    // cannot seed it from an override that HTTP no longer sees after removal.
+    if !platform_root_environment_is_safe() {
+        report_file_root_override();
+        return Roots {
+            complete: false,
+            store: rustls::RootCertStore::empty(),
+        };
+    }
+    roots_from_native(rustls_native_certs::load_native_certs(), |message| {
+        crate::relay::diagnostics::write(format_args!("{message}"));
+    })
+}
+
+fn roots_from_native(
+    loaded: rustls_native_certs::CertificateResult,
+    mut report: impl FnMut(String),
+) -> Roots {
     for error in &loaded.errors {
-        crate::relay::diagnostics::write(format_args!(
+        report(format!(
             "relay: could not read a platform root certificate store: {error}"
         ));
     }
     let mut store = rustls::RootCertStore::empty();
     let (_, unparsable) = store.add_parsable_certificates(loaded.certs);
     if unparsable > 0 {
-        crate::relay::diagnostics::write(format_args!(
+        report(format!(
             "relay: skipped {unparsable} platform root certificates that would not parse"
         ));
+    }
+    if store.is_empty() {
+        report("relay: the operating system TLS trust store contains no usable root certificates; install system CA certificates or the site's CA in that store; no bundled or file-root fallback is used".into());
     }
     Roots {
         complete: loaded.errors.is_empty() && unparsable == 0,
@@ -132,6 +187,90 @@ mod tests {
         Roots {
             store: rustls::RootCertStore::empty(),
             complete: true,
+        }
+    }
+
+    #[test]
+    fn an_empty_native_store_is_diagnosed_without_fallback_roots() {
+        let mut messages = Vec::new();
+        let roots = roots_from_native(Default::default(), |message| messages.push(message));
+        assert!(roots.store.is_empty());
+        assert!(messages
+            .iter()
+            .any(|message| message.contains("no usable root certificates")));
+        assert!(messages
+            .iter()
+            .any(|message| message.contains("no bundled or file-root fallback")));
+
+        let mut loaded = rustls_native_certs::CertificateResult::default();
+        loaded.certs.push(rustls::pki_types::CertificateDer::from(
+            include_bytes!("../../tests/fixtures/platform-tls/ca.der").to_vec(),
+        ));
+        messages.clear();
+        let roots = roots_from_native(loaded, |message| messages.push(message));
+        assert_eq!(roots.store.len(), 1);
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn file_root_overrides_are_refused_without_reading_them() {
+        assert!(platform_root_environment_is_safe_with(|_| None));
+        assert!(platform_root_environment_is_safe_with(|_| Some("".into())));
+        for name in ["SSL_CERT_FILE", "SSL_CERT_DIR"] {
+            assert!(!platform_root_environment_is_safe_with(|key| {
+                (key == name).then(|| "unused-test-root-path".into())
+            }));
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_override_child_refuses_before_tcp_and_reports_once() {
+        if std::env::var("RELAY_WS_OVERRIDE_CHILD").as_deref() != Ok("1") {
+            return;
+        }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        for _ in 0..2 {
+            let result = tokio::time::timeout(
+                Duration::from_secs(1),
+                connect(format!("wss://{}/", listener.local_addr().unwrap()), None),
+            )
+            .await
+            .expect("override must refuse without a network wait");
+            assert!(
+                matches!(result, Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::PermissionDenied)
+            );
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+        }
+        // A direct shared-config caller must neither load file roots nor log again.
+        let _ = connector();
+    }
+
+    #[test]
+    fn websocket_overrides_refuse_before_tcp_without_reconnect_log_spam() {
+        for name in ["SSL_CERT_FILE", "SSL_CERT_DIR"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "relay::websocket_tls::tests::websocket_override_child_refuses_before_tcp_and_reports_once", "--nocapture"])
+                .env_remove("SSL_CERT_FILE")
+                .env_remove("SSL_CERT_DIR")
+                .env("RELAY_WS_OVERRIDE_CHILD", "1")
+                .env(name, "synthetic-unsupported-file-root")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr)
+                    .matches("relay: file-selected TLS roots are unsupported")
+                    .count(),
+                1
+            );
         }
     }
 

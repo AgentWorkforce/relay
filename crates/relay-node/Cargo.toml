@@ -58,7 +58,9 @@ md-5 = "0.10"
 same-file = "1"
 shell-words = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
-relaycast = "10.0.0"
+relaycast = { git = "https://github.com/AgentWorkforce/relaycast.git", rev = "a7433eb24ab42d1106bf6a52edb956051a370cc5" }
+# Same HTTP/TLS stack as the SDK; its client is supplied our shared OS trust.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 sha2 = "0.10"

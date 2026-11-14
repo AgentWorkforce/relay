@@ -183,6 +183,7 @@ fn launch(directory: &Path, full_access: bool) -> Launch {
         full_access,
         message_id: "m1".into(),
         session_id: SPAWN_SESSION.into(),
+        fork: None,
     }
 }
 
@@ -539,6 +540,7 @@ fn a_restart_finds_the_session_by_its_record_and_ends_a_half_started_leader() {
         requester: None,
         target: target.map(|id| Target::new(SessionKind::Grok, id)),
         process,
+        control_url: None,
     };
     assert_eq!(grok.find(&intent(None, None)), None);
     // Interrupted before its session existed.
@@ -918,6 +920,7 @@ fn only_a_spawned_grok_takes_messages_through_its_leader() {
         requester: None,
         target: None,
         process: None,
+        control_url: None,
     };
     let target = Target::new(SessionKind::Grok, SESSION);
     let spawned = intent.registration("agent-1", target.clone(), None, ("node-1", "mac-desktop"));

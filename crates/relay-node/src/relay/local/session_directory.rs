@@ -328,7 +328,17 @@ impl LocalSessions {
             &*self.scans,
             self.config.uid,
             &self.codex_loaded,
-        );
+        )
+        .map(|mut rows| {
+            let known: HashSet<_> = rows.iter().map(|s| s.target.clone()).collect();
+            rows.extend(
+                self.codex_runtime_sessions()
+                    .into_iter()
+                    .map(|(s, _)| s)
+                    .filter(|s| !known.contains(&s.target)),
+            );
+            rows
+        });
         self.codex_threads
             .lock()
             .unwrap_or_else(|error| error.into_inner())

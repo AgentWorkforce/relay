@@ -23,6 +23,9 @@ pub enum RelayCommands {
     MuseSpawnMcp {
         #[arg(long)]
         dev: bool,
+        /// Send through the profile build with this id instead of Agent Relay.
+        #[arg(long, conflicts_with = "dev")]
+        profile: Option<String>,
     },
     /// Run the core daemon, serving the bridge on a private Unix socket.
     Serve {
@@ -71,12 +74,19 @@ pub enum RelayCommands {
         launch_id: String,
         #[arg(long)]
         full_access: bool,
+        /// The profile build that spawned this host; its MCP server sends
+        /// through that build's pointer.
+        #[arg(long)]
+        profile: Option<String>,
     },
     /// Make a session-scoped request to the local relay socket.
     #[command(hide = true)]
     DevinSpawnMcp {
         #[arg(long)]
         dev: bool,
+        /// Send through the profile build with this id instead of Agent Relay.
+        #[arg(long, conflicts_with = "dev")]
+        profile: Option<String>,
     },
     /// Print the relayed message whose pointer names this `REF`.
     Read {
@@ -90,6 +100,10 @@ pub enum RelayCommands {
         /// what Codex's sandbox rules allow.
         #[arg(long)]
         socket: Option<PathBuf>,
+        /// Ask the profile build with this id (the part of its bundle id
+        /// after com.agentrelay.desktop.) instead of Agent Relay.
+        #[arg(long, conflicts_with_all = ["socket", "dev"])]
+        profile: Option<String>,
     },
     /// Send a message as the calling session: `POST /send` to one agent
     /// (`--to`), address (`--address`) or channel (`--channel`), optionally
@@ -137,6 +151,23 @@ pub enum RelayCommands {
         #[arg(long)]
         socket: PathBuf,
     },
+    /// Put only the calling native session on the relay (`POST /register`).
+    /// The core identifies it from this process; its self-registration
+    /// setting and ownership checks still apply.
+    Register {
+        /// The session socket, as the hint names it.
+        #[arg(long)]
+        socket: PathBuf,
+        /// Optional relay name; otherwise use the session's suggested name.
+        #[arg(long)]
+        name: Option<String>,
+        /// Optional description (at most 4096 bytes).
+        #[arg(long)]
+        description: Option<String>,
+        /// Hosted MCP availability, without changing the session identity.
+        #[arg(long, value_parser = ["agent-relay-sessions", "none"])]
+        mcp: Option<String>,
+    },
     /// Fetch an attachment the calling session was sent but did not get in
     /// time (`POST /attachments/fetch`).
     FetchAttachment {
@@ -160,13 +191,35 @@ pub enum RelayCommands {
         body: Option<String>,
     },
     /// Join one channel as the calling session, so its posts are delivered
-    /// (`POST /channels/subscribe`), or leave it with `--remove`.
+    /// (`POST /channels/subscribe`), or leave it with `--remove`. With
+    /// `--create` a channel that does not exist yet is created and joined
+    /// (`POST /channels`); an existing one is joined.
     SubscribeChannel {
         #[arg(value_name = "CHANNEL")]
         channel: String,
         /// Leave the channel instead.
         #[arg(long)]
         remove: bool,
+        /// Create the channel when it does not exist, then join it.
+        #[arg(long, conflicts_with = "remove")]
+        create: bool,
+        /// The new channel's topic (with --create). It may start with a
+        /// hyphen (`- weekly goals`).
+        #[arg(long, requires = "create", allow_hyphen_values = true)]
+        topic: Option<String>,
+        /// The session socket, as the hint names it.
+        #[arg(long)]
+        socket: PathBuf,
+    },
+    /// Create the calling session's own inbound webhook (`POST /webhooks`),
+    /// or delete it with `--revoke` (`DELETE /webhooks`). Anything posted to
+    /// the printed URL with the printed secret is delivered to this session
+    /// and wakes it when idle. The secret is shown only when the webhook is
+    /// created; revoke and create again for a new one.
+    Webhook {
+        /// Delete the session's webhook instead.
+        #[arg(long)]
+        revoke: bool,
         /// The session socket, as the hint names it.
         #[arg(long)]
         socket: PathBuf,
@@ -196,6 +249,12 @@ pub enum RelayCommands {
         /// The session socket; default is the one the running app points to.
         #[arg(long)]
         socket: Option<PathBuf>,
+        /// Ask the profile build with this id (the part of its bundle id
+        /// after com.agentrelay.desktop.) instead of Agent Relay. A profile
+        /// build's hook names both, `--profile=<id> --socket <socket>`: the
+        /// id is the hook's owner (`hook_owner`) and the socket is asked.
+        #[arg(long, conflicts_with = "dev")]
+        profile: Option<String>,
     },
     /// Agent Relay's Devin lifecycle hook, which Devin runs at each session
     /// boundary: drains the session's relay inbox and prints the injection
@@ -220,8 +279,9 @@ pub enum RelayCommands {
         /// Read Agent Relay Dev's inbox instead of Agent Relay's.
         #[arg(long)]
         dev: bool,
-        /// At the end of a Cursor editor conversation's completed turn,
-        /// wait for its next message instead of answering at once.
+        /// At the end of a Cursor editor conversation's or CLI session's
+        /// completed turn, wait for its next message instead of answering at
+        /// once.
         #[arg(long)]
         wait: bool,
     },
@@ -235,6 +295,12 @@ pub enum RelayCommands {
         /// The session socket; default is the one the running app points to.
         #[arg(long)]
         socket: Option<PathBuf>,
+        /// Ask the profile build with this id (the part of its bundle id
+        /// after com.agentrelay.desktop.) instead of Agent Relay. A profile
+        /// build's hook names both, `--profile=<id> --socket <socket>`: the
+        /// id is the hook's owner (`hook_owner`) and the socket is asked.
+        #[arg(long, conflicts_with = "dev")]
+        profile: Option<String>,
     },
     /// Print Agent Relay's settings, as the app's Settings shows them, or
     /// change them with KEY=VALUE pairs (`auto_join_general=true`). Every
@@ -249,6 +315,10 @@ pub enum RelayCommands {
         /// The session socket; default is the one the running app points to.
         #[arg(long)]
         socket: Option<PathBuf>,
+        /// Ask the profile build with this id (the part of its bundle id
+        /// after com.agentrelay.desktop.) instead of Agent Relay.
+        #[arg(long, conflicts_with_all = ["socket", "dev"])]
+        profile: Option<String>,
     },
     /// Subscribe the calling Codex or Claude session to one GitHub pull
     /// request: its reviews, comments and checks arrive as messages.
@@ -264,12 +334,16 @@ pub enum RelayCommands {
         /// The session socket; default is the one the running app points to.
         #[arg(long)]
         socket: Option<PathBuf>,
+        /// Ask the profile build with this id (the part of its bundle id
+        /// after com.agentrelay.desktop.) instead of Agent Relay.
+        #[arg(long, conflicts_with_all = ["socket", "dev"])]
+        profile: Option<String>,
     },
 }
 
 /// The self-limiting session command `command` is, with the socket it
 /// names and its `--body`: what `run` sends for `send`, `agents`,
-/// `whoami`, `read --socket`, `fetch-attachment`, `connect-send` and
+/// `whoami`, `register`, `read --socket`, `fetch-attachment`, `connect-send` and
 /// `subscribe-channel`. `None` for every
 /// other command.
 pub fn session_command(
@@ -303,15 +377,43 @@ pub fn session_command(
         }
         RelayCommands::Agents { socket } => (socket.as_path(), SessionCommand::Agents, None),
         RelayCommands::Whoami { socket } => (socket.as_path(), SessionCommand::Whoami, None),
+        RelayCommands::Webhook { socket, revoke } => (
+            socket.as_path(),
+            SessionCommand::Webhook { revoke: *revoke },
+            None,
+        ),
+        RelayCommands::Register {
+            socket,
+            name,
+            description,
+            mcp,
+        } => (
+            socket.as_path(),
+            SessionCommand::Register {
+                name: name.clone(),
+                description: description.clone(),
+                mcp: mcp.clone(),
+            },
+            None,
+        ),
         RelayCommands::SubscribeChannel {
             socket,
             channel,
             remove,
+            create,
+            topic,
         } => (
             socket.as_path(),
-            SessionCommand::SubscribeChannel {
-                channel: channel.clone(),
-                remove: *remove,
+            if *create {
+                SessionCommand::CreateChannel {
+                    channel: channel.clone(),
+                    topic: topic.clone(),
+                }
+            } else {
+                SessionCommand::SubscribeChannel {
+                    channel: channel.clone(),
+                    remove: *remove,
+                }
             },
             None,
         ),
@@ -353,6 +455,8 @@ pub fn run(command: RelayCommands) -> Result<()> {
         RelayCommands::Send { .. }
         | RelayCommands::Agents { .. }
         | RelayCommands::Whoami { .. }
+        | RelayCommands::Webhook { .. }
+        | RelayCommands::Register { .. }
         | RelayCommands::SubscribeChannel { .. }
         | RelayCommands::FetchAttachment { .. }
         | RelayCommands::ConnectSend { .. } => Err(user_error(
@@ -395,15 +499,26 @@ pub fn run(command: RelayCommands) -> Result<()> {
             runtime,
             launch_id,
             full_access,
-        } => relay::harness::devin::host::run(
-            &executable,
-            &directory,
-            &runtime,
-            &launch_id,
-            full_access,
-        ),
-        RelayCommands::DevinSpawnMcp { dev } => relay::harness::devin::mcp::run(dev),
-        RelayCommands::MuseSpawnMcp { dev } => relay::harness::relay_mcp::run(dev),
+            profile,
+        } => {
+            // Which build spawned this host: its `--profile`, else Dev's
+            // runtime folder, else Agent Relay.
+            let development = profile.is_none() && runtime.ends_with("spawned-dev");
+            relay::harness::devin::host::run(
+                &executable,
+                &directory,
+                &runtime,
+                &launch_id,
+                full_access,
+                &build(development, profile)?,
+            )
+        }
+        RelayCommands::DevinSpawnMcp { dev, profile } => {
+            relay::harness::devin::mcp::run(&build(dev, profile)?)
+        }
+        RelayCommands::MuseSpawnMcp { dev, profile } => {
+            relay::harness::relay_mcp::run(&build(dev, profile)?)
+        }
         RelayCommands::SocketRequest {
             socket,
             method,
@@ -414,31 +529,77 @@ pub fn run(command: RelayCommands) -> Result<()> {
             message_ref,
             dev,
             socket,
-        } => relay::cli::read_message(socket.as_deref(), dev, &message_ref),
-        RelayCommands::CodexStopHook { dev, socket } => {
-            relay::cli::codex_stop_hook(socket.as_deref(), dev)
-        }
+            profile,
+        } => relay::cli::read_message(socket.as_deref(), &build(dev, profile)?, &message_ref),
+        RelayCommands::CodexStopHook {
+            dev,
+            socket,
+            profile,
+        } => relay::cli::codex_stop_hook(socket.as_deref(), &build(dev, profile)?),
         RelayCommands::DevinHook { dev } => relay::cli::devin_hook(dev),
         RelayCommands::CopilotHook { dev, event } => relay::cli::copilot_hook(dev, &event),
         RelayCommands::CursorHook { dev, wait } => relay::cli::cursor_hook(dev, wait),
-        RelayCommands::ClaudeSessionHook { dev, socket } => {
-            relay::cli::claude_session_hook(socket.as_deref(), dev)
-        }
+        RelayCommands::ClaudeSessionHook {
+            dev,
+            socket,
+            profile,
+        } => relay::cli::claude_session_hook(socket.as_deref(), &build(dev, profile)?),
         RelayCommands::Settings {
             changes,
             dev,
             socket,
-        } => relay::settings_cli::settings(socket.as_deref(), dev, &changes),
+            profile,
+        } => relay::settings_cli::settings(socket.as_deref(), &build(dev, profile)?, &changes),
         RelayCommands::Subscribe {
             pull,
             remove,
             dev,
             socket,
-        } => relay::cli::subscribe(socket.as_deref(), dev, &pull, remove),
+            profile,
+        } => relay::cli::subscribe(socket.as_deref(), &build(dev, profile)?, &pull, remove),
         RelayCommands::MuseSpawnHost {
             executable,
             log,
             arguments,
         } => relay::harness::muse::host::run(&executable, &log, &arguments),
+    }
+}
+
+/// The build a command's `--dev` and `--profile` name.
+fn build(development: bool, profile: Option<String>) -> Result<relay::outbound::Build> {
+    relay::outbound::Build::named(development, profile.as_deref()).map_err(user_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RelayCommands;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        command: RelayCommands,
+    }
+
+    #[test]
+    fn a_topic_starting_with_a_hyphen_is_a_value_not_a_flag() {
+        let cli = Cli::try_parse_from([
+            "relay",
+            "subscribe-channel",
+            "planning",
+            "--create",
+            "--topic",
+            "- weekly goals",
+            "--socket",
+            "/tmp/session.sock",
+        ])
+        .expect("a topic may start with a hyphen");
+        match cli.command {
+            RelayCommands::SubscribeChannel { topic, create, .. } => {
+                assert!(create);
+                assert_eq!(topic.as_deref(), Some("- weekly goals"));
+            }
+            _ => panic!("subscribe-channel"),
+        }
     }
 }

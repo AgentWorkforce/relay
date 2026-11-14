@@ -26,12 +26,12 @@ pub(super) const RULES_NAMES: usize = 9;
 /// A prefix rule constrains only a command's leading words: whatever follows
 /// them is allowed too. So the rules name only the probe's self-limiting
 /// session commands (`session_cli::ALLOWED_SUBCOMMANDS`: `send`,
-/// `agents`, `whoami`, `read`, `fetch-attachment`, `connect-send` and
+/// `agents`, `whoami`, `register`, `read`, `fetch-attachment`, `connect-send` and
 /// `subscribe-channel`), each only with
 /// `--socket` naming this core's own session socket. Each of those fixes its
 /// own method and route and checks every other argument, so nothing after
 /// the prefix reaches another route; `socket-request`, which takes any
-/// method and path (`PATCH /settings`, `/register`), has no rule and still
+/// method and path (`PATCH /settings`), has no rule and still
 /// asks. Nothing else is widened: no network, no other program, no other
 /// socket.
 ///
@@ -79,6 +79,7 @@ impl SandboxRules {
                 "send" => "Sends a message as this session through Agent Relay",
                 "agents" => "Lists the agents this session can message",
                 "whoami" => "Shows this session's own name on Agent Relay",
+                "register" => "Registers only this native session through Agent Relay's self-registration checks",
                 "read" => "Reads a message Agent Relay relayed to this session",
                 "fetch-attachment" => "Fetches an attachment sent to this session",
                 "subscribe-channel" => "Joins or leaves one channel as this session",

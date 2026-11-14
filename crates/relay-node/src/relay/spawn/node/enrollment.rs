@@ -144,6 +144,23 @@ pub(crate) fn enrolled_name(app_data_dir: &Path, base_url: &str, base: &str) -> 
         .unwrap_or_else(|| base.to_string())
 }
 
+/// The token of the node saved in `app_data_dir`, when it was enrolled at
+/// `base_url` with `workspace_key`: what a node-scoped workspace asks
+/// Relaycast with for the calls Control does not broker but a node token
+/// may make. `None` when there is no such node.
+pub(crate) fn node_token(
+    app_data_dir: &Path,
+    base_url: &str,
+    workspace_key: &Secret,
+) -> Option<Secret> {
+    let enrollment: Enrollment =
+        serde_json::from_slice(&std::fs::read(app_data_dir.join(NODE_FILE)).ok()?).ok()?;
+    (enrollment.base_url == base_url
+        && enrollment.workspace == fingerprint(workspace_key)
+        && !enrollment.token.expose().is_empty())
+    .then_some(enrollment.token)
+}
+
 /// The saved node, when it was enrolled with this workspace key.
 pub(super) fn load(config: &NodeConfig) -> Option<Enrollment> {
     read(config).filter(|enrollment| enrollment.workspace == fingerprint(&config.workspace_key))

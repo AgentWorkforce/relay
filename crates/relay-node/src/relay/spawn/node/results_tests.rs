@@ -93,6 +93,7 @@ fn config(folder: &Path, listener: &TcpListener) -> NodeConfig {
     let config = NodeConfig {
         base_url: format!("http://{}", listener.local_addr().unwrap()),
         workspace_key: Secret::new("rk_live_one".to_string()),
+        control_url: None,
         node_name: "mac-desktop".into(),
         version: "1.0.0".into(),
         app_data_dir: folder.to_path_buf(),

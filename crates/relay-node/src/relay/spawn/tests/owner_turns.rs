@@ -104,6 +104,57 @@ fn only_a_direct_message_from_the_exact_id_is_from_that_agent() {
     assert!(!direct_from(&mention, Some("agent_grokbot")));
 }
 
+/// Relaycast's delivery queue names a DM's own channel, and a reply in a
+/// thread of the DM arrives as a `thread-reply` in that channel: both are
+/// still the sender's direct message, so the requester and the owner (from
+/// the desktop or a phone) keep native input however the message arrived.
+#[test]
+fn a_queued_dm_and_a_reply_in_its_thread_are_direct() {
+    let queued = Delivery {
+        channel_id: Some("dmch_pair".into()),
+        ..from_requester("hi")
+    };
+    assert!(direct_from(&queued, Some("agent_grokbot")));
+    assert!(!direct_from(&queued, Some("agent_someone_else")));
+    let threaded = Delivery {
+        reason: Some("thread-reply".into()),
+        thread_id: Some("m_parent".into()),
+        ..queued.clone()
+    };
+    assert!(direct_from(&threaded, Some("agent_grokbot")));
+    assert!(!direct_from(&threaded, Some("agent_someone_else")));
+    assert!(!direct_from(&threaded, None));
+}
+
+/// A thread reply outside a 1:1 DM, a group DM and a DM-channel mention
+/// stay peer messages.
+#[test]
+fn replies_and_dms_outside_a_one_to_one_dm_are_not_direct() {
+    let channel_reply = Delivery {
+        reason: Some("thread-reply".into()),
+        channel_id: Some("ch_general".into()),
+        thread_id: Some("m_parent".into()),
+        ..from_requester("hi")
+    };
+    assert!(!direct_from(&channel_reply, Some("agent_grokbot")));
+    let unscoped_reply = Delivery {
+        channel_id: None,
+        ..channel_reply.clone()
+    };
+    assert!(!direct_from(&unscoped_reply, Some("agent_grokbot")));
+    let group_dm = Delivery {
+        channel_id: Some("grp_123".into()),
+        ..from_requester("hi")
+    };
+    assert!(!direct_from(&group_dm, Some("agent_grokbot")));
+    let mention = Delivery {
+        reason: Some("mention".into()),
+        channel_id: Some("dmch_pair".into()),
+        ..from_requester("hi")
+    };
+    assert!(!direct_from(&mention, Some("agent_grokbot")));
+}
+
 #[test]
 fn the_approval_dm_says_only_the_owner_may_answer() {
     let notice = drive::open_request(

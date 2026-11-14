@@ -52,7 +52,16 @@ pub enum Command {
     Leave,
     /// Close the hosted room for everyone. Only its host can do this.
     End,
+    /// Keep the hosted room open longer. Only its host can do this.
+    Extend {
+        /// Minutes to add to the room's current expiry (at most 7 days).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=MAX_EXTEND_MINUTES as i64))]
+        minutes: u32,
+    },
 }
+
+/// Cloud extends a room by at most 7 days per call.
+const MAX_EXTEND_MINUTES: u32 = 10_080;
 
 #[derive(Serialize, Deserialize)]
 struct HostState {
@@ -87,6 +96,54 @@ impl std::fmt::Display for SocketError {
     }
 }
 impl std::error::Error for SocketError {}
+
+/// Cloud's answer that the hosted room is gone for good: it expired, its host
+/// ended it, or Cloud no longer knows it. The saved host state can only be
+/// discarded; nothing can revive the room.
+#[derive(Debug)]
+struct RoomGone(String);
+impl std::fmt::Display for RoomGone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let what = match self.0.as_str() {
+            "connect_expired" => "has expired",
+            "connect_ended" => "was ended",
+            _ => "no longer exists",
+        };
+        write!(
+            f,
+            "This Relay Connect room {what}. Create a new one with connect create."
+        )
+    }
+}
+impl std::error::Error for RoomGone {}
+fn room_gone(cause: &anyhow::Error) -> bool {
+    cause.downcast_ref::<RoomGone>().is_some()
+}
+
+/// The terminal Connect error code in a tool result, read from its
+/// structured content or, when a server omits that, from its JSON text.
+fn terminal_code(body: &Value) -> Option<&'static str> {
+    let structured = body["result"]["structuredContent"]["error"]["code"].as_str();
+    let text = body["result"]["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item["text"].as_str())
+        .filter_map(|text| serde_json::from_str::<Value>(text).ok())
+        .find_map(|value| value["error"]["code"].as_str().map(str::to_owned));
+    let code = structured.map(str::to_owned).or(text)?;
+    ["connect_expired", "connect_ended", "connect_not_found"]
+        .into_iter()
+        .find(|terminal| *terminal == code)
+}
+/// Whether the saved room's own expiry has passed on this computer's clock.
+fn expired_locally(state: &HostState, now_ms: i64) -> bool {
+    state
+        .expires_at
+        .as_deref()
+        .and_then(parse_iso_ms)
+        .is_some_and(|expiry| expiry <= now_ms)
+}
 fn valid_name(name: &str) -> bool {
     crate::relay::agents::normalize_name(name).as_deref() == Some(name)
 }
@@ -172,7 +229,10 @@ fn save(path: &Path, state: &HostState) -> Result<()> {
 }
 
 fn pointed(home: &Path) -> Result<Option<PathBuf>> {
-    let pointer = home.join(".agentworkforce/desktop/relay-socket");
+    // Connect hosts belong to Agent Relay itself: a profile or Dev build's
+    // pointer is never read here.
+    let build = crate::relay::outbound::Build::Production;
+    let pointer = crate::relay::outbound::pointer_directory(home).join(build.pointer_name());
     if !pointer.try_exists()? {
         return Ok(None);
     }
@@ -181,7 +241,7 @@ fn pointed(home: &Path) -> Result<Option<PathBuf>> {
         m.is_file() && owned_and_private(&m, 0o022),
         SafeError("Unsafe Agent Relay socket pointer.".into())
     );
-    trusted_socket(&cli::pointed_socket(home, false)?)
+    trusted_socket(&cli::pointed_socket(home, &build)?)
 }
 fn socket_call(socket: &Path, method: &str, path: &str, body: &[u8]) -> Result<Value> {
     socket_call_with_headers(socket, method, path, body, &[])
@@ -284,15 +344,18 @@ fn mcp(state: &HostState, tool: &str, arguments: Value) -> Result<Value> {
             answer.status
         ))
     );
-    if tool == "end_connect"
-        && matches!(
-            answer.body["result"]["structuredContent"]["error"]["code"].as_str(),
-            Some("connect_ended" | "connect_expired")
-        )
-    {
-        return Ok(json!({"ended":true}));
+    tool_result(tool, answer.body)
+}
+/// A tool's answer. A room that is already gone counts as ended for
+/// `end_connect`; for any other tool it is a [`RoomGone`] error.
+fn tool_result(tool: &str, body: Value) -> Result<Value> {
+    if let Some(code) = terminal_code(&body) {
+        if tool == "end_connect" {
+            return Ok(json!({"ended":true}));
+        }
+        return Err(RoomGone(code.to_owned()).into());
     }
-    mcp_result(answer.body)
+    mcp_result(body)
 }
 fn login(path: &Path, state: &mut HostState) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
@@ -439,6 +502,10 @@ fn complete_end(
     state: &mut HostState,
     services: &mut impl HostServices,
 ) -> Result<Value> {
+    // Cloud decides when a room ends, not this computer's clock: a host clock
+    // running ahead must not discard the authority to end a live room. Cloud
+    // answers a room that is already gone with a terminal code, which counts
+    // as ended.
     services.authenticate(path, state)?;
     let ended = services.call(state, "end_connect", json!({}))?;
     ensure!(
@@ -448,11 +515,95 @@ fn complete_end(
     fs::remove_file(path)?;
     Ok(ended)
 }
+/// Extend the hosted room by `minutes` and record the expiry Cloud reports.
+/// A room that is already gone cannot be extended, so its state is discarded
+/// and the host is told to create a new one.
+fn complete_extend(
+    path: &Path,
+    state: &mut HostState,
+    minutes: u32,
+    services: &mut impl HostServices,
+) -> Result<Value> {
+    ensure!(
+        state.link.is_some(),
+        SafeError("This coding session's room was never created. Run connect create.".into())
+    );
+    ensure!(
+        (1..=MAX_EXTEND_MINUTES).contains(&minutes),
+        SafeError(format!(
+            "A Relay Connect room can be extended by at most {MAX_EXTEND_MINUTES} minutes (7 days)."
+        ))
+    );
+    // As with end, Cloud decides whether the room is still open.
+    services.authenticate(path, state)?;
+    let extended = match services.call(
+        state,
+        "extend_connect",
+        json!({"extend_by_minutes":minutes}),
+    ) {
+        Err(cause) if room_gone(&cause) => {
+            fs::remove_file(path)?;
+            return Err(cause);
+        }
+        result => result?,
+    };
+    // A success without a readable expiry cannot be recorded, so it is not
+    // reported as an extension.
+    let expiry = extended["expires_at"]
+        .as_str()
+        .filter(|expiry| parse_iso_ms(expiry).is_some())
+        .ok_or_else(|| {
+            error("Cloud did not report the room's new expiry. Run connect status to check it.")
+        })?;
+    state.expires_at = Some(expiry.to_owned());
+    save(path, state)?;
+    Ok(json!({"link":state.link,"expires_at":state.expires_at}))
+}
+/// Drop a saved room Cloud reports gone, so `connect create` can start a new
+/// one. Only a created room asked to change (another task, duration or name)
+/// is checked: repeating the original command resumes it as before, and a
+/// room past its own expiry is dropped by [`host_state::for_create`].
+/// Cloud's clock decides, not this computer's: a room can close before the
+/// expiry saved here.
+fn discard_if_gone(
+    path: &Path,
+    saved: Option<HostState>,
+    task: &str,
+    minutes: u32,
+    name: &Option<String>,
+    services: &mut impl HostServices,
+) -> Result<Option<HostState>> {
+    let Some(mut state) = saved else {
+        return Ok(None);
+    };
+    let unchanged = state.task == task && state.minutes == minutes && &state.name == name;
+    if state.link.is_none() || unchanged || expired_locally(&state, crate::relay::state::now_ms()) {
+        return Ok(Some(state));
+    }
+    services.authenticate(path, &mut state)?;
+    match services.call(&state, "connect_status", json!({})) {
+        Err(cause) if room_gone(&cause) => {
+            fs::remove_file(path)?;
+            Ok(None)
+        }
+        Err(cause) => Err(cause),
+        Ok(status) => {
+            // Each host status issues a new claim and invalidates the saved one.
+            if let Some(claim) = status["host_claim"].as_str() {
+                state.host_claim = Some(crate::relay::workspace::Secret::new(claim));
+                save(path, &state)?;
+            }
+            Ok(Some(state))
+        }
+    }
+}
 
 pub fn run(command: Command) -> Result<()> {
     run_inner(command).map_err(|cause| {
         if let Some(socket) = cause.downcast_ref::<SocketError>() {
             error(socket.to_string())
+        } else if let Some(gone) = cause.downcast_ref::<RoomGone>() {
+            error(gone.to_string())
         } else {
             cause
         }
@@ -476,7 +627,7 @@ fn run_inner(command: Command) -> Result<()> {
     let home = paths::home()?;
     let start = matches!(
         &command,
-        Command::Create { .. } | Command::Join { .. } | Command::End
+        Command::Create { .. } | Command::Join { .. } | Command::End | Command::Extend { .. }
     );
     let socket = ensure_probe(&home, start)?;
     let result = match command {
@@ -487,7 +638,7 @@ fn run_inner(command: Command) -> Result<()> {
             to,
             idempotency_key,
         } => send::run(&socket, to, idempotency_key)?,
-        command @ (Command::Create { .. } | Command::End) => {
+        command @ (Command::Create { .. } | Command::End | Command::Extend { .. }) => {
             let who = socket_call(&socket, "GET", "/whoami", &[])?;
             let target = who["session_id"]
                 .as_str()
@@ -516,6 +667,14 @@ fn run_inner(command: Command) -> Result<()> {
                         !task.trim().is_empty() && task.len() <= 16_000,
                         SafeError("The task must contain 1–16000 bytes.".into())
                     );
+                    let saved = discard_if_gone(
+                        &path,
+                        saved,
+                        &task,
+                        expires_in_minutes,
+                        &name,
+                        &mut LiveHost(&socket),
+                    )?;
                     let mut state = host_state::for_create(saved, task, expires_in_minutes, name)?;
                     if let Ok(current) = socket_call(&socket, "GET", "/connect/status", &[]) {
                         ensure!(
@@ -548,6 +707,11 @@ fn run_inner(command: Command) -> Result<()> {
                         }
                     }
                     ended
+                }
+                Command::Extend { minutes } => {
+                    let mut state = saved
+                        .ok_or_else(|| error("This coding session has no hosted Connect room."))?;
+                    complete_extend(&path, &mut state, minutes, &mut LiveHost(&socket))?
                 }
                 _ => unreachable!(),
             }
@@ -621,8 +785,11 @@ mod tests {
         calls: Vec<(String, String, String)>,
         claims: Vec<String>,
         fail_call: bool,
+        extend_without_expiry: bool,
         fail_join: bool,
         invalid_claim: bool,
+        /// Answer every tool as Cloud does once the room is gone.
+        gone: Option<&'static str>,
     }
     impl HostServices for FakeHost {
         fn authenticate(&mut self, _: &Path, _: &mut HostState) -> Result<()> {
@@ -635,12 +802,20 @@ mod tests {
                 self.fail_call = false;
                 return Err(error("interrupted"));
             }
+            if let Some(code) = self.gone {
+                return tool_result(
+                    tool,
+                    json!({"result":{"isError":true,"structuredContent":{"error":{"code":code}}}}),
+                );
+            }
             match tool {
                 "create_connect" => Ok(
                     json!({"link":format!("https://agentrelay.com/connect/{}", "a".repeat(43)),"expires_at":"2099-01-01T00:00:00Z","host_claim":"private-claim"}),
                 ),
                 "connect_status" => Ok(json!({"host_claim":"replacement-claim"})),
                 "end_connect" => Ok(json!({"ended":true})),
+                "extend_connect" if self.extend_without_expiry => Ok(json!({"extended":true})),
+                "extend_connect" => Ok(json!({"expires_at":"2099-01-02T00:00:00.000Z"})),
                 _ => panic!("unexpected tool"),
             }
         }
@@ -662,8 +837,19 @@ mod tests {
             calls: vec![],
             claims: vec![],
             fail_call: false,
+            extend_without_expiry: false,
             fail_join: false,
             invalid_claim: false,
+            gone: None,
+        }
+    }
+    /// A saved room Cloud created, expiring at `expires_at`.
+    fn created(expires_at: &str) -> HostState {
+        HostState {
+            link: Some(format!("https://agentrelay.com/connect/{}", "a".repeat(43))),
+            expires_at: Some(expires_at.into()),
+            host_claim: Some(crate::relay::workspace::Secret::new("saved-claim")),
+            ..host()
         }
     }
     fn host() -> HostState {
@@ -737,6 +923,191 @@ mod tests {
             true
         );
         assert!(!path.exists());
+    }
+    #[test]
+    fn a_gone_room_reads_as_ended_for_end_and_as_gone_otherwise() {
+        let structured = |code: &str| json!({"result":{"isError":true,"structuredContent":{"error":{"code":code,"status":410}}}});
+        // Some answers carry the error only as JSON text.
+        let text_only = json!({"result":{"isError":true,"content":[{"type":"text",
+            "text":"{\"error\":{\"code\":\"connect_expired\",\"status\":410}}"}]}});
+        for body in [
+            structured("connect_expired"),
+            structured("connect_ended"),
+            structured("connect_not_found"),
+            text_only,
+        ] {
+            assert_eq!(
+                tool_result("end_connect", body.clone()).unwrap()["ended"],
+                true
+            );
+            let gone = tool_result("extend_connect", body).unwrap_err();
+            assert!(room_gone(&gone));
+            assert!(gone.to_string().contains("connect create"));
+        }
+        // Any other failure is retryable and keeps the host state.
+        let other = tool_result("end_connect", structured("connect_forbidden")).unwrap_err();
+        assert!(!room_gone(&other));
+        assert!(other.to_string().contains("host state was retained"));
+    }
+    #[test]
+    fn create_drops_a_room_cloud_closed_before_its_saved_expiry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("host.json");
+        // Cloud closed the room although its saved expiry is still ahead.
+        save(&path, &created("2099-01-01T00:00:00Z")).unwrap();
+        let mut api = fake();
+        api.gone = Some("connect_expired");
+        let kept = discard_if_gone(
+            &path,
+            Some(reload(&path)),
+            "new task",
+            1440,
+            &None,
+            &mut api,
+        )
+        .unwrap();
+        assert!(kept.is_none());
+        assert!(!path.exists());
+        // So a new room can be created with the new request.
+        assert!(host_state::for_create(kept, "new task".into(), 1440, None).is_ok());
+    }
+    #[test]
+    fn create_keeps_a_live_room_and_its_rotated_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("host.json");
+        save(&path, &created("2099-01-01T00:00:00Z")).unwrap();
+        let mut api = fake();
+        let kept = discard_if_gone(
+            &path,
+            Some(reload(&path)),
+            "new task",
+            1440,
+            &None,
+            &mut api,
+        )
+        .unwrap();
+        // The live room still refuses a different request,
+        assert!(host_state::for_create(kept, "new task".into(), 1440, None).is_err());
+        // and the claim the status call issued replaces the invalidated one.
+        assert_eq!(
+            reload(&path).host_claim.unwrap().expose(),
+            "replacement-claim"
+        );
+    }
+    #[test]
+    fn repeating_the_original_create_never_asks_cloud() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("host.json");
+        let state = created("2099-01-01T00:00:00Z");
+        save(&path, &state).unwrap();
+        let mut api = fake();
+        let kept = discard_if_gone(&path, Some(state), "test", 60, &None, &mut api).unwrap();
+        assert!(kept.is_some());
+        assert!(api.calls.is_empty());
+    }
+    #[test]
+    fn ending_a_room_past_its_saved_expiry_still_asks_cloud() {
+        // This computer's clock may run ahead of Cloud's, so a saved expiry in
+        // the past is no proof the room is over: the host keeps its authority
+        // until Cloud confirms the end.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("host.json");
+        let mut state = created("2020-01-01T00:00:00Z");
+        save(&path, &state).unwrap();
+        let mut api = fake();
+        api.fail_call = true;
+        assert!(complete_end(&path, &mut state, &mut api).is_err());
+        assert!(path.exists());
+        let mut api = fake();
+        assert_eq!(
+            complete_end(&path, &mut state, &mut api).unwrap()["ended"],
+            true
+        );
+        assert!(api.calls.iter().any(|call| call.0 == "end_connect"));
+        assert!(!path.exists());
+    }
+    #[test]
+    fn ending_a_room_cloud_already_closed_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("host.json");
+        let mut state = created("2099-01-01T00:00:00Z");
+        save(&path, &state).unwrap();
+        let mut api = fake();
+        api.gone = Some("connect_not_found");
+        assert_eq!(
+            complete_end(&path, &mut state, &mut api).unwrap()["ended"],
+            true
+        );
+        assert!(!path.exists());
+    }
+    #[test]
+    fn extend_records_the_new_expiry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("host.json");
+        let mut state = created("2099-01-01T00:00:00Z");
+        save(&path, &state).unwrap();
+        let mut api = fake();
+        let output = complete_extend(&path, &mut state, 120, &mut api).unwrap();
+        assert_eq!(output["expires_at"], "2099-01-02T00:00:00.000Z");
+        assert_eq!(
+            reload(&path).expires_at.as_deref(),
+            Some("2099-01-02T00:00:00.000Z")
+        );
+        assert!(!output.to_string().contains("saved-claim"));
+        assert!(complete_extend(&path, &mut state, MAX_EXTEND_MINUTES + 1, &mut api).is_err());
+    }
+    #[test]
+    fn extending_a_gone_room_clears_it_and_says_to_create_a_new_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("host.json");
+        // Closed by Cloud before its saved expiry.
+        let mut state = created("2099-01-01T00:00:00Z");
+        save(&path, &state).unwrap();
+        let mut api = fake();
+        api.gone = Some("connect_expired");
+        let failed = complete_extend(&path, &mut state, 60, &mut api).unwrap_err();
+        assert!(failed.to_string().contains("expired"));
+        assert!(!path.exists());
+    }
+    #[test]
+    fn an_extension_without_a_readable_expiry_is_not_reported_as_done() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("host.json");
+        let mut state = created("2099-01-01T00:00:00Z");
+        save(&path, &state).unwrap();
+        let mut api = fake();
+        api.extend_without_expiry = true;
+        assert!(complete_extend(&path, &mut state, 60, &mut api).is_err());
+        assert_eq!(
+            reload(&path).expires_at.as_deref(),
+            Some("2099-01-01T00:00:00Z")
+        );
+    }
+    #[test]
+    fn extending_past_the_saved_expiry_asks_cloud() {
+        // A saved expiry in the past may only mean this clock runs ahead:
+        // Cloud decides, and a room it still holds open is extended.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("host.json");
+        let mut state = created("2020-01-01T00:00:00Z");
+        save(&path, &state).unwrap();
+        let mut api = fake();
+        let output = complete_extend(&path, &mut state, 60, &mut api).unwrap();
+        assert_eq!(output["expires_at"], "2099-01-02T00:00:00.000Z");
+        assert!(api.calls.iter().any(|call| call.0 == "extend_connect"));
+    }
+    #[test]
+    fn extend_minutes_are_bounded_on_the_command_line() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+        let parse = |minutes: &str| Cli::try_parse_from(["probe", "extend", "--minutes", minutes]);
+        assert!(parse("10080").is_ok());
+        assert!(parse("10081").is_err());
+        assert!(parse("0").is_err());
     }
     #[test]
     fn names_are_rejected_before_creating_private_state() {
