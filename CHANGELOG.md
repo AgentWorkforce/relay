@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `agent-relay cloud worker` runs flow assignments from a self-hosted control plane without Relayfile. Such assignments omit the Relayfile token, and the worker used to reject every one as "Resolved worker workflow payload is invalid." It now runs them without `RELAYFILE_URL`/`RELAYFILE_TOKEN`, and drops any stale values inherited from its environment.
 
 ### Changed
 

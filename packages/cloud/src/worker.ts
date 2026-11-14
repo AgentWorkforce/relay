@@ -15,7 +15,12 @@ export type WorkerWorkflowPayload = {
   relaycastApiKey: string;
   relaycastBaseUrl?: string;
   relayfileUrl: string;
-  relayfileToken: string;
+  /**
+   * Per-run Relayfile credential. Absent when the control plane minted none
+   * (self-hosted Control without Relayfile omits it and records
+   * run.relayfile_credential_unavailable); the run proceeds without mounts.
+   */
+  relayfileToken?: string;
   workflow: string;
   fileType: WorkerFileType;
   sourceFileType: WorkerFileType | 'workflow';
@@ -534,7 +539,7 @@ function isWorkerWorkflowPayload(value: unknown): value is WorkerWorkflowPayload
     typeof value.relayWorkspaceId === 'string' &&
     typeof value.relaycastApiKey === 'string' &&
     typeof value.relayfileUrl === 'string' &&
-    typeof value.relayfileToken === 'string' &&
+    (value.relayfileToken === undefined || typeof value.relayfileToken === 'string') &&
     typeof value.workflow === 'string' &&
     (value.fileType === 'yaml' || value.fileType === 'ts') &&
     (value.sourceFileType === 'yaml' ||
