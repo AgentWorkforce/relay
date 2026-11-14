@@ -14,11 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Copilot stop hooks release their idle wait when the person cancels, starts another turn or encounters a session error, without claiming a queued Relay message.
-- `agent-relay-node`: a core that discovers its workspace while startup is reconnecting agents no longer lets a stale reconciliation turn its spawn node back off, so headless restarts keep locally spawned agents connected.
 
 ### Changed
 
 - `@agent-relay/events-shim`: `setup --codex` says the Codex session has to be started (send it a first message, such as "Watch for webhooks"): Codex creates a session only on its first turn, so a new window with no message yet cannot be woken.
+
+## [18.7.1] - 2026-11-14
+
+### Fixed
+
+- `agent-relay-node`: a core that discovers its workspace while startup is reconnecting agents no longer lets a stale reconciliation turn its spawn node back off, so headless restarts keep locally spawned agents connected.
 
 ## [18.7.0] - 2026-11-13
 
