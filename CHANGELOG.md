@@ -303,6 +303,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A session whose upload was deleted from Cloud no longer rejoins the relay by itself.
 - Devin agents started on macOS with `relay fleet spawn devin` or an agent's spawn request now get every message; one that arrived a moment after its connection opened could be lost.
 
+### Fixed
+
+- CLI telemetry uses consistent OS labels and includes a bounded client label on local MCP tool calls.
+
 ## [15.0.2] - 2026-11-01
 
 ### Fixed
