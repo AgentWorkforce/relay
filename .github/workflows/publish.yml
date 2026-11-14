@@ -616,6 +616,7 @@ jobs:
           - sdk
           - integration-prompts
           - session
+          - events-shim
 
     steps:
       - name: Checkout code

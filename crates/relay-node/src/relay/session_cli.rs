@@ -44,6 +44,12 @@ pub enum SessionCommand {
     Agents,
     /// `whoami`: `GET /whoami`.
     Whoami,
+    /// `webhook [--revoke]`: `POST` (or, with `revoke`, `DELETE`)
+    /// `/webhooks`, creating or deleting the calling session's own inbound
+    /// webhook. Not in [`ALLOWED_SUBCOMMANDS`]: its secret lets anyone who
+    /// holds it inject into the session, so a relayed message must not be
+    /// able to have a sandboxed session mint one without a person approving.
+    Webhook { revoke: bool },
     /// `register`: `POST /register`, identifying only the calling process.
     Register {
         name: Option<String>,
@@ -60,6 +66,13 @@ pub enum SessionCommand {
     /// `remove`, `DELETE`) `/channels/subscribe`, joining or leaving one
     /// channel as the calling session.
     SubscribeChannel { channel: String, remove: bool },
+    /// `subscribe-channel <channel> --create [--topic <text>]`: `POST
+    /// /channels`, creating the channel and joining it (an existing one is
+    /// joined) as the calling session.
+    CreateChannel {
+        channel: String,
+        topic: Option<String>,
+    },
 }
 
 /// The one request a [`SessionCommand`] makes.
@@ -92,6 +105,9 @@ pub const ALLOWED_SUBCOMMANDS: [&str; 8] = [
 
 /// The longest name, address, channel or id accepted.
 const MAX_FIELD: usize = 200;
+
+/// The longest channel topic accepted, in characters.
+const MAX_TOPIC: usize = 500;
 
 fn refuse(message: &str) -> anyhow::Error {
     SafeError(message.to_string()).into()
@@ -134,11 +150,14 @@ impl SessionCommand {
             SessionCommand::Send { .. } => "send",
             SessionCommand::Agents => "agents",
             SessionCommand::Whoami => "whoami",
+            SessionCommand::Webhook { .. } => "webhook",
             SessionCommand::Register { .. } => "register",
             SessionCommand::Read { .. } => "read",
             SessionCommand::FetchAttachment { .. } => "fetch-attachment",
             SessionCommand::ConnectSend { .. } => "connect-send",
-            SessionCommand::SubscribeChannel { .. } => "subscribe-channel",
+            SessionCommand::SubscribeChannel { .. } | SessionCommand::CreateChannel { .. } => {
+                "subscribe-channel"
+            }
         }
     }
 
@@ -167,6 +186,10 @@ impl SessionCommand {
             SessionCommand::Whoami => Ok(SessionRequest {
                 method: "GET",
                 path: "/whoami".into(),
+            }),
+            SessionCommand::Webhook { revoke } => Ok(SessionRequest {
+                method: if *revoke { "DELETE" } else { "POST" },
+                path: "/webhooks".into(),
             }),
             SessionCommand::Register { .. } => {
                 self.typed_body()?;
@@ -215,6 +238,27 @@ impl SessionCommand {
                 Ok(SessionRequest {
                     method: if *remove { "DELETE" } else { "POST" },
                     path: format!("/channels/subscribe?channel={}", query_encode(channel)),
+                })
+            }
+            SessionCommand::CreateChannel { channel, topic } => {
+                if !valid_channel(channel) {
+                    return Err(refuse("Name one channel, with no spaces."));
+                }
+                let mut path = format!("/channels?channel={}", query_encode(channel));
+                if let Some(topic) = topic {
+                    let plain = !topic.trim().is_empty()
+                        && topic.chars().count() <= MAX_TOPIC
+                        && !topic.chars().any(char::is_control);
+                    if !plain {
+                        return Err(refuse(
+                            "--topic takes 1–500 characters, without control characters.",
+                        ));
+                    }
+                    path.push_str(&format!("&topic={}", query_encode(topic)));
+                }
+                Ok(SessionRequest {
+                    method: "POST",
+                    path,
                 })
             }
         }
@@ -280,6 +324,13 @@ impl SessionCommand {
                 parts
             }
             SessionCommand::Agents | SessionCommand::Whoami => Vec::new(),
+            SessionCommand::Webhook { revoke } => {
+                if *revoke {
+                    vec!["--revoke"]
+                } else {
+                    Vec::new()
+                }
+            }
             SessionCommand::Register {
                 name,
                 description,
@@ -307,6 +358,13 @@ impl SessionCommand {
                 let mut parts = vec![channel.as_str()];
                 if *remove {
                     parts.push("--remove");
+                }
+                parts
+            }
+            SessionCommand::CreateChannel { channel, topic } => {
+                let mut parts = vec![channel.as_str(), "--create"];
+                if let Some(topic) = topic {
+                    parts.extend(["--topic", topic.as_str()]);
                 }
                 parts
             }
@@ -544,6 +602,8 @@ mod tests {
             ),
             (SessionCommand::Agents, "GET", "/agents"),
             (SessionCommand::Whoami, "GET", "/whoami"),
+            (SessionCommand::Webhook { revoke: false }, "POST", "/webhooks"),
+            (SessionCommand::Webhook { revoke: true }, "DELETE", "/webhooks"),
             (
                 SessionCommand::Register {
                     name: None,
@@ -587,6 +647,22 @@ mod tests {
                 },
                 "DELETE",
                 "/channels/subscribe?channel=swarm",
+            ),
+            (
+                SessionCommand::CreateChannel {
+                    channel: "#swarm".into(),
+                    topic: None,
+                },
+                "POST",
+                "/channels?channel=%23swarm",
+            ),
+            (
+                SessionCommand::CreateChannel {
+                    channel: "swarm".into(),
+                    topic: Some("Release work & more".into()),
+                },
+                "POST",
+                "/channels?channel=swarm&topic=Release%20work%20%26%20more",
             ),
             (
                 SessionCommand::ConnectSend {

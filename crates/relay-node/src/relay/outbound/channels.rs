@@ -1,9 +1,10 @@
-//! Channel routes on the session socket: subscribing to a channel (joining
-//! it as the calling session's agent, so its posts are delivered) and
-//! replying in a channel post's thread; and the hosted-MCP word a session
-//! may add when it registers itself.
+//! Channel routes on the session socket: creating a channel, subscribing to
+//! one (joining it as the calling session's agent, so its posts are
+//! delivered) and replying in a channel post's thread; and the hosted-MCP
+//! word a session may add when it registers itself.
 //!
 //! ```text
+//! POST   /channels {"channel":"swarm","topic":"…"}      create #swarm and join it
 //! POST   /channels/subscribe {"channel":"swarm"}        join #swarm
 //! DELETE /channels/subscribe {"channel":"swarm"}        leave it
 //! POST   /send {"channel":"swarm","thread_id":"<id>","text":"…"}
@@ -24,11 +25,15 @@ use crate::relay::sessions::DiscoveredSession;
 use crate::relay::store::Registration;
 use crate::relay::store::SessionKind;
 use crate::relay::workspace::Secret;
+use futures_util::future::BoxFuture;
 use serde_json::{json, Map, Value};
 use std::path::Path;
 
 /// The longest channel name accepted.
 const MAX_FIELD: usize = 200;
+
+/// The longest channel topic accepted, in characters.
+const MAX_TOPIC: usize = 500;
 
 /// A channel name as a session may write it (`#swarm` or `swarm`): one
 /// token without whitespace or control characters.
@@ -43,6 +48,47 @@ pub(crate) fn channel_field(value: Option<&Value>) -> Option<String> {
 
 fn invalid(code: &str, message: &str) -> OutboundError {
     OutboundError::new(400, code, message)
+}
+
+/// The channel and optional topic of `POST /channels`. A blank topic is no
+/// topic.
+fn create_fields(
+    channel: Option<&Value>,
+    topic: Option<&Value>,
+) -> Result<(String, Option<String>), OutboundError> {
+    let channel = channel_field(channel).ok_or_else(|| {
+        invalid(
+            "invalid_channel",
+            "Name the channel: {\"channel\":\"name\"}.",
+        )
+    })?;
+    let topic = match topic {
+        None | Some(Value::Null) => None,
+        Some(Value::String(text)) => {
+            let text = text.trim();
+            if text.chars().count() > MAX_TOPIC || text.chars().any(char::is_control) {
+                return Err(invalid(
+                    "invalid_topic",
+                    "The topic takes at most 500 characters, without control characters.",
+                ));
+            }
+            (!text.is_empty()).then(|| text.to_string())
+        }
+        Some(_) => {
+            return Err(invalid("invalid_topic", "The topic is text."));
+        }
+    };
+    Ok((channel, topic))
+}
+
+/// The last value of `key` in the request's query.
+fn query_value(request: &Request, key: &str) -> Option<Value> {
+    request
+        .query
+        .iter()
+        .rev()
+        .find(|(name, _)| name == key)
+        .map(|(_, value)| Value::String(value.clone()))
 }
 
 /// The channel, thread and text of a channel thread reply.
@@ -208,8 +254,63 @@ impl Outbound {
         if !subscribe || result.is_ok() {
             self.leave_as_forwarder(&registration, &channel).await;
         }
-        result.map_err(|error| OutboundError::relaycast(&error))?;
+        result.map_err(|error| {
+            let mut refused = OutboundError::relaycast(&error);
+            if subscribe && refused.status == 404 && refused.code == "channel_not_found" {
+                refused.message = format!(
+                    "{} To create it and join, use subscribe-channel {channel} --create \
+                     (POST /channels).",
+                    refused.message.trim_end()
+                );
+            }
+            refused
+        })?;
         Ok(json!({"from": registration.name, "channel": channel, "subscribed": subscribe}))
+    }
+
+    /// `POST /channels` creates the channel as the calling session's agent
+    /// and joins it. A channel that already exists is joined instead
+    /// (`created` false), so asking again is harmless. The channel and its
+    /// optional topic are named in the query or a JSON body.
+    ///
+    /// Boxed here, outside [`Outbound::handle`]: an unoptimised build lays
+    /// every route's future out in `handle`'s own stack frame, and this one
+    /// tipped a long-polling session request over a 2 MiB test stack.
+    pub(super) fn create_channel_route<'a>(
+        &'a self,
+        pid: i32,
+        uid: u32,
+        request: &'a Request,
+    ) -> BoxFuture<'a, Result<Value, OutboundError>> {
+        Box::pin(self.create_and_join_channel(pid, uid, request))
+    }
+
+    async fn create_and_join_channel(
+        &self,
+        pid: i32,
+        uid: u32,
+        request: &Request,
+    ) -> Result<Value, OutboundError> {
+        let (channel, topic) = match query_value(request, "channel") {
+            Some(channel) => create_fields(Some(&channel), query_value(request, "topic").as_ref())?,
+            None => {
+                let fields = payload(request, Purpose::Json)?;
+                create_fields(fields.get("channel"), fields.get("topic"))?
+            }
+        };
+        let (session, registration, token) = self.authorize_sender(pid, uid).await?;
+        self.admit(&session.target.key())?;
+        let created =
+            client::create_channel(&registration.base_url, &token, &channel, topic.as_deref())
+                .await
+                .map_err(|error| OutboundError::relaycast(&error))?;
+        self.leave_as_forwarder(&registration, &channel).await;
+        Ok(json!({
+            "from": registration.name,
+            "channel": channel,
+            "created": created,
+            "subscribed": true,
+        }))
     }
 }
 
@@ -459,6 +560,41 @@ mod tests {
         assert_eq!(channel_field(Some(&json!("#"))), None);
         assert_eq!(channel_field(Some(&json!(7))), None);
         assert_eq!(channel_field(None), None);
+    }
+
+    #[test]
+    fn a_new_channel_takes_a_name_and_an_optional_plain_topic() {
+        let (channel, topic) = create_fields(Some(&json!("#swarm")), None).unwrap();
+        assert_eq!((channel.as_str(), topic), ("swarm", None));
+        let (_, topic) =
+            create_fields(Some(&json!("swarm")), Some(&json!(" Release work "))).unwrap();
+        assert_eq!(topic.as_deref(), Some("Release work"));
+        let (_, topic) = create_fields(Some(&json!("swarm")), Some(&json!("  "))).unwrap();
+        assert_eq!(topic, None);
+        let (_, topic) = create_fields(Some(&json!("swarm")), Some(&Value::Null)).unwrap();
+        assert_eq!(topic, None);
+        let longest = "t".repeat(MAX_TOPIC);
+        assert!(create_fields(Some(&json!("swarm")), Some(&json!(longest))).is_ok());
+        for channel in [json!("two words"), json!("#"), json!(7)] {
+            assert_eq!(
+                create_fields(Some(&channel), None).unwrap_err().code,
+                "invalid_channel"
+            );
+        }
+        assert_eq!(
+            create_fields(None, None).unwrap_err().code,
+            "invalid_channel"
+        );
+        for topic in [
+            json!("t".repeat(MAX_TOPIC + 1)),
+            json!("line\nbreak"),
+            json!("bell\u{7}"),
+            json!(5),
+            json!(["a"]),
+        ] {
+            let error = create_fields(Some(&json!("swarm")), Some(&topic)).unwrap_err();
+            assert_eq!((error.status, error.code.as_str()), (400, "invalid_topic"));
+        }
     }
 
     #[test]

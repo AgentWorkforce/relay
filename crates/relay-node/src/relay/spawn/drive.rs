@@ -52,13 +52,29 @@ fn driven_codex(registration: &Registration) -> bool {
         .is_some_and(|spawn| spawn.harness == codex::ID.name() && spawn.taken_over_at.is_none())
 }
 
-/// A direct message (no channel) whose immutable Relaycast sender id is
-/// `id`. A name is never enough: it can be taken again.
+/// The prefix Relaycast gives a 1:1 DM conversation's channel id
+/// (`dmch_<pair key>`). Group DMs and ordinary channels get other ids.
+const ONE_TO_ONE_DM_CHANNEL: &str = "dmch_";
+
+/// A 1:1 direct message whose immutable Relaycast sender id is `id`. A
+/// name is never enough: it can be taken again.
+///
+/// That is a `dm` delivery that names no channel (a pushed `dm.received`)
+/// or names the pair's own DM channel (the delivery queue names it), or a
+/// reply in a thread of that DM conversation (`thread-reply` in a `dmch_`
+/// channel). A channel post, a mention, a group DM and a thread reply in
+/// any other channel never are.
 pub(crate) fn direct_from(delivery: &Delivery, id: Option<&str>) -> bool {
-    id.is_some()
-        && delivery.sender_id.as_deref() == id
-        && delivery.channel_id.is_none()
-        && delivery.reason.as_deref() == Some("dm")
+    let in_dm_channel = delivery
+        .channel_id
+        .as_deref()
+        .is_some_and(|channel| channel.starts_with(ONE_TO_ONE_DM_CHANNEL));
+    let direct = match delivery.reason.as_deref() {
+        Some("dm") => delivery.channel_id.is_none() || in_dm_channel,
+        Some("thread-reply") => in_dm_channel,
+        _ => false,
+    };
+    id.is_some() && delivery.sender_id.as_deref() == id && direct
 }
 
 pub(crate) enum ReplyDecision {
@@ -278,7 +294,7 @@ impl Core {
         {
             return Some(false);
         }
-        let http = sdk_gaps::http(&registration.base_url, &workspace.key).ok()?;
+        let http = sdk_gaps::workspace_http(&workspace).ok()?;
         let agent = sdk_gaps::get_agent(&http, &requester.name).await.ok()?;
         Some(agent.is_some_and(|agent| agent["id"].as_str() == Some(requester.agent_id.as_str())))
     }
@@ -353,7 +369,7 @@ impl Core {
             return None;
         }
         let owner = self.person_identity(false).await.ok()?;
-        let http = sdk_gaps::http(&registration.base_url, &workspace.key).ok()?;
+        let http = sdk_gaps::workspace_http(&workspace).ok()?;
         let holds = sdk_gaps::get_agent(&http, &owner.name)
             .await
             .ok()
@@ -371,6 +387,32 @@ impl Core {
         }
         let (_, owner_id) = self.verified_owner(registration).await?;
         direct_from(delivery, Some(&owner_id)).then_some(owner_id)
+    }
+
+    /// Whether `delivery` is the verified owner's direct message (from the
+    /// desktop or a phone) to an agent spawned here, not taken over, whose
+    /// harness takes native input. Codex and Claude take it as a plain user
+    /// turn (`owner_native_turn`); every other such harness takes it as
+    /// native input that keeps the reply context, so the agent can still
+    /// answer the owner.
+    pub(crate) async fn owner_to_spawned(
+        &self,
+        registration: &Registration,
+        delivery: &Delivery,
+    ) -> bool {
+        let spawned = registration
+            .spawn
+            .as_ref()
+            .is_some_and(|spawn| spawn.taken_over_at.is_none());
+        if !spawned
+            || !direct_from(delivery, delivery.sender_id.as_deref())
+            || !self.plugins.spawner.native_input(&registration.target)
+        {
+            return false;
+        }
+        self.verified_owner(registration)
+            .await
+            .is_some_and(|(_, owner_id)| direct_from(delivery, Some(&owner_id)))
     }
 
     /// Whether `delivery` is the owner's message, which starts a plain user

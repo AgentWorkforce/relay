@@ -265,6 +265,7 @@ impl Core {
             name: registration.name.clone(),
             task: String::new(),
             directory: None,
+            fork_from: None,
         };
         Scope::new(&registration.base_url, key)
             .save(

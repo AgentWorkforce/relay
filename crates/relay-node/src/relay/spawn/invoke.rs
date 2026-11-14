@@ -14,6 +14,7 @@ use super::{first_text, lifecycle, session_ref, SpawnSettings};
 use crate::relay::daemon::Core;
 use crate::relay::push::PushState;
 use crate::relay::state::{Level, Listing, SpawnState};
+use crate::relay::store::{CleanupKind, PendingCleanup};
 use crate::relay::workspace::Secret;
 use chrono::Utc;
 use launching::LaunchFailure;
@@ -293,10 +294,17 @@ impl Core {
         let workspace = self
             .workspace()
             .ok_or("spawn_failed: this computer has no Agent Relay workspace")?;
-        let directory = request
-            .directory
-            .clone()
-            .unwrap_or_else(|| self.config.home.clone());
+        let fork = match &request.fork_from {
+            Some(source) => Some(self.fork_source(request, source).await?),
+            None => None,
+        };
+        let directory = match &fork {
+            Some(fork) => fork.directory.clone(),
+            None => request
+                .directory
+                .clone()
+                .unwrap_or_else(|| self.config.home.clone()),
+        };
         // TCC approval and unavailable volumes can stall filesystem calls.
         // Check before registering an agent, without blocking node heartbeats
         // or the desktop socket. A timed-out check has no launch side effects.
@@ -321,7 +329,8 @@ impl Core {
         let requester = tokio::spawn({
             let workspace = workspace.clone();
             let invocation_id = request.invocation_id.clone();
-            async move { report_back::requester(&workspace, &invocation_id).await }
+            let app_data_dir = self.config.app_data_dir.clone();
+            async move { report_back::requester(&workspace, &app_data_dir, &invocation_id).await }
         });
         // On disk before anything starts, so a restart finds what it left.
         let mut in_flight = InFlight {
@@ -351,6 +360,7 @@ impl Core {
                 requester: None,
                 target: None,
                 process: None,
+                control_url: workspace.control_url.clone(),
             },
         };
         in_flight
@@ -426,14 +436,19 @@ impl Core {
                 .and_then(|relay_send| relay_send.serving.get()),
             settings.full_access(request.harness),
         );
+        let task = match &request.fork_from {
+            Some(source) => super::fork::first_task(source, &request.task),
+            None => request.task.clone(),
+        };
         let launch = Launch {
             harness: request.harness,
             name: request.name.clone(),
-            text: first_text(&request.name, &address, &request.task, &report),
+            text: first_text(&request.name, &address, &task, &report),
             directory: directory.clone(),
             full_access: settings.full_access(request.harness),
             message_id: in_flight.intent.message_id.clone(),
             session_id: in_flight.intent.session_id.clone(),
+            fork: fork.map(|fork| fork.session_id),
         };
         let launched = match self.launch_registered(launch, &mut in_flight).await {
             Ok(launched) => launched,
@@ -466,12 +481,40 @@ impl Core {
         );
         // The requester gets the first turn's final answer unless the agent
         // sends them something itself (`report_back::owed`).
+        // An identity the session was given of its own before this save
+        // (one registered in the moment before its spawn recorded it) is
+        // replaced here, and taken off Relaycast below: the session is the
+        // spawned agent alone. Its removal is recorded in the same update
+        // that lets go of its token, so a stop before the deletion below
+        // leaves it to the cleanup retries rather than unreachable.
+        let mut displaced = None;
         let saved = self.store.update(|store| {
-            report_back::add_spawned(
+            let earlier = store
+                .registration_for(&registration.target)
+                .filter(|earlier| {
+                    earlier.spawn.is_none()
+                        && earlier.agent_id != registration.agent_id
+                        && earlier.name != registration.name
+                })
+                .cloned();
+            let added = report_back::add_spawned(
                 store,
                 registration.clone(),
                 Secret::new(agent.token.clone()),
-            )
+            );
+            if added {
+                displaced = earlier.and_then(|earlier| {
+                    let cleanup = PendingCleanup {
+                        kind: CleanupKind::Agent,
+                        name: earlier.name,
+                        base_url: earlier.base_url,
+                        workspace_key: earlier.workspace_key?,
+                    };
+                    store.add_pending_cleanup(cleanup.clone());
+                    Some(cleanup)
+                });
+            }
+            added
         });
         if saved != Ok(true) {
             if self.abandon(&launched, &mut in_flight).await {
@@ -485,6 +528,9 @@ impl Core {
                 Err(error) => format!("spawn_failed: could not save the agent: {error}"),
             }
             .into());
+        }
+        if let Some(cleanup) = displaced {
+            self.delete_recorded_cleanup(cleanup).await;
         }
         self.watch_spawned(&registration);
         in_flight.settled();

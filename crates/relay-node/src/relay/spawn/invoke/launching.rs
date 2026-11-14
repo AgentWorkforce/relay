@@ -160,6 +160,7 @@ impl Core {
             harness: in_flight.intent.harness,
             task: String::new(),
             directory: None,
+            fork_from: None,
         };
         let saved = self.workspace().is_some_and(|workspace| {
             super::Scope::workspace(&workspace)

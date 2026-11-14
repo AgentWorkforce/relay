@@ -195,6 +195,14 @@ pub struct Registration {
         skip_serializing_if = "Option::is_none"
     )]
     pub workspace_key: Option<Secret>,
+    /// The Control origin brokering `workspace_key` when it is node-scoped
+    /// (`sh_wk_…`); absent for a workspace key.
+    #[serde(
+        rename = "controlURL",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub control_url: Option<String>,
     /// Captured at registration, so a later computer rename does not make
     /// copied addresses disagree with Relaycast.
     #[serde(
@@ -1328,12 +1336,23 @@ impl Store {
     /// strand the agents and the pending removals. Keys that differ from
     /// `old` belong to another workspace sharing the origin and are left
     /// alone.
-    pub fn rotate_workspace_key(&mut self, base_url: &str, old: &Secret, new: &Secret) -> usize {
+    /// `control_url` is the new key's Control origin: set for a node-scoped
+    /// key (a workspace key rotated to an `sh_wk_` one on the same
+    /// workspace, or back), so each registration's brokered calls follow
+    /// the key. A rotation, not a new workspace: nothing is enrolled again.
+    pub fn rotate_workspace_key(
+        &mut self,
+        base_url: &str,
+        old: &Secret,
+        new: &Secret,
+        control_url: Option<&str>,
+    ) -> usize {
         let mut migrated = 0;
         for registration in self.registrations.iter_mut() {
             if registration.base_url == base_url && registration.workspace_key.as_ref() == Some(old)
             {
                 registration.workspace_key = Some(new.clone());
+                registration.control_url = control_url.map(str::to_owned);
                 migrated += 1;
             }
         }

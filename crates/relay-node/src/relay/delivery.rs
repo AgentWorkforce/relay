@@ -43,6 +43,7 @@ pub mod channel_text;
 pub mod final_answer;
 mod inbox_watch;
 mod integration_routing;
+mod person_alert;
 pub mod policy;
 pub(crate) mod session_text;
 mod stuck;
@@ -237,6 +238,8 @@ pub struct DeliveryState {
     /// The last queue read's problem, per agent.
     pub(crate) queue_errors: BTreeMap<String, String>,
     activity: VecDeque<DeliveryActivity>,
+    /// Recent person alerts, for their per-sender cap (`person_alert`).
+    person_alerts: person_alert::PersonAlerts,
     /// Last queue read request/completion per agent. Push wakes are immediate;
     /// a successful read also satisfies the periodic safety net.
     last_queue_poll: HashMap<String, Instant>,
@@ -810,6 +813,11 @@ impl Core {
     pub fn wake(&self, agent: String, frame: Option<Value>) {
         if self.is_person(&agent) {
             self.person_woke();
+            // A marked DM to you may also raise a notification; the DM
+            // itself is read with its conversation as before.
+            if let Some(frame) = frame.as_ref() {
+                self.alert_person(frame);
+            }
             return;
         }
         match frame.as_ref().and_then(Delivery::from_push_frame) {

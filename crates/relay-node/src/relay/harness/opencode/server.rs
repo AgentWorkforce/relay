@@ -101,10 +101,11 @@ impl SystemServer {
     /// load it still starts; its agent replies through MCP only.
     pub(super) fn environment(&self) -> BTreeMap<String, String> {
         let base: BTreeMap<String, String> = std::env::vars().collect();
-        let mut environment = match &self.environment {
-            Some(environment) => environment("opencode", base),
-            None => base,
-        };
+        let mut environment =
+            crate::relay::workspace::without_workspace_key_env(match &self.environment {
+                Some(environment) => environment("opencode", base),
+                None => base,
+            });
         let uid = crate::relay::peer::current_uid();
         let _ = spawned::load_plugin(&self.opencode, uid, &mut environment);
         environment

@@ -393,7 +393,7 @@ pub fn preamble(
                 "On the Agent Relay session socket: list peers with {agents}; send with \
                  {send} (--channel <name> instead of --to posts to a channel; add --thread \
                  <id> to reply in a post's thread); subscribe to a channel with {subscribe} \
-                 (add --remove to stop)."
+                 (add --remove to stop, or --create to create a channel that does not exist)."
             ),
         ),
         None => (
@@ -408,7 +408,8 @@ pub fn preamble(
                  (\"channel\" instead of \"to\" posts to a channel; add \"thread_id\" to reply \
                  in a post's thread); subscribe to a channel with curl -s -X POST \
                  --unix-socket {shown} 'http://relay/channels/subscribe?channel=<name>' \
-                 (DELETE to stop)."
+                 (DELETE to stop; POST to /channels instead creates a channel that does not \
+                 exist)."
             ),
         ),
     };

@@ -142,7 +142,7 @@ fn redact_with(message: &str, secrets: impl Iterator<Item = String>) -> String {
     let parts: Vec<_> = message.split_whitespace().collect();
     for (index, word) in parts.iter().copied().enumerate() {
         let lower = word.to_ascii_lowercase();
-        let credential = ["rk_", "at_", "ar_", "sk_", "sk-", "xai-", "eyj"]
+        let credential = ["rk_", "at_", "ar_", "sk_", "sh_wk_", "sk-", "xai-", "eyj"]
             .iter()
             .any(|prefix| lower.contains(prefix));
         let assignment = word.split_once('=').or_else(|| word.split_once(':'));
@@ -207,6 +207,13 @@ fn closes_quote(value: &str, quote: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn node_credentials_never_reach_a_diagnostic() {
+        let message = redact_with("spawn failed for sh_wk_fixture1234 now", [].into_iter());
+        assert!(!message.contains("sh_wk_fixture1234"), "{message}");
+        assert!(message.contains("spawn failed"), "{message}");
+    }
 
     #[test]
     fn armadillo_credentials_never_reach_a_diagnostic() {

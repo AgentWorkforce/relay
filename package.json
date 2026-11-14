@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/monorepo",
-  "version": "18.0.0",
+  "version": "18.7.0",
   "private": true,
   "description": "Agent Relay monorepo",
   "type": "module",
@@ -10,7 +10,7 @@
   "scripts": {
     "typecheck": "npm run build:core-bridge && npm run build:chief-execution-bridge && npm run build:session && npm run build:config && npm run build:cloud && npm run build:utils && npm run build:sdk && npm run build:cli-surface && cd packages/cli && npx tsc --noEmit",
     "build": "npm run clean && npm run build:core",
-    "build:core": "npm run build:core-bridge && npm run build:chief-execution-bridge && npm run build:session && npm run build:config && npm run build:cloud && npm run build:utils && npm run build:sdk && npm run build:integration-prompts && npm run build:cli-surface && npm run build:connect && npm run build:cli",
+    "build:core": "npm run build:core-bridge && npm run build:chief-execution-bridge && npm run build:session && npm run build:events-shim && npm run build:config && npm run build:cloud && npm run build:utils && npm run build:sdk && npm run build:integration-prompts && npm run build:cli-surface && npm run build:connect && npm run build:cli",
     "build:packages": "npm run build:core",
     "build:packages:watch": "echo 'Package watch build was removed with the simplified core surface. Use package-specific watch commands instead.'",
     "build:cli": "npm --prefix packages/cli run build",
@@ -23,6 +23,7 @@
     "build:integration-prompts": "npm --prefix packages/integration-prompts run build",
     "build:sdk": "npm --prefix packages/sdk run build",
     "build:session": "npm --prefix packages/session run build",
+    "build:events-shim": "npm --prefix packages/events-shim run build",
     "dev:watch": "cd packages/cli && npx tsc -w",
     "dev:local": "npm run build && (cd packages/cli && npm link) && echo '✓ agent-relay linked globally'",
     "dev:unlink": "(cd packages/cli && npm unlink -g agent-relay) && echo '✓ agent-relay unlinked'",
@@ -124,7 +125,7 @@
     "smol-toml": "^1.7.1",
     "tar": "^7.5.22",
     "@relayflows/sdk": {
-      "@agent-relay/sdk": "18.0.0",
+      "@agent-relay/sdk": "18.7.0",
       "@agent-relay/harness-driver": "17.2.1"
     }
   }

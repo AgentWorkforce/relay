@@ -148,10 +148,16 @@ impl Core {
         }
 
         let new_key = current.key.clone();
+        let control_url = current.control_url.clone();
         match self.store.update(|store| {
             let mut migrated = 0;
             for entry in &resolvable {
-                migrated += store.rotate_workspace_key(&entry.base_url, &entry.old_key, &new_key);
+                migrated += store.rotate_workspace_key(
+                    &entry.base_url,
+                    &entry.old_key,
+                    &new_key,
+                    control_url.as_deref(),
+                );
             }
             store.clear_pending_key_migrations(&settled);
             migrated

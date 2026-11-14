@@ -39,7 +39,7 @@ fn write_log(home: &Path, lines: &str) {
 
 #[test]
 fn claude_runs_headless_with_the_session_named_and_access_as_chosen() {
-    let full = arguments("s1", true);
+    let full = arguments("s1", None, true);
     assert_eq!(
         &full[..9],
         [
@@ -58,9 +58,10 @@ fn claude_runs_headless_with_the_session_named_and_access_as_chosen() {
     assert!(full.contains(&"--dangerously-skip-permissions".to_string()));
     // The person's own MCP servers, as with the broker's workers.
     assert!(!full.iter().any(|argument| argument.contains("mcp-config")));
-    let confined = arguments("s1", false);
+    let confined = arguments("s1", None, false);
     assert!(!confined.contains(&"--dangerously-skip-permissions".to_string()));
     assert!(confined.ends_with(&["--permission-mode".into(), "acceptEdits".into()]));
+    assert!(!full.contains(&"--resume".to_string()));
     // Either way, what would ask comes to the core on its output.
     for arguments in [full, confined] {
         let at = arguments
@@ -69,6 +70,49 @@ fn claude_runs_headless_with_the_session_named_and_access_as_chosen() {
             .unwrap();
         assert_eq!(arguments[at + 1], "stdio");
     }
+}
+
+#[test]
+fn a_fork_reads_the_folder_recorded_in_the_source_transcript() {
+    let home = tempfile::tempdir().unwrap();
+    let directory = if cfg!(windows) {
+        r"C:\work\repo"
+    } else {
+        "/work/repo"
+    };
+    let projects = home.path().join("claude").join("projects").join("app");
+    std::fs::create_dir_all(&projects).unwrap();
+    std::fs::write(
+        projects.join(format!("{SESSION}.jsonl")),
+        serde_json::json!({"cwd": directory}).to_string(),
+    )
+    .unwrap();
+    let adapter = adapter(home.path(), Arc::new(FakeProcesses::default()));
+    assert_eq!(
+        adapter
+            .fork_directory(&Target::new(SessionKind::ClaudeTerminal, SESSION))
+            .as_deref(),
+        Some(Path::new(directory))
+    );
+    assert!(adapter
+        .fork_directory(&Target::new(SessionKind::Codex, SESSION))
+        .is_none());
+}
+
+#[test]
+fn a_fork_resumes_the_source_transcript_into_its_own_named_session() {
+    let fork = arguments("s2", Some("s1"), true);
+    let at = fork
+        .iter()
+        .position(|argument| argument == "--resume")
+        .unwrap();
+    assert_eq!(fork[at + 1], "s1");
+    assert_eq!(fork[at + 2], "--fork-session");
+    let named = fork
+        .iter()
+        .position(|argument| argument == "--session-id")
+        .unwrap();
+    assert_eq!(fork[named + 1], "s2");
 }
 
 #[test]
@@ -94,6 +138,7 @@ fn it_is_offered_where_claude_code_is_installed_and_owns_its_sessions() {
             full_access: true,
             message_id: "m1".into(),
             session_id: SESSION.into(),
+            fork: None,
         },
         &|_, _| {},
     );

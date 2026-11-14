@@ -184,6 +184,7 @@ fn spawned(core: &Core, name: &str, kind: SessionKind, harness: HarnessId) {
         requester: None,
         target: None,
         process: None,
+        control_url: None,
     };
     let process = (kind == SessionKind::ClaudeTerminal).then_some(HEADLESS);
     let registration = intent.registration(

@@ -19,7 +19,7 @@ use crate::relay::managed_sessions::ManagedAuthority;
 use crate::relay::people::identity_hash;
 use crate::relay::protocol::{ErrorKind, RpcError};
 use crate::relay::push::{PushState, PushTarget};
-use crate::relay::sessions::DiscoveredSession;
+use crate::relay::sessions::{AutomaticCandidate, DiscoveredSession};
 use crate::relay::state::{Level, Listing};
 use crate::relay::store::{
     iso8601_now, random_hex, AgentAlias, CleanupKind, PendingCleanup, Registration, SessionKind,
@@ -212,6 +212,14 @@ fn not_registered(name: &str) -> RpcError {
     )
 }
 
+/// A session a spawn here started, asked to register on its own.
+fn spawned_session() -> RpcError {
+    RpcError::new(
+        ErrorKind::Refused,
+        "This session is being spawned by Agent Relay and is registered as its spawned agent once the spawn completes.",
+    )
+}
+
 fn name_rules() -> RpcError {
     RpcError::invalid_params("Use 2–48 lowercase letters, digits and single dashes.")
 }
@@ -243,6 +251,34 @@ fn is_name_taken(error: &relaycast::RelayError) -> bool {
 }
 
 impl Core {
+    /// A trusted host can request a global pass, but cannot name the chat
+    /// to register. Coalesce signals and leave network work off hook calls.
+    pub(crate) fn request_codex_discovery(self: &Arc<Self>) {
+        use std::sync::atomic::Ordering;
+        if self.codex_discovery_refresh.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let core = self.clone();
+        struct Reset(Arc<Core>);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                self.0
+                    .codex_discovery_refresh
+                    .store(false, Ordering::Release);
+            }
+        }
+        let reset = Reset(core.clone());
+        tokio::spawn(async move {
+            let _reset = reset;
+            for attempt in 0..3 {
+                if attempt > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                core.activate_new_sessions().await;
+            }
+        });
+    }
+
     /// The agents or the sign-in changed: the spawn node is claimed for them,
     /// the people in the workspace are trusted like the person, and the
     /// account hears of it.
@@ -423,6 +459,26 @@ impl Core {
         added_by_session: bool,
         auto_activated: bool,
     ) -> Result<Registered, RpcError> {
+        self.register_session_authorized(
+            session,
+            raw_name,
+            description,
+            added_by_session,
+            auto_activated,
+            None,
+        )
+        .await
+    }
+
+    async fn register_session_authorized(
+        &self,
+        session: &DiscoveredSession,
+        raw_name: Option<&str>,
+        description: Option<&str>,
+        added_by_session: bool,
+        auto_activated: bool,
+        candidate: Option<&AutomaticCandidate>,
+    ) -> Result<Registered, RpcError> {
         let target = &session.target;
         let lock = self.target_locks.get(&target.key());
         let _changing = lock.lock().await;
@@ -433,6 +489,16 @@ impl Core {
                 self.verify_managed_registration_authority(target).await?;
             }
             return self.answer_registered(existing, raw_name, _changing).await;
+        }
+        // A session a spawn here has started is that spawn's agent: its own
+        // connection (its SessionStart hook, an activation pass, its own
+        // registration request) binds to the spawn's registration once the
+        // spawn saves it, and never gets a second identity.
+        if self.spawning_targets().contains(target) {
+            return match self.saved_spawn_registration(target).await {
+                Some(existing) => self.answer_registered(existing, raw_name, _changing).await,
+                None => Err(spawned_session()),
+            };
         }
         // An already-open Grok agent is pinned to the exact binding it is
         // registered against; delivery refuses any other. A Grok TUI session
@@ -455,7 +521,16 @@ impl Core {
         if is_managed(target.kind) {
             self.verify_managed_registration_authority(target).await?;
         }
-        if !session.live {
+        let runtime_admission = if let Some(candidate) = candidate {
+            let directory = self.plugins.sessions.clone();
+            let candidate = candidate.clone();
+            tokio::task::spawn_blocking(move || directory.automatic_candidate_current(&candidate))
+                .await
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        if !session.live && !runtime_admission {
             return Err(RpcError::new(
                 ErrorKind::Refused,
                 "This session is not running.",
@@ -497,6 +572,27 @@ impl Core {
                 "No Agent Relay workspace key on this computer.",
             )
         })?;
+        let still_admitted = if let Some(candidate) = candidate {
+            let directory = self.plugins.sessions.clone();
+            let candidate = candidate.clone();
+            tokio::task::spawn_blocking(move || directory.automatic_candidate_current(&candidate))
+                .await
+                .unwrap_or(false)
+        } else {
+            runtime_admission
+        };
+        if candidate.is_some()
+            && (!still_admitted
+                || !auto_activation::activation_applies(
+                    &self.store.read(auto_activation::ActivationSettings::of),
+                    target.kind,
+                ))
+        {
+            return Err(RpcError::new(
+                ErrorKind::Refused,
+                "Automatic admission is disabled or its runtime proof expired.",
+            ));
+        }
         let mut candidate = name;
         let mut attempt = 1;
         let registration = loop {
@@ -540,7 +636,14 @@ impl Core {
                     attempt += 1;
                     candidate = suggested_name_numbered(session, attempt);
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    // A spawn saved this session's registration meanwhile:
+                    // it is answered as that agent.
+                    if let Some(existing) = self.saved_spawn_registration_now(target) {
+                        return Ok(already_registered(&existing, &self.machine_prefix));
+                    }
+                    return Err(error);
+                }
             }
         };
         self.sync_agents().await;
@@ -708,8 +811,19 @@ impl Core {
             alias: None,
             retired_aliases: None,
             cleared: None,
+            control_url: workspace.control_url.clone(),
         };
+        let mut spawned = false;
         let saved = self.store.update(|store| {
+            // A spawn saved its registration for this session meanwhile:
+            // the session is that agent, so this one is never added.
+            if store
+                .registration_for(&registration.target)
+                .is_some_and(|existing| existing.spawn.is_some())
+            {
+                spawned = true;
+                return false;
+            }
             let added = store.add(registration.clone(), agent.token.clone());
             if added {
                 if let Some(owner) = owner.as_ref().filter(|owner| owner.workspace_id.is_some()) {
@@ -722,6 +836,11 @@ impl Core {
         });
         match saved {
             Ok(true) => Ok(registration),
+            Ok(false) if spawned => {
+                self.delete_or_retry(&workspace.base_url, &workspace.key, &agent.name)
+                    .await;
+                Err(spawned_session())
+            }
             Ok(false) => {
                 self.delete_or_retry(&workspace.base_url, &workspace.key, &agent.name)
                     .await;
@@ -749,7 +868,7 @@ impl Core {
     /// Deletes an agent this computer no longer holds the token of; when
     /// Relaycast cannot be reached, records the deletion to retry (in memory
     /// at least, when the store cannot be saved either).
-    async fn delete_or_retry(&self, base_url: &str, key: &Secret, name: &str) {
+    pub(crate) async fn delete_or_retry(&self, base_url: &str, key: &Secret, name: &str) {
         let workspace = self.relaycast_scope(base_url, key);
         let result = client::delete_agent(base_url, key, name).await;
         self.observe_relaycast_write_result(&workspace, &result);
@@ -763,6 +882,64 @@ impl Core {
                 })
             });
         }
+    }
+
+    /// Deletes an agent whose removal `cleanup` already records (saved in
+    /// the same store update that let go of its token), and drops the record
+    /// once it is gone. It goes through `delete_agent_cleanup`, as the retry
+    /// pass does: when Relaycast writes are paused, the name is held by
+    /// another removal or registration, or the deletion fails, the record
+    /// stays for `retry_pending_cleanups`, across a restart too.
+    pub(crate) async fn delete_recorded_cleanup(&self, cleanup: PendingCleanup) {
+        let workspace = self.relaycast_scope(&cleanup.base_url, &cleanup.workspace_key);
+        if !self.relaycast_write_allowed(&workspace) {
+            return;
+        }
+        let Some(result) = self.delete_agent_cleanup(&cleanup).await else {
+            return;
+        };
+        self.observe_relaycast_write_result(&workspace, &result);
+        if result.is_ok() {
+            let _ = self.store.update(|store| {
+                if let Some(list) = store.pending_cleanups.as_mut() {
+                    list.retain(|c| *c != cleanup);
+                    if list.is_empty() {
+                        store.pending_cleanups = None;
+                    }
+                }
+            });
+        }
+    }
+
+    /// Carries out a recorded agent removal under its name's claim: `None`
+    /// when the name is held (a registration or another removal in flight;
+    /// tried again next pass). An agent answering to the name here again
+    /// (a rename back, a new registration) is kept, and the removal counts
+    /// as done without a DELETE.
+    async fn delete_agent_cleanup(
+        &self,
+        cleanup: &PendingCleanup,
+    ) -> Option<relaycast::Result<()>> {
+        // The name is held for the removal, as a registration holds it
+        // until saved: one in flight is waited out, and none starts
+        // meanwhile.
+        if !self.claim_cleanup_name(&cleanup.name) {
+            return None;
+        }
+        // Re-read before the removal: the name may have been taken again
+        // since the cleanup was recorded, and that agent is kept.
+        let kept = self.store.read(|s| {
+            s.registrations
+                .iter()
+                .any(|r| r.answers_to(&cleanup.name) && r.base_url == cleanup.base_url)
+        });
+        let result = if kept {
+            Ok(())
+        } else {
+            client::delete_agent(&cleanup.base_url, &cleanup.workspace_key, &cleanup.name).await
+        };
+        self.release_name(&cleanup.name);
+        Some(result)
     }
 
     /// Deletes a channel this computer created but recorded nowhere, or
@@ -801,34 +978,10 @@ impl Core {
                     client::delete_channel(&cleanup.base_url, &cleanup.workspace_key, &cleanup.name)
                         .await
                 }
-                CleanupKind::Agent => {
-                    // The name is held for the removal, as a registration
-                    // holds it until saved: one in flight is waited out (and
-                    // tried next pass), and none starts meanwhile.
-                    if !self.claim_cleanup_name(&cleanup.name) {
-                        continue;
-                    }
-                    // Re-read before the removal: the name may have been
-                    // taken again here (a rename back, a new registration)
-                    // since the cleanup was recorded, and that agent is kept.
-                    let kept = self.store.read(|s| {
-                        s.registrations
-                            .iter()
-                            .any(|r| r.answers_to(&cleanup.name) && r.base_url == cleanup.base_url)
-                    });
-                    let result = if kept {
-                        Ok(())
-                    } else {
-                        client::delete_agent(
-                            &cleanup.base_url,
-                            &cleanup.workspace_key,
-                            &cleanup.name,
-                        )
-                        .await
-                    };
-                    self.release_name(&cleanup.name);
-                    result
-                }
+                CleanupKind::Agent => match self.delete_agent_cleanup(&cleanup).await {
+                    Some(result) => result,
+                    None => continue,
+                },
             };
             self.observe_relaycast_write_result(&workspace, &result);
             if result.is_ok() {
@@ -998,7 +1151,7 @@ impl Core {
         let base = &registration.base_url;
         let sender = self.test_sender(base, &key).await?;
         let sent = match client::send_dm(base, &sender.token, &endpoint, &body, None).await {
-            Err(error) if error.is_auth_rejection() => {
+            Err(error) if crate::relay::node_credential::rejects_credential(&error) => {
                 // The sender was removed elsewhere: make a new one, once.
                 let id = crate::relay::delivery::policy::MessageRef::of(key.expose());
                 let _ = self.store.update(|store| {
@@ -1328,11 +1481,7 @@ impl Core {
         let discovered = tokio::task::spawn_blocking(move || {
             sessions.pi_auto_join(pi_auto_join);
             let all = sessions.sessions();
-            let live: HashSet<Target> = all
-                .iter()
-                .filter(|session| session.live)
-                .map(|session| session.target.clone())
-                .collect();
+            let live = sessions.present_targets(&all);
             let targets: Vec<Target> = registered.iter().map(|(_, t)| t.clone()).collect();
             let archived = sessions.archived(&targets);
             let archived: Vec<String> = registered
@@ -1340,13 +1489,23 @@ impl Core {
                 .filter(|(_, target)| archived.contains(target))
                 .map(|(name, _)| name)
                 .collect();
-            let found = sessions.auto_activation_sessions();
+            let found = sessions.automatic_candidates();
             (found, all, live, archived, sessions.cleared(&targets))
         })
         .await;
         if let Ok((_, _, live, _, _)) = &discovered {
+            *self
+                .runtime_presence
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) =
+                Some((std::time::Instant::now(), live.clone()));
             // Relay Connect credentials follow the same running sessions.
             self.connect.lock().unwrap().observe_live_targets(live);
+        } else {
+            *self
+                .runtime_presence
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
         }
         let (found, all, mut live, archived, cleared) = discovered.unwrap_or_default();
         self.mark_sessions_archived(&archived);
@@ -1356,10 +1515,10 @@ impl Core {
         let spawned_live = self.spawned_live();
         live.retain(|target| !spawned.contains(target));
         live.extend(spawned_live);
-        let mut found: HashMap<Target, DiscoveredSession> = found
+        let mut found: HashMap<Target, AutomaticCandidate> = found
             .into_iter()
-            .filter(|session| !spawned.contains(&session.target))
-            .map(|session| (session.target.clone(), session))
+            .filter(|candidate| !spawned.contains(&candidate.session.target))
+            .map(|candidate| (candidate.session.target.clone(), candidate))
             .collect();
         let moved = self.follow_cleared(&cleared);
         let now = chrono::Utc::now();
@@ -1870,6 +2029,7 @@ mod tests {
             alias: None,
             retired_aliases: None,
             cleared: None,
+            control_url: None,
         }
     }
 
@@ -2320,6 +2480,7 @@ mod tests {
             base_url: "https://cast.test".into(),
             workspace_id: None,
             source: crate::relay::workspace::WorkspaceSource::Cloud,
+            control_url: None,
         }
     }
 

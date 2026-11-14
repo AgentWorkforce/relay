@@ -469,6 +469,7 @@ impl Outbound {
             ("GET", "/messages") => self.read_message(pid, uid, &request.query).await,
             ("POST", "/send") => self.send_route(pid, uid, request).await,
             ("POST", "/register") => self.register_route(pid, uid, request).await,
+            ("POST", "/channels") => self.create_channel_route(pid, uid, request).await,
             ("POST" | "DELETE", "/channels/subscribe") => {
                 self.channel_subscription(pid, uid, request).await
             }
@@ -503,8 +504,22 @@ impl Outbound {
                 let route = format!("{} {}", request.method, request.path);
                 self.setup_route(pid, uid, &route, fields).await
             }
-            _ => self.mobile_handoff_route(pid, uid, request).await,
+            _ => self.boxed_mobile_handoff_route(pid, uid, request).await,
         }
+    }
+
+    /// [`Self::mobile_handoff_route`], built outside [`Self::handle`]'s poll
+    /// frame and awaited boxed. Its permission long-poll is the deepest call
+    /// under `handle`; built inline, its future's temporaries sat in that
+    /// frame and took a test thread's 2 MiB stack past its end in debug
+    /// builds.
+    fn boxed_mobile_handoff_route<'a>(
+        &'a self,
+        pid: i32,
+        uid: u32,
+        request: &'a Request,
+    ) -> futures_util::future::BoxFuture<'a, Result<Value, OutboundError>> {
+        Box::pin(self.mobile_handoff_route(pid, uid, request))
     }
 
     /// The supported live session the caller runs inside, registered or
@@ -590,14 +605,26 @@ impl Outbound {
         self.admit(&session.target.key())?;
         let lock = self.core.target_locks.get(&session.target.key());
         let _changing = lock.lock().await;
-        if let Some(current) = self.core.connect_for(&session.target) {
+        if let Some(mut current) = self.core.connect_for(&session.target) {
+            // A host may have extended the room since this session joined:
+            // confirm a passed expiry with Cloud before discarding it.
+            let mut gone = false;
             if current.expired() {
                 let delivery = self
                     .core
                     .agent_locks
                     .get(&format!("connect:{}", current.agent_id));
                 let _delivery = delivery.lock().await;
-                self.core.close_connect(&current, "connect_expired");
+                match self.core.confirm_connect_expiry(&current).await {
+                    crate::relay::connect::ExpiryCheck::Open(open) => current = *open,
+                    crate::relay::connect::ExpiryCheck::Gone(code) => {
+                        self.core.close_connect(&current, &code);
+                        gone = true;
+                    }
+                }
+            }
+            if gone {
+                // Closed: join the requested Connect below.
             } else if current.connect_id == requested_id {
                 return Ok(current.join_public());
             } else {
@@ -723,15 +750,29 @@ impl Outbound {
                 "This session has not joined a Connect.",
             )
         })?;
-        if joined.expired() {
-            self.close_connect_serialized(&joined, "connect_expired")
-                .await;
-            return Err(OutboundError::new(
-                410,
-                "connect_expired",
-                "This Connect has expired.",
-            ));
+        if !joined.expired() {
+            return Ok((session, joined));
         }
+        // Confirm and close under the credential's lock, as the poll loop
+        // does, so an overlapping check cannot close a room the other just
+        // found extended.
+        let lock = self
+            .core
+            .agent_locks
+            .get(&format!("connect:{}", joined.agent_id));
+        let _checking = lock.lock().await;
+        let joined = match self.core.confirm_connect_expiry(&joined).await {
+            crate::relay::connect::ExpiryCheck::Open(joined) => *joined,
+            crate::relay::connect::ExpiryCheck::Gone(code) => {
+                self.core.close_connect(&joined, &code);
+                let (status, message) = match code.as_str() {
+                    "connect_not_found" => (404, "This Connect no longer exists."),
+                    "connect_ended" => (410, "This Connect has ended."),
+                    _ => (410, "This Connect has expired."),
+                };
+                return Err(OutboundError::new(status, &code, message));
+            }
+        };
         Ok((session, joined))
     }
 
@@ -1816,6 +1857,23 @@ fn private_directory(path: &Path) -> Result<(), String> {
         .create(path)
         .map_err(|e| e.to_string())?;
     let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if metadata.file_type().is_symlink() {
+        // A private runtime directory may be reached through a user-owned
+        // link (for example when volatile state lives on tmpfs). Never
+        // chmod through it, or accept a target another user can access.
+        let target = fs::metadata(path).map_err(|e| e.to_string())?;
+        if metadata.uid() == current_uid()
+            && target.is_dir()
+            && target.uid() == current_uid()
+            && target.mode() & 0o077 == 0
+        {
+            return Ok(());
+        }
+        return Err(format!(
+            "{} must link to a private directory this user owns.",
+            path.display()
+        ));
+    }
     if !metadata.is_dir() || metadata.uid() != current_uid() {
         return Err(format!(
             "{} must be a directory this user owns.",
@@ -2293,6 +2351,73 @@ mod tests {
         );
         assert!(Build::named(false, Some("../x")).is_err());
         assert!(Build::named(false, Some("dev")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_socket_pointer_works_through_private_runtime_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let home = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        // tempdir() takes the process umask (0755 under 022); the private
+        // runtime target this test models is 0700.
+        fs::set_permissions(runtime.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        symlink(state.path(), home.path().join(".agentworkforce")).unwrap();
+        symlink(runtime.path(), state.path().join("desktop")).unwrap();
+        let pointer = pointer_directory(home.path()).join("relay-socket");
+        let socket = runtime.path().join("relay.sock");
+        let mode = fs::metadata(runtime.path()).unwrap().mode();
+
+        let identity = write_pointer(&pointer, &socket).unwrap();
+        assert_eq!(
+            crate::relay::cli::pointed_socket(home.path(), &Build::Production).unwrap(),
+            socket,
+            "unqualified session hooks must find the serving socket"
+        );
+        assert_eq!(fs::metadata(&pointer).unwrap().mode() & 0o777, 0o600);
+        assert_eq!(fs::metadata(runtime.path()).unwrap().mode(), mode);
+        assert!(fs::symlink_metadata(pointer.parent().unwrap())
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        let serving = ServingPath::default();
+        serving.start(&socket, &pointer, Some(identity));
+        fs::remove_file(&pointer).unwrap();
+        assert_eq!(serving.reclaim_pointer(), Reclaimed::Rewritten);
+        assert_eq!(serving.reclaim_pointer(), Reclaimed::Current);
+        remove_pointer(&pointer, &socket, serving.pointer_identity().unwrap());
+        assert!(!pointer.exists());
+        assert!(runtime.path().is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn socket_pointer_refuses_accessible_symlink_targets_without_chmod() {
+        use std::os::unix::fs::symlink;
+
+        let home = tempfile::tempdir().unwrap();
+        for mode in [0o755, 0o770, 0o777] {
+            let target = tempfile::tempdir().unwrap();
+            fs::set_permissions(target.path(), fs::Permissions::from_mode(mode)).unwrap();
+            let link = home.path().join(format!("runtime-{mode:o}"));
+            symlink(target.path(), &link).unwrap();
+            let pointer = link.join("relay-socket");
+            assert!(write_pointer(&pointer, Path::new("/private/relay.sock")).is_err());
+            assert!(!pointer.exists());
+            assert_eq!(fs::metadata(target.path()).unwrap().mode() & 0o777, mode);
+        }
+        let file = home.path().join("ordinary-file");
+        fs::write(&file, b"keep").unwrap();
+        let file_link = home.path().join("file-link");
+        symlink(&file, &file_link).unwrap();
+        assert!(private_directory(&file_link).is_err());
+        assert_eq!(fs::read(&file).unwrap(), b"keep");
+        let broken = home.path().join("broken-link");
+        symlink(home.path().join("absent"), &broken).unwrap();
+        assert!(private_directory(&broken).is_err());
     }
 
     #[cfg(unix)]

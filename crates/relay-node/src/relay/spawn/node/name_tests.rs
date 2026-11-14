@@ -99,6 +99,7 @@ fn config(base_url: &str, directory: &Path) -> NodeConfig {
     NodeConfig {
         base_url: base_url.into(),
         workspace_key: Secret::new("rk_live_one".to_string()),
+        control_url: None,
         node_name: "mac-desktop".into(),
         version: "1.0.0".into(),
         app_data_dir: directory.to_path_buf(),
@@ -944,4 +945,284 @@ async fn a_token_refused_as_proof_three_times_stops_the_node_and_forgets_the_enr
 
 fn host_config(directory: &Path) -> NodeConfig {
     config("http://unused", directory)
+}
+
+// ---------------------------------------------------------------------------
+// A node-scoped credential: node lookup and enrolment go to Control's broker.
+
+const NODE_KEY: &str = "sh_wk_fixture0123456789";
+
+fn node_scoped(relaycast: &str, control: &str, directory: &Path) -> NodeConfig {
+    NodeConfig {
+        workspace_key: Secret::new(NODE_KEY.to_string()),
+        control_url: Some(control.to_string()),
+        ..config(relaycast, directory)
+    }
+}
+
+/// Nothing reached `server` for a moment.
+async fn untouched(server: &Scripted) -> bool {
+    tokio::time::timeout(Duration::from_millis(300), server.listener.accept())
+        .await
+        .is_err()
+}
+
+/// A rotation under a node credential goes to
+/// `<control_url>/relay-node/v1/nodes` with both headers and the credential
+/// as bearer, never to Relaycast; the node keeps Relaycast as its origin.
+#[tokio::test]
+async fn a_node_credential_enrolls_through_the_control_broker() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let control = Scripted::new().await;
+    let config = node_scoped(&relaycast.base_url, &control.base_url, folder.path());
+    let current = enrollment(&config, "node_desktop_1", "mac-desktop", NODE_KEY);
+    save(&node_file(&config), &current).unwrap();
+    let (rotated, request) = tokio::join!(
+        rotate(&config, &current),
+        control.answer((
+            "201 Created",
+            r#"{"ok":true,"data":{"id":"node_desktop_1","token":"nt_live_y"}}"#,
+        ))
+    );
+    assert!(
+        request.starts_with("post /relay-node/v1/nodes "),
+        "{request}"
+    );
+    assert!(request.contains("x-relaycast-node-token: nt_live_x"));
+    assert!(idempotency_key(&request).is_some());
+    assert!(request.contains(&format!("authorization: bearer {NODE_KEY}")));
+    assert_eq!(body(&request)["name"], "mac-desktop");
+    let rotated = rotated.unwrap();
+    assert_eq!(rotated.base_url, relaycast.base_url);
+    assert_eq!(load(&config), Some(rotated));
+    assert!(untouched(&relaycast).await);
+}
+
+/// The same rotation under a workspace key goes to Relaycast, whatever
+/// Control origin is recorded beside it.
+#[tokio::test]
+async fn a_workspace_key_enrolls_at_relaycast() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let control = Scripted::new().await;
+    let config = NodeConfig {
+        control_url: Some(control.base_url.clone()),
+        ..config(&relaycast.base_url, folder.path())
+    };
+    let current = enrollment(&config, "node_desktop_1", "mac-desktop", "rk_live_one");
+    save(&node_file(&config), &current).unwrap();
+    let (rotated, request) = tokio::join!(
+        rotate(&config, &current),
+        relaycast.answer((
+            "201 Created",
+            r#"{"ok":true,"data":{"id":"node_desktop_1","token":"nt_live_y"}}"#,
+        ))
+    );
+    assert!(request.starts_with("post /v1/nodes "), "{request}");
+    assert!(request.contains("x-relaycast-node-token: nt_live_x"));
+    assert!(idempotency_key(&request).is_some());
+    rotated.unwrap();
+    assert!(untouched(&control).await);
+}
+
+/// A node enrolled under the workspace key is kept when the key is rotated
+/// to a node credential for the same workspace: Control's broker lists its
+/// id under its name, so it is adopted, not enrolled again, and the saved
+/// record's fingerprint follows the new credential.
+#[tokio::test]
+async fn a_rotation_to_a_node_credential_keeps_the_enrolled_node() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let control = Scripted::new().await;
+    let config = node_scoped(&relaycast.base_url, &control.base_url, folder.path());
+    let kept = enrollment(&config, "node_desktop_1", "mac-desktop", "rk_live_old");
+    save(&node_file(&config), &kept).unwrap();
+    assert_eq!(load(&config), None);
+    let (found, asked) = tokio::join!(
+        saved(&config),
+        control.answer((
+            "200 OK",
+            r#"{"ok":true,"data":{"id":"node_desktop_1","name":"mac-desktop"}}"#,
+        ))
+    );
+    assert!(
+        asked.starts_with("get /relay-node/v1/nodes/mac-desktop "),
+        "{asked}"
+    );
+    let adopted = found.unwrap().expect("adopted");
+    assert_eq!(adopted.node_id, "node_desktop_1");
+    assert_eq!(adopted.token, kept.token);
+    assert_eq!(load(&config), Some(adopted));
+    assert!(untouched(&relaycast).await);
+}
+
+/// A node credential bound to another node name: the node does not start,
+/// says which node is configured, and never names the credential.
+#[tokio::test]
+async fn a_node_credential_for_another_node_stops_the_node_and_says_so() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let control = Scripted::new().await;
+    let config = node_scoped(&relaycast.base_url, &control.base_url, folder.path());
+    let host = Arc::new(Recording::default());
+    let node = SpawnNode::start(config, host.clone());
+    let request = control
+        .answer((
+            "403 Forbidden",
+            r#"{"ok":false,"error":{"code":"node_mismatch","message":"name differs"}}"#,
+        ))
+        .await;
+    assert!(
+        request.starts_with("post /relay-node/v1/nodes "),
+        "{request}"
+    );
+    until(&host, |states| {
+        states.iter().any(|s| s.state == SpawnState::Off)
+    })
+    .await;
+    // Given up: no alternate and no retry.
+    assert!(untouched(&control).await);
+    let states = host.states.lock().unwrap().clone();
+    let error = states.last().unwrap().error.clone().unwrap();
+    assert!(error.contains("bound to another node name"), "{error}");
+    assert!(error.contains("\"mac-desktop\""), "{error}");
+    assert!(!error.contains("sh_wk_"), "{error}");
+    assert!(!states.iter().any(|s| s.state == SpawnState::Waiting));
+    node.stop().await;
+}
+
+/// A name another node holds, under a node credential: Control's broker
+/// passes Relaycast's `409 node_name_conflict` through, and the credential
+/// is bound to the name, so no alternate is asked for (the broker would
+/// refuse it as `node_mismatch`). The node reports the stale holder.
+#[tokio::test]
+async fn a_name_another_node_holds_is_reported_under_a_node_credential() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let control = Scripted::new().await;
+    let config = node_scoped(&relaycast.base_url, &control.base_url, folder.path());
+    let (refused, request) = tokio::join!(enroll_named(&config, None), control.answer(CONFLICT));
+    assert!(
+        request.starts_with("post /relay-node/v1/nodes "),
+        "{request}"
+    );
+    assert_eq!(body(&request)["name"], "mac-desktop");
+    let Err(Refused::NameTaken(reason)) = refused else {
+        panic!("{refused:?}");
+    };
+    assert!(reason.contains("stale node"), "{reason}");
+    assert!(reason.contains("\"mac-desktop\""), "{reason}");
+    assert!(!reason.contains("sh_wk_"), "{reason}");
+    // No second POST /v1/nodes under an alternate.
+    assert!(untouched(&control).await);
+    assert!(untouched(&relaycast).await);
+}
+
+/// The same for a rotation under a node credential: no alternate.
+#[tokio::test]
+async fn a_rotation_whose_name_another_node_took_is_reported_under_a_node_credential() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let control = Scripted::new().await;
+    let config = node_scoped(&relaycast.base_url, &control.base_url, folder.path());
+    let current = enrollment(&config, "node_desktop_1", "mac-desktop", NODE_KEY);
+    save(&node_file(&config), &current).unwrap();
+    let (refused, request) = tokio::join!(
+        enroll_named(&config, Some(&current)),
+        control.answer(CONFLICT)
+    );
+    assert!(
+        request.starts_with("post /relay-node/v1/nodes "),
+        "{request}"
+    );
+    let Err(Refused::NameTaken(reason)) = refused else {
+        panic!("{refused:?}");
+    };
+    assert!(reason.contains("\"mac-desktop\""), "{reason}");
+    assert!(untouched(&control).await);
+}
+
+/// A node saved under an alternate name (taken under a workspace key) is
+/// not adopted under a node credential, which is bound to the configured
+/// name: nothing is asked of the broker for it, a new node is enrolled
+/// under the configured name, and a stale holder of that name is reported
+/// as one, naming the saved node and the configured name.
+#[tokio::test]
+async fn a_saved_alternate_is_not_adopted_under_a_node_credential() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let control = Scripted::new().await;
+    let config = node_scoped(&relaycast.base_url, &control.base_url, folder.path());
+    let kept = enrollment(&config, "node_desktop_1", "mac-desktop-3f9a", "rk_live_old");
+    save(&node_file(&config), &kept).unwrap();
+    assert_eq!(saved(&config).await, Ok(None));
+    assert!(untouched(&control).await);
+    let (refused, request) = tokio::join!(enroll_named(&config, None), control.answer(CONFLICT));
+    assert!(
+        request.starts_with("post /relay-node/v1/nodes "),
+        "{request}"
+    );
+    assert_eq!(body(&request)["name"], "mac-desktop");
+    let Err(Refused::NameTaken(reason)) = refused else {
+        panic!("{refused:?}");
+    };
+    assert!(reason.contains("stale node"), "{reason}");
+    assert!(reason.contains("\"mac-desktop-3f9a\""), "{reason}");
+    assert!(
+        reason.contains("bound to the configured node name \"mac-desktop\""),
+        "{reason}"
+    );
+    assert!(!reason.contains("sh_wk_"), "{reason}");
+    // The saved node is kept until a new one is enrolled.
+    assert_eq!(read(&config), Some(kept));
+    assert!(untouched(&control).await);
+    assert!(untouched(&relaycast).await);
+}
+
+/// The broker's `403 node_mismatch` for the saved node's name is kept as
+/// `NodeMismatch` by `saved`, and the node stops and says so, as it does
+/// for a new enrollment, rather than retrying forever.
+#[tokio::test]
+async fn a_saved_node_whose_credential_is_for_another_name_stops_the_node() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let control = Scripted::new().await;
+    let config = node_scoped(&relaycast.base_url, &control.base_url, folder.path());
+    let kept = enrollment(&config, "node_desktop_1", "mac-desktop", "rk_live_old");
+    save(&node_file(&config), &kept).unwrap();
+    const MISMATCH: (&str, &str) = (
+        "403 Forbidden",
+        r#"{"ok":false,"error":{"code":"node_mismatch","message":"name differs"}}"#,
+    );
+    let (found, asked) = tokio::join!(saved(&config), control.answer(MISMATCH));
+    assert!(
+        asked.starts_with("get /relay-node/v1/nodes/mac-desktop "),
+        "{asked}"
+    );
+    let Err(Refused::NodeMismatch(reason)) = found else {
+        panic!("{found:?}");
+    };
+    assert!(reason.contains("bound to another node name"), "{reason}");
+
+    let host = Arc::new(Recording::default());
+    let node = SpawnNode::start(config, host.clone());
+    let asked = control.answer(MISMATCH).await;
+    assert!(
+        asked.starts_with("get /relay-node/v1/nodes/mac-desktop "),
+        "{asked}"
+    );
+    until(&host, |states| {
+        states.iter().any(|s| s.state == SpawnState::Off)
+    })
+    .await;
+    // Given up: no retry.
+    assert!(untouched(&control).await);
+    let states = host.states.lock().unwrap().clone();
+    let error = states.last().unwrap().error.clone().unwrap();
+    assert!(error.contains("bound to another node name"), "{error}");
+    assert!(error.contains("\"mac-desktop\""), "{error}");
+    assert!(!error.contains("sh_wk_"), "{error}");
+    assert!(!states.iter().any(|s| s.state == SpawnState::Waiting));
+    node.stop().await;
 }

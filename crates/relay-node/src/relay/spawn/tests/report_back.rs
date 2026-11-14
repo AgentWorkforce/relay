@@ -19,7 +19,7 @@ pub(super) fn relaycast_rest(invocation: Value) -> (String, Arc<Mutex<Vec<String
 
 /// Relaycast's REST API answering each request line that starts with a
 /// route's prefix with its status and body, and anything else with 404.
-fn relaycast_routes(
+pub(super) fn relaycast_routes(
     routes: Vec<(&'static str, &'static str, Value)>,
 ) -> (String, Arc<Mutex<Vec<String>>>) {
     use std::io::{Read, Write};

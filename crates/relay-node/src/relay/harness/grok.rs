@@ -195,6 +195,7 @@ impl GrokAdapter {
         if let Some(agent_environment) = &self.environment {
             environment = agent_environment("grok", environment);
         }
+        let mut environment = crate::relay::workspace::without_workspace_key_env(environment);
         environment.insert(MANAGED_MARKER.into(), marker.into());
         if full_access {
             environment.remove("GROK_SANDBOX");
@@ -379,6 +380,11 @@ impl HarnessAdapter for GrokAdapter {
 impl SpawnFacet for GrokAdapter {
     fn owns(&self, target: &Target) -> bool {
         target.kind == SessionKind::Grok
+    }
+
+    /// Its ACP `session/prompt` is the session's own user input.
+    fn native_input(&self, target: &Target) -> bool {
+        self.owns(target)
     }
 
     fn launch(&self, launch: &Launch, started: Started) -> Result<Launched, LaunchError> {

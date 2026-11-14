@@ -235,6 +235,7 @@ pub fn discovered_sessions(core: &Core) -> Vec<DiscoveredSession> {
         .clone()
 }
 
+/// Present completed discovery and unexpired presence without provider I/O.
 async fn cached_sessions_list(core: &Arc<Core>) -> LocalSessions {
     let found = core
         .session_snapshot
@@ -243,6 +244,16 @@ async fn cached_sessions_list(core: &Arc<Core>) -> LocalSessions {
         .1
         .clone();
     let store = core.store.snapshot();
+    // Runtime checks belong to background discovery, not an RPC read. If
+    // discovery stalls, an expired snapshot must not promise a waiting route.
+    let present = core
+        .runtime_presence
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .filter(|(at, _)| at.elapsed() <= std::time::Duration::from_secs(60))
+        .map(|(_, targets)| targets.clone())
+        .unwrap_or_default();
     let status = core.status();
     let machine_prefix = core.machine_prefix.clone();
     let stalls = core.inbox_stalls();
@@ -275,6 +286,13 @@ async fn cached_sessions_list(core: &Arc<Core>) -> LocalSessions {
                 .and_then(|directory| projects.get(directory).cloned().flatten()),
             directory: session.directory.clone(),
             live: session.live,
+            delivery_wait: (registration.is_some()
+                && !session.live
+                && present.contains(&session.target)
+                && session.target.kind == crate::relay::store::SessionKind::Codex)
+                .then(|| {
+                    "Registered; waiting for a verified turn hook or desktop owner.".to_string()
+                }),
             running: Some(running),
             holder: session.holder,
             updated_at_ms: session.updated_at_ms,
