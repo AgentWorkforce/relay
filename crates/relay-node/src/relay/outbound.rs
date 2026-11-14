@@ -1857,6 +1857,23 @@ fn private_directory(path: &Path) -> Result<(), String> {
         .create(path)
         .map_err(|e| e.to_string())?;
     let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if metadata.file_type().is_symlink() {
+        // A private runtime directory may be reached through a user-owned
+        // link (for example when volatile state lives on tmpfs). Never
+        // chmod through it, or accept a target another user can access.
+        let target = fs::metadata(path).map_err(|e| e.to_string())?;
+        if metadata.uid() == current_uid()
+            && target.is_dir()
+            && target.uid() == current_uid()
+            && target.mode() & 0o077 == 0
+        {
+            return Ok(());
+        }
+        return Err(format!(
+            "{} must link to a private directory this user owns.",
+            path.display()
+        ));
+    }
     if !metadata.is_dir() || metadata.uid() != current_uid() {
         return Err(format!(
             "{} must be a directory this user owns.",
@@ -2334,6 +2351,73 @@ mod tests {
         );
         assert!(Build::named(false, Some("../x")).is_err());
         assert!(Build::named(false, Some("dev")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_socket_pointer_works_through_private_runtime_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let home = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        // tempdir() takes the process umask (0755 under 022); the private
+        // runtime target this test models is 0700.
+        fs::set_permissions(runtime.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        symlink(state.path(), home.path().join(".agentworkforce")).unwrap();
+        symlink(runtime.path(), state.path().join("desktop")).unwrap();
+        let pointer = pointer_directory(home.path()).join("relay-socket");
+        let socket = runtime.path().join("relay.sock");
+        let mode = fs::metadata(runtime.path()).unwrap().mode();
+
+        let identity = write_pointer(&pointer, &socket).unwrap();
+        assert_eq!(
+            crate::relay::cli::pointed_socket(home.path(), &Build::Production).unwrap(),
+            socket,
+            "unqualified session hooks must find the serving socket"
+        );
+        assert_eq!(fs::metadata(&pointer).unwrap().mode() & 0o777, 0o600);
+        assert_eq!(fs::metadata(runtime.path()).unwrap().mode(), mode);
+        assert!(fs::symlink_metadata(pointer.parent().unwrap())
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        let serving = ServingPath::default();
+        serving.start(&socket, &pointer, Some(identity));
+        fs::remove_file(&pointer).unwrap();
+        assert_eq!(serving.reclaim_pointer(), Reclaimed::Rewritten);
+        assert_eq!(serving.reclaim_pointer(), Reclaimed::Current);
+        remove_pointer(&pointer, &socket, serving.pointer_identity().unwrap());
+        assert!(!pointer.exists());
+        assert!(runtime.path().is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn socket_pointer_refuses_accessible_symlink_targets_without_chmod() {
+        use std::os::unix::fs::symlink;
+
+        let home = tempfile::tempdir().unwrap();
+        for mode in [0o755, 0o770, 0o777] {
+            let target = tempfile::tempdir().unwrap();
+            fs::set_permissions(target.path(), fs::Permissions::from_mode(mode)).unwrap();
+            let link = home.path().join(format!("runtime-{mode:o}"));
+            symlink(target.path(), &link).unwrap();
+            let pointer = link.join("relay-socket");
+            assert!(write_pointer(&pointer, Path::new("/private/relay.sock")).is_err());
+            assert!(!pointer.exists());
+            assert_eq!(fs::metadata(target.path()).unwrap().mode() & 0o777, mode);
+        }
+        let file = home.path().join("ordinary-file");
+        fs::write(&file, b"keep").unwrap();
+        let file_link = home.path().join("file-link");
+        symlink(&file, &file_link).unwrap();
+        assert!(private_directory(&file_link).is_err());
+        assert_eq!(fs::read(&file).unwrap(), b"keep");
+        let broken = home.path().join("broken-link");
+        symlink(home.path().join("absent"), &broken).unwrap();
+        assert!(private_directory(&broken).is_err());
     }
 
     #[cfg(unix)]

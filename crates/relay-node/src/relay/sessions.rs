@@ -12,6 +12,24 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+/// Internal admission evidence. A loaded Codex chat can join without an
+/// idle delivery route; this authority can never arrive through an RPC.
+#[derive(Clone, Debug)]
+pub struct AutomaticCandidate {
+    pub session: DiscoveredSession,
+    pub(crate) runtime: Option<crate::relay::process::CodexRuntimeProof>,
+}
+
+impl AutomaticCandidate {
+    /// Existing providers admit only sessions with an established live route.
+    pub fn live(session: DiscoveredSession) -> Option<Self> {
+        session.live.then_some(Self {
+            session,
+            runtime: None,
+        })
+    }
+}
+
 /// A session found on this computer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct DiscoveredSession {
@@ -212,6 +230,33 @@ pub trait SessionDirectory: Send + Sync + 'static {
             .into_iter()
             .filter(|session| session.live)
             .collect()
+    }
+
+    /// Internal admission evidence; public discovery is not caller authority.
+    fn automatic_candidates(&self) -> Vec<AutomaticCandidate> {
+        self.auto_activation_sessions()
+            .into_iter()
+            .filter_map(AutomaticCandidate::live)
+            .collect()
+    }
+
+    /// Freshly revalidate internal authority immediately before admission.
+    fn automatic_candidate_current(&self, candidate: &AutomaticCandidate) -> bool {
+        candidate.runtime.is_none() && candidate.session.live
+    }
+
+    /// Runtime presence and deliverability are deliberately distinct.
+    fn present_targets(&self, discovered: &[DiscoveredSession]) -> HashSet<Target> {
+        discovered
+            .iter()
+            .filter(|s| s.live)
+            .map(|s| s.target.clone())
+            .collect()
+    }
+
+    /// This only schedules global discovery and grants no chat identity.
+    fn trusted_codex_discovery_signal(&self, _pid: i32) -> bool {
+        false
     }
 
     /// What each of `sessions` (with its working directory, when known) is

@@ -56,7 +56,7 @@ impl Core {
     /// admission when the fleet was never reached.
     pub(super) async fn auto_activate_session(
         &self,
-        session: &DiscoveredSession,
+        candidate: &AutomaticCandidate,
         now_text: &str,
     ) -> ActivationAttempt {
         if self.workspace().is_some_and(|workspace| {
@@ -79,7 +79,14 @@ impl Core {
             ));
         }
         match self
-            .register_session_with_origin(session, None, None, false, true)
+            .register_session_authorized(
+                &candidate.session,
+                None,
+                None,
+                false,
+                true,
+                Some(candidate),
+            )
             .await
         {
             Ok(_) => ActivationAttempt::Attempted(Ok(())),
@@ -111,7 +118,7 @@ impl Core {
     /// journal itself could not be written.
     pub(super) async fn activate_sessions(
         &self,
-        sessions: impl IntoIterator<Item = DiscoveredSession>,
+        sessions: impl IntoIterator<Item = AutomaticCandidate>,
         mut remaining: usize,
         wait_reason: &str,
         now_text: &str,
@@ -119,7 +126,8 @@ impl Core {
     ) -> (Vec<String>, BTreeMap<String, String>) {
         let mut cleared = Vec::new();
         let mut blocked = BTreeMap::new();
-        for session in sessions {
+        for candidate in sessions {
+            let session = &candidate.session;
             let key = session.target.key();
             if self
                 .store
@@ -131,7 +139,7 @@ impl Core {
                 blocked.insert(key, wait_reason.to_string());
                 continue;
             }
-            match self.auto_activate_session(&session, now_text).await {
+            match self.auto_activate_session(&candidate, now_text).await {
                 ActivationAttempt::Paused(message) => {
                     blocked.insert(key.clone(), message.clone());
                     failures.push(format!("{key}: {message}"));

@@ -2038,12 +2038,91 @@ async fn a_starting_codex_session_is_told_who_it_is_and_its_local_route() {
     let other = json!({"session_id": "11111111-2222-3333-4444-555555555555", "hook_event_name": "SessionStart"});
     let (status, _) = code(h.call(IN_CODEX, "POST", "/codex/stop-hook", other).await);
     assert_eq!(status, 403);
-    // The other events still carry only relayed messages.
+    // The helper acknowledges only after flushing its startup output.
+    let receipt = renamed["relayIdentityReceipt"].as_str().unwrap();
+    let ack =
+        json!({"session_id":CODEX,"hook_event_name":"RelayIdentityReceipt", "receipt":receipt});
+    let (status, _) = code(
+        h.call(OUTSIDE, "POST", "/codex/stop-hook", ack.clone())
+            .await,
+    );
+    assert_eq!(status, 403);
+    h.call(IN_CODEX, "POST", "/codex/stop-hook", ack.clone())
+        .await
+        .unwrap();
+    let (status, _) = code(h.call(IN_CODEX, "POST", "/codex/stop-hook", ack).await);
+    assert_eq!(status, 403, "a startup receipt is consumed only once");
+    // A confirmed startup suppresses redundant tool context.
     let tool = json!({"session_id": CODEX, "hook_event_name": "PostToolUse"});
     assert_eq!(
         h.call(IN_CODEX, "POST", "/codex/stop-hook", tool)
             .await
             .unwrap(),
+        json!({})
+    );
+    h.stop().await;
+}
+
+/// The real helper strips private metadata and acknowledges after output.
+/// The helper binary exists only with `production-binaries` (it is not built
+/// for the `--no-default-features` library CI job).
+#[cfg(feature = "production-binaries")]
+#[tokio::test]
+async fn a_codex_startup_helper_confirms_its_received_identity() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let h = Harness::start().await;
+    h.register(IN_CODEX, json!({"name":"codex-api"})).await;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_agent-relay-node"))
+        .arg("codex-stop-hook")
+        .arg("--socket")
+        .arg(&h.relay_socket)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    h.sessions.call_from(
+        child.id() as i32,
+        session(SessionKind::Codex, CODEX, "/Users/me/Projects/relay"),
+    );
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            json!({"session_id":CODEX,"hook_event_name":"SessionStart"})
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
+    let output = tokio::task::spawn_blocking(move || child.wait_with_output().unwrap())
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let answer: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        answer["hookSpecificOutput"]["hookEventName"],
+        "SessionStart"
+    );
+    assert!(answer["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap()
+        .contains("codex-api"));
+    assert!(answer.get("relayIdentityReceipt").is_none());
+    assert_eq!(
+        h.call(
+            IN_CODEX,
+            "POST",
+            "/codex/stop-hook",
+            json!({"session_id":CODEX,"hook_event_name":"PostToolUse"})
+        )
+        .await
+        .unwrap(),
         json!({})
     );
     h.stop().await;

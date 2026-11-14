@@ -5,7 +5,9 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Minor]
+## [Unreleased]
+
+## [18.7.0] - 2026-11-13
 
 ### Added
 
@@ -75,7 +77,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Session hooks keep receiving messages when the session-socket pointer directory is a user-owned symlink to private runtime storage; inaccessible or shared symlink targets remain refused.
 - `agent-relay-probe connect create` starts a new room when Cloud has already closed the saved one, even before its saved expiry, instead of refusing with "already has a pending or active room". `connect end` clears a room that has expired, ended or no longer exists instead of failing; `end` and `extend` let Cloud, not the local clock, decide whether a room is over.
+- Loaded Codex user chats automatically join and stay registered without a desktop window owner; registration presence no longer implies an idle message-delivery route.
 
 ## [18.1.0] - 2026-11-11
 
