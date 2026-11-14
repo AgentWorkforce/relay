@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/monorepo",
-  "version": "18.7.0",
+  "version": "18.7.1",
   "private": true,
   "description": "Agent Relay monorepo",
   "type": "module",
@@ -125,7 +125,7 @@
     "smol-toml": "^1.7.1",
     "tar": "^7.5.22",
     "@relayflows/sdk": {
-      "@agent-relay/sdk": "18.7.0",
+      "@agent-relay/sdk": "18.7.1",
       "@agent-relay/harness-driver": "17.2.1"
     }
   }
