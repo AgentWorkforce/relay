@@ -47,5 +47,26 @@
     "sequence": 1,
     "state": "accepted",
     "artifactRefs": []
+  },
+  "extensions": {
+    "note": "Hand-written to the report extension contract (findings, reason); regenerate from relay-chief's reportSchema once its matching change lands.",
+    "completed": {
+      "protocol": "relay-chief.report.v1",
+      "taskId": "task-golden-1",
+      "assignmentDigest": "9503545e60a04a0ec6ea6e39fa82e47176d624a46b5e9d63762412d26c16223c",
+      "artifactRefs": [],
+      "sequence": 3,
+      "state": "completed",
+      "findings": "The flaky test races the cache warm-up; see src/cache.ts."
+    },
+    "failed": {
+      "protocol": "relay-chief.report.v1",
+      "taskId": "task-golden-1",
+      "assignmentDigest": "9503545e60a04a0ec6ea6e39fa82e47176d624a46b5e9d63762412d26c16223c",
+      "artifactRefs": [],
+      "sequence": 3,
+      "state": "failed",
+      "reason": "runtime_exceeded"
+    }
   }
 }

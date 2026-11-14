@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Assignment } from './protocol.js';
+import { MAX_FINDINGS_LENGTH, type Assignment } from './protocol.js';
 import type { ClaimedResult } from './store.js';
 
 /** The core refuses a spawn task over 64 KiB. */
@@ -45,6 +45,26 @@ export function buildTask(assignment: Assignment, digest: string): string | unde
     if (Buffer.byteLength(task) <= MAX_TASK_BYTES) return task;
   }
   return undefined;
+}
+
+/**
+ * The agent's findings: its message without the first-line result marker, trimmed and capped
+ * at {@link MAX_FINDINGS_LENGTH} without splitting a surrogate pair. Untrusted text, carried
+ * to the chief as data only; nothing here or downstream may act on it or log it.
+ * @param text A message whose first line {@link parseClaimedResult} accepted.
+ * @returns The findings, or undefined when nothing but the marker was sent.
+ */
+export function extractFindings(text: string): string | undefined {
+  const trimmed = text.trimStart();
+  const newline = trimmed.indexOf('\n');
+  let findings = newline === -1 ? '' : trimmed.slice(newline + 1).trim();
+  if (findings.length > MAX_FINDINGS_LENGTH) {
+    let end = MAX_FINDINGS_LENGTH;
+    const last = findings.charCodeAt(end - 1);
+    if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+    findings = findings.slice(0, end).trimEnd();
+  }
+  return findings.length > 0 ? findings : undefined;
 }
 
 /** The outcome an agent claims. Untrusted: it decides the report, not whether work is done. */

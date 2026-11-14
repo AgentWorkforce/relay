@@ -58,6 +58,12 @@ export const configSchema = z
     ledgerPath: z.string().refine(isAbsolute, 'must be absolute'),
     coreSocket: z.string().refine(isAbsolute, 'must be absolute').optional(),
     pollIntervalMs: POSITIVE.min(1000).max(300_000).default(5000),
+    /**
+     * Adds `findings` to `completed` reports and `reason` to `failed` reports. Relay Chief's
+     * report schema is strict, so turn this on only after relay-chief and relaychief-control
+     * that accept both fields are deployed. Off, reports are the original v1 shape.
+     */
+    reportExtensions: z.boolean().default(false),
   })
   .superRefine((config, ctx) => {
     if (config.worker.agentId === config.chief.agentId) {
