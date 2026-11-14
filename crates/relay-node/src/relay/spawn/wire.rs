@@ -724,6 +724,7 @@ mod tests {
                 "spawn:grok",
                 "spawn:muse",
                 "spawn:devin",
+                "spawn:droid",
                 "release",
                 "relay:spawn-error-details-v1",
                 "relay:spawn-fork:v1"

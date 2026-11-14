@@ -169,3 +169,34 @@ crates/relay-node/scripts/generate-contract.sh --out /tmp/CoreContract.swift
 
 One core runs per machine: whichever installed it (the relay CLI or a desktop
 app), the apps attach to the running daemon's socket.
+
+## Factory Droid workers
+
+Factory managed messaging currently reports unavailable on macOS and Linux
+and refuses before launching either the helper or Droid. The installed CLI
+inherits user, project and organization MCP configuration; adding a private
+`initialize.mcpServers` entry does not establish that other servers will not
+start. Tool permission checks happen too late to prevent startup registration
+or credential rotation by an inherited server. There is no opt-out or bypass. Existing detached workers are also withheld from
+discovery, caller attribution, reply availability and prompt delivery while
+the hold is active; their records remain usable for ownership checks and cleanup.
+
+The persistent JSON-RPC protocol, delivery journal and identity checks remain
+covered by unit tests for a future verified startup-isolation contract. The
+production proof currently verifies that a disposable sentinel provider is
+never started; it does not claim live messaging works. Windows managed
+messaging is also unavailable. Existing terminal sessions are not adopted.
+
+Factory history acquisition and parsing still belong to RelayHistory's
+`droid` source and are independent of this startup hold. No HOME, global MCP
+configuration, credentials, model preferences or transcript directories are
+changed. A future isolated profile must expose its exact transcript root to
+RelayHistory before it can be enabled; redirecting HOME alone is not a
+supported setup flow.
+
+The native wire contract and an owned read-only inference turn were verified
+with the official, checksum- and signature-verified Droid 1.6.0 runtime.
+Droid 0.148.1 accepted initialization but rejected inference with the same
+valid API key, so that older CLI error does not establish a bad credential.
+This is provider compatibility evidence, not a live Relay MCP roundtrip.
+Relay does not upgrade Droid or change its global settings.

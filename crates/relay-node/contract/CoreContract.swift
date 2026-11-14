@@ -3795,6 +3795,8 @@ public enum SessionHolder: RawRepresentable, Codable, CaseIterable, Hashable, Se
 /// Which kind of local session an agent stands for, and so which route a
 /// message takes into it.
 public enum SessionKind: RawRepresentable, Codable, CaseIterable, Hashable, Sendable {
+    /// A persistent Relay-owned Factory Droid JSON-RPC session.
+    case droid
     /// An existing Pi session connected through the bundled extension.
     case pi
     /// An existing Oh My Pi (`omp`) session connected through the same
@@ -3849,10 +3851,11 @@ public enum SessionKind: RawRepresentable, Codable, CaseIterable, Hashable, Send
     /// A value this build does not know, as the core sent it.
     case unknown(String)
 
-    public static let allCases: [SessionKind] = [.pi, .omp, .codex, .claudeTerminal, .claudeCloud, .grok, .grokOpen, .opencode, .museOpen, .opencodeOpen, .devin, .cursorCli, .copilot, .openclaw, .hermes]
+    public static let allCases: [SessionKind] = [.droid, .pi, .omp, .codex, .claudeTerminal, .claudeCloud, .grok, .grokOpen, .opencode, .museOpen, .opencodeOpen, .devin, .cursorCli, .copilot, .openclaw, .hermes]
 
     public init(rawValue: String) {
         switch rawValue {
+        case "droid": self = .droid
         case "pi": self = .pi
         case "omp": self = .omp
         case "codex": self = .codex
@@ -3874,6 +3877,7 @@ public enum SessionKind: RawRepresentable, Codable, CaseIterable, Hashable, Send
 
     public var rawValue: String {
         switch self {
+        case .droid: return "droid"
         case .pi: return "pi"
         case .omp: return "omp"
         case .codex: return "codex"

@@ -35,7 +35,10 @@ pub(super) fn discover_devin(
 /// The caller `pid`, when the walk up from it reaches a `devin` or
 /// `cursor-agent` process of this user's at `current`: the session whose
 /// file it holds open, or nobody. A Devin or Cursor command that is not a
-/// session never lends a caller the outer session's identity. At a Cursor
+/// session never lends a caller the outer session's identity. Factory Droid
+/// uses the private verified launch record whose child pid is `current`;
+/// an inherited marker never lends a nested unmanaged worker that identity.
+/// At a Cursor
 /// editor window's extension host, the conversation the caller's own
 /// `CURSOR_CONVERSATION_ID` names, or nobody. `None` lets the walk go on.
 pub(super) fn caller(
@@ -57,6 +60,20 @@ pub(super) fn caller(
                 .map(|id| Target::new(SessionKind::CursorCli, id))
                 .ok_or(CallerMiss::NotASession),
         );
+    }
+    if let Some(droid) = crate::relay::droid::caller(
+        &crate::relay::droid::DroidConfig::from_local(config),
+        table,
+        current,
+    ) {
+        let same = table.process(current) == Some(process);
+        return Some(droid.and_then(|id| {
+            if same && crate::relay::harness::droid::unavailable_reason().is_none() {
+                Ok(Target::new(SessionKind::Droid, id))
+            } else {
+                Err(CallerMiss::NotASession)
+            }
+        }));
     }
     let (kind, session) = if devin::is_devin_process(table, current) {
         (
@@ -86,6 +103,13 @@ pub(super) fn caller(
 /// live holding process.
 pub(super) fn can_reply(config: &LocalConfig, table: &dyn ProcessTable, target: &Target) -> bool {
     match target.kind {
+        SessionKind::Droid if crate::relay::harness::droid::unavailable_reason().is_some() => false,
+        SessionKind::Droid => crate::relay::droid::records(
+            &crate::relay::droid::DroidConfig::from_local(config),
+            table,
+        )
+        .iter()
+        .any(|r| r.session_id == target.id),
         SessionKind::Devin => devin::held(&config.devin, table, config.uid, &target.id).is_some(),
         SessionKind::CursorCli => {
             cursor_cli::running(&config.cursor, table, config.uid, &target.id)
@@ -104,6 +128,16 @@ pub(super) fn inject(
     text: &str,
 ) -> InjectOutcome {
     match target.kind {
+        SessionKind::Droid => crate::relay::harness::droid::deliver(
+            &crate::relay::droid::DroidConfig::from_local(config),
+            table,
+            &target.id,
+            message_id,
+            text,
+        )
+        .unwrap_or_else(|| {
+            InjectOutcome::Waiting("The Relay-owned Droid runtime is not running.".into())
+        }),
         SessionKind::Devin => {
             match devin::send(
                 &config.devin,
@@ -143,4 +177,85 @@ pub(super) fn inject(
 pub(super) fn unattributed_runtime(table: &dyn ProcessTable, pid: i32, stop_at_grok: bool) -> bool {
     crate::relay::hook_agents::is_copilot_process(table, pid)
         || (stop_at_grok && crate::relay::existing_session::grok::is_leader(&table.arguments(pid)))
+}
+
+#[cfg(all(test, unix))]
+mod droid_hold_tests {
+    use super::*;
+    use crate::relay::harness::droid::{runtime, Record, MARKER, STARTUP_ISOLATION_GUIDANCE};
+    use crate::relay::process::{FakeProcess, FakeProcesses};
+    use crate::relay::spawn::launch::SpawnedProcess;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn an_existing_verified_droid_cannot_receive_reply_or_register_while_held() {
+        let home = tempfile::tempdir().unwrap();
+        let config = LocalConfig::from_env(&|_| None, home.path());
+        let droid = crate::relay::droid::DroidConfig::from_local(&config);
+        let directory = runtime(&droid);
+        crate::relay::paths::socket_directory(&directory).unwrap();
+        let session = "11111111-2222-4333-8444-555555555555";
+        let launch = "22222222-2222-4333-8444-555555555555";
+        let executable = home.path().join("droid");
+        std::fs::write(&executable, "synthetic provider identity").unwrap();
+        let table = FakeProcesses::default();
+        let environment = std::collections::HashMap::from([(MARKER.into(), launch.into())]);
+        table.insert(
+            40,
+            FakeProcess {
+                uid: config.uid,
+                start: 1,
+                environment: environment.clone(),
+                ..Default::default()
+            },
+        );
+        table.insert(
+            41,
+            FakeProcess {
+                uid: config.uid,
+                parent: 40,
+                start: 2,
+                environment,
+                executable: Some(executable.clone()),
+                ..Default::default()
+            },
+        );
+        let record = Record {
+            launch_id: launch.into(),
+            session_id: session.into(),
+            host: SpawnedProcess { pid: 40, start: 1 },
+            child: SpawnedProcess { pid: 41, start: 2 },
+            socket: home.path().join("control.sock"),
+            executable,
+            directory: home.path().into(),
+            initial_message_id: None,
+        };
+        for filename in [format!("{session}.json"), format!("{launch}.ready.json")] {
+            let path = directory.join(filename);
+            std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let listener = UnixListener::bind(&record.socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        // Positive fixture control: the pre-hold ownership proof is valid.
+        assert!(
+            matches!(crate::relay::droid::caller(&droid, &table, 41), Some(Ok(id)) if id == session)
+        );
+        let process = table.process(41).unwrap();
+        assert!(matches!(
+            caller(&config, &table, 41, 41, process),
+            Some(Err(CallerMiss::NotASession))
+        ));
+        let target = Target::new(SessionKind::Droid, session);
+        assert!(!can_reply(&config, &table, &target));
+        assert!(crate::relay::droid::discover(&droid, &table).is_empty());
+        assert!(
+            matches!(inject(&config, &table, &target, "one", "synthetic held turn"), InjectOutcome::Refused(reason) if reason == STARTUP_ISOLATION_GUIDANCE)
+        );
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
 }

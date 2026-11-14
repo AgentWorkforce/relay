@@ -19,6 +19,7 @@ pub mod claude;
 pub mod codex;
 pub mod devin;
 pub(crate) mod diagnostics;
+pub mod droid;
 #[cfg(test)]
 pub mod fake;
 pub mod grok;
@@ -52,6 +53,7 @@ static BUILTINS: &[Builtin] = &[
     grok::BUILTIN,
     muse::BUILTIN,
     devin::BUILTIN,
+    droid::BUILTIN,
 ];
 
 /// A harness by its stable id, as Relaycast and the settings name it: only
@@ -425,7 +427,8 @@ mod tests {
                 opencode::ID,
                 grok::ID,
                 muse::ID,
-                devin::ID
+                devin::ID,
+                droid::ID
             ]
         );
         assert_eq!(HarnessId::from_name("codex"), Some(codex::ID));
@@ -491,6 +494,7 @@ mod tests {
                  "full_access": {"detail": "Spawned Muse Code runs with --yolo. Off keeps Muse Code's sandbox and refuses actions that would ask for approval.", "default_on": false}},
                 {"id": "devin", "label": "Devin", "billing": true,
                  "full_access": {"detail": "Spawned Devin uses dangerous permission mode. Off uses accept-edits and permits only the private Agent Relay send tool; other approval requests are refused.", "default_on": false}},
+                {"id": "droid", "label": "Factory Droid", "billing": true},
             ])
         );
     }

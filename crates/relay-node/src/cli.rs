@@ -90,10 +90,23 @@ mod socket_request_tests {
         let socket = ["--socket", "/s/relay.sock"];
         for args in [
             vec!["devin-spawn-mcp", build.flag().as_str()],
+            vec!["droid-spawn-mcp", build.flag().as_str()],
             vec!["muse-spawn-mcp", build.flag().as_str()],
             vec!["read", "m1", build.flag().as_str()],
             [&["codex-stop-hook", "--profile=-acme"][..], &socket].concat(),
             [&["claude-session-hook", "--profile=-acme"][..], &socket].concat(),
+            vec![
+                "droid-spawn-host",
+                "--executable",
+                "/droid",
+                "--directory",
+                "/w",
+                "--runtime",
+                "/r",
+                "--launch-id",
+                "l1",
+                "--profile=-acme",
+            ],
             vec![
                 "devin-spawn-host",
                 "--executable",
@@ -114,6 +127,12 @@ mod socket_request_tests {
                     profile, ..
                 })
                 | Commands::Node(relay_commands::RelayCommands::MuseSpawnMcp { profile, .. })
+                | Commands::Node(relay_commands::RelayCommands::DroidSpawnMcp {
+                    profile, ..
+                })
+                | Commands::Node(relay_commands::RelayCommands::DroidSpawnHost {
+                    profile, ..
+                })
                 | Commands::Node(relay_commands::RelayCommands::Read { profile, .. })
                 | Commands::Node(relay_commands::RelayCommands::CodexStopHook {
                     profile, ..
