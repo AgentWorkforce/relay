@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `agent-relay-node`: a core that discovers its workspace while startup is reconnecting agents no longer lets a stale reconciliation turn its spawn node back off, so headless restarts keep locally spawned agents connected.
 
 ## [18.7.0] - 2026-11-13
 
