@@ -259,7 +259,7 @@ and do not start a listener yourself; tell the person you are watching and end y
 **Codex, Devin, Grok, opencode or Muse after \`setup\`: nothing to do.** Setup links the inbox to the newest
 open session of those tools through Agent Relay (Desktop's, or its own headless core when Desktop is not running),
 so each post is injected and wakes the session; no reply is needed. Tell the person you are watching and end your
-turn. (A Codex session is reachable only once it has had a turn; you are in one, so this session is.)
+turn. (A Codex session can be woken only once it has started, which this one has.)
 
 Otherwise, pick one:
 
@@ -988,13 +988,11 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
         if (bin) io.spawnDetached(process.execPath, [bin, 'serve']);
       }
       if (hooked.includes('codex')) {
-        // Codex writes a session's thread only on its first turn, and nothing can reach a thread before
-        // that (\`codex queue\` refuses it, the SessionStart hook has not run). An opening prompt makes the
-        // first turn happen at launch.
+        // Codex writes a session only on its first turn; before that nothing can reach it
+        // (\`codex queue\` refuses it and the SessionStart hook has not run).
         io.stdout(
-          `Start Codex with an opening prompt so it is woken from the start: codex ${shellQuoted('Watch for webhooks.')}`
+          'Start a Codex session and send it a first message, e.g. "Watch for webhooks". A Codex session can be woken only once it has started; a new window with no message yet cannot be reached.'
         );
-        io.stdout('  (A Codex session started with no prompt is woken from its first message on.)');
       }
       const others = throughCore.filter((cli) => cli.id !== 'codex');
       if (others.length > 0) {
@@ -1291,11 +1289,6 @@ async function listenHook(io: CliIo, flags: Record<string, string>): Promise<num
       return 2;
     }
   );
-}
-
-/** One argument quoted for a POSIX shell. */
-function shellQuoted(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 /** The user service that runs \`events-shim serve\` (systemd unit name). */
