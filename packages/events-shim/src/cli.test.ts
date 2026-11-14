@@ -43,6 +43,7 @@ async function setupWorld(
     core?: boolean;
     badChecksum?: boolean;
     inboxWorkspace?: boolean;
+    inboxClaimed?: boolean;
   } = {}
 ) {
   const store = new MemoryEventsShimStore();
@@ -100,6 +101,9 @@ async function setupWorld(
     stderr: (line) => err.push(line),
     fetchImpl: async (input, init) => {
       const url = String(input instanceof Request ? input.url : input);
+      if (url.endsWith('/workspace') && options.inboxClaimed) {
+        return Response.json({ error: 'claimed', message: 'belongs to an account' }, { status: 409 });
+      }
       if (url.endsWith('/workspace') && options.inboxWorkspace) {
         return Response.json({
           workspace_id: '1',
@@ -958,6 +962,19 @@ describe('events-shim CLI', () => {
     );
     expect(codexHookCommand("/it's/bin", true)).toContain("'/it'\\''s/bin/npx'");
     expect(codexHookCommand('/x', false)).toBe(`cd "$HOME" && ${CODEX_HOOK_COMMAND}`);
+  });
+
+  it('setup --codex on a claimed inbox asks to sign in instead of making a temporary workspace', async () => {
+    const w = await setupWorld({ inboxClaimed: true });
+    expect(await runCli(['setup', w.created.mcp_url, '--codex'], w.io)).not.toBe(0);
+    expect(w.mints).toEqual([]);
+    expect([...w.out, ...w.err].join('\n')).toContain('belongs to an Agent Relay account');
+  });
+
+  it('setup --codex on a claimed inbox works with a signed-in core already running', async () => {
+    const w = await setupWorld({ inboxClaimed: true, core: true });
+    expect(await runCli(['setup', w.created.mcp_url, '--codex'], w.io)).toBe(0);
+    expect(w.mints).toEqual([]);
   });
 
   it('setup --codex refuses a core download that does not match its checksum', async () => {
