@@ -26,6 +26,8 @@ pub fn is_app(executable: &Path) -> bool {
 /// Another Codex between the candidate and the app means the candidate was
 /// started by that chat's tools, rather than by OpenIDEA. Missing processes,
 /// another user, and an ancestry that cannot be resolved all fail closed.
+/// Readable launchers are allowed, including the app's integrated terminal;
+/// ancestry establishes the host, not which UI started the process.
 pub fn under_app(table: &dyn ProcessTable, uid: u32, pid: i32) -> bool {
     let mut current = pid;
     for _ in 0..MAX_ANCESTRY {
@@ -33,13 +35,14 @@ pub fn under_app(table: &dyn ProcessTable, uid: u32, pid: i32) -> bool {
             return false;
         };
         if current != pid {
-            if let Some(executable) = table.executable(current) {
-                if is_app(&executable) {
-                    return true;
-                }
-                if table.is_trusted_codex(&executable) {
-                    return false;
-                }
+            let Some(executable) = table.executable(current) else {
+                return false;
+            };
+            if is_app(&executable) {
+                return true;
+            }
+            if table.is_trusted_codex(&executable) {
+                return false;
             }
         }
         if process.parent <= 1 {
@@ -121,7 +124,31 @@ pub(crate) mod tests {
         assert!(!under_app(&table, 501, 50), "a nested tool run");
         table.remove(20);
         assert!(!under_app(&table, 501, 30), "an unreadable ancestor");
-        table.insert(20, process(30, 501, None));
+        table.insert(20, process(30, 501, Some("/bin/sh".into())));
         assert!(!under_app(&table, 501, 30), "an ancestry cycle");
+    }
+
+    #[test]
+    fn a_present_ancestor_with_an_unreadable_executable_blocks_the_host() {
+        use crate::relay::codex::processes::tests::{codex_process, process, trusted_table, UID};
+        let table = trusted_table();
+        table.insert(
+            500,
+            FakeProcess {
+                executable: Some(app()),
+                ..process(1, 5)
+            },
+        );
+        // The process exists, but its executable cannot be inspected. It
+        // could be another Codex between OpenIDEA and a nested tool run.
+        table.insert(550, process(500, 6));
+        table.insert(
+            600,
+            FakeProcess {
+                parent: 550,
+                ..codex_process(10, &["codex", "app-server"])
+            },
+        );
+        assert!(!under_app(&table, UID, 600));
     }
 }

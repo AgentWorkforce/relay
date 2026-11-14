@@ -138,6 +138,26 @@ pub fn is_openidea_codex(table: &dyn ProcessTable, uid: u32, pid: i32) -> bool {
         && table.process(pid) == Some(process)
 }
 
+/// The trusted OpenIDEA app-server executable holding `thread`'s writer
+/// lock. It may be the only queue-capable Codex installed, outside every
+/// configured CLI search path. A command below it is not the lock holder.
+pub fn openidea_executable(table: &dyn ProcessTable, uid: u32, thread: &str) -> Option<PathBuf> {
+    let thread = thread.to_lowercase();
+    if !crate::relay::store::is_uuid(&thread) {
+        return None;
+    }
+    process_sessions(table, uid, &BTreeSet::from([thread]))
+        .iter()
+        .filter(|session| !session.authorizes_callers)
+        .find(|session| {
+            table
+                .process(session.pid)
+                .is_some_and(|process| process.start == session.start)
+                && is_openidea_codex(table, uid, session.pid)
+        })
+        .and_then(|session| table.executable(session.pid))
+}
+
 /// A trusted Codex app-server owned by Paseo. Paseo keeps one such server
 /// per active agent, and it consumes queued turns for the writer lock it
 /// holds just as Conductor's per-session app-server does.
@@ -805,8 +825,18 @@ pub(crate) mod tests {
         assert!(drains_queue(&table, UID, 600));
         assert!(terminal_thread_is_live(&table, UID, SESSION));
         assert!(!terminal_thread_is_live(&table, UID, OTHER));
+        assert_eq!(openidea_executable(&table, UID, SESSION), Some(codex()));
+        assert_eq!(openidea_executable(&table, UID, OTHER), None);
+        assert_eq!(openidea_executable(&table, UID + 1, SESSION), None);
+        assert_eq!(openidea_executable(&table, UID, "not-a-thread"), None);
         // A launcher between the host and its app-server also counts.
-        table.insert(550, process(500, 6));
+        table.insert(
+            550,
+            FakeProcess {
+                executable: Some("/bin/sh".into()),
+                ..process(500, 6)
+            },
+        );
         table.insert(600, server(550));
         assert!(terminal_thread_is_live(&table, UID, SESSION));
         table.insert(
@@ -817,10 +847,12 @@ pub(crate) mod tests {
             },
         );
         assert!(!terminal_thread_is_live(&table, UID, SESSION));
+        assert_eq!(openidea_executable(&table, UID, SESSION), None);
         table.insert(600, server(550));
         table.trusted_codex.lock().unwrap().clear();
         assert!(!drains_queue(&table, UID, 600), "an untrusted binary");
         assert!(!terminal_thread_is_live(&table, UID, SESSION));
+        assert_eq!(openidea_executable(&table, UID, SESSION), None);
         table.trust(codex());
         table.insert(
             500,
@@ -849,6 +881,47 @@ pub(crate) mod tests {
         assert!(!drains_queue(&table, UID, 600), "exec is not a chat");
         table.remove(600);
         assert!(!terminal_thread_is_live(&table, UID, SESSION));
+    }
+
+    #[test]
+    fn an_integrated_terminals_app_server_needs_a_loaded_thread() {
+        let table = trusted_table();
+        table.insert(
+            500,
+            FakeProcess {
+                executable: Some(crate::relay::openidea::tests::app()),
+                ..process(1, 5)
+            },
+        );
+        table.insert(
+            550,
+            FakeProcess {
+                executable: Some("/bin/sh".into()),
+                arguments: vec!["sh".into(), "-l".into()],
+                has_terminal: true,
+                ..process(500, 6)
+            },
+        );
+        let server = FakeProcess {
+            parent: 550,
+            has_terminal: true,
+            ..codex_process(10, &["codex", "app-server"])
+        };
+        table.insert(600, server.clone());
+        assert!(!terminal_thread_is_live(&table, UID, SESSION));
+        assert_eq!(openidea_executable(&table, UID, SESSION), None);
+        // Ancestry identifies the host, not whether its task UI or a
+        // terminal client loaded the thread. Either needs the same lock.
+        table.insert(
+            600,
+            FakeProcess {
+                open_files: vec![lock(SESSION)],
+                ..server
+            },
+        );
+        assert!(terminal_thread_is_live(&table, UID, SESSION));
+        assert!(!terminal_thread_is_live(&table, UID, OTHER));
+        assert_eq!(openidea_executable(&table, UID, SESSION), Some(codex()));
     }
 
     // CodexBridge.openThreadIDs (the process half).

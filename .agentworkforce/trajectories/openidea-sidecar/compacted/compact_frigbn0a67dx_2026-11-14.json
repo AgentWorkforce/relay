@@ -1,0 +1,96 @@
+{
+  "id": "compact_frigbn0a67dx",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-11-14T04:05:05.468Z",
+  "sourceTrajectories": [
+    "traj_u72o95evot71"
+  ],
+  "dateRange": {
+    "start": "2026-11-14T03:48:36.387Z",
+    "end": "2026-11-14T04:05:00.403Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "implementation",
+      "decisions": [
+        {
+          "question": "Use the exact trusted OpenIDEA thread lock holder for queue delivery; fail closed on unknown ancestor executables",
+          "chosen": "Use the exact trusted OpenIDEA thread lock holder for queue delivery; fail closed on unknown ancestor executables",
+          "reasoning": "Regression tests reproduce NotInstalled without a configured CLI and nested host inheritance across a present unreadable ancestor. Keep readable launchers supported; ancestry does not attest which OpenIDEA UI created the server, so model the integrated-terminal loaded-thread boundary explicitly.",
+          "fromTrajectory": "traj_u72o95evot71"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    "CHANGELOG.md",
+    "crates/relay-node/src/relay/openidea.rs",
+    "crates/relay-node/src/relay/codex/processes.rs",
+    "crates/relay-node/src/relay/codex/router.rs",
+    "crates/relay-node/src/relay/codex/router/system.rs"
+  ],
+  "commits": [],
+  "narrative": "PR #2163 review addressed OpenIDEA queue executable selection and process ancestry validation. Regression tests reproduced `NotInstalled` without a configured CLI and nested host inheritance across a present ancestor whose executable could not be read. Reported fix routes queue delivery using the executable of the exact same-user, trusted OpenIDEA thread lock holder, rechecks process start identity, and rejects unreadable ancestor executables while preserving readable launchers and configured CLI fallback. Session also documented integrated-terminal loaded-thread boundary: process ancestry cannot attest which OpenIDEA UI created server. Validation reported 2,797 tests passed, 21 ignored; changed-file rustfmt, diff check, and release build passed. Clippy completed with baseline `unused_io_amount` allowed and 104 existing warnings. Deployed Core remained unchanged. Implementation and regressions are committed alongside this record on fix/openidea-codex-sidecar, based on 51802f580d02.",
+  "decisions": [
+    {
+      "question": "Which executable should handle OpenIDEA queue delivery?",
+      "chosen": "Use exact same-user, trusted thread lock holder and recheck process start identity; preserve configured CLI fallback.",
+      "reasoning": "Regression reproduced `NotInstalled` without configured CLI. Existing trusted lock holder supplies executable identity needed for queue delivery.",
+      "impact": "Queue delivery invokes the trusted target thread lock holder executable without requiring a separately configured CLI."
+    },
+    {
+      "question": "How should ancestry validation handle an ancestor whose executable cannot be read?",
+      "chosen": "Fail closed on unreadable ancestor executables while retaining readable launcher support.",
+      "reasoning": "Regression exposed nested host inheritance across present but unreadable ancestor. Missing executable evidence cannot establish trusted ancestry.",
+      "impact": "Unknown executable breaks ancestry trust instead of allowing inheritance from more distant host."
+    },
+    {
+      "question": "Can ancestry establish which OpenIDEA UI created server?",
+      "chosen": "Document integrated-terminal loaded-thread boundary explicitly.",
+      "reasoning": "Process ancestry does not attest originating OpenIDEA UI.",
+      "impact": "Routing guarantees remain bounded by available process and thread evidence; UI provenance remains unproven."
+    }
+  ],
+  "conventions": [
+    {
+      "pattern": "Pair trusted lock-holder selection with process start identity recheck.",
+      "rationale": "Delivery requires validating selected process identity, not merely finding candidate executable.",
+      "scope": "OpenIDEA queue executable routing."
+    },
+    {
+      "pattern": "Treat unreadable ancestor executables as trust failures; preserve readable launcher compatibility.",
+      "rationale": "Unknown ancestors must not inherit trust from outer host.",
+      "scope": "OpenIDEA process ancestry validation."
+    },
+    {
+      "pattern": "Add red/green regressions for missing CLI configuration and unreadable intermediate ancestors.",
+      "rationale": "Both reproduced failures involve discovery conditions ordinary successful routing may miss.",
+      "scope": "Queue routing and nested host detection tests."
+    }
+  ],
+  "lessons": [
+    {
+      "lesson": "Executable discovery must cover installations without configured CLI.",
+      "context": "`NotInstalled` reproduced despite available trusted OpenIDEA thread lock holder.",
+      "recommendation": "Retain no-configured-CLI regression alongside configured fallback coverage."
+    },
+    {
+      "lesson": "Ancestry evidence supports narrower claims than UI ownership.",
+      "context": "Nested host inheritance crossed unreadable ancestor; ancestry also could not identify originating OpenIDEA UI.",
+      "recommendation": "Reject unknown executable ancestry and document loaded-thread boundary without claiming UI provenance."
+    }
+  ],
+  "openQuestions": [
+    "Maintainer review of the documented ancestry-based host contract, including manually loaded threads under the integrated terminal."
+  ]
+}
