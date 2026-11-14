@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay-node`: a core that discovers its workspace while startup is reconnecting agents no longer lets a stale reconciliation turn its spawn node back off, so headless restarts keep locally spawned agents connected.
 
+### Changed
+
+- `@agent-relay/events-shim`: `setup --codex` tells you to start Codex with an opening prompt (`codex 'Watch for webhooks.'`): Codex creates a session only on its first turn, so a session started without one can be woken only from its first message on.
+
 ## [18.7.0] - 2026-11-13
 
 ### Added
