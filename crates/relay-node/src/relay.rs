@@ -89,6 +89,7 @@ pub mod devin;
 pub mod devin_cloud;
 pub mod diagnostic_http;
 pub mod diagnostics;
+pub mod droid;
 pub mod existing_session;
 pub mod files;
 pub mod fleet;

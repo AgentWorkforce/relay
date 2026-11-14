@@ -259,7 +259,7 @@ and do not start a listener yourself; tell the person you are watching and end y
 **Codex, Devin, Grok, opencode or Muse after \`setup\`: nothing to do.** Setup links the inbox to the newest
 open session of those tools through Agent Relay (Desktop's, or its own headless core when Desktop is not running),
 so each post is injected and wakes the session; no reply is needed. Tell the person you are watching and end your
-turn.
+turn. (A Codex session can be woken only once it has started, which this one has.)
 
 Otherwise, pick one:
 
@@ -310,6 +310,8 @@ interface AgentCli {
   wake: 'listener' | 'core' | 'relay-only' | 'when-asked';
   /** With \`wake: 'core'\`: the session kind the Agent Relay core lists it as. */
   coreKind?: string;
+  /** Replaces the wake text when this tool's sessions are linked but not yet woken in practice. */
+  caveat?: string;
   /** Removes the MCP server again (\`uninstall\`). */
   remove: (io: CliIo) => boolean;
   /** Hooks that wake this tool's sessions by themselves (Claude Code, Codex). */
@@ -739,6 +741,9 @@ export const AGENT_CLIS: readonly AgentCli[] = [
       )(io, url),
     wake: 'core',
     coreKind: 'muse-open',
+    // Linked like the others, so it works as soon as the core delivers; it does not yet (relay#2174).
+    caveat:
+      'not woken yet: Agent Relay cannot deliver into a Muse session today (relay#2174), so the agent reads posts when asked',
     remove: (io) => io.run('muse', ['mcp', 'remove', MCP_SERVER_NAME, '--user']),
   },
   {
@@ -842,6 +847,13 @@ async function workspaceFor(
       { method: 'POST' }
     )
     .catch(() => null);
+  // A claimed inbox belongs to an Agent Relay account: its agents are woken through a signed-in
+  // core, never a new temporary workspace of their own.
+  if (fromInbox?.status === 409) {
+    throw new CliError(
+      "This inbox belongs to an Agent Relay account. Sign this machine's Agent Relay in to that account (Agent Relay Desktop, or `agent-relay-node` signed in), then run setup again."
+    );
+  }
   if (fromInbox?.ok) {
     const issued = (await fromInbox.json().catch(() => null)) as {
       workspace_key?: unknown;
@@ -954,7 +966,7 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
     }
     if (result.ok) {
       io.stdout(
-        `  ${cli.label}: MCP server "${MCP_SERVER_NAME}" added${cli.skillsDir ? ', skill installed' : ''}; ${WAKE_TEXT[cli.wake]}.`
+        `  ${cli.label}: MCP server "${MCP_SERVER_NAME}" added${cli.skillsDir ? ', skill installed' : ''}; ${cli.caveat ?? WAKE_TEXT[cli.wake]}.`
       );
     } else {
       failed.push(cli.label);
@@ -981,9 +993,13 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
         if (bin) io.spawnDetached(process.execPath, [bin, 'serve']);
       }
       if (hooked.includes('codex')) {
-        io.stdout('Start a new Codex session. From its first message on, each post wakes it by itself.');
+        // Codex writes a session only on its first turn; before that nothing can reach it
+        // (\`codex queue\` refuses it and the SessionStart hook has not run).
+        io.stdout(
+          'Start a Codex session and send it a first message, e.g. "Watch for webhooks". A Codex session can be woken only once it has started; a new window with no message yet cannot be reached.'
+        );
       }
-      const others = throughCore.filter((cli) => cli.id !== 'codex');
+      const others = throughCore.filter((cli) => cli.id !== 'codex' && !cli.caveat);
       if (others.length > 0) {
         io.stdout(
           `${others.map((cli) => cli.label).join(', ')}: open a session; the newest one is woken by each post by itself.`
@@ -1278,6 +1294,32 @@ async function listenHook(io: CliIo, flags: Record<string, string>): Promise<num
       return 2;
     }
   );
+}
+
+/**
+ * Where Agent Relay Desktop's bridge client lives, best first: the app's own
+ * helper (macOS, in \`/Applications\` or \`~/Applications\`; it is the same
+ * CLI as \`agent-relay-probe\`), the Linux package, Desktop's versioned
+ * install under \`~/.local/lib/agent-relay/versions\` (newest first), and
+ * \`~/.local/bin/agent-relay-probe\`. Any of them reaches a running Desktop
+ * core, so events-shim uses that core instead of starting a second one.
+ *
+ * @param home - The home directory.
+ * @param list - Lists a directory's entries (empty when it does not exist).
+ * @returns Candidate paths; callers keep the ones that exist.
+ */
+export function desktopCoreBinaries(home: string, list: (dir: string) => string[]): string[] {
+  const versions = join(home, '.local', 'lib', 'agent-relay', 'versions');
+  return [
+    '/Applications/Agent Relay.app/Contents/Helpers/Agent Relay Helper',
+    join(home, 'Applications', 'Agent Relay.app', 'Contents', 'Helpers', 'Agent Relay Helper'),
+    '/Applications/Agent Relay.app/Contents/Helpers/agent-relay-probe',
+    '/usr/lib/agent-relay/agent_relay/helpers/agent-relay-probe',
+    ...list(versions)
+      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+      .map((version) => join(versions, version, 'agent-relay-probe')),
+    join(home, '.local', 'bin', 'agent-relay-probe'),
+  ];
 }
 
 /** The user service that runs \`events-shim serve\` (systemd unit name). */
@@ -1857,13 +1899,14 @@ export function processIo(): CliIo {
       } catch {
         /* No core of our own. */
       }
-      const candidates = [
-        join(own, 'agent-relay-node'),
-        ...older,
-        join(home, '.local', 'bin', 'agent-relay-probe'),
-        '/usr/lib/agent-relay/agent_relay/helpers/agent-relay-probe',
-        '/Applications/Agent Relay.app/Contents/Helpers/agent-relay-probe',
-      ];
+      const list = (dir: string) => {
+        try {
+          return readdirSync(dir);
+        } catch {
+          return [];
+        }
+      };
+      const candidates = [join(own, 'agent-relay-node'), ...older, ...desktopCoreBinaries(home, list)];
       return candidates.filter((path) => existsSync(path));
     },
     userService: {

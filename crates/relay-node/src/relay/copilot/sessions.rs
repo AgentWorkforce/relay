@@ -147,6 +147,9 @@ pub fn hook_answer(
     if !super::settings::caller_is_hook(config, table, pid, event) {
         return None;
     }
+    if cancelled_stop(config, payload, sid, event) {
+        return None;
+    }
     // A previously verified runtime's incarnation is enough to stop orphaned
     // empty polls. A descriptor/signature scan still precedes every data claim.
     if idle_stop(config, payload, sid, event) {
@@ -175,6 +178,9 @@ fn take_answer(config: &CopilotConfig, payload: &Value, sid: &str, event: &str) 
     if event == "stop" && payload["stopReason"].as_str() != Some("end_turn") {
         return Some(json!({}));
     }
+    if cancelled_stop(config, payload, sid, event) {
+        return None;
+    }
     let kind = if event == "stop" {
         crate::relay::codex::turn_hook::HookEvent::Stop
     } else {
@@ -193,6 +199,12 @@ fn take_answer(config: &CopilotConfig, payload: &Value, sid: &str, event: &str) 
         );
     }
     Some(answer)
+}
+fn cancelled_stop(config: &CopilotConfig, payload: &Value, sid: &str, event: &str) -> bool {
+    event == "stop"
+        && payload["stopReason"] == "end_turn"
+        && payload.get("timestamp").is_some()
+        && super::stop_wait::cancelled(config, sid, payload)
 }
 fn observe(
     config: &CopilotConfig,

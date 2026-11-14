@@ -19,6 +19,9 @@ use serde::{Deserialize, Serialize};
     schemars::JsonSchema,
 )]
 pub enum SessionKind {
+    /// A persistent Relay-owned Factory Droid JSON-RPC session.
+    #[serde(rename = "droid")]
+    Droid,
     /// An existing Pi session connected through the bundled extension.
     #[serde(rename = "pi")]
     Pi,
@@ -90,6 +93,7 @@ pub enum SessionKind {
 impl SessionKind {
     pub fn as_str(self) -> &'static str {
         match self {
+            SessionKind::Droid => "droid",
             SessionKind::Codex => "codex",
             SessionKind::ClaudeTerminal => "claude-terminal",
             SessionKind::ClaudeCloud => "claude-cloud",

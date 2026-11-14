@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "id": "factory-droid-persistent-native-worker",
+  "kind": "feature",
+  "title": "Factory Droid refuses managed startup until MCP isolation is verified",
+  "runner": { "command": ["node", "tests/relayflows/cases/factory-droid-persistent-native-worker/run.mjs"] },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": { "outcome": "absent", "signature": "factory_native_worker_absent" },
+    "head": { "outcome": "fixed", "signature": "factory_native_worker_refuses_unverified_mcp_startup" }
+  }
+}

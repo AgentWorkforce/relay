@@ -14,6 +14,7 @@ pub(crate) const TOOL: &str = "send_relay_message";
 #[derive(Clone, Copy)]
 pub(crate) enum Harness {
     Devin,
+    Droid,
     Muse,
 }
 /// The MCP server for a spawned session of `harness`, sending through
@@ -22,6 +23,7 @@ pub(crate) enum Harness {
 pub(crate) fn definition(helper: &Path, alias: &str, build: &Build, harness: Harness) -> Value {
     let command = match harness {
         Harness::Devin => "devin-spawn-mcp",
+        Harness::Droid => "droid-spawn-mcp",
         Harness::Muse => "muse-spawn-mcp",
     };
     let mut arguments = vec![command.to_string()];

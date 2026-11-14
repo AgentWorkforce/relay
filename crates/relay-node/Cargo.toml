@@ -24,6 +24,10 @@ required-features = ["production-binaries"]
 name = "relay_core_binary"
 required-features = ["production-binaries"]
 
+[[test]]
+name = "droid_mcp"
+required-features = ["production-binaries"]
+
 [features]
 # Ordinary builds keep every production executable. The desktop apps'
 # crates opt out with --no-default-features when they only need the library.

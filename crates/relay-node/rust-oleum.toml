@@ -28,7 +28,7 @@ rust_roots = ["src"]
 
 [baseline.file_loc]
 "src/cli/connect.rs" = 518
-"src/relay/agents.rs" = 1347
+"src/relay/agents.rs" = 1322
 "src/relay/claude.rs" = 878
 "src/relay/cloud_chat.rs" = 1304
 "src/relay/connect.rs" = 1787

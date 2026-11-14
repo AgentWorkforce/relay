@@ -17,6 +17,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   CODEX_HOOK_COMMAND,
   codexHookCommand,
+  desktopCoreBinaries,
   configPath,
   HOOK_COMMAND,
   runCli,
@@ -43,6 +44,7 @@ async function setupWorld(
     core?: boolean;
     badChecksum?: boolean;
     inboxWorkspace?: boolean;
+    inboxClaimed?: boolean;
   } = {}
 ) {
   const store = new MemoryEventsShimStore();
@@ -100,6 +102,9 @@ async function setupWorld(
     stderr: (line) => err.push(line),
     fetchImpl: async (input, init) => {
       const url = String(input instanceof Request ? input.url : input);
+      if (url.endsWith('/workspace') && options.inboxClaimed) {
+        return Response.json({ error: 'claimed', message: 'belongs to an account' }, { status: 409 });
+      }
       if (url.endsWith('/workspace') && options.inboxWorkspace) {
         return Response.json({
           workspace_id: '1',
@@ -695,7 +700,7 @@ describe('events-shim CLI', () => {
     ]);
     const said = w.out.join('\n');
     expect(said).toContain(
-      'Start a new Codex session. From its first message on, each post wakes it by itself.'
+      'Start a Codex session and send it a first message, e.g. "Watch for webhooks". A Codex session can be woken only once it has started; a new window with no message yet cannot be reached.'
     );
     expect(said).toContain('temporary Agent Relay workspace, deleted 2026-11-19');
 
@@ -853,6 +858,16 @@ describe('events-shim CLI', () => {
     expect(w.out.join('\n')).toContain("events-shim's core is kept");
   });
 
+  it('setup --muse links Muse but does not promise it wakes (relay#2174)', async () => {
+    const w = await setupWorld({ core: true });
+    expect(await runCli(['setup', w.created.mcp_url, '--muse'], w.io)).toBe(0);
+    const said = w.out.join('\n');
+    expect(said).toContain('Muse: MCP server "webhooks" added; not woken yet');
+    expect(said).not.toContain('Muse: open a session; the newest one is woken');
+    // Still linked, so it works once the core delivers.
+    expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).wakeKinds).toEqual(['muse-open']);
+  });
+
   it("never changes Desktop's core settings", async () => {
     const w = await setupWorld({ core: true });
     expect(await runCli(['setup', w.created.mcp_url, '--opencode'], w.io)).toBe(0);
@@ -958,6 +973,33 @@ describe('events-shim CLI', () => {
     );
     expect(codexHookCommand("/it's/bin", true)).toContain("'/it'\\''s/bin/npx'");
     expect(codexHookCommand('/x', false)).toBe(`cd "$HOME" && ${CODEX_HOOK_COMMAND}`);
+  });
+
+  it('setup --codex on a claimed inbox asks to sign in instead of making a temporary workspace', async () => {
+    const w = await setupWorld({ inboxClaimed: true });
+    expect(await runCli(['setup', w.created.mcp_url, '--codex'], w.io)).not.toBe(0);
+    expect(w.mints).toEqual([]);
+    expect([...w.out, ...w.err].join('\n')).toContain('belongs to an Agent Relay account');
+  });
+
+  it('setup --codex on a claimed inbox works with a signed-in core already running', async () => {
+    const w = await setupWorld({ inboxClaimed: true, core: true });
+    expect(await runCli(['setup', w.created.mcp_url, '--codex'], w.io)).toBe(0);
+    expect(w.mints).toEqual([]);
+  });
+
+  it("finds Agent Relay Desktop's bridge client where the app and its installs keep it", () => {
+    const list = (dir: string) =>
+      dir === '/u/.local/lib/agent-relay/versions' ? ['2026.11.4-beta.10', '2026.11.4-beta.11'] : [];
+    expect(desktopCoreBinaries('/u', list)).toEqual([
+      '/Applications/Agent Relay.app/Contents/Helpers/Agent Relay Helper',
+      '/u/Applications/Agent Relay.app/Contents/Helpers/Agent Relay Helper',
+      '/Applications/Agent Relay.app/Contents/Helpers/agent-relay-probe',
+      '/usr/lib/agent-relay/agent_relay/helpers/agent-relay-probe',
+      '/u/.local/lib/agent-relay/versions/2026.11.4-beta.11/agent-relay-probe',
+      '/u/.local/lib/agent-relay/versions/2026.11.4-beta.10/agent-relay-probe',
+      '/u/.local/bin/agent-relay-probe',
+    ]);
   });
 
   it('setup --codex refuses a core download that does not match its checksum', async () => {

@@ -5,7 +5,37 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `agent-relay cloud worker` runs flow assignments from a self-hosted control plane without Relayfile. Such assignments omit the Relayfile token, and the worker used to reject every one as "Resolved worker workflow payload is invalid." It now runs them without `RELAYFILE_URL`/`RELAYFILE_TOKEN`, and drops any stale values inherited from its environment.
+- `agent-relay-node`: Codex chats hosted by OpenIDEA are discovered as live while their trusted app-server holds the thread's writer lock, and queue delivery uses that server's verified executable even when no separate Codex CLI is configured.
+
+### Changed
+
+- `@agent-relay/events-shim`: `setup --muse` no longer says Muse sessions are woken by each post: Agent Relay cannot deliver into a Muse session yet (relay#2174). The session is still linked, so it starts working once that is fixed.
+
+## [18.7.2] - 2026-11-14
+
+### Added
+
+- Factory Droid managed messaging reports unavailable while inherited MCP startup isolation remains unverified; it refuses to launch providers and leaves history collection available.
+
+### Fixed
+
+- `@agent-relay/events-shim`: finds a running Agent Relay Desktop core on macOS through the app's own helper (in `/Applications` or `~/Applications`) and on Linux through Desktop's versioned install, so setup uses it instead of starting a second core.
+- Copilot stop hooks release their idle wait when the person cancels, starts another turn or encounters a session error, without claiming a queued Relay message.
+
+### Changed
+
+- `@agent-relay/events-shim`: `setup --codex` says the Codex session has to be started (send it a first message, such as "Watch for webhooks"): Codex creates a session only on its first turn, so a new window with no message yet cannot be woken.
+
+## [18.7.1] - 2026-11-14
+
+### Fixed
+
+- `agent-relay-node`: a core that discovers its workspace while startup is reconnecting agents no longer lets a stale reconciliation turn its spawn node back off, so headless restarts keep locally spawned agents connected.
 
 ## [18.7.0] - 2026-11-13
 
@@ -19,9 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay-node`: Codex chats hosted by OpenIDEA are discovered as live while their trusted app-server holds the thread's writer lock, and queue delivery uses that server's verified executable even when no separate Codex CLI is configured.
+- `@agent-relay/events-shim`: `setup` on an inbox claimed into an Agent Relay account no longer makes a temporary workspace of its own; it asks to sign the machine's Agent Relay in to that account (or uses a signed-in core already running).
 - `agent-relay-node`: a restarted core no longer drops a joined Connect room whose saved expiry passed more than 15 minutes earlier without asking Cloud. The room stays joined until the first poll checks with Cloud, so a room the host extended while the computer was off keeps working; it closes with the expired notice when Cloud says it is over, or when Cloud cannot answer. Messages queued for it are held back until then.
 - `agent-relay-node`: a spawned Codex, Claude, Grok, Devin or OpenCode agent now takes its spawning agent's and its owner's direct messages as native input when they reply in a thread of the DM, or when the message was read from the delivery queue instead of pushed. Both used to arrive as peer messages. A spawned Muse agent now gives such messages from its spawning agent the owner framing instead of the peer framing. Group DMs, channel posts and mentions are unchanged.
+- `agent-relay-node`: loaded Codex user chats join and stay registered automatically without a desktop window owner. Registration does not add an idle delivery route: messages still arrive at the chat's next hook.
+- `agent-relay-node`: session hooks keep receiving messages when the session-socket pointer directory is a user-owned symlink to private runtime storage; shared or inaccessible symlink targets are still refused.
 
 ## [18.6.1] - 2026-11-13
 
@@ -77,9 +109,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Session hooks keep receiving messages when the session-socket pointer directory is a user-owned symlink to private runtime storage; inaccessible or shared symlink targets remain refused.
 - `agent-relay-probe connect create` starts a new room when Cloud has already closed the saved one, even before its saved expiry, instead of refusing with "already has a pending or active room". `connect end` clears a room that has expired, ended or no longer exists instead of failing; `end` and `extend` let Cloud, not the local clock, decide whether a room is over.
-- Loaded Codex user chats automatically join and stay registered without a desktop window owner; registration presence no longer implies an idle message-delivery route.
 
 ## [18.1.0] - 2026-11-11
 

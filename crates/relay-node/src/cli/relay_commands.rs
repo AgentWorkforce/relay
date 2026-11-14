@@ -88,6 +88,29 @@ pub enum RelayCommands {
         #[arg(long, conflicts_with = "dev")]
         profile: Option<String>,
     },
+    /// Private Factory Droid runtime host.
+    #[command(hide = true)]
+    DroidSpawnHost {
+        #[arg(long)]
+        executable: PathBuf,
+        #[arg(long)]
+        directory: PathBuf,
+        #[arg(long)]
+        runtime: PathBuf,
+        #[arg(long)]
+        launch_id: String,
+        /// The profile build that owns this host and its MCP pointer.
+        #[arg(long)]
+        profile: Option<String>,
+    },
+    /// Private bounded relay-send transport for a spawned Factory Droid session.
+    #[command(hide = true)]
+    DroidSpawnMcp {
+        #[arg(long)]
+        dev: bool,
+        #[arg(long, conflicts_with = "dev")]
+        profile: Option<String>,
+    },
     /// Print the relayed message whose pointer names this `REF`.
     Read {
         #[arg(value_name = "REF")]
@@ -515,6 +538,25 @@ pub fn run(command: RelayCommands) -> Result<()> {
         }
         RelayCommands::DevinSpawnMcp { dev, profile } => {
             relay::harness::devin::mcp::run(&build(dev, profile)?)
+        }
+        RelayCommands::DroidSpawnHost {
+            executable,
+            directory,
+            runtime,
+            launch_id,
+            profile,
+        } => {
+            let development = profile.is_none() && runtime.ends_with("spawned-dev");
+            relay::harness::droid::host::run(
+                &executable,
+                &directory,
+                &runtime,
+                &launch_id,
+                &build(development, profile)?,
+            )
+        }
+        RelayCommands::DroidSpawnMcp { dev, profile } => {
+            relay::harness::droid::mcp::run(&build(dev, profile)?)
         }
         RelayCommands::MuseSpawnMcp { dev, profile } => {
             relay::harness::relay_mcp::run(&build(dev, profile)?)

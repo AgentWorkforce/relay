@@ -125,6 +125,7 @@ impl SessionDirectory for LocalSessions {
             SessionPartition::Pi,
             SessionPartition::OpenCode,
             SessionPartition::Devin,
+            SessionPartition::Droid,
             SessionPartition::CursorCli,
             SessionPartition::Copilot,
             SessionPartition::OpenClaw,
@@ -293,6 +294,12 @@ impl SessionDirectory for LocalSessions {
         // Named from the session's own state, never by scanning every
         // process: identifying a caller reads only its ancestry.
         let found = match target.kind {
+            SessionKind::Droid => crate::relay::droid::discover(
+                &crate::relay::droid::DroidConfig::from_local(&self.config),
+                &*self.table,
+            )
+            .into_iter()
+            .find(|row| row.target == target),
             SessionKind::Codex => codex::thread(&self.config.codex, &target.id),
             SessionKind::ClaudeTerminal => {
                 claude::terminal_session(&self.config.claude, &*self.table, &target.id).map(
@@ -463,6 +470,7 @@ impl SessionDirectory for LocalSessions {
 /// A caller's title when its session's own state names none.
 fn fallback_title(kind: SessionKind) -> &'static str {
     match kind {
+        SessionKind::Droid => "Factory Droid session",
         SessionKind::Codex => "Codex session",
         SessionKind::ClaudeTerminal | SessionKind::ClaudeCloud => "Claude Code session",
         SessionKind::Grok | SessionKind::GrokOpen => "Grok session",
@@ -576,7 +584,7 @@ impl LocalSessions {
                 // does not prove is refused, so nothing is sent.
                 SessionKind::GrokOpen => grok_reachable(&session.target.id),
                 // Launched by the probe, which registers it itself.
-                SessionKind::Grok | SessionKind::OpenCode => false,
+                SessionKind::Droid | SessionKind::Grok | SessionKind::OpenCode => false,
                 // An open Muse session registers like a Codex one: the
                 // row already admits only live message-capable sessions,
                 // and delivery re-proves each one in Muse's own registry
