@@ -5,7 +5,7 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
 
 ### Changed
 
@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Messages to an open Muse session are delivered again: the core's courier answers the terminal queries Muse sends at startup, gets 60s instead of 20s to start its session (120s per delivery), and logs its last screen to `core.log` when it still cannot start.
+- `agent-relay-node`: messages to open Muse sessions reach the session again; a courier that cannot start is logged to `core.log` with what it was stuck on.
 
 ## [18.7.2] - 2026-11-14
 

@@ -801,6 +801,11 @@ impl CourierProc {
 /// How long a courier waits for the session's turn to end before closing.
 const COURIER_LINGER: Duration = Duration::from_secs(10 * 60);
 
+/// The time one delivery into an open Muse session gets: the courier's
+/// startup (up to [`COURIER_READY`]) and its model turn both fall inside it.
+/// The shared coordinator accepts up to `MAX_INJECT_TIMEOUT`.
+pub const DELIVERY_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// How long a courier has to register its Muse session. A first launch, a
 /// Muse self-update or a credential refresh can take well over the 20s this
 /// used to be, and a courier reaped before it registers delivers nothing.
@@ -820,6 +825,29 @@ impl ScreenTail {
         if self.bytes.len() > Self::KEEP {
             let cut = self.bytes.len() - Self::KEEP;
             self.bytes.drain(..cut);
+        }
+    }
+
+    /// What the courier is stuck on, from the readable text, as a fixed
+    /// category: Muse's sign-in screen, a macOS Keychain refusal, the
+    /// workspace trust prompt, a self-update, or nothing recognised.
+    fn stuck_on(&self) -> &'static str {
+        let text = self.text().to_lowercase();
+        if text.is_empty() {
+            "nothing at all"
+        } else if text.contains("keychain") {
+            "a macOS Keychain refusal (unlock the Keychain or run `muse login`)"
+        } else if text.contains("log in with browser")
+            || text.contains("muse login")
+            || text.contains("set an api key")
+        {
+            "Muse's sign-in screen (run `muse login`)"
+        } else if text.contains("trust this workspace") {
+            "the workspace trust prompt"
+        } else if text.contains("updated") || text.contains("updating") {
+            "a Muse self-update"
+        } else {
+            "a screen it did not recognise"
         }
     }
 
@@ -943,17 +971,13 @@ fn query_at(bytes: &[u8]) -> Query {
     }
     // OSC <n>;?<BEL|ST> for 10 (foreground), 11 (background) and 4;<i> (palette).
     if bytes.starts_with(b"\x1b]") {
-        let Some(end) = bytes
-            .iter()
-            .position(|&b| b == 0x07)
-            .map(|p| (p, p + 1))
-            .or_else(|| {
-                bytes
-                    .windows(2)
-                    .position(|w| w == b"\x1b\\")
-                    .map(|p| (p, p + 2))
-            })
-        else {
+        // Whichever terminator comes first, BEL or ST, ends this sequence.
+        let bel = bytes.iter().position(|&b| b == 0x07).map(|p| (p, p + 1));
+        let st = bytes[2..]
+            .windows(2)
+            .position(|w| w == b"\x1b\\")
+            .map(|p| (p + 2, p + 4));
+        let Some(end) = [bel, st].into_iter().flatten().min_by_key(|(at, _)| *at) else {
             return if bytes.len() < 32 {
                 Query::Partial
             } else {
@@ -1297,12 +1321,16 @@ impl SystemCourier {
                 });
             }
             if Instant::now() >= deadline {
-                let last_screen = screen.lock().map(|tail| tail.text()).unwrap_or_default();
-                eprintln!(
-                    "Agent Relay's Muse courier (pid {pid}) did not start a session within {}s, so this message was not delivered. Its last screen: {}",
+                // What the courier was showing, as a category only: its screen
+                // echoes the message, which never goes into the core log.
+                let stuck_on = screen
+                    .lock()
+                    .map(|tail| tail.stuck_on())
+                    .unwrap_or("an unreadable screen");
+                crate::relay::diagnostics::write(format_args!(
+                    "relay: Muse courier (pid {pid}) did not start a session within {}s, so a message to an open Muse session was not delivered; it was showing {stuck_on}",
                     COURIER_READY.as_secs(),
-                    if last_screen.is_empty() { "(nothing)".to_string() } else { last_screen }
-                );
+                ));
                 let mut proc = CourierProc {
                     pid,
                     _master: master_file,
@@ -1421,6 +1449,38 @@ mod tests {
             b"\x1b]11;rgb:0000/0000/0000\x1b\\".to_vec()
         );
         assert!(queries.replies(b"plain output").is_empty());
+    }
+
+    #[test]
+    fn answers_adjacent_queries_with_different_terminators() {
+        let replies = TerminalQueries::default().replies(b"\x1b]10;?\x1b\\\x1b]11;?\x07");
+        assert_eq!(
+            replies,
+            b"\x1b]10;rgb:ffff/ffff/ffff\x1b\\\x1b]11;rgb:0000/0000/0000\x1b\\".to_vec()
+        );
+    }
+
+    #[test]
+    fn names_what_a_stuck_courier_was_showing_without_its_text() {
+        let stuck = |screen: &[u8]| {
+            let mut tail = ScreenTail::default();
+            tail.push(screen);
+            tail.stuck_on()
+        };
+        assert_eq!(stuck(b""), "nothing at all");
+        assert!(stuck(
+            b"Muse Code couldn't access your Meta credentials because macOS Keychain is locked"
+        )
+        .contains("Keychain"));
+        assert!(stuck(b"  Log in with browser\r\n  Set an API key").contains("sign-in"));
+        assert_eq!(
+            stuck(b"Do you trust this workspace?"),
+            "the workspace trust prompt"
+        );
+        assert_eq!(
+            stuck(b"\x1b[2J<<<RELAY MESSAGE BODY>>> secret deploy notes"),
+            "a screen it did not recognise"
+        );
     }
 
     #[test]
@@ -1792,6 +1852,41 @@ mod tests {
                 "{outcome:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_production_timeout_reaches_the_courier_through_the_coordinator() {
+        let tmp = tempfile::tempdir().unwrap();
+        let t = target(tmp.path());
+        let courier = Arc::new(FakeCourier {
+            courier_session: "courier-1".into(),
+            ..FakeCourier::default()
+        });
+        let outcome = deliver(
+            &journal_dir(tmp.path()),
+            courier.clone(),
+            Arc::new(FakeReceipts { admit: true }),
+            &t,
+            "relay-msg-timeout",
+            "relay-msg-timeout",
+            "hello",
+            DELIVERY_TIMEOUT,
+        );
+        assert!(matches!(outcome, Outcome::Delivered { .. }), "{outcome:?}");
+        assert_eq!(courier.sent.lock().unwrap().len(), 1);
+        // The coordinator's bound still refuses anything longer.
+        let refused = deliver(
+            &journal_dir(tmp.path()),
+            courier.clone(),
+            Arc::new(FakeReceipts { admit: true }),
+            &t,
+            "relay-msg-too-long",
+            "relay-msg-too-long",
+            "hello",
+            super::super::coordinator::MAX_INJECT_TIMEOUT + Duration::from_secs(1),
+        );
+        assert_eq!(refused, Outcome::Refused(Failure::ProviderRefused));
+        assert_eq!(courier.sent.lock().unwrap().len(), 1);
     }
 
     #[test]
