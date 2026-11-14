@@ -1291,6 +1291,32 @@ async function listenHook(io: CliIo, flags: Record<string, string>): Promise<num
   );
 }
 
+/**
+ * Where Agent Relay Desktop's bridge client lives, best first: the app's own
+ * helper (macOS, in \`/Applications\` or \`~/Applications\`; it is the same
+ * CLI as \`agent-relay-probe\`), the Linux package, Desktop's versioned
+ * install under \`~/.local/lib/agent-relay/versions\` (newest first), and
+ * \`~/.local/bin/agent-relay-probe\`. Any of them reaches a running Desktop
+ * core, so events-shim uses that core instead of starting a second one.
+ *
+ * @param home - The home directory.
+ * @param list - Lists a directory's entries (empty when it does not exist).
+ * @returns Candidate paths; callers keep the ones that exist.
+ */
+export function desktopCoreBinaries(home: string, list: (dir: string) => string[]): string[] {
+  const versions = join(home, '.local', 'lib', 'agent-relay', 'versions');
+  return [
+    '/Applications/Agent Relay.app/Contents/Helpers/Agent Relay Helper',
+    join(home, 'Applications', 'Agent Relay.app', 'Contents', 'Helpers', 'Agent Relay Helper'),
+    '/Applications/Agent Relay.app/Contents/Helpers/agent-relay-probe',
+    '/usr/lib/agent-relay/agent_relay/helpers/agent-relay-probe',
+    ...list(versions)
+      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+      .map((version) => join(versions, version, 'agent-relay-probe')),
+    join(home, '.local', 'bin', 'agent-relay-probe'),
+  ];
+}
+
 /** The user service that runs \`events-shim serve\` (systemd unit name). */
 const USER_SERVICE = 'agent-relay-webhooks';
 /** The same on macOS (launchd label). */
@@ -1868,13 +1894,14 @@ export function processIo(): CliIo {
       } catch {
         /* No core of our own. */
       }
-      const candidates = [
-        join(own, 'agent-relay-node'),
-        ...older,
-        join(home, '.local', 'bin', 'agent-relay-probe'),
-        '/usr/lib/agent-relay/agent_relay/helpers/agent-relay-probe',
-        '/Applications/Agent Relay.app/Contents/Helpers/agent-relay-probe',
-      ];
+      const list = (dir: string) => {
+        try {
+          return readdirSync(dir);
+        } catch {
+          return [];
+        }
+      };
+      const candidates = [join(own, 'agent-relay-node'), ...older, ...desktopCoreBinaries(home, list)];
       return candidates.filter((path) => existsSync(path));
     },
     userService: {
