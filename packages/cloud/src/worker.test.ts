@@ -263,6 +263,22 @@ describe('cloud worker store and API client', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it('accepts a payload without relayfileToken (self-hosted Control without Relayfile)', async () => {
+    const { relayfileToken: _omitted, ...withoutToken } = payload;
+    const resolved = await resolveWorkerWorkflowPayload({
+      workflowRef: { type: 'inline', value: JSON.stringify({ ...withoutToken, relayfileUrl: '' }) },
+    });
+    expect(resolved.relayfileToken).toBeUndefined();
+  });
+
+  it('still rejects a non-string relayfileToken', async () => {
+    await expect(
+      resolveWorkerWorkflowPayload({
+        workflowRef: { type: 'inline', value: JSON.stringify({ ...payload, relayfileToken: 42 }) },
+      })
+    ).rejects.toThrow('Resolved worker workflow payload is invalid.');
+  });
+
   it('rejects workflow payloads without a valid sourceFileType', async () => {
     const invalidPayload = { ...payload, sourceFileType: undefined };
 

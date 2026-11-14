@@ -92,7 +92,8 @@ function safePathSegment(value: string): string {
   return base.replace(/[^A-Za-z0-9._-]/g, '_') || 'path';
 }
 
-function buildWorkerRuntimeEnv(
+/** Exported for tests. */
+export function buildWorkerRuntimeEnv(
   payload: WorkerWorkflowPayload,
   deps: CloudWorkerDependencies,
   cliCredentialEnv: Record<string, string> = {}
@@ -108,9 +109,16 @@ function buildWorkerRuntimeEnv(
     RELAY_API_KEY: payload.relaycastApiKey,
     RELAYCAST_API_KEY: payload.relaycastApiKey,
     ...(payload.relaycastBaseUrl ? { RELAYCAST_BASE_URL: payload.relaycastBaseUrl } : {}),
-    RELAYFILE_URL: payload.relayfileUrl,
-    RELAYFILE_TOKEN: payload.relayfileToken,
   };
+  // Without a per-run Relayfile credential, set neither: an empty
+  // RELAYFILE_TOKEN would look configured to the SDK and fail its first call.
+  if (payload.relayfileUrl && payload.relayfileToken) {
+    env.RELAYFILE_URL = payload.relayfileUrl;
+    env.RELAYFILE_TOKEN = payload.relayfileToken;
+  } else {
+    delete env.RELAYFILE_URL;
+    delete env.RELAYFILE_TOKEN;
+  }
   if (payload.fileType === 'ts') {
     const [major, minor] = process.versions.node.split('.').map(Number);
     if (!process.versions.bun && (major! < 22 || (major === 22 && minor! < 12))) {
