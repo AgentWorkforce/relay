@@ -53,8 +53,11 @@ impl Core {
     /// Starts, replaces or stops the spawn node to match the settings and
     /// the workspace.
     pub async fn sync_spawn_node(&self) {
-        let wanted = self.wanted_spawn_node();
         let mut running = self.spawn_node.lock().await;
+        // Read the desired state only after this reconciliation owns the
+        // lock. A pass that snapshots an old workspace before waiting here
+        // must not replace the node a newer pass just started.
+        let wanted = self.wanted_spawn_node();
         if let (Some(node), Ok(config)) = (running.as_ref(), &wanted) {
             if node.config() == config {
                 // The maximum or teammates may have changed: a heartbeat

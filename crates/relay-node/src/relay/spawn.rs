@@ -267,6 +267,7 @@ mod tests {
     use crate::relay::state::{ProcessLiveness, SpawnSlots, SpawnState, SpawnStatus};
     use crate::relay::store::SessionKind;
     use crate::relay::store::Store;
+    use crate::relay::workspace::{Secret, Workspace};
     use serde_json::{json, Value};
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -279,6 +280,10 @@ mod tests {
     struct FakeSpawner {
         launched: Mutex<Vec<Launch>>,
         stopped: Mutex<Vec<Target>>,
+        /// Every `available` call announces itself when set.
+        available_calls: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+        /// The first `available` call waits for this receiver when set.
+        pause_first_available: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
         refuse: bool,
         unconfirmed: bool,
         /// Every session it is asked about has ended.
@@ -333,6 +338,13 @@ mod tests {
 
     impl Spawner for FakeSpawner {
         fn available(&self) -> Vec<HarnessId> {
+            let pause = self.pause_first_available.lock().unwrap().take();
+            if let Some(calls) = self.available_calls.lock().unwrap().as_ref() {
+                calls.send(()).unwrap();
+            }
+            if let Some(proceed) = pause {
+                proceed.recv().unwrap();
+            }
             vec![codex::ID]
         }
 
@@ -462,6 +474,77 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+        core.stop_spawn_node().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stale_sync_cannot_replace_a_newer_workspace() {
+        let home = tempfile::tempdir().unwrap();
+        let config = crate::relay::daemon::Config {
+            paths: crate::relay::paths::CorePaths::for_socket(home.path().join("core.sock"))
+                .unwrap(),
+            home: home.path().into(),
+            app_data_dir: home.path().join("app-data"),
+            env: Default::default(),
+            version: "0.0.0-test".into(),
+            host_name: "Test Desk.local".into(),
+            rediscover_every: Duration::from_secs(3600),
+            push_timing: crate::relay::push::PushTiming::default(),
+            delivery_timing: crate::relay::delivery::DeliveryTiming::default(),
+        };
+        let (calls, called) = std::sync::mpsc::channel();
+        let (proceed, paused) = std::sync::mpsc::channel();
+        let spawner = Arc::new(FakeSpawner {
+            available_calls: Mutex::new(Some(calls)),
+            pause_first_available: Mutex::new(Some(paused)),
+            ..Default::default()
+        });
+        let plugins = crate::relay::daemon::Plugins {
+            spawner,
+            ..crate::relay::daemon::Plugins::default()
+        };
+        let (core, _signals) = Core::with_plugins(config, plugins);
+        core.store
+            .update(|store| store.accept_spawns = Some(true))
+            .unwrap();
+        let workspace = |key: &str| Workspace {
+            key: Secret::new(key),
+            base_url: "http://localhost:9".into(),
+            workspace_id: None,
+            source: Default::default(),
+            control_url: None,
+        };
+        *core.workspace.lock().unwrap() = Some(workspace("rk_live_before"));
+
+        let stale = tokio::spawn({
+            let core = core.clone();
+            async move { core.sync_spawn_node().await }
+        });
+        called.recv_timeout(Duration::from_secs(1)).unwrap();
+        *core.workspace.lock().unwrap() = Some(workspace("rk_live_after"));
+        let fresh = tokio::spawn({
+            let core = core.clone();
+            async move { core.sync_spawn_node().await }
+        });
+
+        // Before the fix, the fresh pass reaches `available` and starts the
+        // new node while the stale pass is paused. With serialization before
+        // the snapshot, it waits without reading any workspace state.
+        let _ = called.recv_timeout(Duration::from_millis(200));
+        proceed.send(()).unwrap();
+        stale.await.unwrap();
+        fresh.await.unwrap();
+
+        assert_eq!(
+            core.spawn_node
+                .lock()
+                .await
+                .as_ref()
+                .unwrap()
+                .config()
+                .workspace_key,
+            Secret::new("rk_live_after")
+        );
         core.stop_spawn_node().await;
     }
 
