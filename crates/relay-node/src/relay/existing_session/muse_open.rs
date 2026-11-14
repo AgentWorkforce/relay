@@ -801,6 +801,188 @@ impl CourierProc {
 /// How long a courier waits for the session's turn to end before closing.
 const COURIER_LINGER: Duration = Duration::from_secs(10 * 60);
 
+/// How long a courier has to register its Muse session. A first launch, a
+/// Muse self-update or a credential refresh can take well over the 20s this
+/// used to be, and a courier reaped before it registers delivers nothing.
+const COURIER_READY: Duration = Duration::from_secs(60);
+
+/// The last few KB a courier printed, kept for the readiness-timeout log.
+#[derive(Default)]
+struct ScreenTail {
+    bytes: Vec<u8>,
+}
+
+impl ScreenTail {
+    const KEEP: usize = 4096;
+
+    fn push(&mut self, data: &[u8]) {
+        self.bytes.extend_from_slice(data);
+        if self.bytes.len() > Self::KEEP {
+            let cut = self.bytes.len() - Self::KEEP;
+            self.bytes.drain(..cut);
+        }
+    }
+
+    /// The readable text: escape sequences removed, lines joined, at most 600 characters.
+    fn text(&self) -> String {
+        let raw = String::from_utf8_lossy(&self.bytes);
+        let mut out = String::new();
+        let mut chars = raw.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '\x1b' => match chars.next() {
+                    // CSI: parameters, then one final byte in @..~.
+                    Some('[') => {
+                        for next in chars.by_ref() {
+                            if ('@'..='~').contains(&next) {
+                                break;
+                            }
+                        }
+                    }
+                    // OSC: up to BEL or ST.
+                    Some(']') => {
+                        while let Some(next) = chars.next() {
+                            if next == '\x07' {
+                                break;
+                            }
+                            if next == '\x1b' {
+                                chars.next();
+                                break;
+                            }
+                        }
+                    }
+                    _ => {}
+                },
+                '\r' | '\n' => {
+                    if !out.ends_with(" | ") && !out.is_empty() {
+                        out.push_str(" | ");
+                    }
+                }
+                c if c.is_control() => {}
+                c => out.push(c),
+            }
+        }
+        let collapsed = out.split_whitespace().collect::<Vec<_>>().join(" ");
+        let chars: Vec<char> = collapsed.chars().collect();
+        let start = chars.len().saturating_sub(600);
+        chars[start..].iter().collect()
+    }
+}
+
+/// Answers the queries a terminal emulator answers, from a courier's output.
+/// Muse asks for the cursor position (\`CSI 6n\`), device attributes
+/// (\`CSI c\`), its foreground, background and palette colours (OSC 10, 11,
+/// 4), the colour scheme (\`CSI ?996n\`) and keyboard protocol (\`CSI ?u\`)
+/// before it starts; a sequence split across reads is answered once whole.
+#[derive(Default)]
+struct TerminalQueries {
+    carry: Vec<u8>,
+}
+
+impl TerminalQueries {
+    fn replies(&mut self, data: &[u8]) -> Vec<u8> {
+        let mut input = std::mem::take(&mut self.carry);
+        input.extend_from_slice(data);
+        let mut out = Vec::new();
+        let mut i = 0;
+        let mut consumed = 0;
+        while i < input.len() {
+            if input[i] != 0x1b {
+                i += 1;
+                continue;
+            }
+            match query_at(&input[i..]) {
+                Query::Complete { len, reply } => {
+                    out.extend_from_slice(&reply);
+                    i += len;
+                    consumed = i;
+                }
+                Query::Partial => break,
+                Query::None => {
+                    i += 1;
+                    consumed = i;
+                }
+            }
+        }
+        if i < input.len() {
+            // An escape sequence may continue in the next read: keep it (bounded).
+            let tail = &input[consumed.max(i)..];
+            if tail.len() <= 64 {
+                self.carry = tail.to_vec();
+            }
+        }
+        out
+    }
+}
+
+enum Query {
+    Complete { len: usize, reply: Vec<u8> },
+    Partial,
+    None,
+}
+
+/// The query (and its reply) starting at an ESC byte.
+fn query_at(bytes: &[u8]) -> Query {
+    const FIXED: &[(&[u8], &[u8])] = &[
+        (b"\x1b[6n", b"\x1b[1;1R"),
+        (b"\x1b[c", b"\x1b[?62;22c"),
+        (b"\x1b[0c", b"\x1b[?62;22c"),
+        (b"\x1b[?996n", b"\x1b[?997;1n"),
+        (b"\x1b[?u", b"\x1b[?0u"),
+    ];
+    for (query, reply) in FIXED {
+        if bytes.starts_with(query) {
+            return Query::Complete {
+                len: query.len(),
+                reply: reply.to_vec(),
+            };
+        }
+        if query.starts_with(bytes) {
+            return Query::Partial;
+        }
+    }
+    // OSC <n>;?<BEL|ST> for 10 (foreground), 11 (background) and 4;<i> (palette).
+    if bytes.starts_with(b"\x1b]") {
+        let Some(end) = bytes
+            .iter()
+            .position(|&b| b == 0x07)
+            .map(|p| (p, p + 1))
+            .or_else(|| {
+                bytes
+                    .windows(2)
+                    .position(|w| w == b"\x1b\\")
+                    .map(|p| (p, p + 2))
+            })
+        else {
+            return if bytes.len() < 32 {
+                Query::Partial
+            } else {
+                Query::None
+            };
+        };
+        let body = &bytes[2..end.0];
+        let reply = match body {
+            b"10;?" => Some(b"\x1b]10;rgb:ffff/ffff/ffff\x1b\\".to_vec()),
+            b"11;?" => Some(b"\x1b]11;rgb:0000/0000/0000\x1b\\".to_vec()),
+            _ => body
+                .strip_prefix(b"4;")
+                .and_then(|rest| rest.strip_suffix(b";?"))
+                .filter(|index| !index.is_empty() && index.iter().all(u8::is_ascii_digit))
+                .map(|index| {
+                    let mut reply = b"\x1b]4;".to_vec();
+                    reply.extend_from_slice(index);
+                    reply.extend_from_slice(b";rgb:8080/8080/8080\x1b\\");
+                    reply
+                }),
+        };
+        return match reply {
+            Some(reply) => Query::Complete { len: end.1, reply },
+            None => Query::None,
+        };
+    }
+    Query::None
+}
+
 const BODY_START: &str = "<<<RELAY MESSAGE BODY>>>";
 const BODY_END: &str = "<<<END RELAY MESSAGE BODY>>>";
 
@@ -1068,10 +1250,16 @@ impl SystemCourier {
         // Reaping is by pid through waitpid; let the Child go without waiting.
         std::mem::forget(child);
 
-        // Drain the PTY so the TUI never blocks writing its redraws.
+        // Drain the PTY so the TUI never blocks writing its redraws, answer the
+        // terminal queries Muse sends at startup (a real terminal would; left
+        // unanswered, each one waits out a timeout and the courier can miss
+        // its readiness window), and keep the screen's tail for diagnostics.
         let drain_fd = master_file.as_raw_fd();
+        let screen = Arc::new(std::sync::Mutex::new(ScreenTail::default()));
+        let drain_screen = screen.clone();
         let drain = std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
+            let mut queries = TerminalQueries::default();
             loop {
                 let n = unsafe {
                     libc::read(drain_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
@@ -1079,11 +1267,25 @@ impl SystemCourier {
                 if n <= 0 {
                     break;
                 }
+                let data = &buf[..n as usize];
+                if let Ok(mut tail) = drain_screen.lock() {
+                    tail.push(data);
+                }
+                let replies = queries.replies(data);
+                if !replies.is_empty() {
+                    unsafe {
+                        libc::write(
+                            drain_fd,
+                            replies.as_ptr() as *const libc::c_void,
+                            replies.len(),
+                        );
+                    }
+                }
             }
         });
 
         // Readiness from the registry, not the screen.
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + COURIER_READY;
         loop {
             if let Some(session_id) = self.session_for_pid(pid) {
                 return Some(CourierProc {
@@ -1095,6 +1297,12 @@ impl SystemCourier {
                 });
             }
             if Instant::now() >= deadline {
+                let last_screen = screen.lock().map(|tail| tail.text()).unwrap_or_default();
+                eprintln!(
+                    "Agent Relay's Muse courier (pid {pid}) did not start a session within {}s, so this message was not delivered. Its last screen: {}",
+                    COURIER_READY.as_secs(),
+                    if last_screen.is_empty() { "(nothing)".to_string() } else { last_screen }
+                );
                 let mut proc = CourierProc {
                     pid,
                     _master: master_file,
@@ -1163,6 +1371,70 @@ impl Courier for SystemCourier {
 #[cfg(unix)]
 mod tests {
     use super::*;
+
+    /// Muse 1.4.20's startup output, as recorded from a courier's PTY on macOS.
+    const MUSE_STARTUP: &[u8] = b"\x1b]7501;?\x1b\\\x1b]10;?\x07\x1b]11;?\x07\x1b]4;0;?\x07\x1b]4;15;?\x07\x1b[?2004h\x1b[?1004h\x1b[0 q\x1b[?25l\x1b[>3u\x1b[?2031h\x1b[?996n\x1b[?u\x1b[c\x1b[6n";
+
+    #[test]
+    fn answers_the_terminal_queries_muse_sends_at_startup() {
+        let replies = TerminalQueries::default().replies(MUSE_STARTUP);
+        let text = String::from_utf8(replies).unwrap();
+        for expected in [
+            "\x1b]10;rgb:ffff/ffff/ffff\x1b\\",
+            "\x1b]11;rgb:0000/0000/0000\x1b\\",
+            "\x1b]4;0;rgb:8080/8080/8080\x1b\\",
+            "\x1b]4;15;rgb:8080/8080/8080\x1b\\",
+            "\x1b[?997;1n",
+            "\x1b[?0u",
+            "\x1b[?62;22c",
+            "\x1b[1;1R",
+        ] {
+            assert!(
+                text.contains(expected),
+                "missing reply {expected:?} in {text:?}"
+            );
+        }
+        // Exactly these replies, in order: mode switches and the unknown OSC 7501 get none.
+        assert_eq!(
+            text,
+            concat!(
+                "\x1b]10;rgb:ffff/ffff/ffff\x1b\\",
+                "\x1b]11;rgb:0000/0000/0000\x1b\\",
+                "\x1b]4;0;rgb:8080/8080/8080\x1b\\",
+                "\x1b]4;15;rgb:8080/8080/8080\x1b\\",
+                "\x1b[?997;1n",
+                "\x1b[?0u",
+                "\x1b[?62;22c",
+                "\x1b[1;1R",
+            )
+        );
+    }
+
+    #[test]
+    fn answers_a_query_split_across_reads_once() {
+        let mut queries = TerminalQueries::default();
+        assert!(queries.replies(b"redraw\x1b[").is_empty());
+        assert_eq!(queries.replies(b"6n more"), b"\x1b[1;1R".to_vec());
+        assert!(queries.replies(b"\x1b]11;").is_empty());
+        assert_eq!(
+            queries.replies(b"?\x07"),
+            b"\x1b]11;rgb:0000/0000/0000\x1b\\".to_vec()
+        );
+        assert!(queries.replies(b"plain output").is_empty());
+    }
+
+    #[test]
+    fn keeps_a_readable_tail_of_the_courier_screen() {
+        let mut tail = ScreenTail::default();
+        tail.push(MUSE_STARTUP);
+        tail.push(b"\x1b[1;1H  Muse Code 1.4.20\r\n\x1b[2K\xe2\x9c\x97 Muse Code couldn't access your credentials\r\n");
+        let text = tail.text();
+        assert!(text.contains("Muse Code 1.4.20"), "{text}");
+        assert!(text.contains("couldn't access your credentials"), "{text}");
+        assert!(!text.contains('\x1b'));
+        tail.push(&vec![b'x'; 10_000]);
+        assert!(tail.text().chars().count() <= 600);
+    }
 
     #[test]
     fn dropping_the_courier_reaps_only_its_in_flight_child() {

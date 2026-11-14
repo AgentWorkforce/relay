@@ -1558,7 +1558,9 @@ impl LocalInjector {
             delivery_id,
             message_id,
             &text,
-            Duration::from_secs(30),
+            // A courier's startup (up to its 60s readiness window) and its model
+            // turn both fall inside this.
+            Duration::from_secs(120),
         ) {
             crate::relay::existing_session::Outcome::Delivered { .. } => InjectOutcome::Delivered,
             crate::relay::existing_session::Outcome::Retry(_) if hosted => {
