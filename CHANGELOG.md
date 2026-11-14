@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Copilot stop hooks release their idle wait when the person cancels, starts another turn or encounters a session error, without claiming a queued Relay message.
 - `agent-relay-node`: a core that discovers its workspace while startup is reconnecting agents no longer lets a stale reconciliation turn its spawn node back off, so headless restarts keep locally spawned agents connected.
 
 ### Changed
