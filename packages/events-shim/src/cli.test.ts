@@ -858,6 +858,16 @@ describe('events-shim CLI', () => {
     expect(w.out.join('\n')).toContain("events-shim's core is kept");
   });
 
+  it('setup --muse links Muse but does not promise it wakes (relay#2174)', async () => {
+    const w = await setupWorld({ core: true });
+    expect(await runCli(['setup', w.created.mcp_url, '--muse'], w.io)).toBe(0);
+    const said = w.out.join('\n');
+    expect(said).toContain('Muse: MCP server "webhooks" added; not woken yet');
+    expect(said).not.toContain('Muse: open a session; the newest one is woken');
+    // Still linked, so it works once the core delivers.
+    expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).wakeKinds).toEqual(['muse-open']);
+  });
+
   it("never changes Desktop's core settings", async () => {
     const w = await setupWorld({ core: true });
     expect(await runCli(['setup', w.created.mcp_url, '--opencode'], w.io)).toBe(0);
