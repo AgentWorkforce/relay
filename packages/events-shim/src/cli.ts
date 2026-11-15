@@ -473,6 +473,9 @@ function editClaudeHooks(io: CliIo, remove = false): { ok: true } | { ok: false;
  * The command a turn-end hook (Copilot's \`agentStop\`, Gemini's
  * \`AfterAgent\`) runs to hold a finished turn open until the next post. It
  * runs from \`$HOME\`, like Claude Code's.
+ *
+ * @param id - The CLI the hook belongs to: \`copilot\` or \`gemini\`.
+ * @returns The shell command that waits for the next post and answers with it.
  */
 export function stopHookCommand(id: StopHookId): string {
   return `cd "$HOME" && npx -y @agent-relay/events-shim@latest listen --stop-hook ${id}`;
@@ -1461,6 +1464,10 @@ interface StopHookCli {
   transcript: string;
   /** Whether this hook run ends a finished turn (others are answered at once). */
   endsTurn: (input: Record<string, unknown>) => boolean;
+  /** Why this run must not hold the turn (another hook on the event needs it to end), if so. */
+  holdsBack?: (io: CliIo) => boolean;
+  /** How many answers in a row the CLI turns into new turns, if it caps them. */
+  chainLimit?: number;
   /** A transcript line the CLI appends once its person cancelled or typed: stop waiting. */
   released: RegExp;
   /** The hook's answer that hands the agent \`text\` as its next prompt. */
@@ -1468,25 +1475,83 @@ interface StopHookCli {
 }
 
 const STOP_HOOK_CLIS: Record<StopHookId, StopHookCli> = {
-  // Copilot CLI's \`agentStop\` hook: \`decision: "block"\` makes \`reason\` the next user turn.
+  // Copilot CLI's \`agentStop\` hook: \`decision: "block"\` makes \`reason\` the next user turn. Copilot
+  // honours at most 8 blocks in a row (\`stop_hook_active\` marks a continued turn), then ends the turn.
   copilot: {
     process: 'copilot',
     session: 'sessionId',
     transcript: 'transcriptPath',
     endsTurn: (input) => input.stopReason === undefined || input.stopReason === 'end_turn',
+    chainLimit: 8,
     released: /"type"\s*:\s*"(abort|user\.message|session\.error)"/,
     answer: (reason) => ({ decision: 'block', reason }),
   },
   // Gemini CLI's \`AfterAgent\` hook: \`decision: "deny"\` sends \`reason\` to the agent as a new prompt.
+  // Gemini waits for every hook of the event, so with Agent Relay's Gemini extension signed in (its
+  // "Relay Stop Guard" can continue the turn with a relay message) this one never holds the turn.
   gemini: {
     process: 'gemini',
     session: 'session_id',
     transcript: 'transcript_path',
     endsTurn: () => true,
+    holdsBack: (io) => Boolean(io.readText(join(home(io), '.relay', 'token'))?.trim()),
     released: /"type"\s*:\s*"user"|"content"\s*:\s*"Request cancelled\."/,
     answer: (reason) => ({ decision: 'deny', reason }),
   },
 };
+
+/** How much of a transcript's end the hook reads for what happened since it started. */
+const TRANSCRIPT_LOOKBACK_BYTES = 256 * 1024;
+
+/** A transcript line's own time (\`"timestamp"\` as ISO text or epoch ms), if it has one. */
+function lineTime(line: string): number | null {
+  const match = /"timestamp"\s*:\s*(?:"([^"]+)"|(\d{10,}))/.exec(line);
+  if (!match) return null;
+  const time = match[1] !== undefined ? Date.parse(match[1]) : Number(match[2]);
+  return Number.isFinite(time) ? time : null;
+}
+
+/**
+ * Watches a CLI's session transcript for the person cancelling or typing
+ * after the hook started. The first successful read looks back over the
+ * transcript's end for such a line stamped at or after the hook's own time
+ * (the person may cancel while the hook is still starting); without that
+ * time it starts at the end. Nothing is read as released until a read
+ * succeeds.
+ */
+function transcriptWatch(io: CliIo, path: string, released: RegExp, since: number | null): () => boolean {
+  let offset: number | null = null;
+  let carry = '';
+  let done = false;
+  return () => {
+    if (done || !path) return done;
+    if (offset === null) {
+      const end = io.readFrom(path, Number.MAX_SAFE_INTEGER)?.end;
+      if (end === undefined) return false;
+      if (since === null) {
+        offset = end;
+        return false;
+      }
+      const start = Math.max(0, end - TRANSCRIPT_LOOKBACK_BYTES);
+      const tail = io.readFrom(path, start);
+      if (!tail) return false;
+      offset = tail.end;
+      const lines = tail.text.split('\n');
+      if (start > 0) lines.shift(); // a partial first line
+      carry = lines.pop() ?? '';
+      done = lines.some((line) => released.test(line) && (lineTime(line) ?? -Infinity) >= since);
+      return done;
+    }
+    const added = io.readFrom(path, offset);
+    if (added && added.end > offset) {
+      offset = added.end;
+      const lines = (carry + added.text).split('\n');
+      carry = lines.pop() ?? '';
+      done = lines.some((line) => released.test(line));
+    }
+    return done;
+  };
+}
 
 /**
  * \`listen --stop-hook <copilot|gemini>\`: run by that CLI's turn-end hook
@@ -1495,11 +1560,13 @@ const STOP_HOOK_CLIS: Record<StopHookId, StopHookCli> = {
  * it as the agent's next prompt, so a session that finished its turn takes
  * a new one by itself. It answers \`{}\` (the turn ends as usual) when the
  * CLI exits, when the transcript shows the person cancelled the wait or
- * typed, or when a newer turn's hook takes over. Every turn's hook starts it
- * again.
+ * typed, or when a newer turn's hook takes over. A post that arrives just as
+ * it lets go is kept for the next turn's hook instead of being lost. Every
+ * turn's hook starts it again.
  */
 async function listenStopHook(io: CliIo, flags: Record<string, string>): Promise<number> {
-  const cli = STOP_HOOK_CLIS[flags['stop-hook'] as StopHookId];
+  const id = flags['stop-hook'] as StopHookId;
+  const cli = STOP_HOOK_CLIS[id];
   const mcpUrl = mcpUrlFor(io, flags);
   let input: Record<string, unknown> = {};
   try {
@@ -1509,37 +1576,67 @@ async function listenStopHook(io: CliIo, flags: Record<string, string>): Promise
     /* No input: still a turn end. */
   }
   let answered = false;
-  if (cli && mcpUrl && cli.endsTurn(input)) {
+  if (cli && mcpUrl && cli.endsTurn(input) && !cli.holdsBack?.(io)) {
     const owner = io.ancestor(cli.process);
     const session = typeof input[cli.session] === 'string' ? (input[cli.session] as string) : '';
-    const transcript = typeof input[cli.transcript] === 'string' ? (input[cli.transcript] as string) : '';
-    // Only what the CLI writes after this hook started can release it.
-    let offset = transcript ? (io.readFrom(transcript, Number.MAX_SAFE_INTEGER)?.end ?? 0) : 0;
-    let carry = '';
-    let released = false;
-    const alive = () => {
-      if (released || (owner !== null && !io.pidAlive(owner))) return false;
-      const added = transcript ? io.readFrom(transcript, offset) : null;
-      if (added && added.end > offset) {
-        offset = added.end;
-        const lines = (carry + added.text).split('\n');
-        carry = lines.pop() ?? '';
-        released = lines.some((line) => cli.released.test(line));
-      }
-      return !released;
-    };
-    await listenAsSessionOwner(
-      io,
-      mcpUrl,
-      session || String(owner ?? 'machine'),
-      alive,
-      async (text) => {
-        io.stdout(JSON.stringify(cli.answer(text)));
+    const sessionKey = session || String(owner ?? 'machine');
+    const dir = dirname(configPath(io));
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 16);
+    // Answers in a row in this session: a turn the CLI did not continue from a hook starts over.
+    const chainFile = join(dir, `chain-${digest(`${id}\n${sessionKey}`)}`);
+    const chain = input.stop_hook_active === true ? Number(io.readText(chainFile)?.trim()) || 0 : 0;
+    if (cli.chainLimit === undefined || chain < cli.chainLimit) {
+      const answer = (text: string) => {
+        const last = cli.chainLimit !== undefined && chain + 1 >= cli.chainLimit;
+        io.stdout(
+          JSON.stringify(
+            cli.answer(
+              last
+                ? `${text}\n\n(This CLI hands at most ${cli.chainLimit} webhook posts in a row to a session. Tell the person to send you any message so later posts keep waking you.)`
+                : text
+            )
+          )
+        );
+        if (cli.chainLimit !== undefined) writePrivate(chainFile, `${chain + 1}\n`);
         answered = true;
-        return 0;
-      },
-      true
-    );
+      };
+      // A post a previous hook claimed just as it let go: this turn takes it at once.
+      const held = join(dir, `held-${digest(mcpUrl)}.txt`);
+      const mine = `${held}.${io.pid}`;
+      let kept: string | null = null;
+      try {
+        renameSync(held, mine);
+        kept = io.readText(mine);
+        rmSync(mine, { force: true });
+      } catch {
+        /* Nothing held. */
+      }
+      if (kept) {
+        answer(kept);
+      } else {
+        // When the CLI ran the hook (Copilot: epoch ms; Gemini: ISO text).
+        const stamp = input.timestamp;
+        const parsedStamp =
+          typeof stamp === 'number' ? stamp : typeof stamp === 'string' ? Date.parse(stamp) : NaN;
+        const since = Number.isFinite(parsedStamp) ? parsedStamp : null;
+        const transcript = typeof input[cli.transcript] === 'string' ? (input[cli.transcript] as string) : '';
+        const releasedByPerson = transcriptWatch(io, transcript, cli.released, since);
+        const alive = () => (owner === null || io.pidAlive(owner)) && !releasedByPerson();
+        await listenAsSessionOwner(
+          io,
+          mcpUrl,
+          sessionKey,
+          alive,
+          async (text) => {
+            // Let go meanwhile: the CLI would drop the answer, so the next turn's hook takes it.
+            if (!alive()) writePrivate(held, text);
+            else answer(text);
+            return 0;
+          },
+          true
+        );
+      }
+    }
   }
   if (!answered) io.stdout('{}');
   return 0;

@@ -1421,6 +1421,169 @@ describe('events-shim CLI', () => {
     }, 10_000);
   }
 
+  it('listen --stop-hook copilot lets go at once when the person cancelled while the hook was starting', async () => {
+    const transcript = join(mkdtempSync(join(tmpdir(), 'events-shim-transcript-')), 'events.jsonl');
+    const started = Date.parse('2026-11-15T17:31:00.000Z');
+    writeFileSync(
+      transcript,
+      [
+        // An earlier turn's cancel never releases this one.
+        '{"type":"abort","timestamp":"2026-11-15T17:20:00.000Z"}',
+        '{"type":"hook.start","timestamp":"2026-11-15T17:31:00.001Z"}',
+        // The person pressed Ctrl+C before the listener read the transcript.
+        '{"type":"abort","timestamp":"2026-11-15T17:31:00.300Z"}',
+        '',
+      ].join('\n')
+    );
+    const w = await setupWorld({
+      stdin: JSON.stringify({
+        sessionId: 'c-1',
+        stopReason: 'end_turn',
+        timestamp: started,
+        transcriptPath: transcript,
+      }),
+    });
+    w.io.readText = (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    await runCli(['setup', w.created.mcp_url], w.io);
+    await w.post({ waiting: true });
+    w.out.length = 0;
+    expect(await runCli(['listen', '--stop-hook', 'copilot'], w.io)).toBe(0);
+    expect(w.out).toEqual(['{}']);
+    // It claimed nothing: the post is still there for the next turn.
+    expect(await runCli(['listen', '--timeout', '1'], w.io)).toBe(0);
+    expect(w.out.join('\n')).toContain('{"waiting":true}');
+  });
+
+  it('listen --stop-hook: an older cancel does not release the wait, even when the transcript was unreadable at first', async () => {
+    const transcript = join(mkdtempSync(join(tmpdir(), 'events-shim-transcript-')), 'events.jsonl');
+    const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'g-1', transcript_path: transcript }) });
+    w.io.readText = (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    await runCli(['setup', w.created.mcp_url], w.io);
+    w.out.length = 0;
+    const listening = runCli(['listen', '--stop-hook', 'gemini'], w.io);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The transcript appears only now, holding an earlier turn's cancel and person's message.
+    writeFileSync(
+      transcript,
+      '{"id":"1","type":"user","content":[{"text":"hi"}]}\n{"id":"2","type":"info","content":"Request cancelled."}\n'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 2_300));
+    await w.post({ still: 'waiting' });
+    expect(await listening).toBe(0);
+    expect(JSON.parse(w.out[0]!).reason).toContain('{"still":"waiting"}');
+  }, 10_000);
+
+  it("listen --stop-hook gemini does not hold the turn while Agent Relay's Gemini extension is signed in", async () => {
+    const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'g-1' }) });
+    w.io.readText = (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    mkdirSync(join(w.home, '.relay'), { recursive: true });
+    writeFileSync(join(w.home, '.relay', 'token'), 'at_live_x\n');
+    await runCli(['setup', w.created.mcp_url], w.io);
+    await w.post({ kept: true });
+    w.out.length = 0;
+    expect(await runCli(['listen', '--stop-hook', 'gemini'], w.io)).toBe(0);
+    expect(w.out).toEqual(['{}']);
+    expect(await runCli(['listen', '--timeout', '1'], w.io)).toBe(0);
+    expect(w.out.join('\n')).toContain('{"kept":true}');
+  });
+
+  it("listen --stop-hook copilot stays within Copilot's 8 continuations in a row and says so on the last", async () => {
+    const w = await setupWorld({
+      stdin: JSON.stringify({ sessionId: 'c-1', stopReason: 'end_turn', stop_hook_active: true }),
+    });
+    w.io.readText = (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    await runCli(['setup', w.created.mcp_url], w.io);
+    const chain = join(
+      w.home,
+      '.config',
+      'agent-relay',
+      `chain-${createHash('sha256').update('copilot\nc-1').digest('hex').slice(0, 16)}`
+    );
+    // Seven posts already continued this turn: the eighth is the last Copilot honours.
+    writeFileSync(chain, '7\n');
+    await w.post({ n: 8 });
+    w.out.length = 0;
+    expect(await runCli(['listen', '--stop-hook', 'copilot'], w.io)).toBe(0);
+    const last = JSON.parse(w.out[0]!).reason as string;
+    expect(last).toContain('{"n":8}');
+    expect(last).toContain('at most 8 webhook posts in a row');
+    expect(readFileSync(chain, 'utf8')).toBe('8\n');
+    // A ninth would be dropped by Copilot: the hook claims nothing and lets the turn end.
+    await w.post({ n: 9 });
+    w.out.length = 0;
+    expect(await runCli(['listen', '--stop-hook', 'copilot'], w.io)).toBe(0);
+    expect(w.out).toEqual(['{}']);
+    // The person's own turn starts a new chain, which gets the waiting post.
+    w.io.readStdin = async () =>
+      JSON.stringify({ sessionId: 'c-1', stopReason: 'end_turn', stop_hook_active: false });
+    w.out.length = 0;
+    expect(await runCli(['listen', '--stop-hook', 'copilot'], w.io)).toBe(0);
+    const fresh = JSON.parse(w.out[0]!).reason as string;
+    expect(fresh).toContain('{"n":9}');
+    expect(fresh).not.toContain('at most 8');
+    expect(readFileSync(chain, 'utf8')).toBe('1\n');
+  });
+
+  it('listen --stop-hook keeps a post claimed just as the CLI let go for the next turn instead of losing it', async () => {
+    const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'g-1' }) });
+    w.io.readText = (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    await runCli(['setup', w.created.mcp_url], w.io);
+    w.out.length = 0;
+    let gone = false;
+    w.io.pidAlive = (pid) => pid === 4242 || (pid === 777 && !gone);
+    const listening = runCli(['listen', '--stop-hook', 'gemini'], w.io);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The post is claimed, but the CLI went away before the answer could be given.
+    const posted = w.post({ late: true });
+    gone = true;
+    await posted;
+    expect(await listening).toBe(0);
+    expect(w.out).toEqual(['{}']);
+    const held = join(
+      w.home,
+      '.config',
+      'agent-relay',
+      `held-${createHash('sha256').update(w.created.mcp_url).digest('hex').slice(0, 16)}.txt`
+    );
+    expect(readFileSync(held, 'utf8')).toContain('{"late":true}');
+    // The next turn's hook answers with it at once.
+    gone = false;
+    w.out.length = 0;
+    expect(await runCli(['listen', '--stop-hook', 'gemini'], w.io)).toBe(0);
+    expect(JSON.parse(w.out[0]!).reason).toContain('{"late":true}');
+    expect(existsSync(held)).toBe(false);
+  });
+
   it('listen --stop-hook: a newer turn of the same session stops the older waiting hook and waits instead', async () => {
     const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'g-1' }) });
     w.io.readText = (path) => {
