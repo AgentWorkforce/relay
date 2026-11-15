@@ -1511,7 +1511,7 @@ const STOP_HOOK_CLIS: Record<StopHookId, StopHookCli> = {
 /**
  * Whether Agent Relay's Gemini extension (\`agent-relay\`) can answer this
  * \`AfterAgent\` run with a relay message: it is installed in
- * \`~/.gemini/extensions\`, enabled for \`cwd\` by Gemini's own rules in
+ * \`~/.gemini/extensions\` (copied, or linked to its source), enabled for \`cwd\` by Gemini's own rules in
  * \`extension-enablement.json\` (the last matching override wins; \`!\`
  * disables, a trailing \`*\` takes subdirectories), and signed in
  * (\`~/.relay/token\`, without which its guard always lets the turn end).
@@ -1519,7 +1519,18 @@ const STOP_HOOK_CLIS: Record<StopHookId, StopHookCli> = {
 function geminiRelayGuardActive(io: CliIo, cwd: string | null): boolean {
   const extensions = join(home(io), '.gemini', 'extensions');
   if (!io.readText(join(home(io), '.relay', 'token'))?.trim()) return false;
-  if (io.readText(join(extensions, 'agent-relay', 'gemini-extension.json')) === null) return false;
+  // A linked install (\`gemini extensions link\`) keeps only its metadata here; the manifest is at its source.
+  let manifestDir = join(extensions, 'agent-relay');
+  try {
+    const metadata = JSON.parse(io.readText(join(manifestDir, '.gemini-extension-install.json')) ?? '{}') as {
+      type?: unknown;
+      source?: unknown;
+    };
+    if (metadata.type === 'link' && typeof metadata.source === 'string') manifestDir = metadata.source;
+  } catch {
+    /* Not linked: a copied install holds its manifest. */
+  }
+  if (io.readText(join(manifestDir, 'gemini-extension.json')) === null) return false;
   let overrides: unknown = [];
   try {
     const config = JSON.parse(io.readText(join(extensions, 'extension-enablement.json')) ?? '{}') as Record<

@@ -8,6 +8,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  rmSync,
   appendFileSync,
   writeFileSync,
 } from 'node:fs';
@@ -1511,6 +1512,17 @@ describe('events-shim CLI', () => {
     // Installed and signed in: its Relay Stop Guard decides, so this hook lets the turn end at once.
     mkdirSync(join(extensions, 'agent-relay'), { recursive: true });
     writeFileSync(join(extensions, 'agent-relay', 'gemini-extension.json'), '{"name":"agent-relay"}');
+    expect(await holds()).toBe(false);
+    // Linked instead of copied: only install metadata here, the manifest at its source.
+    rmSync(join(extensions, 'agent-relay'), { recursive: true });
+    mkdirSync(join(extensions, 'agent-relay'), { recursive: true });
+    const source = mkdtempSync(join(tmpdir(), 'events-shim-gemini-ext-'));
+    writeFileSync(
+      join(extensions, 'agent-relay', '.gemini-extension-install.json'),
+      JSON.stringify({ type: 'link', source })
+    );
+    expect(await holds()).toBe(true); // the source has no manifest yet
+    writeFileSync(join(source, 'gemini-extension.json'), '{"name":"agent-relay"}');
     expect(await holds()).toBe(false);
     // Disabled for this directory by Gemini's own rules (the last matching one wins).
     writeFileSync(
