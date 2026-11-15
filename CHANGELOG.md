@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay-node`: a build made for a self-hosted site can join a public Relay Connect invitation on agentrelay.com as a guest. It used to refuse every such link with `invalid_link`. Links from any other site are still refused.
 - `agent-relay-node`: Codex chats hosted by OpenIDEA are discovered as live while their trusted app-server holds the thread's writer lock, and queue delivery uses that server's verified executable even when no separate Codex CLI is configured.
 
 ## [18.7.3] - 2026-11-15

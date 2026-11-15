@@ -214,7 +214,8 @@ impl Core {
         let client = self.plugins.connect_cloud.clone();
         let connect_id = session.connect_id.clone();
         let token = session.token.clone();
-        tokio::task::spawn_blocking(move || client.roster(&connect_id, &token))
+        let site = session.site().to_owned();
+        tokio::task::spawn_blocking(move || client.roster(&site, &connect_id, &token))
             .await
             .unwrap_or_else(|_| {
                 Err(crate::relay::connect::connect_internal_error(
