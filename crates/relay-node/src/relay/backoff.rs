@@ -168,6 +168,17 @@ impl RelaycastBackoff {
             .any(|entry| entry.retry_at > now)
     }
 
+    /// The time left in the workspace's pause, without claiming the recheck
+    /// that `remaining` hands the first caller after it: a pass of reads
+    /// that holds that recheck asks this before each further read.
+    pub fn pause_left(&self, workspace: &WorkspaceScope) -> Option<Duration> {
+        let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries
+            .get(&workspace.key)
+            .and_then(|entry| entry.retry_at.checked_duration_since(Instant::now()))
+            .filter(|left| !left.is_zero())
+    }
+
     pub fn allowed(&self, workspace: &WorkspaceScope) -> bool {
         self.remaining(workspace).is_none()
     }

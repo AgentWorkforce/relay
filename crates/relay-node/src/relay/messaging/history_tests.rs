@@ -25,6 +25,8 @@ struct Script {
     conversations: Vec<Value>,
     failures: HashMap<String, VecDeque<Failure>>,
     requests: Vec<String>,
+    /// Messages in each conversation's page; one when zero.
+    page: usize,
 }
 
 impl Script {
@@ -53,12 +55,26 @@ impl Script {
         let data = match (path, messages) {
             ("/v1/deliveries", _) => json!([]),
             ("/v1/dm/conversations", _) => Value::Array(self.conversations.clone()),
-            (_, Some(id)) => json!([{
-                "id": format!("msg_{id}"), "agent_id": format!("ag_{id}"),
-                "agent_name": format!("peer-{id}"),
-                "agent_address": format!("peer-{id}@elsewhere"),
-                "thread_id": null, "text": "hello", "created_at": "2026-11-15T00:00:00Z",
-            }]),
+            (_, Some(id)) => (0..self.page.max(1))
+                .map(|n| {
+                    let message = if n == 0 {
+                        format!("msg_{id}")
+                    } else {
+                        format!("msg_{id}_{n}")
+                    };
+                    json!({
+                        "id": message, "agent_id": format!("ag_{id}"),
+                        "agent_name": format!("peer-{id}"),
+                        "agent_address": format!("peer-{id}@elsewhere"),
+                        "thread_id": null, "text": "hello",
+                        "created_at": "2026-11-15T00:00:00Z",
+                    })
+                })
+                .collect(),
+            _ if path.starts_with("/v1/messages/") => {
+                let id = &path["/v1/messages/".len()..];
+                json!({"id": id, "thread_id": null, "text": "hello"})
+            }
             _ => {
                 let body = json!({"ok": false, "error": {"code": "not_found", "message": path}});
                 return (404, None, body);
@@ -227,15 +243,11 @@ async fn an_overloaded_relaycast_pauses_history_without_another_request() {
     }
     let (_home, core, script) = core_with(vec![conversation("c1", "m1")]).await;
     // The SDK retries a GET twice; the answer it gives up on names 30 s.
-    script.lock().unwrap().failures.insert(
-        "/v1/dm/conversations".into(),
-        [
-            (503, "database_overloaded", Some(0)),
-            (503, "database_overloaded", Some(0)),
-            (503, "database_overloaded", Some(30)),
-        ]
-        .into(),
-    );
+    script
+        .lock()
+        .unwrap()
+        .failures
+        .insert("/v1/dm/conversations".into(), overloaded());
     assert!(core.history(&peer(), None).await.is_err());
     let before = script.lock().unwrap().requests.len();
 
@@ -314,4 +326,93 @@ async fn a_retry_after_an_error_goes_on_from_where_it_stopped() {
     assert_eq!(script.count("/v1/dm/c1/messages"), 1);
     assert_eq!(script.count("/v1/dm/c2/messages"), 4);
     assert_eq!(script.count("/v1/dm/c3/messages"), 1);
+}
+
+/// The failures the SDK's three attempts at one GET meet, the last naming
+/// a 30 s `Retry-After`.
+fn overloaded() -> VecDeque<Failure> {
+    [
+        (503, "database_overloaded", Some(0)),
+        (503, "database_overloaded", Some(0)),
+        (503, "database_overloaded", Some(30)),
+    ]
+    .into()
+}
+
+/// Asserts `error` is the paused refusal, with about 30 s left.
+fn assert_paused(error: &RpcError) {
+    assert_eq!(error.data.kind, ErrorKind::RateLimited);
+    assert!(
+        error
+            .retry_after_secs
+            .is_some_and(|secs| (25..=30).contains(&secs)),
+        "{:?}",
+        error.retry_after_secs
+    );
+}
+
+#[tokio::test]
+async fn an_overloaded_delivery_poll_stops_the_history_pass() {
+    if ran_without_file_roots("an_overloaded_delivery_poll_stops_the_history_pass") {
+        return;
+    }
+    let (_home, core, script) =
+        core_with(vec![conversation("c1", "m1"), conversation("c2", "m2")]).await;
+    script
+        .lock()
+        .unwrap()
+        .failures
+        .insert("/v1/deliveries".into(), overloaded());
+
+    let error = core.history(&peer(), None).await.unwrap_err();
+    assert_paused(&error);
+    let script = script.lock().unwrap();
+    assert_eq!(script.count("/v1/dm/conversations"), 0);
+    assert_eq!(script.message_reads(), 0);
+}
+
+#[tokio::test]
+async fn an_overloaded_detail_read_pauses_the_workspace_after_another_failure() {
+    if ran_without_file_roots(
+        "an_overloaded_detail_read_pauses_the_workspace_after_another_failure",
+    ) {
+        return;
+    }
+    let (_home, core, script) = core_with(vec![conversation("c1", "m1")]).await;
+    {
+        let mut script = script.lock().unwrap();
+        script.page = 2;
+        // The first detail read fails for another reason; the second is
+        // the overload answer that has to reach the workspace pause.
+        script.failures.insert(
+            "/v1/messages/msg_c1".into(),
+            std::iter::repeat_n((500, "internal_error", None), 3).collect(),
+        );
+        script
+            .failures
+            .insert("/v1/messages/msg_c1_1".into(), overloaded());
+    }
+    let named = Endpoint::Name("peer-c1".into());
+    assert!(core.history(&named, None).await.is_err());
+    let before = script.lock().unwrap().requests.len();
+
+    let error = core.history(&named, None).await.unwrap_err();
+    assert_paused(&error);
+    assert_eq!(script.lock().unwrap().requests.len(), before);
+}
+
+#[tokio::test]
+async fn a_conversation_listed_with_a_null_last_message_is_read_again_on_a_reply() {
+    if ran_without_file_roots(
+        "a_conversation_listed_with_a_null_last_message_is_read_again_on_a_reply",
+    ) {
+        return;
+    }
+    let mut listed = conversation("c1", "m1");
+    listed["last_message"] = Value::Null;
+    let (_home, core, script) = core_with(vec![listed]).await;
+    assert!(found_nothing(&core).await);
+    core.person_woke();
+    assert!(found_nothing(&core).await);
+    assert_eq!(script.lock().unwrap().count("/v1/dm/c1/messages"), 2);
 }

@@ -158,7 +158,9 @@ impl Checked {
     fn of(conversation: &Value) -> Checked {
         Checked {
             listing: format!("{:x}", Sha256::digest(conversation.to_string())),
-            marked: conversation.get("last_message").is_some(),
+            marked: conversation
+                .get("last_message")
+                .is_some_and(|last| !last.is_null()),
             at: Instant::now(),
         }
     }
@@ -181,6 +183,21 @@ pub struct DirectMessage {
     pub created_at: Option<String>,
     pub thread_id: Option<String>,
     pub mine: bool,
+}
+
+/// The code of a read refused here, without reaching Relaycast, because
+/// the workspace's pause started during the pass.
+const PAUSED: &str = "relaycast_paused";
+
+/// A read as you refused while the workspace's Relaycast pause lasts, with
+/// the time left as the error's `Retry-After`.
+fn paused(wait: Duration) -> RpcError {
+    let mut error = RpcError::new(
+        ErrorKind::RateLimited,
+        "Your messages are paused while Agent Relay recovers.",
+    );
+    error.retry_after_secs = Some(wait.as_secs() + u64::from(wait.subsec_nanos() > 0));
+    error
 }
 
 fn text(value: &Value) -> Option<String> {
@@ -511,26 +528,45 @@ impl Core {
     /// with the time left as the error's `Retry-After`. A read it admits
     /// after a pause is the workspace's one recheck.
     fn person_read_allowed(&self, scope: &WorkspaceScope) -> Result<(), RpcError> {
-        let Some(wait) = self.relaycast_backoff.remaining(scope) else {
-            return Ok(());
-        };
-        let mut error = RpcError::new(
-            ErrorKind::RateLimited,
-            "Your messages are paused while Agent Relay recovers.",
-        );
-        error.retry_after_secs = Some(wait.as_secs() + u64::from(wait.subsec_nanos() > 0));
-        Err(error)
+        match self.relaycast_backoff.remaining(scope) {
+            Some(wait) => Err(paused(wait)),
+            None => Ok(()),
+        }
+    }
+
+    /// `error`, a read as you that failed, as the caller sees it: while the
+    /// workspace's pause lasts (this read or another started it), refused
+    /// with the time left.
+    fn person_error(&self, scope: &WorkspaceScope, error: &relaycast::RelayError) -> RpcError {
+        match self.relaycast_backoff.pause_left(scope) {
+            Some(wait) => paused(wait),
+            None => RpcError::from_relaycast(error),
+        }
     }
 
     /// Runs one Relaycast read as you and tells the workspace pause how it
     /// went. A refused token is your own, renewed by the caller: it says
     /// nothing about the workspace key, so the workspace is not checked again.
+    /// Once a pause starts, by an earlier read of the same pass or anyone
+    /// else's, the read is refused without reaching Relaycast: the recheck
+    /// a pass was admitted with ends with the first pacing answer.
     #[allow(clippy::result_large_err)] // the SDK's own error type
     async fn person_read<T>(
         &self,
         scope: &WorkspaceScope,
         read: impl Future<Output = relaycast::Result<T>>,
     ) -> relaycast::Result<T> {
+        if let Some(wait) = self.relaycast_backoff.pause_left(scope) {
+            return Err(relaycast::RelayError::Api {
+                code: PAUSED.into(),
+                message: "the workspace's Relaycast pause has not ended".into(),
+                status: 429,
+                request_id: None,
+                attempts: 0,
+                retry_after_ms: Some(u64::try_from(wait.as_millis()).unwrap_or(u64::MAX)),
+                details: None,
+            });
+        }
         let result = read.await;
         match &result {
             Err(error) if crate::relay::node_credential::rejects_credential(error) => {
@@ -610,7 +646,8 @@ impl Core {
         before: Option<&str>,
     ) -> Result<History, RpcError> {
         let identity = self.person_identity(false).await?;
-        self.person_read_allowed(&self.person_scope(&identity))?;
+        let scope = self.person_scope(&identity);
+        self.person_read_allowed(&scope)?;
         let result = match self.history_as(&identity, endpoint, before).await {
             Err(error) if error.is_auth_rejection() => {
                 let fresh = self.person_identity(true).await?;
@@ -620,7 +657,7 @@ impl Core {
             }
             other => other.map(|m| (identity, m)),
         };
-        let (identity, messages) = result.map_err(|e| RpcError::from_relaycast(&e))?;
+        let (identity, messages) = result.map_err(|e| self.person_error(&scope, &e))?;
         Ok(History {
             identity: identity.name,
             messages,
@@ -770,9 +807,7 @@ impl Core {
                 sdk_gaps::dm_messages(&http, &selected, HISTORY_LIMIT, before),
             )
             .await?;
-        let hydrated = self
-            .person_read(&scope, self.hydrate(&http, identity, page))
-            .await?;
+        let hydrated = self.hydrate(&http, identity, &scope, page).await?;
         Ok(threaded(&hydrated, &identity.name))
     }
 
@@ -783,6 +818,7 @@ impl Core {
         &self,
         http: &crate::relay::diagnostic_http::HttpClient,
         identity: &PersonIdentity,
+        scope: &WorkspaceScope,
         items: Vec<Value>,
     ) -> relaycast::Result<Vec<Value>> {
         let complete = |item: &Value| {
@@ -800,7 +836,7 @@ impl Core {
                     return Ok(item);
                 }
                 let id = text(&item["id"]).unwrap_or_default();
-                let metadata = self.message_detail(http, identity, &id).await?;
+                let metadata = self.message_detail(http, identity, scope, &id).await?;
                 let mut merged = metadata.clone();
                 if let (Some(merged), Some(item)) = (merged.as_object_mut(), item.as_object()) {
                     for (key, value) in item {
@@ -822,7 +858,7 @@ impl Core {
             .collect();
         for parent in parents {
             if ids.insert(parent.clone()) {
-                hydrated.push(self.message_detail(http, identity, &parent).await?);
+                hydrated.push(self.message_detail(http, identity, scope, &parent).await?);
             }
         }
         Ok(hydrated)
@@ -832,6 +868,7 @@ impl Core {
         &self,
         http: &crate::relay::diagnostic_http::HttpClient,
         identity: &PersonIdentity,
+        scope: &WorkspaceScope,
         id: &str,
     ) -> relaycast::Result<Value> {
         let key = (
@@ -842,7 +879,9 @@ impl Core {
         if let Some(cached) = self.messaging.lock().unwrap().details.get(&key) {
             return Ok(cached.clone());
         }
-        let value = sdk_gaps::message(http, id).await?;
+        // Each detail read is observed on its own: an overload answer
+        // pauses the workspace, and the reads not yet sent are refused.
+        let value = self.person_read(scope, sdk_gaps::message(http, id)).await?;
         if value["id"] != id {
             return Err(relaycast::RelayError::InvalidResponse(
                 "incorrect message thread metadata".into(),
@@ -859,7 +898,8 @@ impl Core {
     /// Your 1:1 conversations, as Relaycast lists them.
     pub async fn conversations(&self) -> Result<Conversations, RpcError> {
         let identity = self.person_identity(false).await?;
-        self.person_read_allowed(&self.person_scope(&identity))?;
+        let scope = self.person_scope(&identity);
+        self.person_read_allowed(&scope)?;
         let list = |identity: PersonIdentity| async move {
             let http = sdk_gaps::http(&identity.base_url, &identity.token)?;
             let scope = self.person_scope(&identity);
@@ -873,7 +913,7 @@ impl Core {
             }
             other => (identity, other),
         };
-        let listing = listing.map_err(|e| RpcError::from_relaycast(&e))?;
+        let listing = listing.map_err(|e| self.person_error(&scope, &e))?;
         let conversations = direct_conversations(&listing, &identity.name)
             .iter()
             .map(|c| {
