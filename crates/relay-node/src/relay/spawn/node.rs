@@ -113,6 +113,9 @@ pub trait NodeHost: Send + Sync + 'static {
     /// What to advertise in the next frame: the configured facts and the
     /// live ones measured now.
     fn advertisement(&self, harnesses: &[HarnessId], repositories: &[String]) -> Advertisement;
+    /// Prepares any blocking inputs for the next advertisement off the async
+    /// runtime. The default is sufficient for hosts with no such inputs.
+    fn prepare_advertisement(&self) {}
     /// A heartbeat was written: evidence the node reaches Agent Relay.
     fn heartbeat_sent(&self);
     /// Notified when places change, for an inventory and a heartbeat at
@@ -430,6 +433,7 @@ async fn connect_once(
         version: config.version.clone(),
     };
     let advertise = || host.advertisement(&config.harnesses, &config.repositories);
+    host.prepare_advertisement();
     let register_id = format!("node_register_{}", random_uuid());
     if sdk_gaps::send_frame(&mut socket, &identity.register(&register_id, &advertise()))
         .await
@@ -529,6 +533,7 @@ async fn connect_once(
                 return Ended::Stopped;
             }
             _ = beats.tick() => {
+                host.prepare_advertisement();
                 let heartbeat = identity.heartbeat(&advertise());
                 if sdk_gaps::send_frame(&mut socket, &heartbeat).await.is_err()
                     || socket.send(Message::Ping(Vec::new())).await.is_err()
@@ -547,6 +552,7 @@ async fn connect_once(
                 }
             }
             _ = changed.notified() => {
+                host.prepare_advertisement();
                 // Places changed: Relaycast learns at once, not at the next
                 // tick (once recovery has sent the first inventory).
                 if (recovered

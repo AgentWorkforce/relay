@@ -88,6 +88,12 @@ pub(super) struct LedgerState {
     pub(super) observed: Option<Instant>,
     /// Free places as last advertised.
     pub(super) advertised_free: Option<u32>,
+    /// Existing, non-home spawn folders prepared on the blocking pool before
+    /// an advertisement. Heartbeat serialization only reads this cache.
+    pub(super) recent_folders: Vec<String>,
+    /// One background filesystem refresh at a time. A stalled mount must not
+    /// accumulate blocking tasks on every heartbeat.
+    pub(super) refreshing_folders: bool,
     pub(super) reclaimed: VecDeque<Reclaimed>,
     /// Agents being taken over (`handover`), each with whether it is to
     /// be stopped at once, in the middle of a turn, and its answer.

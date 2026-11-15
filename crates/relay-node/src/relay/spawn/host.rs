@@ -8,20 +8,69 @@ use super::node_name;
 use super::resources;
 use super::wire::{
     self, Advertisement, Configured, HarnessConfigured, HarnessId, InventoryAgent, Invoke, Live,
-    LiveAgent, SpawnFailure,
+    LiveAgent, SpawnFailure, MAX_RECENT_FOLDERS,
 };
 use crate::relay::daemon::Core;
 use crate::relay::harness;
 use crate::relay::push::PushState;
 use crate::relay::state::{Level, SpawnSlots, SpawnState, SpawnStatus};
+use crate::relay::store::Store;
 use crate::relay::workspace::Secret;
 use chrono::Utc;
 use futures_util::future::BoxFuture;
 use serde_json::Value;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 use tokio::sync::Notify;
 
 impl Core {
+    /// Starts a single-flight refresh of privacy-safe folder suggestions.
+    /// The connection keeps serving heartbeats and frames from its last cache
+    /// while filesystem checks run on the blocking pool.
+    fn refresh_spawn_folder_suggestions(self: &Arc<Self>) {
+        if !self.spawn_settings().allow_teammates {
+            self.ledger().lock().recent_folders.clear();
+            return;
+        }
+        let ledger = self.ledger();
+        {
+            let mut state = ledger.lock();
+            if state.refreshing_folders {
+                return;
+            }
+            state.refreshing_folders = true;
+        }
+        let candidates = self.store.read(Store::spawn_folder_candidates);
+        let home: PathBuf = self.config.home.components().collect();
+        let core = Arc::clone(self);
+        tokio::spawn(async move {
+            let folders = tokio::task::spawn_blocking(move || {
+                existing_spawn_folders(candidates, &home, MAX_RECENT_FOLDERS)
+            })
+            .await;
+            let publish = core.spawn_settings().allow_teammates;
+            let ledger = core.ledger();
+            let changed = {
+                let mut state = ledger.lock();
+                state.refreshing_folders = false;
+                match folders {
+                    Ok(folders) if publish && folders != state.recent_folders => {
+                        state.recent_folders = folders;
+                        true
+                    }
+                    Ok(_) if !publish => {
+                        state.recent_folders.clear();
+                        false
+                    }
+                    _ => false,
+                }
+            };
+            if changed {
+                ledger.changed.notify_one();
+            }
+        });
+    }
+
     /// The node this computer should run now, if any: spawns are on, there
     /// is a workspace, and a harness it can spawn is installed.
     fn wanted_spawn_node(&self) -> Result<NodeConfig, Option<String>> {
@@ -134,6 +183,9 @@ impl Core {
         repositories: &[String],
     ) -> Advertisement {
         let settings = self.spawn_settings();
+        let recent_folders = settings
+            .allow_teammates
+            .then(|| self.ledger().lock().recent_folders.clone());
         // Another account owns the node: it offers no spawns until released.
         let harnesses = if self.spawns_blocked() {
             &[]
@@ -179,6 +231,7 @@ impl Core {
                 machine: self.host_label(),
                 teammates: settings.allow_teammates,
                 repositories: repositories.to_vec(),
+                recent_folders,
                 harnesses: harnesses
                     .iter()
                     .map(|harness| HarnessConfigured {
@@ -317,6 +370,7 @@ impl NodeHost for CoreHost {
                     machine: String::new(),
                     teammates: false,
                     repositories: repositories.to_vec(),
+                    recent_folders: None,
                     harnesses: Vec::new(),
                 },
                 live: Live {
@@ -328,6 +382,12 @@ impl NodeHost for CoreHost {
                     reclaimed: Vec::new(),
                 },
             },
+        }
+    }
+
+    fn prepare_advertisement(&self) {
+        if let Some(core) = self.0.upgrade() {
+            core.refresh_spawn_folder_suggestions();
         }
     }
 
@@ -379,5 +439,46 @@ impl NodeHost for CoreHost {
                 core.recover_spawns(&link).await;
             }
         })
+    }
+}
+
+fn existing_spawn_folders(candidates: Vec<String>, home: &Path, limit: usize) -> Vec<String> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    candidates
+        .into_iter()
+        .filter(|folder| Path::new(folder) != home && Path::new(folder).is_dir())
+        .take(limit)
+        .collect()
+}
+
+#[cfg(test)]
+mod folder_tests {
+    use super::*;
+
+    #[test]
+    fn suggestions_exclude_home_and_missing_paths_before_the_limit() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        std::fs::create_dir(&home).unwrap();
+        let missing = root.path().join("missing").to_string_lossy().into_owned();
+        let mut existing = Vec::new();
+        for index in 0..11 {
+            let folder = root.path().join(format!("folder-{index}"));
+            std::fs::create_dir(&folder).unwrap();
+            existing.push(folder.to_string_lossy().into_owned());
+        }
+        let candidates = [
+            vec![home.to_string_lossy().into_owned(), missing],
+            existing.clone(),
+        ]
+        .concat();
+
+        assert_eq!(
+            existing_spawn_folders(candidates, &home, 10),
+            existing[..10]
+        );
+        assert!(existing_spawn_folders(existing, &home, 0).is_empty());
     }
 }
