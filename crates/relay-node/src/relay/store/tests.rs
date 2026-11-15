@@ -53,8 +53,6 @@ fn recent_spawn_folders_are_absolute_deduplicated_and_newest_first() {
     let root = tempfile::tempdir().unwrap();
     let older = root.path().join("older").to_string_lossy().into_owned();
     let newer = root.path().join("newer").to_string_lossy().into_owned();
-    std::fs::create_dir_all(&older).unwrap();
-    std::fs::create_dir_all(&newer).unwrap();
     let spawned = |name: &str, folder: &str| {
         let mut row = registration(name, target(&random_uuid()));
         row.spawn = Some(
@@ -70,76 +68,15 @@ fn recent_spawn_folders_are_absolute_deduplicated_and_newest_first() {
         row
     };
     let mut store = Store::default();
-    assert!(store.add(spawned("old", &older), token("old-token")));
-    assert!(store.add(
+    store.registrations = vec![
+        spawned("old", &older),
         spawned("relative", "relative/folder"),
-        token("relative-token")
-    ));
-    assert!(store.add(spawned("new", &newer), token("new-token")));
-    assert!(store.add(
-        spawned("same-again", &format!("{older}/")),
-        token("same-token")
-    ));
-    store.registrations.clear();
+        spawned("new", &newer),
+        spawned("same-again", &older),
+    ];
 
-    assert_eq!(store.recent_spawn_folders(), [older.clone(), newer.clone()]);
-    assert_eq!(
-        serde_json::to_value(&store).unwrap()["spawnRecentFolders"],
-        json!([older, newer])
-    );
-}
-
-#[test]
-fn concurrent_and_legacy_store_writers_preserve_spawn_folder_history() {
-    let base = Store {
-        spawn_recent_folders: vec!["/work/base".into()],
-        ..Store::default()
-    };
-    let ours = Store {
-        spawn_recent_folders: vec!["/work/ours".into(), "/work/base".into()],
-        ..base.clone()
-    };
-    let theirs = Store {
-        spawn_recent_folders: vec!["/work/theirs".into(), "/work/base".into()],
-        ..base.clone()
-    };
-    assert_eq!(
-        Store::merged(&base, &ours, &theirs).spawn_recent_folders,
-        ["/work/ours", "/work/theirs", "/work/base"]
-    );
-
-    let legacy = Store {
-        spawn_recent_folders: Vec::new(),
-        ..base.clone()
-    };
-    assert_eq!(
-        Store::merged(&base, &legacy, &base).spawn_recent_folders,
-        ["/work/base"]
-    );
-}
-
-#[test]
-fn published_spawn_folders_skip_removed_paths_and_cap_at_eight() {
-    let root = tempfile::tempdir().unwrap();
-    let mut store = Store::default();
-    let folders: Vec<String> = (0..10)
-        .map(|index| {
-            let folder = root.path().join(format!("folder-{index}"));
-            std::fs::create_dir_all(&folder).unwrap();
-            let folder = folder.to_string_lossy().into_owned();
-            store.remember_spawn_folder(&folder);
-            folder
-        })
-        .collect();
-    std::fs::remove_dir(&folders[9]).unwrap();
-
-    assert_eq!(
-        store.recent_spawn_folders(),
-        (1..=8)
-            .rev()
-            .map(|index| folders[index].clone())
-            .collect::<Vec<_>>()
-    );
+    assert_eq!(store.recent_spawn_folders(2), [older, newer]);
+    assert!(store.recent_spawn_folders(0).is_empty());
 }
 
 #[test]

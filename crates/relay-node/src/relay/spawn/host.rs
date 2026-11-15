@@ -8,7 +8,7 @@ use super::node_name;
 use super::resources;
 use super::wire::{
     self, Advertisement, Configured, HarnessConfigured, HarnessId, InventoryAgent, Invoke, Live,
-    LiveAgent, RepositoryPath, SpawnFailure,
+    LiveAgent, SpawnFailure, MAX_RECENT_FOLDERS,
 };
 use crate::relay::daemon::Core;
 use crate::relay::harness;
@@ -18,7 +18,6 @@ use crate::relay::workspace::Secret;
 use chrono::Utc;
 use futures_util::future::BoxFuture;
 use serde_json::Value;
-use std::path::Path;
 use std::sync::{Arc, Weak};
 use tokio::sync::Notify;
 
@@ -135,28 +134,10 @@ impl Core {
         repositories: &[String],
     ) -> Advertisement {
         let settings = self.spawn_settings();
-        let (repository_paths, recent_folders, home_dir) = if settings.allow_teammates {
-            let (history, recent) = self.store.read(|store| store.spawn_folder_metadata());
-            let mut checkouts: Vec<RepositoryPath> = history
-                .iter()
-                .filter_map(|folder| crate::relay::project::repository_checkout(Path::new(folder)))
-                .filter(|(repository, _)| settings.repositories.contains(repository))
-                .filter_map(|(repository, path)| {
-                    publishable_directory(&path).map(|path| RepositoryPath { repository, path })
-                })
-                .collect();
-            checkouts.sort_by(|left, right| {
-                (&left.repository, &left.path).cmp(&(&right.repository, &right.path))
-            });
-            checkouts.dedup();
-            (
-                Some(checkouts),
-                Some(recent),
-                publishable_directory(&self.config.home),
-            )
-        } else {
-            (None, None, None)
-        };
+        let recent_folders = settings.allow_teammates.then(|| {
+            self.store
+                .read(|store| store.recent_spawn_folders(MAX_RECENT_FOLDERS))
+        });
         // Another account owns the node: it offers no spawns until released.
         let harnesses = if self.spawns_blocked() {
             &[]
@@ -202,9 +183,7 @@ impl Core {
                 machine: self.host_label(),
                 teammates: settings.allow_teammates,
                 repositories: repositories.to_vec(),
-                repository_paths,
                 recent_folders,
-                home_dir,
                 harnesses: harnesses
                     .iter()
                     .map(|harness| HarnessConfigured {
@@ -343,9 +322,7 @@ impl NodeHost for CoreHost {
                     machine: String::new(),
                     teammates: false,
                     repositories: repositories.to_vec(),
-                    repository_paths: None,
                     recent_folders: None,
-                    home_dir: None,
                     harnesses: Vec::new(),
                 },
                 live: Live {
@@ -409,13 +386,4 @@ impl NodeHost for CoreHost {
             }
         })
     }
-}
-
-fn publishable_directory(path: &Path) -> Option<String> {
-    let path = path.to_str()?;
-    if !path.starts_with('/') || !Path::new(path).is_absolute() || !Path::new(path).is_dir() {
-        return None;
-    }
-    let path = path.trim_end_matches('/');
-    Some(if path.is_empty() { "/" } else { path }.to_string())
 }

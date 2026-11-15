@@ -24,7 +24,6 @@ impl Store {
         if ours == base && preserves_journals(theirs) {
             let mut result = theirs.clone();
             result.archived_session_keys = Store::merged_archive_keys(ours, theirs);
-            result.spawn_recent_folders = spawn::merge_recent_folders(base, ours, theirs);
             preserve_spawn_origins(&mut result, &[ours, base]);
             super::integration::preserve_filters(&mut result, &[ours, base]);
             result.retire_unregistered_refusals(&[base, ours, theirs]);
@@ -33,7 +32,6 @@ impl Store {
         if theirs == base && preserves_journals(ours) {
             let mut result = ours.clone();
             result.archived_session_keys = Store::merged_archive_keys(ours, theirs);
-            result.spawn_recent_folders = spawn::merge_recent_folders(base, ours, theirs);
             preserve_spawn_origins(&mut result, &[theirs, base]);
             super::integration::preserve_filters(&mut result, &[theirs, base]);
             result.retire_unregistered_refusals(&[base, ours, theirs]);
@@ -109,7 +107,6 @@ impl Store {
                 &ours.spawn_repositories,
                 &theirs.spawn_repositories,
             ),
-            spawn_recent_folders: spawn::merge_recent_folders(base, ours, theirs),
             spawn_harnesses: merge_maps(
                 &base.spawn_harnesses,
                 &ours.spawn_harnesses,
