@@ -20,8 +20,8 @@
 //!
 //! Each `spawn:<harness>` capability carries `metadata.configured` (what the
 //! person or an agent set: billing, full access, maximum agents,
-//! repositories, whether teammates may spawn here; privacy-gated recent
-//! folders; and what the node is: `node_kind` `desktop` on `machine`) and
+//! repositories, whether teammates may spawn here; privacy-gated checkout,
+//! recent and home folders; and what the node is: `node_kind` `desktop` on `machine`) and
 //! `metadata.live` (measured for this frame: places and resources, stamped
 //! `observed_at`). `release` carries the agents it can release with their
 //! lifecycle, and the places reclaimed from agents that ended unreleased.
@@ -45,10 +45,6 @@ pub const FORK_CAPABILITY: &str = "relay:spawn-fork:v1";
 /// What kind of node this is, in each `spawn:<harness>` capability's
 /// `metadata.configured.node_kind`: a person's desktop.
 pub const NODE_KIND: &str = "desktop";
-
-/// The most working folders a node publishes after the person opts into
-/// teammate spawning. A bounded list keeps capability heartbeats small.
-pub const MAX_RECENT_FOLDERS: usize = 10;
 
 /// Relaycast's frame version.
 pub const WIRE_VERSION: u64 = 1;
@@ -109,6 +105,13 @@ pub struct HarnessConfigured {
     pub full_access: bool,
 }
 
+/// One local checkout a remote spawn dialog can offer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepositoryPath {
+    pub repository: String,
+    pub path: String,
+}
+
 /// What this node offers in every spawn capability. Most fields are stable
 /// between edits; recent folder suggestions change as spawns are saved.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,10 +124,16 @@ pub struct Configured {
     pub teammates: bool,
     /// Owner/name keys of the repositories this computer offers to work in.
     pub repositories: Vec<String>,
+    /// Local checkouts of configured repositories, sorted by repository then
+    /// path. Absent while teammate spawning (and path publication) is off.
+    pub repository_paths: Option<Vec<RepositoryPath>>,
     /// Newest-first absolute working folders used by saved spawns. `None`
     /// means the person has not opted into publishing paths to teammates;
     /// `Some(empty)` means they opted in but no saved spawn has a folder.
     pub recent_folders: Option<Vec<String>>,
+    /// This person's absolute home folder. Absent while teammate spawning
+    /// (and path publication) is off.
+    pub home_dir: Option<String>,
     /// The harnesses offered, in order.
     pub harnesses: Vec<HarnessConfigured>,
 }
@@ -186,6 +195,17 @@ impl Advertisement {
         });
         if let Some(folders) = &self.configured.recent_folders {
             configured["recent_folders"] = json!(folders);
+        }
+        if let Some(paths) = &self.configured.repository_paths {
+            configured["repository_paths"] = Value::Array(
+                paths
+                    .iter()
+                    .map(|entry| json!({"repository": entry.repository, "path": entry.path}))
+                    .collect(),
+            );
+        }
+        if let Some(home) = &self.configured.home_dir {
+            configured["home_dir"] = json!(home);
         }
         configured
     }
@@ -665,7 +685,12 @@ mod tests {
                 machine: "Test-Mac-Mini".into(),
                 teammates: true,
                 repositories: vec!["AgentWorkforce/relay-desktop".into()],
+                repository_paths: Some(vec![RepositoryPath {
+                    repository: "AgentWorkforce/relay-desktop".into(),
+                    path: "/Users/me/src/relay-desktop".into(),
+                }]),
                 recent_folders: Some(vec!["/Users/me/src/relay-desktop".into()]),
+                home_dir: Some("/Users/me".into()),
                 harnesses: harnesses
                     .iter()
                     .map(|harness| HarnessConfigured {
@@ -763,7 +788,10 @@ mod tests {
             codex["configured"],
             json!({"harness": "codex", "billing": "subscription", "full_access": true,
                 "max_agents": 8, "repositories": ["AgentWorkforce/relay-desktop"],
+                "repository_paths": [{"repository": "AgentWorkforce/relay-desktop",
+                    "path": "/Users/me/src/relay-desktop"}],
                 "recent_folders": ["/Users/me/src/relay-desktop"],
+                "home_dir": "/Users/me",
                 "node_kind": "desktop", "machine": "Test-Mac-Mini", "teammates": true})
         );
         assert_eq!(codex["live"]["observed_at"], "2026-10-14T10:00:00Z");
@@ -799,10 +827,14 @@ mod tests {
     fn configured_omits_private_folders_when_publication_is_not_enabled() {
         let mut advertisement = advertisement(&[codex::ID], 0);
         advertisement.configured.teammates = false;
+        advertisement.configured.repository_paths = None;
         advertisement.configured.recent_folders = None;
+        advertisement.configured.home_dir = None;
         let configured =
             &identity().heartbeat(&advertisement)["capabilities"][0]["metadata"]["configured"];
         assert!(configured.get("recent_folders").is_none());
+        assert!(configured.get("repository_paths").is_none());
+        assert!(configured.get("home_dir").is_none());
     }
 
     #[test]

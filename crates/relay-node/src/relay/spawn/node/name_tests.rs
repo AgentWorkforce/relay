@@ -707,7 +707,9 @@ impl NodeHost for Recording {
                 machine: "mac".into(),
                 teammates: false,
                 repositories: repositories.to_vec(),
+                repository_paths: None,
                 recent_folders: None,
+                home_dir: None,
                 harnesses: Vec::new(),
             },
             live: Live {

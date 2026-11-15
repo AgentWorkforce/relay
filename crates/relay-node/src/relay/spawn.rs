@@ -258,7 +258,9 @@ mod tests {
     use super::ledger::LEDGERS;
     use super::node::{NodeHost, NodeInfo, NodeLink};
     use super::observe::{Observe, Watched};
-    use super::wire::{Billing, InventoryAgent, Invoke, ReleaseRequest, SpawnRequest};
+    use super::wire::{
+        Billing, InventoryAgent, Invoke, ReleaseRequest, RepositoryPath, SpawnRequest,
+    };
     use super::*;
     use crate::relay::harness::{claude, codex, HarnessId};
     use crate::relay::spawn::launch::{Launched, SpawnedProcess, Spawner};
@@ -2207,12 +2209,26 @@ mod tests {
             assert!(change(bad.clone()).is_err(), "{bad}");
         }
         assert_eq!(core.settings()["spawn_allow_teammates"], false);
-        assert_eq!(
-            core.spawn_advertisement(&[codex::ID], &[])
-                .configured
-                .recent_folders,
-            None
-        );
+        let private = core.spawn_advertisement(&[codex::ID], &[]).configured;
+        assert_eq!(private.repository_paths, None);
+        assert_eq!(private.recent_folders, None);
+        assert_eq!(private.home_dir, None);
+        let checkout_b = home.path().join("checkout-b");
+        let checkout_a = home.path().join("checkout-a");
+        for checkout in [&checkout_b, &checkout_a] {
+            std::fs::create_dir_all(checkout.join(".git")).unwrap();
+            std::fs::write(
+                checkout.join(".git/config"),
+                "[remote \"origin\"]\nurl = git@github.com:AgentWorkforce/relay.git\n",
+            )
+            .unwrap();
+        }
+        core.store
+            .update(|store| {
+                store.remember_spawn_folder(&format!("{}/", checkout_b.display()));
+                store.remember_spawn_folder(checkout_a.to_str().unwrap());
+            })
+            .unwrap();
         let settings = core
             .set_settings(
                 json!({"spawn_max_agents": 3, "spawn_billing_codex": "subscription",
@@ -2240,7 +2256,30 @@ mod tests {
         assert_eq!(advertised.configured.max_agents, 3);
         assert!(advertised.configured.teammates);
         assert_eq!(advertised.configured.repositories, ["AgentWorkforce/relay"]);
-        assert_eq!(advertised.configured.recent_folders, Some(Vec::new()));
+        assert_eq!(
+            advertised.configured.repository_paths,
+            Some(vec![
+                RepositoryPath {
+                    repository: "AgentWorkforce/relay".into(),
+                    path: checkout_a.to_string_lossy().into_owned(),
+                },
+                RepositoryPath {
+                    repository: "AgentWorkforce/relay".into(),
+                    path: checkout_b.to_string_lossy().into_owned(),
+                },
+            ])
+        );
+        assert_eq!(
+            advertised.configured.recent_folders,
+            Some(vec![
+                checkout_a.to_string_lossy().into_owned(),
+                checkout_b.to_string_lossy().into_owned(),
+            ])
+        );
+        assert_eq!(
+            advertised.configured.home_dir.as_deref(),
+            home.path().to_str()
+        );
         assert_eq!(
             advertised.configured.harnesses[0].billing,
             Billing::Subscription

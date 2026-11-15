@@ -772,6 +772,15 @@ pub struct Store {
         skip_serializing_if = "Option::is_none"
     )]
     pub spawn_repositories: Option<Vec<String>>,
+    /// Successfully resolved spawn working folders, newest first. Kept
+    /// locally even after release; capability publication is separately
+    /// gated by `spawnAllowTeammates`.
+    #[serde(
+        rename = "spawnRecentFolders",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub spawn_recent_folders: Vec<String>,
     /// The spawn settings of harnesses other than Codex and Claude, by id
     /// (`spawn`).
     #[serde(rename = "spawnHarnesses")]
@@ -1034,6 +1043,13 @@ impl Store {
         self.registrations
             .retain(|r| r.target != registration.target);
         self.forget_activation_blocker(&registration.target.key());
+        if let Some(folder) = registration
+            .spawn
+            .as_ref()
+            .and_then(|spawn| spawn.worker_cwd.as_deref())
+        {
+            self.remember_spawn_folder(folder);
+        }
         self.tokens.insert(registration.name.clone(), token);
         self.registrations.push(registration);
         true

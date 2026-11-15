@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `agent-relay-node`: spawn capabilities publish recent saved absolute working folders after the person enables teammate spawning, so remote spawn dialogs can offer valid folders on the target machine without exposing paths by default.
+- `agent-relay-node`: spawn capabilities publish local repository checkouts, recent working folders and the home folder after the person enables teammate spawning, so remote spawn dialogs can offer valid absolute paths without exposing them by default.
 
 ### Fixed
 

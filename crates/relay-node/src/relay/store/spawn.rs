@@ -11,6 +11,11 @@
 use super::*;
 use std::path::Path;
 
+/// Enough durable history to keep useful older folders when recent ones are
+/// removed, while capability metadata publishes only its newest eight.
+const RECENT_FOLDER_HISTORY: usize = 32;
+pub(crate) const RECENT_FOLDERS_PUBLISHED: usize = 8;
+
 /// Where a spawned agent came from, and the process it runs as.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpawnOrigin {
@@ -107,30 +112,57 @@ pub struct HarnessSpawnSettings {
 }
 
 impl Store {
-    /// Absolute working folders from the most recently saved spawn origins,
-    /// newest first. These stay private in the store unless the spawn node's
-    /// advertisement explicitly opts into publishing them.
-    pub(crate) fn recent_spawn_folders(&self, limit: usize) -> Vec<String> {
-        if limit == 0 {
-            return Vec::new();
-        }
+    /// Keeps a successfully resolved spawn folder as bounded local history.
+    /// Publication remains separately gated by the teammate-spawn setting.
+    pub(crate) fn remember_spawn_folder(&mut self, folder: &str) {
+        let Some(folder) = normalized_absolute(folder) else {
+            return;
+        };
+        self.spawn_recent_folders.retain(|kept| kept != &folder);
+        self.spawn_recent_folders.insert(0, folder);
+        self.spawn_recent_folders.truncate(RECENT_FOLDER_HISTORY);
+    }
+
+    /// Existing absolute folders from durable history and legacy active spawn
+    /// origins, newest first and normalized.
+    pub(crate) fn spawn_folder_history(&self) -> Vec<String> {
         let mut folders = Vec::new();
-        for folder in self
+        let active = self
             .registrations
             .iter()
             .rev()
             .filter_map(|registration| registration.spawn.as_ref())
-            .filter_map(|spawn| spawn.worker_cwd.as_deref())
-            .filter(|folder| Path::new(folder).is_absolute())
-        {
-            if !folders.iter().any(|kept| kept == folder) {
-                folders.push(folder.to_string());
-                if folders.len() == limit {
-                    break;
-                }
+            .filter_map(|spawn| spawn.worker_cwd.as_deref());
+        for folder in active.chain(self.spawn_recent_folders.iter().map(String::as_str)) {
+            let Some(folder) = normalized_absolute(folder) else {
+                continue;
+            };
+            if !Path::new(&folder).is_dir() || folders.contains(&folder) {
+                continue;
+            }
+            folders.push(folder);
+            if folders.len() == RECENT_FOLDER_HISTORY {
+                break;
             }
         }
         folders
+    }
+
+    /// The newest eight existing folders published as `recent_folders`.
+    pub(crate) fn recent_spawn_folders(&self) -> Vec<String> {
+        self.spawn_folder_metadata().1
+    }
+
+    /// All known existing folders for checkout discovery and the newest eight
+    /// for the recent-folder wire field, from one filesystem pass.
+    pub(crate) fn spawn_folder_metadata(&self) -> (Vec<String>, Vec<String>) {
+        let history = self.spawn_folder_history();
+        let recent = history
+            .iter()
+            .take(RECENT_FOLDERS_PUBLISHED)
+            .cloned()
+            .collect();
+        (history, recent)
     }
 
     pub fn accepts_spawns(&self) -> bool {
@@ -172,6 +204,43 @@ impl Store {
             }
         }
     }
+}
+
+fn normalized_absolute(folder: &str) -> Option<String> {
+    if !folder.starts_with('/') || !Path::new(folder).is_absolute() {
+        return None;
+    }
+    let folder = folder.trim_end_matches('/');
+    Some(if folder.is_empty() { "/" } else { folder }.to_string())
+}
+
+/// Spawn folder history is append-only. Merge both writers and their base so
+/// an older writer that omitted the field cannot erase newer history.
+pub(super) fn merge_recent_folders(base: &Store, ours: &Store, theirs: &Store) -> Vec<String> {
+    let mut merged = Vec::new();
+    let base_folders: Vec<String> = base
+        .spawn_recent_folders
+        .iter()
+        .filter_map(|folder| normalized_absolute(folder))
+        .collect();
+    let mut add = |folders: &[String], skip_base: bool| {
+        for folder in folders {
+            if let Some(folder) = normalized_absolute(folder) {
+                if (!skip_base || !base_folders.contains(&folder)) && !merged.contains(&folder) {
+                    merged.push(folder);
+                }
+            }
+        }
+    };
+    if ours.spawn_recent_folders != base.spawn_recent_folders {
+        add(&ours.spawn_recent_folders, true);
+    }
+    if theirs.spawn_recent_folders != base.spawn_recent_folders {
+        add(&theirs.spawn_recent_folders, true);
+    }
+    add(&base.spawn_recent_folders, false);
+    merged.truncate(RECENT_FOLDER_HISTORY);
+    merged
 }
 
 #[cfg(test)]

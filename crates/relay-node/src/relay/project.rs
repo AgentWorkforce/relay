@@ -109,6 +109,58 @@ fn remote_name(git_dir: &Path) -> Option<String> {
     None
 }
 
+/// The configured `owner/name` identity and checkout root for the repository
+/// containing `directory`. Linked worktrees keep their own checkout root and
+/// read the shared repository's origin remote.
+pub(crate) fn repository_checkout(directory: &Path) -> Option<(String, PathBuf)> {
+    let (root, git_dir) = repository(directory, None)?;
+    let config = fs::read_to_string(git_dir.join("config")).ok()?;
+    let mut origin = false;
+    for raw in config.lines() {
+        let line = raw.trim();
+        if line.starts_with('[') {
+            origin = line.eq_ignore_ascii_case("[remote \"origin\"]");
+            continue;
+        }
+        if !origin {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim().eq_ignore_ascii_case("url") {
+            return repository_key(value.trim()).map(|repository| (repository, root));
+        }
+    }
+    None
+}
+
+fn repository_key(url: &str) -> Option<String> {
+    let trimmed = url.trim().trim_end_matches(['/', '\\']);
+    let trimmed = trimmed.strip_suffix(".git").unwrap_or(trimmed);
+    let path = match trimmed.split_once("://") {
+        Some((_, authority_and_path)) => authority_and_path.split_once('/')?.1,
+        None => trimmed
+            .split_once(':')
+            .map(|(_, path)| path)
+            .unwrap_or(trimmed),
+    };
+    let mut parts = path
+        .rsplit(['/', '\\'])
+        .filter(|part| !part.is_empty());
+    let name = parts.next()?;
+    let owner = parts.next()?;
+    let valid = |part: &str| {
+        !part.is_empty()
+            && part != "."
+            && part != ".."
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
+    };
+    (valid(owner) && valid(name)).then(|| format!("{owner}/{name}"))
+}
+
 fn repository_name(url: &str) -> Option<String> {
     let trimmed = url.trim().trim_end_matches('/');
     let leaf = trimmed
@@ -210,6 +262,27 @@ mod tests {
             name(Some(checkout.to_str().unwrap()), &temp.path().join("relay")),
             Some("cloud".into())
         );
+        assert_eq!(
+            repository_checkout(&checkout),
+            Some(("acme/cloud".into(), checkout))
+        );
+    }
+
+    #[test]
+    fn repository_keys_cover_https_ssh_and_scp_origins() {
+        assert_eq!(
+            repository_key("https://github.com/AgentWorkforce/relay.git"),
+            Some("AgentWorkforce/relay".into())
+        );
+        assert_eq!(
+            repository_key("ssh://git@github.com/AgentWorkforce/relay.git/"),
+            Some("AgentWorkforce/relay".into())
+        );
+        assert_eq!(
+            repository_key("git@github.com:AgentWorkforce/relay.git"),
+            Some("AgentWorkforce/relay".into())
+        );
+        assert_eq!(repository_key("https://github.com/owner"), None);
     }
 
     #[test]
