@@ -8,7 +8,7 @@ use super::node_name;
 use super::resources;
 use super::wire::{
     self, Advertisement, Configured, HarnessConfigured, HarnessId, InventoryAgent, Invoke, Live,
-    LiveAgent, SpawnFailure,
+    LiveAgent, SpawnFailure, MAX_RECENT_FOLDERS,
 };
 use crate::relay::daemon::Core;
 use crate::relay::harness;
@@ -134,6 +134,10 @@ impl Core {
         repositories: &[String],
     ) -> Advertisement {
         let settings = self.spawn_settings();
+        let recent_folders = settings.allow_teammates.then(|| {
+            self.store
+                .read(|store| store.recent_spawn_folders(MAX_RECENT_FOLDERS))
+        });
         // Another account owns the node: it offers no spawns until released.
         let harnesses = if self.spawns_blocked() {
             &[]
@@ -179,6 +183,7 @@ impl Core {
                 machine: self.host_label(),
                 teammates: settings.allow_teammates,
                 repositories: repositories.to_vec(),
+                recent_folders,
                 harnesses: harnesses
                     .iter()
                     .map(|harness| HarnessConfigured {
@@ -317,6 +322,7 @@ impl NodeHost for CoreHost {
                     machine: String::new(),
                     teammates: false,
                     repositories: repositories.to_vec(),
+                    recent_folders: None,
                     harnesses: Vec::new(),
                 },
                 live: Live {

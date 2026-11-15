@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Patch]
 
+### Added
+
+- `agent-relay-node`: spawn capabilities publish recent saved absolute working folders after the person enables teammate spawning, so remote spawn dialogs can offer valid folders on the target machine without exposing paths by default.
+
 ### Fixed
 
 - `agent-relay-node`: messages to open Muse sessions are delivered. The courier that carries them now runs Muse on its own data directory, the only place Muse registers the session that delivery waits for; every message used to time out.

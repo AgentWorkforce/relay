@@ -9,6 +9,7 @@
 //! by id. Nothing else here names a harness.
 
 use super::*;
+use std::path::Path;
 
 /// Where a spawned agent came from, and the process it runs as.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +107,32 @@ pub struct HarnessSpawnSettings {
 }
 
 impl Store {
+    /// Absolute working folders from the most recently saved spawn origins,
+    /// newest first. These stay private in the store unless the spawn node's
+    /// advertisement explicitly opts into publishing them.
+    pub(crate) fn recent_spawn_folders(&self, limit: usize) -> Vec<String> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let mut folders = Vec::new();
+        for folder in self
+            .registrations
+            .iter()
+            .rev()
+            .filter_map(|registration| registration.spawn.as_ref())
+            .filter_map(|spawn| spawn.worker_cwd.as_deref())
+            .filter(|folder| Path::new(folder).is_absolute())
+        {
+            if !folders.iter().any(|kept| kept == folder) {
+                folders.push(folder.to_string());
+                if folders.len() == limit {
+                    break;
+                }
+            }
+        }
+        folders
+    }
+
     pub fn accepts_spawns(&self) -> bool {
         self.accept_spawns != Some(false)
     }

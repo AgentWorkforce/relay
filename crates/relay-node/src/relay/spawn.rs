@@ -2207,6 +2207,12 @@ mod tests {
             assert!(change(bad.clone()).is_err(), "{bad}");
         }
         assert_eq!(core.settings()["spawn_allow_teammates"], false);
+        assert_eq!(
+            core.spawn_advertisement(&[codex::ID], &[])
+                .configured
+                .recent_folders,
+            None
+        );
         let settings = core
             .set_settings(
                 json!({"spawn_max_agents": 3, "spawn_billing_codex": "subscription",
@@ -2234,6 +2240,7 @@ mod tests {
         assert_eq!(advertised.configured.max_agents, 3);
         assert!(advertised.configured.teammates);
         assert_eq!(advertised.configured.repositories, ["AgentWorkforce/relay"]);
+        assert_eq!(advertised.configured.recent_folders, Some(Vec::new()));
         assert_eq!(
             advertised.configured.harnesses[0].billing,
             Billing::Subscription

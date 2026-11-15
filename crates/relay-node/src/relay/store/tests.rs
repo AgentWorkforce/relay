@@ -49,6 +49,37 @@ fn token(value: &str) -> Secret {
 }
 
 #[test]
+fn recent_spawn_folders_are_absolute_deduplicated_and_newest_first() {
+    let root = tempfile::tempdir().unwrap();
+    let older = root.path().join("older").to_string_lossy().into_owned();
+    let newer = root.path().join("newer").to_string_lossy().into_owned();
+    let spawned = |name: &str, folder: &str| {
+        let mut row = registration(name, target(&random_uuid()));
+        row.spawn = Some(
+            serde_json::from_value(json!({
+                "nodeID": "node_desktop_1",
+                "nodeName": "test-desk-desktop",
+                "invocationID": format!("inv_{name}"),
+                "harness": "codex",
+                "workerCwd": folder,
+            }))
+            .unwrap(),
+        );
+        row
+    };
+    let mut store = Store::default();
+    store.registrations = vec![
+        spawned("old", &older),
+        spawned("relative", "relative/folder"),
+        spawned("new", &newer),
+        spawned("same-again", &older),
+    ];
+
+    assert_eq!(store.recent_spawn_folders(2), [older, newer]);
+    assert!(store.recent_spawn_folders(0).is_empty());
+}
+
+#[test]
 fn forward_owner_binding_survives_store_roundtrip_and_retires_with_agent() {
     let mut store = Store::default();
     let registration = fresh("owned");
