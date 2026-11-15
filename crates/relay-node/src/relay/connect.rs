@@ -93,17 +93,31 @@ pub trait ConnectJoinClient: Send + Sync + 'static {
 
     /// Reads the public invite after Relaycast rejects this Connect's token,
     /// distinguishing a destroyed workspace from a transient auth failure.
-    fn availability(&self, connect_id: &str) -> Result<ConnectAvailability, OutboundError>;
+    fn availability(
+        &self,
+        site: &str,
+        connect_id: &str,
+    ) -> Result<ConnectAvailability, OutboundError>;
 
     /// Reads Cloud's participant-authenticated roster, the one source of
     /// presence a participant token may read.
-    fn roster(&self, connect_id: &str, token: &Secret) -> Result<Vec<RosterEntry>, OutboundError>;
+    fn roster(
+        &self,
+        site: &str,
+        connect_id: &str,
+        token: &Secret,
+    ) -> Result<Vec<RosterEntry>, OutboundError>;
 
     /// Cloud's current expiry for this Connect, read with the participant
     /// token. Asked only once the expiry saved at join has passed, because a
     /// host may have extended the room since. `Ok(None)` means Cloud gave no
     /// readable expiry, and the saved one stands.
-    fn expiry(&self, _connect_id: &str, _token: &Secret) -> Result<Option<String>, OutboundError> {
+    fn expiry(
+        &self,
+        _site: &str,
+        _connect_id: &str,
+        _token: &Secret,
+    ) -> Result<Option<String>, OutboundError> {
         Ok(None)
     }
 }
@@ -176,14 +190,31 @@ const CONNECT_JOIN_OVERRIDE: &str = "AGENT_RELAY_CONNECT_JOIN_BASE_URL";
 pub(crate) const CONNECT_PRESENCE_HEADER: (&str, &str) =
     ("X-Agent-Relay-Connect-Presence", "session");
 
+/// The public Agent Relay site. Its Connect invitations are open to any
+/// build, including one made for a self-hosted site: a guest needs no
+/// account there, and its participant token is scoped to the one room.
+pub(crate) const PUBLIC_CONNECT_SITE: &str = "https://agentrelay.com";
+
+/// The site whose Cloud issued a Connect link: this build's own site for a
+/// bare id or one of its links, or [`PUBLIC_CONNECT_SITE`] for a public
+/// invitation. Any other origin is refused, so a pasted link cannot point
+/// this desktop at an arbitrary host.
+pub(crate) fn connect_site(link: &str) -> Option<&'static str> {
+    let built_in = crate::relay::links::built_in_site_url();
+    if !link.contains("://") {
+        return Some(built_in);
+    }
+    let origin = url::Url::parse(link).ok()?.origin();
+    [built_in, PUBLIC_CONNECT_SITE]
+        .into_iter()
+        .find(|site| url::Url::parse(site).is_ok_and(|site| site.origin() == origin))
+}
+
 pub(crate) fn connect_id(link: &str) -> Option<String> {
     let id = if link.contains("://") {
-        // An invite link is one this build's site issued.
+        // An invite link is one this build's site, or the public site, issued.
+        connect_site(link)?;
         let url = url::Url::parse(link).ok()?;
-        let site = url::Url::parse(crate::relay::links::built_in_site_url()).ok()?;
-        if url.origin() != site.origin() {
-            return None;
-        }
         let parts: Vec<_> = url
             .path_segments()?
             .filter(|part| !part.is_empty())
@@ -204,7 +235,7 @@ pub(crate) fn connect_id(link: &str) -> Option<String> {
     .then_some(id)
 }
 
-fn cloud_join_url(id: &str, debug_override: Option<&str>) -> String {
+fn cloud_join_url(site: &str, id: &str, debug_override: Option<&str>) -> String {
     if let Some(base) = debug_override.and_then(|base| {
         let url = url::Url::parse(base).ok()?;
         let loopback = match url.host()? {
@@ -222,22 +253,19 @@ fn cloud_join_url(id: &str, debug_override: Option<&str>) -> String {
     }) {
         return format!("{base}/cloud/connect/{id}/join");
     }
-    format!(
-        "{}/cloud/connect/{id}/join",
-        crate::relay::links::built_in_site_url()
-    )
+    format!("{}/cloud/connect/{id}/join", site.trim_end_matches('/'))
 }
 
-fn cloud_roster_url(id: &str, debug_override: Option<&str>) -> String {
-    let join = cloud_join_url(id, debug_override);
+fn cloud_roster_url(site: &str, id: &str, debug_override: Option<&str>) -> String {
+    let join = cloud_join_url(site, id, debug_override);
     format!("{}/participants", join.trim_end_matches("/join"))
 }
 
-fn cloud_invite_url(id: &str, debug_override: Option<&str>) -> String {
-    if let Some(join) = cloud_join_url(id, debug_override).strip_suffix("/join") {
+fn cloud_invite_url(site: &str, id: &str, debug_override: Option<&str>) -> String {
+    if let Some(join) = cloud_join_url(site, id, debug_override).strip_suffix("/join") {
         return join.replace("/cloud/connect/", "/connect/");
     }
-    format!("{}/connect/{id}", crate::relay::links::built_in_site_url())
+    format!("{}/connect/{id}", site.trim_end_matches('/'))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -299,9 +327,9 @@ impl ConnectJoinClient for CloudJoinClient {
         host_claim: Option<&str>,
         idempotency_key: &str,
     ) -> Result<JoinResponse, OutboundError> {
-        let id = connect_id(link).ok_or_else(|| {
-            OutboundError::new(400, "invalid_link", "Use a Relay Connect link or id.")
-        })?;
+        let invalid = || OutboundError::new(400, "invalid_link", "Use a Relay Connect link or id.");
+        let id = connect_id(link).ok_or_else(invalid)?;
+        let site = connect_site(link).ok_or_else(invalid)?;
         // Shipped release builds have exactly one destination. Debug builds
         // may point at a loopback join handler for an accountless end-to-end
         // against real Relaycast without waiting for a Cloud deployment.
@@ -309,7 +337,7 @@ impl ConnectJoinClient for CloudJoinClient {
         let debug_override = std::env::var(CONNECT_JOIN_OVERRIDE).ok();
         #[cfg(not(debug_assertions))]
         let debug_override: Option<String> = None;
-        let url = cloud_join_url(&id, debug_override.as_deref());
+        let url = cloud_join_url(site, &id, debug_override.as_deref());
         let mut body = json!({});
         if let Some(name) = name {
             body["agent_name"] = json!(name);
@@ -320,21 +348,30 @@ impl ConnectJoinClient for CloudJoinClient {
         join_at(&url, &id, &body, idempotency_key)
     }
 
-    fn roster(&self, connect_id: &str, token: &Secret) -> Result<Vec<RosterEntry>, OutboundError> {
+    fn roster(
+        &self,
+        site: &str,
+        connect_id: &str,
+        token: &Secret,
+    ) -> Result<Vec<RosterEntry>, OutboundError> {
         #[cfg(debug_assertions)]
         let debug_override = std::env::var(CONNECT_JOIN_OVERRIDE).ok();
         #[cfg(not(debug_assertions))]
         let debug_override: Option<String> = None;
-        let url = cloud_roster_url(connect_id, debug_override.as_deref());
+        let url = cloud_roster_url(site, connect_id, debug_override.as_deref());
         read_cloud_roster(&url, connect_id, token)
     }
 
-    fn availability(&self, connect_id: &str) -> Result<ConnectAvailability, OutboundError> {
+    fn availability(
+        &self,
+        site: &str,
+        connect_id: &str,
+    ) -> Result<ConnectAvailability, OutboundError> {
         #[cfg(debug_assertions)]
         let debug_override = std::env::var(CONNECT_JOIN_OVERRIDE).ok();
         #[cfg(not(debug_assertions))]
         let debug_override: Option<String> = None;
-        let url = cloud_invite_url(connect_id, debug_override.as_deref());
+        let url = cloud_invite_url(site, connect_id, debug_override.as_deref());
         let answer = cloud_http::send_blocking_with_headers(
             "GET",
             &url,
@@ -401,12 +438,17 @@ impl ConnectJoinClient for CloudJoinClient {
         ))
     }
 
-    fn expiry(&self, connect_id: &str, token: &Secret) -> Result<Option<String>, OutboundError> {
+    fn expiry(
+        &self,
+        site: &str,
+        connect_id: &str,
+        token: &Secret,
+    ) -> Result<Option<String>, OutboundError> {
         #[cfg(debug_assertions)]
         let debug_override = std::env::var(CONNECT_JOIN_OVERRIDE).ok();
         #[cfg(not(debug_assertions))]
         let debug_override: Option<String> = None;
-        let url = cloud_roster_url(connect_id, debug_override.as_deref());
+        let url = cloud_roster_url(site, connect_id, debug_override.as_deref());
         read_cloud_expiry(&url, connect_id, token)
     }
 }
@@ -441,6 +483,12 @@ pub struct ConnectSession {
     /// Their role remains unknown until Cloud includes it in a join response.
     #[serde(default)]
     pub observed_participants: Vec<String>,
+    /// The site whose Cloud issued this Connect, when it is not this build's
+    /// own: a public invitation joined from a self-hosted build. Roster,
+    /// availability and expiry reads go back to it. Absent in sessions saved
+    /// before this field, which were all this build's site's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_site: Option<String>,
 }
 
 impl ConnectSession {
@@ -473,7 +521,22 @@ impl ConnectSession {
             base_url: join.participant.relay_base_url,
             participants: join.participants,
             observed_participants: Vec::new(),
+            cloud_site: None,
         })
+    }
+
+    /// Records the site that issued the joined link, when it is not this
+    /// build's own.
+    pub fn issued_by(mut self, site: &str) -> Self {
+        self.cloud_site = (site != crate::relay::links::built_in_site_url()).then(|| site.into());
+        self
+    }
+
+    /// The site to read this Connect's roster, availability and expiry from.
+    pub fn site(&self) -> &str {
+        self.cloud_site
+            .as_deref()
+            .unwrap_or_else(|| crate::relay::links::built_in_site_url())
     }
 
     pub fn expired(&self) -> bool {
@@ -484,6 +547,10 @@ impl ConnectSession {
     fn valid(&self) -> bool {
         self.target.is_valid()
             && connect_id(&self.connect_id).as_deref() == Some(self.connect_id.as_str())
+            && self
+                .cloud_site
+                .as_deref()
+                .is_none_or(|site| site == PUBLIC_CONNECT_SITE)
             && DateTime::parse_from_rfc3339(&self.expires_at).is_ok()
             && cloud_http::sendable(&self.base_url)
             && !self.agent_name.is_empty()
@@ -1517,7 +1584,8 @@ impl Core {
         let client = self.plugins.connect_cloud.clone();
         let connect_id = session.connect_id.clone();
         let id = connect_id.clone();
-        tokio::task::spawn_blocking(move || client.availability(&id))
+        let site = session.site().to_owned();
+        tokio::task::spawn_blocking(move || client.availability(&site, &id))
             .await
             .unwrap_or_else(|_| Err(connect_internal_error("availability", &connect_id)))
     }
@@ -1567,7 +1635,8 @@ impl Core {
         let client = self.plugins.connect_cloud.clone();
         let connect_id = session.connect_id.clone();
         let token = session.token.clone();
-        let answer = tokio::task::spawn_blocking(move || client.expiry(&connect_id, &token))
+        let site = session.site().to_owned();
+        let answer = tokio::task::spawn_blocking(move || client.expiry(&site, &connect_id, &token))
             .await
             .unwrap_or_else(|_| Err(connect_internal_error("expiry", &session.connect_id)));
         let now = Utc::now();
@@ -2352,22 +2421,22 @@ mod tests {
 
     #[test]
     fn only_debug_loopback_origins_can_override_the_cloud_join_url() {
+        let site = crate::relay::links::built_in_site_url();
         assert_eq!(
-            cloud_join_url("abc", Some("http://127.0.0.1:4312")),
+            cloud_join_url(site, "abc", Some("http://127.0.0.1:4312")),
             "http://127.0.0.1:4312/cloud/connect/abc/join"
         );
         assert_eq!(
-            cloud_join_url("abc", Some("http://localhost:4312/test/")),
+            cloud_join_url(site, "abc", Some("http://localhost:4312/test/")),
             "http://localhost:4312/test/cloud/connect/abc/join"
         );
         assert_eq!(
-            cloud_invite_url("abc", Some("http://localhost:4312/test/")),
+            cloud_invite_url(site, "abc", Some("http://localhost:4312/test/")),
             "http://localhost:4312/test/connect/abc"
         );
         // Cloud's join response advertises this as `participants_url`.
-        let site = crate::relay::links::built_in_site_url();
         assert_eq!(
-            cloud_roster_url("abc", None),
+            cloud_roster_url(site, "abc", None),
             format!("{site}/cloud/connect/abc/participants")
         );
         for refused in [
@@ -2377,16 +2446,19 @@ mod tests {
             "not a url",
         ] {
             assert_eq!(
-                cloud_join_url("abc", Some(refused)),
+                cloud_join_url(site, "abc", Some(refused)),
                 format!("{site}/cloud/connect/abc/join")
             );
         }
     }
 
     #[test]
-    fn invite_links_are_this_build_s_site_s() {
+    fn invite_links_are_this_build_s_site_s_or_the_public_site_s() {
         let site = crate::relay::links::built_in_site_url();
-        assert_eq!(cloud_invite_url("abc", None), format!("{site}/connect/abc"));
+        assert_eq!(
+            cloud_invite_url(site, "abc", None),
+            format!("{site}/connect/abc")
+        );
         assert_eq!(
             connect_id(&format!("{site}/connect/abc")).as_deref(),
             Some("abc")
@@ -2395,14 +2467,42 @@ mod tests {
             connect_id(&format!("{site}/cloud/connect/abc/join")).as_deref(),
             Some("abc")
         );
+        assert_eq!(connect_site(&format!("{site}/connect/abc")), Some(site));
         assert_eq!(connect_id("abc").as_deref(), Some("abc"));
+        assert_eq!(connect_site("abc"), Some(site));
+        // A public invitation is open to every build, self-hosted ones too.
+        for public in [
+            "https://agentrelay.com/connect/abc",
+            "https://AgentRelay.com:443/connect/abc",
+        ] {
+            assert_eq!(connect_id(public).as_deref(), Some("abc"), "{public}");
+            assert_eq!(connect_site(public), Some(PUBLIC_CONNECT_SITE), "{public}");
+        }
         for other in [
             "https://other.example/connect/abc",
             "http://agentrelay.com/connect/abc",
             "https://agentrelay.com:8443/connect/abc",
+            "https://cast.agentrelay.com/connect/abc",
         ] {
             assert_eq!(connect_id(other), None, "{other}");
+            assert_eq!(connect_site(other), None, "{other}");
         }
+    }
+
+    #[test]
+    fn a_public_invitation_is_read_back_from_the_site_that_issued_it() {
+        assert_eq!(
+            cloud_join_url(PUBLIC_CONNECT_SITE, "abc", None),
+            "https://agentrelay.com/cloud/connect/abc/join"
+        );
+        assert_eq!(
+            cloud_roster_url(PUBLIC_CONNECT_SITE, "abc", None),
+            "https://agentrelay.com/cloud/connect/abc/participants"
+        );
+        assert_eq!(
+            cloud_invite_url(PUBLIC_CONNECT_SITE, "abc", None),
+            "https://agentrelay.com/connect/abc"
+        );
     }
 
     #[test]
@@ -2504,6 +2604,54 @@ mod tests {
     }
 
     #[test]
+    fn a_joined_session_remembers_a_public_issuing_site_across_a_save() {
+        let join: JoinResponse = serde_json::from_value(json!({
+            "connect_id": "connect-1",
+            "task": "Support",
+            "expires_at": "2099-10-01T12:00:00Z",
+            "host": {"person": "Alice", "agent_name": "host"},
+            "participant": {
+                "agent_name": "me",
+                "agent_id": "agent-me",
+                "role": "guest",
+                "token": "at_live_connect",
+                "relay_base_url": "https://cast.agentrelay.com",
+            },
+            "participants": [{"agent_name": "me", "role": "guest"}],
+        }))
+        .unwrap();
+        let target = Target::new(SessionKind::Codex, "01a0c221-6806-7210-af25-97e104b15049");
+        let built_in = crate::relay::links::built_in_site_url();
+
+        let own = ConnectSession::from_join(target.clone(), join.clone())
+            .unwrap()
+            .issued_by(built_in);
+        assert_eq!(own.cloud_site, None);
+        assert_eq!(own.site(), built_in);
+        assert!(own.valid());
+        // Sessions saved before the field existed read as this build's site.
+        assert!(serde_json::to_value(&own)
+            .unwrap()
+            .get("cloud_site")
+            .is_none());
+
+        let public = ConnectSession::from_join(target, join)
+            .unwrap()
+            .issued_by(PUBLIC_CONNECT_SITE);
+        assert_eq!(public.site(), PUBLIC_CONNECT_SITE);
+        assert!(public.valid());
+        let saved: ConnectSession =
+            serde_json::from_value(serde_json::to_value(&public).unwrap()).unwrap();
+        assert_eq!(saved.site(), PUBLIC_CONNECT_SITE);
+        assert!(saved.valid());
+
+        // A saved session naming any other site is not trusted.
+        let mut tampered = saved;
+        tampered.cloud_site = Some("https://other.example".into());
+        assert!(!tampered.valid());
+    }
+
+    #[test]
     fn status_shows_clouds_current_role_over_the_one_saved_at_join() {
         let session = ConnectSession {
             target: Target::new(SessionKind::Codex, "01a0c221-6806-7210-af25-97e104b15049"),
@@ -2530,6 +2678,7 @@ mod tests {
                 },
             ],
             observed_participants: Vec::new(),
+            cloud_site: None,
         };
         let entry = |name: &str, role: Option<&str>| RosterEntry {
             agent_name: name.into(),
@@ -2574,6 +2723,7 @@ mod tests {
                     role: "guest".into(),
                 }],
                 observed_participants: Vec::new(),
+                cloud_site: None,
             })
             .unwrap();
         let saved = state.sessions.get(&target.key()).unwrap().clone();
@@ -2852,6 +3002,7 @@ mod tests {
                     role: "guest".into(),
                 }],
                 observed_participants: Vec::new(),
+                cloud_site: None,
             })
             .unwrap();
         state
@@ -2910,6 +3061,7 @@ mod tests {
                     role: "guest".into(),
                 }],
                 observed_participants: Vec::new(),
+                cloud_site: None,
             })
             .unwrap();
         state

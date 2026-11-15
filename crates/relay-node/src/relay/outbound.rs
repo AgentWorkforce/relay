@@ -564,6 +564,9 @@ impl Outbound {
         let requested_id = connect_id(link).ok_or_else(|| {
             OutboundError::new(400, "invalid_link", "link must be a Connect link or id.")
         })?;
+        let issuing_site = crate::relay::connect::connect_site(link).ok_or_else(|| {
+            OutboundError::new(400, "invalid_link", "link must be a Connect link or id.")
+        })?;
         let name = match fields.get("name") {
             None | Some(Value::Null) => None,
             Some(Value::String(value)) => {
@@ -708,7 +711,8 @@ impl Outbound {
                 "Relay Connect returned a different Connect.",
             ));
         }
-        let adopted = ConnectSession::from_join(session.target.clone(), joined)?;
+        let adopted =
+            ConnectSession::from_join(session.target.clone(), joined)?.issued_by(issuing_site);
         if adopted.expired() {
             return Err(OutboundError::new(
                 410,
