@@ -235,6 +235,8 @@ pub struct OutboundError {
     pub status: u16,
     pub code: String,
     pub message: String,
+    /// Sent as `Retry-After` (seconds) when the failure says when to retry.
+    pub retry_after_secs: Option<u64>,
 }
 
 impl OutboundError {
@@ -243,6 +245,7 @@ impl OutboundError {
             status,
             code: code.into(),
             message: message.into(),
+            retry_after_secs: None,
         }
     }
 
@@ -308,13 +311,16 @@ impl OutboundError {
             ErrorKind::Busy => (409, "busy"),
             ErrorKind::Refused => (409, "refused"),
             ErrorKind::RateLimited => (429, "rate_limited"),
+            ErrorKind::PlanLimitExceeded => (429, "plan_limit_exceeded"),
             ErrorKind::StoreFailed => (500, "save_failed"),
             ErrorKind::ShuttingDown => (503, "shutting_down"),
             ErrorKind::MethodNotFound => (503, "setup_unavailable"),
             ErrorKind::FleetUnavailable => (503, "fleet_unavailable"),
             _ => (502, fallback_code),
         };
-        OutboundError::new(status, code, error.message.clone())
+        let mut outbound = OutboundError::new(status, code, error.message.clone());
+        outbound.retry_after_secs = error.retry_after_secs;
+        outbound
     }
 }
 
@@ -1737,14 +1743,32 @@ fn closed() -> OutboundError {
 }
 
 async fn write_response(stream: &mut CoreStream, status: u16, payload: &Value) {
-    let body = format!("{payload}\n");
-    let response = format!(
-        "HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        http::reason(status),
-        body.len()
-    );
+    write_response_after(stream, status, payload, None).await;
+}
+
+async fn write_response_after(
+    stream: &mut CoreStream,
+    status: u16,
+    payload: &Value,
+    retry_after_secs: Option<u64>,
+) {
+    let response = http_response(status, payload, retry_after_secs);
     let _ = stream.write_all(response.as_bytes()).await;
     let _ = stream.shutdown().await;
+}
+
+/// One complete HTTP/1.1 response; `Retry-After` only when the failure
+/// named one, so a caller backs off as long as the upstream asked.
+fn http_response(status: u16, payload: &Value, retry_after_secs: Option<u64>) -> String {
+    let body = format!("{payload}\n");
+    let retry_after = retry_after_secs
+        .map(|secs| format!("Retry-After: {secs}\r\n"))
+        .unwrap_or_default();
+    format!(
+        "HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\n{retry_after}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        http::reason(status),
+        body.len()
+    )
 }
 
 /// A credential-free description of a failed Relaycast call, for the log.
@@ -1770,7 +1794,7 @@ fn relaycast_failure_cause(error: &relaycast::RelayError) -> String {
 
 async fn write_error(stream: &mut CoreStream, error: &OutboundError) {
     let payload = json!({"ok": false, "error": {"code": error.code, "message": error.message}});
-    write_response(stream, error.status, &payload).await;
+    write_response_after(stream, error.status, &payload, error.retry_after_secs).await;
 }
 
 /// One file's identity, so cleanup removes only what this core created.
@@ -2088,6 +2112,29 @@ async fn accept_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_core_failure_keeps_its_retry_after_and_plan_limit() {
+        let mut limited = RpcError::new(ErrorKind::RateLimited, "slow down");
+        limited.retry_after_secs = Some(30);
+        let outbound = OutboundError::from_rpc(&limited, "integration_failed");
+        assert_eq!(
+            (outbound.status, outbound.code.as_str()),
+            (429, "rate_limited")
+        );
+        assert_eq!(outbound.retry_after_secs, Some(30));
+        let response = http_response(429, &json!({"ok": false}), Some(30));
+        assert!(response.contains("\r\nRetry-After: 30\r\n"), "{response}");
+        assert!(!http_response(502, &json!({"ok": false}), None).contains("Retry-After"));
+
+        let full = RpcError::new(ErrorKind::PlanLimitExceeded, "full");
+        let outbound = OutboundError::from_rpc(&full, "integration_failed");
+        assert_eq!(
+            (outbound.status, outbound.code.as_str()),
+            (429, "plan_limit_exceeded")
+        );
+        assert_eq!(outbound.retry_after_secs, None);
+    }
 
     /// The `(method, path)` arms of the router function `name` in `source`:
     /// each `("M", "/p")` or `("M" | "N", "/p")` pattern, until the

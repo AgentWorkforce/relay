@@ -111,6 +111,13 @@ pub struct RpcError {
     pub code: i64,
     pub message: String,
     pub data: ErrorData,
+    /// How long the upstream service asked callers to wait (its
+    /// `Retry-After`, in seconds). Local only: never sent over JSON-RPC, so
+    /// the core contract is unchanged; the outbound HTTP API repeats it as
+    /// its own `Retry-After`.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub retry_after_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, JsonSchema)]
@@ -241,6 +248,7 @@ impl RpcError {
                 plan_limit: None,
                 reason: None,
             },
+            retry_after_secs: None,
         }
     }
 

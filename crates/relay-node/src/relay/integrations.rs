@@ -30,6 +30,7 @@ use url::Url;
 
 mod create;
 mod event_filters;
+mod relayfile_error;
 use create::SubscriptionIntent;
 pub(crate) use event_filters::normalize_event_types;
 
@@ -127,15 +128,13 @@ impl Relayfile {
                     ErrorKind::NotFound,
                     "relayfile has no such resource.",
                 )),
-                Err(ureq::Error::Status(status, _)) => {
-                    let kind = if (400..500).contains(&status) && status != 429 {
-                        ErrorKind::CloudRefused
-                    } else {
-                        ErrorKind::CloudFailed
-                    };
-                    Err(RpcError::new(
-                        kind,
-                        format!("relayfile returned HTTP {status}."),
+                Err(ureq::Error::Status(status, response)) => {
+                    let retry_after = response.header("Retry-After").map(str::to_owned);
+                    let body = response.into_string().unwrap_or_default();
+                    Err(relayfile_error::relayfile_status_error(
+                        status,
+                        retry_after.as_deref(),
+                        &body,
                     ))
                 }
                 Err(_) => Err(failed("relayfile could not be reached.")),
