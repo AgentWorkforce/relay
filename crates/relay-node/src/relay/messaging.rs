@@ -24,7 +24,12 @@
 //! the peer's id. A cached conversation id or a matching name is never
 //! enough, so a reused name or machine cannot inherit another identity's
 //! history. A conversation without proof is looked for again at most once a
-//! minute, sooner when a reply arrives.
+//! minute, sooner when a reply arrives, and then only in the conversations
+//! that changed since they were read.
+//!
+//! Every read as you is paced by the workspace's Relaycast pause
+//! ([`crate::relay::backoff`]): while it lasts, a read is refused with the
+//! time left instead of reaching Relaycast.
 
 use crate::relay::backoff::WorkspaceScope;
 use crate::relay::client::{self, Sent};
@@ -42,7 +47,9 @@ use crate::relay::workspace::{validated_base_url, Secret, Workspace};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::time::{Duration, Instant};
 
 /// Messages per history page.
@@ -106,8 +113,61 @@ pub struct MessagingState {
     conversations: HashMap<(String, String), String>,
     /// Exact-address lookups that found no proof, by `(workspace, identity, endpoint key)`.
     misses: HashMap<(String, String, String), Instant>,
+    /// The conversations an exact-address lookup read without finding
+    /// proof, by the same key as `misses` and then conversation id.
+    checked: HashMap<(String, String, String), HashMap<String, Checked>>,
     /// `GET /v1/messages/{id}` answers, scoped to the credential that read them.
     details: HashMap<(String, Secret, String), Value>,
+}
+
+impl MessagingState {
+    /// A reply or a send may be the proof a lookup lacked: lookups run
+    /// again, and a conversation whose listing cannot show that it changed
+    /// is read again. `key` limits this to one lookup.
+    fn forget_misses(&mut self, key: Option<&(String, String, String)>) {
+        match key {
+            Some(key) => {
+                self.misses.remove(key);
+                if let Some(checked) = self.checked.get_mut(key) {
+                    checked.retain(|_, c| c.marked);
+                }
+            }
+            None => {
+                self.misses.clear();
+                for checked in self.checked.values_mut() {
+                    checked.retain(|_, c| c.marked);
+                }
+            }
+        }
+    }
+}
+
+/// What `/v1/dm/conversations` said of a conversation that was read without
+/// finding proof. Relaycast lists each conversation with its last message
+/// (`last_message`: id, text, sender, time), so while the listing says the
+/// same nothing new can be in it. A server that lists no last message
+/// cannot show a change: such a conversation is read again after
+/// [`EXACT_MISS_TTL`], or when a reply arrives.
+struct Checked {
+    listing: String,
+    marked: bool,
+    at: Instant,
+}
+
+impl Checked {
+    fn of(conversation: &Value) -> Checked {
+        Checked {
+            listing: format!("{:x}", Sha256::digest(conversation.to_string())),
+            marked: conversation.get("last_message").is_some(),
+            at: Instant::now(),
+        }
+    }
+
+    /// Whether reading the conversation listed as `now` again would only
+    /// read what this check already read.
+    fn covers(&self, now: &Checked) -> bool {
+        self.listing == now.listing && (self.marked || self.at.elapsed() < EXACT_MISS_TTL)
+    }
 }
 
 /// One message as a conversation shows it.
@@ -128,6 +188,8 @@ fn text(value: &Value) -> Option<String> {
 }
 
 mod conversations;
+#[cfg(test)]
+mod history_tests;
 pub use conversations::{direct_conversations, find_conversation};
 
 /// The agent id a desktop address carries: `name@<machine prefix>-<id>`,
@@ -366,9 +428,7 @@ impl Core {
     /// The push channel for your identity, once it is known.
     pub(crate) fn person_push_target(&self) -> Option<PushTarget> {
         let identity = self.current_identity()?;
-        let team = self.workspace();
-        let account_key = self.account_workspace_key();
-        let workspace = person_workspace_scope(&identity, team.as_ref(), account_key.as_ref());
+        let workspace = self.person_scope(&identity);
         Some(PushTarget {
             agent: person_channel(&identity.name),
             base_url: identity.base_url,
@@ -386,7 +446,7 @@ impl Core {
     /// A reply arrived for you, or your socket came up: any open
     /// conversation re-reads, and exact-address lookups may now find proof.
     pub(crate) fn person_woke(&self) {
-        self.messaging.lock().unwrap().misses.clear();
+        self.messaging.lock().unwrap().forget_misses(None);
         self.hub.invalidated(Listing::Messages);
     }
 
@@ -436,10 +496,49 @@ impl Core {
                 conversation.clone(),
             );
         }
-        state
-            .misses
-            .remove(&(workspace, identity.name.clone(), endpoint.key()));
+        state.forget_misses(Some(&(workspace, identity.name.clone(), endpoint.key())));
         Ok(sent)
+    }
+
+    /// The Relaycast workspace that paces calls as you.
+    fn person_scope(&self, identity: &PersonIdentity) -> WorkspaceScope {
+        let team = self.workspace();
+        let account_key = self.account_workspace_key();
+        person_workspace_scope(identity, team.as_ref(), account_key.as_ref())
+    }
+
+    /// Refuses a read as you while the workspace's Relaycast pause lasts,
+    /// with the time left as the error's `Retry-After`. A read it admits
+    /// after a pause is the workspace's one recheck.
+    fn person_read_allowed(&self, scope: &WorkspaceScope) -> Result<(), RpcError> {
+        let Some(wait) = self.relaycast_backoff.remaining(scope) else {
+            return Ok(());
+        };
+        let mut error = RpcError::new(
+            ErrorKind::RateLimited,
+            "Your messages are paused while Agent Relay recovers.",
+        );
+        error.retry_after_secs = Some(wait.as_secs() + u64::from(wait.subsec_nanos() > 0));
+        Err(error)
+    }
+
+    /// Runs one Relaycast read as you and tells the workspace pause how it
+    /// went. A refused token is your own, renewed by the caller: it says
+    /// nothing about the workspace key, so the workspace is not checked again.
+    #[allow(clippy::result_large_err)] // the SDK's own error type
+    async fn person_read<T>(
+        &self,
+        scope: &WorkspaceScope,
+        read: impl Future<Output = relaycast::Result<T>>,
+    ) -> relaycast::Result<T> {
+        let result = read.await;
+        match &result {
+            Err(error) if crate::relay::node_credential::rejects_credential(error) => {
+                self.relaycast_backoff.record_error(scope, error);
+            }
+            result => self.observe_relaycast_result(scope, result),
+        }
+        result
     }
 
     /// The signed-in account's Relaycast workspace key: the workspace your
@@ -481,8 +580,13 @@ impl Core {
 
     /// Acknowledges the replies Relaycast queued for you. History is
     /// durable; this only stops redrive. Returns how many.
-    async fn acknowledge_person_deliveries(&self, identity: &PersonIdentity) -> usize {
-        let Ok(pending) = client::deliveries(&identity.base_url, &identity.token).await else {
+    async fn acknowledge_person_deliveries(
+        &self,
+        identity: &PersonIdentity,
+        scope: &WorkspaceScope,
+    ) -> usize {
+        let pending = client::deliveries(&identity.base_url, &identity.token);
+        let Ok(pending) = self.person_read(scope, pending).await else {
             return 0;
         };
         let mut acknowledged = 0;
@@ -506,6 +610,7 @@ impl Core {
         before: Option<&str>,
     ) -> Result<History, RpcError> {
         let identity = self.person_identity(false).await?;
+        self.person_read_allowed(&self.person_scope(&identity))?;
         let result = match self.history_as(&identity, endpoint, before).await {
             Err(error) if error.is_auth_rejection() => {
                 let fresh = self.person_identity(true).await?;
@@ -529,9 +634,10 @@ impl Core {
         before: Option<&str>,
     ) -> relaycast::Result<Vec<DirectMessage>> {
         let http = sdk_gaps::http(&identity.base_url, &identity.token)?;
-        if self.acknowledge_person_deliveries(identity).await > 0 {
+        let scope = self.person_scope(identity);
+        if self.acknowledge_person_deliveries(identity, &scope).await > 0 {
             // Any incoming DM can be the proof an earlier lookup lacked.
-            self.messaging.lock().unwrap().misses.clear();
+            self.messaging.lock().unwrap().forget_misses(None);
         }
         let workspace = self
             .plugins
@@ -555,7 +661,9 @@ impl Core {
                 .get(&(identity.name.clone(), peer.key()))
                 .cloned()
         };
-        let listing = sdk_gaps::dm_conversations(&http).await?;
+        let listing = self
+            .person_read(&scope, sdk_gaps::dm_conversations(&http))
+            .await?;
         let mut conversations = direct_conversations(&listing, &identity.name);
         if let Some(preferred) = &preferred {
             conversations.sort_by_key(|c| c["id"].as_str() != Some(preferred.as_str()));
@@ -563,11 +671,45 @@ impl Core {
         let mut selected: Option<String> = None;
         match peer {
             Endpoint::Address(address) => {
+                {
+                    // Conversations no longer listed are not remembered.
+                    let listed: HashSet<String> = conversations
+                        .iter()
+                        .filter_map(|c| text(&c["id"]))
+                        .collect();
+                    let mut state = self.messaging.lock().unwrap();
+                    if state.checked.len() >= DETAILS_KEPT {
+                        state.checked.clear();
+                    }
+                    if let Some(checked) = state.checked.get_mut(&miss_key) {
+                        checked.retain(|id, _| listed.contains(id));
+                    }
+                }
                 for candidate in &conversations {
                     let Some(id) = text(&candidate["id"]) else {
                         continue;
                     };
-                    let mut page = sdk_gaps::dm_messages(&http, &id, HISTORY_LIMIT, None).await?;
+                    // A conversation read without proof is read again only
+                    // once the listing shows it changed. What was read before
+                    // an error stays read, so a retry goes on from there.
+                    let listed = Checked::of(candidate);
+                    let unchanged = self
+                        .messaging
+                        .lock()
+                        .unwrap()
+                        .checked
+                        .get(&miss_key)
+                        .and_then(|checked| checked.get(&id))
+                        .is_some_and(|checked| checked.covers(&listed));
+                    if unchanged {
+                        continue;
+                    }
+                    let mut page = self
+                        .person_read(
+                            &scope,
+                            sdk_gaps::dm_messages(&http, &id, HISTORY_LIMIT, None),
+                        )
+                        .await?;
                     let mut proof = endpoint_binding(candidate, &page, address, &identity.name);
                     let mut seen = HashSet::new();
                     // The address-bearing message may be older than the
@@ -580,14 +722,25 @@ impl Core {
                         if !seen.insert(cursor.clone()) {
                             break;
                         }
-                        page =
-                            sdk_gaps::dm_messages(&http, &id, HISTORY_LIMIT, Some(&cursor)).await?;
+                        page = self
+                            .person_read(
+                                &scope,
+                                sdk_gaps::dm_messages(&http, &id, HISTORY_LIMIT, Some(&cursor)),
+                            )
+                            .await?;
                         proof = endpoint_binding(candidate, &page, address, &identity.name);
                     }
                     if proof.is_some() {
                         selected = Some(id);
                         break;
                     }
+                    self.messaging
+                        .lock()
+                        .unwrap()
+                        .checked
+                        .entry(miss_key.clone())
+                        .or_default()
+                        .insert(id, listed);
                 }
             }
             Endpoint::Name(name) => {
@@ -611,8 +764,15 @@ impl Core {
                 .conversations
                 .insert((identity.name.clone(), peer.key()), selected.clone());
         }
-        let page = sdk_gaps::dm_messages(&http, &selected, HISTORY_LIMIT, before).await?;
-        let hydrated = self.hydrate(&http, identity, page).await?;
+        let page = self
+            .person_read(
+                &scope,
+                sdk_gaps::dm_messages(&http, &selected, HISTORY_LIMIT, before),
+            )
+            .await?;
+        let hydrated = self
+            .person_read(&scope, self.hydrate(&http, identity, page))
+            .await?;
         Ok(threaded(&hydrated, &identity.name))
     }
 
@@ -699,9 +859,12 @@ impl Core {
     /// Your 1:1 conversations, as Relaycast lists them.
     pub async fn conversations(&self) -> Result<Conversations, RpcError> {
         let identity = self.person_identity(false).await?;
+        self.person_read_allowed(&self.person_scope(&identity))?;
         let list = |identity: PersonIdentity| async move {
             let http = sdk_gaps::http(&identity.base_url, &identity.token)?;
-            sdk_gaps::dm_conversations(&http).await
+            let scope = self.person_scope(&identity);
+            self.person_read(&scope, sdk_gaps::dm_conversations(&http))
+                .await
         };
         let (identity, listing) = match list(identity.clone()).await {
             Err(error) if error.is_auth_rejection() => {
