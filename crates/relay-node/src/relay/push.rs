@@ -14,13 +14,16 @@
 //! ends, the channel wakes a queue read, since something may have been pushed
 //! while it was down. It reconnects with jittered backoff capped at 300 s
 //! until stopped, with the node token it minted first (`tokens`): a new one
-//! only once Relaycast refuses it. The backoff starts over only once a
+//! only once Relaycast refuses it, at the upgrade (401, 403) or in a
+//! `node_token_invalid` register refusal. The backoff starts over only once a
 //! socket held up ([`Liveness`]), so a gateway that accepts sockets and
 //! drops them again is not answered with a reconnect every second or two.
 //! A gateway that refuses the upgrade with 429 or 503, or closes the socket
 //! with 1013 (try again later) or 1008, pauses the whole workspace's writes
 //! in the shared [`RelaycastBackoff`], every channel's reconnect included,
-//! for its `Retry-After` or else the transient schedule.
+//! for its `Retry-After` (or the close's `retry_after`) or else the
+//! transient schedule, at most 300 s, never cutting short a longer pause
+//! another socket started.
 //!
 //! `node.register` names this install's provider instance
 //! (`<machine id>-<install id>`), so installs sharing one person identity
@@ -30,8 +33,8 @@
 //! by Relaycast for about 30 s and then closed: 4009 when another install's
 //! instance holds the node (`provider_instance_conflict`), 4001 otherwise.
 //! Neither wakes a queue read. A conflict waits 30-60 s, or the refusal's
-//! `retry_after` (capped at 300 s), or its backoff if longer, counted from
-//! the refusal; the socket is left for Relaycast to close until then. Any
+//! `retry_after` (capped at 300 s; the reply's, else the close's), or its
+//! backoff if longer, counted from the refusal; the socket is left for Relaycast to close until then. Any
 //! other refusal waits up to 60 s for Relaycast's close, then takes the
 //! normal backoff, as a 4000 supersede does.
 
@@ -177,6 +180,8 @@ const RETRY_AFTER_CAP_UNITS: f64 = 300.0;
 const REFUSED_CLOSE_UNITS: f64 = 60.0;
 /// How long `node.register` may go unanswered, in backoff units (15 s).
 const REGISTER_REPLY_UNITS: f64 = 15.0;
+/// The register refusal code for a node token Relaycast no longer takes.
+const NODE_TOKEN_INVALID: &str = "node_token_invalid";
 /// How long the upgrade and `node.register` send may take.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -461,13 +466,19 @@ async fn run(target: PushTarget, context: PushContext, mut stopped: watch::Recei
                     retry_in_ms: until.saturating_duration_since(now).as_millis() as u64,
                 });
                 // Left for Relaycast to close, or closed once the wait is over.
-                if hold_refused(&mut socket, refusal, until, &mut stopped)
-                    .await
-                    .is_none()
-                {
+                let Some(closed) = hold_refused(&mut socket, refusal, until, &mut stopped).await
+                else {
                     break;
+                };
+                // The close may ask for a longer wait than the reply did.
+                let asked = from.unwrap_or(now) + unit.mul_f64(closed.units(backoff, jitter));
+                if asked > until {
+                    let now = Instant::now();
+                    state(PushState::Waiting {
+                        retry_in_ms: asked.saturating_duration_since(now).as_millis() as u64,
+                    });
                 }
-                until
+                until.max(asked)
             }
             ended => {
                 if !matches!(ended, Ended::Unregistered) {
@@ -578,6 +589,11 @@ async fn connect_once(
             }
             read = sdk_gaps::next_read(&mut socket) => match read {
                 NodeRead::Frame(frame) if sdk_gaps::is_register_refusal(&frame) => {
+                    // A token Relaycast no longer takes is minted again on
+                    // the next connection, as one the upgrade refused is.
+                    if sdk_gaps::refusal_code(&frame) == Some(NODE_TOKEN_INVALID) {
+                        context.tokens.forget(target);
+                    }
                     return Ended::Refused {
                         refusal: Refusal::of_reply(&frame),
                         at: Instant::now(),
@@ -625,7 +641,8 @@ async fn connect_once(
                         };
                     }
                     if shed(close.as_ref(), &liveness, heartbeat_period) {
-                        context.backoff.record_write_pause(&target.workspace, None);
+                        let retry_after = close.as_ref().and_then(NodeClose::retry_after);
+                        context.backoff.record_write_pause(&target.workspace, retry_after);
                     }
                     return liveness.ended(heartbeat_period);
                 }

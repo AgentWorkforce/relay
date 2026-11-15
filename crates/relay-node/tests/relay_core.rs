@@ -1160,6 +1160,77 @@ async fn a_rejected_registration_takes_the_normal_backoff() {
 }
 
 #[tokio::test]
+async fn a_conflict_close_s_retry_after_extends_a_reply_without_one() {
+    // The reply names no wait; the 4009 close 100 ms later asks for 90 s
+    // (90 units of 10 ms), counted from the refusal.
+    let fake = FakeRelaycast::start(Behaviour {
+        close_after_register: Some(4009),
+        close_reason: r#"{"code":"provider_instance_conflict","retry_after_ms":90000}"#.into(),
+        close_delay: Duration::from_millis(100),
+        ..conflict_refusal()
+    })
+    .await;
+    let (context, mut signals) = push_context();
+    let channel = PushChannel::spawn(target(&fake, "alice", None), context);
+    let (seen, wait) = signals_to_wait(&mut signals).await;
+    let refused = std::time::Instant::now();
+    assert!((550..=600).contains(&wait), "{wait}");
+    assert!(!went_live_or_woke(&seen), "{seen:?}");
+    // The close lengthens the wait.
+    let (seen, wait) = signals_to_wait(&mut signals).await;
+    assert!((700..=800).contains(&wait), "{wait}");
+    assert!(!went_live_or_woke(&seen), "{seen:?}");
+    // And the next attempt waits for it.
+    let _ = signals_to_wait(&mut signals).await;
+    assert!(
+        refused.elapsed() >= Duration::from_millis(850),
+        "{:?}",
+        refused.elapsed()
+    );
+    assert_eq!(fake.socket_queries().len(), 2);
+    channel.stop().await;
+}
+
+#[tokio::test]
+async fn a_register_refused_for_an_invalid_node_token_mints_a_new_one() {
+    let fake = FakeRelaycast::start(Behaviour {
+        refuse_register: Some("node_token_invalid".into()),
+        close_after_register: Some(4001),
+        close_reason: "node_token_invalid".into(),
+        ..Behaviour::default()
+    })
+    .await;
+    let (context, mut signals) = push_context();
+    let channel = PushChannel::spawn(target(&fake, "alice", None), context);
+    let _ = signals_to_wait(&mut signals).await;
+    assert_eq!(fake.minted(), 1);
+    fake.wait_for("a second socket", |fake| fake.socket_queries().len() >= 2)
+        .await;
+    assert_eq!(fake.minted(), 2, "the refused token is not used again");
+    channel.stop().await;
+}
+
+#[tokio::test]
+async fn a_try_again_later_close_s_retry_after_is_the_workspace_pause() {
+    let fake = FakeRelaycast::start(Behaviour {
+        close_after_register: Some(1013),
+        close_reason: r#"{"retry_after":7}"#.into(),
+        ..Behaviour::default()
+    })
+    .await;
+    let (context, mut signals) = push_context();
+    let gate = context.backoff.clone();
+    let alice = target(&fake, "alice", None);
+    let workspace = alice.workspace.clone();
+    let channel = PushChannel::spawn(alice, context);
+    assert_eq!(next_wait(&mut signals).await, 20);
+    let paused = next_wait(&mut signals).await;
+    assert!((6_500..=7_000).contains(&paused), "{paused} ms");
+    assert!(gate.write_paused(&workspace));
+    channel.stop().await;
+}
+
+#[tokio::test]
 async fn a_superseded_socket_does_not_start_the_backoff_over() {
     // Live, then superseded right away: the backoff keeps growing, and it
     // is not taken for a conflict.

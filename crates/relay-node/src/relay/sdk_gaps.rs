@@ -590,9 +590,7 @@ pub fn is_register_refusal(frame: &Value) -> bool {
 /// Whether a register refusal says another install's provider instance
 /// holds the node (409 `provider_instance_conflict`).
 pub fn is_instance_conflict(frame: &Value) -> bool {
-    let code = frame["code"]
-        .as_str()
-        .or_else(|| frame["error"]["code"].as_str());
+    let code = refusal_code(frame);
     let status = frame["status"]
         .as_u64()
         .or_else(|| frame["error"]["status"].as_u64());
@@ -611,11 +609,22 @@ fn retry_after_of(value: &Value) -> Option<Duration> {
     }
     let seconds = &value["retry_after"];
     seconds.as_u64().map(Duration::from_secs).or_else(|| {
+        // A wait too long for a `Duration` (`1e100`) is the longest one,
+        // as an integer's would be; callers cap it.
         seconds
             .as_f64()
             .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
-            .map(Duration::from_secs_f64)
+            .map(|seconds| {
+                Duration::try_from_secs_f64(seconds).unwrap_or(Duration::from_secs(u64::MAX))
+            })
     })
+}
+
+/// The error code of a register refusal, on the frame or its `error`.
+pub fn refusal_code(frame: &Value) -> Option<&str> {
+    frame["code"]
+        .as_str()
+        .or_else(|| frame["error"]["code"].as_str())
 }
 
 pub type NodeSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -923,6 +932,32 @@ mod tests {
         assert_eq!(
             refusal_retry_after(&in_seconds),
             Some(Duration::from_secs(31))
+        );
+        assert_eq!(refusal_code(&other), Some("node_token_invalid"));
+        assert_eq!(refusal_code(&conflict), Some("provider_instance_conflict"));
+    }
+
+    #[test]
+    fn a_retry_after_too_long_for_a_duration_is_the_longest_wait() {
+        for huge in ["1e100", "1e30", "2e19"] {
+            let frame: Value = serde_json::from_str(&format!(
+                r#"{{"type": "reply", "id": "register-a", "ok": false, "retry_after": {huge}}}"#
+            ))
+            .unwrap();
+            assert_eq!(
+                refusal_retry_after(&frame),
+                Some(Duration::from_secs(u64::MAX)),
+                "{huge}"
+            );
+        }
+        let close = NodeClose {
+            code: 4009,
+            reason: r#"{"retry_after": 1e100}"#.into(),
+        };
+        assert_eq!(close.retry_after(), Some(Duration::from_secs(u64::MAX)));
+        assert_eq!(
+            refusal_retry_after(&json!({"retry_after": 1.5})),
+            Some(Duration::from_millis(1500))
         );
     }
 
