@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Minor]
+
+### Added
+
+- `@agent-relay/events-shim setup --copilot` and `setup --gemini` wake an idle GitHub Copilot CLI or Gemini CLI session with each webhook post, without Agent Relay. After each turn, a turn-end hook (Copilot `agentStop`, Gemini `AfterAgent`) waits for the next post and gives it to the agent as its next prompt. A session wakes only after it has finished one turn. While it waits, the CLI shows "Working" (Copilot) or "Executing Hook" (Gemini); press Ctrl+C or Esc before typing, and it waits again after your turn. Before, Gemini read posts only when asked, and Copilot was not supported.
 
 ### Fixed
 
