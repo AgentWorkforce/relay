@@ -83,6 +83,9 @@ impl Core {
         if !self.prepare_removal(&registration, name, mode).await? {
             return Ok(());
         }
+        if mode.removes_integrations() {
+            self.remove_integrations(&registration, name).await?;
+        }
         let key = self.key_for(&registration).ok_or_else(|| key_gone(name))?;
         let mut removed = self.remove_remotely(&registration, name, &key).await;
         if let Err(error) = &removed {
@@ -222,6 +225,103 @@ impl Core {
         removed
     }
 
+    /// Unsubscribes every integration `registration` holds before its
+    /// registration (the only record of them) is dropped. Without this an
+    /// archived or ended agent left its relayfile webhook subscription and
+    /// reply subscription behind for good, and the workspace's webhook
+    /// subscription cap filled up.
+    ///
+    /// Only an explicit refusal (another workspace, signed out, a key that
+    /// is missing, a resource already gone) lets removal go ahead, naming
+    /// what may be left. A rejected saved key is first settled like every
+    /// other removal write: a rotation found retries the cleanup with the
+    /// current key, and a workspace proved out of reach is left as is.
+    /// Anything else (a store that could not be saved, an outage, a key
+    /// nothing proves either way) keeps the agent and its record, so the
+    /// next pass retries.
+    async fn remove_integrations(
+        &self,
+        registration: &Registration,
+        name: &str,
+    ) -> Result<(), RpcError> {
+        if !registration.has_integrations() {
+            return Ok(());
+        }
+        let _integrating = self.integration_lock.lock().await;
+        let entries: Vec<(String, String)> = registration
+            .integrations
+            .iter()
+            .flatten()
+            .map(|entry| (entry.provider.clone(), entry.resource.clone()))
+            .collect();
+        // Settled once per removal: a rotation found moves every saved copy,
+        // and a workspace proved out of reach stays out of reach for every
+        // later integration of this removal.
+        let mut key_settled = false;
+        let mut workspace_unreachable = false;
+        for (provider, resource) in entries {
+            loop {
+                // Boxed, so removal (reached from the outbound router and
+                // the archive sweep) does not carry the cleanup's state.
+                let Err(error) =
+                    Box::pin(self.unsubscribe_integration_held(name, &provider, &resource, true))
+                        .await
+                else {
+                    break;
+                };
+                if error.data.kind == ErrorKind::Unauthorized {
+                    if !key_settled {
+                        key_settled = true;
+                        match self.settle_rejected_key(name).await {
+                            // The saved copies now hold the current key.
+                            KeyProof::Current(_) => continue,
+                            KeyProof::Unreachable => workspace_unreachable = true,
+                            KeyProof::Unknown => {}
+                        }
+                    }
+                    if workspace_unreachable {
+                        self.integration_left_behind(name, &provider, &resource, &error);
+                        break;
+                    }
+                }
+                if !integration_cleanup_refused(error.data.kind) {
+                    return Err(cleanup_kept(error, name, &provider));
+                }
+                self.integration_left_behind(name, &provider, &resource, &error);
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Settles the saved key of `name` that Relaycast rejected during
+    /// integration cleanup, from the registration as saved now.
+    async fn settle_rejected_key(&self, name: &str) -> KeyProof {
+        let Ok(current) = self.registration_named(name) else {
+            return KeyProof::Unknown;
+        };
+        let Some(key) = self.key_for(&current) else {
+            return KeyProof::Unknown;
+        };
+        self.prove_rejected_saved_key(&current, &key).await
+    }
+
+    fn integration_left_behind(
+        &self,
+        name: &str,
+        provider: &str,
+        resource: &str,
+        error: &RpcError,
+    ) {
+        self.hub.activity(
+            Level::Warning,
+            format!(
+                "@{name}'s {provider} subscription to {resource} could not be removed ({}); it may still be live in relayfile.",
+                error.message
+            ),
+        );
+    }
+
     /// Validates the selected removal under its delivery locks. Archive
     /// cleanup can be deferred without error while a refusal still settles.
     async fn prepare_removal(
@@ -266,4 +366,27 @@ impl Core {
         }
         Ok(true)
     }
+}
+
+/// Whether integration cleanup was refused outright, so repeating it cannot
+/// help and removal may go ahead without it.
+fn integration_cleanup_refused(kind: ErrorKind) -> bool {
+    matches!(
+        kind,
+        ErrorKind::Refused
+            | ErrorKind::NotSignedIn
+            | ErrorKind::CloudRefused
+            | ErrorKind::RelaycastRefused
+            | ErrorKind::NotFound
+    )
+}
+
+/// The error that keeps `name` because its `provider` cleanup failed: the
+/// original one, so its kind and any `Retry-After` reach the caller.
+pub(super) fn cleanup_kept(mut error: RpcError, name: &str, provider: &str) -> RpcError {
+    error.message = format!(
+        "Could not remove @{name}'s {provider} subscription: {} The agent was kept; its cleanup is retried.",
+        error.message
+    );
+    error
 }
