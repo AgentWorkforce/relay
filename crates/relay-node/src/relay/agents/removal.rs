@@ -254,36 +254,38 @@ impl Core {
             .flatten()
             .map(|entry| (entry.provider.clone(), entry.resource.clone()))
             .collect();
+        // Settled once per removal: a rotation found moves every saved copy,
+        // and a workspace proved out of reach stays out of reach for every
+        // later integration of this removal.
         let mut key_settled = false;
+        let mut workspace_unreachable = false;
         for (provider, resource) in entries {
             loop {
                 // Boxed, so removal (reached from the outbound router and
                 // the archive sweep) does not carry the cleanup's state.
                 let Err(error) =
-                    Box::pin(self.unsubscribe_integration_held(name, &provider, &resource)).await
+                    Box::pin(self.unsubscribe_integration_held(name, &provider, &resource, true))
+                        .await
                 else {
                     break;
                 };
-                if error.data.kind == ErrorKind::Unauthorized && !key_settled {
-                    key_settled = true;
-                    match self.settle_rejected_key(name).await {
-                        // The saved copies now hold the current key.
-                        KeyProof::Current(_) => continue,
-                        KeyProof::Unreachable => {
-                            self.integration_left_behind(name, &provider, &resource, &error);
-                            break;
+                if error.data.kind == ErrorKind::Unauthorized {
+                    if !key_settled {
+                        key_settled = true;
+                        match self.settle_rejected_key(name).await {
+                            // The saved copies now hold the current key.
+                            KeyProof::Current(_) => continue,
+                            KeyProof::Unreachable => workspace_unreachable = true,
+                            KeyProof::Unknown => {}
                         }
-                        KeyProof::Unknown => {}
+                    }
+                    if workspace_unreachable {
+                        self.integration_left_behind(name, &provider, &resource, &error);
+                        break;
                     }
                 }
                 if !integration_cleanup_refused(error.data.kind) {
-                    return Err(RpcError::new(
-                        error.data.kind,
-                        format!(
-                            "Could not remove @{name}'s {provider} subscription: {} The agent was kept; its cleanup is retried.",
-                            error.message
-                        ),
-                    ));
+                    return Err(cleanup_kept(error, name, &provider));
                 }
                 self.integration_left_behind(name, &provider, &resource, &error);
                 break;
@@ -377,4 +379,14 @@ fn integration_cleanup_refused(kind: ErrorKind) -> bool {
             | ErrorKind::RelaycastRefused
             | ErrorKind::NotFound
     )
+}
+
+/// The error that keeps `name` because its `provider` cleanup failed: the
+/// original one, so its kind and any `Retry-After` reach the caller.
+pub(super) fn cleanup_kept(mut error: RpcError, name: &str, provider: &str) -> RpcError {
+    error.message = format!(
+        "Could not remove @{name}'s {provider} subscription: {} The agent was kept; its cleanup is retried.",
+        error.message
+    );
+    error
 }

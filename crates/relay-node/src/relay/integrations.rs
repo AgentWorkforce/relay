@@ -632,16 +632,23 @@ impl Core {
         }
         // Boxed: the cleanup's state lives on the heap, so every caller up to
         // the outbound router (one future per request) stays small.
-        Box::pin(self.unsubscribe_integration_held(name, provider, resource)).await
+        Box::pin(self.unsubscribe_integration_held(name, provider, resource, false)).await
     }
 
     /// [`Core::unsubscribe_integration`] for a caller that already holds the
     /// agent's target lock and the integration lock (agent removal).
+    ///
+    /// `agent_leaving`: the agent itself is deleted from Relaycast next,
+    /// which ends its channel memberships, so its integration channel is
+    /// not left with the agent's own token. That token may already be
+    /// revoked while the workspace key still works; leaving with it would
+    /// fail on every pass and the agent could never be removed.
     pub(crate) async fn unsubscribe_integration_held(
         &self,
         name: &str,
         provider: &str,
         resource: &str,
+        agent_leaving: bool,
     ) -> Result<IntegrationChange, RpcError> {
         let resource = resource.trim();
         let (registration, key) = self.integration_target(name)?;
@@ -755,7 +762,7 @@ impl Core {
                             && url.contains(&marker)
                     })
                 });
-        if !current.has_integrations() && !others_use_channel {
+        if !current.has_integrations() && !others_use_channel && !agent_leaving {
             let token = self
                 .store
                 .read(|s| s.tokens.get(name).cloned())
