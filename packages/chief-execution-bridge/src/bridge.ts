@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { relayWorkspaceOf, type BridgeConfig } from './config.js';
-import { buildTask, parseClaimedResult } from './prompt.js';
+import { buildTask, extractFindings, parseClaimedResult } from './prompt.js';
 import { hash, readAssignment, type AssignmentPolicy } from './protocol.js';
 import {
   RelayError,
@@ -208,6 +208,7 @@ export class ExecutionBridge {
       invocationKey: `chief-spawn-${short(`${assignment.taskId}|${digest}`, 40)}`,
       budgetMicros: this.config.limits.budgetMicros,
       now,
+      reportExtensions: this.config.reportExtensions,
     });
     if (outcome === 'conflict') {
       this.store.quarantine(message.id, 'task_digest_conflict', metadata, message.agentId, now);
@@ -229,10 +230,12 @@ export class ExecutionBridge {
       this.log('late_result_ignored', { taskId: task.taskId });
       return;
     }
-    // The text is model-authored: it selects the report state and nothing else.
+    // The text is model-authored: it selects the report state and, with extensions on, is
+    // carried to the chief as findings. It is never parsed for instructions or logged.
     const claimed = parseClaimedResult(message.text);
     if (claimed) {
-      this.store.setPendingResult(task.taskId, claimed);
+      const findings = this.config.reportExtensions ? extractFindings(message.text) : undefined;
+      this.store.setPendingResult(task.taskId, claimed, findings);
       return;
     }
     // Sending to the requester uses up the agent's automatic answer, so nothing better follows.
@@ -401,13 +404,16 @@ export class ExecutionBridge {
       task.taskId,
       state,
       state === 'failed' ? 'agent_reported_failure' : undefined,
-      this.now()
+      this.now(),
+      { reportExtensions: this.config.reportExtensions }
     );
     this.log('task_finished', { taskId: task.taskId, state });
   }
 
   private fail(task: TaskRow, reason: string): void {
-    this.store.finish(task.taskId, 'failed', reason, this.now());
+    this.store.finish(task.taskId, 'failed', reason, this.now(), {
+      reportExtensions: this.config.reportExtensions,
+    });
     this.log('task_finished', { taskId: task.taskId, state: 'failed', reason });
   }
 

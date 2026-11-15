@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay-node`: `POST /integrations/subscribe` now says why relayfile refused. A workspace at relayfile's webhook subscription limit returns 429 `plan_limit_exceeded` (not retryable, with the limit, plan and correlation id) instead of 502 `integration_failed` "relayfile returned HTTP 429."; a relayfile rate limit returns 429 `rate_limited` and repeats relayfile's `Retry-After`.
 - `agent-relay-node`: an agent removed because its session was archived, ended or excluded from upload now unsubscribes its integrations first. Before, its relayfile webhook and reply subscriptions stayed live for good, which filled the workspace's webhook subscription cap.
+- `agent-relay-node`: a build made for a self-hosted site can join a public Relay Connect invitation on agentrelay.com as a guest. It used to refuse every such link with `invalid_link`. Links from any other site are still refused.
 
 ## [18.7.3] - 2026-11-15
 

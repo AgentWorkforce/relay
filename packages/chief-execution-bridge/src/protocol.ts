@@ -62,6 +62,19 @@ export type Assignment = z.infer<typeof ASSIGNMENT_SCHEMA>;
 
 export type ReportState = 'accepted' | 'running' | 'completed' | 'failed';
 
+/** Why a task failed, as the chief sees it. Always the bridge's own record, never agent text. */
+export const FAILURE_REASONS = [
+  'runtime_exceeded',
+  'result_marker_missing',
+  'agent_failed',
+  'spawn_failed',
+  'stop_failed',
+] as const;
+export type FailureReason = (typeof FAILURE_REASONS)[number];
+
+/** The most `findings` may hold, in UTF-16 code units, which is what the chief's schema counts. */
+export const MAX_FINDINGS_LENGTH = 3000;
+
 export interface WorkerReport {
   protocol: 'relay-chief.report.v1';
   taskId: string;
@@ -69,6 +82,13 @@ export interface WorkerReport {
   sequence: number;
   state: ReportState;
   artifactRefs: string[];
+  /**
+   * Optional extension, sent only with `reportExtensions`. On `completed` reports only: the
+   * agent's final message without its result line, 1 to 3,000 characters. Untrusted agent text.
+   */
+  findings?: string;
+  /** Optional extension, sent only with `reportExtensions`. On `failed` reports only. */
+  reason?: FailureReason;
 }
 
 /**
