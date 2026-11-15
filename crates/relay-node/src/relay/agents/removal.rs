@@ -229,9 +229,16 @@ impl Core {
     /// registration (the only record of them) is dropped. Without this an
     /// archived or ended agent left its relayfile webhook subscription and
     /// reply subscription behind for good, and the workspace's webhook
-    /// subscription cap filled up. A retryable failure keeps the agent, so
-    /// the next pass retries; a refusal (another workspace, signed out) lets
-    /// removal go ahead and names what is left, as before.
+    /// subscription cap filled up.
+    ///
+    /// Only an explicit refusal (another workspace, signed out, a key that
+    /// is missing, a resource already gone) lets removal go ahead, naming
+    /// what may be left. A rejected saved key is first settled like every
+    /// other removal write: a rotation found retries the cleanup with the
+    /// current key, and a workspace proved out of reach is left as is.
+    /// Anything else (a store that could not be saved, an outage, a key
+    /// nothing proves either way) keeps the agent and its record, so the
+    /// next pass retries.
     async fn remove_integrations(
         &self,
         registration: &Registration,
@@ -247,13 +254,29 @@ impl Core {
             .flatten()
             .map(|entry| (entry.provider.clone(), entry.resource.clone()))
             .collect();
+        let mut key_settled = false;
         for (provider, resource) in entries {
-            match self
-                .unsubscribe_integration_held(name, &provider, &resource)
-                .await
-            {
-                Ok(_) => {}
-                Err(error) if error.data.retryable => {
+            loop {
+                // Boxed, so removal (reached from the outbound router and
+                // the archive sweep) does not carry the cleanup's state.
+                let Err(error) =
+                    Box::pin(self.unsubscribe_integration_held(name, &provider, &resource)).await
+                else {
+                    break;
+                };
+                if error.data.kind == ErrorKind::Unauthorized && !key_settled {
+                    key_settled = true;
+                    match self.settle_rejected_key(name).await {
+                        // The saved copies now hold the current key.
+                        KeyProof::Current(_) => continue,
+                        KeyProof::Unreachable => {
+                            self.integration_left_behind(name, &provider, &resource, &error);
+                            break;
+                        }
+                        KeyProof::Unknown => {}
+                    }
+                }
+                if !integration_cleanup_refused(error.data.kind) {
                     return Err(RpcError::new(
                         error.data.kind,
                         format!(
@@ -262,18 +285,39 @@ impl Core {
                         ),
                     ));
                 }
-                Err(error) => {
-                    self.hub.activity(
-                        Level::Warning,
-                        format!(
-                            "@{name}'s {provider} subscription to {resource} could not be removed ({}); it may still be live in relayfile.",
-                            error.message
-                        ),
-                    );
-                }
+                self.integration_left_behind(name, &provider, &resource, &error);
+                break;
             }
         }
         Ok(())
+    }
+
+    /// Settles the saved key of `name` that Relaycast rejected during
+    /// integration cleanup, from the registration as saved now.
+    async fn settle_rejected_key(&self, name: &str) -> KeyProof {
+        let Ok(current) = self.registration_named(name) else {
+            return KeyProof::Unknown;
+        };
+        let Some(key) = self.key_for(&current) else {
+            return KeyProof::Unknown;
+        };
+        self.prove_rejected_saved_key(&current, &key).await
+    }
+
+    fn integration_left_behind(
+        &self,
+        name: &str,
+        provider: &str,
+        resource: &str,
+        error: &RpcError,
+    ) {
+        self.hub.activity(
+            Level::Warning,
+            format!(
+                "@{name}'s {provider} subscription to {resource} could not be removed ({}); it may still be live in relayfile.",
+                error.message
+            ),
+        );
     }
 
     /// Validates the selected removal under its delivery locks. Archive
@@ -320,4 +364,17 @@ impl Core {
         }
         Ok(true)
     }
+}
+
+/// Whether integration cleanup was refused outright, so repeating it cannot
+/// help and removal may go ahead without it.
+fn integration_cleanup_refused(kind: ErrorKind) -> bool {
+    matches!(
+        kind,
+        ErrorKind::Refused
+            | ErrorKind::NotSignedIn
+            | ErrorKind::CloudRefused
+            | ErrorKind::RelaycastRefused
+            | ErrorKind::NotFound
+    )
 }

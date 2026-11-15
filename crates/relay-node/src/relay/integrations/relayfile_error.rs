@@ -40,7 +40,8 @@ pub(super) fn relayfile_status_error(
             ),
         );
     }
-    let retry_after_secs = retry_after.and_then(|value| value.trim().parse::<u64>().ok());
+    let retry_after_secs =
+        retry_after.and_then(|value| retry_after_seconds(value, chrono::Utc::now()));
     let kind = match status {
         429 => ErrorKind::RateLimited,
         400..=499 => ErrorKind::CloudRefused,
@@ -57,6 +58,21 @@ pub(super) fn relayfile_status_error(
     );
     error.retry_after_secs = retry_after_secs.filter(|_| status == 429 || status == 503);
     error
+}
+
+/// `Retry-After` as seconds from `now`: either delay-seconds or an
+/// HTTP-date (RFC 9110 §10.2.3). A date already past means retry now; an
+/// unreadable value is dropped.
+fn retry_after_seconds(value: &str, now: chrono::DateTime<chrono::Utc>) -> Option<u64> {
+    let value = value.trim();
+    if let Ok(secs) = value.parse::<u64>() {
+        return Some(secs);
+    }
+    // IMF-fixdate ("Sun, 06 Nov 1994 08:49:37 GMT") is RFC 2822 shaped.
+    let at = chrono::DateTime::parse_from_rfc2822(value).ok()?;
+    let wait = at.with_timezone(&chrono::Utc) - now;
+    let millis = u64::try_from(wait.num_milliseconds()).unwrap_or(0);
+    Some(millis.div_ceil(1000))
 }
 
 /// A short machine identifier from relayfile (an error code, a plan, a
@@ -105,6 +121,33 @@ mod tests {
             error.message,
             "relayfile returned HTTP 429: rate_limited. Retry after 42s."
         );
+    }
+
+    #[test]
+    fn retry_after_accepts_an_http_date() {
+        let now = chrono::DateTime::parse_from_rfc2822("Sun, 06 Nov 1994 08:49:00 GMT")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(
+            retry_after_seconds("Sun, 06 Nov 1994 08:49:37 GMT", now),
+            Some(37)
+        );
+        assert_eq!(
+            retry_after_seconds(" Sun, 06 Nov 1994 08:48:00 GMT ", now),
+            Some(0),
+            "a date already past means retry now"
+        );
+        assert_eq!(retry_after_seconds("12", now), Some(12));
+        assert_eq!(retry_after_seconds("soon", now), None);
+
+        let later = (chrono::Utc::now() + chrono::Duration::seconds(90))
+            .format("%a, %d %b %Y %H:%M:%S GMT")
+            .to_string();
+        let error = relayfile_status_error(429, Some(&later), "{}");
+        assert_eq!(error.data.kind, ErrorKind::RateLimited);
+        let secs = error.retry_after_secs.expect("date form kept");
+        assert!((85..=90).contains(&secs), "{secs}");
+        assert!(error.message.ends_with(&format!("Retry after {secs}s.")));
     }
 
     #[test]

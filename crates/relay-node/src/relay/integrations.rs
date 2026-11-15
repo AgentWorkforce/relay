@@ -630,8 +630,9 @@ impl Core {
                 format!("@{name} changed meanwhile. Try again."),
             ));
         }
-        self.unsubscribe_integration_held(name, provider, resource)
-            .await
+        // Boxed: the cleanup's state lives on the heap, so every caller up to
+        // the outbound router (one future per request) stays small.
+        Box::pin(self.unsubscribe_integration_held(name, provider, resource)).await
     }
 
     /// [`Core::unsubscribe_integration`] for a caller that already holds the

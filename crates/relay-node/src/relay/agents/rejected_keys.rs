@@ -66,6 +66,17 @@ impl Core {
         if !rejects_the_key(error) {
             return KeyProof::Unknown;
         }
+        self.prove_rejected_saved_key(registration, rejected).await
+    }
+
+    /// [`Core::prove_rejected_key`] for a caller that already knows
+    /// Relaycast rejected `rejected` itself (a 401 mapped to
+    /// `ErrorKind::Unauthorized`).
+    pub(crate) async fn prove_rejected_saved_key(
+        &self,
+        registration: &Registration,
+        rejected: &Secret,
+    ) -> KeyProof {
         let Some(current) = self
             .workspace()
             .filter(|w| w.base_url == registration.base_url && w.key != *rejected)

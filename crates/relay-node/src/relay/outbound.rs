@@ -463,6 +463,13 @@ impl Outbound {
                 "The temporary relay is stopping; retry the command.",
             )
         })?;
+        // Boxed: every route's state lives on the heap, so a caller (a
+        // connection task, a test driving many requests) holds only a
+        // pointer instead of the largest route's whole state machine.
+        Box::pin(self.route(pid, uid, request)).await
+    }
+
+    async fn route(&self, pid: i32, uid: u32, request: &Request) -> Result<Value, OutboundError> {
         match (request.method.as_str(), request.path.as_str()) {
             ("POST", "/connect/join") => {
                 let fields = payload(request, Purpose::Json)?;
@@ -2186,7 +2193,7 @@ mod tests {
     // itself: a route added to it without being listed fails here.
     #[test]
     fn session_routes_list_every_route_the_router_serves() {
-        let mut served = routed(include_str!("outbound.rs"), "handle");
+        let mut served = routed(include_str!("outbound.rs"), "route");
         served.extend(routed(
             include_str!("outbound/mobile_handoff.rs"),
             "mobile_handoff_route",
