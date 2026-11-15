@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay-node`: messages to open Muse sessions are delivered. The courier that carries them now runs Muse on its own data directory, the only place Muse registers the session that delivery waits for; every message used to time out.
 - `agent-relay-node`: `POST /integrations/subscribe` now says why relayfile refused. A workspace at relayfile's webhook subscription limit returns 429 `plan_limit_exceeded` (not retryable, with the limit, plan and correlation id) instead of 502 `integration_failed` "relayfile returned HTTP 429."; a relayfile rate limit returns 429 `rate_limited` and repeats relayfile's `Retry-After` (in seconds, also when relayfile sends a date).
 - `agent-relay-node`: an agent removed because its session was archived, ended or excluded from upload now unsubscribes its integrations first. Before, its relayfile webhook and reply subscriptions stayed live for good, which filled the workspace's webhook subscription cap. If the cleanup cannot finish (the agent store cannot be saved, the service is unreachable), the agent is kept and the cleanup retried.
 - `agent-relay-node`: a build made for a self-hosted site can join a public Relay Connect invitation on agentrelay.com as a guest. It used to refuse every such link with `invalid_link`. Links from any other site are still refused.
