@@ -17,6 +17,7 @@ use agent_relay_node::relay::harness::HarnessId;
 use agent_relay_node::relay::inject::InjectOutcome;
 use agent_relay_node::relay::managed_sessions::ManagedAuthority;
 use agent_relay_node::relay::paths::{self, CorePaths};
+use agent_relay_node::relay::protocol::ErrorKind;
 use agent_relay_node::relay::push::PushTiming;
 use agent_relay_node::relay::spawn::launch::{
     Launch, LaunchError, Launched, SpawnedProcess, Spawner, Started,
@@ -4599,6 +4600,113 @@ async fn an_integration_subscribes_and_cleans_up_through_relayfile() {
     client
         .ok("agents.unregister", json!({"name": "codex-api"}))
         .await;
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn an_archived_agent_removes_its_relayfile_subscriptions_before_it_leaves() {
+    let h = Harness::signed_in().await;
+    let cloud = h.cloud.clone().unwrap();
+    cloud.answer(
+        "GET",
+        "/workspaces/rw_fake/integrations",
+        Ok(json!({"integrations": [{"provider": "github", "status": "connected"}]})),
+    );
+    cloud.answer(
+        "POST",
+        "/workspaces/rw_fake/relayfile/delegated-token",
+        Ok(json!({"relayfileToken": "rf_token", "relayfileUrl": h.fake.base_url, "relayfileWorkspaceId": "rw_fake"})),
+    );
+    let mut client = h.client().await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    client
+        .ok(
+            "agents.integrations.subscribe",
+            json!({"name": "codex-api", "provider": "github", "resource": "acme/api#1"}),
+        )
+        .await;
+    assert_eq!(h.fake.relayfile_subscriptions().len(), 1);
+    assert_eq!(h.fake.subscription_ids().len(), 1);
+
+    // The session is archived while its pull request is still open: no
+    // close event will ever clean this subscription up, so leaving must.
+    h.sessions.archive(Target::new(SessionKind::Codex, CODEX));
+    eventually("archived agent removed with its subscriptions", || {
+        h.fake.agent("codex-api").is_none()
+            && h.store()["registrations"].as_array().unwrap().is_empty()
+    })
+    .await;
+    assert!(
+        h.fake.relayfile_subscriptions().is_empty(),
+        "relayfile webhook subscription leaked"
+    );
+    assert!(
+        h.fake.subscription_ids().is_empty(),
+        "reply subscription leaked"
+    );
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn a_removal_whose_cleanup_cannot_be_saved_keeps_the_agent_and_its_subscriptions() {
+    let h = Harness::signed_in().await;
+    let cloud = h.cloud.clone().unwrap();
+    cloud.answer(
+        "GET",
+        "/workspaces/rw_fake/integrations",
+        Ok(json!({"integrations": [{"provider": "github", "status": "connected"}]})),
+    );
+    cloud.answer(
+        "POST",
+        "/workspaces/rw_fake/relayfile/delegated-token",
+        Ok(json!({"relayfileToken": "rf_token", "relayfileUrl": h.fake.base_url, "relayfileWorkspaceId": "rw_fake"})),
+    );
+    let mut client = h.client().await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    client
+        .ok(
+            "agents.integrations.subscribe",
+            json!({"name": "codex-api", "provider": "github", "resource": "acme/api#1"}),
+        )
+        .await;
+    assert_eq!(h.fake.relayfile_subscriptions().len(), 1);
+    assert_eq!(h.fake.subscription_ids().len(), 1);
+
+    // The store cannot be saved when the cleanup starts. Nothing may be
+    // deleted remotely and the registration, the subscriptions' only
+    // record, must stay.
+    let saved = std::fs::read(h.store_path()).unwrap();
+    std::fs::remove_file(h.store_path()).unwrap();
+    std::fs::create_dir(h.store_path()).unwrap();
+    let error = h
+        .core
+        .unregister_upload_excluded("codex-api")
+        .await
+        .unwrap_err();
+    assert_eq!(error.data.kind, ErrorKind::StoreFailed, "{error:?}");
+    assert!(h.fake.agent("codex-api").is_some(), "agent removed anyway");
+    assert_eq!(h.fake.relayfile_subscriptions().len(), 1);
+    assert_eq!(h.fake.subscription_ids().len(), 1);
+
+    // Once the store saves again, removing again finishes the cleanup.
+    std::fs::remove_dir(h.store_path()).unwrap();
+    std::fs::write(h.store_path(), saved).unwrap();
+    h.core
+        .unregister_upload_excluded("codex-api")
+        .await
+        .unwrap();
+    assert!(h.fake.agent("codex-api").is_none());
+    assert!(h.store()["registrations"].as_array().unwrap().is_empty());
+    assert!(
+        h.fake.relayfile_subscriptions().is_empty(),
+        "relayfile webhook subscription leaked"
+    );
+    assert!(
+        h.fake.subscription_ids().is_empty(),
+        "reply subscription leaked"
+    );
     h.stop().await;
 }
 
