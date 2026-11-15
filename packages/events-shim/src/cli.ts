@@ -1352,7 +1352,8 @@ async function listenAsSessionOwner(
   sessionKey: string,
   alive: () => boolean,
   deliver: (text: string) => Promise<number | null>,
-  takeOver = false
+  takeOver = false,
+  takeHeld?: () => string | null
 ): Promise<number> {
   const dir = dirname(configPath(io));
   const digest = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 16);
@@ -1376,6 +1377,13 @@ async function listenAsSessionOwner(
       }
       try {
         while (alive() && io.readText(inboxLock)?.trim() === String(io.pid)) {
+          // A post an earlier owner claimed but could not hand over goes first.
+          const kept = takeHeld?.();
+          if (kept) {
+            const exit = await deliver(kept);
+            if (exit !== null) return exit;
+            continue;
+          }
           const controller = new AbortController();
           const watch = setInterval(() => {
             if (!alive()) controller.abort();
@@ -1464,8 +1472,8 @@ interface StopHookCli {
   transcript: string;
   /** Whether this hook run ends a finished turn (others are answered at once). */
   endsTurn: (input: Record<string, unknown>) => boolean;
-  /** Why this run must not hold the turn (another hook on the event needs it to end), if so. */
-  holdsBack?: (io: CliIo) => boolean;
+  /** Whether this run must not hold the turn (another hook on the same event needs it to end). */
+  holdsBack?: (io: CliIo, input: Record<string, unknown>) => boolean;
   /** How many answers in a row the CLI turns into new turns, if it caps them. */
   chainLimit?: number;
   /** A transcript line the CLI appends once its person cancelled or typed: stop waiting. */
@@ -1487,18 +1495,55 @@ const STOP_HOOK_CLIS: Record<StopHookId, StopHookCli> = {
     answer: (reason) => ({ decision: 'block', reason }),
   },
   // Gemini CLI's \`AfterAgent\` hook: \`decision: "deny"\` sends \`reason\` to the agent as a new prompt.
-  // Gemini waits for every hook of the event, so with Agent Relay's Gemini extension signed in (its
-  // "Relay Stop Guard" can continue the turn with a relay message) this one never holds the turn.
+  // Gemini waits for every hook of the event, so while Agent Relay's Gemini extension is active
+  // (its "Relay Stop Guard" can continue the turn with a relay message) this one never holds it.
   gemini: {
     process: 'gemini',
     session: 'session_id',
     transcript: 'transcript_path',
     endsTurn: () => true,
-    holdsBack: (io) => Boolean(io.readText(join(home(io), '.relay', 'token'))?.trim()),
+    holdsBack: (io, input) => geminiRelayGuardActive(io, typeof input.cwd === 'string' ? input.cwd : null),
     released: /"type"\s*:\s*"user"|"content"\s*:\s*"Request cancelled\."/,
     answer: (reason) => ({ decision: 'deny', reason }),
   },
 };
+
+/**
+ * Whether Agent Relay's Gemini extension (\`agent-relay\`) can answer this
+ * \`AfterAgent\` run with a relay message: it is installed in
+ * \`~/.gemini/extensions\`, enabled for \`cwd\` by Gemini's own rules in
+ * \`extension-enablement.json\` (the last matching override wins; \`!\`
+ * disables, a trailing \`*\` takes subdirectories), and signed in
+ * (\`~/.relay/token\`, without which its guard always lets the turn end).
+ */
+function geminiRelayGuardActive(io: CliIo, cwd: string | null): boolean {
+  const extensions = join(home(io), '.gemini', 'extensions');
+  if (!io.readText(join(home(io), '.relay', 'token'))?.trim()) return false;
+  if (io.readText(join(extensions, 'agent-relay', 'gemini-extension.json')) === null) return false;
+  let overrides: unknown = [];
+  try {
+    const config = JSON.parse(io.readText(join(extensions, 'extension-enablement.json')) ?? '{}') as Record<
+      string,
+      { overrides?: unknown } | undefined
+    >;
+    overrides = config['agent-relay']?.overrides ?? [];
+  } catch {
+    /* Unreadable: Gemini treats the extension as enabled. */
+  }
+  if (!cwd || !Array.isArray(overrides)) return true;
+  const slashed = (path: string) =>
+    `${path.startsWith('/') ? '' : '/'}${path}${path.endsWith('/') ? '' : '/'}`;
+  const here = slashed(cwd.replace(/\\/g, '/'));
+  let enabled = true;
+  for (const rule of overrides) {
+    if (typeof rule !== 'string') continue;
+    const disable = rule.startsWith('!');
+    const glob = disable ? rule.slice(1) : rule;
+    const pattern = glob.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/(\/?)\*/g, '($1.*)?');
+    if (new RegExp(`^${pattern}$`).test(here)) enabled = !disable;
+  }
+  return enabled;
+}
 
 /** How much of a transcript's end the hook reads for what happened since it started. */
 const TRANSCRIPT_LOOKBACK_BYTES = 256 * 1024;
@@ -1576,7 +1621,7 @@ async function listenStopHook(io: CliIo, flags: Record<string, string>): Promise
     /* No input: still a turn end. */
   }
   let answered = false;
-  if (cli && mcpUrl && cli.endsTurn(input) && !cli.holdsBack?.(io)) {
+  if (cli && mcpUrl && cli.endsTurn(input) && !cli.holdsBack?.(io, input)) {
     const owner = io.ancestor(cli.process);
     const session = typeof input[cli.session] === 'string' ? (input[cli.session] as string) : '';
     const sessionKey = session || String(owner ?? 'machine');
@@ -1600,42 +1645,41 @@ async function listenStopHook(io: CliIo, flags: Record<string, string>): Promise
         if (cli.chainLimit !== undefined) writePrivate(chainFile, `${chain + 1}\n`);
         answered = true;
       };
-      // A post a previous hook claimed just as it let go: this turn takes it at once.
+      // A post an earlier owner claimed just as its CLI let go: the next owner takes it first.
       const held = join(dir, `held-${digest(mcpUrl)}.txt`);
-      const mine = `${held}.${io.pid}`;
-      let kept: string | null = null;
-      try {
-        renameSync(held, mine);
-        kept = io.readText(mine);
+      const takeHeld = () => {
+        const mine = `${held}.${io.pid}`;
+        try {
+          renameSync(held, mine);
+        } catch {
+          return null;
+        }
+        const kept = io.readText(mine);
         rmSync(mine, { force: true });
-      } catch {
-        /* Nothing held. */
-      }
-      if (kept) {
-        answer(kept);
-      } else {
-        // When the CLI ran the hook (Copilot: epoch ms; Gemini: ISO text).
-        const stamp = input.timestamp;
-        const parsedStamp =
-          typeof stamp === 'number' ? stamp : typeof stamp === 'string' ? Date.parse(stamp) : NaN;
-        const since = Number.isFinite(parsedStamp) ? parsedStamp : null;
-        const transcript = typeof input[cli.transcript] === 'string' ? (input[cli.transcript] as string) : '';
-        const releasedByPerson = transcriptWatch(io, transcript, cli.released, since);
-        const alive = () => (owner === null || io.pidAlive(owner)) && !releasedByPerson();
-        await listenAsSessionOwner(
-          io,
-          mcpUrl,
-          sessionKey,
-          alive,
-          async (text) => {
-            // Let go meanwhile: the CLI would drop the answer, so the next turn's hook takes it.
-            if (!alive()) writePrivate(held, text);
-            else answer(text);
-            return 0;
-          },
-          true
-        );
-      }
+        return kept;
+      };
+      // When the CLI ran the hook (Copilot: epoch ms; Gemini: ISO text).
+      const stamp = input.timestamp;
+      const parsedStamp =
+        typeof stamp === 'number' ? stamp : typeof stamp === 'string' ? Date.parse(stamp) : NaN;
+      const since = Number.isFinite(parsedStamp) ? parsedStamp : null;
+      const transcript = typeof input[cli.transcript] === 'string' ? (input[cli.transcript] as string) : '';
+      const releasedByPerson = transcriptWatch(io, transcript, cli.released, since);
+      const alive = () => (owner === null || io.pidAlive(owner)) && !releasedByPerson();
+      await listenAsSessionOwner(
+        io,
+        mcpUrl,
+        sessionKey,
+        alive,
+        async (text) => {
+          // Let go meanwhile: the CLI would drop the answer, so the next turn's hook takes it.
+          if (!alive()) writePrivate(held, text);
+          else answer(text);
+          return 0;
+        },
+        true,
+        takeHeld
+      );
     }
   }
   if (!answered) io.stdout('{}');

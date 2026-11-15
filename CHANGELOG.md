@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `@agent-relay/events-shim setup --copilot` and `setup --gemini` wake an idle GitHub Copilot CLI or Gemini CLI session with each webhook post, without Agent Relay. After each turn, a turn-end hook (Copilot `agentStop`, Gemini `AfterAgent`) waits for the next post and gives it to the agent as its next prompt. A session wakes only after it has finished one turn. While it waits, the CLI shows "Working" (Copilot) or "Executing Hook" (Gemini); press Ctrl+C or Esc before typing, and it waits again after your turn. Copilot takes at most 8 posts in a row before it needs a message from you. Before, Gemini read posts only when asked, and Copilot was not supported.
+- `@agent-relay/events-shim setup --copilot` and `setup --gemini` now wake an idle GitHub Copilot CLI or Gemini CLI session with each webhook post, without Agent Relay. The session must have finished one turn first; see the package README for the limits.
 
 ### Fixed
 

@@ -1485,8 +1485,8 @@ describe('events-shim CLI', () => {
     expect(JSON.parse(w.out[0]!).reason).toContain('{"still":"waiting"}');
   }, 10_000);
 
-  it("listen --stop-hook gemini does not hold the turn while Agent Relay's Gemini extension is signed in", async () => {
-    const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'g-1' }) });
+  it("listen --stop-hook gemini does not hold the turn while Agent Relay's Gemini extension is active", async () => {
+    const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'g-1', cwd: '/work/app' }) });
     w.io.readText = (path) => {
       try {
         return readFileSync(path, 'utf8');
@@ -1494,15 +1494,71 @@ describe('events-shim CLI', () => {
         return null;
       }
     };
+    await runCli(['setup', w.created.mcp_url], w.io);
+    const extensions = join(w.home, '.gemini', 'extensions');
+    const holds = async () => {
+      w.out.length = 0;
+      const listening = runCli(['listen', '--stop-hook', 'gemini'], w.io);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      if (w.out.length === 0) await w.post({ woke: true });
+      expect(await listening).toBe(0);
+      return w.out[0] !== '{}';
+    };
+    // A token left behind with no extension installed: the hook still wakes the session.
     mkdirSync(join(w.home, '.relay'), { recursive: true });
     writeFileSync(join(w.home, '.relay', 'token'), 'at_live_x\n');
+    expect(await holds()).toBe(true);
+    // Installed and signed in: its Relay Stop Guard decides, so this hook lets the turn end at once.
+    mkdirSync(join(extensions, 'agent-relay'), { recursive: true });
+    writeFileSync(join(extensions, 'agent-relay', 'gemini-extension.json'), '{"name":"agent-relay"}');
+    expect(await holds()).toBe(false);
+    // Disabled for this directory by Gemini's own rules (the last matching one wins).
+    writeFileSync(
+      join(extensions, 'extension-enablement.json'),
+      JSON.stringify({ 'agent-relay': { overrides: ['/work/*', '!/work/app/*'] } })
+    );
+    expect(await holds()).toBe(true);
+    writeFileSync(
+      join(extensions, 'extension-enablement.json'),
+      JSON.stringify({ 'agent-relay': { overrides: ['!/work/*', '/work/app/'] } })
+    );
+    expect(await holds()).toBe(false);
+    // Signed out: its guard always lets the turn end, so this hook holds it again.
+    writeFileSync(join(w.home, '.relay', 'token'), '');
+    expect(await holds()).toBe(true);
+  });
+
+  it('listen --stop-hook: a session waiting for the inbox takes a post its previous owner kept, before polling', async () => {
+    const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'g-2' }) });
+    w.io.readText = (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
     await runCli(['setup', w.created.mcp_url], w.io);
-    await w.post({ kept: true });
+    const dir = join(w.home, '.config', 'agent-relay');
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 16);
+    // Another session's hook (777) owns the inbox; it then keeps a post it could not hand over and exits.
+    writeFileSync(join(dir, `listen-${digest(w.created.mcp_url)}.pid`), '777\n');
+    w.io.ancestor = () => 900;
+    w.io.pidAlive = (pid) => pid === 4242 || pid === 900;
+    let sleeps = 0;
+    w.io.sleep = async () => {
+      sleeps += 1;
+      if (sleeps === 1) {
+        writeFileSync(
+          join(dir, `held-${digest(w.created.mcp_url)}.txt`),
+          'Webhook inbox: kept post {"kept":1}'
+        );
+        w.listeners.delete(777);
+      }
+    };
     w.out.length = 0;
     expect(await runCli(['listen', '--stop-hook', 'gemini'], w.io)).toBe(0);
-    expect(w.out).toEqual(['{}']);
-    expect(await runCli(['listen', '--timeout', '1'], w.io)).toBe(0);
-    expect(w.out.join('\n')).toContain('{"kept":true}');
+    expect(JSON.parse(w.out[0]!).reason).toBe('Webhook inbox: kept post {"kept":1}');
+    expect(existsSync(join(dir, `held-${digest(w.created.mcp_url)}.txt`))).toBe(false);
   });
 
   it("listen --stop-hook copilot stays within Copilot's 8 continuations in a row and says so on the last", async () => {
