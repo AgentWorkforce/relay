@@ -30,6 +30,7 @@ import {
   readFileSync,
   readSync,
   renameSync,
+  statSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -58,6 +59,8 @@ export interface CliIo {
    * where it ends; null when it cannot be read.
    */
   readFrom: (path: string, offset: number) => { text: string; end: number } | null;
+  /** When a file was last modified (epoch ms), or null when it does not exist. */
+  modifiedAt: (path: string) => number | null;
   /** All of standard input (for \`forward --stdin\`). */
   readStdin: () => Promise<string>;
   /** Replaces the wait between failed polls; tests pass one that does not sleep. */
@@ -1456,8 +1459,33 @@ async function listenHook(io: CliIo, flags: Record<string, string>): Promise<num
     async (text) => {
       io.stderr(text);
       return 2;
-    }
+    },
+    false,
+    () => takeHeldPost(io, mcpUrl)
   );
+}
+
+/**
+ * Where a turn-end hook keeps a post it claimed just as its CLI let go (the
+ * inbox had already marked it read), for the inbox's next owner.
+ */
+function heldPostPath(io: CliIo, mcpUrl: string): string {
+  const digest = createHash('sha256').update(mcpUrl).digest('hex').slice(0, 16);
+  return join(dirname(configPath(io)), `held-${digest}.txt`);
+}
+
+/** Takes the kept post, if any: one owner gets it (an atomic rename). */
+function takeHeldPost(io: CliIo, mcpUrl: string): string | null {
+  const held = heldPostPath(io, mcpUrl);
+  const mine = `${held}.${io.pid}`;
+  try {
+    renameSync(held, mine);
+  } catch {
+    return null;
+  }
+  const kept = io.readText(mine);
+  rmSync(mine, { force: true });
+  return kept;
 }
 
 /** The agent CLIs whose turn-end hook can hold a finished turn open and hand it the next post. */
@@ -1472,8 +1500,11 @@ interface StopHookCli {
   transcript: string;
   /** Whether this hook run ends a finished turn (others are answered at once). */
   endsTurn: (input: Record<string, unknown>) => boolean;
-  /** Whether this run must not hold the turn (another hook on the same event needs it to end). */
-  holdsBack?: (io: CliIo, input: Record<string, unknown>) => boolean;
+  /**
+   * Another hook on the same event that may need the turn to end now: a check
+   * that turns true once it has (the CLI waits for every hook before it acts).
+   */
+  otherHook?: (io: CliIo, input: Record<string, unknown>, since: number | null) => (() => boolean) | null;
   /** How many answers in a row the CLI turns into new turns, if it caps them. */
   chainLimit?: number;
   /** A transcript line the CLI appends once its person cancelled or typed: stop waiting. */
@@ -1495,22 +1526,26 @@ const STOP_HOOK_CLIS: Record<StopHookId, StopHookCli> = {
     answer: (reason) => ({ decision: 'block', reason }),
   },
   // Gemini CLI's \`AfterAgent\` hook: \`decision: "deny"\` sends \`reason\` to the agent as a new prompt.
-  // Gemini waits for every hook of the event, so while Agent Relay's Gemini extension is active
-  // (its "Relay Stop Guard" can continue the turn with a relay message) this one never holds it.
+  // Gemini waits for every hook of the event before it acts. While Agent Relay's Gemini extension
+  // is active, its "Relay Stop Guard" may continue the turn with relay messages: this one keeps
+  // waiting for posts only until that guard has done so.
   gemini: {
     process: 'gemini',
     session: 'session_id',
     transcript: 'transcript_path',
     endsTurn: () => true,
-    holdsBack: (io, input) => geminiRelayGuardActive(io, typeof input.cwd === 'string' ? input.cwd : null),
+    otherHook: (io, input, since) =>
+      geminiRelayGuardActive(io, typeof input.cwd === 'string' ? input.cwd : null)
+        ? geminiRelayGuardBlocked(io, input, since)
+        : null,
     released: /"type"\s*:\s*"user"|"content"\s*:\s*"Request cancelled\."/,
     answer: (reason) => ({ decision: 'deny', reason }),
   },
 };
 
 /**
- * Whether Agent Relay's Gemini extension (\`agent-relay\`) can answer this
- * \`AfterAgent\` run with a relay message: it is installed in
+ * Whether Agent Relay's Gemini extension (\`agent-relay\`) may answer this
+ * \`AfterAgent\` run with relay messages: it is installed in
  * \`~/.gemini/extensions\` (copied, or linked to its source), enabled for \`cwd\` by Gemini's own rules in
  * \`extension-enablement.json\` (the last matching override wins; \`!\`
  * disables, a trailing \`*\` takes subdirectories), and signed in
@@ -1554,6 +1589,29 @@ function geminiRelayGuardActive(io: CliIo, cwd: string | null): boolean {
     if (new RegExp(`^${pattern}$`).test(here)) enabled = !disable;
   }
   return enabled;
+}
+
+/**
+ * Turns true once the Relay Stop Guard (\`after-agent-inbox.sh\`) answered
+ * this turn with relay messages. It writes its retry count to
+ * \`$TMPDIR/relay-afteragent/<session>.count\` just before it blocks (and
+ * removes it when it lets the turn end), in the same \`TMPDIR\` Gemini gives
+ * every hook.
+ */
+function geminiRelayGuardBlocked(
+  io: CliIo,
+  input: Record<string, unknown>,
+  since: number | null
+): () => boolean {
+  const session = typeof input.session_id === 'string' && input.session_id ? input.session_id : 'default';
+  const file = join(
+    io.env.TMPDIR || '/tmp',
+    'relay-afteragent',
+    `${session.replace(/[^A-Za-z0-9._-]/g, '_')}.count`
+  );
+  // Written this turn: the guard and this hook start together, so allow for clock rounding.
+  const after = (since ?? Date.now()) - 1_000;
+  return () => (io.modifiedAt(file) ?? -Infinity) >= after;
 }
 
 /** How much of a transcript's end the hook reads for what happened since it started. */
@@ -1632,7 +1690,7 @@ async function listenStopHook(io: CliIo, flags: Record<string, string>): Promise
     /* No input: still a turn end. */
   }
   let answered = false;
-  if (cli && mcpUrl && cli.endsTurn(input) && !cli.holdsBack?.(io, input)) {
+  if (cli && mcpUrl && cli.endsTurn(input)) {
     const owner = io.ancestor(cli.process);
     const session = typeof input[cli.session] === 'string' ? (input[cli.session] as string) : '';
     const sessionKey = session || String(owner ?? 'machine');
@@ -1656,19 +1714,7 @@ async function listenStopHook(io: CliIo, flags: Record<string, string>): Promise
         if (cli.chainLimit !== undefined) writePrivate(chainFile, `${chain + 1}\n`);
         answered = true;
       };
-      // A post an earlier owner claimed just as its CLI let go: the next owner takes it first.
-      const held = join(dir, `held-${digest(mcpUrl)}.txt`);
-      const takeHeld = () => {
-        const mine = `${held}.${io.pid}`;
-        try {
-          renameSync(held, mine);
-        } catch {
-          return null;
-        }
-        const kept = io.readText(mine);
-        rmSync(mine, { force: true });
-        return kept;
-      };
+      const held = heldPostPath(io, mcpUrl);
       // When the CLI ran the hook (Copilot: epoch ms; Gemini: ISO text).
       const stamp = input.timestamp;
       const parsedStamp =
@@ -1676,7 +1722,8 @@ async function listenStopHook(io: CliIo, flags: Record<string, string>): Promise
       const since = Number.isFinite(parsedStamp) ? parsedStamp : null;
       const transcript = typeof input[cli.transcript] === 'string' ? (input[cli.transcript] as string) : '';
       const releasedByPerson = transcriptWatch(io, transcript, cli.released, since);
-      const alive = () => (owner === null || io.pidAlive(owner)) && !releasedByPerson();
+      const otherHookDone = cli.otherHook?.(io, input, since) ?? (() => false);
+      const alive = () => (owner === null || io.pidAlive(owner)) && !releasedByPerson() && !otherHookDone();
       await listenAsSessionOwner(
         io,
         mcpUrl,
@@ -1689,7 +1736,7 @@ async function listenStopHook(io: CliIo, flags: Record<string, string>): Promise
           return 0;
         },
         true,
-        takeHeld
+        () => takeHeldPost(io, mcpUrl)
       );
     }
   }
@@ -2204,6 +2251,13 @@ export function processIo(): CliIo {
     readText: (path) => {
       try {
         return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    },
+    modifiedAt: (path) => {
+      try {
+        return statSync(path).mtimeMs;
       } catch {
         return null;
       }

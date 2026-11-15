@@ -45,9 +45,9 @@ agent "watch for webhooks". Each post wakes it:
   the CLI shows its turn as running ("Working" / "Executing Hook") and holds what you type, so press Ctrl+C
   (Copilot) or Esc (Gemini) first; the hook sees that in the session's transcript and lets go, and it waits again
   after your turn. Copilot continues a turn from a hook at most 8 times in a row, so after 8 posts with no message from
-  you the session stops waking until you send it one (the 8th post tells the agent to ask you). With Agent Relay's
-  Gemini extension signed in (`~/.relay/token`), Gemini's hook never holds the turn, so the extension's own relay
-  messages are not kept waiting. `uninstall --copilot` / `--gemini` removes the hook and stops a waiting one.
+  you the session stops waking until you send it one (the 8th post tells the agent to ask you). Beside Agent Relay's
+  Gemini extension (installed, enabled and signed in), the hook still waits for posts, and lets go at once when the
+  extension's Relay Stop Guard continues the turn with relay messages, so those are not kept waiting. `uninstall --copilot` / `--gemini` removes the hook and stops a waiting one.
 - **Cursor** gets a post on its next turn (Agent Relay's hooks); it cannot be woken while idle.
 - **Under Agent Relay** (Desktop or a headless relay on the machine) the agent links the inbox to its session's own
   relay webhook (`agent-relay-probe webhook --socket <socket>`, then the `link_relay_wake` tool). Every post is

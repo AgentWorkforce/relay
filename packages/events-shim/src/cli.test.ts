@@ -9,6 +9,8 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
+  utimesSync,
   appendFileSync,
   writeFileSync,
 } from 'node:fs';
@@ -149,6 +151,13 @@ async function setupWorld(
       options.socket && path.endsWith(join('.agentworkforce', 'desktop', 'relay-socket'))
         ? '/tmp/agent-relay-test/relay.sock\n'
         : null,
+    modifiedAt: (path) => {
+      try {
+        return statSync(path).mtimeMs;
+      } catch {
+        return null;
+      }
+    },
     readFrom: (path, offset) => {
       try {
         const bytes = readFileSync(path);
@@ -1486,8 +1495,8 @@ describe('events-shim CLI', () => {
     expect(JSON.parse(w.out[0]!).reason).toContain('{"still":"waiting"}');
   }, 10_000);
 
-  it("listen --stop-hook gemini does not hold the turn while Agent Relay's Gemini extension is active", async () => {
-    const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'g-1', cwd: '/work/app' }) });
+  it("listen --stop-hook gemini keeps waking the session beside Agent Relay's Gemini extension, and steps aside once its guard continued the turn", async () => {
+    const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'g/1', cwd: '/work/app' }) });
     w.io.readText = (path) => {
       try {
         return readFileSync(path, 'utf8');
@@ -1495,24 +1504,35 @@ describe('events-shim CLI', () => {
         return null;
       }
     };
+    const tmp = mkdtempSync(join(tmpdir(), 'events-shim-gemini-tmp-'));
+    w.io.env = { ...w.io.env, TMPDIR: tmp };
     await runCli(['setup', w.created.mcp_url], w.io);
     const extensions = join(w.home, '.gemini', 'extensions');
-    const holds = async () => {
+    const guardFile = join(tmp, 'relay-afteragent', 'g_1.count');
+    /** One turn end: the Relay Stop Guard blocked it with relay messages or let it end. */
+    const turnEnd = async (guardBlocked: boolean) => {
+      rmSync(guardFile, { force: true });
+      if (guardBlocked) {
+        mkdirSync(dirname(guardFile), { recursive: true });
+        writeFileSync(guardFile, '1\n');
+      }
       w.out.length = 0;
       const listening = runCli(['listen', '--stop-hook', 'gemini'], w.io);
       await new Promise((resolve) => setTimeout(resolve, 20));
       if (w.out.length === 0) await w.post({ woke: true });
       expect(await listening).toBe(0);
-      return w.out[0] !== '{}';
+      return w.out[0] === '{}' ? 'stepped aside' : 'woke';
     };
-    // A token left behind with no extension installed: the hook still wakes the session.
+    // No extension: a guard file of something else changes nothing.
+    expect(await turnEnd(true)).toBe('woke');
+    // Installed, enabled and signed in: posts still wake the session when the guard let the turn end,
+    // and the hook lets go at once when the guard continued it with relay messages.
     mkdirSync(join(w.home, '.relay'), { recursive: true });
     writeFileSync(join(w.home, '.relay', 'token'), 'at_live_x\n');
-    expect(await holds()).toBe(true);
-    // Installed and signed in: its Relay Stop Guard decides, so this hook lets the turn end at once.
     mkdirSync(join(extensions, 'agent-relay'), { recursive: true });
     writeFileSync(join(extensions, 'agent-relay', 'gemini-extension.json'), '{"name":"agent-relay"}');
-    expect(await holds()).toBe(false);
+    expect(await turnEnd(false)).toBe('woke');
+    expect(await turnEnd(true)).toBe('stepped aside');
     // Linked instead of copied: only install metadata here, the manifest at its source.
     rmSync(join(extensions, 'agent-relay'), { recursive: true });
     mkdirSync(join(extensions, 'agent-relay'), { recursive: true });
@@ -1521,23 +1541,50 @@ describe('events-shim CLI', () => {
       join(extensions, 'agent-relay', '.gemini-extension-install.json'),
       JSON.stringify({ type: 'link', source })
     );
-    expect(await holds()).toBe(true); // the source has no manifest yet
+    expect(await turnEnd(true)).toBe('woke'); // the source has no manifest yet
     writeFileSync(join(source, 'gemini-extension.json'), '{"name":"agent-relay"}');
-    expect(await holds()).toBe(false);
+    expect(await turnEnd(true)).toBe('stepped aside');
     // Disabled for this directory by Gemini's own rules (the last matching one wins).
     writeFileSync(
       join(extensions, 'extension-enablement.json'),
       JSON.stringify({ 'agent-relay': { overrides: ['/work/*', '!/work/app/*'] } })
     );
-    expect(await holds()).toBe(true);
+    expect(await turnEnd(true)).toBe('woke');
     writeFileSync(
       join(extensions, 'extension-enablement.json'),
       JSON.stringify({ 'agent-relay': { overrides: ['!/work/*', '/work/app/'] } })
     );
-    expect(await holds()).toBe(false);
-    // Signed out: its guard always lets the turn end, so this hook holds it again.
-    writeFileSync(join(w.home, '.relay', 'token'), '');
-    expect(await holds()).toBe(true);
+    expect(await turnEnd(true)).toBe('stepped aside');
+    // A guard file from an earlier turn does not count.
+    mkdirSync(dirname(guardFile), { recursive: true });
+    writeFileSync(guardFile, '1\n');
+    utimesSync(guardFile, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+    w.io.readStdin = async () =>
+      JSON.stringify({ session_id: 'g/1', cwd: '/work/app', timestamp: new Date().toISOString() });
+    w.out.length = 0;
+    const listening = runCli(['listen', '--stop-hook', 'gemini'], w.io);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await w.post({ woke: 'again' });
+    expect(await listening).toBe(0);
+    expect(JSON.parse(w.out[0]!).reason).toContain('{"woke":"again"}');
+  });
+
+  it('listen --hook (Claude Code) also takes a post a turn-end hook kept for the inbox', async () => {
+    const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'claude-1' }) });
+    w.io.readText = (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    await runCli(['setup', w.created.mcp_url], w.io);
+    const digest = createHash('sha256').update(w.created.mcp_url).digest('hex').slice(0, 16);
+    const held = join(w.home, '.config', 'agent-relay', `held-${digest}.txt`);
+    writeFileSync(held, 'Webhook inbox: kept post {"kept":"claude"}');
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(2);
+    expect(w.err.join('\n')).toContain('{"kept":"claude"}');
+    expect(existsSync(held)).toBe(false);
   });
 
   it('listen --stop-hook: a session waiting for the inbox takes a post its previous owner kept, before polling', async () => {
