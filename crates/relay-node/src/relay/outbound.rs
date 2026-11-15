@@ -30,7 +30,9 @@
 
 use crate::relay::activity::publication::roster_rows;
 use crate::relay::client;
-use crate::relay::connect::{connect_id, join_request_hash, ConnectAvailability, ConnectSession};
+use crate::relay::connect::{
+    connect_id, join_request_hash_at, ConnectAvailability, ConnectSession,
+};
 use crate::relay::connect_presence::RosterEntry;
 use crate::relay::daemon::Core;
 use crate::relay::links::Endpoint;
@@ -628,7 +630,7 @@ impl Outbound {
             }
             if gone {
                 // Closed: join the requested Connect below.
-            } else if current.connect_id == requested_id {
+            } else if current.connect_id == requested_id && current.site() == issuing_site {
                 return Ok(current.join_public());
             } else {
                 return Err(OutboundError::new(
@@ -639,7 +641,10 @@ impl Outbound {
             }
         }
         let joiner = self.core.plugins.connect_cloud.clone();
-        let request_hash = join_request_hash(&requested_id, name.as_deref(), claim.as_deref());
+        let cloud_site =
+            (issuing_site != crate::relay::links::built_in_site_url()).then_some(issuing_site);
+        let request_hash =
+            join_request_hash_at(cloud_site, &requested_id, name.as_deref(), claim.as_deref());
         let idempotency_key = self
             .core
             .connect

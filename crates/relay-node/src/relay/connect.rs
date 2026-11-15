@@ -200,7 +200,11 @@ pub(crate) const PUBLIC_CONNECT_SITE: &str = "https://agentrelay.com";
 /// invitation. Any other origin is refused, so a pasted link cannot point
 /// this desktop at an arbitrary host.
 pub(crate) fn connect_site(link: &str) -> Option<&'static str> {
-    let built_in = crate::relay::links::built_in_site_url();
+    connect_site_for(link, crate::relay::links::built_in_site_url())
+}
+
+/// [`connect_site`] for a build made for `built_in`.
+fn connect_site_for<'a>(link: &str, built_in: &'a str) -> Option<&'a str> {
     if !link.contains("://") {
         return Some(built_in);
     }
@@ -453,15 +457,34 @@ impl ConnectJoinClient for CloudJoinClient {
     }
 }
 
-/// Stable across a repeat of the same local join, while keeping the session
-/// identity and host claim out of the public request header.
+/// A join on this build's own site.
+#[cfg(test)]
 pub(crate) fn join_request_hash(
     connect_id: &str,
     name: Option<&str>,
     host_claim: Option<&str>,
 ) -> String {
-    let request = serde_json::to_vec(&("relay-connect-join:v1", connect_id, name, host_claim))
-        .unwrap_or_default();
+    join_request_hash_at(None, connect_id, name, host_claim)
+}
+
+/// Stable across a repeat of the same local join, while keeping the session
+/// identity and host claim out of the public request header. `cloud_site` is
+/// the Connect's site when it is not this build's own. A join on this build's
+/// own site (`None`) keeps the original fingerprint, so a pending attempt
+/// saved before sites were recorded is still retried with its idempotency key.
+pub(crate) fn join_request_hash_at(
+    cloud_site: Option<&str>,
+    connect_id: &str,
+    name: Option<&str>,
+    host_claim: Option<&str>,
+) -> String {
+    let request = match cloud_site {
+        None => serde_json::to_vec(&("relay-connect-join:v1", connect_id, name, host_claim)),
+        Some(site) => {
+            serde_json::to_vec(&("relay-connect-join:v2", site, connect_id, name, host_claim))
+        }
+    }
+    .unwrap_or_default();
     let digest = Sha256::digest(request);
     format!("{digest:x}")
 }
@@ -527,16 +550,22 @@ impl ConnectSession {
 
     /// Records the site that issued the joined link, when it is not this
     /// build's own.
-    pub fn issued_by(mut self, site: &str) -> Self {
-        self.cloud_site = (site != crate::relay::links::built_in_site_url()).then(|| site.into());
+    pub fn issued_by(self, site: &str) -> Self {
+        self.issued_by_for(site, crate::relay::links::built_in_site_url())
+    }
+
+    fn issued_by_for(mut self, site: &str, built_in: &str) -> Self {
+        self.cloud_site = (site != built_in).then(|| site.into());
         self
     }
 
     /// The site to read this Connect's roster, availability and expiry from.
     pub fn site(&self) -> &str {
-        self.cloud_site
-            .as_deref()
-            .unwrap_or_else(|| crate::relay::links::built_in_site_url())
+        self.site_for(crate::relay::links::built_in_site_url())
+    }
+
+    fn site_for<'a>(&'a self, built_in: &'a str) -> &'a str {
+        self.cloud_site.as_deref().unwrap_or(built_in)
     }
 
     pub fn expired(&self) -> bool {
@@ -2522,6 +2551,25 @@ mod tests {
         );
         assert!(!first.contains("do-not-leak-this-claim"));
         assert_eq!(first.len(), 64);
+        // A join on this build's own site keeps its original fingerprint; the
+        // same room id, name and claim on another site is another attempt.
+        assert_eq!(
+            join_request_hash_at(
+                None,
+                "connect-1",
+                Some("guest"),
+                Some("do-not-leak-this-claim")
+            ),
+            first
+        );
+        let public = join_request_hash_at(
+            Some(PUBLIC_CONNECT_SITE),
+            "connect-1",
+            Some("guest"),
+            Some("do-not-leak-this-claim"),
+        );
+        assert_ne!(public, first);
+        assert!(!public.contains("do-not-leak-this-claim"));
     }
 
     #[test]
@@ -2603,6 +2651,31 @@ mod tests {
         );
     }
 
+    /// A self-hosted build's site, distinct from [`PUBLIC_CONNECT_SITE`]: in
+    /// an ordinary build the two are the same, which would hide whether the
+    /// issuing site is really kept.
+    const SELF_HOSTED: &str = "https://relay.selfhost.example";
+
+    #[test]
+    fn a_self_hosted_build_accepts_its_own_and_public_invitations_only() {
+        assert_eq!(connect_site_for("abc", SELF_HOSTED), Some(SELF_HOSTED));
+        assert_eq!(
+            connect_site_for("https://relay.selfhost.example/connect/abc", SELF_HOSTED),
+            Some(SELF_HOSTED)
+        );
+        assert_eq!(
+            connect_site_for("https://agentrelay.com/connect/abc", SELF_HOSTED),
+            Some(PUBLIC_CONNECT_SITE)
+        );
+        for other in [
+            "https://other.example/connect/abc",
+            "http://relay.selfhost.example/connect/abc",
+            "https://cast.agentrelay.com/connect/abc",
+        ] {
+            assert_eq!(connect_site_for(other, SELF_HOSTED), None, "{other}");
+        }
+    }
+
     #[test]
     fn a_joined_session_remembers_a_public_issuing_site_across_a_save() {
         let join: JoinResponse = serde_json::from_value(json!({
@@ -2621,13 +2694,13 @@ mod tests {
         }))
         .unwrap();
         let target = Target::new(SessionKind::Codex, "01a0c221-6806-7210-af25-97e104b15049");
-        let built_in = crate::relay::links::built_in_site_url();
 
+        // Joined on the build's own site: nothing extra is saved.
         let own = ConnectSession::from_join(target.clone(), join.clone())
             .unwrap()
-            .issued_by(built_in);
+            .issued_by_for(SELF_HOSTED, SELF_HOSTED);
         assert_eq!(own.cloud_site, None);
-        assert_eq!(own.site(), built_in);
+        assert_eq!(own.site_for(SELF_HOSTED), SELF_HOSTED);
         assert!(own.valid());
         // Sessions saved before the field existed read as this build's site.
         assert!(serde_json::to_value(&own)
@@ -2635,14 +2708,16 @@ mod tests {
             .get("cloud_site")
             .is_none());
 
+        // Joined from a public invitation: the public site is saved and read
+        // back after a restart, not the build's own.
         let public = ConnectSession::from_join(target, join)
             .unwrap()
-            .issued_by(PUBLIC_CONNECT_SITE);
-        assert_eq!(public.site(), PUBLIC_CONNECT_SITE);
+            .issued_by_for(PUBLIC_CONNECT_SITE, SELF_HOSTED);
+        assert_eq!(public.cloud_site.as_deref(), Some(PUBLIC_CONNECT_SITE));
         assert!(public.valid());
         let saved: ConnectSession =
             serde_json::from_value(serde_json::to_value(&public).unwrap()).unwrap();
-        assert_eq!(saved.site(), PUBLIC_CONNECT_SITE);
+        assert_eq!(saved.site_for(SELF_HOSTED), PUBLIC_CONNECT_SITE);
         assert!(saved.valid());
 
         // A saved session naming any other site is not trusted.

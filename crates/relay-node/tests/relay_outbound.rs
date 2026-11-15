@@ -408,6 +408,16 @@ async fn connect_status_discovers_later_participants_and_uses_null_when_unknown(
             .all(|token| *token == h.connect_fake.agent("connect-guest").unwrap().token),
         "Cloud's roster is read with this participant's own token"
     );
+    let site = agent_relay_node::relay::links::built_in_site_url();
+    assert!(
+        h.join
+            .read_sites
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|read| read == site),
+        "a Connect joined by id is read back from this build's site"
+    );
 
     h.join.set_roster_error(OutboundError::new(
         503,
@@ -1863,6 +1873,12 @@ async fn a_connect_the_host_extended_stays_open_past_its_join_expiry() {
         .await
         .expect("an extended Connect stays joined");
     assert_eq!(status["expires_at"], "2099-10-01T12:00:00.000Z");
+    let site = agent_relay_node::relay::links::built_in_site_url();
+    let reads = h.join.read_sites.lock().unwrap().clone();
+    assert!(
+        !reads.is_empty() && reads.iter().all(|read| read == site),
+        "the expiry is confirmed with the site that issued the Connect: {reads:?}"
+    );
     h.stop().await;
 }
 
