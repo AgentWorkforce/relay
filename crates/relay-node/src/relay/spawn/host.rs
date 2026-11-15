@@ -24,23 +24,51 @@ use std::sync::{Arc, Weak};
 use tokio::sync::Notify;
 
 impl Core {
-    /// Refreshes privacy-safe folder suggestions without doing filesystem
-    /// work on the node connection's async task.
-    async fn refresh_spawn_folder_suggestions(&self) {
+    /// Starts a single-flight refresh of privacy-safe folder suggestions.
+    /// The connection keeps serving heartbeats and frames from its last cache
+    /// while filesystem checks run on the blocking pool.
+    fn refresh_spawn_folder_suggestions(self: &Arc<Self>) {
         if !self.spawn_settings().allow_teammates {
             self.ledger().lock().recent_folders.clear();
             return;
         }
+        let ledger = self.ledger();
+        {
+            let mut state = ledger.lock();
+            if state.refreshing_folders {
+                return;
+            }
+            state.refreshing_folders = true;
+        }
         let candidates = self.store.read(Store::spawn_folder_candidates);
         let home: PathBuf = self.config.home.components().collect();
-        let Ok(folders) = tokio::task::spawn_blocking(move || {
-            existing_spawn_folders(candidates, &home, MAX_RECENT_FOLDERS)
-        })
-        .await
-        else {
-            return;
-        };
-        self.ledger().lock().recent_folders = folders;
+        let core = Arc::clone(self);
+        tokio::spawn(async move {
+            let folders = tokio::task::spawn_blocking(move || {
+                existing_spawn_folders(candidates, &home, MAX_RECENT_FOLDERS)
+            })
+            .await;
+            let publish = core.spawn_settings().allow_teammates;
+            let ledger = core.ledger();
+            let changed = {
+                let mut state = ledger.lock();
+                state.refreshing_folders = false;
+                match folders {
+                    Ok(folders) if publish && folders != state.recent_folders => {
+                        state.recent_folders = folders;
+                        true
+                    }
+                    Ok(_) if !publish => {
+                        state.recent_folders.clear();
+                        false
+                    }
+                    _ => false,
+                }
+            };
+            if changed {
+                ledger.changed.notify_one();
+            }
+        });
     }
 
     /// The node this computer should run now, if any: spawns are on, there
@@ -357,13 +385,10 @@ impl NodeHost for CoreHost {
         }
     }
 
-    fn prepare_advertisement(&self) -> BoxFuture<'static, ()> {
-        let core = self.0.clone();
-        Box::pin(async move {
-            if let Some(core) = core.upgrade() {
-                core.refresh_spawn_folder_suggestions().await;
-            }
-        })
+    fn prepare_advertisement(&self) {
+        if let Some(core) = self.0.upgrade() {
+            core.refresh_spawn_folder_suggestions();
+        }
     }
 
     fn heartbeat_sent(&self) {
