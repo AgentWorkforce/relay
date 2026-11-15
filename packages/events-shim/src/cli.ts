@@ -751,6 +751,8 @@ import { spawn } from 'node:child_process'
 const COMMAND = ${JSON.stringify(command)}
 const waits = new Map<string, { child: ReturnType<typeof spawn>; released: boolean }>()
 const kept = new Map<string, string>()
+// The last post each thread was continued with: a turn it started is one of Amp's plugin continuations.
+const sent = new Map<string, string>()
 
 function stop(thread: string) {
   const wait = waits.get(thread)
@@ -766,6 +768,7 @@ function stop(thread: string) {
 interface TurnEvent {
   thread?: { id?: unknown }
   status?: unknown
+  message?: unknown
 }
 
 export default function (amp: { on: (event: string, handler: (event: TurnEvent) => unknown) => void }) {
@@ -777,9 +780,12 @@ export default function (amp: { on: (event: string, handler: (event: TurnEvent) 
   amp.on('agent.end', async (event) => {
     const thread = String(event?.thread?.id ?? '')
     if (!thread) return
+    const continued = typeof event?.message === 'string' && sent.get(thread) === event.message
+    sent.delete(thread)
     const held = kept.get(thread)
     if (held) {
       kept.delete(thread)
+      sent.set(thread, held)
       return { action: 'continue', userMessage: held, maxContinuations: ${AMP_MAX_CONTINUATIONS} }
     }
     stop(thread)
@@ -787,7 +793,9 @@ export default function (amp: { on: (event: string, handler: (event: TurnEvent) 
     const wait = { child, released: false }
     waits.set(thread, wait)
     const status = typeof event?.status === 'string' ? event.status : 'done'
-    child.stdin?.end(JSON.stringify({ thread_id: thread, status, timestamp: Date.now() }))
+    child.stdin?.end(
+      JSON.stringify({ thread_id: thread, status, stop_hook_active: continued, timestamp: Date.now() })
+    )
     let out = ''
     child.stdout?.on('data', (chunk) => (out += chunk))
     await new Promise((resolve) => child.on('close', resolve))
@@ -802,6 +810,7 @@ export default function (amp: { on: (event: string, handler: (event: TurnEvent) 
       kept.set(thread, answer.userMessage)
       return
     }
+    sent.set(thread, answer.userMessage)
     return answer
   })
 }
@@ -1891,6 +1900,8 @@ const STOP_HOOK_CLIS: Record<StopHookId, StopHookCli> = {
     session: 'thread_id',
     transcript: 'transcript_path',
     endsTurn: () => true,
+    // Amp ignores a \`continue\` after this many in a row; the plugin marks a turn it continued.
+    chainLimit: AMP_MAX_CONTINUATIONS,
     released: /$^/,
     answer: (userMessage) => ({ action: 'continue', userMessage, maxContinuations: AMP_MAX_CONTINUATIONS }),
   },

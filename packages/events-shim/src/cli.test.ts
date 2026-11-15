@@ -1594,12 +1594,41 @@ describe('events-shim CLI', () => {
       maxContinuations: AMP_MAX_CONTINUATIONS,
     });
 
-    // The person types: the wait is stopped, and the next turn's end waits again.
-    const second = handlers['agent.end']!(thread) as Promise<unknown>;
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // The turn that post started ends: the hook is told it was a continuation (Amp caps those).
+    rmSync(seen, { force: true });
+    const second = handlers['agent.end']!({ ...thread, message: 'post #1' }) as Promise<unknown>;
+    await vi.waitFor(() => expect(existsSync(seen)).toBe(true));
+    expect(JSON.parse(readFileSync(seen, 'utf8'))).toMatchObject({ stop_hook_active: true });
+    // The person types meanwhile: the wait is stopped, and the next turn's end waits again.
     handlers['agent.start']!(thread);
     expect(await second).toBeUndefined();
+    // A turn the person started is not a continuation.
+    rmSync(seen, { force: true });
+    const third = handlers['agent.end']!({ ...thread, message: 'my own prompt' }) as Promise<unknown>;
+    await vi.waitFor(() => expect(existsSync(seen)).toBe(true));
+    expect(JSON.parse(readFileSync(seen, 'utf8'))).toMatchObject({ stop_hook_active: false });
+    handlers['agent.start']!(thread);
+    await third;
   }, 10_000);
+
+  it("listen --stop-hook amp leaves the next post unclaimed once Amp's continuation cap is reached", async () => {
+    const w = await fileWorld({ stdin: JSON.stringify({ thread_id: 'T-1', stop_hook_active: true }) });
+    await runCli(['setup', w.created.mcp_url], w.io);
+    const dir = join(w.home, '.config', 'agent-relay');
+    const chain = join(dir, `chain-${createHash('sha256').update('amp\nT-1').digest('hex').slice(0, 16)}`);
+    writeFileSync(chain, `${AMP_MAX_CONTINUATIONS - 1}\n`);
+    await w.post({ n: 'last' });
+    w.out.length = 0;
+    expect(await runCli(['listen', '--stop-hook', 'amp'], w.io)).toBe(0);
+    expect(w.out[0]).toContain('Tell the person to send you any message');
+    await w.post({ n: 'over' });
+    w.out.length = 0;
+    expect(await runCli(['listen', '--stop-hook', 'amp'], w.io)).toBe(0);
+    expect(w.out).toEqual(['{}']);
+    // Not claimed: it waits for the person's next turn.
+    expect(await runCli(['listen', '--timeout', '1'], w.io)).toBe(0);
+    expect(w.out.join('\n')).toContain('{"n":"over"}');
+  });
 
   for (const [id, input, answer] of [
     ['copilot', { sessionId: 'c-1', stopReason: 'end_turn' }, { decision: 'block' }],
