@@ -1,10 +1,13 @@
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, statSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { ExecutionBridge } from './bridge.js';
 import { configSchema } from './config.js';
 import { RelayError } from './ports.js';
-import { hash } from './protocol.js';
-import { BridgeStore } from './store.js';
+import { canonical, hash } from './protocol.js';
+import { BridgeStore, reportReason } from './store.js';
 import {
   agentNameOf,
   CHIEF,
@@ -968,5 +971,165 @@ describe('review regressions', () => {
       expect(existsSync(h.path + suffix)).toBe(true);
       expect(statSync(h.path + suffix).mode & 0o077).toBe(0);
     }
+  });
+});
+
+describe('report extensions', () => {
+  const V1_KEYS = ['artifactRefs', 'assignmentDigest', 'protocol', 'sequence', 'state', 'taskId'];
+  const extended = () => makeHarness({ reportExtensions: true });
+  const last = (h: Harness, taskId = 'task-1') =>
+    h.relay
+      .deliveredReports()
+      .filter((r) => r.taskId === taskId)
+      .at(-1);
+
+  it('is off unless configured', () => {
+    expect(makeConfig().reportExtensions).toBe(false);
+  });
+
+  it('sends findings without the marker on a completed report, and nothing extra earlier', async () => {
+    const h = await extended();
+    await assignAndStart(h);
+    h.relay.deliver('agent-spawned', agentNameOf(h), 'CHIEF_RESULT: completed\n\nThe cache races warm-up.\n');
+    await h.bridge.tick();
+    expect(h.relay.states()).toEqual(['1:accepted', '2:running', '3:completed']);
+    const [accepted, running, completed] = h.relay.deliveredReports();
+    expect(Object.keys(accepted ?? {}).sort()).toEqual(V1_KEYS);
+    expect(Object.keys(running ?? {}).sort()).toEqual(V1_KEYS);
+    expect(completed).toMatchObject({ findings: 'The cache races warm-up.' });
+    expect(completed).not.toHaveProperty('reason');
+  });
+
+  it('caps findings at 3,000 characters', async () => {
+    const h = await extended();
+    await assignAndStart(h);
+    h.relay.deliver('agent-spawned', agentNameOf(h), `CHIEF_RESULT: completed\n${'z'.repeat(3900)}`);
+    await h.bridge.tick();
+    expect(last(h)?.findings).toBe('z'.repeat(3000));
+  });
+
+  it('omits findings when the message is only the marker', async () => {
+    const h = await extended();
+    await assignAndStart(h);
+    h.relay.deliver('agent-spawned', agentNameOf(h), 'CHIEF_RESULT: completed');
+    await h.bridge.tick();
+    expect(last(h)).toMatchObject({ state: 'completed' });
+    expect(Object.keys(last(h) ?? {}).sort()).toEqual(V1_KEYS);
+  });
+
+  it("keeps the first claim's findings when the agent sends another result", async () => {
+    const h = await extended();
+    await assignAndStart(h);
+    h.relay.deliver('agent-spawned', agentNameOf(h), 'CHIEF_RESULT: completed\nfirst');
+    h.relay.deliver('agent-spawned', agentNameOf(h), 'CHIEF_RESULT: completed\nsecond');
+    await h.bridge.tick();
+    expect(last(h)).toMatchObject({ state: 'completed', findings: 'first' });
+  });
+
+  it('sends the agent_failed reason, and no findings, when the agent claims failure', async () => {
+    const h = await extended();
+    await assignAndStart(h);
+    h.relay.deliver('agent-spawned', agentNameOf(h), 'CHIEF_RESULT: failed\nCould not reproduce.');
+    await h.bridge.tick();
+    expect(last(h)).toMatchObject({ state: 'failed', reason: 'agent_failed' });
+    expect(last(h)).not.toHaveProperty('findings');
+  });
+
+  it("sends runtime_exceeded from the bridge's own record", async () => {
+    const h = await extended();
+    await assignAndStart(h);
+    h.clock.now += 1_800_001;
+    await h.bridge.tick();
+    expect(last(h)).toMatchObject({ state: 'failed', reason: 'runtime_exceeded' });
+  });
+
+  it('sends result_marker_missing whatever reason the agent text names', async () => {
+    const h = await extended();
+    await assignAndStart(h);
+    h.relay.deliver('agent-spawned', agentNameOf(h), 'reason: spawn_failed\nI give up.');
+    await h.bridge.tick();
+    expect(last(h)).toMatchObject({ state: 'failed', reason: 'result_marker_missing' });
+  });
+
+  it('reports a refused claim as agent_failed', async () => {
+    const h = await makeHarness({
+      reportExtensions: true,
+      limits: {
+        maxConcurrent: 2,
+        maxReservationMicros: 5000,
+        budgetMicros: 500,
+        maxRuntimeMs: 1_800_000,
+        maxQueuedMs: 900_000,
+      },
+    });
+    await assignAndStart(h);
+    expect(h.relay.deliveredReports()).toEqual([
+      expect.objectContaining({ sequence: 1, state: 'failed', reason: 'agent_failed' }),
+    ]);
+  });
+
+  it('maps ledger reasons onto the report enum', () => {
+    expect(reportReason('runtime_exceeded')).toBe('runtime_exceeded');
+    expect(reportReason('result_marker_missing')).toBe('result_marker_missing');
+    expect(reportReason('spawn_failed')).toBe('spawn_failed');
+    expect(reportReason('spawn_refused')).toBe('spawn_failed');
+    expect(reportReason('spawn_not_ready')).toBe('spawn_failed');
+    expect(reportReason('stop_failed')).toBe('stop_failed');
+    expect(reportReason('agent_reported_failure')).toBe('agent_failed');
+    expect(reportReason('queue_timeout')).toBe('agent_failed');
+    expect(reportReason('something_new')).toBe('agent_failed');
+    expect(reportReason(undefined)).toBe('agent_failed');
+  });
+
+  it('sends byte-identical v1 reports when off', async () => {
+    const h = await makeHarness();
+    const a = makeAssignment({ taskId: 'task-a' });
+    const b = makeAssignment({ taskId: 'task-b', repository: 'acme/other' });
+    h.relay.deliverAssignment(a.assignment, a.digest);
+    h.relay.deliverAssignment(b.assignment, b.digest);
+    await h.bridge.tick();
+    h.relay.deliver('agent-spawned', agentNameOf(h, 'task-a'), 'CHIEF_RESULT: completed\nfindings here');
+    await h.bridge.tick();
+    h.clock.now += 1_800_001;
+    await h.bridge.tick();
+    expect(h.relay.states('task-a')).toEqual(['1:accepted', '2:running', '3:completed']);
+    expect(h.relay.states('task-b')).toEqual(['1:accepted', '2:running', '3:failed']);
+    const v1 = (taskId: string, digest: string, sequence: number, state: string) =>
+      `{"artifactRefs":[],"assignmentDigest":"${digest}","protocol":"relay-chief.report.v1",` +
+      `"sequence":${sequence},"state":"${state}","taskId":"${taskId}"}`;
+    const sent = h.relay.reportAttempts.map((r) => canonical(r.data.chief_report));
+    expect(new Set(sent)).toEqual(
+      new Set([
+        v1('task-a', a.digest, 1, 'accepted'),
+        v1('task-a', a.digest, 2, 'running'),
+        v1('task-a', a.digest, 3, 'completed'),
+        v1('task-b', b.digest, 1, 'accepted'),
+        v1('task-b', b.digest, 2, 'running'),
+        v1('task-b', b.digest, 3, 'failed'),
+      ])
+    );
+    for (const r of h.relay.reportAttempts) {
+      expect(JSON.stringify(r.data.chief_report)).not.toContain('findings');
+    }
+    expect(h.store.task('task-a')).not.toHaveProperty('findings');
+  });
+
+  it('opens a ledger written before findings existed', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'chief-bridge-')), 'old.db');
+    const old = new DatabaseSync(path);
+    old.exec(`CREATE TABLE tasks(task_id TEXT PRIMARY KEY, digest TEXT NOT NULL, assignment TEXT NOT NULL,
+      repository TEXT NOT NULL, reservation_micros INTEGER NOT NULL, agent_name TEXT NOT NULL UNIQUE,
+      invocation_key TEXT NOT NULL, state TEXT NOT NULL, next_sequence INTEGER NOT NULL, invocation_id TEXT,
+      bound_agent_id TEXT, pending_result TEXT, reason TEXT, created_at INTEGER NOT NULL, invoking_at INTEGER,
+      running_at INTEGER, finished_at INTEGER, stop_pending INTEGER NOT NULL DEFAULT 0)`);
+    old.close();
+    const store = new BridgeStore(path);
+    const made = makeAssignment();
+    store.claim({ ...made, agentName: 'n', invocationKey: 'k', budgetMicros: 1e6, now: T0 });
+    store.setPendingResult('task-1', 'completed', 'found it');
+    store.finish('task-1', 'completed', undefined, T0, { reportExtensions: true });
+    store.markReportSent('task-1', 1);
+    expect(store.dueReports(T0)[0]?.report).toMatchObject({ state: 'completed', findings: 'found it' });
+    store.close();
   });
 });

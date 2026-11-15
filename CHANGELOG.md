@@ -9,12 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay cloud worker` runs flow assignments from a self-hosted control plane without Relayfile. Such assignments omit the Relayfile token, and the worker used to reject every one as "Resolved worker workflow payload is invalid." It now runs them without `RELAYFILE_URL`/`RELAYFILE_TOKEN`, and drops any stale values inherited from its environment.
 - `agent-relay-node`: Codex chats hosted by OpenIDEA are discovered as live while their trusted app-server holds the thread's writer lock, and queue delivery uses that server's verified executable even when no separate Codex CLI is configured.
+
+## [18.7.3] - 2026-11-15
 
 ### Changed
 
 - `@agent-relay/events-shim`: `setup --muse` no longer says Muse sessions are woken by each post: Agent Relay cannot deliver into a Muse session yet (relay#2174). The session is still linked, so it starts working once that is fixed.
+
+### Fixed
+
+- `agent-relay-node`: messages to open Muse sessions reach the session again; a courier that cannot start is logged to `core.log` with what it was stuck on.
+- `agent-relay cloud worker` runs flow assignments from a self-hosted control plane without Relayfile. Such assignments omit the Relayfile token, and the worker used to reject every one as "Resolved worker workflow payload is invalid." It now runs them without `RELAYFILE_URL`/`RELAYFILE_TOKEN`, and drops any stale values inherited from its environment.
 
 ## [18.7.2] - 2026-11-14
 

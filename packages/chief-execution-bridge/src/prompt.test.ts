@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildTask, MAX_TASK_BYTES, parseClaimedResult } from './prompt.js';
+import { buildTask, extractFindings, MAX_TASK_BYTES, parseClaimedResult } from './prompt.js';
 import { makeAssignment } from './__tests__/helpers.js';
 
 describe('agent task text', () => {
@@ -80,5 +80,35 @@ describe('claimed result', () => {
     '> CHIEF_RESULT: completed',
   ])('refuses %j', (text) => {
     expect(parseClaimedResult(text)).toBeUndefined();
+  });
+});
+
+describe('findings', () => {
+  it('drops the first-line marker and trims what is left', () => {
+    expect(extractFindings('\n  CHIEF_RESULT: completed  \r\n\n  Root cause is X.\n\nSee a.ts.  \n')).toBe(
+      'Root cause is X.\n\nSee a.ts.'
+    );
+  });
+
+  it('removes only the first marker line', () => {
+    expect(extractFindings('CHIEF_RESULT: completed\nCHIEF_RESULT: failed')).toBe('CHIEF_RESULT: failed');
+  });
+
+  it('is absent when the message is only the marker', () => {
+    expect(extractFindings('CHIEF_RESULT: completed')).toBeUndefined();
+    expect(extractFindings('CHIEF_RESULT: completed\n   \n\t\n')).toBeUndefined();
+  });
+
+  it('caps at 3,000 characters', () => {
+    const findings = extractFindings(`CHIEF_RESULT: completed\n${'y'.repeat(5000)}`);
+    expect(findings).toBe('y'.repeat(3000));
+  });
+
+  it('never cuts a surrogate pair in half', () => {
+    const findings = extractFindings(`CHIEF_RESULT: completed\n${'y'.repeat(2999)}\u{1F600}tail`) as string;
+    expect(findings).toBe('y'.repeat(2999));
+    const whole = extractFindings(`CHIEF_RESULT: completed\n${'y'.repeat(2998)}\u{1F600}tail`) as string;
+    expect(whole).toBe(`${'y'.repeat(2998)}\u{1F600}`);
+    expect(whole).toHaveLength(3000);
   });
 });

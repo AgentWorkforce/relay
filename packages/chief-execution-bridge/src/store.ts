@@ -1,6 +1,14 @@
 import { chmodSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import { canonical, hash, type Assignment, type ReportState, type WorkerReport } from './protocol.js';
+import {
+  canonical,
+  FAILURE_REASONS,
+  hash,
+  type Assignment,
+  type FailureReason,
+  type ReportState,
+  type WorkerReport,
+} from './protocol.js';
 
 export type TaskState = 'queued' | 'invoking' | 'launched' | 'running' | 'completed' | 'failed';
 export type ClaimedResult = 'completed' | 'failed';
@@ -32,6 +40,25 @@ export type ClaimOutcome = 'claimed' | 'over_budget' | 'duplicate' | 'conflict';
 
 const REPORT_RETRY_BASE_MS = 5000;
 const REPORT_RETRY_MAX_MS = 300_000;
+/** Ledger reasons that are a spawn failing, reported to the chief as one. */
+const SPAWN_FAILURES = new Set(['spawn_failed', 'spawn_refused', 'spawn_not_ready']);
+
+/**
+ * Maps the bridge's recorded failure reason onto the report's enum. Anything without a closer
+ * match is `agent_failed`. The input is always the bridge's own code, never agent text.
+ * @param reason The reason recorded in the ledger.
+ * @returns The reason a `failed` report carries.
+ */
+export function reportReason(reason: string | undefined): FailureReason {
+  if (reason && SPAWN_FAILURES.has(reason)) return 'spawn_failed';
+  return (FAILURE_REASONS as readonly string[]).includes(reason ?? '')
+    ? (reason as FailureReason)
+    : 'agent_failed';
+}
+
+/** Report fields beyond the original v1 shape, sent only when the chief accepts them. */
+type ReportExtensions = Pick<WorkerReport, 'findings' | 'reason'>;
+
 /** Rows kept in `quarantine`, newest first. Any peer can DM the worker, so it must be bounded. */
 const QUARANTINE_MAX_ROWS = 10_000;
 
@@ -69,7 +96,8 @@ export class BridgeStore {
         invoking_at INTEGER,
         running_at INTEGER,
         finished_at INTEGER,
-        stop_pending INTEGER NOT NULL DEFAULT 0
+        stop_pending INTEGER NOT NULL DEFAULT 0,
+        findings TEXT
       );
       CREATE TABLE IF NOT EXISTS reports(
         task_id TEXT NOT NULL REFERENCES tasks(task_id),
@@ -90,6 +118,10 @@ export class BridgeStore {
         at INTEGER NOT NULL
       );
     `);
+    // Ledgers written before `findings` existed gain the column; existing rows keep NULL.
+    const columns = this.db.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>;
+    if (!columns.some((c) => c.name === 'findings'))
+      this.db.exec('ALTER TABLE tasks ADD COLUMN findings TEXT');
   }
 
   close(): void {
@@ -126,6 +158,8 @@ export class BridgeStore {
     invocationKey: string;
     budgetMicros: number;
     now: number;
+    /** Adds `reason` to a refused task's `failed` report. */
+    reportExtensions?: boolean;
   }): ClaimOutcome {
     const { assignment, digest, now } = input;
     return this.transaction(() => {
@@ -156,12 +190,23 @@ export class BridgeStore {
           now,
           overBudget ? now : null
         );
-      this.enqueue(assignment.taskId, digest, 1, overBudget ? 'failed' : 'accepted', now);
+      const extensions: ReportExtensions =
+        overBudget && input.reportExtensions ? { reason: reportReason('budget_exceeded') } : {};
+      this.enqueue(assignment.taskId, digest, 1, overBudget ? 'failed' : 'accepted', now, extensions);
       return overBudget ? 'over_budget' : 'claimed';
     });
   }
 
-  private enqueue(taskId: string, digest: string, sequence: number, state: ReportState, now: number): void {
+  private enqueue(
+    taskId: string,
+    digest: string,
+    sequence: number,
+    state: ReportState,
+    now: number,
+    extensions: ReportExtensions = {}
+  ): void {
+    // Undefined fields are left out of the canonical payload, so a report without
+    // extensions is byte-identical to the original v1 shape.
     const report: WorkerReport = {
       protocol: 'relay-chief.report.v1',
       taskId,
@@ -169,6 +214,8 @@ export class BridgeStore {
       sequence,
       state,
       artifactRefs: [],
+      findings: state === 'completed' ? extensions.findings : undefined,
+      reason: state === 'failed' ? extensions.reason : undefined,
     };
     this.db
       .prepare('INSERT INTO reports(task_id, sequence, payload, next_attempt_at) VALUES (?, ?, ?, ?)')
@@ -252,24 +299,44 @@ export class BridgeStore {
       .run(agentId, taskId);
   }
 
-  /** The first claimed outcome wins; an agent cannot revise it. */
-  setPendingResult(taskId: string, result: ClaimedResult): void {
+  /**
+   * The first claimed outcome wins; an agent cannot revise it. Findings travel with that
+   * claim and are kept only for the report: untrusted text, never logged or acted on.
+   */
+  setPendingResult(taskId: string, result: ClaimedResult, findings?: string): void {
     this.db
-      .prepare('UPDATE tasks SET pending_result=? WHERE task_id=? AND pending_result IS NULL')
-      .run(result, taskId);
+      .prepare('UPDATE tasks SET pending_result=?, findings=? WHERE task_id=? AND pending_result IS NULL')
+      .run(result, findings ?? null, taskId);
   }
 
-  /** Ends a task and queues its report atomically. A second call changes nothing. */
-  finish(taskId: string, state: 'completed' | 'failed', reason: string | undefined, now: number): boolean {
+  /**
+   * Ends a task and queues its report atomically. A second call changes nothing. With
+   * `reportExtensions`, a `completed` report carries the stored findings and a `failed`
+   * report the mapped reason.
+   */
+  finish(
+    taskId: string,
+    state: 'completed' | 'failed',
+    reason: string | undefined,
+    now: number,
+    options: { reportExtensions?: boolean } = {}
+  ): boolean {
     return this.transaction(() => {
       const row = this.db
         .prepare(
-          `SELECT digest, next_sequence, invoking_at FROM tasks
+          `SELECT digest, next_sequence, invoking_at, findings FROM tasks
            WHERE task_id=? AND state NOT IN ('completed','failed')`
         )
-        .get(taskId) as { digest: string; next_sequence: number; invoking_at: number | null } | undefined;
+        .get(taskId) as
+        | { digest: string; next_sequence: number; invoking_at: number | null; findings: string | null }
+        | undefined;
       if (!row) return false;
-      this.enqueue(taskId, row.digest, row.next_sequence, state, now);
+      const extensions: ReportExtensions = !options.reportExtensions
+        ? {}
+        : state === 'completed'
+          ? { findings: row.findings ?? undefined }
+          : { reason: reportReason(reason) };
+      this.enqueue(taskId, row.digest, row.next_sequence, state, now, extensions);
       this.db
         .prepare(
           `UPDATE tasks SET state=?, reason=?, finished_at=?, next_sequence=next_sequence+1, stop_pending=?

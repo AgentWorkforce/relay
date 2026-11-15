@@ -48,4 +48,38 @@ describe('agreement with relay-chief', () => {
     expect(store.dueReports(golden.now).map((due) => due.report)).toEqual([golden.report]);
     store.close();
   });
+
+  /** Runs the golden task to its end with extensions on and returns the terminal report. */
+  function terminalReport(state: 'completed' | 'failed', reason?: string) {
+    const store = new BridgeStore(':memory:');
+    store.claim({
+      assignment,
+      digest: golden.digest,
+      agentName: 'agent',
+      invocationKey: 'key',
+      budgetMicros: 1_000_000,
+      now: golden.now,
+      reportExtensions: true,
+    });
+    store.markInvoking(assignment.taskId, golden.now);
+    store.markLaunched(assignment.taskId, 'inv-1');
+    store.markRunning(assignment.taskId, golden.now);
+    if (state === 'completed') {
+      store.setPendingResult(assignment.taskId, 'completed', golden.extensions.completed.findings);
+    }
+    store.finish(assignment.taskId, state, reason, golden.now, { reportExtensions: true });
+    store.markReportSent(assignment.taskId, 1);
+    store.markReportSent(assignment.taskId, 2);
+    const reports = store.dueReports(golden.now).map((due) => due.report);
+    store.close();
+    return reports;
+  }
+
+  it('produces an extended completed report in the agreed shape', () => {
+    expect(terminalReport('completed')).toEqual([golden.extensions.completed]);
+  });
+
+  it('produces an extended failed report in the agreed shape', () => {
+    expect(terminalReport('failed', 'runtime_exceeded')).toEqual([golden.extensions.failed]);
+  });
 });
