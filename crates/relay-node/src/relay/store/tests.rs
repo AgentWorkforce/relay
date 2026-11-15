@@ -153,7 +153,56 @@ fn cloud() -> CloudWorkspace {
         account_workspace_id: None,
         name: None,
         relayfile_workspace_id: None,
+        gate_url: None,
     }
+}
+
+// A cloud record written before relaygate decodes and re-encodes to the
+// same bytes: no `relaygateURL` key appears when there is no gate.
+#[test]
+fn a_cloud_record_without_a_gate_round_trips_byte_for_byte() {
+    let old = r#"{"key":"rk_live_cloudcloud","baseURL":"https://cast.agentrelay.com","workspaceID":"rw_cloud","accountWorkspaceID":"workspace","name":"Acme","relayfileWorkspaceID":"rf_1"}"#;
+    let decoded: CloudWorkspace = serde_json::from_str(old).unwrap();
+    assert_eq!(decoded.gate_url, None);
+    assert_eq!(serde_json::to_string(&decoded).unwrap(), old);
+    let minimal = r#"{"key":"rk_live_cloudcloud","baseURL":""}"#;
+    let decoded: CloudWorkspace = serde_json::from_str(minimal).unwrap();
+    assert_eq!(serde_json::to_string(&decoded).unwrap(), minimal);
+
+    let store = decode(&format!(
+        r#"{{"registrations":[],"tokens":{{}},"cloud":{old}}}"#
+    ));
+    assert_eq!(
+        store.cloud,
+        Some(CloudWorkspace {
+            account_workspace_id: Some("workspace".into()),
+            name: Some("Acme".into()),
+            relayfile_workspace_id: Some("rf_1".into()),
+            ..cloud()
+        })
+    );
+    let encoded = store.encode();
+    assert!(!String::from_utf8_lossy(&encoded).contains("relaygateURL"));
+    let encoded: Value = serde_json::from_slice(&encoded).unwrap();
+    let old: Value = serde_json::from_str(old).unwrap();
+    assert_eq!(encoded["cloud"], old);
+}
+
+#[test]
+fn a_gate_url_round_trips_under_its_own_key() {
+    let gated = CloudWorkspace {
+        key: Secret::default(),
+        gate_url: Some("https://gate.corp.test".into()),
+        ..cloud()
+    };
+    let json = serde_json::to_value(&gated).unwrap();
+    assert_eq!(json["relaygateURL"], "https://gate.corp.test");
+    let store = Store {
+        cloud: Some(gated.clone()),
+        ..Store::default()
+    };
+    let restored = Store::decode(&store.encode(), PREFIX).unwrap().store;
+    assert_eq!(restored.cloud, Some(gated));
 }
 
 fn delivery(id: &str, reason: &str) -> Delivery {
@@ -199,6 +248,7 @@ fn desktop_identity_clear_generations_keep_their_own_sessions() {
             account_workspace_id: Some("workspace".into()),
             name: None,
             relayfile_workspace_id: None,
+            gate_url: None,
         }),
         ..Store::default()
     };

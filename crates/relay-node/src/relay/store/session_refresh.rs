@@ -191,6 +191,7 @@ mod tests {
                 account_workspace_id: Some("workspace".into()),
                 name: None,
                 relayfile_workspace_id: None,
+                gate_url: None,
             }),
             ..Store::default()
         }

@@ -740,6 +740,7 @@ mod tests {
             workspace_id: Some("rw_1".into()),
             source: Default::default(),
             control_url: None,
+            gate_url: None,
         };
         let hub = hub();
         hub.update(|status| status.workspace = WorkspaceStatus::discovered(Some(&workspace)));

@@ -366,6 +366,15 @@ pub struct CloudWorkspace {
         skip_serializing_if = "Option::is_none"
     )]
     pub relayfile_workspace_id: Option<String>,
+    /// The relaygate origin of a gate-only install: agents enrol there with
+    /// the desktop's device token instead of the workspace key. Absent (and
+    /// never written) for every other workspace.
+    #[serde(
+        rename = "relaygateURL",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub gate_url: Option<String>,
 }
 
 /// The Agent Relay sign-in session kept for acting later without a browser.

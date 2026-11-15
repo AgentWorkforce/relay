@@ -120,6 +120,7 @@ fn core(base: &str) -> (Arc<Core>, tempfile::TempDir) {
         workspace_id: None,
         source: crate::relay::workspace::WorkspaceSource::Cloud,
         control_url: None,
+        gate_url: None,
     });
     (core, temp)
 }
@@ -501,6 +502,7 @@ fn core_with_relayfile(base: &str) -> (Arc<Core>, tempfile::TempDir) {
         workspace_id: None,
         source: crate::relay::workspace::WorkspaceSource::Cloud,
         control_url: None,
+        gate_url: None,
     });
     (core, temp)
 }

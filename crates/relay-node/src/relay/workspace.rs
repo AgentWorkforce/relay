@@ -88,6 +88,11 @@ pub struct Workspace {
     /// The Control origin brokering a node-scoped key's workspace calls
     /// ([`KeyKind::NodeScoped`]); `None` for a workspace key.
     pub control_url: Option<String>,
+    /// The relaygate origin of a gate-only install (validated, a bare
+    /// origin like `base_url`, which is the same origin then). Agents enrol
+    /// there with the desktop's device token and use the `rg_` token it
+    /// returns; `key` is empty. `None` for every other workspace.
+    pub gate_url: Option<String>,
 }
 
 impl Workspace {
@@ -102,6 +107,12 @@ impl Workspace {
     /// so only the brokered calls are available.
     pub fn node_scoped(&self) -> bool {
         self.kind() == KeyKind::NodeScoped
+    }
+
+    /// Whether this is a gate-only workspace: agents enrol through relaygate
+    /// ([`Workspace::gate_url`]) and there is no workspace key.
+    pub fn is_gate_only(&self) -> bool {
+        self.gate_url.is_some()
     }
 
     /// Where this workspace's workspace-key calls go, and with what.
@@ -337,7 +348,9 @@ pub fn resolve_for_site(
 
 /// The account's workspace, at its own origin; `Ok(None)` when signed out
 /// or its key is not a workspace key. A node-scoped key (`sh_wk_…`) never
-/// comes from the sign-in: it counts as no key here.
+/// comes from the sign-in: it counts as no key here. A stored relaygate URL
+/// makes it a gate-only workspace whatever the key ([`resolve_gate`]); an
+/// invalid one is an `Err`.
 ///
 /// In the default build `RELAYCAST_URL` overrides that origin when it is a
 /// bare https origin, and a missing or invalid one falls back to
@@ -358,6 +371,9 @@ pub fn resolve_cloud_for_site(
     env: &dyn Fn(&str) -> Option<String>,
     site: &str,
 ) -> Result<Option<Workspace>, String> {
+    if let Some(cloud) = cloud.filter(|cloud| cloud.gate_url.is_some()) {
+        return resolve_gate(cloud, site).map(Some);
+    }
     let Some(cloud) = cloud.filter(|cloud| is_workspace_key(cloud.key.expose())) else {
         return Ok(None);
     };
@@ -387,7 +403,38 @@ pub fn resolve_cloud_for_site(
         workspace_id: cloud.workspace_id.clone(),
         source: WorkspaceSource::Cloud,
         control_url: None,
+        gate_url: None,
     }))
+}
+
+/// The account's workspace in gate-only mode: agent traffic goes to the gate
+/// (which serves the Relaycast paths), so the gate is the base URL too, and
+/// there is no workspace key. A gate URL means gate-only, as agreed with
+/// relaygate: a workspace key stored beside it is ignored and never sent
+/// anywhere. `RELAYCAST_URL` does not re-origin a gate. A gate URL that is
+/// not a valid origin fails closed instead of falling back to the key.
+fn resolve_gate(cloud: &CloudWorkspace, site: &str) -> Result<Workspace, String> {
+    let stored = cloud.gate_url.as_deref().unwrap_or_default();
+    let gate = validated_base_url(stored).ok_or_else(|| {
+        let whose = if links::is_site_build_for(site) {
+            format!("This build is for {site}, and {site}'s workspace resolve")
+        } else {
+            "The account's workspace resolve".to_string()
+        };
+        format!(
+            "{whose} named no valid relaygateUrl (it must be a bare https origin), so this \
+             computer's agents cannot enrol through the gate. It will not fall back to a \
+             workspace key; sign in again once it names a valid one."
+        )
+    })?;
+    Ok(Workspace {
+        key: Secret::default(),
+        base_url: gate.clone(),
+        workspace_id: cloud.workspace_id.clone(),
+        source: WorkspaceSource::Cloud,
+        control_url: None,
+        gate_url: Some(gate),
+    })
 }
 
 /// `$AGENT_RELAY_HOME`, else `~/.agentworkforce/relay`: the `agent-relay`
@@ -489,6 +536,7 @@ mod tests {
             base_url: base_url.into(),
             workspace_id: Some("rw_acct".into()),
             name: Some("Acme".into()),
+            gate_url: None,
         }
     }
 
@@ -507,6 +555,77 @@ mod tests {
         assert_eq!(found.workspace_id.as_deref(), Some("rw_acct"));
         // An agent token is not a workspace key.
         assert!(resolve_with(&[], Some(account("at_live_agenttoken", DEFAULT_BASE_URL))).is_none());
+    }
+
+    fn gate(key: &str, gate_url: &str) -> CloudWorkspace {
+        CloudWorkspace {
+            gate_url: Some(gate_url.into()),
+            ..account(key, "https://cast.corp.test")
+        }
+    }
+
+    #[test]
+    fn a_key_only_account_is_not_gate_only() {
+        let found =
+            resolve_with(&[], Some(account("rk_live_account00", DEFAULT_BASE_URL))).unwrap();
+        assert_eq!(found.gate_url, None);
+        assert!(!found.is_gate_only());
+    }
+
+    #[test]
+    fn a_gate_record_resolves_to_a_keyless_gate_workspace() {
+        for site in [DEFAULT_SITE_URL, SITE] {
+            for key in ["", "at_live_agenttoken"] {
+                let found = resolve_cloud_at(site, &[], Some(gate(key, "https://gate.corp.test/")))
+                    .unwrap()
+                    .unwrap();
+                assert!(found.is_gate_only());
+                assert_eq!(found.gate_url.as_deref(), Some("https://gate.corp.test"));
+                // The gate serves the Relaycast paths, so agent traffic goes there.
+                assert_eq!(found.base_url, "https://gate.corp.test");
+                assert_eq!(found.key.expose(), "");
+                assert_eq!(found.workspace_id.as_deref(), Some("rw_acct"));
+                assert!(found.source.is_cloud());
+                assert_eq!(found.control_url, None);
+            }
+        }
+    }
+
+    #[test]
+    fn a_gate_wins_over_a_workspace_key_and_relaycast_url() {
+        let found = resolve_with(
+            &[("RELAYCAST_URL", "https://override.corp.test")],
+            Some(gate("rk_live_account00", "https://gate.corp.test")),
+        )
+        .unwrap();
+        assert!(found.is_gate_only());
+        assert_eq!(found.base_url, "https://gate.corp.test");
+        assert_eq!(found.key.expose(), "", "the workspace key is never used");
+    }
+
+    #[test]
+    fn an_invalid_gate_url_is_an_error_not_a_fallback_to_the_key() {
+        for bad in [
+            "",
+            "  ",
+            "ftp://gate.corp.test",
+            "http://gate.corp.test",
+            "https://gate.corp.test/v1",
+            "https://user@gate.corp.test",
+            "not a url",
+        ] {
+            for site in [DEFAULT_SITE_URL, SITE] {
+                let error = resolve_cloud_at(site, &[], Some(gate("rk_live_account00", bad)))
+                    .expect_err(bad);
+                assert!(error.contains("relaygateUrl"), "{error}");
+                if site == SITE {
+                    assert!(error.contains(SITE), "{error}");
+                }
+            }
+        }
+        // http stays allowed for a loopback gate, as for any base URL.
+        let local = resolve_with(&[], Some(gate("", "http://127.0.0.1:8790"))).unwrap();
+        assert_eq!(local.gate_url.as_deref(), Some("http://127.0.0.1:8790"));
     }
 
     /// `resolve` in the default build over a fresh home whose CLI state

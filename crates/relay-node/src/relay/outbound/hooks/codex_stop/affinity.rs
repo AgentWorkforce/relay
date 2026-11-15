@@ -148,6 +148,7 @@ fn fixture(
         workspace_id: Some("workspace".into()),
         source: WorkspaceSource::Cloud,
         control_url: None,
+        gate_url: None,
     });
     core.store
         .update(|store| store.allow_self_registration = Some(guidance))?;

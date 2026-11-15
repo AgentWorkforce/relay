@@ -1114,6 +1114,7 @@ mod key_migration_tests {
             workspace_id: None,
             source: Default::default(),
             control_url: None,
+            gate_url: None,
         }
     }
 
