@@ -1033,6 +1033,11 @@ impl SystemCourier {
     /// delivery times out. The courier's `AGENT_RELAY_MUSE_COURIER` marker
     /// keeps its session out of Relay's session listing.
     pub fn for_open_session(config: MuseConfig) -> Self {
+        // The courier runs in the target's workspace while readiness is polled
+        // from here, so a relative data home must resolve the same for both.
+        let config = MuseConfig {
+            data_dir: std::path::absolute(&config.data_dir).unwrap_or(config.data_dir),
+        };
         Self::new(config, None)
     }
 
@@ -2105,6 +2110,16 @@ mod tests {
         assert!(is_courier_reference(&courier_reference(TARGET)));
         assert!(!is_courier_reference("existing:grok:x"));
     }
+    #[test]
+    fn the_open_session_courier_resolves_a_relative_data_home() {
+        let courier = SystemCourier::for_open_session(MuseConfig {
+            data_dir: PathBuf::from("relative-target/muse"),
+        });
+        assert!(courier.config.data_dir.is_absolute());
+        assert!(courier.config.data_dir.ends_with("relative-target/muse"));
+        assert!(courier.private_base.is_none());
+    }
+
     #[test]
     fn the_open_session_courier_runs_muse_on_the_target_data_home() {
         let tmp = tempfile::tempdir().unwrap();
