@@ -25,6 +25,7 @@
 //!   "cloud": {"key", "baseURL", "workspaceID", "accountWorkspaceID", "name", "relayfileWorkspaceID"},
 //!   "cloudSession": {"accessToken", "accessTokenExpiresAt", "refreshToken", "refreshTokenExpiresAt", "siteURL"},
 //!   "allowSelfRegistration": true, "autoActivate": false, "agentLedDefaultsApplied": true,
+//!   "spawnRecentFolders": ["/Users/person/code/relay"],
 //!   "pendingCleanups": [{"kind": "agent", "name", "baseURL", "workspaceKey"}],
 //!   "testSenders": {"<key ref>": {"name", "token"}},
 //!   "replies": [{"agentID", "messageID", "destination": {"thread": {"_0": "m_1"}}, "claimed", …}],
@@ -772,6 +773,15 @@ pub struct Store {
         skip_serializing_if = "Option::is_none"
     )]
     pub spawn_repositories: Option<Vec<String>>,
+    /// Successfully resolved spawn working folders, newest first. Kept
+    /// locally after release; capability publication is separately gated by
+    /// `spawnAllowTeammates` and filters folders that no longer exist.
+    #[serde(
+        rename = "spawnRecentFolders",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub spawn_recent_folders: Vec<String>,
     /// The spawn settings of harnesses other than Codex and Claude, by id
     /// (`spawn`).
     #[serde(rename = "spawnHarnesses")]
@@ -1034,6 +1044,13 @@ impl Store {
         self.registrations
             .retain(|r| r.target != registration.target);
         self.forget_activation_blocker(&registration.target.key());
+        if let Some(folder) = registration
+            .spawn
+            .as_ref()
+            .and_then(|spawn| spawn.worker_cwd.as_deref())
+        {
+            self.remember_spawn_folder(folder);
+        }
         self.tokens.insert(registration.name.clone(), token);
         self.registrations.push(registration);
         true

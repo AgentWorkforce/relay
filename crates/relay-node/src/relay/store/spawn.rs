@@ -9,6 +9,11 @@
 //! by id. Nothing else here names a harness.
 
 use super::*;
+use std::path::{Path, PathBuf};
+
+/// More local history than the wire limit keeps valid older folders available
+/// when newer checkouts are removed.
+const RECENT_FOLDER_HISTORY: usize = 40;
 
 /// Where a spawned agent came from, and the process it runs as.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +111,48 @@ pub struct HarnessSpawnSettings {
 }
 
 impl Store {
+    /// Keeps a successfully resolved spawn folder as bounded local history.
+    /// Publication remains separately gated by the teammate-spawn setting.
+    pub(crate) fn remember_spawn_folder(&mut self, folder: &str) {
+        let Some(folder) = normalized_absolute(folder) else {
+            return;
+        };
+        self.spawn_recent_folders.retain(|kept| kept != &folder);
+        self.spawn_recent_folders.insert(0, folder);
+        self.spawn_recent_folders.truncate(RECENT_FOLDER_HISTORY);
+    }
+
+    /// Absolute working-folder candidates, newest first. Durable history is
+    /// authoritative; active origins only backfill stores written before the
+    /// history field existed. Filesystem validation happens off the async
+    /// heartbeat task before these are advertised.
+    pub(crate) fn spawn_folder_candidates(&self) -> Vec<String> {
+        let mut folders = Vec::new();
+        let legacy_active = self
+            .registrations
+            .iter()
+            .rev()
+            .filter_map(|registration| registration.spawn.as_ref())
+            .filter_map(|spawn| spawn.worker_cwd.as_deref());
+        for folder in self
+            .spawn_recent_folders
+            .iter()
+            .map(String::as_str)
+            .chain(legacy_active)
+        {
+            let Some(folder) = normalized_absolute(folder) else {
+                continue;
+            };
+            if !folders.contains(&folder) {
+                folders.push(folder);
+                if folders.len() == RECENT_FOLDER_HISTORY {
+                    break;
+                }
+            }
+        }
+        folders
+    }
+
     pub fn accepts_spawns(&self) -> bool {
         self.accept_spawns != Some(false)
     }
@@ -147,9 +194,54 @@ impl Store {
     }
 }
 
+fn normalized_absolute(folder: &str) -> Option<String> {
+    let path = Path::new(folder);
+    if !path.is_absolute() {
+        return None;
+    }
+    let normalized: PathBuf = path.components().collect();
+    normalized.to_str().map(str::to_owned)
+}
+
+/// Both current writers may add or reorder history. Prefer our ordering,
+/// retain their additions, then backfill the common base so an older writer
+/// that omits this field cannot erase it.
+pub(super) fn merge_recent_folders(base: &Store, ours: &Store, theirs: &Store) -> Vec<String> {
+    let mut merged = Vec::new();
+    let mut add = |folders: &[String]| {
+        for folder in folders {
+            if let Some(folder) = normalized_absolute(folder) {
+                if !merged.contains(&folder) {
+                    merged.push(folder);
+                }
+            }
+        }
+    };
+    if ours.spawn_recent_folders != base.spawn_recent_folders {
+        add(&ours.spawn_recent_folders);
+    }
+    if theirs.spawn_recent_folders != base.spawn_recent_folders {
+        add(&theirs.spawn_recent_folders);
+    }
+    add(&base.spawn_recent_folders);
+    merged.truncate(RECENT_FOLDER_HISTORY);
+    merged
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_absolute_folders_are_normalized_and_kept() {
+        let mut store = Store::default();
+        store.remember_spawn_folder(r"C:\Users\person\code\relay\");
+        assert_eq!(
+            store.spawn_folder_candidates(),
+            [r"C:\Users\person\code\relay"]
+        );
+    }
 
     #[test]
     fn codex_and_claude_keep_their_own_fields_and_others_the_map() {

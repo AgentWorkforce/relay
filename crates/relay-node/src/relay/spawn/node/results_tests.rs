@@ -58,6 +58,7 @@ impl NodeHost for Host {
                 machine: "Test-Desk".into(),
                 teammates: false,
                 repositories: repositories.to_vec(),
+                recent_folders: None,
                 harnesses: Vec::new(),
             },
             live: Live {

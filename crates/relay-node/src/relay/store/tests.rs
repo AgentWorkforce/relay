@@ -49,6 +49,81 @@ fn token(value: &str) -> Secret {
 }
 
 #[test]
+fn recent_spawn_folders_are_absolute_deduplicated_and_newest_first() {
+    let root = tempfile::tempdir().unwrap();
+    let older = root.path().join("older").to_string_lossy().into_owned();
+    let newer = root.path().join("newer").to_string_lossy().into_owned();
+    std::fs::create_dir_all(&older).unwrap();
+    std::fs::create_dir_all(&newer).unwrap();
+    let spawned = |name: &str, folder: &str| {
+        let mut row = registration(name, target(&random_uuid()));
+        row.spawn = Some(
+            serde_json::from_value(json!({
+                "nodeID": "node_desktop_1",
+                "nodeName": "test-desk-desktop",
+                "invocationID": format!("inv_{name}"),
+                "harness": "codex",
+                "workerCwd": folder,
+            }))
+            .unwrap(),
+        );
+        row
+    };
+    let mut store = Store::default();
+    assert!(store.add(spawned("old", &older), token("old-token")));
+    assert!(store.add(
+        spawned("relative", "relative/folder"),
+        token("relative-token")
+    ));
+    assert!(store.add(spawned("new", &newer), token("new-token")));
+    assert!(store.add(
+        spawned("same-again", &format!("{older}/")),
+        token("same-token")
+    ));
+
+    // Release does not erase the history, and reusing an older folder moves
+    // it to the front without leaving a duplicate.
+    store.registrations.clear();
+    assert_eq!(
+        store.spawn_folder_candidates(),
+        [older.clone(), newer.clone()]
+    );
+    assert_eq!(
+        serde_json::to_value(&store).unwrap()["spawnRecentFolders"],
+        json!([older, newer])
+    );
+}
+
+#[test]
+fn concurrent_and_legacy_writers_preserve_recent_folder_order() {
+    let base = Store {
+        spawn_recent_folders: vec!["/work/b".into(), "/work/a".into()],
+        ..Store::default()
+    };
+    let ours = Store {
+        spawn_recent_folders: vec!["/work/a".into(), "/work/b".into()],
+        ..base.clone()
+    };
+    let theirs = Store {
+        spawn_recent_folders: vec!["/work/c".into(), "/work/b".into(), "/work/a".into()],
+        ..base.clone()
+    };
+    assert_eq!(
+        Store::merged(&base, &ours, &theirs).spawn_recent_folders,
+        ["/work/a", "/work/b", "/work/c"]
+    );
+
+    let legacy = Store {
+        spawn_recent_folders: Vec::new(),
+        ..base.clone()
+    };
+    assert_eq!(
+        Store::merged(&base, &legacy, &base).spawn_recent_folders,
+        ["/work/b", "/work/a"]
+    );
+}
+
+#[test]
 fn forward_owner_binding_survives_store_roundtrip_and_retires_with_agent() {
     let mut store = Store::default();
     let registration = fresh("owned");
