@@ -94,6 +94,8 @@ struct FakeJoin {
     /// Cloud's participant roster, as each participant token reads it.
     roster: Mutex<Result<Vec<RosterEntry>, OutboundError>>,
     roster_tokens: Mutex<Vec<String>>,
+    /// The site each roster, availability and expiry read was sent to.
+    read_sites: Mutex<Vec<String>>,
     calls: Mutex<Vec<JoinCall>>,
     /// Cloud's current expiry for the Connect, as its roster reports it.
     expiry: Mutex<Result<Option<String>, OutboundError>>,
@@ -121,6 +123,7 @@ impl FakeJoin {
             availability: Mutex::new(Ok(ConnectAvailability::Active)),
             roster: Mutex::new(Ok(roster)),
             roster_tokens: Mutex::default(),
+            read_sites: Mutex::default(),
             calls: Mutex::default(),
             expiry: Mutex::new(Ok(None)),
         }
@@ -185,16 +188,24 @@ impl ConnectJoinClient for FakeJoin {
         self.response.lock().unwrap().clone()
     }
 
-    fn availability(&self, _: &str) -> Result<ConnectAvailability, OutboundError> {
+    fn availability(&self, site: &str, _: &str) -> Result<ConnectAvailability, OutboundError> {
+        self.read_sites.lock().unwrap().push(site.into());
         self.availability.lock().unwrap().clone()
     }
 
-    fn expiry(&self, _: &str, _: &Secret) -> Result<Option<String>, OutboundError> {
+    fn expiry(&self, site: &str, _: &str, _: &Secret) -> Result<Option<String>, OutboundError> {
+        self.read_sites.lock().unwrap().push(site.into());
         self.expiry.lock().unwrap().clone()
     }
 
     /// Like Cloud, a roster read of an ended Connect answers its gone code.
-    fn roster(&self, _: &str, token: &Secret) -> Result<Vec<RosterEntry>, OutboundError> {
+    fn roster(
+        &self,
+        site: &str,
+        _: &str,
+        token: &Secret,
+    ) -> Result<Vec<RosterEntry>, OutboundError> {
+        self.read_sites.lock().unwrap().push(site.into());
         self.roster_tokens
             .lock()
             .unwrap()
