@@ -64,6 +64,12 @@ export const configSchema = z
      * that accept both fields are deployed. Off, reports are the original v1 shape.
      */
     reportExtensions: z.boolean().default(false),
+    /**
+     * Before each spawn, fetches the task's repository folder and hard-resets and cleans it to
+     * `origin`'s default branch, and tells the agent the commit. Everything local in those
+     * folders is discarded, so turn this on only for folders the bridge alone uses.
+     */
+    refreshRepositories: z.boolean().default(false),
   })
   .superRefine((config, ctx) => {
     if (config.worker.agentId === config.chief.agentId) {
