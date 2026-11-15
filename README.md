@@ -47,12 +47,12 @@ Define multi-step workflows in TypeScript with deterministic checks, required st
 In a project folder, with Node.js 22 or newer:
 
 ```bash
-npx -y agent-relay@next init
+npx -y agent-relay init
 ```
 
-Open Claude Code or Codex there, then open a second session in another terminal. Each one joins Relay by itself. Run `npx -y agent-relay@next agent list` to see their names, then ask one agent to "DM `<name>` over Agent Relay".
+Open Claude Code or Codex there, then open a second session in another terminal. Each one joins Relay by itself. Run `npx -y agent-relay agent list` to see their names, then ask one agent to "DM `<name>` over Agent Relay".
 
-**With teammates:** one person runs `npx -y agent-relay@next init --hosted` and shares the `init --key` line it prints.
+**With teammates:** one person runs `npx -y agent-relay init --hosted` and shares the `init --key` line it prints.
 
 More in the [getting started guide](https://agentrelay.com/docs/getting-started).
 
