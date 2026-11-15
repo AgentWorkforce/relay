@@ -33,7 +33,8 @@ dedicated `agent-relay-node`. Each pass:
 
 `src/protocol.ts` is vendored from relay-chief, which is unpublished. A fixture written by
 relay-chief's own code guards digest and report compatibility. Regenerate it when the
-protocol changes.
+protocol changes. Its `extensions` reports are hand-written to the agreed contract until
+relay-chief can generate them.
 
 ## Completion is a claim
 
@@ -50,7 +51,30 @@ The agent is told to send one message. The core carries a final answer and a mes
 agent sends itself the same way, so the bridge cannot tell them apart: any message from the
 bound agent without a marker fails the task at once (`result_marker_missing` in the ledger
 and log), and the agent is stopped. No message at all by the deadline fails with
-`runtime_exceeded`. A failed report carries no reason; the reason stays in the ledger and log.
+`runtime_exceeded`. The full reason always stays in the ledger and log.
+
+## Report extensions
+
+Reports are `relay-chief.report.v1`:
+`{ protocol, taskId, assignmentDigest, sequence, state, artifactRefs }`. With
+`"reportExtensions": true` in the configuration, two optional fields are added, still
+under `relay-chief.report.v1`:
+
+| Field      | On               | Value                                                                                                                                                                                                                 |
+| ---------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `findings` | `completed` only | The agent's final message with its first `CHIEF_RESULT:` line removed, trimmed, and cut to at most 3,000 UTF-16 code units without splitting a surrogate pair. Omitted if empty.                                      |
+| `reason`   | `failed` only    | The bridge's own recorded reason, never agent text: `runtime_exceeded`, `result_marker_missing`, `spawn_failed` (also for `spawn_refused` and `spawn_not_ready`), `stop_failed`, or `agent_failed` for anything else. |
+
+`accepted` and `running` reports never carry either field. `findings` is untrusted agent
+text: the bridge keeps it in the ledger only to build the report, never logs it and never
+acts on it, and the chief must treat it as data.
+
+**Deploy order.** `reportExtensions` defaults to `false`, and then every report is
+byte-identical to the original v1 shape. Relay Chief's report schema is strict and refuses
+unknown fields, so turn it on only after relay-chief and relaychief-control with the
+matching change are deployed. A report is fixed when it is queued, so reports already in
+the outbox keep the shape they were queued with, and findings are kept only for results
+received while the flag is on.
 
 ## Requirements
 
