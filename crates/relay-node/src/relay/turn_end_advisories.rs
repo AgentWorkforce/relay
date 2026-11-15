@@ -123,12 +123,15 @@ pub fn reach(kind: SessionKind) -> Reach {
         SessionKind::Hermes => {
             Unavailable("Hermes relay sessions are per sender, not a person's sessions")
         }
+        SessionKind::Droid => Unavailable(
+            "Factory Droid sessions are Relay-owned JSON-RPC sessions with no turn-end hook",
+        ),
     }
 }
 
 /// Every session kind, for [`reach_report`]. [`reach`] matches each one by
 /// name, so a new kind cannot be added without deciding its reach.
-pub const KINDS: [SessionKind; 15] = [
+pub const KINDS: [SessionKind; 16] = [
     SessionKind::ClaudeTerminal,
     SessionKind::ClaudeCloud,
     SessionKind::Codex,
@@ -144,6 +147,7 @@ pub const KINDS: [SessionKind; 15] = [
     SessionKind::GrokOpen,
     SessionKind::OpenClaw,
     SessionKind::Hermes,
+    SessionKind::Droid,
 ];
 
 /// [`reach`] for every kind, as `status.get`-style JSON: `{kind:
