@@ -14,14 +14,35 @@ use crate::relay::daemon::Core;
 use crate::relay::harness;
 use crate::relay::push::PushState;
 use crate::relay::state::{Level, SpawnSlots, SpawnState, SpawnStatus};
+use crate::relay::store::Store;
 use crate::relay::workspace::Secret;
 use chrono::Utc;
 use futures_util::future::BoxFuture;
 use serde_json::Value;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 use tokio::sync::Notify;
 
 impl Core {
+    /// Refreshes privacy-safe folder suggestions without doing filesystem
+    /// work on the node connection's async task.
+    async fn refresh_spawn_folder_suggestions(&self) {
+        if !self.spawn_settings().allow_teammates {
+            self.ledger().lock().recent_folders.clear();
+            return;
+        }
+        let candidates = self.store.read(Store::spawn_folder_candidates);
+        let home: PathBuf = self.config.home.components().collect();
+        let Ok(folders) = tokio::task::spawn_blocking(move || {
+            existing_spawn_folders(candidates, &home, MAX_RECENT_FOLDERS)
+        })
+        .await
+        else {
+            return;
+        };
+        self.ledger().lock().recent_folders = folders;
+    }
+
     /// The node this computer should run now, if any: spawns are on, there
     /// is a workspace, and a harness it can spawn is installed.
     fn wanted_spawn_node(&self) -> Result<NodeConfig, Option<String>> {
@@ -134,10 +155,9 @@ impl Core {
         repositories: &[String],
     ) -> Advertisement {
         let settings = self.spawn_settings();
-        let recent_folders = settings.allow_teammates.then(|| {
-            self.store
-                .read(|store| store.recent_spawn_folders(MAX_RECENT_FOLDERS))
-        });
+        let recent_folders = settings
+            .allow_teammates
+            .then(|| self.ledger().lock().recent_folders.clone());
         // Another account owns the node: it offers no spawns until released.
         let harnesses = if self.spawns_blocked() {
             &[]
@@ -337,6 +357,15 @@ impl NodeHost for CoreHost {
         }
     }
 
+    fn prepare_advertisement(&self) -> BoxFuture<'static, ()> {
+        let core = self.0.clone();
+        Box::pin(async move {
+            if let Some(core) = core.upgrade() {
+                core.refresh_spawn_folder_suggestions().await;
+            }
+        })
+    }
+
     fn heartbeat_sent(&self) {
         if let Some(core) = self.0.upgrade() {
             core.ledger().lock().node = Some(NodeSeen::Reached(Utc::now()));
@@ -385,5 +414,46 @@ impl NodeHost for CoreHost {
                 core.recover_spawns(&link).await;
             }
         })
+    }
+}
+
+fn existing_spawn_folders(candidates: Vec<String>, home: &Path, limit: usize) -> Vec<String> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    candidates
+        .into_iter()
+        .filter(|folder| Path::new(folder) != home && Path::new(folder).is_dir())
+        .take(limit)
+        .collect()
+}
+
+#[cfg(test)]
+mod folder_tests {
+    use super::*;
+
+    #[test]
+    fn suggestions_exclude_home_and_missing_paths_before_the_limit() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        std::fs::create_dir(&home).unwrap();
+        let missing = root.path().join("missing").to_string_lossy().into_owned();
+        let mut existing = Vec::new();
+        for index in 0..11 {
+            let folder = root.path().join(format!("folder-{index}"));
+            std::fs::create_dir(&folder).unwrap();
+            existing.push(folder.to_string_lossy().into_owned());
+        }
+        let candidates = [
+            vec![home.to_string_lossy().into_owned(), missing],
+            existing.clone(),
+        ]
+        .concat();
+
+        assert_eq!(
+            existing_spawn_folders(candidates, &home, 10),
+            existing[..10]
+        );
+        assert!(existing_spawn_folders(existing, &home, 0).is_empty());
     }
 }
