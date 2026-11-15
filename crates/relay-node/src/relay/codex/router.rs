@@ -1768,6 +1768,15 @@ mod tests {
 
     #[test]
     fn an_openidea_thread_uses_its_lock_holders_codex_without_a_configured_cli() {
+        openidea_thread_uses_its_lock_holders_codex_without_a_configured_cli(false);
+    }
+
+    #[test]
+    fn an_environment_authorized_openidea_thread_queues_without_a_configured_cli() {
+        openidea_thread_uses_its_lock_holders_codex_without_a_configured_cli(true);
+    }
+
+    fn openidea_thread_uses_its_lock_holders_codex_without_a_configured_cli(environment: bool) {
         use crate::relay::codex::processes::tests::{lock, process, OTHER};
         let home = tempfile::tempdir().unwrap();
         let table = trusted_table();
@@ -1796,6 +1805,11 @@ mod tests {
                 parent: 500,
                 executable: Some(bundled.clone()),
                 open_files: vec![lock(THREAD)],
+                environment: if environment {
+                    [("CODEX_THREAD_ID".into(), THREAD.into())].into()
+                } else {
+                    Default::default()
+                },
                 ..codex_process(11, &["codex", "app-server"])
             },
         );

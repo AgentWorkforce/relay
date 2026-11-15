@@ -61,6 +61,7 @@ pub fn process_sessions(
             start: process.start,
             authorizes_callers,
         };
+        let mut environment_authorizes = false;
         if let Some(thread) = table
             .environment_var(pid, "CODEX_THREAD_ID")
             .map(|id| id.to_lowercase())
@@ -68,7 +69,7 @@ pub fn process_sessions(
         {
             if codex_caller_thread(table, pid, uid).as_deref() == Some(thread.as_str()) {
                 found.push(session(&thread, true));
-                continue;
+                environment_authorizes = true;
             }
         }
         let Some(executable) = table.executable(pid) else {
@@ -79,6 +80,11 @@ pub fn process_sessions(
         }
         for thread in codex_locked_threads(table, pid).intersection(threads) {
             found.push(session(thread, false));
+        }
+        // Caller authorization and writer-lock evidence serve different
+        // consumers. Keep both, but do not duplicate resume authorization.
+        if environment_authorizes {
+            continue;
         }
         // The same older Codex can still be an authorizing `resume`.
         let arguments = table.arguments(pid);
@@ -512,6 +518,20 @@ pub(crate) mod tests {
             codex_caller_thread(&table, 700, UID).as_deref(),
             Some(SESSION)
         );
+        // Environment authorization must not hide the lock or duplicate
+        // the same process's legacy resume authorization.
+        table.insert(
+            600,
+            FakeProcess {
+                environment: [("CODEX_THREAD_ID".into(), SESSION.into())].into(),
+                open_files: vec![lock(SESSION)],
+                ..codex_process(123, &["codex", "resume", SESSION])
+            },
+        );
+        let sessions = process_sessions(&table, UID, &threads(&[SESSION]));
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions.contains(&session(SESSION, 600, 123, false)));
+        assert!(sessions.contains(&session(SESSION, 600, 123, true)));
     }
 
     // OutboundTests.testCodexDiscoveryAcceptsThreadEnvironmentOnlyBelowTrustedAncestor.
@@ -803,6 +823,34 @@ pub(crate) mod tests {
             },
         );
         assert!(!terminal_thread_is_live(&table, UID, SESSION));
+    }
+
+    #[test]
+    fn an_environment_authorized_openidea_server_keeps_all_its_writer_locks() {
+        let table = trusted_table();
+        table.insert(
+            500,
+            FakeProcess {
+                executable: Some(crate::relay::openidea::tests::app()),
+                ..process(1, 5)
+            },
+        );
+        table.insert(
+            600,
+            FakeProcess {
+                parent: 500,
+                environment: [("CODEX_THREAD_ID".into(), SESSION.into())].into(),
+                open_files: vec![lock(SESSION), lock(OTHER)],
+                ..codex_process(10, &["codex", "app-server"])
+            },
+        );
+        let sessions = process_sessions(&table, UID, &threads(&[SESSION, OTHER]));
+        assert_eq!(sessions.len(), 3);
+        assert!(sessions.contains(&session(SESSION, 600, 10, true)));
+        assert!(sessions.contains(&session(SESSION, 600, 10, false)));
+        assert!(sessions.contains(&session(OTHER, 600, 10, false)));
+        assert_eq!(openidea_executable(&table, UID, SESSION), Some(codex()));
+        assert_eq!(openidea_executable(&table, UID, OTHER), Some(codex()));
     }
 
     #[test]

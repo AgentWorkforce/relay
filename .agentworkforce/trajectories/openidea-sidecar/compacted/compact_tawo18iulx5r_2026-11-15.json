@@ -1,0 +1,152 @@
+{
+  "id": "compact_tawo18iulx5r",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-11-15T04:29:54.108Z",
+  "sourceTrajectories": [
+    "traj_rsdnc3caxxfb"
+  ],
+  "dateRange": {
+    "start": "2026-11-15T04:16:50.157Z",
+    "end": "2026-11-15T04:29:47.871Z"
+  },
+  "summary": {
+    "totalDecisions": 2,
+    "totalEvents": 2,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "testing",
+      "decisions": [
+        {
+          "question": "Retain environment authorization and collect every trusted writer lock before skipping duplicate resume authorization",
+          "chosen": "Retain environment authorization and collect every trusted writer lock before skipping duplicate resume authorization",
+          "reasoning": "On PR head 2b62406ee the two new OpenIDEA regressions fail: only the authorizing record is returned and queue_send without a configured CLI returns NotInstalled. Move the early exit after lock collection while keeping trust and UID checks; add legacy resume uniqueness coverage.",
+          "fromTrajectory": "traj_rsdnc3caxxfb"
+        },
+        {
+          "question": "Merge upstream main b6145fef0 and retain only the OpenIDEA fix under Unreleased - Patch",
+          "chosen": "Merge upstream main b6145fef0 and retain only the OpenIDEA fix under Unreleased - Patch",
+          "reasoning": "GitHub reports the PR dirty after upstream v18.7.3 moved existing changelog entries into the release. Conflict is limited to CHANGELOG.md. Preserve upstream release history exactly and keep the unmerged OpenIDEA entry pending. Stop the superseded full test run and rerun against the final merged base.",
+          "fromTrajectory": "traj_rsdnc3caxxfb"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    "CHANGELOG.md",
+    "crates/relay-node/src/relay/existing_session/coordinator.rs",
+    "crates/relay-node/src/relay/existing_session/muse_open.rs",
+    "crates/relay-node/src/relay/local.rs",
+    "package-lock.json",
+    "package.json",
+    "packages/chief-execution-bridge/README.md",
+    "packages/chief-execution-bridge/package.json",
+    "packages/chief-execution-bridge/src/__tests__/golden.json",
+    "packages/chief-execution-bridge/src/bridge.test.ts",
+    "packages/chief-execution-bridge/src/bridge.ts",
+    "packages/chief-execution-bridge/src/config.ts",
+    "packages/chief-execution-bridge/src/prompt.test.ts",
+    "packages/chief-execution-bridge/src/prompt.ts",
+    "packages/chief-execution-bridge/src/protocol.test.ts",
+    "packages/chief-execution-bridge/src/protocol.ts",
+    "packages/chief-execution-bridge/src/store.ts",
+    "packages/cli-surface/package.json",
+    "packages/cli/package.json",
+    "packages/cloud/package.json",
+    "packages/config/package.json",
+    "packages/connect/package.json",
+    "packages/core-bridge/package.json",
+    "packages/events-shim/package.json",
+    "packages/integration-prompts/package.json",
+    "packages/sdk/package.json",
+    "packages/session/package.json",
+    "packages/utils/package.json"
+  ],
+  "commits": [
+    "d5a5558af",
+    "b6145fef0",
+    "87d2b2e92",
+    "e11e2f414"
+  ],
+  "narrative": "PR #2163 fixed environment authorization hiding writer-lock evidence for OpenIDEA servers in crates/relay-node/src/relay/codex/processes.rs. At PR head 2b62406ee, discovery returned only authorizing record; queue_send without configured CLI returned NotInstalled. Fix moved early exit after collection of every trusted writer lock, preserving environment caller authorization, same-user UID checks, and trusted executable requirements. Only duplicate legacy resume authorization is skipped. Regression coverage in processes.rs and crates/relay-node/src/relay/codex/router.rs checks all-lock collection, exact executable selection without configured CLI, and unique legacy resume authorization. Two new regressions failed before fix and passed afterward; focused Codex suite reported 327 passed, 2 ignored. Upstream main b6145fef0 was merged through d5a5558af after v18.7.3 caused CHANGELOG.md conflict. Resolution preserved upstream release history verbatim and retained pending OpenIDEA entry under [Unreleased - Patch]. Superseded full test run was stopped; final merged base passed 2878 tests, with 21 ignored and zero failures. Release build and changed-file rustfmt/diff checks passed. Clippy passed with existing unused_io_amount allowed and 106 current-base warnings; full formatting check retained pre-existing session_cli.rs tuple-formatting issue. Broad file list includes upstream release, Muse, and chief-execution-bridge changes; session’s authored fix centers on Codex discovery, routing regressions, and pending changelog entry. Deployed Core remained unchanged.",
+  "decisions": [
+    {
+      "question": "How should environment authorization interact with writer-lock discovery and legacy resume authorization?",
+      "chosen": "Retain environment authorization, collect every trusted writer lock, then skip only duplicate legacy resume authorization.",
+      "reasoning": "Early exit at 2b62406ee suppressed evidence beyond authorizing record. Missing evidence also caused queue_send to return NotInstalled when no CLI was configured. Moving exit preserved authorization while restoring lock and executable evidence.",
+      "impact": "OpenIDEA discovery retains all trusted writer locks and supports exact executable selection without configured CLI. Same-user UID and trusted executable checks remain enforced; legacy resume authorization has uniqueness coverage."
+    },
+    {
+      "question": "How should PR #2163 resolve changelog conflict after upstream v18.7.3 release?",
+      "chosen": "Merge main b6145fef0, preserve released v18.7.3 history exactly, and retain only pending OpenIDEA fix under [Unreleased - Patch].",
+      "reasoning": "GitHub marked PR dirty because upstream release moved earlier pending entries into released section. Conflict was limited to CHANGELOG.md; restoring those entries under Unreleased would duplicate release history.",
+      "impact": "Merge d5a5558af restored compatibility with upstream while keeping OpenIDEA fix pending at patch release level."
+    },
+    {
+      "question": "Which revision should supply final validation evidence?",
+      "chosen": "Stop superseded full suite and rerun validation against final merged base.",
+      "reasoning": "Results from pre-merge revision would not validate code incorporating latest main.",
+      "impact": "Final merged base passed 2878 tests, release build, and changed-file checks; lint and full-format limitations were recorded separately."
+    }
+  ],
+  "conventions": [
+    {
+      "pattern": "Complete trusted writer-lock collection before taking environment-authorization shortcut.",
+      "rationale": "Authorization success must not suppress evidence needed for subsequent executable selection and routing.",
+      "scope": "crates/relay-node/src/relay/codex/processes.rs; environment-authorized OpenIDEA server discovery."
+    },
+    {
+      "pattern": "Preserve same-user UID and trusted executable requirements across authorization paths.",
+      "rationale": "Collecting more evidence must retain existing trust boundaries.",
+      "scope": "Codex process discovery and writer-lock acceptance."
+    },
+    {
+      "pattern": "Cover discovery evidence and downstream routing behavior together.",
+      "rationale": "Incomplete discovery surfaced as queue_send returning NotInstalled. Tests must check all-lock collection, exact executable selection without configured CLI, and legacy resume authorization uniqueness.",
+      "scope": "crates/relay-node/src/relay/codex/processes.rs and crates/relay-node/src/relay/codex/router.rs."
+    },
+    {
+      "pattern": "Preserve published changelog sections verbatim when merging release updates; retain unmerged user-visible fixes under appropriate Unreleased level.",
+      "rationale": "Prevents released changes from reappearing as pending work and preserves release history.",
+      "scope": "CHANGELOG.md; PR updates across upstream releases."
+    },
+    {
+      "pattern": "Report changed-file checks separately from repository-wide baseline failures and lint allowances.",
+      "rationale": "Passing local checks does not imply clean full formatting or warning-free Clippy.",
+      "scope": "Rust validation reports and PR completion evidence."
+    }
+  ],
+  "lessons": [
+    {
+      "lesson": "Authorization shortcuts can break downstream routing by discarding discovery evidence.",
+      "context": "Environment-authorized server returned only authorizing record; queue_send without configured CLI failed with NotInstalled.",
+      "recommendation": "Audit early returns for required evidence collection. Add regressions that exercise discovery output and consumers relying on it."
+    },
+    {
+      "lesson": "Prove regression tests fail against original PR head before accepting passing results.",
+      "context": "Two new OpenIDEA regressions failed at 2b62406ee and passed after moving early exit.",
+      "recommendation": "Retain before/after evidence for control-flow fixes, especially when successful authorization masks incomplete results."
+    },
+    {
+      "lesson": "Upstream merges invalidate final validation claims tied to earlier revisions.",
+      "context": "Release-related merge changed PR base during validation; earlier full run was stopped and suite rerun after merge.",
+      "recommendation": "Tie completion evidence to final merged revision and replace superseded runs when base changes."
+    },
+    {
+      "lesson": "Baseline exceptions need explicit attribution.",
+      "context": "Clippy passed with unused_io_amount allowed and 106 current-base warnings. Changed-file rustfmt passed, while full formatting retained existing session_cli.rs tuple issue.",
+      "recommendation": "Record allowances and unchanged baseline failures alongside successful checks; avoid claiming warning-free lint or clean repository-wide formatting."
+    }
+  ],
+  "openQuestions": [
+    "Was PR #2163 subsequently merged? Session records upstream merge into feature branch, but no PR merge outcome.",
+    "When will deployed Core receive and validate fix? Session explicitly left deployed Core unchanged.",
+    "Which commit contains source fix and regression tests? Retrospective references accompanying source-fix commit, but supplied commit list identifies upstream and merge commits without naming that commit."
+  ]
+}
