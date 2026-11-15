@@ -4603,6 +4603,51 @@ async fn an_integration_subscribes_and_cleans_up_through_relayfile() {
 }
 
 #[tokio::test]
+async fn an_archived_agent_removes_its_relayfile_subscriptions_before_it_leaves() {
+    let h = Harness::signed_in().await;
+    let cloud = h.cloud.clone().unwrap();
+    cloud.answer(
+        "GET",
+        "/workspaces/rw_fake/integrations",
+        Ok(json!({"integrations": [{"provider": "github", "status": "connected"}]})),
+    );
+    cloud.answer(
+        "POST",
+        "/workspaces/rw_fake/relayfile/delegated-token",
+        Ok(json!({"relayfileToken": "rf_token", "relayfileUrl": h.fake.base_url, "relayfileWorkspaceId": "rw_fake"})),
+    );
+    let mut client = h.client().await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    client
+        .ok(
+            "agents.integrations.subscribe",
+            json!({"name": "codex-api", "provider": "github", "resource": "acme/api#1"}),
+        )
+        .await;
+    assert_eq!(h.fake.relayfile_subscriptions().len(), 1);
+    assert_eq!(h.fake.subscription_ids().len(), 1);
+
+    // The session is archived while its pull request is still open: no
+    // close event will ever clean this subscription up, so leaving must.
+    h.sessions.archive(Target::new(SessionKind::Codex, CODEX));
+    eventually("archived agent removed with its subscriptions", || {
+        h.fake.agent("codex-api").is_none()
+            && h.store()["registrations"].as_array().unwrap().is_empty()
+    })
+    .await;
+    assert!(
+        h.fake.relayfile_subscriptions().is_empty(),
+        "relayfile webhook subscription leaked"
+    );
+    assert!(
+        h.fake.subscription_ids().is_empty(),
+        "reply subscription leaked"
+    );
+    h.stop().await;
+}
+
+#[tokio::test]
 async fn a_terminal_integration_cleans_up_when_injection_cannot_complete() {
     for outcome in [
         InjectOutcome::InDoubt("session answer was lost".into()),

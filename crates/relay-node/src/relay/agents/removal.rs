@@ -83,6 +83,9 @@ impl Core {
         if !self.prepare_removal(&registration, name, mode).await? {
             return Ok(());
         }
+        if mode.removes_integrations() {
+            self.remove_integrations(&registration, name).await?;
+        }
         let key = self.key_for(&registration).ok_or_else(|| key_gone(name))?;
         let mut removed = self.remove_remotely(&registration, name, &key).await;
         if let Err(error) = &removed {
@@ -220,6 +223,57 @@ impl Core {
         .await;
         self.observe_relaycast_write_result(&self.relaycast_scope(base, key), &removed);
         removed
+    }
+
+    /// Unsubscribes every integration `registration` holds before its
+    /// registration (the only record of them) is dropped. Without this an
+    /// archived or ended agent left its relayfile webhook subscription and
+    /// reply subscription behind for good, and the workspace's webhook
+    /// subscription cap filled up. A retryable failure keeps the agent, so
+    /// the next pass retries; a refusal (another workspace, signed out) lets
+    /// removal go ahead and names what is left, as before.
+    async fn remove_integrations(
+        &self,
+        registration: &Registration,
+        name: &str,
+    ) -> Result<(), RpcError> {
+        if !registration.has_integrations() {
+            return Ok(());
+        }
+        let _integrating = self.integration_lock.lock().await;
+        let entries: Vec<(String, String)> = registration
+            .integrations
+            .iter()
+            .flatten()
+            .map(|entry| (entry.provider.clone(), entry.resource.clone()))
+            .collect();
+        for (provider, resource) in entries {
+            match self
+                .unsubscribe_integration_held(name, &provider, &resource)
+                .await
+            {
+                Ok(_) => {}
+                Err(error) if error.data.retryable => {
+                    return Err(RpcError::new(
+                        error.data.kind,
+                        format!(
+                            "Could not remove @{name}'s {provider} subscription: {} The agent was kept; its cleanup is retried.",
+                            error.message
+                        ),
+                    ));
+                }
+                Err(error) => {
+                    self.hub.activity(
+                        Level::Warning,
+                        format!(
+                            "@{name}'s {provider} subscription to {resource} could not be removed ({}); it may still be live in relayfile.",
+                            error.message
+                        ),
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Validates the selected removal under its delivery locks. Archive

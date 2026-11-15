@@ -623,13 +623,27 @@ impl Core {
         // Read again under the lock: a change that finished meanwhile is
         // what this undoes.
         let held = registration;
-        let (registration, key) = self.integration_target(name)?;
+        let (registration, _) = self.integration_target(name)?;
         if registration.target != held.target {
             return Err(RpcError::new(
                 ErrorKind::Busy,
                 format!("@{name} changed meanwhile. Try again."),
             ));
         }
+        self.unsubscribe_integration_held(name, provider, resource)
+            .await
+    }
+
+    /// [`Core::unsubscribe_integration`] for a caller that already holds the
+    /// agent's target lock and the integration lock (agent removal).
+    pub(crate) async fn unsubscribe_integration_held(
+        &self,
+        name: &str,
+        provider: &str,
+        resource: &str,
+    ) -> Result<IntegrationChange, RpcError> {
+        let resource = resource.trim();
+        let (registration, key) = self.integration_target(name)?;
         // The same subscription may be named another way than it was made:
         // `owner/repo#123` and that pull request's address are one resource.
         let glob = relayfile_glob(provider, resource);
