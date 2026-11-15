@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `@agent-relay/events-shim setup --droid`, `setup --cursor` and `setup --amp` wake an idle Factory Droid, Cursor CLI or Amp session with each webhook post, without Agent Relay. The session must have finished one turn first; see the package README for the limits. Before, Cursor read posts only when asked.
 - `@agent-relay/events-shim setup --copilot` and `setup --gemini` now wake an idle GitHub Copilot CLI or Gemini CLI session with each webhook post, without Agent Relay. The session must have finished one turn first; see the package README for the limits.
 - `agent-relay-node`: spawn capabilities publish recent saved absolute working folders after the person enables teammate spawning, so remote spawn dialogs can offer valid folders on the target machine without exposing paths by default.
 

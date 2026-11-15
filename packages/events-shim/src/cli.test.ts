@@ -19,6 +19,8 @@ import { dirname, join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  AMP_MAX_CONTINUATIONS,
+  ampPluginSource,
   CODEX_HOOK_COMMAND,
   codexHookCommand,
   desktopCoreBinaries,
@@ -84,6 +86,9 @@ async function setupWorld(
   const spawned: string[][] = [];
   const appServerCalls: [string, unknown][] = [];
   const listeners = new Set<number>([777]);
+  /** SIGTERM handlers the listener registered; \`terminate()\` calls them. */
+  const terminators = new Set<() => void>();
+  const terminate = () => [...terminators].forEach((handler) => handler());
   /** A fake Agent Relay core: its bridge calls, whether it runs, the agents it lists. */
   const core = {
     running: options.core ?? false,
@@ -171,6 +176,10 @@ async function setupWorld(
     pid: 4242,
     pidAlive: (pid) => pid === 4242 || pid === 777,
     ancestor: () => 777,
+    onTerminate: (handler: () => void) => {
+      terminators.add(handler);
+      return () => terminators.delete(handler);
+    },
     spawnDetached: vi.fn((file: string, args: string[]) => {
       spawned.push([file, ...args]);
       if (args[0] === 'serve') core.running = true;
@@ -275,6 +284,7 @@ async function setupWorld(
   return {
     store,
     io,
+    terminate,
     out,
     err,
     runs,
@@ -326,7 +336,9 @@ describe('events-shim CLI', () => {
     expect(printed).toContain('No supported agent CLI found here');
     w.out.length = 0;
     expect(await runCli(['setup', w.created.mcp_url, '--cursor'], w.io)).toBe(0);
-    expect(w.out.join('\n')).toContain('Agent Relay (running here) injects each post');
+    // Cursor is woken by its own stop hook, with or without Agent Relay.
+    expect(w.out.join('\n')).toContain('Cursor: start a new session and send it a first message');
+    expect(w.out.join('\n')).not.toContain('Other agents:');
   });
 
   it('setup installs the MCP server the right way for each CLI it is asked for', async () => {
@@ -1341,9 +1353,264 @@ describe('events-shim CLI', () => {
     );
   });
 
+  /** A world whose \`readText\` reads the real files under its home. */
+  async function fileWorld(options: Parameters<typeof setupWorld>[0] = {}) {
+    const w = await setupWorld(options);
+    w.io.readText = (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    const exists = w.io.exists;
+    w.io.exists = (path) => exists(path) || existsSync(path);
+    return w;
+  }
+
+  it("setup --droid puts its Stop hook in settings.json beside the person's hooks while hooks.json is absent; uninstall takes out only ours", async () => {
+    const w = await fileWorld();
+    const settings = join(w.home, '.factory', 'settings.json');
+    mkdirSync(dirname(settings), { recursive: true });
+    const mine = { hooks: [{ type: 'command', command: 'echo mine' }] };
+    writeFileSync(
+      settings,
+      JSON.stringify({ logoAnimation: 'off', hooks: { Stop: [mine], Notification: [mine] } })
+    );
+    expect(await runCli(['setup', w.created.mcp_url, '--droid'], w.io)).toBe(0);
+    expect(w.runs).toContainEqual(['droid', 'mcp', 'add', 'webhooks', w.created.mcp_url, '--type', 'http']);
+    // Writing hooks.json would make Droid stop reading the person's hooks in settings.json.
+    expect(existsSync(join(w.home, '.factory', 'hooks.json'))).toBe(false);
+    const after = JSON.parse(readFileSync(settings, 'utf8'));
+    expect(after.logoAnimation).toBe('off');
+    expect(after.hooks.Notification).toEqual([mine]);
+    expect(after.hooks.Stop).toEqual([
+      mine,
+      { hooks: [{ type: 'command', command: stopHookCommand('droid'), timeout: 7 * 24 * 60 * 60 }] },
+    ]);
+    expect(existsSync(join(w.home, '.factory', 'skills', 'agent-relay-webhooks', 'SKILL.md'))).toBe(true);
+    expect(w.out.join('\n')).toContain(
+      'Factory Droid: MCP server "webhooks" added, skill installed; after each turn it waits'
+    );
+    expect(w.out.join('\n')).toContain('Factory Droid: start a new session and send it a first message');
+    expect(w.core.calls).toEqual([]);
+    // Again: still one of ours.
+    expect(await runCli(['setup', w.created.mcp_url, '--droid'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(settings, 'utf8')).hooks.Stop).toHaveLength(2);
+
+    expect(await runCli(['uninstall', '--droid'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(settings, 'utf8'))).toEqual({
+      logoAnimation: 'off',
+      hooks: { Stop: [mine], Notification: [mine] },
+    });
+    expect(w.runs).toContainEqual(['droid', 'mcp', 'remove', 'webhooks']);
+  });
+
+  it('setup --droid uses hooks.json when it exists (or nothing else does), keyed directly by event', async () => {
+    const w = await fileWorld();
+    const hooksFile = join(w.home, '.factory', 'hooks.json');
+    expect(await runCli(['setup', w.created.mcp_url, '--droid'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(hooksFile, 'utf8'))).toEqual({
+      Stop: [{ hooks: [{ type: 'command', command: stopHookCommand('droid'), timeout: 7 * 24 * 60 * 60 }] }],
+    });
+    expect(modeOf(hooksFile)).toBe(0o600);
+    writeFileSync(join(w.home, '.factory', 'settings.json'), '{}');
+    expect(await runCli(['uninstall', '--droid'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(hooksFile, 'utf8'))).toEqual({});
+    expect(readFileSync(join(w.home, '.factory', 'settings.json'), 'utf8')).toBe('{}');
+  });
+
+  it('uninstall --droid takes ours out of settings.json too once hooks.json appeared, so it cannot come back', async () => {
+    const w = await fileWorld();
+    const settings = join(w.home, '.factory', 'settings.json');
+    const hooksFile = join(w.home, '.factory', 'hooks.json');
+    mkdirSync(dirname(settings), { recursive: true });
+    writeFileSync(settings, JSON.stringify({ logoAnimation: 'off' }));
+    expect(await runCli(['setup', w.created.mcp_url, '--droid'], w.io)).toBe(0);
+    // The person later moves to hooks.json; setting up again moves ours there and out of settings.json.
+    const mine = { hooks: [{ type: 'command', command: 'echo mine' }] };
+    writeFileSync(hooksFile, JSON.stringify({ Stop: [mine] }));
+    expect(JSON.parse(readFileSync(settings, 'utf8')).hooks.Stop).toHaveLength(1);
+    expect(await runCli(['uninstall', '--droid'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(settings, 'utf8'))).toEqual({ logoAnimation: 'off' });
+    expect(JSON.parse(readFileSync(hooksFile, 'utf8'))).toEqual({ Stop: [mine] });
+    expect(await runCli(['setup', w.created.mcp_url, '--droid'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(hooksFile, 'utf8')).Stop).toHaveLength(2);
+    expect(JSON.parse(readFileSync(settings, 'utf8'))).toEqual({ logoAnimation: 'off' });
+  });
+
+  for (const id of ['amp', 'droid', 'cursor'] as const) {
+    it(`listen --stop-hook ${id} asked to stop finishes its wait in flight and keeps the post it claimed for the next turn`, async () => {
+      const input = {
+        amp: { thread_id: 'T-1' },
+        droid: { session_id: 'd-1' },
+        cursor: { conversation_id: 'k-1', status: 'completed' },
+      }[id];
+      const w = await fileWorld({ stdin: JSON.stringify(input) });
+      await runCli(['setup', w.created.mcp_url], w.io);
+      w.out.length = 0;
+      const listening = runCli(['listen', '--stop-hook', id], w.io);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      // SIGTERM (Amp's plugin, a newer turn's hook, the CLI) while wait_for_webhook is in flight.
+      w.terminate();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      await w.post({ claimed: 'in flight' });
+      expect(await listening).toBe(0);
+      expect(w.out).toEqual(['{}']);
+      // The next turn's hook hands it over at once.
+      expect(await runCli(['listen', '--stop-hook', id], w.io)).toBe(0);
+      expect(w.out[1]).toContain('{\\"claimed\\":\\"in flight\\"}');
+    }, 10_000);
+  }
+
+  it('listen --stop-hook keeps a held post when its CLI is already gone instead of answering into nothing', async () => {
+    const w = await fileWorld({ stdin: JSON.stringify({ session_id: 'd-1' }) });
+    await runCli(['setup', w.created.mcp_url], w.io);
+    const listening = runCli(['listen', '--stop-hook', 'droid'], w.io);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    w.terminate();
+    await w.post({ kept: 1 });
+    await listening;
+    w.out.length = 0;
+    // This turn's Droid exited before its hook ran: the held post waits for the next live one.
+    w.io.pidAlive = (pid) => pid === 4242;
+    expect(await runCli(['listen', '--stop-hook', 'droid'], w.io)).toBe(0);
+    expect(w.out).toEqual(['{}']);
+    w.io.pidAlive = (pid) => pid === 4242 || pid === 777;
+    expect(await runCli(['listen', '--stop-hook', 'droid'], w.io)).toBe(0);
+    expect(w.out[1]).toContain('{\\"kept\\":1}');
+  }, 10_000);
+
+  it('setup --droid never replaces a hooks file it cannot parse', async () => {
+    const w = await fileWorld();
+    const hooksFile = join(w.home, '.factory', 'hooks.json');
+    mkdirSync(dirname(hooksFile), { recursive: true });
+    writeFileSync(hooksFile, '{ not json');
+    expect(await runCli(['setup', w.created.mcp_url, '--droid'], w.io)).toBe(1);
+    expect(readFileSync(hooksFile, 'utf8')).toBe('{ not json');
+    expect(w.out.join('\n')).toContain('could not add the wake hooks. Do it yourself: add a Stop hook');
+  });
+
+  it("setup --cursor adds a stop hook with no loop limit beside the person's hooks; uninstall takes out only ours", async () => {
+    const w = await fileWorld();
+    const hooksFile = join(w.home, '.cursor', 'hooks.json');
+    mkdirSync(dirname(hooksFile), { recursive: true });
+    const mine = { command: './mine.sh' };
+    writeFileSync(
+      hooksFile,
+      JSON.stringify({ version: 1, hooks: { stop: [mine], beforeSubmitPrompt: [mine] } })
+    );
+    expect(await runCli(['setup', w.created.mcp_url, '--cursor'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(hooksFile, 'utf8'))).toEqual({
+      version: 1,
+      hooks: {
+        stop: [mine, { command: stopHookCommand('cursor'), timeout: 3600, loop_limit: null }],
+        beforeSubmitPrompt: [mine],
+      },
+    });
+    expect(w.out.join('\n')).toContain(
+      'Cursor: MCP server "webhooks" added; after each turn it waits for the next post'
+    );
+    expect(await runCli(['setup', w.created.mcp_url, '--cursor'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(hooksFile, 'utf8')).hooks.stop).toHaveLength(2);
+    expect(await runCli(['uninstall', '--cursor'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(hooksFile, 'utf8'))).toEqual({
+      version: 1,
+      hooks: { stop: [mine], beforeSubmitPrompt: [mine] },
+    });
+  });
+
+  it("listen --stop-hook cursor does not hold the turn while Agent Relay's own Cursor delivery waits there too; setup says so", async () => {
+    const w = await fileWorld({ stdin: JSON.stringify({ conversation_id: 'k-1', status: 'completed' }) });
+    const hooksFile = join(w.home, '.cursor', 'hooks.json');
+    mkdirSync(dirname(hooksFile), { recursive: true });
+    const relay = {
+      command: "'/Applications/Agent Relay.app/Contents/Helpers/Agent Relay Helper' cursor-hook --wait",
+      timeout: 3600,
+      loop_limit: null,
+    };
+    writeFileSync(hooksFile, JSON.stringify({ version: 1, hooks: { stop: [relay] } }));
+    expect(await runCli(['setup', w.created.mcp_url, '--cursor'], w.io)).toBe(0);
+    expect(w.out.join('\n')).toContain(
+      'Cursor: MCP server "webhooks" added; not woken by posts here: Agent Relay\'s own Cursor CLI delivery'
+    );
+    expect(w.out.join('\n')).not.toContain('Cursor: start a new session');
+    await w.post({ kept: true });
+    w.out.length = 0;
+    expect(await runCli(['listen', '--stop-hook', 'cursor'], w.io)).toBe(0);
+    expect(w.out).toEqual(['{}']);
+    expect(await runCli(['listen', '--timeout', '1'], w.io)).toBe(0);
+    expect(w.out.join('\n')).toContain('{"kept":true}');
+  });
+
+  it('setup --amp adds the MCP server and a plugin that runs the stop hook; uninstall removes both', async () => {
+    const w = await fileWorld();
+    expect(await runCli(['setup', w.created.mcp_url, '--amp'], w.io)).toBe(0);
+    expect(w.runs).toContainEqual(['amp', 'mcp', 'add', 'webhooks', w.created.mcp_url]);
+    const plugin = join(w.home, '.config', 'amp', 'plugins', 'agent-relay-webhooks.ts');
+    expect(readFileSync(plugin, 'utf8')).toBe(ampPluginSource(stopHookCommand('amp')));
+    expect(readFileSync(plugin, 'utf8')).toContain(
+      '@i-know-the-amp-plugin-api-is-wip-and-very-experimental-right-now'
+    );
+    expect(existsSync(join(w.home, '.config', 'agents', 'skills', 'agent-relay-webhooks', 'SKILL.md'))).toBe(
+      true
+    );
+    expect(w.out.join('\n')).toContain(
+      'Amp: MCP server "webhooks" added, skill installed; after each turn a plugin waits'
+    );
+    expect(await runCli(['uninstall', '--amp'], w.io)).toBe(0);
+    expect(existsSync(plugin)).toBe(false);
+    expect(w.runs).toContainEqual(['amp', 'mcp', 'remove', 'webhooks']);
+  });
+
+  it("the Amp plugin answers agent.end with the stop hook's post, and keeps one claimed after the person started a turn", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'events-shim-amp-'));
+    const gate = join(dir, 'gate');
+    const seen = join(dir, 'stdin.json');
+    // A stand-in for \`listen --stop-hook amp\`: records its input, waits for the gate, then answers.
+    const script = join(dir, 'hook.sh');
+    writeFileSync(
+      script,
+      // Written aside and renamed, so the test never reads it half written.
+      `cat > '${seen}.tmp' && mv '${seen}.tmp' '${seen}'; while [ ! -e '${gate}' ]; do sleep 0.05; done; rm -f '${gate}'; ` +
+        `echo '{"action":"continue","userMessage":"post #1","maxContinuations":${AMP_MAX_CONTINUATIONS}}'`
+    );
+    const pluginFile = join(dir, 'plugin.ts');
+    writeFileSync(pluginFile, ampPluginSource(`sh '${script}'`));
+    const handlers: Record<string, (event: unknown) => unknown> = {};
+    const plugin = (await import(pluginFile)) as { default: (amp: unknown) => void };
+    plugin.default({
+      on: (name: string, handler: (event: unknown) => unknown) => (handlers[name] = handler),
+    });
+    const thread = { thread: { id: 'T-1' }, status: 'done' };
+
+    const ended = handlers['agent.end']!(thread) as Promise<unknown>;
+    await vi.waitFor(() => expect(existsSync(seen)).toBe(true));
+    expect(JSON.parse(readFileSync(seen, 'utf8'))).toMatchObject({ thread_id: 'T-1', status: 'done' });
+    writeFileSync(gate, '');
+    expect(await ended).toEqual({
+      action: 'continue',
+      userMessage: 'post #1',
+      maxContinuations: AMP_MAX_CONTINUATIONS,
+    });
+
+    // The person types: the wait is stopped, and the next turn's end waits again.
+    const second = handlers['agent.end']!(thread) as Promise<unknown>;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    handlers['agent.start']!(thread);
+    expect(await second).toBeUndefined();
+  }, 10_000);
+
   for (const [id, input, answer] of [
-    ['copilot', { sessionId: 'c-1', stopReason: 'end_turn' }, 'block'],
-    ['gemini', { session_id: 'g-1', hook_event_name: 'AfterAgent' }, 'deny'],
+    ['copilot', { sessionId: 'c-1', stopReason: 'end_turn' }, { decision: 'block' }],
+    ['gemini', { session_id: 'g-1', hook_event_name: 'AfterAgent' }, { decision: 'deny' }],
+    ['droid', { session_id: 'd-1', hook_event_name: 'Stop', stop_hook_active: false }, { decision: 'block' }],
+    ['cursor', { conversation_id: 'k-1', status: 'completed', loop_count: 0 }, {}],
+    [
+      'amp',
+      { thread_id: 'T-1', status: 'done' },
+      { action: 'continue', maxContinuations: AMP_MAX_CONTINUATIONS },
+    ],
   ] as const) {
     it(`listen --stop-hook ${id} holds the finished turn until the next post and answers it as the next prompt`, async () => {
       const w = await setupWorld({ stdin: JSON.stringify(input) });
@@ -1361,11 +1628,28 @@ describe('events-shim CLI', () => {
       await w.post({ deploy: 'green' });
       expect(await listening).toBe(0);
       expect(w.out).toHaveLength(1);
-      const reply = JSON.parse(w.out[0]!) as { decision: string; reason: string };
-      expect(reply.decision).toBe(answer);
-      expect(reply.reason).toContain('Webhook inbox (agent-relay-webhooks): a post arrived');
-      expect(reply.reason).toContain('{"deploy":"green"}');
-      expect(reply.reason).toContain('untrusted data');
+      const reply = JSON.parse(w.out[0]!) as Record<string, unknown>;
+      expect(reply).toMatchObject(answer);
+      const text = String(reply.reason ?? reply.followup_message ?? reply.userMessage);
+      expect(text).toContain('Webhook inbox (agent-relay-webhooks): a post arrived');
+      expect(text).toContain('{"deploy":"green"}');
+      expect(text).toContain('untrusted data');
+    });
+  }
+
+  for (const [id, input] of [
+    ['cursor', { conversation_id: 'k-1', status: 'aborted' }],
+    ['droid', { session_id: 'd-1', hook_event_name: 'SubagentStop' }],
+  ] as const) {
+    it(`listen --stop-hook ${id} answers at once for a run that does not end a finished turn (${JSON.stringify(input).slice(0, 40)})`, async () => {
+      const w = await fileWorld({ stdin: JSON.stringify(input) });
+      await runCli(['setup', w.created.mcp_url], w.io);
+      await w.post({ kept: true });
+      w.out.length = 0;
+      expect(await runCli(['listen', '--stop-hook', id], w.io)).toBe(0);
+      expect(w.out).toEqual(['{}']);
+      expect(await runCli(['listen', '--timeout', '1'], w.io)).toBe(0);
+      expect(w.out.join('\n')).toContain('{"kept":true}');
     });
   }
 
@@ -1396,6 +1680,11 @@ describe('events-shim CLI', () => {
     ],
     ['gemini', { session_id: 'g-1' }, '{"id":"1","type":"info","content":"Request cancelled."}'],
     ['gemini', { session_id: 'g-1' }, '{"id":"2","type":"user","content":[{"text":"hi"}]}'],
+    [
+      'droid',
+      { session_id: 'd-1', hook_event_name: 'Stop' },
+      '{"type":"message","message":{"role":"user","content":[]}}',
+    ],
   ] as const) {
     it(`listen --stop-hook ${id} stops waiting once the transcript shows the person cancelled or typed (${line.slice(0, 24)}…)`, async () => {
       const transcript = join(mkdtempSync(join(tmpdir(), 'events-shim-transcript-')), 'events.jsonl');
@@ -1752,6 +2041,60 @@ describe('events-shim CLI', () => {
     w.io.pidAlive = (pid) => [4242, 777, 778].includes(pid);
     expect(await runCli(['uninstall', '--copilot'], w.io)).toBe(0);
     expect(w.killed).toEqual([777]);
+    // It finishes the wait it has in flight first and releases its own locks; another listener
+    // cannot take the inbox over meanwhile.
+    expect(existsSync(join(dir, 'wait-0123456789abcdef.pid'))).toBe(true);
+  });
+
+  it('listen --hook (Claude Code) wakes its session with a post a stop-hook listener kept', async () => {
+    const w = await fileWorld({ stdin: JSON.stringify({ session_id: 'd-1' }) });
+    await runCli(['setup', w.created.mcp_url], w.io);
+    const stopped = runCli(['listen', '--stop-hook', 'droid'], w.io);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    w.terminate();
+    await w.post({ kept: 'for claude' });
+    await stopped;
+    w.err.length = 0;
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(2);
+    expect(w.err.join('\n')).toContain('{"kept":"for claude"}');
+  }, 10_000);
+
+  it('listen prints a post a stop-hook listener kept before it waits', async () => {
+    const w = await fileWorld({ stdin: JSON.stringify({ session_id: 'd-1' }) });
+    await runCli(['setup', w.created.mcp_url], w.io);
+    const stopped = runCli(['listen', '--stop-hook', 'droid'], w.io);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    w.terminate();
+    await w.post({ kept: 'for listen' });
+    await stopped;
+    w.out.length = 0;
+    expect(await runCli(['listen', '--timeout', '1'], w.io)).toBe(0);
+    expect(w.out.join('\n')).toContain('{"kept":"for listen"}');
+    // Handed over once: the next listen does not see it again.
+    w.out.length = 0;
+    expect(await runCli(['listen', '--timeout', '1'], w.io)).toBe(0);
+    expect(w.out.join('\n')).not.toContain('for listen');
+  }, 10_000);
+
+  it('a hook taking over from a draining listener gives up at once when its own CLI lets go', async () => {
+    const w = await fileWorld({ stdin: JSON.stringify({ session_id: 'd-1' }) });
+    await runCli(['setup', w.created.mcp_url], w.io);
+    const dir = join(w.home, '.config', 'agent-relay');
+    // An older hook of the same session (pid 777, still draining) holds the session lock.
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 16);
+    writeFileSync(join(dir, `wait-${digest(`${w.created.mcp_url}\nd-1`)}.pid`), '777\n');
+    w.io.processArgs = (pid) =>
+      pid === 777 ? 'node /x/events-shim/dist/bin.js listen --stop-hook droid' : null;
+    let sleeps = 0;
+    w.io.sleep = async () => {
+      sleeps += 1;
+      // Droid (the owner, also 777 here) exits while this hook waits for the lock.
+      if (sleeps === 3) w.io.pidAlive = (pid) => pid === 4242;
+    };
+    w.out.length = 0;
+    expect(await runCli(['listen', '--stop-hook', 'droid'], w.io)).toBe(0);
+    expect(w.out).toEqual(['{}']);
+    expect(sleeps).toBeLessThan(10);
   });
 
   it('listen cuts long bodies and names the event id', async () => {

@@ -71,6 +71,8 @@ export interface CliIo {
   pidAlive: (pid: number) => boolean;
   /** The nearest ancestor process whose executable is named \`name\` (\`claude\`, \`codex\`), if any. */
   ancestor: (name: string) => number | null;
+  /** Calls \`handler\` instead of exiting when this process is asked to stop (SIGTERM); returns the undo. */
+  onTerminate: (handler: () => void) => () => void;
   /** Starts a process that outlives this one, with extra environment. */
   spawnDetached: (file: string, args: string[], env?: Record<string, string>) => void;
   /** Runs a program and returns its stdout, or null when it fails. */
@@ -113,7 +115,7 @@ interface Config {
 }
 
 const USAGE = `Usage:
-  npx @agent-relay/events-shim setup <mcp-url> [--claude] [--codex] [--copilot] [--cursor] [--opencode] [--muse] [--gemini] [--grok] [--devin]
+  npx @agent-relay/events-shim setup <mcp-url> [--claude] [--codex] [--copilot] [--cursor] [--droid] [--amp] [--opencode] [--muse] [--gemini] [--grok] [--devin]
                                                  Add the inbox's MCP server to those agent CLIs (default: every one
                                                  installed here) and install the webhooks skill
   npx @agent-relay/events-shim uninstall [--claude] [--codex] …
@@ -324,6 +326,8 @@ interface AgentCli {
   coreKind?: string;
   /** Replaces the wake text when this tool's sessions are linked but not yet woken in practice. */
   caveat?: string;
+  /** Why its wake hook stands down on this machine, if it does (replaces the wake text). */
+  heldBack?: (io: CliIo) => string | null;
   /** Removes the MCP server again (\`uninstall\`). */
   remove: (io: CliIo) => boolean;
   /** Hooks that wake this tool's sessions by themselves (Claude Code, Codex). */
@@ -568,6 +572,258 @@ function editGeminiHooks(io: CliIo, remove = false): { ok: true } | { ok: false;
   writeFileSync(temporary, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
   renameSync(temporary, path);
   return { ok: true };
+}
+
+/** Reads a JSON object file: \`{}\` when missing, null when it exists but cannot be read or parsed. */
+function readJsonObject(io: CliIo, path: string): Record<string, unknown> | null {
+  const raw = io.readText(path);
+  if (raw === null) return io.exists(path) ? null : {};
+  if (!raw.trim()) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Writes a JSON file owner-only, beside it and renamed into place. */
+function writeJsonPrivate(path: string, value: unknown): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temporary, path);
+}
+
+/** Takes our command out of one event's hook groups, keeping the person's own and their matchers. */
+function withoutOurHooks(groups: unknown): HookGroup[] {
+  const kept: HookGroup[] = [];
+  for (const group of Array.isArray(groups) ? (groups as HookGroup[]) : []) {
+    const others = (group.hooks ?? []).filter((hook) => !hook.command?.includes('@agent-relay/events-shim'));
+    if (others.length > 0) kept.push({ ...group, hooks: others });
+    else if (!isOurs(group)) kept.push(group);
+  }
+  return kept;
+}
+
+/** Factory Droid's home. */
+function factoryHome(io: CliIo): string {
+  return join(home(io), '.factory');
+}
+
+/**
+ * Adds (or, with \`remove\`, takes out) the \`Stop\` hook that holds a
+ * finished Droid turn open until the next post. Droid reads
+ * \`~/.factory/hooks.json\` and, only while that file is absent, the
+ * \`hooks\` key of \`~/.factory/settings.json\`: the hook goes into the one
+ * Droid reads, so a person whose hooks live in settings.json keeps them.
+ * Never replaces a file it cannot read.
+ */
+function editDroidHooks(io: CliIo, remove = false): { ok: true } | { ok: false; manual: string } {
+  const command = stopHookCommand('droid');
+  const hooksFile = join(factoryHome(io), 'hooks.json');
+  const settingsFile = join(factoryHome(io), 'settings.json');
+  const target = !io.exists(hooksFile) && io.exists(settingsFile) ? settingsFile : hooksFile;
+  /** Puts ours into (or only takes it out of) one file; false when the file cannot be read. */
+  const edit = (path: string, add: boolean): boolean => {
+    if (!add && !io.exists(path)) return true;
+    const file = readJsonObject(io, path);
+    if (!file) return false;
+    const nested = path === settingsFile;
+    if (nested && file.hooks !== undefined && (typeof file.hooks !== 'object' || file.hooks === null)) {
+      return false;
+    }
+    const hooks = (nested ? ((file.hooks as Record<string, unknown>) ?? {}) : file) as Record<
+      string,
+      unknown
+    >;
+    const before = JSON.stringify(hooks.Stop);
+    const kept = withoutOurHooks(hooks.Stop);
+    if (add) kept.push({ hooks: [{ type: 'command', command, timeout: HOOK_TIMEOUT_SECONDS }] });
+    if (kept.length > 0) hooks.Stop = kept;
+    else delete hooks.Stop;
+    if (!add && JSON.stringify(hooks.Stop) === before) return true; // none of ours there
+    if (nested) {
+      if (Object.keys(hooks).length > 0) file.hooks = hooks;
+      else delete file.hooks;
+    }
+    writeJsonPrivate(path, file);
+    return true;
+  };
+  // Ours also comes out of the file Droid does not read, so it cannot come back when that one is read again.
+  const other = target === hooksFile ? settingsFile : hooksFile;
+  const ok = remove
+    ? edit(hooksFile, false) && edit(settingsFile, false)
+    : edit(target, true) && edit(other, false);
+  return ok
+    ? { ok: true }
+    : {
+        ok: false,
+        manual: `add a Stop hook running "${command}" with "timeout": ${HOOK_TIMEOUT_SECONDS} to ${target}`,
+      };
+}
+
+/** Cursor's user hooks file (Cursor CLI and the editor read it). */
+function cursorHooksPath(io: CliIo): string {
+  return join(home(io), '.cursor', 'hooks.json');
+}
+
+/**
+ * Cursor's longest hook timeout, in seconds, that it takes without warning
+ * (an hour): a session idle for longer is not woken until its next turn.
+ */
+const CURSOR_HOOK_TIMEOUT_SECONDS = 60 * 60;
+
+/**
+ * True when Agent Relay's own waiting Cursor \`stop\` hook (\`cursor-hook
+ * --wait\`, Cursor CLI delivery turned on in Agent Relay) is installed.
+ * Cursor waits for every \`stop\` hook before it submits any follow-up, so
+ * two waiting hooks would hold each other's messages back: ours then never
+ * holds the turn.
+ */
+function cursorHasRelayWait(io: CliIo): boolean {
+  const hooks = readJsonObject(io, cursorHooksPath(io))?.hooks as { stop?: unknown } | undefined;
+  return (Array.isArray(hooks?.stop) ? (hooks.stop as HookEntry[]) : []).some(
+    (hook) =>
+      typeof hook.command === 'string' &&
+      !hook.command.includes('@agent-relay/events-shim') &&
+      /\bcursor-hook\b.*\s--wait\b/.test(hook.command)
+  );
+}
+
+/**
+ * Adds (or, with \`remove\`, takes out) the \`stop\` hook that holds a
+ * finished Cursor turn open until the next post (\`loop_limit: null\`, so
+ * Cursor takes every post), keeping every other hook. Never replaces a file
+ * it cannot read.
+ */
+function editCursorHooks(io: CliIo, remove = false): { ok: true } | { ok: false; manual: string } {
+  const path = cursorHooksPath(io);
+  const command = stopHookCommand('cursor');
+  const manual = `add a stop hook {"command": "${command}", "timeout": ${CURSOR_HOOK_TIMEOUT_SECONDS}, "loop_limit": null} to ${path}`;
+  const file = readJsonObject(io, path);
+  if (!file) return { ok: false, manual };
+  if (file.hooks !== undefined && (typeof file.hooks !== 'object' || file.hooks === null)) {
+    return { ok: false, manual };
+  }
+  const hooks = (file.hooks ?? {}) as Record<string, unknown>;
+  if (hooks.stop !== undefined && !Array.isArray(hooks.stop)) return { ok: false, manual };
+  const kept = ((hooks.stop as HookEntry[] | undefined) ?? []).filter(
+    (hook) => !hook.command?.includes('@agent-relay/events-shim')
+  );
+  if (!remove) kept.push({ command, timeout: CURSOR_HOOK_TIMEOUT_SECONDS, loop_limit: null });
+  if (kept.length > 0) hooks.stop = kept;
+  else delete hooks.stop;
+  if (remove && !io.exists(path)) return { ok: true };
+  writeJsonPrivate(path, { version: 1, ...file, hooks });
+  return { ok: true };
+}
+
+/** Amp's system plugins directory. */
+function ampPluginPath(io: CliIo): string {
+  return join(xdgConfig(io), 'amp', 'plugins', `${SKILL_NAME}.ts`);
+}
+
+/**
+ * How many posts in a row Amp turns into new turns before the person types
+ * again (Amp's own default is 5).
+ */
+export const AMP_MAX_CONTINUATIONS = 1000;
+
+/**
+ * events-shim's Amp plugin. Amp runs plugins under Bun and lets an
+ * \`agent.end\` handler start the next turn (\`action: 'continue'\`); the
+ * thread is idle while the handler waits. So after each turn it runs
+ * \`listen --stop-hook amp\` and answers with the next post. When the person
+ * starts a turn first, it stops that wait; a post it had already claimed is
+ * kept for the end of that turn.
+ *
+ * @param command - The shell command that waits for the next post.
+ * @returns The plugin's TypeScript source.
+ */
+export function ampPluginSource(command: string): string {
+  return `// Agent Relay webhook inbox: each post wakes this Amp thread. Written by @agent-relay/events-shim setup --amp.
+// @i-know-the-amp-plugin-api-is-wip-and-very-experimental-right-now
+import { spawn } from 'node:child_process'
+
+const COMMAND = ${JSON.stringify(command)}
+const waits = new Map<string, { child: ReturnType<typeof spawn>; released: boolean }>()
+const kept = new Map<string, string>()
+
+function stop(thread: string) {
+  const wait = waits.get(thread)
+  if (!wait) return
+  wait.released = true
+  waits.delete(thread)
+  try {
+    if (wait.child.pid) process.kill(-wait.child.pid, 'SIGTERM')
+  } catch {}
+}
+
+/** The fields of Amp's agent.start and agent.end events this plugin reads. */
+interface TurnEvent {
+  thread?: { id?: unknown }
+  status?: unknown
+}
+
+export default function (amp: { on: (event: string, handler: (event: TurnEvent) => unknown) => void }) {
+  amp.on('agent.start', (event) => {
+    const thread = String(event?.thread?.id ?? '')
+    if (thread) stop(thread)
+    return {}
+  })
+  amp.on('agent.end', async (event) => {
+    const thread = String(event?.thread?.id ?? '')
+    if (!thread) return
+    const held = kept.get(thread)
+    if (held) {
+      kept.delete(thread)
+      return { action: 'continue', userMessage: held, maxContinuations: ${AMP_MAX_CONTINUATIONS} }
+    }
+    stop(thread)
+    const child = spawn('/bin/sh', ['-c', COMMAND], { detached: true, stdio: ['pipe', 'pipe', 'ignore'] })
+    const wait = { child, released: false }
+    waits.set(thread, wait)
+    const status = typeof event?.status === 'string' ? event.status : 'done'
+    child.stdin?.end(JSON.stringify({ thread_id: thread, status, timestamp: Date.now() }))
+    let out = ''
+    child.stdout?.on('data', (chunk) => (out += chunk))
+    await new Promise((resolve) => child.on('close', resolve))
+    if (waits.get(thread) === wait) waits.delete(thread)
+    let answer: { userMessage?: unknown } = {}
+    try {
+      answer = JSON.parse(out.trim().split('\\n').pop() || '{}')
+    } catch {}
+    if (typeof answer.userMessage !== 'string' || !answer.userMessage) return
+    // The person started a turn meanwhile: this post wakes the thread once that turn ends.
+    if (wait.released) {
+      kept.set(thread, answer.userMessage)
+      return
+    }
+    return answer
+  })
+}
+`;
+}
+
+/** Writes (or, with \`remove\`, deletes) events-shim's Amp plugin; the file is events-shim's alone. */
+function editAmpPlugin(io: CliIo, remove = false): { ok: true } | { ok: false; manual: string } {
+  const path = ampPluginPath(io);
+  try {
+    if (remove) {
+      rmSync(path, { force: true });
+      return { ok: true };
+    }
+    mkdirSync(dirname(path), { recursive: true });
+    const temporary = `${path}.${process.pid}.tmp`;
+    writeFileSync(temporary, ampPluginSource(stopHookCommand('amp')), { mode: 0o600 });
+    renameSync(temporary, path);
+    return { ok: true };
+  } catch {
+    return { ok: false, manual: `save the plugin \`ampPluginSource\` writes as ${path}` };
+  }
 }
 
 /** Deletes \`<root>.webhooks\` from a JSON config file (\`uninstall\`); true when it is gone. */
@@ -843,8 +1099,57 @@ export const AGENT_CLIS: readonly AgentCli[] = [
       'mcpServers',
       (url) => ({ url })
     ),
-    wake: 'when-asked',
+    wake: 'listener',
+    caveat:
+      'after each turn it waits for the next post and submits it as your next message, for up to an hour after that turn (a session idle for longer wakes after your next turn)',
+    heldBack: (io) =>
+      cursorHasRelayWait(io)
+        ? "not woken by posts here: Agent Relay's own Cursor CLI delivery holds each finished turn for relay messages, and Cursor waits for every such hook, so the agent reads posts when asked (turn that delivery off in Agent Relay to have posts wake Cursor)"
+        : null,
     remove: removeJson((io) => join(home(io), '.cursor', 'mcp.json'), 'mcpServers'),
+    hooks: {
+      install: async (io) => editCursorHooks(io),
+      remove: async (io) => editCursorHooks(io, true).ok,
+      listener: '--stop-hook cursor',
+    },
+  },
+  {
+    id: 'droid',
+    label: 'Factory Droid',
+    present: onPath('droid'),
+    install: (io, url) =>
+      viaCommand(
+        'droid',
+        ['mcp', 'add', MCP_SERVER_NAME, url, '--type', 'http'],
+        ['mcp', 'remove', MCP_SERVER_NAME]
+      )(io, url),
+    skillsDir: (io) => join(factoryHome(io), 'skills'),
+    wake: 'listener',
+    caveat:
+      'after each turn it waits for the next post and takes it as its next instruction (it shows "Streaming..." while it waits; press Esc before you type, or what you type waits for the next post)',
+    remove: (io) => io.run('droid', ['mcp', 'remove', MCP_SERVER_NAME]),
+    hooks: {
+      install: async (io) => editDroidHooks(io),
+      remove: async (io) => editDroidHooks(io, true).ok,
+      listener: '--stop-hook droid',
+    },
+  },
+  {
+    id: 'amp',
+    label: 'Amp',
+    present: onPath('amp'),
+    install: (io, url) =>
+      viaCommand('amp', ['mcp', 'add', MCP_SERVER_NAME, url], ['mcp', 'remove', MCP_SERVER_NAME])(io, url),
+    skillsDir: (io) => join(xdgConfig(io), 'agents', 'skills'),
+    wake: 'listener',
+    caveat:
+      'after each turn a plugin waits for the next post and sends it as your next message (it shows "Streaming" while it waits; older Amp builds load plugins only with PLUGINS=all set)',
+    remove: (io) => io.run('amp', ['mcp', 'remove', MCP_SERVER_NAME]),
+    hooks: {
+      install: async (io) => editAmpPlugin(io),
+      remove: async (io) => editAmpPlugin(io, true).ok,
+      listener: '--stop-hook amp',
+    },
   },
   {
     id: 'opencode',
@@ -1103,7 +1408,7 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
     }
     if (result.ok) {
       io.stdout(
-        `  ${cli.label}: MCP server "${MCP_SERVER_NAME}" added${cli.skillsDir ? ', skill installed' : ''}; ${cli.caveat ?? WAKE_TEXT[cli.wake]}.`
+        `  ${cli.label}: MCP server "${MCP_SERVER_NAME}" added${cli.skillsDir ? ', skill installed' : ''}; ${cli.heldBack?.(io) ?? cli.caveat ?? WAKE_TEXT[cli.wake]}.`
       );
     } else {
       failed.push(cli.label);
@@ -1117,7 +1422,7 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
     io.stdout('Start a new Claude Code session. Each post wakes it by itself; there is nothing to tell it.');
   }
   const holding = clis.filter(
-    (cli) => hooked.includes(cli.id) && cli.hooks?.listener.startsWith('--stop-hook')
+    (cli) => hooked.includes(cli.id) && cli.hooks?.listener.startsWith('--stop-hook') && !cli.heldBack?.(io)
   );
   if (holding.length > 0) {
     io.stdout(
@@ -1192,7 +1497,9 @@ async function uninstall(io: CliIo, flags: Record<string, string>): Promise<numb
       const args = isListener(io, pid) ? (io.processArgs(pid) ?? '') : '';
       if (kinds.some((kind) => new RegExp(`(^|\\s)${kind}(\\s|$)`).test(args))) {
         io.kill(pid);
-        rmSync(join(dir, name), { force: true });
+        // A stop-hook listener first finishes the wait it has in flight and keeps what it claimed, so it
+        // keeps its locks until then (it releases them itself); others stop at once.
+        if (!/(^|\s)--stop-hook(\s|$)/.test(args)) rmSync(join(dir, name), { force: true });
       } else if (!args) rmSync(join(dir, name), { force: true });
     }
   }
@@ -1356,7 +1663,8 @@ async function listenAsSessionOwner(
   alive: () => boolean,
   deliver: (text: string) => Promise<number | null>,
   takeOver = false,
-  takeHeld?: () => string | null
+  takeHeld?: () => string | null,
+  drain: () => boolean = () => false
 ): Promise<number> {
   const dir = dirname(configPath(io));
   const digest = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 16);
@@ -1366,8 +1674,16 @@ async function listenAsSessionOwner(
     if (!takeOver) return 0;
     const holder = Number(io.readText(sessionLock)?.trim());
     if (isListener(io, holder)) io.kill(holder);
+    // A stop-hook listener asked to stop first finishes the wait it has in flight (up to ~65 s).
     let taken = false;
-    for (let tries = 0; tries < 10 && !(taken = tryLock(io, sessionLock)); tries += 1) await io.sleep(500);
+    for (
+      let tries = 0;
+      !(taken = tryLock(io, sessionLock)) &&
+      alive() &&
+      (tries < 10 || (tries < 160 && isListener(io, holder)));
+      tries += 1
+    )
+      await io.sleep(500);
     if (!taken) return 0;
   }
   try {
@@ -1388,8 +1704,10 @@ async function listenAsSessionOwner(
             continue;
           }
           const controller = new AbortController();
+          // While \`drain()\`, a wait in flight is not cut off: the inbox may already have handed it
+          // posts, which \`deliver\` then keeps for the next owner.
           const watch = setInterval(() => {
-            if (!alive()) controller.abort();
+            if (!alive() && !drain()) controller.abort();
           }, 2_000);
           const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(65_000)]);
           try {
@@ -1489,7 +1807,7 @@ function takeHeldPost(io: CliIo, mcpUrl: string): string | null {
 }
 
 /** The agent CLIs whose turn-end hook can hold a finished turn open and hand it the next post. */
-export type StopHookId = 'copilot' | 'gemini';
+export type StopHookId = 'copilot' | 'gemini' | 'droid' | 'cursor' | 'amp';
 
 /** How one of them runs its turn-end hook, and how it reads the hook's answer. */
 interface StopHookCli {
@@ -1511,6 +1829,8 @@ interface StopHookCli {
   released: RegExp;
   /** The hook's answer that hands the agent \`text\` as its next prompt. */
   answer: (text: string) => Record<string, unknown>;
+  /** How long the CLI lets the hook run, in seconds, when it caps it below the inbox's 7 idle days. */
+  timeoutSeconds?: number;
 }
 
 const STOP_HOOK_CLIS: Record<StopHookId, StopHookCli> = {
@@ -1540,6 +1860,39 @@ const STOP_HOOK_CLIS: Record<StopHookId, StopHookCli> = {
         : null,
     released: /"type"\s*:\s*"user"|"content"\s*:\s*"Request cancelled\."/,
     answer: (reason) => ({ decision: 'deny', reason }),
+  },
+  // Factory Droid's \`Stop\` hook: \`decision: "block"\` makes \`reason\` Droid's next instruction. A
+  // cancelled turn runs no \`Stop\` hook; a typed message is a \`"role":"user"\` transcript line.
+  droid: {
+    process: 'droid',
+    session: 'session_id',
+    transcript: 'transcript_path',
+    endsTurn: (input) => input.hook_event_name === undefined || input.hook_event_name === 'Stop',
+    released: /"role"\s*:\s*"user"/,
+    answer: (reason) => ({ decision: 'block', reason }),
+  },
+  // Cursor's \`stop\` hook: a \`followup_message\` is submitted as the next user message. Cursor ends a
+  // hook after its timeout (an hour), so the wait stops a minute before.
+  cursor: {
+    process: 'cursor-agent',
+    session: 'conversation_id',
+    transcript: 'transcript_path',
+    endsTurn: (input) => input.status === undefined || input.status === 'completed',
+    released: /"role"\s*:\s*"user"/,
+    answer: (text) => ({ followup_message: text }),
+    timeoutSeconds: CURSOR_HOOK_TIMEOUT_SECONDS,
+    // Agent Relay's own waiting entry holds the turn too: ours lets go at once, so neither keeps the other waiting.
+    otherHook: (io) => (cursorHasRelayWait(io) ? () => true : null),
+  },
+  // events-shim's Amp plugin (\`ampPluginSource\`) runs this after each turn and returns the answer
+  // from its \`agent.end\` handler; it stops the wait itself when the person starts a turn.
+  amp: {
+    process: 'amp',
+    session: 'thread_id',
+    transcript: 'transcript_path',
+    endsTurn: () => true,
+    released: /$^/,
+    answer: (userMessage) => ({ action: 'continue', userMessage, maxContinuations: AMP_MAX_CONTINUATIONS }),
   },
 };
 
@@ -1668,8 +2021,9 @@ function transcriptWatch(io: CliIo, path: string, released: RegExp, since: numbe
 }
 
 /**
- * \`listen --stop-hook <copilot|gemini>\`: run by that CLI's turn-end hook
- * (Copilot's \`agentStop\`, Gemini's \`AfterAgent\`), which the CLI waits for
+ * \`listen --stop-hook <copilot|gemini|droid|cursor|amp>\`: run by that CLI's turn-end hook
+ * (Copilot's \`agentStop\`, Gemini's \`AfterAgent\`, Droid's \`Stop\`, Cursor's \`stop\`, events-shim's
+ * Amp plugin's \`agent.end\`), which the CLI waits for
  * before it settles the turn. It waits for the next post and answers with
  * it as the agent's next prompt, so a session that finished its turn takes
  * a new one by itself. It answers \`{}\` (the turn ends as usual) when the
@@ -1723,7 +2077,21 @@ async function listenStopHook(io: CliIo, flags: Record<string, string>): Promise
       const transcript = typeof input[cli.transcript] === 'string' ? (input[cli.transcript] as string) : '';
       const releasedByPerson = transcriptWatch(io, transcript, cli.released, since);
       const otherHookDone = cli.otherHook?.(io, input, since) ?? (() => false);
-      const alive = () => (owner === null || io.pidAlive(owner)) && !releasedByPerson() && !otherHookDone();
+      // A minute before the CLI would end the hook, and with it any answer it printed.
+      const deadline =
+        cli.timeoutSeconds === undefined ? Infinity : Date.now() + (cli.timeoutSeconds - 60) * 1000;
+      // Asked to stop (a newer turn's hook taking over, the Amp plugin, the CLI cancelling the hook):
+      // finish the wait in flight and keep what it claimed for the next owner instead of losing it.
+      let stopping = false;
+      const undo = io.onTerminate(() => {
+        stopping = true;
+      });
+      const alive = () =>
+        !stopping &&
+        (owner === null || io.pidAlive(owner)) &&
+        !releasedByPerson() &&
+        !otherHookDone() &&
+        Date.now() < deadline;
       await listenAsSessionOwner(
         io,
         mcpUrl,
@@ -1736,8 +2104,11 @@ async function listenStopHook(io: CliIo, flags: Record<string, string>): Promise
           return 0;
         },
         true,
-        () => takeHeldPost(io, mcpUrl)
-      );
+        () => takeHeldPost(io, mcpUrl),
+        // Nobody waits on a hook asked to stop, so it lets a wait in flight finish; when the person
+        // cancels or types, the CLI does wait on it, so it lets go at once.
+        () => stopping
+      ).finally(undo);
     }
   }
   if (!answered) io.stdout('{}');
@@ -2075,6 +2446,16 @@ async function listen(io: CliIo, flags: Record<string, string>): Promise<number>
     );
     return 2;
   }
+  // A post a stop-hook listener claimed but could not hand over comes first.
+  const kept = takeHeldPost(io, mcpUrl);
+  if (kept) {
+    io.stdout(kept);
+    io.stdout('');
+    io.stdout(
+      '(Act on it, then start the listener again in the background: npx -y @agent-relay/events-shim@latest listen)'
+    );
+    return 0;
+  }
   // Seconds until giving up; default: wait as long as it takes.
   const limit = flags.timeout ? Number(flags.timeout) * 1000 : Infinity;
   const deadline = Date.now() + (Number.isFinite(limit) && limit > 0 ? limit : Infinity);
@@ -2321,6 +2702,10 @@ export function processIo(): CliIo {
       } catch (error) {
         return (error as NodeJS.ErrnoException).code === 'EPERM';
       }
+    },
+    onTerminate: (handler) => {
+      process.on('SIGTERM', handler);
+      return () => process.off('SIGTERM', handler);
     },
     ancestor: (name) => {
       // Walk up with ps (Linux and macOS) to the nearest process whose executable is \`name\`.
