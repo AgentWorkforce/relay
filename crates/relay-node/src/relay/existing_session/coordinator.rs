@@ -6,6 +6,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// The longest a delivery may take. A Muse courier must start an interactive
+/// Muse (up to its 60s readiness window) and run one model turn, so the open
+/// Muse route asks for 120s; other routes ask for 30s or less.
+pub const MAX_INJECT_TIMEOUT: Duration = Duration::from_secs(120);
+
 pub struct Coordinator {
     gate: Gate,
     pub(super) journal: Journal,
@@ -43,7 +48,7 @@ impl Coordinator {
             || !printable(request.message_id, 256)
             || request.text.is_empty()
             || request.text.len() > 65_536
-            || !(Duration::from_secs(1)..=Duration::from_secs(30)).contains(&request.timeout)
+            || !(Duration::from_secs(1)..=MAX_INJECT_TIMEOUT).contains(&request.timeout)
         {
             return Outcome::Refused(Failure::ProviderRefused);
         }

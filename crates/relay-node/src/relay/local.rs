@@ -1558,7 +1558,7 @@ impl LocalInjector {
             delivery_id,
             message_id,
             &text,
-            Duration::from_secs(30),
+            muse_open::DELIVERY_TIMEOUT,
         ) {
             crate::relay::existing_session::Outcome::Delivered { .. } => InjectOutcome::Delivered,
             crate::relay::existing_session::Outcome::Retry(_) if hosted => {
