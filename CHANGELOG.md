@@ -7,15 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Minor]
 
-### Fixed
-
-- `agent-relay-node`: session-socket requests share one deadline across connection setup and partial reads and writes, so slow replies cannot extend a native hook beyond its wait budget.
-- `agent-relay-node`: Copilot idle chats keep waiting through delayed journal writes and large model-log batches; incoming-message hooks also recognize bundled helper hard links and validate current session descriptors.
-- `agent-relay-node`: macOS development builds recognize their computed code-signing requirement, so native helper verification works while still requiring the running helper to satisfy the core's own requirement.
-
 ### Added
 
 - `agent-relay-node`: macOS GitHub Copilot desktop sessions can register and receive Relay messages through their native hooks, with GitHub signature, desktop host and held-session verification.
+
+### Fixed
+
+- `agent-relay-node`: session-socket requests share one deadline across connection setup and partial reads and writes, so slow replies cannot extend a native hook beyond its wait budget.
+
+## [18.9.0] - 2026-11-16
+
+### Added
+
 - `agent-relay-node`: self-hosted installs whose Control API returns `urls.relaygateUrl` (relaygate gate-only mode) register each agent at relaygate with the person's device token instead of the shared workspace key. Agents renew their relaygate token before it expires, publish their session details and presence, read the roster and are removed through the gate. A removed name registers again as the same agent. Installs without a relaygate URL, including default and hosted ones, are unchanged.
 - `agent-relay-node`: messaging as yourself works on gate-only installs. Your own identity enrols at relaygate as one more agent (named from your user id) with the device token, sends and reads through the gate, and renews its token like an agent does. A due token keeps working while its renewal fails, and relaygate's `Retry-After` is honoured before enrolling again. This also happens when the Control API refuses the messaging identity with `gate_only` and names the gate. Signed out, messaging says it is unavailable until you sign in again.
 - `agent-relay-node`: on gate-only self-hosted installs, spawning works through Control's node bridge: the node enrols and connects with its relay-node credential, holds no Relaycast node token, and registers each launched agent at relaygate itself with the launch's one-time credential before the agent starts. The agent never sees the credential, which is presented once and never saved or logged. The agent's relaygate token is kept in memory only, refreshed before it expires and released when the launch ends. A launch relaygate refuses fails with relaygate's reason, and an agent whose token can no longer be refreshed, or whose token was lost when Agent Relay restarted, must be launched again. A gate-only install without a relay-node credential or Control URL reports spawning as unavailable instead of retrying, and so does one whose relay-node credential Control refuses ("Agent Relay's Control refused this install's relay-node credential").
@@ -23,7 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `@agent-relay/events-shim`: webhook posts no longer go to the wrong session. `setup --claude` installs its wake hooks for every Claude Code session on the machine, and they all share one inbox. Each hook listener took (and marked read) whichever post it saw first, so posts went to unrelated sessions, including posts for a session woken through a relay wake link. Now `listen --hook` listens only in a session whose transcript shows it used the `webhooks` MCP. Any hook listener (Claude Code and turn-end hooks) stands down while the inbox has a working relay wake link, and `wait_for_webhook` takes no posts while one is linked.
+- `agent-relay-node`: Copilot idle chats keep waiting through delayed journal writes and large model-log batches; incoming-message hooks also recognize bundled helper hard links and validate current session descriptors.
+- `agent-relay-node`: macOS development builds recognize their computed code-signing requirement, so native helper verification works while still requiring the running helper to satisfy the core's own requirement.
 - `agent-relay-node`: spawned agents and the shared Codex app server no longer receive `CLOUD_API_ACCESS_TOKEN` or `CLOUD_API_REFRESH_TOKEN` from the node's environment, in any letter case.
+- `@agent-relay/events-shim`: a webhook post can no longer reach agents other than the one its inbox wakes. Posts forwarded to Agent Relay used to carry any `@name` from the post body, so the relay delivered them to that agent too, including Capy threads, Replicas and Amp threads in the workspace. Every `@` that a name follows in forwarded text, nudges included, now has an invisible word joiner after it: the agent reads the same text, and e-mail addresses still read normally.
 
 ## [18.8.0] - 2026-11-16
 

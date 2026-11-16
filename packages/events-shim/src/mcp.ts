@@ -18,10 +18,9 @@ export interface EventsShimMcpContext {
   /** How often `wait_for_webhook` re-reads the store. */
   pollIntervalMs?: number;
   /**
-   * Re-reads the inbox before a tool reports its wake state. Pass it when the
-   * tools stay registered across requests (a long-lived server), since a
-   * delivery pass may have marked the link broken since `shim` was read.
-   * The per-request HTTP handler reads the inbox fresh and does not need it.
+   * Re-reads the inbox before a tool reports its wake state, and on each
+   * `wait_for_webhook` poll, since a delivery pass or another request may
+   * have linked, unlinked or broken the link since `shim` was read.
    */
   reloadShim?: () => Promise<ShimRecord | null>;
   /** Ends a `wait_for_webhook` early when the client disconnects. */
@@ -325,7 +324,7 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
     'wait_for_webhook',
     {
       title: 'Wait for a webhook post',
-      description: `Blocks until a post arrives (or timeout_seconds pass, at most ${EVENTS_SHIM_LIMITS.maxWaitMs / 1000}), then returns the posts and marks them read. Run it in the background and call it again after each return. Not needed once link_relay_wake succeeded.`,
+      description: `Blocks until a post arrives (or timeout_seconds pass, at most ${EVENTS_SHIM_LIMITS.maxWaitMs / 1000}), then returns the posts and marks them read. Run it in the background and call it again after each return. While a relay wake link works (link_relay_wake), it takes no posts and returns none when the timeout passes: the link delivers them.`,
       inputSchema: {
         timeout_seconds: z
           .number()
@@ -348,12 +347,26 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
       const deadline = Date.now() + timeoutMs;
       const interval = ctx.pollIntervalMs ?? 1_000;
       const signals = [ctx.signal, extra?.signal].filter((signal): signal is AbortSignal => Boolean(signal));
+      // `seen` just read the inbox; later polls read it again.
+      let polled = false;
       for (;;) {
-        // Never claim for a client that is gone: claimed posts are marked read.
+        // Re-read the link on every poll: one made or broken while this waits counts at once.
+        if (polled && ctx.reloadShim) {
+          const fresh = await ctx.reloadShim();
+          if (fresh) ctx.shim = fresh;
+        }
+        polled = true;
+        // Never claim for a client that is gone (checked after the re-read, which takes time):
+        // claimed posts are marked read.
         if (signals.some((signal) => signal.aborted)) {
           return result({ events: [], more: false, next_steps: ['Cancelled. Call wait_for_webhook again.'] });
         }
-        const batch = await handOver(ctx);
+        // A working relay wake link owns the posts: each one is forwarded to the session that
+        // made the link, and a waiter here (another session's wake hook, say) would mark it read
+        // first and take it from that session. Wait out the timeout without claiming, so a
+        // listener that calls again at once does not spin.
+        const linked = wakeState(ctx.shim) === 'linked';
+        const batch = linked ? { events: [], more: false } : await handOver(ctx);
         if (batch.events.length > 0) {
           return result({
             ...batch,
@@ -364,7 +377,12 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
           return result({
             events: [],
             more: false,
-            next_steps: ['Nothing yet. Call wait_for_webhook again.'],
+            ...(linked ? { wake: 'linked' } : {}),
+            next_steps: [
+              linked
+                ? 'This inbox forwards each post to the Agent Relay session that linked it (link_relay_wake), so wait_for_webhook does not take posts. Read one with get_webhook_events and its event_id, or call unlink_relay_wake to wait for posts here instead.'
+                : 'Nothing yet. Call wait_for_webhook again.',
+            ],
           });
         }
         await sleep(interval, signals);
