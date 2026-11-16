@@ -1,316 +1,34 @@
-# Git Workflow Rules
+# Working in relay
 
-## NEVER Push Directly to Main
-
-**CRITICAL: Agents must NEVER push directly to the main branch.**
-
-- Always work on a feature branch
-- Commit and push to the feature branch only
-- Let the user decide when to merge to main
-- Do not merge to main without explicit user approval
-
-```bash
-# CORRECT workflow
-git checkout -b feature/my-feature
-# ... do work ...
-git add .
-git commit -m "My changes"
-git push origin feature/my-feature
-# STOP HERE - let user merge
-
-# WRONG - never do this
-git checkout main
-git merge feature/my-feature
-git push origin main  # NO!
+```sh
+npm ci
+npm run lint
+npm run typecheck
+npm run test
+npm run build
 ```
 
-This ensures the user maintains control over what goes into the main branch.
+- Work on a feature branch. Never push directly to `main` or merge without explicit user approval.
+- Keep `.agentworkforce/trajectories/` tracked. Use the existing Trail workflow without copying its CLI manual here.
+- Curate `CHANGELOG.md` for user-visible changes; pending release severity only rises. Omit web-only and internal feature-guardian changes, and keep published-release history accurate.
+- Respect the resident’s writer, coordination and publishing authority. Keep dated task-board entries in their issue tracker, not in ambient instructions.
+- For CLI or SDK work, read the matching `.claude/rules/{cli-modules,sdk,testing,typescript}.md`; discover skill instructions on demand.
 
-## Changelog
+## Agency and guidance
 
-Curate `[Unreleased]` in `CHANGELOG.md` as you land PRs. The root changelog is
-the cross-package, user-facing release narrative for Relay. It follows
-[Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and Semantic
-Versioning.
+- Act autonomously on routine assigned work; ask forgiveness rather than permission. Preserve explicit production, release and credential gates.
+- For guidance, ask the engineering leads, the agent that spawned you, or the layered owner on Agent Relay.
+- Only a truly pressing or blocking question goes to `khaliq-gant` or `will-washburn` (CODEOWNERS) on Agent Relay.
 
-An empty post-release changelog starts with `[Unreleased]`. The first pending
-user-visible change must set the heading to `[Unreleased - Patch]`,
-`[Unreleased - Minor]`, or `[Unreleased - Major]` according to its SemVer
-impact. The pending release level is monotonic (`Patch < Minor < Major`):
-raise the heading when a higher-impact change arrives; never lower it for a
-later lower-impact change, and leave it unchanged for another change at the
-same level. When a release is cut, move the pending entries under the released
-version and restore an empty `[Unreleased]` heading with no release level.
+## Cross-repo context
 
-Changelog entries should be concise and impact-first. Prefer one short bullet
-per user-visible change: name the command, API, schema, or package touched and
-the practical effect. Drop issue/PR links, internal review notes,
-implementation backstory, release-only entries, and "foundation for..." phrasing
-unless that text clearly explains the shipped impact.
+- Before and during changes, understand how this repo fits the wider system; consult its repo map and related-repo docs where available.
+- Check relevant agents’ summaries on Agent Relay and proactively contact owning agents about dependencies, adjacent changes and work in flight.
 
-Use Keep a Changelog sections (`Added`, `Changed`, `Deprecated`, `Removed`,
-`Fixed`, `Security`), plus `Breaking Changes` and `Migration Guidance` when a
-SemVer-major change needs explicit callouts. Do not use generated perspective
-sections such as "Product Perspective", "Technical Perspective", or "Releases".
-Do not add web-only changes to the changelog. Omit unpublished or withdrawn
-versions as release headings; move their shipped user-visible changes into the
-corrected published release.
+## Pull requests
 
-Do not add `relay-feature-guardian` changes to the changelog. It is an internal
-Slack feature-check agent (`.agentworkforce/agents/relay-feature-guardian/`),
-not a user-facing Relay surface, so its fixes never belong in the release
-narrative. The release workflow also skips these commits automatically.
-
-## .trajectories Must Be Tracked
-
-**CRITICAL: Never add `.agentworkforce/trajectories/` to `.gitignore`.**
-
-The `.agentworkforce/trajectories/` directory must remain tracked in git. It contains trajectory records from the `trail` tool that provide valuable context for future agents and humans about past decisions, reasoning, and work history.
-
-## Resident lead
-
-The resident `relay` agent is this repo's lead. Reports to **chief**
-(Will → chief → relay; no engineering department is seated yet). One
-writer: the resident is sole writer of this repo while online; delegates
-use worktrees off origin/main (others — including Khaliq and bots — work
-this repo in parallel). Session start: this file, `git log --oneline -15`,
-relay inbox. ACK / progress / DONE with evidence on every assignment.
-Publishing (npm, crates, GitHub releases) is gated on chief green-light.
-
-### Standing board (2026-07-29 — delete entries as they close)
-
-- Telemetry identity-leak cluster: merged as PR #1363; CLI stayed 11.2.0
-  (no release cut yet — release-train needs chief green-light).
-- Secrets fix train (issue #1379): PR A = #1380 (CLI output/error masking,
-  key off argv) + required companion relayfile#380 which must merge and
-  release FIRST (relayfile scrapes raw secrets from CLI output and error
-  text). PR B (Rust file modes) and PR C (--mcp-config argv→file; must
-  also update .claude/rules/mcp-injection.md) are unstarted — full spec
-  in #1379. #1380 unblocks the fleet-wide credential rotation.
-- Open issue batch: #1378 (fresh `node up` silently mints a workspace),
-  #1381 (teams.json per-agent model pinning gap; `claude:opus` doc syntax
-  is dead), #1382 (attach pairs broker URL/key from different sources;
-  delete chief's orgchart env-unset workaround when fixed), #1383
-  (non-Error rejections render as `[object Object]`).
-- Also pending: 64 dependabot alerts on main (1 critical); skills repo
-  relay-team/relay-pipeline/relay-fanout SKILL.mds still instruct printing
-  raw observer URLs — unsatisfiable once #1380 lands.
-
-<!-- PRPM_MANIFEST_START -->
-
-<skills_system priority="1">
-<usage>
-When users ask you to perform tasks, check if any of the available skills below can help complete the task more effectively. Skills provide specialized capabilities and domain knowledge.
-
-How to use skills (loaded into main context):
-
-- Use the <path> from the skill entry below
-- Invoke: Bash("cat <path>")
-- The skill content will load into your current context
-- Example: Bash("cat .openskills/backend-architect/SKILL.md")
-
-Usage notes:
-
-- Skills share your context window
-- Do not invoke a skill that is already loaded in your context
-  </usage>
-
-<available_skills>
-
-<skill activation="lazy">
-<name>writing-relayflows</name>
-<description>Use when authoring a Relayflows flow (@relayflows/surface / @relayflows/sdk, the v2 journal-based engine, CLI `flows`) in TypeScript or YAML/JSON. Covers the run/llm/agent ladder, human/dispatch/done, verification gates, cli/model resolution, flows.json, and flows check/run/resume refusal shapes. Not for the older @relayflows/core WorkflowBuilder (chained .pattern(&apos;dag&apos;)/.agent()/.step() calls) — see writing-agent-relay-workflows / migrating-persona-to-relayflow instead.</description>
-<path>.openskills/writing-relayflows/SKILL.md</path>
-</skill>
-
-</available_skills>
-</skills_system>
-
-<!-- PRPM_MANIFEST_END -->
-
-<!-- prpm:snippet:start @agent-workforce/trail-snippet@1.1.2 -->
-
-# Trail
-
-Record your work as a trajectory for future agents and humans to follow.
-
-## Usage
-
-If `trail` is installed globally, run commands directly:
-
-```bash
-trail start "Task description"
-```
-
-If not globally installed, use npx to run from local installation:
-
-```bash
-npx trail start "Task description"
-```
-
-## When Starting Work
-
-Start a trajectory when beginning a task:
-
-```bash
-trail start "Implement user authentication"
-```
-
-With external task reference:
-
-```bash
-trail start "Fix login bug" --task "ENG-123"
-```
-
-## Recording Decisions
-
-Record key decisions as you work:
-
-```bash
-trail decision "Chose JWT over sessions" \
-  --reasoning "Stateless scaling requirements"
-```
-
-For minor decisions, reasoning is optional:
-
-```bash
-trail decision "Used existing auth middleware"
-```
-
-**Record decisions when you:**
-
-- Choose between alternatives
-- Make architectural trade-offs
-- Decide on an approach after investigation
-
-## Recording Reflections
-
-Periodically step back and synthesize progress:
-
-```bash
-trail reflect "Workers aligned on auth approach, API layer progressing well" \
-  --confidence 0.8
-```
-
-With focal points and adjustments:
-
-```bash
-trail reflect "Frontend and backend duplicating validation logic" \
-  --focal-points "duplication,ownership" \
-  --adjustments "Reassigning validation to backend team" \
-  --confidence 0.7
-```
-
-**Record reflections when you:**
-
-- Have received several updates and need to synthesize the big picture
-- Notice workers or tasks diverging from the plan
-- Want to course-correct before continuing
-- Are coordinating multiple agents and need to assess overall progress
-
-Reflections differ from decisions: decisions record a specific choice,
-reflections record a higher-level synthesis of what's happening and whether
-the current approach is working.
-
-## Completing Work
-
-When done, complete with a retrospective:
-
-```bash
-trail complete --summary "Added JWT auth with refresh tokens" --confidence 0.85
-```
-
-After completing work, compact the finished trajectory or merged PR into a
-durable summary. When the compacted summary is sufficient, discard the raw
-source trajectories so `.trajectories/index.json` and list output stay focused:
-
-```bash
-trail compact --discard-sources
-# or after a PR merge:
-trail compact --pr 42 --discard-sources
-```
-
-`--discard-sources` removes the source trajectory JSON/Markdown/trace files and
-updates the index. Use it after confirming the compacted artifact is the record
-you want to keep.
-
-**Confidence levels:**
-
-- 0.9+ : High confidence, well-tested
-- 0.7-0.9 : Good confidence, standard implementation
-- 0.5-0.7 : Some uncertainty, edge cases possible
-- <0.5 : Significant uncertainty, needs review
-
-## Abandoning Work
-
-If you need to stop without completing:
-
-```bash
-trail abandon --reason "Blocked by missing API credentials"
-```
-
-## Checking Status
-
-View current trajectory:
-
-```bash
-trail status
-```
-
-## Listing and Viewing Trajectories
-
-List all trajectories:
-
-```bash
-trail list
-```
-
-View a specific trajectory:
-
-```bash
-trail show <trajectory-id>
-```
-
-Export a trajectory (markdown, json, timeline, html):
-
-```bash
-trail export <trajectory-id> --format markdown
-```
-
-## Compacting Trajectories
-
-After a PR merge, compact related trajectories into a single summary and prune
-raw source trajectories when the summary should replace them:
-
-```bash
-trail compact --pr 42 --discard-sources
-```
-
-Compact by branch (finds trajectories with commits not in the specified base branch):
-
-```bash
-trail compact --branch main --discard-sources
-```
-
-Compact by specific commits:
-
-```bash
-trail compact --commits abc123,def456 --discard-sources
-```
-
-Compaction consolidates decisions and creates a grouped summary. Adding
-`--discard-sources` makes the compacted artifact the durable record by removing
-the raw trajectories and their index entries.
-
-## Why Trail?
-
-Your trajectory helps others understand:
-
-- **What** you built (commits show this)
-- **Why** you built it this way (trajectory shows this)
-- **What alternatives** you considered
-- **What challenges** you faced
-
-Future agents can query past trajectories to learn from your decisions.
-
-<!-- prpm:snippet:end @agent-workforce/trail-snippet@1.1.2 -->
+- Open PRs ready for review, never as drafts. If merging requires Khaliq’s OK, use `merge-train:hold`.
+- Immediately subscribe to PR feedback through Agent Relay using [this skill](https://github.com/AgentWorkforce/skills/blob/main/skills/subscribing-relay-webhooks-and-writebacks/SKILL.md), and verify the subscription.
+- Evaluate every finding. Address applicable feedback and explain declined changes; a PR with unaddressed feedback or conflicts is not ready.
+- When ready, loudly alert the CODEOWNERS and the agent that spawned you on Agent Relay.
+- Keep related older PRs moving by contacting their author agent; if unavailable, escalate to the CODEOWNERS or layered owner.
