@@ -226,7 +226,18 @@ fn own_requirement() -> Option<String> {
 #[cfg(test)]
 #[test]
 fn the_running_helper_can_derive_and_validate_its_own_designated_requirement() {
-    assert!(own_requirement().is_some());
+    // arm64 test binaries are normally ad-hoc signed by the linker; an
+    // unsigned x86_64 test binary must remain unavailable, rather than making
+    // the test suite depend on an installed signing identity.
+    let signed = std::process::Command::new("/usr/bin/codesign")
+        .args(["--verify", "--strict"])
+        .arg(std::env::current_exe().unwrap())
+        .output()
+        .unwrap()
+        .status
+        .success();
+    assert_eq!(own_requirement().is_some(), signed);
+    assert_eq!(trusted_relay_helper(std::process::id() as i32), signed);
 }
 
 #[cfg(test)]
