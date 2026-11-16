@@ -70,6 +70,14 @@ export const configSchema = z
      * folders is discarded, so turn this on only for folders the bridge alone uses.
      */
     refreshRepositories: z.boolean().default(false),
+    /**
+     * Fails a running task with `agent_failed` once the core has stopped listing its agent, or
+     * lists it as exited, for `deadWorkerGraceMs` without a result. A core that cannot be
+     * reached is never taken as a dead worker. Off, only the runtime limit ends such a task.
+     */
+    detectDeadWorkers: z.boolean().default(false),
+    /** How long a worker must stay gone, so a late final answer can still land. */
+    deadWorkerGraceMs: POSITIVE.max(HOUR_MS).default(60_000),
   })
   .superRefine((config, ctx) => {
     if (config.worker.agentId === config.chief.agentId) {

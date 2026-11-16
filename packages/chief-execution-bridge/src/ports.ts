@@ -88,6 +88,14 @@ export interface NodePort {
   /** `undefined` when the node may take work now, otherwise a refusal code. */
   preflight(harness: string, node: { id: string; name: string }): Promise<string | undefined>;
   endAgent(name: string): Promise<'ended' | 'not_found' | 'refused'>;
+  /**
+   * The agents the core lists now, by registered name: `exited` when it reports the agent's
+   * session ended, otherwise `live`. `undefined` when the core cannot be reached or its answer
+   * cannot be read, which says nothing about any agent.
+   */
+  listAgents(): Promise<Map<string, WorkerLiveness> | undefined>;
 }
+
+export type WorkerLiveness = 'live' | 'exited';
 
 export type BridgeLog = (event: string, fields?: Record<string, string | number>) => void;

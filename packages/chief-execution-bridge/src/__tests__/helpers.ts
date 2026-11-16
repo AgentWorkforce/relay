@@ -13,6 +13,7 @@ import {
   type SendReport,
   type SpawnReceipt,
   type SpawnRequest,
+  type WorkerLiveness,
 } from '../ports.js';
 import { hash, type Assignment, type WorkerReport } from '../protocol.js';
 import { GitError, type GitRunner } from '../repository.js';
@@ -240,6 +241,15 @@ export class FakeNode implements NodePort {
     this.endAttempts.push(name);
     if (this.endOutcome === 'ended') this.ended.push(name);
     return this.endOutcome;
+  }
+
+  /** What `listAgents` answers; `undefined` is a core that cannot be reached. */
+  agents: Map<string, WorkerLiveness> | undefined = new Map();
+  listCalls = 0;
+
+  async listAgents(): Promise<Map<string, WorkerLiveness> | undefined> {
+    this.listCalls += 1;
+    return this.agents && new Map(this.agents);
   }
 }
 
