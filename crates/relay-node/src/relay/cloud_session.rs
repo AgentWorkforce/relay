@@ -127,6 +127,13 @@ pub trait CloudAccess: Send + Sync + 'static {
     fn credential(&self, _refused: Option<Secret>) -> BoxFuture<'_, Option<(String, Secret)>> {
         Box::pin(async { None })
     }
+
+    /// The desktop's sign-in session bearer (`sh_at_…`), refreshed by the
+    /// plugin if near expiry; `None` when signed out. A gate-only install
+    /// enrols its agents at relaygate with it; it is sent nowhere else.
+    fn device_token(&self) -> BoxFuture<'_, Option<Secret>> {
+        Box::pin(async { None })
+    }
 }
 
 /// Not signed in.

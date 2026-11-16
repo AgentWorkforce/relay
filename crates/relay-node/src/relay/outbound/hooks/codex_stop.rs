@@ -445,6 +445,7 @@ mod tests {
             workspace_id: Some("workspace".into()),
             source: crate::relay::workspace::WorkspaceSource::Cloud,
             control_url: None,
+            gate_url: None,
         });
         (temp, Outbound::new(core, direct), inbox)
     }

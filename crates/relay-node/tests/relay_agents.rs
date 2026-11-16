@@ -5658,3 +5658,620 @@ async fn an_agent_can_keep_messaging_a_session_with_no_person_in_between() {
     .await;
     h.stop().await;
 }
+
+// MARK: Gate-only installs (relaygate)
+
+const DEVICE_TOKEN: &str = "sh_at_test_device_session";
+
+/// A Cloud whose sign-in session hands out a device token, or none when
+/// signed out.
+fn gate_cloud(signed_in: bool) -> Arc<FakeCloud> {
+    let cloud = Arc::new(FakeCloud::new("user-1"));
+    *cloud.device_token.lock().unwrap() = signed_in
+        .then(|| agent_relay_node::relay::workspace::Secret::new(DEVICE_TOKEN.to_string()));
+    cloud
+}
+
+/// The account's workspace is gate-only: no key, the gate's origin.
+fn gate_only_store(home: &Path, fake: &FakeRelaycast, rest: Value) {
+    let mut store = rest;
+    store["cloud"] = json!({"key": "", "baseURL": fake.base_url,
+        "relaygateURL": fake.base_url, "workspaceID": "rw_fake"});
+    std::fs::create_dir_all(home.join("app-data")).unwrap();
+    std::fs::write(
+        home.join("app-data/injectable-agents.json"),
+        store.to_string(),
+    )
+    .unwrap();
+}
+
+async fn gate_harness(signed_in: bool) -> Harness {
+    Harness::start_with_fake(
+        |_| Some(gate_cloud(signed_in)),
+        |home, fake| gate_only_store(home, fake, json!({})),
+    )
+    .await
+}
+
+fn gate_registers(fake: &FakeRelaycast) -> Vec<support::fake_relaycast::Recorded> {
+    fake.calls("POST", "/v1/register")
+}
+
+#[tokio::test]
+async fn a_gate_only_install_registers_its_agents_through_the_gate() {
+    let h = gate_harness(true).await;
+    let mut client = h.client().await;
+    client.ok("status.get", json!({})).await;
+
+    let registered = h
+        .register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    assert_eq!(registered["name"], "codex-api");
+    let registers = gate_registers(&h.fake);
+    assert_eq!(registers.len(), 1);
+    assert_eq!(
+        registers[0].authorization.as_deref(),
+        Some(format!("Bearer {DEVICE_TOKEN}").as_str())
+    );
+    assert_eq!(registers[0].body["name"], "codex-api");
+    // The workspace key path is never taken.
+    assert!(h.fake.calls("POST", "/v1/agents").is_empty());
+
+    let agent = h.fake.agent("codex-api").unwrap();
+    assert!(agent.token.starts_with("rg_"));
+    let store = h.store();
+    let saved = &store["registrations"][0];
+    assert_eq!(saved["agentID"], agent.id);
+    assert_eq!(saved["baseURL"], h.fake.base_url);
+    assert_eq!(saved["workspaceKey"], Value::Null);
+    // The recovery proof is kept with the registration, and is what the
+    // gate holds.
+    let recovery = saved["gate"]["recovery"].as_str().unwrap();
+    assert_eq!(recovery.len(), 43);
+    assert_eq!(h.fake.gate_recovery("codex-api").as_deref(), Some(recovery));
+    assert!(saved["gate"]["expiresAt"].is_string());
+    assert!(saved["gate"]["renewAt"].is_string());
+    assert_eq!(store["tokens"]["codex-api"], agent.token);
+    // Neither the token nor the recovery proof is ever returned.
+    let listed = client.ok("agents.list", json!({})).await;
+    assert!(!listed.to_string().contains("rg_"), "{listed}");
+    assert!(!listed.to_string().contains(recovery), "{listed}");
+
+    // Its push channel goes live with the rg_ token.
+    eventually("push live", || {
+        h.core
+            .status()
+            .push
+            .get("codex-api")
+            .map(|s| format!("{s:?}"))
+            == Some("Live".into())
+    })
+    .await;
+    let minted = h.fake.calls("POST", "/v1/agent/node-token");
+    assert!(minted
+        .iter()
+        .any(|r| r.authorization.as_deref() == Some(format!("Bearer {}", agent.token).as_str())));
+
+    // Its queue is read with the rg_ token, and a DM arrives once.
+    h.fake.seed_agent("alice", "agent", json!({}));
+    let (delivery, _) = h
+        .fake
+        .send_dm("alice", "codex-api", "hello through the gate");
+    eventually("acked", || {
+        delivered(&h.fake, &delivery).as_deref() == Some("acked")
+    })
+    .await;
+    assert_eq!(h.injector.injected().len(), 1);
+    assert!(h
+        .fake
+        .calls("GET", "/v1/deliveries")
+        .iter()
+        .all(|r| r.authorization.as_deref() == Some(format!("Bearer {}", agent.token).as_str())));
+
+    // Removal deletes it at the gate with its own token.
+    client
+        .ok("agents.unregister", json!({"name": "codex-api"}))
+        .await;
+    let deleted = h.fake.calls("DELETE", "/v1/agent");
+    assert_eq!(deleted.len(), 1);
+    assert_eq!(
+        deleted[0].authorization.as_deref(),
+        Some(format!("Bearer {}", agent.token).as_str())
+    );
+    assert!(h.fake.agent("codex-api").is_none());
+    assert!(h.store()["registrations"].as_array().unwrap().is_empty());
+    h.stop().await;
+}
+
+/// The opt-in is the Control API's `urls.relaygateUrl`: without it (every
+/// default and hosted install), nothing here touches relaygate, even when
+/// the sign-in has a device token at hand. Registration (named and
+/// automatic), metadata, the roster, verification, delivery, renewal
+/// passes and removal all stay on the workspace key.
+#[tokio::test]
+async fn a_key_mode_install_never_calls_the_gate() {
+    let h = Harness::start_with_fake(|_| Some(gate_cloud(true)), |_, _| {}).await;
+    let mut client = h.client().await;
+    client.ok("status.get", json!({})).await;
+    let verified = client.ok("workspace.verify", json!({})).await;
+    assert_eq!(verified["verification"], "verified");
+    assert!(!h.fake.calls("GET", "/v1/workspace").is_empty());
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    // An automatic name, too.
+    h.register(&mut client, "claude-terminal", CLAUDE, None)
+        .await;
+    let created = h.fake.calls("POST", "/v1/agents");
+    assert_eq!(created.len(), 2);
+    assert!(created
+        .iter()
+        .all(|r| r.authorization.as_deref() == Some(format!("Bearer {WORKSPACE_KEY}").as_str())));
+    // Its metadata goes with the register, as before.
+    assert_eq!(created[0].body["metadata"]["session_id"], CODEX);
+    let store = h.store();
+    for saved in store["registrations"].as_array().unwrap() {
+        assert_eq!(saved["gate"], Value::Null);
+        assert_eq!(saved["workspaceKey"], WORKSPACE_KEY);
+    }
+    assert!(!store.to_string().contains("gateRecoveries"));
+    assert!(!store.to_string().contains("rg_"));
+
+    // Deliveries are read with the agent's own Relaycast token.
+    h.fake.seed_agent("alice", "agent", json!({}));
+    let (delivery, _) = h.fake.send_dm("alice", "codex-api", "hello by key");
+    eventually("acked", || {
+        delivered(&h.fake, &delivery).as_deref() == Some("acked")
+    })
+    .await;
+
+    client
+        .ok("agents.unregister", json!({"name": "codex-api"}))
+        .await;
+    assert!(h.fake.agent("codex-api").is_none());
+    // Several delivery passes run renewals and cleanups: none go to a gate.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(gate_registers(&h.fake).is_empty());
+    assert!(h.fake.calls("DELETE", "/v1/agent").is_empty());
+    assert!(h.fake.calls("PATCH", "/v1/agent").is_empty());
+    assert!(h.fake.requests().iter().all(|r| !r
+        .authorization
+        .as_deref()
+        .unwrap_or_default()
+        .contains("sh_at_")));
+    assert!(!h.store().to_string().contains("gateRecoveries"));
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn a_signed_out_gate_install_says_so_and_sends_no_bearer() {
+    let h = gate_harness(false).await;
+    let mut client = h.client().await;
+    client.ok("status.get", json!({})).await;
+    let (kind, message) = client
+        .error(
+            "agents.register",
+            json!({"target": {"kind": "codex", "id": CODEX}, "name": "codex-api"}),
+        )
+        .await;
+    assert_eq!(kind, "not_signed_in");
+    assert!(message.contains("sign in"), "{message}");
+    assert!(gate_registers(&h.fake).is_empty());
+    assert!(h
+        .fake
+        .requests()
+        .iter()
+        .all(|r| r.authorization.as_deref() != Some("Bearer ")));
+    assert!(h.store()["registrations"]
+        .as_array()
+        .is_none_or(|r| r.is_empty()));
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn a_taken_gate_name_is_reported_and_never_retried() {
+    let h = gate_harness(true).await;
+    let mut client = h.client().await;
+    client.ok("status.get", json!({})).await;
+
+    // Another person holds the name.
+    h.fake.seed_agent("codex-api", "agent", json!({}));
+    let (kind, message) = client
+        .error(
+            "agents.register",
+            json!({"target": {"kind": "codex", "id": CODEX}, "name": "codex-api"}),
+        )
+        .await;
+    assert_eq!(kind, "conflict");
+    assert!(message.contains("codex-api"), "{message}");
+    assert_eq!(gate_registers(&h.fake).len(), 1);
+
+    // A renewal the gate answers with a taken name stops renewing, and the
+    // reason is on the agent.
+    h.register(&mut client, "claude-terminal", CLAUDE, Some("claude-api"))
+        .await;
+    assert_eq!(gate_registers(&h.fake).len(), 2);
+    h.fake
+        .set_api_error("POST /v1/register", Some((409, "relaygate_name_taken")));
+    h.fake.expire_gate_token("claude-api");
+    eventually("renewal tried", || gate_registers(&h.fake).len() == 3).await;
+    // The 409 is recorded after the fake counts the request: wait for it.
+    let mut agent = Value::Null;
+    for _ in 0..50 {
+        let listed = client.ok("agents.list", json!({})).await;
+        agent = listed["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == "claude-api")
+            .unwrap()
+            .clone();
+        if agent["delivery_error"].as_str().is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        agent["delivery_error"]
+            .as_str()
+            .is_some_and(|e| e.contains("taken")),
+        "{agent}"
+    );
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert_eq!(gate_registers(&h.fake).len(), 3, "not retried");
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn a_gate_token_is_renewed_before_it_expires_and_keeps_the_agent() {
+    let h = gate_harness(true).await;
+    h.fake.set_gate_ttl(Duration::from_secs(2));
+    let mut client = h.client().await;
+    client.ok("status.get", json!({})).await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    let first = h.fake.agent("codex-api").unwrap();
+    let recovery = h.store()["registrations"][0]["gate"]["recovery"].clone();
+
+    // At 80% of its two-second lifetime it registers again.
+    eventually_for("renewed", Duration::from_secs(10), || {
+        gate_registers(&h.fake).len() >= 2
+    })
+    .await;
+    let renewal = &gate_registers(&h.fake)[1];
+    assert_eq!(renewal.body["name"], "codex-api");
+    eventually("saved", || {
+        h.store()["tokens"]["codex-api"] != json!(first.token)
+    })
+    .await;
+    let store = h.store();
+    let renewed = h.fake.agent("codex-api").unwrap();
+    assert_eq!(renewed.id, first.id);
+    assert_eq!(store["registrations"][0]["agentID"], first.id);
+    assert_eq!(store["registrations"][0]["gate"]["recovery"], recovery);
+    assert_eq!(
+        h.fake.gate_recovery("codex-api"),
+        recovery.as_str().map(String::from)
+    );
+
+    // The new token is used from then on.
+    h.fake.set_gate_ttl(Duration::from_secs(3600));
+    h.fake.seed_agent("alice", "agent", json!({}));
+    let (delivery, _) = h.fake.send_dm("alice", "codex-api", "after renewal");
+    eventually_for("acked", Duration::from_secs(10), || {
+        delivered(&h.fake, &delivery).as_deref() == Some("acked")
+    })
+    .await;
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn a_refused_gate_token_on_a_queue_read_registers_once_and_reads_on() {
+    let h = gate_harness(true).await;
+    let mut client = h.client().await;
+    client.ok("status.get", json!({})).await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    let first = h.fake.agent("codex-api").unwrap();
+
+    h.fake.expire_gate_token("codex-api");
+    eventually("re-registered", || gate_registers(&h.fake).len() == 2).await;
+    let renewed = h.fake.agent("codex-api").unwrap();
+    assert_eq!(renewed.id, first.id);
+    assert_ne!(renewed.token, first.token);
+    let refused = h
+        .fake
+        .calls("GET", "/v1/deliveries")
+        .iter()
+        .filter(|r| r.authorization.as_deref() == Some(format!("Bearer {}", first.token).as_str()))
+        .count();
+    assert!(refused >= 1);
+    // The push channel restarts with the new token.
+    eventually("push restarted", || {
+        h.fake
+            .calls("POST", "/v1/agent/node-token")
+            .iter()
+            .any(|r| {
+                r.authorization.as_deref() == Some(format!("Bearer {}", renewed.token).as_str())
+            })
+    })
+    .await;
+
+    // Polling goes on with the new token.
+    h.fake.seed_agent("alice", "agent", json!({}));
+    let (delivery, _) = h.fake.send_dm("alice", "codex-api", "after the 401");
+    eventually("acked", || {
+        delivered(&h.fake, &delivery).as_deref() == Some("acked")
+    })
+    .await;
+    assert!(h
+        .fake
+        .calls("GET", "/v1/deliveries")
+        .iter()
+        .any(|r| r.authorization.as_deref() == Some(format!("Bearer {}", renewed.token).as_str())));
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(gate_registers(&h.fake).len(), 2, "registered once");
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn a_restarted_core_renews_a_saved_gate_agent_with_its_recovery() {
+    const RECOVERY: &str = "saved-recovery-proof-0123456789abcdef";
+    let seeded = std::sync::Mutex::new(None);
+    let h = Harness::start_with_fake(
+        |_| Some(gate_cloud(true)),
+        |home, fake| {
+            let (id, token) = fake.seed_gate_agent("codex-api", RECOVERY);
+            // Saved by an earlier run; its token ran out while it was off.
+            fake.expire_gate_token("codex-api");
+            gate_only_store(
+                home,
+                fake,
+                json!({
+                    "registrations": [{"name": "codex-api", "agentID": id,
+                        "target": {"kind": "codex", "id": CODEX}, "title": "api",
+                        "baseURL": fake.base_url, "registeredAt": "2026-11-15T08:00:00Z",
+                        "machinePrefix": "test-desk",
+                        "gate": {"recovery": RECOVERY,
+                            "expiresAt": "2026-11-15T09:00:00.000Z",
+                            "renewAt": "2026-11-15T08:48:00.000Z"}}],
+                    "tokens": {"codex-api": token},
+                }),
+            );
+            *seeded.lock().unwrap() = Some(id);
+        },
+    )
+    .await;
+    let id = seeded.lock().unwrap().clone().unwrap();
+    let mut client = h.client().await;
+    client.ok("status.get", json!({})).await;
+
+    eventually("renewed", || gate_registers(&h.fake).len() == 1).await;
+    let renewal = &gate_registers(&h.fake)[0];
+    assert_eq!(renewal.body["name"], "codex-api");
+    assert_eq!(
+        renewal.authorization.as_deref(),
+        Some(format!("Bearer {DEVICE_TOKEN}").as_str())
+    );
+    let renewed = h.fake.agent("codex-api").unwrap();
+    assert_eq!(renewed.id, id);
+    eventually("saved", || {
+        h.store()["tokens"]["codex-api"] == json!(renewed.token)
+    })
+    .await;
+    let store = h.store();
+    assert_eq!(store["registrations"][0]["agentID"], id);
+    assert_eq!(store["registrations"][0]["gate"]["recovery"], RECOVERY);
+    assert_ne!(
+        store["registrations"][0]["gate"]["renewAt"],
+        "2026-11-15T08:48:00.000Z"
+    );
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn a_gate_agent_publishes_its_session_metadata_with_its_own_token() {
+    let h = gate_harness(true).await;
+    let mut client = h.client().await;
+    client.ok("status.get", json!({})).await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    let agent = h.fake.agent("codex-api").unwrap();
+    eventually("metadata published", || {
+        h.fake.agent("codex-api").unwrap().metadata["session_id"] == CODEX
+    })
+    .await;
+    let metadata = h.fake.agent("codex-api").unwrap().metadata;
+    assert_eq!(metadata["session_kind"], "codex");
+    assert_eq!(metadata["source"], "relay-desktop");
+    assert!(metadata["host"].is_string(), "{metadata}");
+    let patches = h.fake.calls("PATCH", "/v1/agent");
+    assert!(!patches.is_empty());
+    assert!(patches
+        .iter()
+        .all(|r| r.authorization.as_deref() == Some(format!("Bearer {}", agent.token).as_str())));
+    // Never with a workspace key, which a gate-only install does not have.
+    assert!(h.fake.calls("PATCH", "/v1/agents/codex-api").is_empty());
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn a_gate_only_workspace_verifies_without_a_key() {
+    let h = gate_harness(true).await;
+    let mut client = h.client().await;
+    client.ok("status.get", json!({})).await;
+    let verified = client.ok("workspace.verify", json!({})).await;
+    assert_eq!(verified["verification"], "verified", "{verified}");
+    assert_eq!(verified["workspace_id"], "rw_fake");
+    // relaygate serves no workspace read, and there is no key to send.
+    assert!(h.fake.calls("GET", "/v1/workspace").is_empty());
+    h.stop().await;
+
+    let h = gate_harness(false).await;
+    let mut client = h.client().await;
+    client.ok("status.get", json!({})).await;
+    let (kind, _) = client.error("workspace.verify", json!({})).await;
+    assert_eq!(kind, "not_signed_in");
+    assert!(h.fake.calls("GET", "/v1/workspace").is_empty());
+    h.stop().await;
+}
+
+// relaygate keeps a deleted name for its owner with the same recovery
+// proof: registering it again here recovers the same agent.
+#[tokio::test]
+async fn a_removed_gate_agent_registers_again_as_the_same_agent() {
+    let h = gate_harness(true).await;
+    let mut client = h.client().await;
+    client.ok("status.get", json!({})).await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    let first = h.fake.agent("codex-api").unwrap();
+    client
+        .ok("agents.unregister", json!({"name": "codex-api"}))
+        .await;
+    assert!(h.fake.agent("codex-api").is_none());
+
+    let again = h
+        .register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    assert_eq!(again["name"], "codex-api");
+    let renewed = h.fake.agent("codex-api").unwrap();
+    assert_eq!(renewed.id, first.id);
+    let registers = gate_registers(&h.fake);
+    assert_eq!(registers.len(), 2);
+    assert_eq!(registers[0].body["recovery"], registers[1].body["recovery"]);
+    let store = h.store();
+    assert_eq!(store["registrations"][0]["agentID"], first.id);
+    assert_eq!(
+        store["registrations"][0]["gate"]["recovery"],
+        registers[0].body["recovery"]
+    );
+    h.stop().await;
+}
+
+// The recovery proof is saved before the register goes out: when relaygate
+// enrolled the name but its answer was lost, the next attempt sends the
+// same proof and gets the agent, not a taken name.
+#[tokio::test]
+async fn a_lost_register_answer_is_recovered_by_the_next_attempt() {
+    let h = gate_harness(true).await;
+    let mut client = h.client().await;
+    client.ok("status.get", json!({})).await;
+    h.fake.lose_gate_register_replies(true);
+    let (kind, _) = client
+        .error(
+            "agents.register",
+            json!({"target": {"kind": "codex", "id": CODEX}, "name": "codex-api"}),
+        )
+        .await;
+    assert_eq!(kind, "relaycast_unreachable");
+    let enrolled = h.fake.agent("codex-api").expect("the gate enrolled it");
+    let kept = h.store()["gateRecoveries"].clone();
+    assert_eq!(kept[0]["name"], "codex-api");
+    assert_eq!(kept[0]["gateURL"], h.fake.base_url);
+
+    h.fake.lose_gate_register_replies(false);
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    let registers = gate_registers(&h.fake);
+    assert_eq!(registers.len(), 2);
+    assert_eq!(registers[0].body["recovery"], registers[1].body["recovery"]);
+    assert_eq!(registers[0].body["recovery"], kept[0]["recovery"]);
+    assert_eq!(h.fake.agent("codex-api").unwrap().id, enrolled.id);
+    h.stop().await;
+}
+
+// A refused token whose renewal fails for now (an outage) does not drop
+// the registration: the agent may still be at the gate, and this computer
+// keeps what reaches it, so removal can be retried.
+#[tokio::test]
+async fn removal_keeps_a_gate_agent_whose_token_cannot_be_renewed_yet() {
+    let h = gate_harness(true).await;
+    let mut client = h.client().await;
+    client.ok("status.get", json!({})).await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    h.fake
+        .set_api_error("POST /v1/register", Some((503, "relaygate_unavailable")));
+    h.fake.expire_gate_token("codex-api");
+    let (kind, message) = client
+        .error("agents.unregister", json!({"name": "codex-api"}))
+        .await;
+    assert_eq!(kind, "relaycast_unreachable", "{message}");
+    assert!(message.contains("kept"), "{message}");
+    let store = h.store();
+    assert_eq!(store["registrations"][0]["name"], "codex-api");
+    assert!(store["tokens"]["codex-api"].is_string());
+    assert!(store["registrations"][0]["gate"]["recovery"].is_string());
+    assert!(h.fake.agent("codex-api").is_some());
+    h.stop().await;
+}
+
+// A renewal in flight when removal starts finishes first; removal then
+// deletes the agent with the renewed token, and nothing registers it again.
+#[tokio::test]
+async fn a_renewal_in_flight_cannot_bring_back_a_removed_gate_agent() {
+    let h = gate_harness(true).await;
+    h.fake.set_gate_ttl(Duration::from_secs(2));
+    let mut client = h.client().await;
+    client.ok("status.get", json!({})).await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    let first = h.fake.agent("codex-api").unwrap();
+    h.fake.set_gate_ttl(Duration::from_secs(3600));
+    let release = h.fake.hold("POST /v1/register");
+    eventually_for("renewal parked", Duration::from_secs(10), || {
+        h.fake.held("POST /v1/register") >= 1
+    })
+    .await;
+
+    let (removed, ()) = tokio::join!(
+        client.ok("agents.unregister", json!({"name": "codex-api"})),
+        async {
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            assert!(
+                h.fake.calls("DELETE", "/v1/agent").is_empty(),
+                "removal waits for the renewal"
+            );
+            release.send(true).unwrap();
+        }
+    );
+    let _ = removed;
+    let deleted = h.fake.calls("DELETE", "/v1/agent");
+    assert_eq!(deleted.len(), 1);
+    assert_ne!(
+        deleted[0].authorization.as_deref(),
+        Some(format!("Bearer {}", first.token).as_str()),
+        "deleted with the renewed token"
+    );
+    assert!(h.fake.agent("codex-api").is_none());
+    assert!(h.store()["registrations"]
+        .as_array()
+        .is_none_or(|r| r.is_empty()));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(h.fake.agent("codex-api").is_none(), "not registered again");
+    h.stop().await;
+}
+
+// A gate that answers an agent PATCH with 429 is not patched again before
+// its wait is over: the metadata and presence stay pending meanwhile.
+#[tokio::test]
+async fn a_rate_limited_gate_update_waits_before_it_is_sent_again() {
+    let h = gate_harness(true).await;
+    let mut client = h.client().await;
+    client.ok("status.get", json!({})).await;
+    h.fake
+        .set_api_error("PATCH /v1/agent", Some((429, "rate_limited")));
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    eventually("first patch", || {
+        !h.fake.calls("PATCH", "/v1/agent").is_empty()
+    })
+    .await;
+    // Many delivery passes later, still only the one.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(h.fake.calls("PATCH", "/v1/agent").len(), 1);
+    assert!(h.store()["pendingNameMarkers"]
+        .as_array()
+        .is_some_and(|p| p.iter().any(|n| n == "codex-api")));
+    h.stop().await;
+}

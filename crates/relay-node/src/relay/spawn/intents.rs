@@ -147,6 +147,7 @@ impl Intent {
             alias: None,
             retired_aliases: None,
             cleared: None,
+            gate: None,
             spawn: Some(SpawnOrigin {
                 node_id: node_id.to_string(),
                 node_name: node_name.to_string(),

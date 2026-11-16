@@ -63,7 +63,7 @@ pub(super) fn relayfile_status_error(
 /// `Retry-After` as seconds from `now`: either delay-seconds or an
 /// HTTP-date (RFC 9110 §10.2.3). A date already past means retry now; an
 /// unreadable value is dropped.
-fn retry_after_seconds(value: &str, now: chrono::DateTime<chrono::Utc>) -> Option<u64> {
+pub(crate) fn retry_after_seconds(value: &str, now: chrono::DateTime<chrono::Utc>) -> Option<u64> {
     let value = value.trim();
     if let Ok(secs) = value.parse::<u64>() {
         return Some(secs);

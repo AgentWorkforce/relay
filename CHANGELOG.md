@@ -9,17 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `agent-relay-node`: self-hosted installs whose Control API returns `urls.relaygateUrl` (relaygate gate-only mode) register each agent at relaygate with the person's device token instead of the shared workspace key. Agents renew their relaygate token before it expires, publish their session details and presence, read the roster and are removed through the gate. A removed name registers again as the same agent. Installs without a relaygate URL, including default and hosted ones, are unchanged.
+
+### Fixed
+
+- `@agent-relay/events-shim`: a webhook post can no longer reach agents other than the one its inbox wakes. Posts forwarded to Agent Relay used to carry any `@name` from the post body, so the relay delivered them to that agent too, including Capy threads, Replicas and Amp threads in the workspace. Every `@` that a name follows in forwarded text, nudges included, now has an invisible word joiner after it: the agent reads the same text, and e-mail addresses still read normally.
+
+## [18.8.0] - 2026-11-16
+
+### Added
+
 - `@agent-relay/events-shim setup --droid`, `setup --cursor` and `setup --amp` wake an idle Factory Droid, Cursor CLI or Amp session with each webhook post, without Agent Relay. The session must have finished one turn first; see the package README for the limits. Before, Cursor read posts only when asked.
 - `@agent-relay/events-shim setup --copilot` and `setup --gemini` now wake an idle GitHub Copilot CLI or Gemini CLI session with each webhook post, without Agent Relay. The session must have finished one turn first; see the package README for the limits.
 - `agent-relay-node`: spawn capabilities publish recent saved absolute working folders after the person enables teammate spawning, so remote spawn dialogs can offer valid folders on the target machine without exposing paths by default.
 
 ### Fixed
 
-- `@agent-relay/events-shim`: a webhook post can no longer reach agents other than the one its inbox wakes. Posts forwarded to Agent Relay used to carry any `@name` from the post body, so the relay delivered them to that agent too, including Capy threads, Replicas and Amp threads in the workspace. Every `@` that a name follows in forwarded text, nudges included, now has an invisible word joiner after it: the agent reads the same text, and e-mail addresses still read normally.
+- `agent-relay-node`: `messages.history` no longer rereads every direct conversation on each poll, and while Relaycast asks the workspace to slow down, `messages.history` and `messages.conversations` stop at once with a retryable `rate_limited` error instead of adding load.
 - `agent-relay-node`: messages to open Muse sessions are delivered. The courier that carries them now runs Muse on its own data directory, the only place Muse registers the session that delivery waits for; every message used to time out.
 - `agent-relay-node`: `POST /integrations/subscribe` now says why relayfile refused. A workspace at relayfile's webhook subscription limit returns 429 `plan_limit_exceeded` (not retryable, with the limit, plan and correlation id) instead of 502 `integration_failed` "relayfile returned HTTP 429."; a relayfile rate limit returns 429 `rate_limited` and repeats relayfile's `Retry-After` (in seconds, also when relayfile sends a date).
 - `agent-relay-node`: an agent removed because its session was archived, ended or excluded from upload now unsubscribes its integrations first. Before, its relayfile webhook and reply subscriptions stayed live for good, which filled the workspace's webhook subscription cap. If the cleanup cannot finish (the agent store cannot be saved, the service is unreachable), the agent is kept and the cleanup retried.
 - `agent-relay-node`: a build made for a self-hosted site can join a public Relay Connect invitation on agentrelay.com as a guest. It used to refuse every such link with `invalid_link`. Links from any other site are still refused.
+- `agent-relay-node`: direct-node sockets back off when the Relaycast gateway is overloaded instead of reconnecting every few seconds. Reconnects wait up to about 4 minutes; a 429 or 503 upgrade, or a 1013 or 1008 close, pauses the workspace's new sockets for the server's `Retry-After`; another install holding the node (`provider_instance_conflict`) means a 30-60 s wait, or the one asked for. `node.register` now names this install's provider instance, and a node token it refuses is replaced.
 
 ## [18.7.3] - 2026-11-15
 

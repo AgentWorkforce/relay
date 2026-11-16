@@ -36,6 +36,19 @@
 //!   `MessageWithMeta` has no `agent_address` or `thread_id`.
 //! - `RelayCast` and `AgentClient` cannot set the origin client and version;
 //!   the clients here send `relay-desktop` and the desktop's version.
+//!
+//! The relaygate calls (`POST /v1/register`, `PATCH`/`DELETE /v1/agent`)
+//! are in [`gate`]: they are relaygate's, not Relaycast's, so no SDK will
+//! have them, and they are read outside the SDK's `HttpClient` (one attempt,
+//! either answer shape, both forms of `Retry-After`).
+
+mod gate;
+pub use gate::{
+    gate_delete_self, gate_patch_self, gate_register, new_recovery, GateError, GateRegistration,
+    GateSelfPatch, GATE_DENIED, GATE_NAME_SCOPE, GATE_NAME_TAKEN, GATE_UNAUTHENTICATED,
+};
+// For the agent-token calls to classify an expired `rg_` token by (re-register).
+pub(crate) use gate::is_gate_unauthenticated;
 
 use crate::relay::diagnostic_http::HttpClient;
 use crate::relay::workspace::{Secret, Workspace, WorkspaceRoute};
@@ -43,6 +56,7 @@ use futures_util::{SinkExt, StreamExt};
 use relaycast::types::DirectNodeToken;
 use relaycast::{AgentClient, ClientOptions, RelayError, RequestOptions};
 use serde_json::{json, Map, Value};
+use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
@@ -521,7 +535,15 @@ fn node_socket(base_url: &str, node_token: Option<&str>, version: &str) -> Strin
 }
 
 /// The first frame on a direct node socket.
-pub fn register_frame(node: &DirectNodeToken, version: &str, machine_id: &str) -> Value {
+/// `instance_id` names this install's provider for the node, so two
+/// installs serving one agent are told apart instead of superseding each
+/// other.
+pub fn register_frame(
+    node: &DirectNodeToken,
+    version: &str,
+    machine_id: &str,
+    instance_id: &str,
+) -> Value {
     json!({
         "v": 1,
         "id": format!("register-{}", node.node_id),
@@ -534,6 +556,7 @@ pub fn register_frame(node: &DirectNodeToken, version: &str, machine_id: &str) -
         "tags": ["implicit", "direct", "sdk"],
         "version": format!("relay-desktop/{version}"),
         "resume_cursor": null,
+        "provider": {"name": "default", "instance_id": instance_id},
     })
 }
 
@@ -568,6 +591,55 @@ pub fn is_register_reply(frame: &Value) -> bool {
             .is_some_and(|id| id.starts_with("register-"))
 }
 
+/// Whether a frame is Relaycast refusing this socket's `node.register`.
+pub fn is_register_refusal(frame: &Value) -> bool {
+    matches!(frame["type"].as_str(), Some("reply" | "error"))
+        && frame["ok"] == false
+        && frame["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("register-"))
+}
+
+/// Whether a register refusal says another install's provider instance
+/// holds the node (409 `provider_instance_conflict`).
+pub fn is_instance_conflict(frame: &Value) -> bool {
+    let code = refusal_code(frame);
+    let status = frame["status"]
+        .as_u64()
+        .or_else(|| frame["error"]["status"].as_u64());
+    code == Some("provider_instance_conflict") || status == Some(409)
+}
+
+/// The least wait a register refusal asks for: `retry_after_ms`, or
+/// `retry_after` in seconds, on the frame or its `error`.
+pub fn refusal_retry_after(frame: &Value) -> Option<Duration> {
+    retry_after_of(frame).or_else(|| retry_after_of(&frame["error"]))
+}
+
+fn retry_after_of(value: &Value) -> Option<Duration> {
+    if let Some(ms) = value["retry_after_ms"].as_u64() {
+        return Some(Duration::from_millis(ms));
+    }
+    let seconds = &value["retry_after"];
+    seconds.as_u64().map(Duration::from_secs).or_else(|| {
+        // A wait too long for a `Duration` (`1e100`) is the longest one,
+        // as an integer's would be; callers cap it.
+        seconds
+            .as_f64()
+            .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+            .map(|seconds| {
+                Duration::try_from_secs_f64(seconds).unwrap_or(Duration::from_secs(u64::MAX))
+            })
+    })
+}
+
+/// The error code of a register refusal, on the frame or its `error`.
+pub fn refusal_code(frame: &Value) -> Option<&str> {
+    frame["code"]
+        .as_str()
+        .or_else(|| frame["error"]["code"].as_str())
+}
+
 pub type NodeSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// Opens the socket and sends `node.register`. The caller drives the rest.
@@ -576,10 +648,12 @@ pub async fn open_node_socket(
     node: &DirectNodeToken,
     version: &str,
     machine_id: &str,
+    instance_id: &str,
 ) -> Result<NodeSocket, tokio_tungstenite::tungstenite::Error> {
     let url = node_socket_url(base_url, &node.token, version);
     let (mut socket, _) = crate::relay::websocket_tls::connect(url, None).await?;
-    send_frame(&mut socket, &register_frame(node, version, machine_id)).await?;
+    let register = register_frame(node, version, machine_id, instance_id);
+    send_frame(&mut socket, &register).await?;
     Ok(socket)
 }
 
@@ -595,16 +669,92 @@ pub async fn send_frame(
 pub async fn next_frame(
     socket: &mut NodeSocket,
 ) -> Option<Result<Value, tokio_tungstenite::tungstenite::Error>> {
+    match next_read(socket).await {
+        NodeRead::Frame(value) => Some(Ok(value)),
+        NodeRead::Closed(_) => None,
+        NodeRead::Failed(error) => Some(Err(error)),
+    }
+}
+
+/// What the next read of a node socket brought.
+pub enum NodeRead {
+    Frame(Value),
+    /// The socket ended: with the peer's close frame, if it sent one.
+    Closed(Option<NodeClose>),
+    Failed(tokio_tungstenite::tungstenite::Error),
+}
+
+/// The close frame a peer ended a node socket with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NodeClose {
+    pub code: u16,
+    pub reason: String,
+}
+
+impl NodeClose {
+    /// Relaycast closing a socket whose `node.register` lost to another
+    /// install's provider instance, or held during a flap: 4009
+    /// `provider_instance_conflict`. 4001 (registration rejected) and 4000
+    /// (superseded by a newer socket of this instance) are not.
+    pub fn is_instance_conflict(&self) -> bool {
+        self.code == INSTANCE_CONFLICT_CLOSE
+    }
+
+    /// Relaycast's close after any refused `node.register`: 4009 or 4001.
+    pub fn is_register_refusal(&self) -> bool {
+        matches!(self.code, INSTANCE_CONFLICT_CLOSE | REGISTER_REJECTED_CLOSE)
+    }
+
+    /// The least wait the close's reason asks for, when it is a JSON object
+    /// with `retry_after_ms` or `retry_after`, or carries
+    /// `retry_after_ms=<n>` / `retry_after=<n>`.
+    pub fn retry_after(&self) -> Option<Duration> {
+        if let Ok(reason) = serde_json::from_str::<Value>(&self.reason) {
+            if let Some(wait) = refusal_retry_after(&reason) {
+                return Some(wait);
+            }
+        }
+        let number = |key: &str| {
+            let at = self.reason.find(key)? + key.len();
+            let rest = self.reason[at..].trim_start_matches([' ', '=', ':', '"']);
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse::<u64>().ok()
+        };
+        number("retry_after_ms")
+            .map(Duration::from_millis)
+            .or_else(|| {
+                // `retry_after_ms` also contains `retry_after`.
+                (!self.reason.contains("retry_after_ms"))
+                    .then(|| number("retry_after"))
+                    .flatten()
+                    .map(Duration::from_secs)
+            })
+    }
+}
+
+/// Relaycast's close code for a `provider_instance_conflict` refusal.
+pub const INSTANCE_CONFLICT_CLOSE: u16 = 4009;
+/// Relaycast's close code for any other refused `node.register`.
+pub const REGISTER_REJECTED_CLOSE: u16 = 4001;
+
+/// [`next_frame`], keeping the close frame the peer ended the socket with.
+pub async fn next_read(socket: &mut NodeSocket) -> NodeRead {
     loop {
-        match socket.next().await? {
-            Ok(Message::Text(text)) => {
+        match socket.next().await {
+            None => return NodeRead::Closed(None),
+            Some(Ok(Message::Text(text))) => {
                 if let Ok(value) = serde_json::from_str::<Value>(&text) {
-                    return Some(Ok(value));
+                    return NodeRead::Frame(value);
                 }
             }
-            Ok(Message::Close(_)) => return None,
-            Ok(_) => {}
-            Err(error) => return Some(Err(error)),
+            Some(Ok(Message::Close(frame))) => {
+                return NodeRead::Closed(frame.map(|frame| NodeClose {
+                    code: u16::from(frame.code),
+                    reason: frame.reason.into_owned(),
+                }))
+            }
+            Some(Ok(_)) => {}
+            Some(Err(error)) => return NodeRead::Failed(error),
         }
     }
 }
@@ -734,12 +884,16 @@ mod tests {
         let origin = crate::relay::workspace::validated_base_url("https://[2001:db8::1]").unwrap();
         assert!(node_socket_url(&origin, "t", "1").starts_with("wss://[2001:db8::1]/v1/node/ws?"));
 
-        let register = register_frame(&node(), "1", "desk-agent-1");
+        let register = register_frame(&node(), "1", "desk-agent-1", "desk-agent-1-install-a");
         assert_eq!(register["type"], "node.register");
         assert_eq!(register["id"], "register-node_direct_agent-1");
         assert_eq!(register["machine_id"], "desk-agent-1");
         assert_eq!(register["version"], "relay-desktop/1");
         assert_eq!(register["resume_cursor"], Value::Null);
+        assert_eq!(
+            register["provider"],
+            json!({"name": "default", "instance_id": "desk-agent-1-install-a"})
+        );
 
         let heartbeat = heartbeat_frame(&node(), "1");
         assert_eq!(heartbeat["type"], "node.heartbeat");
@@ -760,5 +914,99 @@ mod tests {
         assert!(!is_register_reply(
             &json!({"type":"deliver","id":"register-x"})
         ));
+    }
+
+    #[test]
+    fn a_refused_registration_is_told_apart_from_an_instance_conflict() {
+        let conflict = json!({"v": 1, "type": "reply", "id": "register-node_direct_a",
+            "ok": false, "error": {"code": "provider_instance_conflict", "status": 409}});
+        assert!(is_register_refusal(&conflict));
+        assert!(is_instance_conflict(&conflict));
+        let by_status = json!({"type": "error", "id": "register-node_direct_a",
+            "ok": false, "status": 409});
+        assert!(is_register_refusal(&by_status));
+        assert!(is_instance_conflict(&by_status));
+        let other = json!({"type": "reply", "id": "register-node_direct_a",
+            "ok": false, "code": "node_token_invalid"});
+        assert!(is_register_refusal(&other));
+        assert!(!is_instance_conflict(&other));
+        assert!(!is_register_refusal(
+            &json!({"type": "reply", "id": "register-node_direct_a", "ok": true})
+        ));
+        assert!(!is_register_refusal(
+            &json!({"type": "reply", "id": "presence-1", "ok": false})
+        ));
+        assert_eq!(refusal_retry_after(&conflict), None);
+        let hinted = json!({"type": "reply", "id": "register-node_direct_a", "ok": false,
+            "error": {"code": "provider_instance_conflict", "retry_after_ms": 45000}});
+        assert_eq!(refusal_retry_after(&hinted), Some(Duration::from_secs(45)));
+        let in_seconds = json!({"type": "error", "id": "register-node_direct_a", "ok": false,
+            "code": "provider_instance_conflict", "retry_after": 31});
+        assert_eq!(
+            refusal_retry_after(&in_seconds),
+            Some(Duration::from_secs(31))
+        );
+        assert_eq!(refusal_code(&other), Some("node_token_invalid"));
+        assert_eq!(refusal_code(&conflict), Some("provider_instance_conflict"));
+    }
+
+    #[test]
+    fn a_retry_after_too_long_for_a_duration_is_the_longest_wait() {
+        for huge in ["1e100", "1e30", "2e19"] {
+            let frame: Value = serde_json::from_str(&format!(
+                r#"{{"type": "reply", "id": "register-a", "ok": false, "retry_after": {huge}}}"#
+            ))
+            .unwrap();
+            assert_eq!(
+                refusal_retry_after(&frame),
+                Some(Duration::from_secs(u64::MAX)),
+                "{huge}"
+            );
+        }
+        let close = NodeClose {
+            code: 4009,
+            reason: r#"{"retry_after": 1e100}"#.into(),
+        };
+        assert_eq!(close.retry_after(), Some(Duration::from_secs(u64::MAX)));
+        assert_eq!(
+            refusal_retry_after(&json!({"retry_after": 1.5})),
+            Some(Duration::from_millis(1500))
+        );
+    }
+
+    #[test]
+    fn a_conflict_close_is_told_apart_from_a_supersede() {
+        let close = |code: u16, reason: &str| NodeClose {
+            code,
+            reason: reason.into(),
+        };
+        assert!(close(4009, "provider_instance_conflict").is_instance_conflict());
+        assert!(close(4009, "").is_instance_conflict());
+        assert!(!close(4001, "node registration rejected").is_instance_conflict());
+        assert!(!close(4000, "superseded").is_instance_conflict());
+        assert!(!close(1013, "conflict").is_instance_conflict());
+        assert!(close(4009, "").is_register_refusal());
+        assert!(close(4001, "node registration rejected").is_register_refusal());
+        assert!(!close(4000, "superseded").is_register_refusal());
+        assert_eq!(
+            close(4009, "provider_instance_conflict").retry_after(),
+            None
+        );
+        assert_eq!(
+            close(
+                4009,
+                r#"{"code":"provider_instance_conflict","retry_after_ms":45000}"#
+            )
+            .retry_after(),
+            Some(Duration::from_secs(45))
+        );
+        assert_eq!(
+            close(4009, "provider_instance_conflict retry_after_ms=1500").retry_after(),
+            Some(Duration::from_millis(1500))
+        );
+        assert_eq!(
+            close(4009, "provider_instance_conflict; retry_after: 40").retry_after(),
+            Some(Duration::from_secs(40))
+        );
     }
 }

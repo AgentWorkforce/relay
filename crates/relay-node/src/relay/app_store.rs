@@ -52,6 +52,9 @@ pub struct CloudWorkspace {
     pub base_url: String,
     pub workspace_id: Option<String>,
     pub name: Option<String>,
+    /// The relaygate origin of a gate-only install, as stored (unvalidated;
+    /// [`crate::relay::workspace::resolve_cloud`] validates it).
+    pub gate_url: Option<String>,
 }
 
 /// Reads the account's workspace from the store in `data_dir`. A missing or
@@ -67,6 +70,7 @@ pub fn decode_cloud(bytes: &[u8]) -> Option<CloudWorkspace> {
         base_url: cloud.base_url,
         workspace_id: cloud.workspace_id,
         name: cloud.name,
+        gate_url: cloud.gate_url,
     })
 }
 
@@ -87,6 +91,18 @@ mod tests {
             decode_cloud(br#"{"workspaceKey":"rk_live_pasted000"}"#),
             None
         );
+    }
+
+    #[test]
+    fn reads_a_gate_url_and_none_without_one() {
+        let cloud = decode_cloud(
+            br#"{"cloud":{"key":"","baseURL":"https://cast.corp.test","relaygateURL":"https://gate.corp.test"}}"#,
+        )
+        .unwrap();
+        assert_eq!(cloud.gate_url.as_deref(), Some("https://gate.corp.test"));
+        assert_eq!(cloud.key.expose(), "");
+        let cloud = decode_cloud(br#"{"cloud":{"key":"rk_live_account00"}}"#).unwrap();
+        assert_eq!(cloud.gate_url, None);
     }
 
     // Ported from InjectableAgentsTests.testASignInKeyStoredBy2026_09_5MovesToTheAccountSlot.

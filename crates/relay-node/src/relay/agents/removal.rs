@@ -86,32 +86,17 @@ impl Core {
         if mode.removes_integrations() {
             self.remove_integrations(&registration, name).await?;
         }
-        let key = self.key_for(&registration).ok_or_else(|| key_gone(name))?;
-        let mut removed = self.remove_remotely(&registration, name, &key).await;
-        if let Err(error) = &removed {
-            match self.prove_rejected_key(&registration, &key, error).await {
-                KeyProof::Current(current) => {
-                    removed = self.remove_remotely(&registration, name, &current).await;
-                }
-                KeyProof::Unreachable => {
-                    self.leave_unreachable(&registration, name).await;
-                    removed = Ok(());
-                }
-                KeyProof::Unknown => {}
-            }
+        // Held until the registration is dropped: a renewal can neither
+        // run between the gate's delete and that, nor register it again.
+        let _renewals = match &registration.gate {
+            Some(_) => Some(self.gate_locks.get(name).lock_owned().await),
+            None => None,
+        };
+        if registration.gate.is_some() {
+            self.remove_at_gate(&registration, name).await?;
+        } else {
+            self.remove_with_key(&registration, name).await?;
         }
-        removed.map_err(|error| {
-            let mut mapped = RpcError::from_relaycast(&error);
-            let status = match &error {
-                relaycast::RelayError::Api { status, .. } => format!(" (HTTP {status})"),
-                _ => String::new(),
-            };
-            mapped.message = format!(
-                "Could not remove @{name} from Agent Relay{status}. {} The registration was kept; retry when the connection is working.",
-                mapped.message,
-            );
-            mapped
-        })?;
         self.store
             .update(|store| store.remove(name))
             .map_err(|error| {
@@ -122,6 +107,7 @@ impl Core {
             })?;
         self.stop_spawned(&registration);
         self.forget_agent_and_alias(&registration);
+        self.forget_gate_renewal(name);
         self.sync_agents().await;
         self.hub.invalidated(Listing::Agents);
         let left = match registration.alias_name() {
@@ -130,6 +116,41 @@ impl Core {
         };
         self.hub.activity(Level::Info, left);
         Ok(())
+    }
+
+    /// Removes a Relaycast-key agent from Relaycast with the workspace
+    /// key, settling a rejected key first.
+    async fn remove_with_key(
+        &self,
+        registration: &Registration,
+        name: &str,
+    ) -> Result<(), RpcError> {
+        let key = self.key_for(registration).ok_or_else(|| key_gone(name))?;
+        let mut removed = self.remove_remotely(registration, name, &key).await;
+        if let Err(error) = &removed {
+            match self.prove_rejected_key(registration, &key, error).await {
+                KeyProof::Current(current) => {
+                    removed = self.remove_remotely(registration, name, &current).await;
+                }
+                KeyProof::Unreachable => {
+                    self.leave_unreachable(registration, name).await;
+                    removed = Ok(());
+                }
+                KeyProof::Unknown => {}
+            }
+        }
+        removed.map_err(|error| {
+                let mut mapped = RpcError::from_relaycast(&error);
+                let status = match &error {
+                    relaycast::RelayError::Api { status, .. } => format!(" (HTTP {status})"),
+                    _ => String::new(),
+                };
+                mapped.message = format!(
+                    "Could not remove @{name} from Agent Relay{status}. {} The registration was kept; retry when the connection is working.",
+                    mapped.message,
+                );
+                mapped
+            })
     }
 
     /// Takes an agent whose saved key's workspace is out of reach off this
