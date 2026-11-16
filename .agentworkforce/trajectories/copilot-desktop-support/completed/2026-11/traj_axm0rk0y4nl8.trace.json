@@ -1,0 +1,325 @@
+{
+  "version": "1.0.0",
+  "id": "befbbcd9-1830-4630-b1d9-031a13f662d2",
+  "timestamp": "2026-11-16T06:33:07.598Z",
+  "trajectory": "traj_axm0rk0y4nl8",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/compacted/copilot-stop-wake-20261115.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 51,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".agentworkforce/trajectories/compacted/copilot-stop-wake-20261115.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 23,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 7,
+              "end_line": 19,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/relay-node/src/relay/cli/copilot_hook.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 20,
+              "end_line": 30,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/relay-node/src/relay/copilot.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 9,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/relay-node/src/relay/copilot/desktop.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 151,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/relay-node/src/relay/copilot/proof.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 27,
+              "end_line": 35,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/relay-node/src/relay/copilot/sessions.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 17,
+              "end_line": 24,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            },
+            {
+              "start_line": 41,
+              "end_line": 47,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            },
+            {
+              "start_line": 228,
+              "end_line": 243,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/relay-node/src/relay/copilot/stop_wait.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 37,
+              "end_line": 77,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/relay-node/src/relay/copilot/stop_wait/tests.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 32,
+              "end_line": 122,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/relay-node/src/relay/process.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 115,
+              "end_line": 127,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            },
+            {
+              "start_line": 682,
+              "end_line": 689,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            },
+            {
+              "start_line": 925,
+              "end_line": 937,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/relay-node/src/relay/process/fake.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 36,
+              "end_line": 43,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            },
+            {
+              "start_line": 101,
+              "end_line": 115,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/relay-node/src/relay/process/macos_signing.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 34,
+              "end_line": 48,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            },
+            {
+              "start_line": 109,
+              "end_line": 123,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            },
+            {
+              "start_line": 141,
+              "end_line": 150,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            },
+            {
+              "start_line": 156,
+              "end_line": 162,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/relay-node/src/relay/process/snapshot.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 156,
+              "end_line": 167,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/relay-node/src/relay/store/session_kind.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 76,
+              "end_line": 82,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "docs/harnesses/copilot-vscode.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            },
+            {
+              "start_line": 27,
+              "end_line": 56,
+              "revision": "20b17cb5788a6c73f3302738c7b02daa9ae3281c"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
