@@ -205,6 +205,9 @@ pub struct Core {
     /// agent, and when each may be tried again.
     pub(crate) gate_locks: KeyedLocks,
     pub(crate) gate_renewals: Mutex<crate::relay::agents::GateRenewals>,
+    /// Gate agents whose undo could not delete them yet; empty without a
+    /// gate.
+    pub(crate) gate_cleanups: Mutex<Vec<crate::relay::agents::GateCleanup>>,
     pub(crate) delivery: Mutex<DeliveryState>,
     pub(crate) claude_delivery: ClaudeDeliveryPolicy,
     pub(crate) mobile_claude_plugins: crate::relay::claude_mobile_plugin::Installations,
@@ -326,6 +329,7 @@ impl Core {
             retiring: Mutex::default(),
             gate_locks: KeyedLocks::default(),
             gate_renewals: Mutex::default(),
+            gate_cleanups: Mutex::default(),
             delivery: Mutex::default(),
             claude_delivery,
             mobile_claude_plugins: Default::default(),

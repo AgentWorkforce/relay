@@ -1420,7 +1420,17 @@ impl Outbound {
         };
         let (session, registration, _) = self.authorize(pid, uid).await?;
         self.admit(&session.target.key())?;
-        let key = self.core.key_for(&registration).ok_or_else(|| {
+        // A gate agent has no workspace key: relaygate answers the roster
+        // to its own token, filtered to the agents it may reach.
+        let gate = registration.gate.is_some();
+        let key = if gate {
+            self.core
+                .store
+                .read(|s| s.tokens.get(&registration.name).cloned())
+        } else {
+            self.core.key_for(&registration)
+        }
+        .ok_or_else(|| {
             OutboundError::new(
                 401,
                 "not_signed_in",
@@ -1455,7 +1465,11 @@ impl Outbound {
                 .filter(|r| {
                     (r.missing_since.is_none() || r.name == registration.name)
                         && r.base_url == base
-                        && self.core.key_for(r).as_ref() == Some(&key)
+                        && if gate {
+                            r.gate.is_some()
+                        } else {
+                            self.core.key_for(r).as_ref() == Some(&key)
+                        }
                 })
                 .flat_map(|r| r.names().into_iter().map(|name| (name, true)))
                 .collect()

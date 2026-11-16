@@ -171,6 +171,12 @@ impl Store {
                 theirs.pending_cleanups.as_deref().unwrap_or_default(),
                 |c| c.clone(),
             )),
+            gate_recoveries: non_empty(merge_keyed(
+                base.gate_recoveries.as_deref().unwrap_or_default(),
+                ours.gate_recoveries.as_deref().unwrap_or_default(),
+                theirs.gate_recoveries.as_deref().unwrap_or_default(),
+                |kept| (kept.gate_url.clone(), kept.name.clone()),
+            )),
             pending_key_migrations: non_empty(merge_keyed(
                 base.pending_key_migrations.as_deref().unwrap_or_default(),
                 ours.pending_key_migrations.as_deref().unwrap_or_default(),

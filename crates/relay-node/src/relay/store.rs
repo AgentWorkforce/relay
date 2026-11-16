@@ -323,6 +323,17 @@ pub struct GateEnrolment {
     pub renew_at: String,
 }
 
+/// A recovery proof this computer made for an agent name at one relaygate
+/// ([`Store::gate_recoveries`]). Never logged.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateRecovery {
+    /// The gate's origin (the registration's base URL).
+    #[serde(rename = "gateURL")]
+    pub gate_url: String,
+    pub name: String,
+    pub recovery: Secret,
+}
+
 impl GateEnrolment {
     /// The enrolment for a token issued `now` that expires at `expires_at`.
     pub fn issued(
@@ -912,6 +923,17 @@ pub struct Store {
         skip_serializing_if = "Option::is_none"
     )]
     pub pending_cleanups: Option<Vec<PendingCleanup>>,
+    /// The recovery proof made for each name this computer enrolled at a
+    /// relaygate, kept after the agent is removed: relaygate reserves a
+    /// deleted name for its owner with the same proof, and a register whose
+    /// answer was lost has already bound it. Written before the register is
+    /// sent. Absent for every workspace-key install.
+    #[serde(
+        rename = "gateRecoveries",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub gate_recoveries: Option<Vec<GateRecovery>>,
     /// Rotations whose saved-copy rewrite is still owed, each recorded
     /// before the replacement key's verification so a failed check does not
     /// drop it. A list, not a slot: A→B followed by B→C owes A's copies the
@@ -1134,6 +1156,17 @@ impl Store {
         for id in retired {
             self.agent_owners.remove(&id);
             self.retire_refusals(&id);
+        }
+        // A gate agent's name stays reserved at relaygate for its recovery
+        // proof, which outlives the registration.
+        let kept: Vec<(String, Secret)> = self
+            .registrations
+            .iter()
+            .filter(|r| r.name == name)
+            .filter_map(|r| Some((r.base_url.clone(), r.gate.as_ref()?.recovery.clone())))
+            .collect();
+        for (gate_url, recovery) in kept {
+            self.keep_gate_recovery(&gate_url, name, recovery);
         }
         self.registrations.retain(|r| r.name != name);
         self.tokens.remove(name);
@@ -1361,6 +1394,32 @@ impl Store {
             .get_or_insert_with(Vec::new)
             .retain(|pending| pending.delivery_id != delivery_id);
         self.trim_injected_history();
+    }
+
+    /// The recovery proof kept for `name` at the gate `gate_url`.
+    pub fn gate_recovery(&self, gate_url: &str, name: &str) -> Option<Secret> {
+        self.gate_recoveries
+            .iter()
+            .flatten()
+            .find(|kept| kept.gate_url == gate_url && kept.name == name)
+            .map(|kept| kept.recovery.clone())
+    }
+
+    /// Keeps `recovery` for `name` at `gate_url` unless one is kept already,
+    /// and returns the one kept: a proof relaygate may hold is never
+    /// replaced.
+    pub fn keep_gate_recovery(&mut self, gate_url: &str, name: &str, recovery: Secret) -> Secret {
+        if let Some(kept) = self.gate_recovery(gate_url, name) {
+            return kept;
+        }
+        self.gate_recoveries
+            .get_or_insert_with(Vec::new)
+            .push(GateRecovery {
+                gate_url: gate_url.to_owned(),
+                name: name.to_owned(),
+                recovery: recovery.clone(),
+            });
+        recovery
     }
 
     /// Records a cleanup to retry, once.

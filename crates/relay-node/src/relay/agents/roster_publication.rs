@@ -246,6 +246,17 @@ impl Core {
                     .remove(&name);
                 continue;
             };
+            if registration.gate.is_some() {
+                // A gate agent patches its own status with its own token.
+                let roster_status = self.roster_status(&registration, &name);
+                let published = self
+                    .publish_at_gate(&registration, &name, None, None, roster_status)
+                    .await;
+                if published.is_ok() {
+                    self.presence_confirmed(&name, status);
+                }
+                continue;
+            }
             let Some(key) = self.key_for(&registration) else {
                 continue;
             };
@@ -262,14 +273,19 @@ impl Core {
                 })
                 .await;
             if result.is_ok() || unreachable {
-                let mut pending = self
-                    .presence_pending
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if pending.get(&name) == Some(&status) {
-                    pending.remove(&name);
-                }
+                self.presence_confirmed(&name, status);
             }
+        }
+    }
+
+    /// Drops `name`'s pending presence once `status` is what was told.
+    fn presence_confirmed(&self, name: &str, status: &'static str) {
+        let mut pending = self
+            .presence_pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if pending.get(name) == Some(&status) {
+            pending.remove(name);
         }
     }
 }

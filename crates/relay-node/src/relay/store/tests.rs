@@ -267,6 +267,81 @@ fn a_gate_enrolment_round_trips_with_its_recovery() {
     assert_eq!(again.store.encode(), encoded);
 }
 
+// A name's recovery proof is kept once and never replaced, and outlives
+// the registration's removal: relaygate keeps the name for that proof.
+#[test]
+fn a_gate_recovery_is_kept_once_and_outlives_removal() {
+    const GATE: &str = "https://gate.corp.test";
+    let mut store = Store::default();
+    assert_eq!(store.gate_recovery(GATE, "codex-x"), None);
+    let kept = store.keep_gate_recovery(GATE, "codex-x", Secret::new("first-proof-0123456789"));
+    assert_eq!(kept.expose(), "first-proof-0123456789");
+    let again = store.keep_gate_recovery(GATE, "codex-x", Secret::new("second-proof-0123456789"));
+    assert_eq!(again.expose(), "first-proof-0123456789");
+    assert_eq!(store.gate_recoveries.as_ref().unwrap().len(), 1);
+    // Scoped to the gate.
+    assert_eq!(
+        store.gate_recovery("https://other.corp.test", "codex-x"),
+        None
+    );
+
+    // A registration enrolled before recoveries were kept leaves its own.
+    let now = chrono::Utc::now();
+    let gated = Registration {
+        base_url: GATE.into(),
+        workspace_key: None,
+        gate: Some(GateEnrolment::issued(
+            Secret::new("registration-proof-0123456789"),
+            now,
+            now + chrono::TimeDelta::hours(1),
+        )),
+        ..registration("claude-x", target(THREAD))
+    };
+    store.registrations.push(gated);
+    store
+        .tokens
+        .insert("claude-x".into(), Secret::new("rg_claude"));
+    store.remove("claude-x");
+    assert!(store.registrations.is_empty());
+    assert_eq!(
+        store
+            .gate_recovery(GATE, "claude-x")
+            .map(|r| r.expose().to_owned()),
+        Some("registration-proof-0123456789".into())
+    );
+    let restored = Store::decode(&store.encode(), PREFIX).unwrap().store;
+    assert_eq!(restored.gate_recoveries, store.gate_recoveries);
+}
+
+// Removing a workspace-key agent keeps no recovery, and a store without a
+// gate never writes the key.
+#[test]
+fn a_key_agent_removal_keeps_no_gate_recovery() {
+    let mut store = Store::default();
+    store
+        .registrations
+        .push(registration("codex-x", target(THREAD)));
+    store
+        .tokens
+        .insert("codex-x".into(), Secret::new("at_live_x"));
+    store.remove("codex-x");
+    assert_eq!(store.gate_recoveries, None);
+    assert!(!String::from_utf8_lossy(&store.encode()).contains("gateRecoveries"));
+}
+
+#[test]
+fn concurrent_saves_keep_both_gate_recoveries() {
+    const GATE: &str = "https://gate.corp.test";
+    let base = Store::default();
+    let mut ours = base.clone();
+    ours.keep_gate_recovery(GATE, "a", Secret::new("proof-a-0123456789"));
+    let mut theirs = base.clone();
+    theirs.keep_gate_recovery(GATE, "b", Secret::new("proof-b-0123456789"));
+    let merged = Store::merged(&base, &ours, &theirs);
+    assert!(merged.gate_recovery(GATE, "a").is_some());
+    assert!(merged.gate_recovery(GATE, "b").is_some());
+}
+
 fn delivery(id: &str, reason: &str) -> Delivery {
     Delivery {
         id: id.into(),

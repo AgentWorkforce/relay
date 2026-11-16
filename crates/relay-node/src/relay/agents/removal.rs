@@ -86,6 +86,12 @@ impl Core {
         if mode.removes_integrations() {
             self.remove_integrations(&registration, name).await?;
         }
+        // Held until the registration is dropped: a renewal can neither
+        // run between the gate's delete and that, nor register it again.
+        let _renewals = match &registration.gate {
+            Some(_) => Some(self.gate_locks.get(name).lock_owned().await),
+            None => None,
+        };
         if registration.gate.is_some() {
             self.remove_at_gate(&registration, name).await?;
         } else {

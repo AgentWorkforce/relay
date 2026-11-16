@@ -141,10 +141,12 @@ async fn relaygate_enrolment_end_to_end() {
         .unwrap_or_else(|error| panic!("DELETE /v1/agent: {error}"));
     step("DELETE /v1/agent", "ok");
 
-    let revoked = gate_patch_self(&gate, &first.token, &GateSelfPatch::default()).await;
+    // The token current until the DELETE is the one it must revoke (the
+    // first was revoked by re-registration already, checked above).
+    let revoked = gate_patch_self(&gate, &second.token, &GateSelfPatch::default()).await;
     assert!(
         matches!(revoked, Err(GateError::Unauthenticated)),
-        "the revoked token still works: {revoked:?}"
+        "the deleted agent's token still works: {revoked:?}"
     );
-    step("revoked token", "ok 401 relaygate_unauthenticated");
+    step("deleted agent's token", "ok 401 relaygate_unauthenticated");
 }

@@ -34,7 +34,7 @@ use std::sync::{Arc, Mutex};
 
 mod activation_journal;
 mod gate_enrolment;
-pub(crate) use gate_enrolment::{GateRenewals, Renewal};
+pub(crate) use gate_enrolment::{GateCleanup, GateRenewals, Renewal};
 mod naming;
 mod registration_routes;
 mod removal;
@@ -328,15 +328,11 @@ impl Core {
         if registration.gate.is_some() {
             return None;
         }
-        registration
-            .workspace_key
-            .clone()
-            .or_else(|| {
-                self.workspace()
-                    .filter(|w| w.base_url == registration.base_url)
-                    .map(|w| w.key)
-            })
-            .filter(|key| !key.expose().is_empty())
+        registration.workspace_key.clone().or_else(|| {
+            self.workspace()
+                .filter(|w| !w.is_gate_only() && w.base_url == registration.base_url)
+                .map(|w| w.key)
+        })
     }
 
     fn registration_named(&self, name: &str) -> Result<Registration, RpcError> {
@@ -867,7 +863,7 @@ impl Core {
         });
         let undo = || async {
             if registration.gate.is_some() {
-                self.delete_at_gate(&workspace.base_url, &agent.token, &agent.name)
+                self.undo_gate_enrolment(&workspace.base_url, &agent.token, &agent.name, &agent.id)
                     .await;
             } else {
                 self.delete_or_retry(&workspace.base_url, &workspace.key, &agent.name)
@@ -876,7 +872,12 @@ impl Core {
         };
         match saved {
             Ok(true) => {
-                self.forget_gate_renewal(&registration.name);
+                if registration.gate.is_some() {
+                    self.forget_gate_renewal(&registration.name);
+                    // relaygate's register takes no metadata: it follows.
+                    self.publish_gate_registration(&registration, description)
+                        .await;
+                }
                 Ok(registration)
             }
             Ok(false) if spawned => {

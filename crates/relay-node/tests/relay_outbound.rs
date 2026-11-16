@@ -3453,6 +3453,34 @@ async fn registering_and_removing_one_session_take_turns() {
     h.stop().await;
 }
 
+// A gate agent has no workspace key: it reads the roster through relaygate
+// with its own rg_ token instead of answering not signed in.
+#[tokio::test]
+async fn a_gate_agent_lists_its_teammates_with_its_own_token() {
+    let h = Harness::start_gate().await;
+    h.register(IN_CODEX, json!({"name": "codex-api"})).await;
+    h.register(IN_CLAUDE, json!({"name": "claude-api"})).await;
+    h.fake.seed_agent("alice", "human", json!({}));
+    let token = h.fake.agent("codex-api").unwrap().token;
+    assert!(token.starts_with("rg_"));
+    let listed = h
+        .call(IN_CODEX, "GET", "/agents", Value::Null)
+        .await
+        .unwrap();
+    let rows = listed["agents"].as_array().unwrap();
+    let row = |name: &str| rows.iter().find(|r| r["name"] == name).unwrap().clone();
+    assert_eq!(row("codex-api")["is_self"], true);
+    assert_eq!(row("claude-api")["where"], "this_computer");
+    assert_eq!(row("alice")["where"], "other_desktop");
+    let reads = h.fake.calls("GET", "/v1/agents");
+    assert!(!reads.is_empty());
+    assert!(reads
+        .iter()
+        .all(|r| r.authorization.as_deref() == Some(format!("Bearer {token}").as_str())));
+    assert!(!listed.to_string().contains("rg_"), "{listed}");
+    h.stop().await;
+}
+
 #[tokio::test]
 async fn agents_lists_the_callers_workspace_and_caches_it() {
     let h = Harness::start().await;

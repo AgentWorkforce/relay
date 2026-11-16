@@ -217,6 +217,9 @@ struct Gate {
     /// How long an issued token lives; one hour when unset.
     ttl: Option<chrono::TimeDelta>,
     next_gid: u64,
+    /// Registers are carried out, then answered 503 as if the answer was
+    /// lost on the way back.
+    lose_register_replies: bool,
 }
 
 #[derive(Default)]
@@ -736,6 +739,12 @@ impl FakeRelaycast {
     pub fn set_gate_ttl(&self, ttl: Duration) {
         self.shared.lock().unwrap().world.gate.ttl =
             Some(chrono::TimeDelta::from_std(ttl).unwrap());
+    }
+
+    /// Carries out each `POST /v1/register` but answers it 503, as if the
+    /// answer was lost on the way back.
+    pub fn lose_gate_register_replies(&self, lose: bool) {
+        self.shared.lock().unwrap().world.gate.lose_register_replies = lose;
     }
 
     /// Expires `name`'s current `rg_` token now, as if its lifetime ran out.
@@ -1264,7 +1273,13 @@ fn route(
                     "message": "key rk_live_secret0000 is revoked"}}),
             ),
         },
-        ("POST", ["v1", "register"]) => gate_register(world, bearer, body),
+        ("POST", ["v1", "register"]) => {
+            let answer = gate_register(world, bearer, body);
+            if world.gate.lose_register_replies && answer.0 == 200 {
+                return error(503, "relaygate_unavailable");
+            }
+            answer
+        }
         ("PATCH", ["v1", "agent"]) if bearer.starts_with("rg_") => {
             let Some(agent) = caller.and_then(|c| world.agents.get_mut(&c.name)) else {
                 return error(401, "relaygate_unauthenticated");
