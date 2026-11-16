@@ -154,7 +154,10 @@ pub(super) fn caller_is_hook(
     };
     let program = std::path::Path::new(&expected[1]);
     let resolved = std::fs::canonicalize(program).unwrap_or_else(|_| program.to_path_buf());
-    actual == resolved
+    // macOS may report either bundled hard-link name (the ordinary helper or
+    // its Sessions alias) for the very same running executable. A different
+    // file with identical bytes must still fail, as must an untrusted process.
+    (actual == resolved || same_file::is_same_file(&actual, &resolved).unwrap_or(false))
         && resolved == std::fs::canonicalize(config.helper()).unwrap_or_else(|_| config.helper())
         && table.is_trusted_relay_helper(pid, &actual)
         && table.arguments(pid).get(1..) == Some(&expected[2..])
