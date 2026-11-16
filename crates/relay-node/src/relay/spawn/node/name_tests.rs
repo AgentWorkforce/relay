@@ -1268,21 +1268,21 @@ async fn a_gate_only_node_enrols_without_a_token_and_connects_through_control() 
     assert_eq!(kept["nodeID"], "node_desktop_new");
     let seen = Arc::new(Mutex::new(None));
     let record = seen.clone();
-    let mut socket = tokio_tungstenite::accept_hdr_async(
-        stream,
-        move |request: &tungstenite::handshake::server::Request,
-              response: tungstenite::handshake::server::Response| {
-            let bearer = request
-                .headers()
-                .get("authorization")
-                .and_then(|value| value.to_str().ok())
-                .map(str::to_string);
-            *record.lock().unwrap() = Some((request.uri().to_string(), bearer));
-            Ok(response)
-        },
-    )
-    .await
-    .unwrap();
+    // tungstenite's callback shape, whose error is its own response type.
+    #[allow(clippy::result_large_err)]
+    let callback = move |request: &tungstenite::handshake::server::Request,
+                         response: tungstenite::handshake::server::Response| {
+        let bearer = request
+            .headers()
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        *record.lock().unwrap() = Some((request.uri().to_string(), bearer));
+        Ok(response)
+    };
+    let mut socket = tokio_tungstenite::accept_hdr_async(stream, callback)
+        .await
+        .unwrap();
     let (uri, bearer) = seen.lock().unwrap().clone().unwrap();
     assert!(uri.starts_with("/relay-node/v1/ws?"), "{uri}");
     assert!(!uri.contains("sh_wk_") && !uri.contains("token="), "{uri}");
@@ -1483,4 +1483,32 @@ async fn a_workspace_key_enrolment_without_a_token_is_still_refused() {
     };
     assert!(refused.reason().contains("without a node token"));
     assert!(!node_file(&config).exists());
+}
+
+/// A tokenless bridged record is never used where there is no bridge: after
+/// a switch to a workspace key at the same origin it is not adopted (nothing
+/// is asked of Relaycast for it, and no empty token is sent), and neither is
+/// one saved under the same key once Control's origin is gone.
+#[tokio::test]
+async fn a_bridged_node_is_never_used_without_the_bridge() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let keyed = config(&relaycast.base_url, folder.path());
+    save(&node_file(&keyed), &bridged(&keyed)).unwrap();
+    let adopted = tokio::time::timeout(Duration::from_secs(2), saved(&keyed)).await;
+    assert_eq!(adopted, Ok(Ok(None)));
+    assert!(untouched(&relaycast).await);
+
+    let control = Scripted::new().await;
+    let scoped = node_scoped(&relaycast.base_url, &control.base_url, folder.path());
+    save(&node_file(&scoped), &bridged(&scoped)).unwrap();
+    let without_control = NodeConfig {
+        control_url: None,
+        ..scoped.clone()
+    };
+    let loaded = tokio::time::timeout(Duration::from_secs(2), saved(&without_control)).await;
+    assert_eq!(loaded, Ok(Ok(None)));
+    // Where the bridge is, it is this computer's node.
+    assert_eq!(saved(&scoped).await, Ok(Some(bridged(&scoped))));
+    assert!(untouched(&relaycast).await);
 }

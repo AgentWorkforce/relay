@@ -23,14 +23,15 @@ use crate::relay::store::LaunchGate;
 impl Core {
     /// Registers launched agent `name` at relaygate `gate_url` with its
     /// launch's one-time `credential`, which is spent here whatever the
-    /// answer and dropped before this returns. The registration replaces
-    /// any earlier one of the name. A refusal or a failed call is the
-    /// launch's failure: its reason names relaygate's code and holds no
-    /// secret.
+    /// answer and dropped before this returns. The registration is bound to
+    /// the launch (`invocation_id`) and replaces any earlier one of the
+    /// name. A refusal or a failed call is the launch's failure: its reason
+    /// names relaygate's code and holds no secret.
     pub(crate) async fn register_launch_at_gate(
         &self,
         gate_url: &str,
         name: &str,
+        invocation_id: &str,
         credential: Secret,
     ) -> Result<(), String> {
         let registered = gate_register_launch(gate_url, &credential, name).await;
@@ -43,6 +44,7 @@ impl Core {
             gates.0.insert(
                 name.to_owned(),
                 LaunchGate {
+                    invocation_id: invocation_id.to_owned(),
                     gate_url: gate_url.to_owned(),
                     agent_id: issued.agent_id,
                     token: issued.token,
@@ -54,14 +56,19 @@ impl Core {
         Ok(())
     }
 
-    /// Ends launched agent `name`'s relaygate registration, if it has one:
-    /// it is dropped here, then deleted at the gate with its own token
-    /// (`DELETE /v1/agent`), best effort. A failed delete is reported
-    /// without the token; the registration expires at the gate with it.
-    pub(crate) async fn release_launch_gate(&self, name: &str) {
+    /// Ends launched agent `name`'s relaygate registration, if it has one
+    /// made for launch `invocation_id`: it is dropped here, then deleted at
+    /// the gate with its own token (`DELETE /v1/agent`), best effort. A
+    /// later launch of the same name keeps its own. A failed delete is
+    /// reported without the token; the registration expires at the gate
+    /// with it.
+    pub(crate) async fn release_launch_gate(&self, name: &str, invocation_id: &str) {
         let lock = self.gate_locks.get(name);
         let _renewals = lock.lock().await;
-        let Some(launched) = self.store.launch_gates(|gates| gates.0.remove(name)) else {
+        let Some(launched) = self.store.launch_gates(|gates| match gates.0.get(name) {
+            Some(held) if held.invocation_id == invocation_id => gates.0.remove(name),
+            _ => None,
+        }) else {
             return;
         };
         self.forget_gate_renewal(name);

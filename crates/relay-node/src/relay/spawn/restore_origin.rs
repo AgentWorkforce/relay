@@ -94,6 +94,7 @@ pub(super) fn restorable(
         owner: None,
         taken_over_at: None,
         task_unconfirmed: receipt.verification(),
+        gate_launch: false,
     })
 }
 

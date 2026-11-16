@@ -186,8 +186,12 @@ impl Core {
                 .await
                 .ok()
                 .map(|n| n as u32);
-            // Its launch is over: so is its relaygate registration.
-            self.release_launch_gate(&registration.name).await;
+            // Its launch is over: so is its relaygate registration, and
+            // only that launch's (a new launch may hold the name by now).
+            if let Some(spawn) = &registration.spawn {
+                self.release_launch_gate(&registration.name, &spawn.invocation_id)
+                    .await;
+            }
             {
                 let mut state = ledger.lock();
                 if let Some(unfinished) = state

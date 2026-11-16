@@ -103,12 +103,16 @@ fn scrub_text(value: &str, secret: &str) -> String {
         .split_inclusive(char::is_whitespace)
         .scan(false, |bearer, word| {
             let lower = word.to_ascii_lowercase();
+            // Where a credential starts in the word, also after punctuation
+            // (`credential=sh_lt_…`, `(rg_…)`), never inside an identifier.
             let hide = *bearer
-                || [
-                    "rk_", "at_", "ar_", "sk_", "sh_wk_", "sh_at_", "sh_lt_", "rg_", "rgn_", "eyj",
-                ]
-                .iter()
-                .any(|prefix| lower.trim_start_matches(['\"', '\'']).starts_with(prefix));
+                || crate::relay::harness::diagnostics::credential_in_word(
+                    &lower,
+                    &[
+                        "rk_", "at_", "ar_", "sk_", "sh_wk_", "sh_at_", "sh_lt_", "rg_", "rgn_",
+                        "eyj",
+                    ],
+                );
             *bearer = lower.trim() == "bearer";
             Some(if hide {
                 "[redacted] ".to_owned()
@@ -360,6 +364,21 @@ mod tests {
         let text = scrub_text("refused sh_lt_fixture_launch here", "");
         assert!(!text.contains("sh_lt_fixture_launch"), "{text}");
         assert!(text.contains("refused"), "{text}");
+        // Echoed inside a word: an assignment, punctuation, a quote.
+        let text = scrub_text(
+            "refused launch_credential=sh_lt_fixture_one (sh_lt_fixture_two) \"rg_fixture_three\" created_at_ms=1 org_id=2",
+            "",
+        );
+        for secret in ["sh_lt_fixture_one", "sh_lt_fixture_two", "rg_fixture_three"] {
+            assert!(!text.contains(secret), "{text}");
+        }
+        assert!(text.contains("created_at_ms=1"), "{text}");
+        assert!(text.contains("org_id=2"), "{text}");
+        let logged = body(
+            &json!({"error": "refused launch_credential=sh_lt_fixture_launch"}),
+            "",
+        );
+        assert!(!logged.contains("sh_lt_fixture_launch"), "{logged}");
         let frame = body(
             &json!({"type": "action.invoke", "action": "spawn:claude",
                 "input": {"name": "a1", "launch_credential": "sh_lt_fixture_launch"}}),

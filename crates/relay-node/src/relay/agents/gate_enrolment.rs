@@ -488,6 +488,7 @@ impl Core {
     /// Starts a renewal for every present gate agent whose token is due,
     /// unless one is running or it waits. Called on every delivery pass.
     pub(crate) fn renew_due_gate_registrations(self: &Arc<Self>) {
+        self.report_lost_launch_gates();
         let now = chrono::Utc::now();
         // Each name with a token of its own: the agent, then its aliases.
         let due: Vec<String> = self.store.read(|store| {
@@ -508,6 +509,32 @@ impl Core {
             tokio::spawn(async move {
                 core.renew_gate_registration(&name, None).await;
             });
+        }
+    }
+
+    /// Says once, on each launched agent whose relaygate registration this
+    /// run does not hold (it lived in memory alone, so a restart lost it),
+    /// that it needs a relaunch: its launch credential was spent, so it
+    /// cannot be registered again here, and it acts with no other token.
+    fn report_lost_launch_gates(&self) {
+        let lost: Vec<String> = self.store.read(|store| {
+            store
+                .registrations
+                .iter()
+                .filter(|r| r.spawn.as_ref().is_some_and(|spawn| spawn.gate_launch))
+                .filter(|r| r.archived_at.is_none() && store.launch_gate_of(r).is_none())
+                .map(|r| r.name.clone())
+                .collect()
+        });
+        for name in lost {
+            if self.gate_error(&name).is_some() {
+                continue;
+            }
+            let message = format!(
+                "@{name}: its relaygate registration ended when Agent Relay restarted, and its launch credential can be used only once. Relaunch the agent."
+            );
+            self.hub.activity(Level::Warning, message.clone());
+            self.renewal_failed(&name, message, None, true);
         }
     }
 

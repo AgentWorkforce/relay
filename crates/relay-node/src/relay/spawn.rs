@@ -1772,6 +1772,7 @@ mod tests {
     fn interrupted(name: &str, registered: bool, target: Option<Target>) -> intents::Intent {
         intents::Intent {
             invocation_id: format!("inv_{name}"),
+            gate_launch: false,
             name: name.into(),
             harness: codex::ID,
             node_id: node().node_id,

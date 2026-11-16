@@ -1034,6 +1034,9 @@ pub struct Store {
 /// lives as long as the launch and never reaches disk.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LaunchGate {
+    /// The launch it was made for (its spawn's invocation): only the
+    /// registration of that launch acts with it.
+    pub invocation_id: String,
     /// The gate it is registered at.
     pub gate_url: String,
     /// The agent relaygate registered.

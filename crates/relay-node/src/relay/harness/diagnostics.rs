@@ -131,6 +131,21 @@ fn sensitive(key: &str) -> bool {
         .any(|part| key.contains(part))
 }
 
+/// Whether `lower` (one lowercase word) holds a credential that starts with
+/// one of `prefixes`: at the word's start or after punctuation
+/// (`credential=sh_lt_…`, `(rg_…)`, `"sh_at_…"`), never inside an
+/// identifier (`org_id`, `created_at_ms`).
+pub(crate) fn credential_in_word(lower: &str, prefixes: &[&str]) -> bool {
+    prefixes.iter().any(|prefix| {
+        lower.match_indices(prefix).any(|(at, _)| {
+            lower[..at]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'))
+        })
+    })
+}
+
 fn redact_with(message: &str, secrets: impl Iterator<Item = String>) -> String {
     let mut message = message.to_owned();
     for secret in secrets {
@@ -146,7 +161,10 @@ fn redact_with(message: &str, secrets: impl Iterator<Item = String>) -> String {
             "rk_", "at_", "ar_", "sk_", "sh_wk_", "sh_lt_", "sk-", "xai-", "eyj",
         ]
         .iter()
-        .any(|prefix| lower.contains(prefix));
+        .any(|prefix| lower.contains(prefix))
+            // An agent's relaygate token, a node's, and the device token:
+            // only where a credential starts, as `rg_` is common in words.
+            || credential_in_word(&lower, &["rg_", "rgn_", "sh_at_"]);
         let assignment = word.split_once('=').or_else(|| word.split_once(':'));
         let secret_field = assignment.is_some_and(|(key, _)| sensitive(&key.to_ascii_lowercase()));
         let hide = hide_next
@@ -215,6 +233,26 @@ mod tests {
         let message = redact_with("spawn failed for sh_wk_fixture1234 now", [].into_iter());
         assert!(!message.contains("sh_wk_fixture1234"), "{message}");
         assert!(message.contains("spawn failed"), "{message}");
+    }
+
+    /// A gate agent's `rg_` token, a node's `rgn_` token and the device
+    /// token never reach a diagnostic, wherever they sit in a word; a word
+    /// that merely contains `rg_` is kept.
+    #[test]
+    fn gate_tokens_never_reach_a_diagnostic() {
+        let message = redact_with(
+            "relaygate refused rg_fixture_agent (rgn_fixture_node) device=sh_at_fixture_device; org_id kept",
+            [].into_iter(),
+        );
+        for secret in [
+            "rg_fixture_agent",
+            "rgn_fixture_node",
+            "sh_at_fixture_device",
+        ] {
+            assert!(!message.contains(secret), "{message}");
+        }
+        assert!(message.contains("relaygate refused"), "{message}");
+        assert!(message.contains("org_id kept"), "{message}");
     }
 
     #[test]

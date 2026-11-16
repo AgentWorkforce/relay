@@ -184,9 +184,35 @@ pub fn is_workspace_key_env(name: &str) -> bool {
 pub const LAUNCH_CREDENTIAL_ENV: &str = "RELAY_LAUNCH_CREDENTIAL";
 
 /// Other credential variables no child process the core starts inherits,
-/// in production builds too: the Cloud access token the core may run with,
-/// and a launch credential left in the node's environment.
-pub const AGENT_SECRET_ENV: [&str; 2] = ["CLOUD_API_ACCESS_TOKEN", LAUNCH_CREDENTIAL_ENV];
+/// in production builds too: the Cloud access and refresh tokens the core
+/// may run with (the refresh token alone gets a new access token), and a
+/// launch credential left in the node's environment.
+pub const AGENT_SECRET_ENV: [&str; 3] = [
+    "CLOUD_API_ACCESS_TOKEN",
+    "CLOUD_API_REFRESH_TOKEN",
+    LAUNCH_CREDENTIAL_ENV,
+];
+
+/// Removes [`AGENT_SECRET_ENV`] from a child `command` that inherits the
+/// core's environment, in every spelling `inherited` (the core's variable
+/// names) has: names are case-sensitive outside Windows.
+pub fn remove_agent_secret_env(
+    command: &mut std::process::Command,
+    inherited: impl Iterator<Item = std::ffi::OsString>,
+) {
+    for name in AGENT_SECRET_ENV {
+        command.env_remove(name);
+    }
+    for name in inherited {
+        if name.to_str().is_some_and(|name| {
+            AGENT_SECRET_ENV
+                .iter()
+                .any(|secret| secret.eq_ignore_ascii_case(name))
+        }) {
+            command.env_remove(name);
+        }
+    }
+}
 
 /// Whether `name` is a variable no child process inherits: one of
 /// [`WORKSPACE_KEY_ENV`] or [`AGENT_SECRET_ENV`], in any ASCII case
@@ -1125,6 +1151,7 @@ mod tests {
             ("RELAY_BASE_URL", "https://cast.example"),
             ("CLOUD_API_ACCESS_TOKEN", "fixture-cloud-access"),
             ("Cloud_Api_Access_Token", "fixture-cloud-access"),
+            ("CLOUD_API_REFRESH_TOKEN", "fixture-cloud-refresh"),
             (
                 "RELAY_LAUNCH_CREDENTIAL",
                 "sh_lt_fixture_from_an_earlier_spawn",
@@ -1138,6 +1165,37 @@ mod tests {
             stripped.keys().map(String::as_str).collect::<Vec<_>>(),
             ["RELAY_BASE_URL"]
         );
+    }
+
+    /// A command that inherits the core's environment loses every spelling
+    /// of the Cloud tokens and a launch credential, and keeps the rest.
+    #[test]
+    fn an_inheriting_command_loses_the_agent_secrets_in_any_case() {
+        let mut command = std::process::Command::new("true");
+        let inherited = [
+            "Cloud_Api_Access_Token",
+            "cloud_api_refresh_token",
+            "Relay_Launch_Credential",
+            "KEPT",
+        ]
+        .map(std::ffi::OsString::from);
+        remove_agent_secret_env(&mut command, inherited.into_iter());
+        let removed: Vec<String> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        for name in [
+            "CLOUD_API_ACCESS_TOKEN",
+            "CLOUD_API_REFRESH_TOKEN",
+            "RELAY_LAUNCH_CREDENTIAL",
+            "Cloud_Api_Access_Token",
+            "cloud_api_refresh_token",
+            "Relay_Launch_Credential",
+        ] {
+            assert!(removed.iter().any(|r| r == name), "{name}: {removed:?}");
+        }
+        assert!(!removed.iter().any(|r| r == "KEPT"));
     }
 
     /// Windows reads environment names in any case, so every spelling of a

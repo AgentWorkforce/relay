@@ -1991,8 +1991,23 @@ impl Core {
             None => None,
         };
         let token = match &registration.gate {
+            // Read again after the lock wait, and only while `sender` is
+            // still the session's current name: a rename meanwhile leaves
+            // the answer unclaimed, for a later pass to send under the new
+            // name.
             Some(_) => {
-                let Some((_, current)) = self.store.read(|s| s.credential_named(sender)) else {
+                let current = self.store.read(|s| {
+                    let owner = s
+                        .registrations
+                        .iter()
+                        .find(|r| r.agent_id == reply.agent_id)?;
+                    if owner.display_name() != sender {
+                        return None;
+                    }
+                    let (holder, token) = s.credential_named(sender)?;
+                    (holder.target == owner.target).then_some(token)
+                });
+                let Some(current) = current else {
                     return;
                 };
                 current

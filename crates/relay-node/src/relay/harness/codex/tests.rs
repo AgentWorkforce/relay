@@ -384,6 +384,7 @@ fn it_owns_codex_threads_only() {
     // A thread recorded on the intent is found as it is.
     let intent = Intent {
         invocation_id: "inv_w1".into(),
+        gate_launch: false,
         name: "w1".into(),
         harness: ID,
         node_id: "node_desktop_1".into(),

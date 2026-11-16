@@ -350,6 +350,9 @@ impl Core {
             app_data_dir: self.config.app_data_dir.clone(),
             intent: Intent {
                 invocation_id: request.invocation_id.clone(),
+                // Decided before anything is sent, so a restart mid-launch
+                // finds the agent's relaygate registration was in memory.
+                gate_launch: launch_credential.is_some() && workspace.gate_url.is_some(),
                 name: request.name.clone(),
                 harness: request.harness,
                 node_id: link.node.node_id.clone(),
@@ -470,7 +473,12 @@ impl Core {
         let at_gate = match (launch_credential.take(), &gate_url) {
             (Some(credential), Some(gate_url)) => {
                 if let Err(reason) = self
-                    .register_launch_at_gate(gate_url, &request.name, credential)
+                    .register_launch_at_gate(
+                        gate_url,
+                        &request.name,
+                        &request.invocation_id,
+                        credential,
+                    )
                     .await
                 {
                     deregister(&in_flight.intent);
@@ -483,9 +491,10 @@ impl Core {
         // A launch that does not start leaves no relaygate registration.
         let released = |name: &str| {
             let name = name.to_owned();
+            let invocation = request.invocation_id.clone();
             async move {
                 if at_gate {
-                    self.release_launch_gate(&name).await;
+                    self.release_launch_gate(&name, &invocation).await;
                 }
             }
         };

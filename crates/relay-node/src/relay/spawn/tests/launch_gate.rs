@@ -291,9 +291,14 @@ async fn a_launch_registers_at_the_gate_once_and_its_agent_acts_with_the_token()
     );
 
     // A second registration of the name replaces the first.
-    core.register_launch_at_gate(&gate.url, "lg1", Secret::new("sh_lt_second_launch"))
-        .await
-        .unwrap();
+    core.register_launch_at_gate(
+        &gate.url,
+        "lg1",
+        "inv_lg1",
+        Secret::new("sh_lt_second_launch"),
+    )
+    .await
+    .unwrap();
     assert_eq!(gate.seen("POST", "/v1/register").len(), 2);
     assert_eq!(
         launch_gate(&core, "lg1").unwrap().token.expose(),
@@ -473,4 +478,68 @@ async fn a_spawn_without_a_credential_never_calls_the_gate() {
     assert!(gate.seen("POST", "/v1/register").is_empty());
     assert!(launch_gate(&core, "lg7").is_none());
     assert_eq!(acting(&core, "lg7").unwrap().1, "at_live_lg7");
+}
+
+/// A launch registration is bound to the launch it was made for: a
+/// same-named registration of another launch is never acted with by this
+/// one's agent, and this launch's end never releases it.
+#[tokio::test]
+async fn a_launch_registration_belongs_to_its_own_launch_alone() {
+    let gate = FakeGate::start().await;
+    let home = tempfile::tempdir().unwrap();
+    let core = gate_core(home.path(), Arc::new(FakeSpawner::default()), &gate.url);
+    let observer = observed(&core);
+    launch(&core, "lg8", Some(CREDENTIAL)).await;
+    assert_eq!(acting(&core, "lg8").unwrap().1, "rg_launch_1");
+    // Another launch of the name registers meanwhile.
+    core.register_launch_at_gate(
+        &gate.url,
+        "lg8",
+        "inv_another",
+        Secret::new("sh_lt_another_launch"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(acting(&core, "lg8"), None);
+    // This launch's process ends: the other launch's registration stays,
+    // and nothing is deleted with its token.
+    observer.set("lg8", ProcessLiveness::Exited, WorkState::Completed, false);
+    core.observe_spawned().await;
+    assert!(gate.seen("DELETE", "/v1/agent").is_empty());
+    assert_eq!(
+        launch_gate(&core, "lg8").unwrap().token.expose(),
+        "rg_launch_2"
+    );
+}
+
+/// A launched agent's relaygate registration lives in memory alone: after
+/// a restart the agent acts with no token (never the one saved beside it),
+/// and is reported once as needing a relaunch. Only a marker is saved.
+#[tokio::test]
+async fn a_restart_leaves_a_launched_agent_without_a_token_and_says_so() {
+    let gate = FakeGate::start().await;
+    let home = tempfile::tempdir().unwrap();
+    let spawner = Arc::new(FakeSpawner::default());
+    let core = gate_core(home.path(), spawner.clone(), &gate.url);
+    observed(&core);
+    launch(&core, "lg9", Some(CREDENTIAL)).await;
+    assert_eq!(acting(&core, "lg9").unwrap().1, "rg_launch_1");
+    nothing_written(&core, home.path());
+    let store = core.config.app_data_dir.join("injectable-agents.json");
+    let saved = std::fs::read_to_string(&store).unwrap();
+    assert!(saved.contains("\"gateLaunch\": true"), "{saved}");
+
+    let restarted = gate_core(home.path(), spawner, &gate.url);
+    observed(&restarted);
+    assert!(launch_gate(&restarted, "lg9").is_none());
+    assert_eq!(acting(&restarted, "lg9"), None);
+    assert_eq!(restarted.store.read(|s| s.token("lg9")), None);
+    restarted.poll_once().await;
+    let error = restarted.gate_error("lg9").unwrap();
+    assert!(error.contains("Relaunch the agent"), "{error}");
+    // Nothing reached the gate with any other token.
+    assert!(gate
+        .all()
+        .iter()
+        .all(|seen| seen.authorization.as_deref() != Some("Bearer at_live_lg9")));
 }

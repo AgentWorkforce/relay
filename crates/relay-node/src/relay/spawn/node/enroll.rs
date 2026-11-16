@@ -100,6 +100,13 @@ fn node_scoped(config: &NodeConfig) -> bool {
     is_node_key(config.workspace_key.expose())
 }
 
+/// Whether `enrollment` can be used under `config`: a bridged one (no token
+/// of its own) only where Control's bridge is, a node-scoped credential with
+/// a Control origin.
+fn bridge_fits(config: &NodeConfig, enrollment: &Enrollment) -> bool {
+    !enrollment.bridged || (node_scoped(config) && config.control_url.is_some())
+}
+
 /// Why `name` was not enrolled: another node holds it. A node credential is
 /// bound to its one name, so the holder is a stale node of the same name
 /// that has to be released, or has to expire, before this one enrolls.
@@ -357,12 +364,19 @@ async fn rotate_named(config: &NodeConfig, current: &Enrollment) -> Result<Enrol
 /// `node_mismatch` is `Refused::NodeMismatch`; any other failure is
 /// `Refused::Failed`.
 pub(super) async fn saved(config: &NodeConfig) -> Result<Option<Enrollment>, Refused> {
-    if let Some(enrollment) = load(config) {
+    if let Some(enrollment) = load(config).filter(|e| bridge_fits(config, e)) {
         return Ok(Some(enrollment));
     }
     let Some(kept) = read(config) else {
         return Ok(None);
     };
+    // A bridged node holds no token: only Control's bridge opens its socket.
+    // Without that bridge (a workspace key now, or no Control origin) it is
+    // not this computer's node, and a new one is enrolled; its empty token
+    // is never sent anywhere.
+    if !bridge_fits(config, &kept) {
+        return Ok(None);
+    }
     // A node credential is bound to the configured name, and Control's
     // broker refuses any other as `node_mismatch`. A node saved under an
     // alternate (taken under a workspace key) is therefore not adopted: a
