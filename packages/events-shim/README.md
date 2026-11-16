@@ -9,8 +9,8 @@ npx @agent-relay/events-shim@latest setup '<mcp url>'
 ```
 
 It adds the inbox's MCP server to every supported agent CLI on the machine, or only the ones you name:
-`--claude`, `--codex`, `--cursor`, `--opencode`, `--muse`, `--gemini`, `--grok`, `--devin` (or `--cli claude,codex`).
-Each tool gets it its own way (`claude`/`codex`/`gemini`/`grok`/`devin`/`muse mcp add` at user scope; Cursor's
+`--claude`, `--codex`, `--copilot`, `--cursor`, `--opencode`, `--muse`, `--gemini`, `--grok`, `--devin` (or `--cli claude,codex`).
+Each tool gets it its own way (`claude`/`codex`/`copilot`/`gemini`/`grok`/`devin`/`muse mcp add` at user scope; Cursor's
 `~/.cursor/mcp.json`, opencode's config file), re-running replaces it, and Claude Code and Codex also get
 the `agent-relay-webhooks` skill. The inbox is saved to `~/.config/agent-relay/webhooks.json` (0600). Then tell the
 agent "watch for webhooks". Each post wakes it:
@@ -36,7 +36,19 @@ agent "watch for webhooks". Each post wakes it:
   up. A session opened later takes the link, and when the linked one closes the link moves to the most recent one
   still open. Setup turns on opencode's auto-join on its own core, and the core turns on Grok's leader mode, so start
   a new Grok session after setup. `uninstall` stops the service and the core once no CLI uses them.
-- **Cursor and Copilot** get a post on their next turn (Agent Relay's hooks); they cannot be woken while idle.
+- **GitHub Copilot CLI and Gemini CLI, with or without Agent Relay.** `setup --copilot` writes an `agentStop` hook to
+  `~/.copilot/hooks/agent-relay-webhooks.json` (`COPILOT_HOME` respected); `setup --gemini` adds an `AfterAgent` hook to
+  `~/.gemini/settings.json`, keeping your own hooks. Both run `events-shim listen --stop-hook <cli>` with a 7-day
+  timeout. When a turn ends, the hook waits for the next post and answers with it as the agent's next prompt
+  (Copilot `decision: "block"`, Gemini `decision: "deny"`), so the session takes a new turn by itself; each turn
+  re-arms it. **Send the session a first message**: it can be woken only once it has finished a turn. While it waits
+  the CLI shows its turn as running ("Working" / "Executing Hook") and holds what you type, so press Ctrl+C
+  (Copilot) or Esc (Gemini) first; the hook sees that in the session's transcript and lets go, and it waits again
+  after your turn. Copilot continues a turn from a hook at most 8 times in a row, so after 8 posts with no message from
+  you the session stops waking until you send it one (the 8th post tells the agent to ask you). Beside Agent Relay's
+  Gemini extension (installed, enabled and signed in), the hook still waits for posts, and lets go at once when the
+  extension's Relay Stop Guard continues the turn with relay messages, so those are not kept waiting. `uninstall --copilot` / `--gemini` removes the hook and stops a waiting one.
+- **Cursor** gets a post on its next turn (Agent Relay's hooks); it cannot be woken while idle.
 - **Under Agent Relay** (Desktop or a headless relay on the machine) the agent links the inbox to its session's own
   relay webhook (`agent-relay-probe webhook --socket <socket>`, then the `link_relay_wake` tool). Every post is
   forwarded there and Agent Relay injects it into the session, **waking it even when idle**.
