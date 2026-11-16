@@ -5797,6 +5797,7 @@ async fn copilot_verified_hook_gets_late_identity_once_and_only_core_registratio
                 agent_id: "renamed-agent".into(),
                 token: agent_relay_node::relay::workspace::Secret::new("test-alias-token"),
                 registered_at: registration.registered_at.clone(),
+                gate: None,
             });
             store.update(registration);
         })
@@ -5876,6 +5877,7 @@ async fn copilot_claimed_message_survives_rename_and_same_workspace_replacement(
                             agent_id: "renamed-agent".into(),
                             token: Secret::new("test-alias-token"),
                             registered_at: registration.registered_at.clone(),
+                            gate: None,
                         });
                     }
                     store.update(registration);
