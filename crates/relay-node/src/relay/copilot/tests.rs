@@ -4,6 +4,65 @@ use crate::relay::inject::InjectOutcome;
 use serde_json::json;
 
 #[test]
+fn a_native_hook_sees_a_session_opened_after_the_discovery_snapshot() {
+    use crate::relay::process::{ProcessSnapshot, ProcessTable};
+    let (_home, config, table, lock) = proof::tests::fixture();
+    CopilotSettings::new(&config, "/opt/agent-relay-desktop-probe".into())
+        .set_enabled(true)
+        .unwrap();
+    named_hook(&table, "start");
+    let table = Arc::new(table);
+    table
+        .processes
+        .lock()
+        .unwrap()
+        .get_mut(&102)
+        .unwrap()
+        .open_files
+        .clear();
+    let snapshot = ProcessSnapshot::with_window(table.clone(), std::time::Duration::from_secs(60));
+    assert!(snapshot.opened_files(102).is_empty());
+    table
+        .processes
+        .lock()
+        .unwrap()
+        .get_mut(&102)
+        .unwrap()
+        .open_files
+        .push(lock);
+    let payload = json!({"sessionId":"1069773c-0824-4fad-b7f9-d3dc3c4ed148","relayEvent":"start"});
+    assert_eq!(
+        hook_answer(&config, &snapshot, 501, 103, &payload),
+        Some(json!({}))
+    );
+    // The discovery view remains cached; only authentication bypasses it.
+    assert!(snapshot.opened_files(102).is_empty());
+}
+
+#[test]
+fn a_native_hook_cannot_claim_a_descriptor_closed_after_discovery() {
+    use crate::relay::process::{ProcessSnapshot, ProcessTable};
+    let (_home, config, table, _lock) = proof::tests::fixture();
+    CopilotSettings::new(&config, "/opt/agent-relay-desktop-probe".into())
+        .set_enabled(true)
+        .unwrap();
+    named_hook(&table, "start");
+    let table = Arc::new(table);
+    let snapshot = ProcessSnapshot::with_window(table.clone(), std::time::Duration::from_secs(60));
+    assert_eq!(snapshot.opened_files(102).len(), 1);
+    table
+        .processes
+        .lock()
+        .unwrap()
+        .get_mut(&102)
+        .unwrap()
+        .open_files
+        .clear();
+    let payload = json!({"sessionId":"1069773c-0824-4fad-b7f9-d3dc3c4ed148","relayEvent":"start"});
+    assert!(hook_answer(&config, &snapshot, 501, 103, &payload).is_none());
+}
+
+#[test]
 fn a_kernel_reported_hardlink_to_the_managed_helper_is_the_same_program() {
     let (home, config, table, _) = proof::tests::fixture();
     let helper = home.path().join("Agent Relay Helper");

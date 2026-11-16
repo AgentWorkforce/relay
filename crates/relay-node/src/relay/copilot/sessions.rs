@@ -135,6 +135,9 @@ pub fn hook_answer(
     pid: i32,
     payload: &Value,
 ) -> Option<Value> {
+    // Authenticate against current descriptors, executable and incarnation,
+    // never the discovery scan's two-second snapshot.
+    let table = table.uncached().unwrap_or(table);
     let sid = payload["sessionId"].as_str().filter(|s| is_uuid(s))?;
     let event = payload["relayEvent"].as_str()?;
     if !matches!(event, "start" | "before" | "tool" | "stop") || !config.enabled() {
@@ -167,12 +170,14 @@ pub fn hook_answer(
         }
         // Recover a missed SessionStart or stale incarnation with full native proof below.
     }
-    if !proof::hook_holds(config, table, pid, uid, sid)
-        || table.process(pid) != Some(hook)
-        || table.process(runtime.pid) != Some(runtime)
-    {
+    #[cfg(debug_assertions)]
+    let began = std::time::Instant::now();
+    let holds = proof::hook_holds(config, table, pid, uid, sid);
+    let hook_same = table.process(pid) == Some(hook);
+    let runtime_same = table.process(runtime.pid) == Some(runtime);
+    if !holds || !hook_same || !runtime_same {
         #[cfg(debug_assertions)]
-        eprintln!("[copilot-hook] rejected: native session proof");
+        eprintln!("[copilot-hook] rejected: native session proof (held={holds}, hook_current={hook_same}, runtime_current={runtime_same}, elapsed_ms={})", began.elapsed().as_millis());
         return None;
     }
     observe(config, table, uid, sid, runtime, payload)?;

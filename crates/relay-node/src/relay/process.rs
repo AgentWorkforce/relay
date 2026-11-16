@@ -80,6 +80,12 @@ pub enum StartClock {
 }
 
 pub trait ProcessTable: Send + Sync {
+    /// An authoritative view for caller authentication. Discovery snapshots
+    /// may retain facts from before a native session opened its descriptor.
+    /// Tables that already read current facts need no alternate view.
+    fn uncached(&self) -> Option<&dyn ProcessTable> {
+        None
+    }
     fn process(&self, pid: i32) -> Option<ProcessInfo>;
     /// Whether the kernel positively reports that `pid` no longer exists.
     /// A failed or incomplete process lookup is not evidence of death.
