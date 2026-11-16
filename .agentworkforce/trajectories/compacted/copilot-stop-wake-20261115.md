@@ -28,3 +28,9 @@
 - The installed ordinary and Sessions helpers share one inode, while macOS proc_pidpath reports the Sessions name for the core and native MCP helper; path-string equality incorrectly rejects the configured executable.
 - A new full-hook hardlink regression failed before the fix and passed after same-file identity comparison; copied executables, missing signature proof and wrong event arguments remain rejected.
 - After the hardlink fix, 52 Copilot-related tests passed with one manual proof ignored. The companion app session is applying the matching MCP peer fix and preparing a signed combined candidate.
+
+## Verification follow-up
+
+- The selected helper can itself use the Sessions hardlink; the initial hardlink fix still disabled equivalent owned settings. The extended regression failed before completing same-file checks for configuration and caller selection.
+- The ad-hoc live candidate failed helper verification because codesign prints its computed requirement as a comment. Replaced subprocess/path parsing with native Security.framework requirement derivation from the running code object, retaining strict self and guest validation.
+- Native designated-requirement self-validation failed before the fix and passed after it. All 52 Copilot tests and both macOS signing tests pass; actual signed-candidate idle wake remains pending the rebuilt candidate.

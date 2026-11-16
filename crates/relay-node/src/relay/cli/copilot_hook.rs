@@ -56,9 +56,13 @@ pub fn copilot_hook(development: bool, event: &str) -> Result<()> {
             }),
         );
         let Ok((status, bytes)) = response else {
+            #[cfg(debug_assertions)]
+            eprintln!("[copilot-hook] released: session socket transport");
             break;
         };
         if status != 200 {
+            #[cfg(debug_assertions)]
+            eprintln!("[copilot-hook] released: session socket HTTP {status}");
             break;
         }
         let Some(value) = answer(&bytes) else { break };

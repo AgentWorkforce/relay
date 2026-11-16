@@ -138,6 +138,8 @@ pub fn hook_answer(
     let sid = payload["sessionId"].as_str().filter(|s| is_uuid(s))?;
     let event = payload["relayEvent"].as_str()?;
     if !matches!(event, "start" | "before" | "tool" | "stop") || !config.enabled() {
+        #[cfg(debug_assertions)]
+        eprintln!("[copilot-hook] rejected: event or managed settings");
         return None;
     }
     let hook = table.process(pid).filter(|p| p.uid == uid)?;
@@ -145,9 +147,13 @@ pub fn hook_answer(
         .process(hook.parent)
         .filter(|p| p.uid == uid && !table.zombie(p.pid))?;
     if !super::settings::caller_is_hook(config, table, pid, event) {
+        #[cfg(debug_assertions)]
+        eprintln!("[copilot-hook] rejected: managed helper proof");
         return None;
     }
     if cancelled_stop(config, payload, sid, event) {
+        #[cfg(debug_assertions)]
+        eprintln!("[copilot-hook] released: native stop journal");
         return None;
     }
     // A previously verified runtime's incarnation is enough to stop orphaned
@@ -165,6 +171,8 @@ pub fn hook_answer(
         || table.process(pid) != Some(hook)
         || table.process(runtime.pid) != Some(runtime)
     {
+        #[cfg(debug_assertions)]
+        eprintln!("[copilot-hook] rejected: native session proof");
         return None;
     }
     observe(config, table, uid, sid, runtime, payload)?;
