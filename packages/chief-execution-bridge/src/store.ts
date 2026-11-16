@@ -31,7 +31,14 @@ export interface TaskRow {
   stopPending: boolean;
   /** The commit the bridge refreshed the folder to before invoking, when it did. */
   revision?: string;
+  /** When the core first listed this task's agent, with `detectDeadWorkers`. */
+  workerSeenAt?: number;
+  /** Since when the core has listed the agent as gone, with `detectDeadWorkers`. */
+  workerGoneAt?: number;
 }
+
+/** What the core said about a running task's agent on one poll. */
+export type WorkerObservation = 'live' | 'exited' | 'absent';
 
 export interface PendingReport {
   report: WorkerReport;
@@ -131,6 +138,10 @@ export class BridgeStore {
     for (const column of ['findings', 'revision']) {
       if (!columns.some((c) => c.name === column))
         this.db.exec(`ALTER TABLE tasks ADD COLUMN ${column} TEXT`);
+    }
+    for (const column of ['worker_seen_at', 'worker_gone_at']) {
+      if (!columns.some((c) => c.name === column))
+        this.db.exec(`ALTER TABLE tasks ADD COLUMN ${column} INTEGER`);
     }
   }
 
@@ -250,6 +261,8 @@ export class BridgeStore {
       runningAt: (raw.running_at as number | null) ?? undefined,
       stopPending: raw.stop_pending === 1,
       revision: (raw.revision as string | null) ?? undefined,
+      workerSeenAt: (raw.worker_seen_at as number | null) ?? undefined,
+      workerGoneAt: (raw.worker_gone_at as number | null) ?? undefined,
     };
   }
 
@@ -361,6 +374,26 @@ export class BridgeStore {
         .run(state, reason ?? null, now, row.invoking_at === null ? 0 : 1, taskId);
       return true;
     });
+  }
+
+  /**
+   * Records what the core said about a running task's agent. A listed agent counts as seen;
+   * a live one clears any gone mark, and a gone one keeps the earliest. An absent agent counts
+   * as gone only once it has been seen, so a name the core never lists cannot fail a task.
+   */
+  observeWorker(taskId: string, observation: WorkerObservation, now: number): void {
+    // Plain `?` only: Node 22.14's node:sqlite does not bind numbered `?N` placeholders positionally.
+    const [sql, times] = {
+      live: ['worker_seen_at=COALESCE(worker_seen_at, ?), worker_gone_at=NULL', 1],
+      exited: ['worker_seen_at=COALESCE(worker_seen_at, ?), worker_gone_at=COALESCE(worker_gone_at, ?)', 2],
+      absent: [
+        'worker_gone_at=CASE WHEN worker_seen_at IS NULL THEN NULL ELSE COALESCE(worker_gone_at, ?) END',
+        1,
+      ],
+    }[observation] as [string, number];
+    this.db
+      .prepare(`UPDATE tasks SET ${sql} WHERE task_id=? AND state='running'`)
+      .run(...Array<number>(times).fill(now), taskId);
   }
 
   stopPending(): TaskRow[] {
