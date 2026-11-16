@@ -399,18 +399,28 @@ fn refusal(error: &tungstenite::Error) -> Option<u16> {
 }
 
 /// Control refused to bridge a node's socket (`status`, no body). Never a
-/// rotation: the bridged node holds no token. A `403` means Control has no
-/// usable node token for it (never enrolled through it, or unreadable
-/// under its keyring), so the node is enrolled again under its own id and
-/// name; a `404` means the install is no longer gate-only, so the saved
-/// node is forgotten and the next attempt enrols as the install now asks.
-/// A `401` (the relay-node credential refused) is waited out.
+/// rotation: the bridged node holds no token.
+///
+/// - `401`: Control refused the install's relay-node credential
+///   (`token_invalid`). Enrolling again cannot change that, so the node
+///   stops and says why ([`BRIDGE_CREDENTIAL_REFUSED`]); the saved node is
+///   kept.
+/// - `403`: Control has no usable node token for it (never enrolled
+///   through it, or unreadable under its keyring), so the node is enrolled
+///   again under its own id and name.
+/// - `404`: the install is no longer gate-only (or this is not Control's
+///   bridge), so the saved node is forgotten and the next attempt enrols as
+///   the install now asks.
+/// - `429` and `503`: Control is at a limit or shutting down. The same
+///   enrolment is tried again after the backoff, neither enrolled again
+///   nor forgotten.
+/// - Anything else is backed off and tried again likewise.
 async fn bridge_refused(config: &NodeConfig, enrollment: &Enrollment, status: u16) -> Ended {
     let refused = "Agent Relay's Control bridge refused this computer's spawn node.";
     match status {
+        401 => Ended::GaveUp(BRIDGE_CREDENTIAL_REFUSED.into()),
         403 => match enroll(config, &enrollment.node_id, &enrollment.node_name, None).await {
             Ok(_) => Ended::Closed(refused.into()),
-            Err(Refused::GateOnly(reason)) => Ended::GaveUp(reason),
             Err(Refused::PlanLimit(limit)) => Ended::Refused(limit),
             Err(Refused::IdTaken) => {
                 let _ = forget(&node_file(config));
@@ -422,9 +432,17 @@ async fn bridge_refused(config: &NodeConfig, enrollment: &Enrollment, status: u1
             let _ = forget(&node_file(config));
             Ended::Closed(refused.into())
         }
+        429 | 503 => Ended::Closed(
+            "Agent Relay's Control bridge is busy or restarting; the spawn node will try again."
+                .into(),
+        ),
         _ => Ended::Closed(refused.into()),
     }
 }
+
+/// Why a bridged node stopped: Control answered its socket with `401`, the
+/// install's relay-node credential refused.
+const BRIDGE_CREDENTIAL_REFUSED: &str = "Spawning is unavailable on this computer: Agent Relay's Control refused this install's relay-node credential.";
 
 async fn connect_once(
     config: &NodeConfig,
@@ -443,8 +461,6 @@ async fn connect_once(
                 host.refused(reason.clone());
                 return Ended::GaveUp(reason);
             }
-            // Never retried: spawning is unavailable on this install.
-            Err(Refused::GateOnly(reason)) => return Ended::GaveUp(reason),
             Err(refused) => return Ended::Closed(refused.reason()),
         },
         // The saved node's credential is bound to another name: stopped,
@@ -474,7 +490,6 @@ async fn connect_once(
                 Err(Refused::ProofRefused(reason)) => {
                     Ended::TokenRefused(format!("{refused} {reason}"))
                 }
-                Err(Refused::GateOnly(reason)) => Ended::GaveUp(reason),
                 Err(reason) => Ended::Closed(format!("{refused} {}", reason.reason())),
             };
         }

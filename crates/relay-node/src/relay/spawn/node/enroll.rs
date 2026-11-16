@@ -48,14 +48,11 @@ pub(super) enum Refused {
     /// The node credential is bound to another node name (the broker's
     /// `403 node_mismatch`): the node does not start.
     NodeMismatch(String),
-    /// A gate-only install whose Control bridge cannot take this node (the
-    /// broker's `403 gate_only`): spawning is unavailable here, and asking
-    /// again cannot change that, so it is never retried.
-    GateOnly(String),
 }
 
-/// Why spawning is unavailable on a gate-only install whose Control bridge
-/// refused this node.
+/// Why spawning is unavailable on a gate-only install that has no
+/// relay-node credential or no Control URL to reach Control's node bridge
+/// with.
 pub(crate) const GATE_ONLY_UNAVAILABLE: &str = "Spawning is unavailable on this computer: this Agent Relay install is gate-only and its Control bridge is not available.";
 
 impl Refused {
@@ -69,8 +66,7 @@ impl Refused {
             | Refused::KeyRefused(reason)
             | Refused::Failed(reason)
             | Refused::NoName(reason)
-            | Refused::NodeMismatch(reason)
-            | Refused::GateOnly(reason) => reason,
+            | Refused::NodeMismatch(reason) => reason,
             Refused::PlanLimit(limit) => limit.message(),
         }
     }
@@ -168,9 +164,6 @@ pub(super) async fn enroll(
             }
             if node_credential::is_node_mismatch(&error) {
                 return node_mismatch(config, name);
-            }
-            if node_credential::is_gate_only_refusal(&error) {
-                return Refused::GateOnly(GATE_ONLY_UNAVAILABLE.into());
             }
             let failed =
                 || Refused::Failed(format!("Agent Relay did not enroll this computer: {error}"));
