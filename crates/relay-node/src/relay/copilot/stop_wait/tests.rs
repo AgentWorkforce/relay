@@ -44,12 +44,70 @@ fn a_delayed_stop_anchor_keeps_the_original_snapshot_and_starts_the_wait() {
     })
     .unwrap();
     assert_eq!(retries, 1);
-    assert_eq!(stamp, original);
+    assert_eq!(stamp["identity"], original["identity"]);
+    assert_eq!(stamp["length"], original["length"]);
+    assert!(stamp["offset"].is_u64());
     assert!(!cancelled(
         &config,
         SID,
         &json!({"timestamp":300,"relayJournal":stamp})
     ));
+}
+
+#[test]
+fn queued_model_records_do_not_evict_the_active_stop_anchor() {
+    let (_home, config, path, _) = fixture();
+    let stamp = snapshot_after_start(&config, SID, 200, || false).unwrap();
+    for _ in 0..5 {
+        append(
+            &path,
+            json!({"type":"model.messages_snapshot","data":{"content":"x".repeat(20_000)}}),
+        );
+    }
+    let payload = json!({"timestamp":200,"relayJournal":stamp});
+    assert!(!cancelled(&config, SID, &payload));
+    append(&path, json!({"type":"abort"}));
+    assert!(cancelled(&config, SID, &payload));
+}
+
+#[test]
+fn startup_finds_its_anchor_beneath_an_already_flushed_model_batch() {
+    let (_home, config, path, _) = fixture();
+    append(
+        &path,
+        json!({"type":"model.messages_snapshot","data":"x".repeat(2 * LIMIT as usize)}),
+    );
+    let stamp = snapshot_after_start(&config, SID, 200, || false).unwrap();
+    let payload = json!({"timestamp":200,"relayJournal":stamp});
+    assert!(!cancelled(&config, SID, &payload));
+    append(&path, json!({"type":"user.message"}));
+    assert!(cancelled(&config, SID, &payload));
+}
+
+#[test]
+fn anchored_scans_remain_bounded_and_reject_invalid_offsets_and_corruption() {
+    let (_home, config, path, _) = fixture();
+    let stamp = snapshot_after_start(&config, SID, 200, || false).unwrap();
+    let mut payload = json!({"timestamp":200,"relayJournal":stamp});
+    let mut invalid = payload.clone();
+    invalid["relayJournal"]["offset"] = json!(u64::MAX);
+    assert!(cancelled(&config, SID, &invalid));
+    invalid["relayJournal"]["offset"] = json!("not-an-offset");
+    assert!(cancelled(&config, SID, &invalid));
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(b"invalid\n")
+        .unwrap();
+    assert!(cancelled(&config, SID, &payload));
+    // A sparse oversized append must fail before allocating or reading it.
+    let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    file.set_len(payload["relayJournal"]["offset"].as_u64().unwrap() + MAX_SCAN + 1)
+        .unwrap();
+    assert!(cancelled(&config, SID, &payload));
+    payload["relayJournal"]["offset"] = json!(0);
+    assert!(cancelled(&config, SID, &payload));
 }
 
 #[test]
@@ -164,6 +222,7 @@ fn non_object_or_untyped_complete_records_are_unverifiable_after_the_anchor() {
     for value in [
         json!(null),
         json!([]),
+        json!(["fixture"]),
         json!(true),
         json!(42),
         json!("bad"),
