@@ -224,7 +224,7 @@ mod tests {
     #[test]
     fn full_accept_queue_retries_until_capacity_returns() {
         let (_directory, listener, _queued, path) = full_queue();
-        let (release, released) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
         let accepting = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(100));
             let _accepted = listener.accept().unwrap();
@@ -232,10 +232,11 @@ mod tests {
             let _ = released.recv_timeout(Duration::from_secs(3));
         });
         let started = Instant::now();
-        let _client =
-            BlockingStream::connect_until(&path, started + Duration::from_secs(2)).unwrap();
-        assert!(started.elapsed() >= Duration::from_millis(50));
+        let result = BlockingStream::connect_until(&path, started + Duration::from_secs(2));
+        let _ = release.send(());
         accepting.join().unwrap();
+        let _client = result.unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(50));
     }
 
     #[test]
