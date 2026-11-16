@@ -6491,3 +6491,159 @@ async fn signed_out_on_a_gate_only_install_messaging_says_so_and_sends_nothing()
     client.ok("status.get", json!({})).await;
     h.stop().await;
 }
+
+fn person_registers(fake: &FakeRelaycast) -> usize {
+    gate_registers(fake)
+        .into_iter()
+        .filter(|r| r.body["name"] == GATE_PERSON)
+        .count()
+}
+
+// A due token keeps working while relaygate refuses to renew it: sends
+// and reads go on with it until it expires, and the gate's Retry-After
+// holds back both the background renewal and your own messages.
+#[tokio::test]
+async fn a_due_person_token_keeps_working_while_the_gate_will_not_renew_it() {
+    let h = gate_harness(true).await;
+    h.fake.set_gate_ttl(Duration::from_secs(15));
+    let mut client = h.client().await;
+    let (_, reviewer_token) = h
+        .fake
+        .seed_gate_agent("reviewer", "reviewer-recovery-0123456789");
+    client
+        .ok("messages.send", json!({"to": "reviewer", "text": "first"}))
+        .await;
+    let first = h.fake.agent(GATE_PERSON).unwrap();
+    assert_eq!(person_registers(&h.fake), 1);
+
+    // The gate is overloaded when the token comes due, and asks for two
+    // minutes.
+    h.fake
+        .set_api_error("POST /v1/register", Some((503, "relaygate_unavailable")));
+    h.fake.set_api_retry_after("POST /v1/register", Some("120"));
+    eventually_for("renewal tried", Duration::from_secs(20), || {
+        person_registers(&h.fake) >= 2
+    })
+    .await;
+
+    // The token it holds has not expired: messaging goes on with it.
+    client
+        .ok("messages.send", json!({"to": "reviewer", "text": "second"}))
+        .await;
+    let dm = h.fake.calls("POST", "/v1/dm").pop().unwrap();
+    assert_eq!(
+        dm.authorization.as_deref(),
+        Some(format!("Bearer {}", first.token).as_str())
+    );
+    gate_peer_says(&h.fake, &reviewer_token, "answer").await;
+    let history = client
+        .ok("messages.history", json!({"endpoint": "reviewer"}))
+        .await;
+    assert_eq!(texts(&history), ["first", "second", "answer"]);
+    // Many delivery passes and another send later, nothing asked the gate
+    // again inside its wait.
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    client
+        .ok("messages.send", json!({"to": "reviewer", "text": "third"}))
+        .await;
+    assert_eq!(person_registers(&h.fake), 2);
+    h.stop().await;
+}
+
+// With no token to fall back on, an enrolment the gate rate limited is not
+// sent again before its Retry-After: messaging says when to try again.
+#[tokio::test]
+async fn a_rate_limited_person_enrolment_waits_for_the_gate() {
+    let h = gate_harness(true).await;
+    h.fake
+        .set_api_error("POST /v1/register", Some((429, "rate_limited")));
+    h.fake.set_api_retry_after("POST /v1/register", Some("120"));
+    let mut client = h.client().await;
+    let (kind, _) = client
+        .error("messages.send", json!({"to": "reviewer", "text": "hello"}))
+        .await;
+    assert_eq!(kind, "relaycast_unreachable");
+    assert_eq!(person_registers(&h.fake), 1);
+
+    let (kind, message) = client
+        .error("messages.send", json!({"to": "reviewer", "text": "again"}))
+        .await;
+    assert_eq!(kind, "relaycast_unreachable");
+    assert!(message.contains("waiting for relaygate"), "{message}");
+    assert!(message.contains("Try again in"), "{message}");
+    let (kind, _) = client
+        .error("messages.history", json!({"endpoint": "reviewer"}))
+        .await;
+    assert_eq!(kind, "relaycast_unreachable");
+    assert_eq!(person_registers(&h.fake), 1);
+    assert!(h.fake.calls("POST", "/v1/dm").is_empty());
+    h.stop().await;
+}
+
+// Signing out while your identity enrols at the gate: the token it got is
+// neither kept nor used.
+#[tokio::test]
+async fn signing_out_during_a_person_enrolment_keeps_nothing_and_sends_nothing() {
+    let h = gate_harness(true).await;
+    let mut client = h.client().await;
+    h.fake
+        .seed_gate_agent("reviewer", "reviewer-recovery-0123456789");
+    let cloud = h.cloud.clone().unwrap();
+    let release = h.fake.hold("POST /v1/register");
+    let ((kind, _), ()) = tokio::join!(
+        client.error("messages.send", json!({"to": "reviewer", "text": "hello"})),
+        async {
+            eventually_for("enrolment parked", Duration::from_secs(10), || {
+                h.fake.held("POST /v1/register") >= 1
+            })
+            .await;
+            *cloud.account.lock().unwrap() = None;
+            release.send(true).unwrap();
+        }
+    );
+    assert_eq!(kind, "not_signed_in");
+    assert!(h.fake.calls("POST", "/v1/dm").is_empty());
+    let (kind, _) = client
+        .error("messages.history", json!({"endpoint": "reviewer"}))
+        .await;
+    assert_eq!(kind, "not_signed_in");
+    assert_eq!(person_registers(&h.fake), 1);
+    h.stop().await;
+}
+
+// Key mode is untouched: with no relaygate URL, messaging as you uses the
+// Cloud identity and its Relaycast token, even with a device token at hand;
+// nothing is registered at a gate and no gate is kept.
+#[tokio::test]
+async fn without_a_gate_url_messaging_as_you_stays_on_the_cloud_identity() {
+    let h = Harness::signed_in().await;
+    let cloud = h.cloud.clone().unwrap();
+    *cloud.device_token.lock().unwrap() = Some(agent_relay_node::relay::workspace::Secret::new(
+        DEVICE_TOKEN.to_string(),
+    ));
+    let mut client = h.client().await;
+    h.fake.seed_agent("reviewer", "agent", json!({}));
+    client
+        .ok("messages.send", json!({"to": "reviewer", "text": "hello"}))
+        .await;
+    let person = h.fake.agent(PERSON).unwrap();
+    let dm = h.fake.calls("POST", "/v1/dm").pop().unwrap();
+    assert_eq!(
+        dm.authorization.as_deref(),
+        Some(format!("Bearer {}", person.token).as_str())
+    );
+    let history = client
+        .ok("messages.history", json!({"endpoint": "reviewer"}))
+        .await;
+    assert_eq!(history["identity"], PERSON);
+    let fetches = cloud
+        .paths()
+        .iter()
+        .filter(|p| p.ends_with("/messaging/identity/credential"))
+        .count();
+    assert_eq!(fetches, 1);
+    assert!(gate_registers(&h.fake).is_empty());
+    assert!(h.fake.agent(GATE_PERSON).is_none());
+    assert!(h.store()["cloud"]["relaygateURL"].is_null());
+    h.stop().await;
+}

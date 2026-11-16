@@ -357,6 +357,14 @@ impl GateEnrolment {
             .map(|at| at <= now)
             .unwrap_or(true)
     }
+
+    /// Whether the token has stopped working at `now`. An unreadable time
+    /// has, so a damaged record is never trusted past its end.
+    pub fn expired(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
+        chrono::DateTime::parse_from_rfc3339(&self.expires_at)
+            .map(|at| at <= now)
+            .unwrap_or(true)
+    }
 }
 
 impl Registration {

@@ -398,6 +398,19 @@ fn gate_identity_error(error: RpcError) -> RpcError {
     }
 }
 
+/// Your gate identity cannot be enrolled before `wait` is over (the gate's
+/// `Retry-After` after a failure, `why`), and no unexpired token is held.
+fn person_gate_waiting(wait: std::time::Duration, why: Option<String>) -> RpcError {
+    let secs = wait.as_secs().max(1);
+    let why = why.map(|why| format!(" {why}")).unwrap_or_default();
+    let mut error = RpcError::new(
+        ErrorKind::RelaycastUnreachable,
+        format!("Messaging as yourself is waiting for relaygate.{why} Try again in {secs}s."),
+    );
+    error.retry_after_secs = Some(secs);
+    error
+}
+
 /// Who an identity and everything read with it belong to.
 fn account_key(account: &CloudAccount) -> String {
     format!(
@@ -447,7 +460,9 @@ impl Core {
             return Ok(identity);
         }
         if let Some(gate_url) = gate_url {
-            return self.person_identity_at_gate(&account, &gate_url).await;
+            return self
+                .person_identity_at_gate(&account, &gate_url, refresh)
+                .await;
         }
         let path = format!(
             "/workspaces/{}/messaging/identity/credential",
@@ -462,7 +477,9 @@ impl Core {
             Ok(body) => body,
             Err(CloudError::GateOnly { relaygate_url }) => {
                 let gate_url = self.adopt_gate_url(relaygate_url)?;
-                return self.person_identity_at_gate(&account, &gate_url).await;
+                return self
+                    .person_identity_at_gate(&account, &gate_url, refresh)
+                    .await;
             }
             Err(CloudError::SignedOut | CloudError::Rejected) => return Err(sign_in_required()),
             Err(error) => return Err(RpcError::cloud(&error)),
@@ -556,6 +573,15 @@ impl Core {
             .is_some_and(|gate| gate.due(chrono::Utc::now()))
     }
 
+    /// Whether your identity's `rg_` token (gate-only) has expired.
+    fn person_gate_expired(&self) -> bool {
+        let state = self.messaging.lock().unwrap();
+        state
+            .gate
+            .as_ref()
+            .is_some_and(|gate| gate.expired(chrono::Utc::now()))
+    }
+
     /// The renewal key of your gate identity, `@name`, when it is held.
     pub(crate) fn person_gate_channel(&self) -> Option<String> {
         let state = self.messaging.lock().unwrap();
@@ -570,10 +596,17 @@ impl Core {
     /// `gate_url` as one more agent: [`gate_person_name`], the device token,
     /// and the recovery proof kept for that name. One enrolment runs at a
     /// time; a caller that waited for another's uses the token it got.
+    /// `refused`: the token held now was refused, so it is never kept.
+    ///
+    /// A token that is due but has not expired keeps working: when
+    /// enrolling again fails, or the gate's wait after a failure is not
+    /// over, it is returned instead of the error. Without one, the wait is
+    /// an error that says when to try again; no request is sent before it.
     async fn person_identity_at_gate(
         &self,
         account: &CloudAccount,
         gate_url: &str,
+        refused: bool,
     ) -> Result<PersonIdentity, RpcError> {
         let user_id = account
             .user_id
@@ -582,21 +615,38 @@ impl Core {
             .ok_or_else(sign_in_required)?;
         let name = gate_person_name(user_id);
         let channel = person_channel(&name);
-        let held = self.current_identity().map(|identity| identity.token);
+        let refused = refused
+            .then(|| self.current_identity().map(|identity| identity.token))
+            .flatten();
         let lock = self.gate_locks.get(&channel);
         let _enrolling = lock.lock().await;
-        if let Some(identity) = self.current_identity().filter(|identity| {
+        let held = self.current_identity().filter(|identity| {
             identity.base_url == gate_url
                 && identity.name == name
-                && Some(&identity.token) != held.as_ref()
-                && !self.person_gate_due()
-        }) {
+                && Some(&identity.token) != refused.as_ref()
+        });
+        if let Some(identity) = held.clone().filter(|_| !self.person_gate_due()) {
             return Ok(identity);
         }
-        let (issued, enrolment) = self
-            .enrol_at_gate(gate_url, &name)
-            .await
-            .map_err(gate_identity_error)?;
+        let usable = held.filter(|_| !self.person_gate_expired());
+        if let Some((wait, why)) = self.person_renewal_wait(&channel) {
+            return usable.ok_or_else(|| person_gate_waiting(wait, why));
+        }
+        let (issued, enrolment) = match self.enrol_at_gate(gate_url, &name).await {
+            Ok(enrolled) => enrolled,
+            Err(error) => {
+                // Signed out, nothing was sent: nothing to wait for.
+                if error.data.kind != ErrorKind::NotSignedIn || self.device_token().await.is_ok() {
+                    self.person_renewal_failed(&channel, &error);
+                }
+                return usable.ok_or_else(|| gate_identity_error(error));
+            }
+        };
+        // Signed out, or another account signed in, while it enrolled:
+        // the identity is not this person's to keep or hand out.
+        if self.plugins.cloud.account().map(|a| account_key(&a)) != Some(account_key(account)) {
+            return Err(sign_in_required());
+        }
         let identity = PersonIdentity {
             name,
             agent_id: issued.agent_id,

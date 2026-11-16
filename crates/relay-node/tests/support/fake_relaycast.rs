@@ -243,6 +243,8 @@ struct Shared {
     held: BTreeMap<String, u32>,
     /// Explicit API errors for pacing tests; healthy routes are unchanged.
     api_errors: BTreeMap<String, (u16, String)>,
+    /// The `Retry-After` header an explicit API error carries, by request.
+    api_retry_after: BTreeMap<String, String>,
 }
 
 enum SocketCommand {
@@ -735,6 +737,20 @@ impl FakeRelaycast {
         }
     }
 
+    /// The `Retry-After` header the error [`FakeRelaycast::set_api_error`]
+    /// set for `request` answers with.
+    pub fn set_api_retry_after(&self, request: &str, retry_after: Option<&str>) {
+        let mut shared = self.shared.lock().unwrap();
+        match retry_after {
+            Some(value) => {
+                shared.api_retry_after.insert(request.into(), value.into());
+            }
+            None => {
+                shared.api_retry_after.remove(request);
+            }
+        }
+    }
+
     /// How long the `rg_` tokens the fake relaygate issues from now on live.
     pub fn set_gate_ttl(&self, ttl: Duration) {
         self.shared.lock().unwrap().world.gate.ttl =
@@ -1166,7 +1182,7 @@ async fn http(
     if let Some(mut hold) = hold {
         let _ = hold.wait_for(|released| *released).await;
     }
-    let (status, payload) = {
+    let ((status, payload), retry_after) = {
         let mut shared = shared.lock().unwrap();
         shared.requests.push(Recorded {
             received_at: std::time::Instant::now(),
@@ -1181,8 +1197,17 @@ async fn http(
             ),
             body: body.clone(),
         });
-        route(&mut shared, &method, &path, &query, &bearer, &body)
+        let answer = route(&mut shared, &method, &path, &query, &bearer, &body);
+        let retry_after = shared
+            .api_errors
+            .contains_key(&request)
+            .then(|| shared.api_retry_after.get(&request).cloned())
+            .flatten();
+        (answer, retry_after)
     };
+    let retry_after = retry_after
+        .map(|value| format!("Retry-After: {value}\r\n"))
+        .unwrap_or_default();
     let body = if status == 204 {
         String::new()
     } else {
@@ -1194,7 +1219,7 @@ async fn http(
         _ => "Error",
     };
     let response = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\n{retry_after}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     let _ = stream.write_all(response.as_bytes()).await;
