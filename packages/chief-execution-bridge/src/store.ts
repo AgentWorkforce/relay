@@ -386,7 +386,10 @@ export class BridgeStore {
     const [sql, times] = {
       live: ['worker_seen_at=COALESCE(worker_seen_at, ?), worker_gone_at=NULL', 1],
       exited: ['worker_seen_at=COALESCE(worker_seen_at, ?), worker_gone_at=COALESCE(worker_gone_at, ?)', 2],
-      absent: ['worker_gone_at=CASE WHEN worker_seen_at IS NULL THEN NULL ELSE COALESCE(worker_gone_at, ?) END', 1],
+      absent: [
+        'worker_gone_at=CASE WHEN worker_seen_at IS NULL THEN NULL ELSE COALESCE(worker_gone_at, ?) END',
+        1,
+      ],
     }[observation] as [string, number];
     this.db
       .prepare(`UPDATE tasks SET ${sql} WHERE task_id=? AND state='running'`)
