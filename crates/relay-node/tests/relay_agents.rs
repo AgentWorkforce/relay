@@ -6251,3 +6251,27 @@ async fn a_renewal_in_flight_cannot_bring_back_a_removed_gate_agent() {
     assert!(h.fake.agent("codex-api").is_none(), "not registered again");
     h.stop().await;
 }
+
+// A gate that answers an agent PATCH with 429 is not patched again before
+// its wait is over: the metadata and presence stay pending meanwhile.
+#[tokio::test]
+async fn a_rate_limited_gate_update_waits_before_it_is_sent_again() {
+    let h = gate_harness(true).await;
+    let mut client = h.client().await;
+    client.ok("status.get", json!({})).await;
+    h.fake
+        .set_api_error("PATCH /v1/agent", Some((429, "rate_limited")));
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    eventually("first patch", || {
+        !h.fake.calls("PATCH", "/v1/agent").is_empty()
+    })
+    .await;
+    // Many delivery passes later, still only the one.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(h.fake.calls("PATCH", "/v1/agent").len(), 1);
+    assert!(h.store()["pendingNameMarkers"]
+        .as_array()
+        .is_some_and(|p| p.iter().any(|n| n == "codex-api")));
+    h.stop().await;
+}

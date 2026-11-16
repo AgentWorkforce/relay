@@ -40,6 +40,9 @@ pub(crate) struct GateRenewals {
     stopped: HashSet<String>,
     /// Why the last renewal failed, shown on the agent.
     errors: BTreeMap<String, String>,
+    /// By gate origin: no agent `PATCH` is sent before then (a 429 or 503
+    /// answered one, with its `Retry-After` or [`RENEW_RETRY`]).
+    patch_not_before: HashMap<String, Instant>,
 }
 
 /// How a renewal ended.
@@ -489,6 +492,20 @@ impl Core {
         let Some(token) = self.store.read(|s| s.tokens.get(name).cloned()) else {
             return Ok(());
         };
+        let base = &registration.base_url;
+        let waiting = self
+            .gate_renewals
+            .lock()
+            .unwrap()
+            .patch_not_before
+            .get(base)
+            .is_some_and(|at| *at > Instant::now());
+        if waiting {
+            // Stays pending: the gate asked to wait.
+            return Err(relaycast::RelayError::InvalidResponse(
+                "relaygate asked to wait before the next update".into(),
+            ));
+        }
         let owner = self.agent_owner();
         let mut metadata = self.metadata(
             &registration.target,
@@ -502,13 +519,22 @@ impl Core {
             metadata: Some(metadata),
             ..GateSelfPatch::default()
         };
-        gate_patch_self(&registration.base_url, &token, &patch)
-            .await
-            .map(drop)
-            .map_err(|error| match error {
-                GateError::Other(inner) => *inner,
-                other => relaycast::RelayError::InvalidResponse(other.to_string()),
-            })
+        let result = gate_patch_self(base, &token, &patch).await;
+        if let Err(
+            GateError::RateLimited { retry_after } | GateError::Unavailable { retry_after },
+        ) = &result
+        {
+            let wait = retry_after.unwrap_or(RENEW_RETRY).max(RENEW_SPACING);
+            self.gate_renewals
+                .lock()
+                .unwrap()
+                .patch_not_before
+                .insert(base.clone(), Instant::now() + wait);
+        }
+        result.map(drop).map_err(|error| match error {
+            GateError::Other(inner) => *inner,
+            other => relaycast::RelayError::InvalidResponse(other.to_string()),
+        })
     }
 
     /// Publishes a new gate agent's session metadata. One that fails is

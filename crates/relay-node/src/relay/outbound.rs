@@ -1451,7 +1451,12 @@ impl Outbound {
             fetched_at_ms,
             items,
             stale,
-        } = self.roster(&base, &key, include_idle).await?;
+        } = if gate {
+            self.gate_roster(&base, &registration.name, &key, include_idle)
+                .await?
+        } else {
+            self.roster(&base, &key, include_idle).await?
+        };
 
         // This computer's agents are the registrations whose sessions the
         // delivery pass last found running (`missing_since` unset), and the
@@ -1539,6 +1544,32 @@ impl Outbound {
         include_idle: bool,
     ) -> Result<RosterAnswer, OutboundError> {
         let cache_key = format!("{base}\n{}\n{include_idle}", key.expose());
+        self.roster_cached_as(base, key, cache_key, include_idle)
+            .await
+    }
+
+    /// [`Outbound::roster`] read with a gate agent's `rg_` token, cached
+    /// under the agent's name instead: the token changes at every renewal,
+    /// and one copy per agent is kept, not one per token it ever held.
+    async fn gate_roster(
+        &self,
+        base: &str,
+        name: &str,
+        token: &Secret,
+        include_idle: bool,
+    ) -> Result<RosterAnswer, OutboundError> {
+        let cache_key = format!("{base}\ngate:{name}\n{include_idle}");
+        self.roster_cached_as(base, token, cache_key, include_idle)
+            .await
+    }
+
+    async fn roster_cached_as(
+        &self,
+        base: &str,
+        key: &Secret,
+        cache_key: String,
+        include_idle: bool,
+    ) -> Result<RosterAnswer, OutboundError> {
         let (last, read) = {
             let mut rosters = self.rosters.lock().unwrap();
             let last = rosters.cached.get(&cache_key).cloned();
