@@ -68,6 +68,21 @@ pub struct Behaviour {
     /// Status for the node socket's upgrade: 101 accepts it, anything else
     /// refuses it with that status (401: the node token is not current).
     pub socket_status: u16,
+    /// The `Retry-After` a refused upgrade carries.
+    pub socket_retry_after: Option<String>,
+    /// Closes every socket right after replying to `node.register`, with
+    /// this close code: a gateway shedding sockets.
+    pub close_after_register: Option<u16>,
+    /// The reason that close carries.
+    pub close_reason: String,
+    /// How long the socket is held, unread, before that close: a refused
+    /// register is held about 30 s.
+    pub close_delay: Duration,
+    /// Refuses `node.register` with an `ok: false` reply carrying this
+    /// error code (`provider_instance_conflict` is a 409).
+    pub refuse_register: Option<String>,
+    /// The `retry_after_ms` that refusal carries.
+    pub refuse_retry_after_ms: Option<u64>,
 }
 
 impl Default for Behaviour {
@@ -80,6 +95,12 @@ impl Default for Behaviour {
             node_name: "desk".into(),
             stall_after_register: false,
             socket_status: 101,
+            socket_retry_after: None,
+            close_after_register: None,
+            close_reason: String::new(),
+            close_delay: Duration::ZERO,
+            refuse_register: None,
+            refuse_retry_after_ms: None,
         }
     }
 }
@@ -191,6 +212,10 @@ struct Shared {
     frames: Vec<Value>,
     sockets: Vec<mpsc::UnboundedSender<SocketCommand>>,
     socket_queries: Vec<String>,
+    /// Upgrades refused with `socket_status`.
+    refused_upgrades: u32,
+    /// Sockets the client closed before the server did.
+    client_closes: u32,
     minted: u32,
     world: World,
     /// `METHOD /path` requests that wait for `true` before they are
@@ -204,7 +229,8 @@ struct Shared {
 
 enum SocketCommand {
     Send(Value),
-    Close,
+    /// Close, with this close code if any.
+    Close(Option<u16>),
 }
 
 pub struct FakeRelaycast {
@@ -252,6 +278,29 @@ impl FakeRelaycast {
         self.shared.lock().unwrap().behaviour.socket_status = status;
     }
 
+    pub fn set_socket_retry_after(&self, retry_after: Option<&str>) {
+        self.shared.lock().unwrap().behaviour.socket_retry_after = retry_after.map(str::to_string);
+    }
+
+    pub fn set_refuse_register(&self, refuse: Option<&str>) {
+        let refuse = refuse.map(str::to_string);
+        self.shared.lock().unwrap().behaviour.refuse_register = refuse;
+    }
+
+    pub fn set_close_after_register(&self, code: Option<u16>) {
+        self.shared.lock().unwrap().behaviour.close_after_register = code;
+    }
+
+    /// Sockets the client closed before the server did.
+    pub fn client_closes(&self) -> u32 {
+        self.shared.lock().unwrap().client_closes
+    }
+
+    /// Upgrades refused so far.
+    pub fn refused_upgrades(&self) -> u32 {
+        self.shared.lock().unwrap().refused_upgrades
+    }
+
     pub fn requests(&self) -> Vec<Recorded> {
         self.shared.lock().unwrap().requests.clone()
     }
@@ -292,7 +341,14 @@ impl FakeRelaycast {
     /// Closes the newest open socket from the server side.
     pub fn close_socket(&self) {
         if let Some(socket) = self.shared.lock().unwrap().sockets.last() {
-            let _ = socket.send(SocketCommand::Close);
+            let _ = socket.send(SocketCommand::Close(None));
+        }
+    }
+
+    /// Closes the newest open socket from the server side with `code`.
+    pub fn close_socket_with(&self, code: u16) {
+        if let Some(socket) = self.shared.lock().unwrap().sockets.last() {
+            let _ = socket.send(SocketCommand::Close(Some(code)));
         }
     }
 
@@ -869,11 +925,18 @@ async fn serve(stream: TcpStream, shared: Arc<Mutex<Shared>>) {
     let target = parts.next().unwrap_or_default().to_string();
     let lower = head.to_ascii_lowercase();
     if target.starts_with("/v1/node/ws") && lower.contains("upgrade: websocket") {
-        let status = shared.lock().unwrap().behaviour.socket_status;
+        let (status, retry_after) = {
+            let mut shared = shared.lock().unwrap();
+            let status = shared.behaviour.socket_status;
+            if status != 101 {
+                shared.refused_upgrades += 1;
+            }
+            (status, shared.behaviour.socket_retry_after.clone())
+        };
         if status == 101 {
             socket(stream, target, shared).await;
         } else {
-            refuse_socket(stream, status).await;
+            refuse_socket(stream, status, retry_after).await;
         }
     } else if target.starts_with("/blob/") {
         let path = target.split('?').next().unwrap_or_default().to_string();
@@ -1545,9 +1608,13 @@ fn route(
     }
 }
 
-async fn refuse_socket(mut stream: TcpStream, status: u16) {
-    let response =
-        format!("HTTP/1.1 {status} Refused\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+async fn refuse_socket(mut stream: TcpStream, status: u16, retry_after: Option<String>) {
+    let retry_after = retry_after
+        .map(|value| format!("Retry-After: {value}\r\n"))
+        .unwrap_or_default();
+    let response = format!(
+        "HTTP/1.1 {status} Refused\r\n{retry_after}Content-Length: 0\r\nConnection: close\r\n\r\n"
+    );
     let _ = stream.write_all(response.as_bytes()).await;
     let _ = stream.shutdown().await;
 }
@@ -1570,7 +1637,11 @@ async fn socket(stream: TcpStream, target: String, shared: Arc<Mutex<Shared>>) {
                         return;
                     }
                 }
-                Some(SocketCommand::Close) | None => {
+                Some(SocketCommand::Close(code)) => {
+                    let _ = socket.close(code.map(close_frame)).await;
+                    return;
+                }
+                None => {
                     let _ = socket.close(None).await;
                     return;
                 }
@@ -1578,18 +1649,32 @@ async fn socket(stream: TcpStream, target: String, shared: Arc<Mutex<Shared>>) {
             message = socket.next() => match message {
                 Some(Ok(Message::Text(text))) => {
                     let frame: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-                    let (reply, stall) = {
+                    let (reply, stall, close) = {
                         let mut shared = shared.lock().unwrap();
                         shared.frames.push(frame.clone());
                         let register = frame["type"] == "node.register";
                         (
-                            if register && shared.behaviour.reply_to_register {
+                            if let Some(code) = shared.behaviour.refuse_register.as_ref().filter(|_| register) {
+                                let status = if code == "provider_instance_conflict" { 409 } else { 400 };
+                                let mut reply = json!({"v": 1, "id": frame["id"], "type": "reply", "ok": false,
+                                    "error": {"code": code, "status": status,
+                                        "message": "node registration rejected"}});
+                                if let Some(ms) = shared.behaviour.refuse_retry_after_ms {
+                                    reply["error"]["retry_after_ms"] = ms.into();
+                                }
+                                Some(reply)
+                            } else if register && shared.behaviour.reply_to_register {
                                 Some(json!({"v": 1, "id": frame["id"], "type": "reply", "ok": true}))
                             } else if frame["type"] == "node.heartbeat" && shared.behaviour.acknowledge_presence {
                                 Some(json!({"v": 1, "id": frame["id"], "type": "reply", "ok": true,
                                     "data": {"agent_presence": true, "agent_id": frame["node_id"].as_str().unwrap().trim_start_matches("node_direct_")}}))
                             } else { None },
                             register && shared.behaviour.stall_after_register,
+                            shared
+                                .behaviour
+                                .close_after_register
+                                .filter(|_| register)
+                                .map(|code| (code, shared.behaviour.close_reason.clone(), shared.behaviour.close_delay)),
                         )
                     };
                     if let Some(reply) = reply {
@@ -1597,14 +1682,46 @@ async fn socket(stream: TcpStream, target: String, shared: Arc<Mutex<Shared>>) {
                             return;
                         }
                     }
+                    if let Some((code, reason, delay)) = close {
+                        // Held unread; a client that closes first is counted.
+                        let held = tokio::time::sleep(delay);
+                        tokio::pin!(held);
+                        loop {
+                            tokio::select! {
+                                _ = &mut held => break,
+                                message = socket.next() => match message {
+                                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => {
+                                        shared.lock().unwrap().client_closes += 1;
+                                        return;
+                                    }
+                                    Some(Ok(_)) => {}
+                                },
+                            }
+                        }
+                        let mut frame = close_frame(code);
+                        frame.reason = reason.into();
+                        let _ = socket.close(Some(frame)).await;
+                        return;
+                    }
                     if stall {
                         // Holds the socket open without ever reading it.
                         std::future::pending::<()>().await;
                     }
                 }
-                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
+                Some(Ok(Message::Close(_))) => {
+                    shared.lock().unwrap().client_closes += 1;
+                    return;
+                }
+                None | Some(Err(_)) => return,
                 Some(Ok(_)) => {}
             },
         }
+    }
+}
+
+fn close_frame(code: u16) -> tokio_tungstenite::tungstenite::protocol::CloseFrame<'static> {
+    tokio_tungstenite::tungstenite::protocol::CloseFrame {
+        code: code.into(),
+        reason: "".into(),
     }
 }

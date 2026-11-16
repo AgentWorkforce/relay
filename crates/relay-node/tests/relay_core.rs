@@ -815,6 +815,448 @@ async fn a_token_the_socket_refuses_is_minted_again() {
     channel.stop().await;
 }
 
+/// The next `Waiting` state, with its wait in milliseconds.
+async fn next_wait(signals: &mut mpsc::UnboundedReceiver<PushSignal>) -> u64 {
+    match wait_signal(signals, |signal| {
+        matches!(
+            signal,
+            PushSignal::State {
+                state: PushState::Waiting { .. },
+                ..
+            }
+        )
+    })
+    .await
+    {
+        PushSignal::State {
+            state: PushState::Waiting { retry_in_ms },
+            ..
+        } => retry_in_ms,
+        _ => unreachable!(),
+    }
+}
+
+async fn wait_live(signals: &mut mpsc::UnboundedReceiver<PushSignal>) {
+    wait_signal(signals, |signal| {
+        matches!(
+            signal,
+            PushSignal::State {
+                state: PushState::Live,
+                ..
+            }
+        )
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_busy_gateway_pauses_every_channel_of_the_workspace_for_its_retry_after() {
+    let fake = FakeRelaycast::start(Behaviour {
+        socket_status: 503,
+        socket_retry_after: Some("7".into()),
+        ..Behaviour::default()
+    })
+    .await;
+    let (context, mut signals) = push_context();
+    let gate = context.backoff.clone();
+    let alice = target(&fake, "alice", None);
+    let workspace = alice.workspace.clone();
+    let channel = PushChannel::spawn(alice, context.clone());
+    // First the channel's own backoff (2 units), then the workspace pause.
+    assert_eq!(next_wait(&mut signals).await, 20);
+    let paused = next_wait(&mut signals).await;
+    assert!((6_500..=7_000).contains(&paused), "{paused} ms");
+    assert!(gate.write_paused(&workspace));
+    assert!(gate.allowed(&workspace), "queue reads keep going");
+
+    // Another agent of the workspace holds off too.
+    let (bob_context, mut bob_signals) = push_context();
+    let bob = PushChannel::spawn(
+        PushTarget {
+            workspace: workspace.clone(),
+            ..target(&fake, "bob", None)
+        },
+        PushContext {
+            backoff: gate.clone(),
+            ..bob_context
+        },
+    );
+    let bob_paused = next_wait(&mut bob_signals).await;
+    assert!((6_000..=7_000).contains(&bob_paused), "{bob_paused} ms");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        fake.refused_upgrades(),
+        1,
+        "nothing reconnects in the pause"
+    );
+    assert_eq!(fake.minted(), 1, "nothing mints in the pause");
+    channel.stop().await;
+    bob.stop().await;
+}
+
+#[tokio::test]
+async fn a_rate_limited_upgrade_without_retry_after_takes_the_transient_pause() {
+    let fake = FakeRelaycast::start(Behaviour {
+        socket_status: 429,
+        ..Behaviour::default()
+    })
+    .await;
+    let (context, mut signals) = push_context();
+    let gate = context.backoff.clone();
+    let alice = target(&fake, "alice", None);
+    let workspace = alice.workspace.clone();
+    let channel = PushChannel::spawn(alice, context);
+    assert_eq!(next_wait(&mut signals).await, 20);
+    // The transient schedule's first step: 2 s, jittered to 1-2 s.
+    let paused = next_wait(&mut signals).await;
+    assert!((900..=2_000).contains(&paused), "{paused} ms");
+    assert!(gate.write_paused(&workspace));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(fake.refused_upgrades(), 1);
+    channel.stop().await;
+}
+
+#[tokio::test]
+async fn a_socket_closed_with_try_again_later_pauses_the_workspace() {
+    let fake = FakeRelaycast::start(Behaviour {
+        close_after_register: Some(1013),
+        ..Behaviour::default()
+    })
+    .await;
+    let (context, mut signals) = push_context();
+    let gate = context.backoff.clone();
+    let alice = target(&fake, "alice", None);
+    let workspace = alice.workspace.clone();
+    let channel = PushChannel::spawn(alice, context);
+    assert_eq!(next_wait(&mut signals).await, 20);
+    let paused = next_wait(&mut signals).await;
+    assert!((900..=2_000).contains(&paused), "{paused} ms");
+    assert!(gate.write_paused(&workspace));
+    assert_eq!(fake.socket_queries().len(), 1);
+    channel.stop().await;
+}
+
+#[tokio::test]
+async fn reconnects_start_over_only_after_a_socket_held_up() {
+    // Sockets the gateway drops right after registering (a normal close,
+    // so no workspace pause): every reconnect waits longer.
+    let fake = FakeRelaycast::start(Behaviour {
+        close_after_register: Some(1000),
+        ..Behaviour::default()
+    })
+    .await;
+    let (context, mut signals) = push_context();
+    let channel = PushChannel::spawn(target(&fake, "alice", None), context);
+    let mut waits = Vec::new();
+    for _ in 0..4 {
+        waits.push(next_wait(&mut signals).await);
+    }
+    assert_eq!(waits, vec![20, 40, 80, 160]);
+    fake.set_close_after_register(None);
+    // Live, but dropped before it held up (4 heartbeats of 50 ms): still
+    // growing.
+    wait_live(&mut signals).await;
+    fake.close_socket_with(1000);
+    assert_eq!(next_wait(&mut signals).await, 320);
+    // Live past the stable period: the next reconnect is fast again.
+    wait_live(&mut signals).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    fake.close_socket_with(1000);
+    assert_eq!(next_wait(&mut signals).await, 20);
+    channel.stop().await;
+}
+
+/// The signals up to the channel's next wait, and that wait.
+async fn signals_to_wait(
+    signals: &mut mpsc::UnboundedReceiver<PushSignal>,
+) -> (Vec<PushSignal>, u64) {
+    let mut seen = Vec::new();
+    loop {
+        let signal = next_signal(signals).await;
+        if let PushSignal::State {
+            state: PushState::Waiting { retry_in_ms },
+            ..
+        } = signal
+        {
+            return (seen, retry_in_ms);
+        }
+        seen.push(signal);
+    }
+}
+
+fn went_live_or_woke(seen: &[PushSignal]) -> bool {
+    seen.iter().any(|signal| {
+        matches!(
+            signal,
+            PushSignal::Wake { .. }
+                | PushSignal::State {
+                    state: PushState::Live,
+                    ..
+                }
+        )
+    })
+}
+
+#[tokio::test]
+async fn register_names_this_installs_provider_instance() {
+    let fake = FakeRelaycast::start(Behaviour::default()).await;
+    let (context, mut signals) = push_context();
+    let install_id = context.install_id.clone();
+    let channel = PushChannel::spawn(target(&fake, "alice", None), context);
+    wait_live(&mut signals).await;
+    let register = fake.frames()[0].clone();
+    assert_eq!(register["type"], "node.register");
+    assert_eq!(register["provider"]["name"], "default");
+    let instance = register["provider"]["instance_id"].as_str().unwrap();
+    assert!(instance.ends_with(&format!("-{install_id}")), "{instance}");
+    assert!(instance.len() > install_id.len() + 1, "{instance}");
+    channel.stop().await;
+}
+
+fn conflict_refusal() -> Behaviour {
+    Behaviour {
+        refuse_register: Some("provider_instance_conflict".into()),
+        ..Behaviour::default()
+    }
+}
+
+#[tokio::test]
+async fn a_conflict_reply_waits_half_a_minute_or_more_from_the_refusal() {
+    // Relaycast holds the refused socket (here 150 ms), then closes 4009.
+    let fake = FakeRelaycast::start(Behaviour {
+        close_after_register: Some(4009),
+        close_reason: "provider_instance_conflict".into(),
+        close_delay: Duration::from_millis(150),
+        ..conflict_refusal()
+    })
+    .await;
+    let (context, mut signals) = push_context();
+    let channel = PushChannel::spawn(target(&fake, "alice", None), context);
+    let (seen, wait) = signals_to_wait(&mut signals).await;
+    let refused = std::time::Instant::now();
+    // 60 units of 10 ms at jitter 1.0: the 30-60 s wait, counted from the
+    // refusal, not from the close 150 ms later.
+    assert!((550..=600).contains(&wait), "{wait}");
+    // Never live, no queue read woken.
+    assert!(!went_live_or_woke(&seen), "{seen:?}");
+    // The next attempt only once the wait is over; the server closed the
+    // socket, and nothing was sent on it while it was held.
+    let (seen, wait) = signals_to_wait(&mut signals).await;
+    assert!(refused.elapsed() >= Duration::from_millis(500));
+    assert!((550..=600).contains(&wait), "{wait}");
+    assert!(!went_live_or_woke(&seen), "{seen:?}");
+    assert_eq!(fake.client_closes(), 0);
+    assert!(fake
+        .frames()
+        .iter()
+        .all(|frame| frame["type"] == "node.register"));
+    channel.stop().await;
+}
+
+#[tokio::test]
+async fn a_conflict_reply_s_retry_after_is_the_least_wait() {
+    let fake = FakeRelaycast::start(Behaviour {
+        refuse_retry_after_ms: Some(45_000),
+        close_after_register: Some(4009),
+        close_reason: "provider_instance_conflict".into(),
+        ..conflict_refusal()
+    })
+    .await;
+    let (context, mut signals) = push_context();
+    let channel = PushChannel::spawn(target(&fake, "alice", None), context);
+    let (seen, wait) = signals_to_wait(&mut signals).await;
+    // 45 s is 45 units of 10 ms.
+    assert!((400..=450).contains(&wait), "{wait}");
+    assert!(!went_live_or_woke(&seen), "{seen:?}");
+    channel.stop().await;
+}
+
+#[tokio::test]
+async fn a_conflict_reply_the_server_never_closes_is_closed_when_the_wait_is_over() {
+    // No close from the server: the client closes the socket itself once
+    // the conflict wait is over, then reconnects.
+    let fake = FakeRelaycast::start(conflict_refusal()).await;
+    let (context, mut signals) = push_context();
+    let channel = PushChannel::spawn(target(&fake, "alice", None), context);
+    let (seen, wait) = signals_to_wait(&mut signals).await;
+    let refused = std::time::Instant::now();
+    assert!((550..=600).contains(&wait), "{wait}");
+    assert!(!went_live_or_woke(&seen), "{seen:?}");
+    fake.wait_for("the client's close", |fake| fake.client_closes() == 1)
+        .await;
+    assert!(refused.elapsed() >= Duration::from_millis(500));
+    // Once the other instance lets go, the node registers.
+    fake.set_refuse_register(None);
+    wait_live(&mut signals).await;
+    channel.stop().await;
+}
+
+#[tokio::test]
+async fn an_unanswered_register_is_closed_and_retried_on_the_normal_backoff() {
+    // No reply in 15 units (150 ms here, 15 s live): closed, never live,
+    // and the backoff keeps growing.
+    let fake = FakeRelaycast::start(Behaviour {
+        reply_to_register: false,
+        ..Behaviour::default()
+    })
+    .await;
+    let (context, mut signals) = push_context();
+    let started = std::time::Instant::now();
+    let channel = PushChannel::spawn(target(&fake, "alice", None), context);
+    let mut waits = Vec::new();
+    for _ in 0..2 {
+        let (seen, wait) = signals_to_wait(&mut signals).await;
+        assert!(!went_live_or_woke(&seen), "{seen:?}");
+        waits.push(wait);
+    }
+    assert!(started.elapsed() >= Duration::from_millis(300));
+    assert_eq!(waits, vec![20, 40]);
+    fake.wait_for("the client's closes", |fake| fake.client_closes() >= 2)
+        .await;
+    channel.stop().await;
+}
+
+#[tokio::test]
+async fn a_conflict_close_alone_waits_like_a_conflict_reply() {
+    let fake = FakeRelaycast::start(Behaviour {
+        reply_to_register: false,
+        close_after_register: Some(4009),
+        close_reason: "provider_instance_conflict".into(),
+        ..Behaviour::default()
+    })
+    .await;
+    let (context, mut signals) = push_context();
+    let channel = PushChannel::spawn(target(&fake, "alice", None), context);
+    for _ in 0..2 {
+        let (seen, wait) = signals_to_wait(&mut signals).await;
+        assert!((550..=600).contains(&wait), "{wait}");
+        assert!(!went_live_or_woke(&seen), "{seen:?}");
+    }
+    channel.stop().await;
+}
+
+#[tokio::test]
+async fn a_rejected_registration_takes_the_normal_backoff() {
+    // Refused for another reason, then closed 4001: no conflict wait, no
+    // fresh start, and no queue read.
+    let fake = FakeRelaycast::start(Behaviour {
+        refuse_register: Some("node_registration_rejected".into()),
+        close_after_register: Some(4001),
+        close_reason: "node registration rejected".into(),
+        ..Behaviour::default()
+    })
+    .await;
+    let (context, mut signals) = push_context();
+    let channel = PushChannel::spawn(target(&fake, "alice", None), context);
+    let mut waits = Vec::new();
+    for _ in 0..3 {
+        let (seen, wait) = signals_to_wait(&mut signals).await;
+        assert!(!went_live_or_woke(&seen), "{seen:?}");
+        waits.push(wait);
+    }
+    assert_eq!(waits, vec![20, 40, 80]);
+    assert_eq!(fake.client_closes(), 0);
+    channel.stop().await;
+}
+
+#[tokio::test]
+async fn a_conflict_close_s_retry_after_extends_a_reply_without_one() {
+    // The reply names no wait; the 4009 close 100 ms later asks for 90 s
+    // (90 units of 10 ms), counted from the refusal.
+    let fake = FakeRelaycast::start(Behaviour {
+        close_after_register: Some(4009),
+        close_reason: r#"{"code":"provider_instance_conflict","retry_after_ms":90000}"#.into(),
+        close_delay: Duration::from_millis(100),
+        ..conflict_refusal()
+    })
+    .await;
+    let (context, mut signals) = push_context();
+    let channel = PushChannel::spawn(target(&fake, "alice", None), context);
+    let (seen, wait) = signals_to_wait(&mut signals).await;
+    let refused = std::time::Instant::now();
+    assert!((550..=600).contains(&wait), "{wait}");
+    assert!(!went_live_or_woke(&seen), "{seen:?}");
+    // The close lengthens the wait.
+    let (seen, wait) = signals_to_wait(&mut signals).await;
+    assert!((700..=800).contains(&wait), "{wait}");
+    assert!(!went_live_or_woke(&seen), "{seen:?}");
+    // And the next attempt waits for it.
+    let _ = signals_to_wait(&mut signals).await;
+    assert!(
+        refused.elapsed() >= Duration::from_millis(850),
+        "{:?}",
+        refused.elapsed()
+    );
+    assert_eq!(fake.socket_queries().len(), 2);
+    channel.stop().await;
+}
+
+#[tokio::test]
+async fn a_register_refused_for_an_invalid_node_token_mints_a_new_one() {
+    let fake = FakeRelaycast::start(Behaviour {
+        refuse_register: Some("node_token_invalid".into()),
+        close_after_register: Some(4001),
+        close_reason: "node_token_invalid".into(),
+        ..Behaviour::default()
+    })
+    .await;
+    let (context, mut signals) = push_context();
+    let channel = PushChannel::spawn(target(&fake, "alice", None), context);
+    let _ = signals_to_wait(&mut signals).await;
+    assert_eq!(fake.minted(), 1);
+    fake.wait_for("a second socket", |fake| fake.socket_queries().len() >= 2)
+        .await;
+    assert_eq!(fake.minted(), 2, "the refused token is not used again");
+    channel.stop().await;
+}
+
+#[tokio::test]
+async fn a_try_again_later_close_s_retry_after_is_the_workspace_pause() {
+    let fake = FakeRelaycast::start(Behaviour {
+        close_after_register: Some(1013),
+        close_reason: r#"{"retry_after":7}"#.into(),
+        ..Behaviour::default()
+    })
+    .await;
+    let (context, mut signals) = push_context();
+    let gate = context.backoff.clone();
+    let alice = target(&fake, "alice", None);
+    let workspace = alice.workspace.clone();
+    let channel = PushChannel::spawn(alice, context);
+    assert_eq!(next_wait(&mut signals).await, 20);
+    let paused = next_wait(&mut signals).await;
+    assert!((6_500..=7_000).contains(&paused), "{paused} ms");
+    assert!(gate.write_paused(&workspace));
+    channel.stop().await;
+}
+
+#[tokio::test]
+async fn a_superseded_socket_does_not_start_the_backoff_over() {
+    // Live, then superseded right away: the backoff keeps growing, and it
+    // is not taken for a conflict.
+    let fake = FakeRelaycast::start(Behaviour {
+        close_after_register: Some(4000),
+        close_reason: "superseded".into(),
+        ..Behaviour::default()
+    })
+    .await;
+    let (context, mut signals) = push_context();
+    let gate = context.backoff.clone();
+    let alice = target(&fake, "alice", None);
+    let workspace = alice.workspace.clone();
+    let channel = PushChannel::spawn(alice, context);
+    let mut waits = Vec::new();
+    for _ in 0..4 {
+        let (seen, wait) = signals_to_wait(&mut signals).await;
+        assert!(went_live_or_woke(&seen), "{seen:?}");
+        waits.push(wait);
+    }
+    assert_eq!(waits, vec![20, 40, 80, 160]);
+    // A superseded close is not the gateway shedding load.
+    assert!(gate.remaining_write(&workspace).is_none());
+    channel.stop().await;
+}
+
 fn relabelled(target: PushTarget, label: &str) -> PushTarget {
     PushTarget {
         workspace: agent_relay_node::relay::backoff::WorkspaceScope::credential(

@@ -33,6 +33,7 @@ mod event_filters;
 mod relayfile_error;
 use create::SubscriptionIntent;
 pub(crate) use event_filters::normalize_event_types;
+pub(crate) use relayfile_error::retry_after_seconds;
 
 pub const PROVIDERS: [&str; 4] = ["github", "linear", "slack", "jira"];
 
