@@ -2060,6 +2060,23 @@ impl Core {
                 .await
             }
         };
+        // The gate refused a gate agent's token (it expired, and its renewal
+        // has not landed): the answer was not accepted, so its claim is
+        // released and a later pass sends it with the renewed token.
+        if registration.gate.is_some() {
+            if let Err(error) = &sent {
+                if crate::relay::sdk_gaps::is_gate_unauthenticated(error) {
+                    let _ = self.store.update(|store| {
+                        if let Some(entry) = store.replies.iter_mut().flatten().find(|r| {
+                            r.agent_id == reply.agent_id && r.message_id == reply.message_id
+                        }) {
+                            entry.claimed = None;
+                        }
+                    });
+                    return;
+                }
+            }
+        }
         let (outcome, detail, preview) = match sent {
             Ok(_) => (
                 DeliveryOutcome::Answered,

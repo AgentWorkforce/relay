@@ -107,9 +107,17 @@ impl Core {
             return Ok(self.status().workspace);
         }
         let checked_at_ms = Some(now_ms());
+        // Decided in the same update as it is written: a rediscovery (a
+        // sign-out) published since is never overwritten with this answer.
+        let still_shown = |status: &crate::relay::state::Status| {
+            status.workspace.base_url.as_deref() == Some(workspace.base_url.as_str())
+        };
         match signed_in {
             Ok(_) => {
                 let status = self.hub.update(|status| {
+                    if !still_shown(status) {
+                        return;
+                    }
                     status.workspace.verification = Verification::Verified;
                     if let Some(id) = &workspace.workspace_id {
                         status.workspace.workspace_id = Some(id.clone());
@@ -120,6 +128,9 @@ impl Core {
             }
             Err(error) => {
                 self.hub.update(|status| {
+                    if !still_shown(status) {
+                        return;
+                    }
                     status.workspace.verification = Verification::Pending;
                     status.workspace.checked_at_ms = checked_at_ms;
                 });

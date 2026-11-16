@@ -107,7 +107,9 @@ impl Core {
             )
         })?;
         self.store
-            .update(|s| s.keep_gate_recovery(gate_url, name, fresh))
+            // Decided on the file as it is now, under its lock: another
+            // process may have kept a proof for this name already.
+            .update_latest(|s| s.keep_gate_recovery(gate_url, name, fresh))
             .map_err(|error| {
                 RpcError::new(
                     ErrorKind::StoreFailed,
