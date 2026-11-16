@@ -34,6 +34,15 @@ impl SignatureCache {
         installed_app_file(path) && self.0.trusted(path, identity, verify_vscode_signature)
     }
 
+    pub(super) fn trusted_copilot(&self, path: &Path) -> bool {
+        let uid = crate::relay::peer::current_uid();
+        std::fs::metadata(path)
+            .is_ok_and(|m| (m.uid() == 0 || m.uid() == uid) && m.mode() & 0o022 == 0)
+            && self
+                .0
+                .trusted(path, identity, |path| verify_signature(path, GITHUB))
+    }
+
     /// Cursor's own: an installed app file (`installed_app_file`) validly
     /// signed by Cursor's developer.
     pub(super) fn trusted_cursor(&self, path: &Path) -> bool {
@@ -100,6 +109,15 @@ fn core_foundation_url(path: &Path) -> Option<core_foundation::url::CFURL> {
 }
 
 const MICROSOFT: &str = "anchor apple generic and certificate leaf[subject.OU] = \"UBF8T346G9\"";
+const GITHUB: &str = "anchor apple generic and certificate leaf[subject.OU] = \"VEKTX9H2N7\"";
+
+pub(super) fn trusted_copilot_process(pid: i32) -> bool {
+    trusted_process(pid, GITHUB)
+}
+
+pub(super) fn trusted_copilot_bundle(bundle: &Path) -> bool {
+    trusted_bundle(bundle, GITHUB, "com.github.githubapp")
+}
 
 /// Bind validation to the live process, not a signed file replacing its path.
 pub(super) fn trusted_vscode_process(pid: i32) -> bool {
@@ -123,6 +141,10 @@ fn trusted_process(pid: i32, requirement: &str) -> bool {
 /// Check sealed application resources as well as the runtime executable. This
 /// intentionally bypasses the executable cache: resources have separate inodes.
 pub(super) fn trusted_vscode_bundle(bundle: &Path) -> bool {
+    trusted_bundle(bundle, MICROSOFT, "com.microsoft.VSCode")
+}
+
+fn trusted_bundle(bundle: &Path, signer: &str, identifier: &str) -> bool {
     use security_framework::os::macos::code_signing::{Flags, SecRequirement, SecStaticCode};
     if !installed_app_file(bundle) {
         return false;
@@ -134,7 +156,7 @@ pub(super) fn trusted_vscode_bundle(bundle: &Path) -> bool {
         return false;
     };
     let Ok(requirement) =
-        format!("{MICROSOFT} and identifier \"com.microsoft.VSCode\"").parse::<SecRequirement>()
+        format!("{signer} and identifier \"{identifier}\"").parse::<SecRequirement>()
     else {
         return false;
     };

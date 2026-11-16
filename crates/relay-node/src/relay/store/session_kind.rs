@@ -76,7 +76,7 @@ pub enum SessionKind {
     /// when its turn ends (`relay::cursor_cli`). Not a Cursor Cloud agent.
     #[serde(rename = "cursor-cli")]
     CursorCli,
-    /// A native Copilot harness session in VS Code, reached by verified hooks.
+    /// A native Copilot desktop or VS Code session, reached by verified hooks.
     #[serde(rename = "copilot")]
     Copilot,
     /// An OpenClaw agent on the person's local OpenClaw Gateway, reached as

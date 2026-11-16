@@ -17,6 +17,8 @@ struct Record {
     cwd: Option<String>,
     #[serde(default)]
     context_after: u64,
+    #[serde(default)]
+    host: Option<String>,
 }
 fn read(config: &CopilotConfig, sid: &str) -> io::Result<Option<Record>> {
     if !is_uuid(sid) {
@@ -39,7 +41,7 @@ fn discovered(sid: &str, record: Record) -> DiscoveredSession {
         title: record.title,
         directory: record.cwd,
         updated_at_ms: None,
-        host: Some("VS Code".into()),
+        host: Some(record.host.unwrap_or_else(|| "VS Code".into())),
         live: true,
         holder: None,
     }
@@ -226,6 +228,16 @@ fn observe(
     let record = Record {
         pid: runtime.pid,
         start: runtime.start,
+        host: Some(
+            if table
+                .executable(runtime.parent)
+                .is_some_and(|exe| exe.ends_with("GitHub Copilot.app/Contents/MacOS/github"))
+            {
+                "GitHub Copilot".into()
+            } else {
+                "VS Code".into()
+            },
+        ),
         context_after: if payload["relayEvent"] == "start"
             || old
                 .as_ref()

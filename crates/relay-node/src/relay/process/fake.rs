@@ -36,6 +36,8 @@ pub struct FakeProcesses {
     pub trusted_relay_helpers: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
     pub trusted_vscode_bundles: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
     pub trusted_vscode: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
+    pub trusted_copilot: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
+    pub trusted_copilot_bundles: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
     pub trusted_cursor: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
     pub clock: Option<StartClock>,
     /// Processes whose environment the kernel would not let this user read.
@@ -98,6 +100,15 @@ impl ProcessTable for FakeProcesses {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .contains(executable)
+    }
+    fn is_trusted_copilot(&self, _pid: i32, executable: &Path) -> bool {
+        self.trusted_copilot.lock().unwrap().contains(executable)
+    }
+    fn is_trusted_copilot_bundle(&self, bundle: &Path) -> bool {
+        self.trusted_copilot_bundles
+            .lock()
+            .unwrap()
+            .contains(bundle)
     }
 
     fn is_trusted_vscode_bundle(&self, bundle: &Path) -> bool {
