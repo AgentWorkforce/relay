@@ -3,7 +3,7 @@
 //! sees it (`CoreHost`).
 
 use super::lifecycle::{self, NodeSeen, WorkCounts};
-use super::node::{NodeConfig, NodeHost, NodeInfo, NodeLink, SpawnNode};
+use super::node::{NodeConfig, NodeHost, NodeInfo, NodeLink, SpawnNode, GATE_ONLY_UNAVAILABLE};
 use super::node_name;
 use super::resources;
 use super::wire::{
@@ -72,7 +72,8 @@ impl Core {
     }
 
     /// The node this computer should run now, if any: spawns are on, there
-    /// is a workspace, and a harness it can spawn is installed.
+    /// is a workspace, and a harness it can spawn is installed. On a
+    /// gate-only install, also a relay-node credential for Control's bridge.
     fn wanted_spawn_node(&self) -> Result<NodeConfig, Option<String>> {
         let settings = self.spawn_settings();
         if !settings.accept {
@@ -81,6 +82,17 @@ impl Core {
         let workspace = self
             .workspace()
             .ok_or_else(|| Some("No Agent Relay workspace on this computer.".to_string()))?;
+        // A gate-only install keeps the node token in Control, which
+        // bridges the node's socket for a node holding a relay-node
+        // credential (`sh_wk_…` with its Control origin). Without one there
+        // is no bridge to spawn through: reported as unavailable, never
+        // hidden.
+        if workspace.is_gate_only()
+            && !(crate::relay::workspace::is_node_key(workspace.key.expose())
+                && workspace.control_url.is_some())
+        {
+            return Err(Some(GATE_ONLY_UNAVAILABLE.into()));
+        }
         let harnesses = self.plugins.spawner.available();
         if harnesses.is_empty() {
             return Err(Some(

@@ -32,7 +32,8 @@ pub(crate) use control_retry::Results;
 pub(crate) use control_retry::KEEP as RESULT_KEEP;
 #[cfg(test)]
 use enroll::ALTERNATES;
-use enroll::{enroll_named, rotate, saved, Refused};
+pub(crate) use enroll::GATE_ONLY_UNAVAILABLE;
+use enroll::{enroll, enroll_named, rotate, saved, Refused};
 #[cfg(test)]
 use enrollment::{alternate, fingerprint, pending, read, save, save_pending, Pending};
 pub(crate) use enrollment::{enrolled_name, node_token};
@@ -347,13 +348,31 @@ fn dead_token(config: &NodeConfig) -> String {
     }
 }
 
+/// Where the node's socket is opened, and with what credential: Relaycast's
+/// `/v1/node/ws` with the node token, or, for a node bridged through
+/// Control on a gate-only install, Control's `/relay-node/v1/ws` with the
+/// node's relay-node credential. Either goes in the `Authorization`
+/// header, never in the URL.
+fn socket_target<'a>(config: &'a NodeConfig, enrollment: &'a Enrollment) -> (String, &'a Secret) {
+    match config.control_url.as_deref() {
+        Some(control_url) if enrollment.bridged => (
+            sdk_gaps::control_node_socket_url(control_url, &config.version),
+            &config.workspace_key,
+        ),
+        _ => (
+            sdk_gaps::broker_node_socket_url(&config.base_url, &config.version),
+            &enrollment.token,
+        ),
+    }
+}
+
 async fn open(
     config: &NodeConfig,
     enrollment: &Enrollment,
 ) -> Result<sdk_gaps::NodeSocket, tungstenite::Error> {
-    let url = sdk_gaps::broker_node_socket_url(&config.base_url, &config.version);
+    let (url, credential) = socket_target(config, enrollment);
     let mut request = url.into_client_request()?;
-    let bearer = format!("Bearer {}", enrollment.token.expose())
+    let bearer = format!("Bearer {}", credential.expose())
         .parse()
         .map_err(|_| tungstenite::Error::Url(tungstenite::error::UrlError::NoHostName))?;
     request.headers_mut().insert("Authorization", bearer);
@@ -368,8 +387,43 @@ async fn open(
 }
 
 fn rejected(error: &tungstenite::Error) -> bool {
-    matches!(error, tungstenite::Error::Http(response)
-        if matches!(response.status().as_u16(), 401 | 403))
+    matches!(refusal(error), Some(401 | 403))
+}
+
+/// The status of an upgrade Agent Relay refused with a plain HTTP answer.
+fn refusal(error: &tungstenite::Error) -> Option<u16> {
+    match error {
+        tungstenite::Error::Http(response) => Some(response.status().as_u16()),
+        _ => None,
+    }
+}
+
+/// Control refused to bridge a node's socket (`status`, no body). Never a
+/// rotation: the bridged node holds no token. A `403` means Control has no
+/// usable node token for it (never enrolled through it, or unreadable
+/// under its keyring), so the node is enrolled again under its own id and
+/// name; a `404` means the install is no longer gate-only, so the saved
+/// node is forgotten and the next attempt enrols as the install now asks.
+/// A `401` (the relay-node credential refused) is waited out.
+async fn bridge_refused(config: &NodeConfig, enrollment: &Enrollment, status: u16) -> Ended {
+    let refused = "Agent Relay's Control bridge refused this computer's spawn node.";
+    match status {
+        403 => match enroll(config, &enrollment.node_id, &enrollment.node_name, None).await {
+            Ok(_) => Ended::Closed(refused.into()),
+            Err(Refused::GateOnly(reason)) => Ended::GaveUp(reason),
+            Err(Refused::PlanLimit(limit)) => Ended::Refused(limit),
+            Err(Refused::IdTaken) => {
+                let _ = forget(&node_file(config));
+                Ended::Closed(refused.into())
+            }
+            Err(reason) => Ended::Closed(format!("{refused} {}", reason.reason())),
+        },
+        404 => {
+            let _ = forget(&node_file(config));
+            Ended::Closed(refused.into())
+        }
+        _ => Ended::Closed(refused.into()),
+    }
 }
 
 async fn connect_once(
@@ -389,6 +443,8 @@ async fn connect_once(
                 host.refused(reason.clone());
                 return Ended::GaveUp(reason);
             }
+            // Never retried: spawning is unavailable on this install.
+            Err(Refused::GateOnly(reason)) => return Ended::GaveUp(reason),
             Err(refused) => return Ended::Closed(refused.reason()),
         },
         // The saved node's credential is bound to another name: stopped,
@@ -401,6 +457,10 @@ async fn connect_once(
     };
     let mut socket = match open(config, &enrollment).await {
         Ok(socket) => socket,
+        Err(error) if enrollment.bridged && refusal(&error).is_some() => {
+            let status = refusal(&error).unwrap_or_default();
+            return bridge_refused(config, &enrollment, status).await;
+        }
         Err(error) if rejected(&error) => {
             let refused = "Agent Relay refused this computer's spawn node.";
             return match rotate(config, &enrollment).await {
@@ -414,6 +474,7 @@ async fn connect_once(
                 Err(Refused::ProofRefused(reason)) => {
                     Ended::TokenRefused(format!("{refused} {reason}"))
                 }
+                Err(Refused::GateOnly(reason)) => Ended::GaveUp(reason),
                 Err(reason) => Ended::Closed(format!("{refused} {}", reason.reason())),
             };
         }
@@ -675,6 +736,7 @@ mod tests {
             base_url: config.base_url.clone(),
             workspace: fingerprint(&config.workspace_key),
             rotation_key: None,
+            bridged: false,
         };
         save(&node_file(&config), &enrollment).unwrap();
         assert_eq!(load(&config), Some(enrollment));
@@ -715,6 +777,7 @@ mod tests {
             base_url: config.base_url.clone(),
             workspace: fingerprint(&config.workspace_key),
             rotation_key: None,
+            bridged: false,
         };
         save(&node_file(&config), &enrollment).unwrap();
         let token = node_token(folder.path(), &config.base_url, &config.workspace_key).unwrap();
@@ -817,6 +880,7 @@ mod tests {
             base_url: old.base_url.clone(),
             workspace: fingerprint(&old.workspace_key),
             rotation_key: None,
+            bridged: false,
         };
         save(&node_file(&old), &enrollment).unwrap();
         let current = NodeConfig {
@@ -942,6 +1006,7 @@ mod tests {
             base_url: config.base_url.clone(),
             workspace: fingerprint(&config.workspace_key),
             rotation_key: None,
+            bridged: false,
         };
         save(&node_file(&config), &enrollment).unwrap();
         assert!(rotate(&config, &enrollment).await.is_err());

@@ -42,6 +42,10 @@ pub const NODE_MISMATCH: &str = "node_mismatch";
 pub const TOKEN_INVALID: &str = "token_invalid";
 /// The broker's code when Relaycast could not be reached or refused it.
 pub const RELAYCAST_UNAVAILABLE: &str = "relaycast_unavailable";
+/// The broker's code when this install is gate-only and its enrolment
+/// (`POST /relay-node/v1/nodes`) cannot bridge a spawn node: spawning is
+/// unavailable here, and asking again cannot change that.
+pub const GATE_ONLY: &str = "gate_only";
 
 /// The error a workspace-key call answers with when it is not available with
 /// a node-scoped credential: the broker's own `403 scope_denied`.
@@ -121,13 +125,22 @@ pub fn is_node_mismatch(error: &RelayError) -> bool {
     broker_answer(error, 403, NODE_MISMATCH)
 }
 
+/// Whether `error` is the broker's `403 gate_only`: a gate-only install
+/// whose Control bridge cannot take this node. Never retried.
+pub fn is_gate_only_refusal(error: &RelayError) -> bool {
+    broker_answer(error, 403, GATE_ONLY)
+}
+
 /// Whether `error` rejects the credential itself (a refused workspace key, a
 /// revoked or expired node credential): an auth rejection that is neither a
 /// call outside the node credential's scope nor a node-name mismatch. Use it
 /// wherever [`RelayError::is_auth_rejection`] would mark the workspace
 /// rejected or start a key recovery.
 pub fn rejects_credential(error: &RelayError) -> bool {
-    error.is_auth_rejection() && !is_scope_denied(error) && !is_node_mismatch(error)
+    error.is_auth_rejection()
+        && !is_scope_denied(error)
+        && !is_node_mismatch(error)
+        && !is_gate_only_refusal(error)
 }
 
 /// Whether `error` rejects a workspace credential of `kind`. A workspace
@@ -277,6 +290,9 @@ mod tests {
         assert!(!is_scope_denied(&api(401, SCOPE_DENIED)));
         assert!(is_node_mismatch(&api(403, NODE_MISMATCH)));
         assert!(!is_node_mismatch(&api(409, NODE_MISMATCH)));
+        assert!(is_gate_only_refusal(&api(403, GATE_ONLY)));
+        assert!(!is_gate_only_refusal(&api(401, GATE_ONLY)));
+        assert!(!rejects_credential(&api(403, GATE_ONLY)));
         // A quoted body is never searched for a code.
         let quoted = RelayError::api(
             "invalid_response_body",

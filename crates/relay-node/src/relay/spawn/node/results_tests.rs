@@ -108,6 +108,7 @@ fn config(folder: &Path, listener: &TcpListener) -> NodeConfig {
         base_url: config.base_url.clone(),
         workspace: fingerprint(&config.workspace_key),
         rotation_key: None,
+        bridged: false,
     };
     save(&node_file(&config), &enrollment).unwrap();
     config

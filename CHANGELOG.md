@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `agent-relay-node`: self-hosted installs whose Control API returns `urls.relaygateUrl` (relaygate gate-only mode) register each agent at relaygate with the person's device token instead of the shared workspace key. Agents renew their relaygate token before it expires, publish their session details and presence, read the roster and are removed through the gate. A removed name registers again as the same agent. Installs without a relaygate URL, including default and hosted ones, are unchanged.
+- `agent-relay-node`: on gate-only self-hosted installs, spawning works through Control's node bridge: the node enrols and connects with its relay-node credential, holds no Relaycast node token, and passes each launch's one-time credential to the agent as `RELAY_LAUNCH_CREDENTIAL` without saving or logging it. An install whose Control has no bridge reports spawning as unavailable instead of retrying.
 
 ### Fixed
 
