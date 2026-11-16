@@ -1715,6 +1715,8 @@ async function listenAsSessionOwner(
           // A relay wake link delivers every post to the session that linked it. Claiming one here
           // (wait_for_webhook marks it read) would take it from that session, so stand down.
           if (await relayWakeLinked(io, mcpUrl)) return 0;
+          // The session may have closed while that was asked: start no wait for it.
+          if (!alive()) return 0;
           const controller = new AbortController();
           // While \`drain()\`, a wait in flight is not cut off: the inbox may already have handed it
           // posts, which \`deliver\` then keeps for the next owner.
@@ -1790,26 +1792,82 @@ async function hookInput(io: CliIo): Promise<{ session: string; transcript: stri
   }
 }
 
-/** A webhooks MCP tool call as Claude Code records it in a transcript (\`mcp__webhooks__watch_webhooks\`). */
-const WEBHOOKS_TOOL_USE = new RegExp(
-  `"name"\\s*:\\s*"mcp__${MCP_SERVER_NAME}__(watch_webhooks|link_relay_wake|wait_for_webhook|get_webhook_events)"`
+/** The webhooks MCP tools whose call opts a Claude Code session in (\`mcp__webhooks__watch_webhooks\`). */
+const WEBHOOKS_TOOL = new RegExp(
+  `^mcp__${MCP_SERVER_NAME}__(watch_webhooks|link_relay_wake|wait_for_webhook|get_webhook_events)$`
 );
 
+/** The longest transcript line read for an opt-in; a tool call record is far shorter. */
+const TRANSCRIPT_LINE_LIMIT = 16 * 1024 * 1024;
+
+/** Whether one transcript line is an assistant turn that called a webhooks MCP tool. */
+function callsWebhooksTool(line: string): boolean {
+  if (!line.includes(`mcp__${MCP_SERVER_NAME}__`)) return false;
+  try {
+    const record = JSON.parse(line) as { type?: unknown; message?: { content?: unknown } };
+    const content = record.type === 'assistant' ? record.message?.content : undefined;
+    return (
+      Array.isArray(content) &&
+      content.some(
+        (block: { type?: unknown; name?: unknown } | null) =>
+          block?.type === 'tool_use' && typeof block.name === 'string' && WEBHOOKS_TOOL.test(block.name)
+      )
+    );
+  } catch {
+    return false; // a malformed or partly written line
+  }
+}
+
 /**
- * Whether this Claude Code session asked for webhook posts: its transcript shows a call to one of
- * the webhooks MCP tools (the skill starts with \`watch_webhooks\`). \`setup --claude\` installs the
- * wake hooks for every session on the machine, but all of them share one inbox, so a session that
- * never opted in would otherwise take posts meant for another. Remembered per session once seen.
+ * Whether this Claude Code session asked for webhook posts: its transcript shows an assistant
+ * \`tool_use\` of one of the webhooks MCP tools (the skill starts with \`watch_webhooks\`).
+ * \`setup --claude\` installs the wake hooks for every session on the machine, but all of them
+ * share one inbox, so a session that never opted in would otherwise take posts meant for another.
+ * The transcript is read in chunks, whole lines only, from where the last check stopped (kept in a
+ * per-session file), so a long transcript is read once in all, not once per turn; the answer is
+ * remembered once seen.
  */
 function sessionOptedIn(io: CliIo, mcpUrl: string, session: string, transcript: string): boolean {
   if (!session || !transcript) return false;
   const digest = createHash('sha256').update(`${mcpUrl}\n${session}`).digest('hex').slice(0, 16);
   const marker = join(dirname(configPath(io)), `optin-${digest}`);
   if (io.exists(marker)) return true;
-  const text = io.readFrom(transcript, 0)?.text;
-  if (!text || !WEBHOOKS_TOOL_USE.test(text)) return false;
-  writePrivate(marker, `${session}\n`);
-  return true;
+  const progress = `${marker}.scanned`;
+  const saved = Number(io.readText(progress)?.trim());
+  // \`offset\`: where the first line not yet checked starts; \`carry\`: that line so far, when it is
+  // longer than one read.
+  let offset = Number.isSafeInteger(saved) && saved > 0 ? saved : 0;
+  let position = offset;
+  let carry = '';
+  for (;;) {
+    const chunk = io.readFrom(transcript, position);
+    if (!chunk || chunk.end <= position) break;
+    const cut = chunk.text.lastIndexOf('\n');
+    if (cut < 0) {
+      carry += chunk.text;
+      position = chunk.end;
+      // No call record is this long: skip the line rather than hold it.
+      if (carry.length > TRANSCRIPT_LINE_LIMIT) {
+        carry = '';
+        offset = position;
+      }
+      continue;
+    }
+    // Everything up to the chunk's last newline is whole lines; only the bytes after it can end
+    // inside a character, so this offset is exact.
+    const head = chunk.text.slice(0, cut + 1);
+    if ((carry + head).split('\n').some(callsWebhooksTool)) {
+      writePrivate(marker, `${session}\n`);
+      rmSync(progress, { force: true });
+      return true;
+    }
+    offset = position + Buffer.byteLength(head, 'utf8');
+    position = offset;
+    carry = '';
+  }
+  // A line still being written is read again next time, from its start.
+  if (offset > 0) writePrivate(progress, `${offset}\n`);
+  return false;
 }
 
 /**

@@ -18,10 +18,9 @@ export interface EventsShimMcpContext {
   /** How often `wait_for_webhook` re-reads the store. */
   pollIntervalMs?: number;
   /**
-   * Re-reads the inbox before a tool reports its wake state. Pass it when the
-   * tools stay registered across requests (a long-lived server), since a
-   * delivery pass may have marked the link broken since `shim` was read.
-   * The per-request HTTP handler reads the inbox fresh and does not need it.
+   * Re-reads the inbox before a tool reports its wake state, and on each
+   * \`wait_for_webhook\` poll, since a delivery pass or another request may
+   * have linked, unlinked or broken the link since `shim` was read.
    */
   reloadShim?: () => Promise<ShimRecord | null>;
   /** Ends a `wait_for_webhook` early when the client disconnects. */
@@ -348,6 +347,8 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
       const deadline = Date.now() + timeoutMs;
       const interval = ctx.pollIntervalMs ?? 1_000;
       const signals = [ctx.signal, extra?.signal].filter((signal): signal is AbortSignal => Boolean(signal));
+      // \`seen\` just read the inbox; later polls read it again.
+      let polled = false;
       for (;;) {
         // Never claim for a client that is gone: claimed posts are marked read.
         if (signals.some((signal) => signal.aborted)) {
@@ -357,6 +358,12 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
         // made the link, and a waiter here (another session's wake hook, say) would mark it read
         // first and take it from that session. Wait out the timeout without claiming, so a
         // listener that calls again at once does not spin.
+        // Re-read the link on every poll: one made or broken while this waits counts at once.
+        if (polled && ctx.reloadShim) {
+          const fresh = await ctx.reloadShim();
+          if (fresh) ctx.shim = fresh;
+        }
+        polled = true;
         const linked = wakeState(ctx.shim) === 'linked';
         const batch = linked ? { events: [], more: false } : await handOver(ctx);
         if (batch.events.length > 0) {

@@ -1241,6 +1241,90 @@ describe('events-shim CLI', () => {
     expect(readdirSync(dir).some((file) => file.startsWith('optin-'))).toBe(true);
   });
 
+  it('listen --hook finds an opt-in past the first chunk of a long transcript, reading each part once', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'events-shim-transcript-'));
+    const transcript = join(dir, 'long-1.jsonl');
+    const turn = (n: number) =>
+      JSON.stringify({ type: 'user', message: { role: 'user', content: `turn ${n} é ${'x'.repeat(40)}` } });
+    writeFileSync(transcript, `${Array.from({ length: 30 }, (_, n) => turn(n)).join('\n')}\n`);
+    const w = await fileWorld({
+      stdin: JSON.stringify({ session_id: 'long-1', transcript_path: transcript }),
+    });
+    // The real reader returns at most 4 MiB a call; this one 100 bytes, so the transcript takes many.
+    const reads: number[] = [];
+    w.io.readFrom = (path, offset) => {
+      reads.push(offset);
+      const bytes = readFileSync(path);
+      const start = Math.min(offset, bytes.length);
+      const part = bytes.subarray(start, Math.min(bytes.length, start + 100));
+      return { text: part.toString('utf8'), end: start + part.length };
+    };
+    await runCli(['setup', w.created.mcp_url], w.io);
+    await w.post({ for: 'the long session' });
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(0); // no webhooks call yet
+    const scanned = Math.max(...reads);
+    expect(scanned).toBeGreaterThan(1_000);
+    // The session calls watch_webhooks late in a long transcript; the next turn's hook starts where the last stopped.
+    appendFileSync(
+      transcript,
+      `${JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{ type: 'tool_use', id: 't9', name: 'mcp__webhooks__watch_webhooks', input: {} }],
+        },
+      })}\n`
+    );
+    reads.length = 0;
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(2);
+    expect(w.err.join('\n')).toContain('{"for":"the long session"}');
+    expect(Math.min(...reads)).toBeGreaterThanOrEqual(scanned - 100);
+  });
+
+  it('listen --hook: a webhooks tool name inside another call is not an opt-in', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'events-shim-transcript-'));
+    const transcript = join(dir, 'other-2.jsonl');
+    writeFileSync(
+      transcript,
+      [
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            content: [
+              { type: 'tool_use', id: 't1', name: 'Bash', input: { name: 'mcp__webhooks__watch_webhooks' } },
+            ],
+          },
+        }),
+        JSON.stringify({ type: 'user', message: { content: '"name": "mcp__webhooks__watch_webhooks"' } }),
+        '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__webhooks__watch_webhooks"',
+      ].join('\n')
+    );
+    const w = await fileWorld({
+      stdin: JSON.stringify({ session_id: 'other-2', transcript_path: transcript }),
+    });
+    await runCli(['setup', w.created.mcp_url], w.io);
+    await w.post({ for: 'someone else' });
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
+    expect((await inboxTool(w, 'watch_webhooks')).waiting).toBe(1);
+  });
+
+  it('listen --hook takes nothing when its session closes while it asks about the relay link', async () => {
+    const w = await fileWorld({ stdin: claudeHook('closing-1') });
+    await runCli(['setup', w.created.mcp_url], w.io);
+    await w.post({ for: 'a live session' });
+    const fetchImpl = w.io.fetchImpl;
+    w.io.fetchImpl = async (input, init) => {
+      const response = await fetchImpl(input, init);
+      if (typeof init?.body === 'string' && init.body.includes('"watch_webhooks"')) {
+        w.io.pidAlive = (pid) => pid === 4242; // Claude (777) exits meanwhile
+      }
+      return response;
+    };
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
+    expect(w.err).toEqual([]);
+    w.io.fetchImpl = fetchImpl;
+    expect((await inboxTool(w, 'watch_webhooks')).waiting).toBe(1);
+  });
+
   it('listen --hook stands down while the inbox forwards posts through a relay wake link', async () => {
     const w = await fileWorld({ stdin: claudeHook('abc-123') });
     await runCli(['setup', w.created.mcp_url], w.io);

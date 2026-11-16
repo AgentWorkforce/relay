@@ -524,6 +524,27 @@ describe('events shim', () => {
     expect(unlinked.structuredContent?.events).toHaveLength(1);
   });
 
+  it('a wait already running sees a relay wake link made, then removed, meanwhile', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const waiter = await h.connect(shim.mcp_url);
+    const linker = await h.connect(shim.mcp_url);
+    const waiting = waiter.call('wait_for_webhook', { timeout_seconds: 2 });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await linker.call('link_relay_wake', RELAY_HOOK);
+    await h.post(shim.webhook_url, { for: 'the linked session' });
+    expect((await waiting).structuredContent).toMatchObject({ events: [], wake: 'linked' });
+    await vi.waitFor(async () => {
+      const [event] = (await h.feed(shim.manage_token)).body.events as { delivery: string }[];
+      expect(event?.delivery).toBe('woken');
+    });
+    const again = waiter.call('wait_for_webhook', { timeout_seconds: 5 });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await linker.call('unlink_relay_wake', {});
+    await h.post(shim.webhook_url, { after: 'unlink' });
+    expect((await again).structuredContent?.events).toHaveLength(1);
+  });
+
   it('delivers a retried post once per Idempotency-Key but counts it', async () => {
     const h = createHarness();
     const shim = await h.create();
