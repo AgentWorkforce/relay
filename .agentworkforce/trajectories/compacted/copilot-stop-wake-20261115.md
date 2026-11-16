@@ -34,3 +34,11 @@
 - The selected helper can itself use the Sessions hardlink; the initial hardlink fix still disabled equivalent owned settings. The extended regression failed before completing same-file checks for configuration and caller selection.
 - The ad-hoc live candidate failed helper verification because codesign prints its computed requirement as a comment. Replaced subprocess/path parsing with native Security.framework requirement derivation from the running code object, retaining strict self and guest validation.
 - Native designated-requirement self-validation failed before the fix and passed after it. All 52 Copilot tests and both macOS signing tests pass; actual signed-candidate idle wake remains pending the rebuilt candidate.
+
+## Live validation follow-up
+
+- V2 delivered DM247988130483310592 through a native stop block and exactly one injected user message. The assistant completed its response without inbox polling. Evidence: `/tmp/relay-copilot-live-results/wake-A.json`.
+- A repeated wake failed native session proof, so one successful wake did not finish validation. Combined V3 remains pending.
+- Copilot's shared agent host retains hook/MCP helper commands across window reload. Developer: Restart Local Agent Host refreshes the native runtime.
+- Current process-table hook authentication avoids stale discovered descriptors; regressions accept newly opened descriptors and reject closed descriptors hidden by the snapshot. The stop request gets 30 seconds for native validation, retaining the existing bounded native hook lifetime.
+- 54 Copilot tests, 3 snapshot tests and 2 macOS signing tests pass. Veto used host analysis fallback, not an independent reviewer. The original installed app bundle is untouched; tests use a separate candidate and preserve message claims.
