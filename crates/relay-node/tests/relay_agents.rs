@@ -6398,6 +6398,64 @@ async fn a_gate_only_refusal_of_the_identity_route_enrols_you_at_the_gate() {
     h.stop().await;
 }
 
+// Switching to a key-based workspace while the identity route is asked: a
+// late gate_only refusal neither saves the old gate into the new workspace
+// nor enrols you there.
+#[tokio::test]
+async fn a_gate_only_refusal_after_a_workspace_switch_is_neither_kept_nor_used() {
+    let gate = FakeRelaycast::start(Behaviour::default()).await;
+    let gate_url = gate.base_url.clone();
+    let home_cell: Arc<std::sync::Mutex<Option<std::path::PathBuf>>> = Arc::default();
+    let home_seen = home_cell.clone();
+    let h = Harness::start_with(
+        |_| {
+            let cloud = gate_cloud(true);
+            let path =
+                "/workspaces/50587328-441d-4acb-b8f3-dbe1b3c5de99/messaging/identity/credential";
+            cloud.answer(
+                "POST",
+                path,
+                Err(CloudError::GateOnly {
+                    relaygate_url: Some(gate_url),
+                }),
+            );
+            cloud.during.lock().unwrap().insert(
+                format!("POST {path}"),
+                Box::new(move || {
+                    let home = home_cell.lock().unwrap().clone().unwrap();
+                    let store = home.join("app-data/injectable-agents.json");
+                    let mut switched: Value =
+                        serde_json::from_slice(&std::fs::read(&store).unwrap()).unwrap();
+                    switched["cloud"]["key"] = json!("rk_live_another000");
+                    std::fs::write(&store, switched.to_string()).unwrap();
+                }),
+            );
+            Some(cloud)
+        },
+        move |home, _| *home_seen.lock().unwrap() = Some(home.to_path_buf()),
+    )
+    .await;
+    let mut client = h.client().await;
+    gate.seed_gate_agent("reviewer", "reviewer-recovery-0123456789");
+
+    let (kind, _) = client
+        .error(
+            "messages.send",
+            json!({"to": "reviewer", "text": "not through the old gate"}),
+        )
+        .await;
+    assert_eq!(kind, "cloud_failed");
+    assert!(gate.calls("POST", "/v1/register").is_empty());
+    assert!(gate.calls("POST", "/v1/dm").is_empty());
+    let store: Value = serde_json::from_slice(
+        &std::fs::read(h.home.join("app-data/injectable-agents.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(store["cloud"]["key"], "rk_live_another000");
+    assert!(store["cloud"].get("relaygateURL").is_none());
+    h.stop().await;
+}
+
 #[tokio::test]
 async fn on_a_gate_only_install_you_message_through_the_gate_and_your_token_is_renewed() {
     let h = gate_harness(true).await;

@@ -411,6 +411,20 @@ fn person_gate_waiting(wait: std::time::Duration, why: Option<String>) -> RpcErr
     error
 }
 
+/// The stored workspace's key, address and Agent Relay workspace: what
+/// tells one saved workspace from another.
+fn stored_workspace_of(
+    store: &crate::relay::store::Store,
+) -> Option<(Secret, String, Option<String>)> {
+    store.cloud.as_ref().map(|cloud| {
+        (
+            cloud.key.clone(),
+            cloud.base_url.clone(),
+            cloud.account_workspace_id.clone(),
+        )
+    })
+}
+
 /// Who an identity and everything read with it belong to.
 fn account_key(account: &CloudAccount) -> String {
     format!(
@@ -491,6 +505,7 @@ impl Core {
             "/workspaces/{}/messaging/identity/credential",
             segment(&account.workspace_id)
         );
+        let asked_in = self.stored_workspace();
         let body = match self
             .plugins
             .cloud
@@ -499,7 +514,7 @@ impl Core {
         {
             Ok(body) => body,
             Err(CloudError::GateOnly { relaygate_url }) => {
-                let gate_url = self.adopt_gate_url(relaygate_url)?;
+                let gate_url = self.adopt_gate_url(&account, asked_in, relaygate_url)?;
                 return self
                     .person_identity_at_gate(&account, &gate_url, refused.as_ref())
                     .await;
@@ -563,11 +578,40 @@ impl Core {
             })
     }
 
+    /// Which stored workspace a request was made in: its key, address and
+    /// Agent Relay workspace. Another workspace saved meanwhile differs.
+    fn stored_workspace(&self) -> Option<(Secret, String, Option<String>)> {
+        self.store.read(stored_workspace_of)
+    }
+
     /// The gate a `gate_only` refusal of the identity route named, kept in
     /// the store as a gate-only resolve keeps it, unless a gate is known
     /// already (then that one is used). A refusal that names no valid gate
-    /// leaves nothing to message through.
-    fn adopt_gate_url(&self, offered: Option<String>) -> Result<String, RpcError> {
+    /// leaves nothing to message through. `account` asked while `asked_in`
+    /// was stored: a refusal that arrives after a sign-out, another account
+    /// or another workspace belongs to none of them and is neither kept nor
+    /// used.
+    fn adopt_gate_url(
+        &self,
+        account: &CloudAccount,
+        asked_in: Option<(Secret, String, Option<String>)>,
+        offered: Option<String>,
+    ) -> Result<String, RpcError> {
+        if self.plugins.cloud.account().map(|a| account_key(&a)) != Some(account_key(account)) {
+            return Err(sign_in_required());
+        }
+        // As the file holds it now: another process may have saved the
+        // workspace you switched to.
+        let unchanged = self
+            .store
+            .update_latest(|store| stored_workspace_of(store) == asked_in)
+            .unwrap_or_else(|_| self.stored_workspace() == asked_in);
+        if !unchanged {
+            return Err(RpcError::new(
+                ErrorKind::CloudFailed,
+                "Your Agent Relay workspace changed while you were being enrolled. Try again.",
+            ));
+        }
         if let Some(known) = self.person_gate_url() {
             return Ok(known);
         }
@@ -579,7 +623,12 @@ impl Core {
         })?;
         // A failed save is not fatal here: you still message through the
         // gate now, and the next refusal adopts it again.
+        // Checked again as it saves, so a workspace saved in between keeps
+        // its own credentials.
         let _ = self.store.update_latest(|store| {
+            if stored_workspace_of(store) != asked_in {
+                return;
+            }
             if let Some(cloud) = store.cloud.as_mut().filter(|c| c.gate_url.is_none()) {
                 cloud.gate_url = Some(gate.clone());
             }
