@@ -177,14 +177,15 @@ pub fn is_workspace_key_env(name: &str) -> bool {
         .any(|key| key.eq_ignore_ascii_case(name))
 }
 
-/// The variable a spawned agent reads its one-time launch credential
-/// (`sh_lt_…`) from, for its relaygate registration. Set only for the one
-/// launch Control minted it for (`spawn::launch::agent_environment`).
+/// The variable an earlier design handed a spawned agent its one-time
+/// launch credential (`sh_lt_…`) in. Never set now: the node redeems the
+/// credential at relaygate itself. Still stripped from every child's
+/// environment ([`AGENT_SECRET_ENV`]), so a stale one is never inherited.
 pub const LAUNCH_CREDENTIAL_ENV: &str = "RELAY_LAUNCH_CREDENTIAL";
 
 /// Other credential variables no child process the core starts inherits,
 /// in production builds too: the Cloud access token the core may run with,
-/// and a launch credential left in an environment by an earlier spawn.
+/// and a launch credential left in the node's environment.
 pub const AGENT_SECRET_ENV: [&str; 2] = ["CLOUD_API_ACCESS_TOKEN", LAUNCH_CREDENTIAL_ENV];
 
 /// Whether `name` is a variable no child process inherits: one of

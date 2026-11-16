@@ -73,6 +73,7 @@ impl Core {
             );
         }
         self.forget_agent(&registration.name);
+        self.release_launch_gate(&registration.name).await;
         self.forget_releasing(&registration.name);
         self.hub.update(|status| {
             status.push.remove(&registration.name);

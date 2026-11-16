@@ -240,12 +240,36 @@ impl Store {
     /// an agent's own, or one of its aliases'.
     pub fn credential_named(&self, name: &str) -> Option<(Registration, Secret)> {
         if let Some(registration) = self.registration_named(name) {
-            let token = self.tokens.get(name)?;
-            return Some((registration.clone(), token.clone()));
+            return self.own_credential(registration);
         }
         self.credentials()
             .into_iter()
             .find(|(registration, _)| registration.name == name)
+    }
+
+    /// A registration with its own token. A launched agent registered at
+    /// relaygate ([`Store::launch_gates`]) acts there with its `rg_` token,
+    /// renewed by refresh.
+    fn own_credential(&self, registration: &Registration) -> Option<(Registration, Secret)> {
+        if let Some(launched) = self.launch_gates.0.get(&registration.name) {
+            let view = Registration {
+                base_url: launched.gate_url.clone(),
+                gate: Some(launched.gate.clone()),
+                ..registration.clone()
+            };
+            return Some((view, launched.token.clone()));
+        }
+        let token = self.tokens.get(&registration.name)?;
+        Some((registration.clone(), token.clone()))
+    }
+
+    /// The token `name` acts with: its launch registration's at relaygate
+    /// when it has one, its own otherwise. Not an alias's.
+    pub fn token(&self, name: &str) -> Option<Secret> {
+        match self.launch_gates.0.get(name) {
+            Some(launched) => Some(launched.token.clone()),
+            None => self.tokens.get(name).cloned(),
+        }
     }
 
     /// Like `credential_named`, by Relaycast agent id.
@@ -259,10 +283,10 @@ impl Store {
     /// token, then each alias, current or still forwarding, as an agent of
     /// its own.
     pub fn credentials(&self) -> Vec<(Registration, Secret)> {
-        let own = self.registrations.iter().filter_map(|registration| {
-            let token = self.tokens.get(&registration.name)?;
-            Some((registration.clone(), token.clone()))
-        });
+        let own = self
+            .registrations
+            .iter()
+            .filter_map(|registration| self.own_credential(registration));
         let aliases = self.registrations.iter().flat_map(|registration| {
             registration
                 .alias_credential()

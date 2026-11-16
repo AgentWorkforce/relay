@@ -44,8 +44,9 @@
 
 mod gate;
 pub use gate::{
-    gate_delete_self, gate_patch_self, gate_register, new_recovery, GateError, GateRegistration,
-    GateSelfPatch, GATE_DENIED, GATE_NAME_SCOPE, GATE_NAME_TAKEN, GATE_UNAUTHENTICATED,
+    gate_delete_self, gate_patch_self, gate_refresh, gate_register, gate_register_launch,
+    new_recovery, GateError, GateRefresh, GateRegistration, GateSelfPatch, GATE_DENIED,
+    GATE_NAME_SCOPE, GATE_NAME_TAKEN, GATE_UNAUTHENTICATED, GATE_UNAVAILABLE,
 };
 // For the agent-token calls to classify an expired `rg_` token by (re-register).
 pub(crate) use gate::is_gate_unauthenticated;

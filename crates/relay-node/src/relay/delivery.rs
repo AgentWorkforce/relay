@@ -1930,13 +1930,15 @@ impl Core {
 
     async fn check_reply(self: &Arc<Core>, reply: &Reply) {
         let owner = self.store.read(|s| {
-            let registration = s
+            let name = &s
                 .registrations
                 .iter()
                 .find(|r| r.agent_id == reply.agent_id)?
-                .clone();
+                .name;
+            // A launched agent's view carries its relaygate registration.
+            let (registration, token) = s.credential_named(name)?;
             // One name per session: the answer goes out under its current name.
-            let token = registration.sender_token(s.tokens.get(&registration.name)?.clone());
+            let token = registration.sender_token(token);
             Some((registration, token))
         });
         let Some((registration, token)) = owner else {

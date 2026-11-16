@@ -541,11 +541,14 @@ pub struct SpawnRequest {
     pub fork_from: Option<String>,
     /// The one-time `sh_lt_` credential Control added for this launch on a
     /// gate-only install (`input.launch_credential`), for the agent's
-    /// relaygate registration. Read once from the frame, handed to the
-    /// agent's process alone as `RELAY_LAUNCH_CREDENTIAL`, and never kept
-    /// anywhere else: not in the intent, the ledger or any file, and never
-    /// logged (its `Debug` shows only the prefix). `None` when Control sent
-    /// none: a spawn exactly as before.
+    /// relaygate registration. Read once from the frame, taken out of the
+    /// request when the spawn is answered, and presented by the node to
+    /// relaygate once, inside the launch and before the harness starts
+    /// (`Core::register_launch_at_gate`); dropped as soon as that returns.
+    /// Never handed to the agent's process and never kept anywhere else:
+    /// not in the intent, the ledger or any file, and never logged (its
+    /// `Debug` shows only the prefix). `None` when Control sent none: a
+    /// spawn exactly as before.
     pub launch_credential: Option<Secret>,
 }
 
@@ -1011,7 +1014,7 @@ mod tests {
     }
 
     /// Control's launch credential is read from the spawn's input, and a
-    /// value that is not one is refused, never handed to the agent.
+    /// value that is not one is refused, never presented to relaygate.
     #[test]
     fn a_launch_credential_is_read_once_from_the_spawn_input() {
         let spawn = |input: Value| {

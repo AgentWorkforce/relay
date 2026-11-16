@@ -186,6 +186,8 @@ impl Core {
                 .await
                 .ok()
                 .map(|n| n as u32);
+            // Its launch is over: so is its relaygate registration.
+            self.release_launch_gate(&registration.name).await;
             {
                 let mut state = ledger.lock();
                 if let Some(unfinished) = state

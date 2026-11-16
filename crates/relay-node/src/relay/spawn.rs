@@ -302,7 +302,7 @@ mod tests {
         /// as Codex starts a thread before its first turn is confirmed.
         starts_before_pause: bool,
         /// The `RELAY_LAUNCH_CREDENTIAL` each launch's agent would start
-        /// with (`launch::agent_environment`).
+        /// with (`launch::agent_environment`): never one.
         credentials: Mutex<Vec<Option<String>>>,
     }
 
@@ -423,6 +423,7 @@ mod tests {
         }
     }
 
+    mod launch_gate;
     mod lifecycle_failures;
     mod native_sender;
     mod owner_framing;
@@ -2287,11 +2288,11 @@ mod tests {
         });
     }
 
-    /// Control's one-time launch credential reaches the launched agent's
-    /// environment alone: nothing the node writes keeps it, and the next
-    /// launch without one starts without it.
+    /// Control's one-time launch credential never reaches the launched
+    /// agent's environment and nothing the node writes keeps it. Without a
+    /// relaygate URL the node has nowhere to present it, so it drops it.
     #[tokio::test]
-    async fn a_launch_credential_reaches_the_agent_alone_and_is_never_written() {
+    async fn a_launch_credential_never_reaches_the_agent_and_is_never_written() {
         const CREDENTIAL: &str = "sh_lt_fixture_one_time_launch";
         let home = tempfile::tempdir().unwrap();
         let spawner = Arc::new(FakeSpawner::default());
@@ -2318,10 +2319,7 @@ mod tests {
         let (link, sent) = NodeLink::detached(node());
         let _frames = relaycast(link.clone(), sent);
         core.clone().answer_spawn(link, request).await;
-        assert_eq!(
-            *spawner.credentials.lock().unwrap(),
-            [Some(CREDENTIAL.to_string()), None]
-        );
+        assert_eq!(*spawner.credentials.lock().unwrap(), [None, None]);
         core.store.flush().unwrap();
         let mut folders = vec![home.path().to_path_buf()];
         let mut files = 0;
@@ -2332,9 +2330,10 @@ mod tests {
                     folders.push(path);
                 } else if let Ok(bytes) = std::fs::read(&path) {
                     files += 1;
+                    let text = String::from_utf8_lossy(&bytes);
                     assert!(
-                        !String::from_utf8_lossy(&bytes).contains("sh_lt_"),
-                        "{} keeps the launch credential",
+                        !text.contains("sh_lt_") && !text.contains("rg_"),
+                        "{} keeps a launch credential or relaygate token",
                         path.display()
                     );
                 }

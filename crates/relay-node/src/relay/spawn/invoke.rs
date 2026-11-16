@@ -48,8 +48,11 @@ impl Core {
     pub(super) async fn answer_spawn(
         self: Arc<Core>,
         link: NodeLink,
-        request: SpawnRequest,
+        mut request: SpawnRequest,
     ) -> Value {
+        // Taken out of the request at once: it is presented to relaygate
+        // once, by the launch, and kept nowhere else.
+        let mut launch_credential = request.launch_credential.take();
         self.hub.activity(
             Level::Info,
             format!(
@@ -57,7 +60,11 @@ impl Core {
                 request.invocation_id, request.name, request.harness, link.node.node_name
             ),
         );
-        match self.spawn_agent(&link, &request).await {
+        let result = self
+            .spawn_agent(&link, &request, &mut launch_credential)
+            .await;
+        drop(launch_credential);
+        match result {
             Ok(output) => wire::action_output(&request.invocation_id, output),
             Err(error) => {
                 if let Some(cleanup) = self.ledger().lock().failed.get_mut(&request.invocation_id) {
@@ -99,6 +106,7 @@ impl Core {
         &self,
         link: &NodeLink,
         request: &SpawnRequest,
+        launch_credential: &mut Option<Secret>,
     ) -> Result<Value, SpawnError> {
         let workspace = self
             .workspace()
@@ -172,7 +180,10 @@ impl Core {
             let _ = self.preserve_spawn_completion(&saved);
             return Ok(completions::spawned_output(&saved));
         }
-        let result = match self.spawn_agent_once(link, request).await {
+        let result = match self
+            .spawn_agent_once(link, request, launch_credential)
+            .await
+        {
             Ok(output) => match scope.save(&self.config.app_data_dir, request, output.clone()) {
                 Ok(completion) => completion.replay(request),
                 // The agent runs and its registration is saved, carrying the
@@ -220,6 +231,7 @@ impl Core {
         &self,
         link: &NodeLink,
         request: &SpawnRequest,
+        launch_credential: &mut Option<Secret>,
     ) -> Result<Value, SpawnError> {
         let settings = self.spawn_settings();
         if !settings.accept {
@@ -263,7 +275,7 @@ impl Core {
         let result = match self.claim_name(&request.name) {
             Ok(()) => {
                 let result = self
-                    .spawn_claimed(link, request, &settings, &mut left)
+                    .spawn_claimed(link, request, launch_credential, &settings, &mut left)
                     .await;
                 self.release_name(&request.name);
                 result
@@ -288,6 +300,7 @@ impl Core {
         &self,
         link: &NodeLink,
         request: &SpawnRequest,
+        launch_credential: &mut Option<Secret>,
         settings: &SpawnSettings,
         left: &mut Option<(Intent, Unanswered)>,
     ) -> Result<Value, SpawnError> {
@@ -450,14 +463,38 @@ impl Core {
             session_id: in_flight.intent.session_id.clone(),
             fork: fork.map(|fork| fork.session_id),
         };
-        let launched = match self
-            .launch_registered(launch, request.launch_credential.as_ref(), &mut in_flight)
-            .await
-        {
+        // On a gate-only install the launch's one-time credential registers
+        // the agent at relaygate, here and before the harness starts; the
+        // agent's process never sees it. Elsewhere it is dropped unused.
+        let gate_url = workspace.gate_url.clone();
+        let at_gate = match (launch_credential.take(), &gate_url) {
+            (Some(credential), Some(gate_url)) => {
+                if let Err(reason) = self
+                    .register_launch_at_gate(gate_url, &request.name, credential)
+                    .await
+                {
+                    deregister(&in_flight.intent);
+                    return Err(reason.into());
+                }
+                true
+            }
+            _ => false,
+        };
+        // A launch that does not start leaves no relaygate registration.
+        let released = |name: &str| {
+            let name = name.to_owned();
+            async move {
+                if at_gate {
+                    self.release_launch_gate(&name).await;
+                }
+            }
+        };
+        let launched = match self.launch_registered(launch, &mut in_flight).await {
             Ok(launched) => launched,
             Err(LaunchFailure::Launch(
                 LaunchError::Unavailable(reason) | LaunchError::Failed(reason),
             )) => {
+                released(&request.name).await;
                 deregister(&in_flight.intent);
                 return Err(self.harness_unavailable(
                     link,
@@ -467,8 +504,12 @@ impl Core {
             }
             // What it started may still run: it stays registered, its intent
             // left for recovery to stop it and take it off the node.
-            Err(LaunchFailure::Running(code)) => return Err(code.into()),
+            Err(LaunchFailure::Running(code)) => {
+                released(&request.name).await;
+                return Err(code.into());
+            }
             Err(failure) => {
+                released(&request.name).await;
                 deregister(&in_flight.intent);
                 return Err(failure.code().into());
             }
@@ -520,6 +561,7 @@ impl Core {
             added
         });
         if saved != Ok(true) {
+            released(&request.name).await;
             if self.abandon(&launched, &mut in_flight).await {
                 deregister(&in_flight.intent);
             }

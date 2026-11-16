@@ -374,3 +374,62 @@ fn only_relaygates_401_code_means_register_again() {
         "x".into()
     )));
 }
+
+const LAUNCH_CREDENTIAL: &str = "sh_lt_launch0123456789";
+
+/// A launch's credential registers the agent by name alone: no recovery
+/// proof, the credential as the bearer, the same answer read.
+#[tokio::test]
+async fn a_launch_register_sends_the_credential_and_the_name_alone() {
+    let body = format!(r#"{{"ok":true,"data":{}}}"#, registration_body());
+    let (url, server) = gate("201 Created", &[], &body);
+    let registration = gate_register_launch(&url, &Secret::new(LAUNCH_CREDENTIAL), "builder")
+        .await
+        .unwrap();
+    assert_eq!(registration.agent_id, "ag_1");
+    assert_eq!(registration.token.expose(), "rg_issued");
+    let request = server.join().unwrap();
+    assert!(request.starts_with("POST /v1/register "), "{request}");
+    assert!(request
+        .to_lowercase()
+        .contains(&format!("authorization: bearer {LAUNCH_CREDENTIAL}")));
+    let sent: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(sent, json!({"name": "builder"}));
+}
+
+/// A refresh sends the agent's own token and no body, and reads the new
+/// token; an answer without an `rg_` token is refused.
+#[tokio::test]
+async fn a_refresh_sends_the_agent_token_and_reads_the_new_one() {
+    let (url, server) = gate(
+        "200 OK",
+        &[],
+        r#"{"ok":true,"data":{"token":"rg_next","expires_at":"2026-11-16T11:00:00.000Z"}}"#,
+    );
+    let refreshed = gate_refresh(&url, &Secret::new(AGENT_TOKEN)).await.unwrap();
+    assert_eq!(refreshed.token.expose(), "rg_next");
+    assert_eq!(
+        refreshed.expires_at,
+        chrono::DateTime::parse_from_rfc3339("2026-11-16T11:00:00Z").unwrap()
+    );
+    let request = server.join().unwrap();
+    assert!(request.starts_with("POST /v1/token/refresh "), "{request}");
+    assert!(request
+        .to_lowercase()
+        .contains(&format!("authorization: bearer {AGENT_TOKEN}")));
+
+    let (url, server) = gate(
+        "200 OK",
+        &[],
+        r#"{"token":"at_live_x","expires_at":"2026-11-16T11:00:00Z"}"#,
+    );
+    assert!(gate_refresh(&url, &Secret::new(AGENT_TOKEN)).await.is_err());
+    server.join().unwrap();
+
+    let (url, server) = gate("401 Unauthorized", &[], &error_body(GATE_UNAUTHENTICATED));
+    assert!(matches!(
+        gate_refresh(&url, &Secret::new(AGENT_TOKEN)).await,
+        Err(GateError::Unauthenticated)
+    ));
+    server.join().unwrap();
+}

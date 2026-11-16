@@ -108,6 +108,10 @@ impl Core {
         self.stop_spawned(&registration);
         self.forget_agent_and_alias(&registration);
         self.forget_gate_renewal(name);
+        if registration.gate.is_none() {
+            // A launched agent's relaygate registration ends with it.
+            self.release_launch_gate(name).await;
+        }
         if registration.gate.is_some() {
             // Its aliases are gate agents of their own: each is deleted with
             // its own token, now that nothing here holds it.

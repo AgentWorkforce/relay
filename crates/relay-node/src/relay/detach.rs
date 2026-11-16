@@ -35,8 +35,8 @@ pub(crate) fn record_exit(path: &Path, status: &str) -> std::io::Result<()> {
 /// child inherits ([`AGENT_SECRET_ENV`]): every detached launch (Devin's
 /// helper, Muse, OpenCode, Grok, managed providers) goes through [`start`],
 /// so no process it starts inherits the node's credential or the core's
-/// Cloud access token. A spawn's launch credential is added for the launch
-/// it was given to only (`spawn::launch::agent_environment`).
+/// Cloud access token. A spawn's launch credential never reaches a child:
+/// the node redeems it at relaygate itself.
 ///
 /// [`WORKSPACE_KEY_ENV`]: crate::relay::workspace::WORKSPACE_KEY_ENV
 /// [`AGENT_SECRET_ENV`]: crate::relay::workspace::AGENT_SECRET_ENV

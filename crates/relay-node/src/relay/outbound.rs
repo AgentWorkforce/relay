@@ -1472,9 +1472,7 @@ impl Outbound {
         // to its own token, filtered to the agents it may reach.
         let gate = registration.gate.is_some();
         let key = if gate {
-            self.core
-                .store
-                .read(|s| s.tokens.get(&registration.name).cloned())
+            self.core.store.read(|s| s.token(&registration.name))
         } else {
             self.core.key_for(&registration)
         }
