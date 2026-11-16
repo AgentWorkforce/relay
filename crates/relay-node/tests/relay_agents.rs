@@ -6456,6 +6456,55 @@ async fn a_gate_only_refusal_after_a_workspace_switch_is_neither_kept_nor_used()
     h.stop().await;
 }
 
+// A token the gate refused (401) whose renewal then failed is not handed
+// out again: the next send waits for the gate's Retry-After instead of
+// trying the refused token once more.
+#[tokio::test]
+async fn a_refused_person_token_is_not_used_again_while_its_renewal_waits() {
+    let h = gate_harness(true).await;
+    h.fake.set_gate_ttl(Duration::from_secs(3600));
+    let mut client = h.client().await;
+    h.fake
+        .seed_gate_agent("reviewer", "reviewer-recovery-0123456789");
+    client
+        .ok("messages.send", json!({"to": "reviewer", "text": "first"}))
+        .await;
+    let refused = h.fake.agent(GATE_PERSON).unwrap().token;
+
+    h.fake.expire_gate_token(GATE_PERSON);
+    h.fake
+        .set_api_error("POST /v1/register", Some((503, "unavailable")));
+    client
+        .error("messages.send", json!({"to": "reviewer", "text": "second"}))
+        .await;
+    let dms = |fake: &FakeRelaycast| {
+        fake.calls("POST", "/v1/dm")
+            .into_iter()
+            .filter(|dm| dm.authorization.as_deref() == Some(format!("Bearer {refused}").as_str()))
+            .count()
+    };
+    let refused_dms = dms(&h.fake);
+    let registers = gate_registers(&h.fake).len();
+
+    client
+        .error("messages.send", json!({"to": "reviewer", "text": "third"}))
+        .await;
+    client
+        .error("messages.history", json!({"endpoint": "reviewer"}))
+        .await;
+    assert_eq!(
+        dms(&h.fake),
+        refused_dms,
+        "the refused token was tried again"
+    );
+    assert_eq!(
+        gate_registers(&h.fake).len(),
+        registers,
+        "enrolled before Retry-After"
+    );
+    h.stop().await;
+}
+
 #[tokio::test]
 async fn on_a_gate_only_install_you_message_through_the_gate_and_your_token_is_renewed() {
     let h = gate_harness(true).await;

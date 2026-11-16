@@ -143,6 +143,10 @@ pub struct MessagingState {
     /// When the identity enrolled at relaygate (gate-only), its recovery
     /// proof and when its `rg_` token is due for renewal.
     gate: Option<GateEnrolment>,
+    /// The identity's `rg_` token relaygate rejected (401): never handed
+    /// out again, while the identity and its renewal timing are kept,
+    /// until an enrolment issues another.
+    refused: Option<Secret>,
     /// Conversation ids by `(identity name, endpoint key)`: search hints only.
     conversations: HashMap<(String, String), String>,
     /// Exact-address lookups that found no proof, by `(workspace, identity, endpoint key)`.
@@ -498,6 +502,7 @@ impl Core {
         if let Some(identity) = self.current_identity().filter(|identity| {
             !refresh
                 && !self.person_gate_due()
+                && !self.person_token_refused(&identity.token)
                 && gate_url
                     .as_ref()
                     .is_none_or(|gate| *gate == identity.base_url)
@@ -561,6 +566,7 @@ impl Core {
             }
             state.identity = Some((account_key(&account), identity.clone()));
             state.gate = None;
+            state.refused = None;
         }
         if let Some(core) = self.arc() {
             tokio::spawn(async move { core.sync_agents().await });
@@ -645,6 +651,11 @@ impl Core {
         Ok(gate)
     }
 
+    /// Whether relaygate rejected `token`, your identity's `rg_` token.
+    fn person_token_refused(&self, token: &Secret) -> bool {
+        self.messaging.lock().unwrap().refused.as_ref() == Some(token)
+    }
+
     /// Whether your identity's `rg_` token (gate-only) is due for renewal.
     pub(crate) fn person_gate_due(&self) -> bool {
         let state = self.messaging.lock().unwrap();
@@ -698,10 +709,20 @@ impl Core {
         let channel = person_channel(&name);
         let lock = self.gate_locks.get(&channel);
         let _enrolling = lock.lock().await;
+        if let Some(refused) = refused {
+            let mut state = self.messaging.lock().unwrap();
+            if state
+                .identity
+                .as_ref()
+                .is_some_and(|(_, identity)| identity.token == *refused)
+            {
+                state.refused = Some(refused.clone());
+            }
+        }
         let held = self.current_identity().filter(|identity| {
             identity.base_url == gate_url
                 && identity.name == name
-                && Some(&identity.token) != refused
+                && !self.person_token_refused(&identity.token)
         });
         if let Some(identity) = held.clone().filter(|_| !self.person_gate_due()) {
             return Ok(identity);
@@ -744,6 +765,7 @@ impl Core {
             }
             state.identity = Some((account_key(account), identity.clone()));
             state.gate = Some(enrolment);
+            state.refused = None;
         }
         self.forget_gate_renewal(&channel);
         if let Some(core) = self.arc() {
@@ -754,7 +776,9 @@ impl Core {
 
     /// The push channel for your identity, once it is known.
     pub(crate) fn person_push_target(&self) -> Option<PushTarget> {
-        let identity = self.current_identity()?;
+        let identity = self
+            .current_identity()
+            .filter(|identity| !self.person_token_refused(&identity.token))?;
         let workspace = self.person_scope(&identity);
         Some(PushTarget {
             agent: person_channel(&identity.name),
