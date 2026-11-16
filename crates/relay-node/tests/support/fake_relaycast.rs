@@ -1317,10 +1317,12 @@ fn route(
                     .as_ref()
                     .map(|a| a.id.clone())
                     .unwrap_or_else(|| "agent-1".into());
+                // relaygate mints its own rgn_ node token for an rg_ agent.
+                let prefix = if bearer.starts_with("rg_") { "rgn" } else { "nt_live" };
                 ok(json!({
                     "node_id": format!("node_direct_{id}"),
                     "node_name": shared.behaviour.node_name,
-                    "token": format!("nt_live_{}", shared.minted)
+                    "token": format!("{prefix}_{}", shared.minted)
                 }))
             }
             status => error(status, "unauthorized"),
@@ -1400,6 +1402,21 @@ fn route(
             let Some(agent) = caller else {
                 return error(401, "unauthorized");
             };
+            // relaygate never hands out a group DM: it marks it failed
+            // upstream so it does not come back.
+            if bearer.starts_with("rg_") {
+                for denied in world
+                    .deliveries
+                    .get_mut(&agent.name)
+                    .into_iter()
+                    .flatten()
+                    .filter(|d| d.state == "queued" && d.item["reason"] == "group_dm")
+                {
+                    denied.state = "failed".into();
+                    denied.retryable = Some(false);
+                    denied.error = Some("relaygate_denied".into());
+                }
+            }
             let items: Vec<Value> = world
                 .deliveries
                 .get(&agent.name)
@@ -1409,6 +1426,10 @@ fn route(
                 .map(|d| d.item.clone())
                 .collect();
             ok(json!(items))
+        }
+        // Served as relaygate serves it; recorded, never acted on.
+        ("POST", ["v1", "deliveries", _, "defer"]) if caller.is_some() => {
+            ok(json!({"status": "deferred"}))
         }
         ("POST", ["v1", "deliveries", id, action]) if *action == "ack" || *action == "fail" => {
             if caller.is_none() {
@@ -1800,6 +1821,9 @@ async fn socket(stream: TcpStream, target: String, shared: Arc<Mutex<Shared>>) {
     let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
         return;
     };
+    // relaygate's socket forces the node id and capabilities [] in what it
+    // accepts, and says so in its reply.
+    let gate = target.contains("token=rgn_");
     let (commands, mut command_rx) = mpsc::unbounded_channel();
     {
         let mut shared = shared.lock().unwrap();
@@ -1840,6 +1864,9 @@ async fn socket(stream: TcpStream, target: String, shared: Arc<Mutex<Shared>>) {
                                     reply["error"]["retry_after_ms"] = ms.into();
                                 }
                                 Some(reply)
+                            } else if register && shared.behaviour.reply_to_register && gate {
+                                Some(json!({"v": 1, "id": frame["id"], "type": "reply", "ok": true,
+                                    "data": {"node_id": "node_gate_forced", "capabilities": []}}))
                             } else if register && shared.behaviour.reply_to_register {
                                 Some(json!({"v": 1, "id": frame["id"], "type": "reply", "ok": true}))
                             } else if frame["type"] == "node.heartbeat" && shared.behaviour.acknowledge_presence {
