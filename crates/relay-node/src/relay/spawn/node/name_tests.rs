@@ -105,6 +105,7 @@ fn config(base_url: &str, directory: &Path) -> NodeConfig {
         app_data_dir: directory.to_path_buf(),
         harnesses: vec![codex::ID],
         repositories: Vec::new(),
+        desktop_credential: false,
     }
 }
 
@@ -1094,6 +1095,88 @@ async fn a_node_credential_for_another_node_stops_the_node_and_says_so() {
     node.stop().await;
 }
 
+const TOKEN_INVALID: (&str, &str) = (
+    "401 Unauthorized",
+    r#"{"ok":false,"error":{"code":"token_invalid","message":"relay-node credential revoked"}}"#,
+);
+
+/// Control refuses a gate-only desktop's relay-node credential (`401
+/// token_invalid`) when the node enrols: the node stops, marks it for the
+/// desktop to mint another, and never asks again with it.
+#[tokio::test]
+async fn a_refused_desktop_credential_at_enrolment_stops_and_marks_the_node() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let control = Scripted::new().await;
+    let config = NodeConfig {
+        desktop_credential: true,
+        ..node_scoped(&relaycast.base_url, &control.base_url, folder.path())
+    };
+    let host = Arc::new(Recording::default());
+    let node = SpawnNode::start(config, host.clone());
+    let request = control.answer(TOKEN_INVALID).await;
+    assert!(
+        request.starts_with("post /relay-node/v1/nodes "),
+        "{request}"
+    );
+    until(&host, |states| {
+        states.iter().any(|s| s.state == SpawnState::Off)
+    })
+    .await;
+    assert!(untouched(&control).await);
+    let states = host.states.lock().unwrap().clone();
+    let last = states.last().unwrap();
+    assert_eq!(last.error.as_deref(), Some(BRIDGE_CREDENTIAL_REFUSED));
+    assert_eq!(last.credential_refused, Some(true));
+    assert!(!states.iter().any(|s| s.state == SpawnState::Waiting));
+    assert!(untouched(&relaycast).await);
+    node.stop().await;
+}
+
+/// The same refusal of the saved node's lookup under the desktop's
+/// credential is marked too, and is not taken for a missing node.
+#[tokio::test]
+async fn a_refused_desktop_credential_at_the_saved_nodes_lookup_is_marked() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let control = Scripted::new().await;
+    let config = NodeConfig {
+        desktop_credential: true,
+        ..node_scoped(&relaycast.base_url, &control.base_url, folder.path())
+    };
+    // Enrolled with another key: looked up before it is kept.
+    let kept = enrollment(&config, "node_desktop_1", "mac-desktop", "sh_wk_previous");
+    save(&node_file(&config), &kept).unwrap();
+    let (found, asked) = tokio::join!(saved(&config), control.answer(TOKEN_INVALID));
+    assert!(
+        asked.starts_with("get /relay-node/v1/nodes/mac-desktop "),
+        "{asked}"
+    );
+    assert_eq!(found, Err(Refused::CredentialRejected));
+    assert!(untouched(&relaycast).await);
+}
+
+/// Any other node credential's `401` (one an operator configured, not the
+/// desktop's) is waited out as before: never marked, never given up.
+#[tokio::test]
+async fn another_node_credentials_refusal_at_enrolment_is_waited_out() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let control = Scripted::new().await;
+    let config = node_scoped(&relaycast.base_url, &control.base_url, folder.path());
+    let host = Arc::new(Recording::default());
+    let node = SpawnNode::start(config, host.clone());
+    control.answer(TOKEN_INVALID).await;
+    until(&host, |states| {
+        states.iter().any(|s| s.state == SpawnState::Waiting)
+    })
+    .await;
+    let states = host.states.lock().unwrap().clone();
+    assert!(states.iter().all(|s| s.credential_refused.is_none()));
+    assert!(!states.iter().any(|s| s.state == SpawnState::Off));
+    node.stop().await;
+}
+
 /// A name another node holds, under a node credential: Control's broker
 /// passes Relaycast's `409 node_name_conflict` through, and the credential
 /// is bound to the name, so no alternate is asked for (the broker would
@@ -1422,6 +1505,12 @@ async fn a_refused_relay_node_credential_stops_the_bridged_node() {
         states.last().unwrap().error.as_deref(),
         Some(BRIDGE_CREDENTIAL_REFUSED)
     );
+    // Marked for the desktop, which forgets the credential and mints
+    // another; never marked before the refusal.
+    assert_eq!(states.last().unwrap().credential_refused, Some(true));
+    assert!(states[..states.len() - 1]
+        .iter()
+        .all(|s| s.credential_refused.is_none()));
     assert!(!states.iter().any(|s| s.state == SpawnState::Waiting));
     assert_eq!(load(&config), Some(bridged(&config)));
     assert!(untouched(&relaycast).await);

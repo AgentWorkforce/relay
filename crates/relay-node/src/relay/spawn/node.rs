@@ -93,6 +93,12 @@ pub struct NodeConfig {
     /// `node.register`: a change reconnects the node. Everything else the
     /// node advertises is read again for each heartbeat.
     pub repositories: Vec<String>,
+    /// Whether `workspace_key` is a gate-only desktop's relay-node
+    /// credential (`CloudAccess::relay_node_credential`), which the desktop
+    /// mints again when told. Control refusing it (`401`, `token_invalid`)
+    /// at enrolment, the saved node's lookup or the bridge stops the node
+    /// with `credential_refused` set, never retried with the same one.
+    pub desktop_credential: bool,
 }
 
 /// The node as Relaycast enrolled it.
@@ -245,6 +251,10 @@ enum Ended {
     Closed(String),
     /// Trying again cannot help: the node stops and says why.
     GaveUp(String),
+    /// Control refused the install's relay-node credential (`401` on its
+    /// bridge): the node stops, says why ([`BRIDGE_CREDENTIAL_REFUSED`])
+    /// and marks it, so the desktop can mint another.
+    CredentialRefused,
     /// Relaycast refused the node's token as proof of it on a rotation
     /// (`node_token_proof_required` with the token sent; never a 401, which
     /// is the workspace key refused and waited out): the enrollment is
@@ -279,6 +289,7 @@ async fn run(
         harness_descriptors: None,
         claim: None,
         plan_limit,
+        credential_refused: None,
     };
     let mut attempt = 0u32;
     let mut token_refusals = 0u32;
@@ -313,6 +324,18 @@ async fn run(
             Ended::Refused(limit) => (limit.message(), Some(limit)),
             Ended::GaveUp(reason) => {
                 host.state(status(SpawnState::Off, Some(reason), None));
+                let _ = stopped.changed().await;
+                break;
+            }
+            Ended::CredentialRefused => {
+                host.state(SpawnStatus {
+                    credential_refused: Some(true),
+                    ..status(
+                        SpawnState::Off,
+                        Some(BRIDGE_CREDENTIAL_REFUSED.into()),
+                        None,
+                    )
+                });
                 let _ = stopped.changed().await;
                 break;
             }
@@ -418,10 +441,11 @@ fn refusal(error: &tungstenite::Error) -> Option<u16> {
 async fn bridge_refused(config: &NodeConfig, enrollment: &Enrollment, status: u16) -> Ended {
     let refused = "Agent Relay's Control bridge refused this computer's spawn node.";
     match status {
-        401 => Ended::GaveUp(BRIDGE_CREDENTIAL_REFUSED.into()),
+        401 => Ended::CredentialRefused,
         403 => match enroll(config, &enrollment.node_id, &enrollment.node_name, None).await {
             Ok(_) => Ended::Closed(refused.into()),
             Err(Refused::PlanLimit(limit)) => Ended::Refused(limit),
+            Err(Refused::CredentialRejected) => Ended::CredentialRefused,
             Err(Refused::IdTaken) => {
                 let _ = forget(&node_file(config));
                 Ended::Closed(refused.into())
@@ -461,6 +485,7 @@ async fn connect_once(
                 host.refused(reason.clone());
                 return Ended::GaveUp(reason);
             }
+            Err(Refused::CredentialRejected) => return Ended::CredentialRefused,
             Err(refused) => return Ended::Closed(refused.reason()),
         },
         // The saved node's credential is bound to another name: stopped,
@@ -469,6 +494,7 @@ async fn connect_once(
             host.refused(reason.clone());
             return Ended::GaveUp(reason);
         }
+        Err(Refused::CredentialRejected) => return Ended::CredentialRefused,
         Err(refused) => return Ended::Closed(refused.reason()),
     };
     let mut socket = match open(config, &enrollment).await {
@@ -490,6 +516,7 @@ async fn connect_once(
                 Err(Refused::ProofRefused(reason)) => {
                     Ended::TokenRefused(format!("{refused} {reason}"))
                 }
+                Err(Refused::CredentialRejected) => Ended::CredentialRefused,
                 Err(reason) => Ended::Closed(format!("{refused} {}", reason.reason())),
             };
         }
@@ -553,6 +580,7 @@ async fn connect_once(
         harness_descriptors: None,
         claim: None,
         plan_limit: None,
+        credential_refused: None,
     });
     let (outgoing, mut queued) = mpsc::unbounded_channel();
     let link = NodeLink {
@@ -737,6 +765,7 @@ mod tests {
             app_data_dir: directory.to_path_buf(),
             harnesses: vec![codex::ID],
             repositories: Vec::new(),
+            desktop_credential: false,
         }
     }
 

@@ -48,6 +48,10 @@ pub(super) enum Refused {
     /// The node credential is bound to another node name (the broker's
     /// `403 node_mismatch`): the node does not start.
     NodeMismatch(String),
+    /// Control refused a gate-only desktop's relay-node credential
+    /// (`NodeConfig::desktop_credential`, `401`): the node stops and marks
+    /// it, so the desktop mints another.
+    CredentialRejected,
 }
 
 /// Why spawning is unavailable on a gate-only install that has no
@@ -68,6 +72,7 @@ impl Refused {
             | Refused::NoName(reason)
             | Refused::NodeMismatch(reason) => reason,
             Refused::PlanLimit(limit) => limit.message(),
+            Refused::CredentialRejected => super::BRIDGE_CREDENTIAL_REFUSED.into(),
         }
     }
 }
@@ -92,6 +97,17 @@ fn node_mismatch(config: &NodeConfig, name: &str) -> Refused {
         "Agent Relay did not start this computer's spawn node: its node credential is bound to another node name than \"{name}\" (configured node \"{}\"). Use a node credential issued for this node.",
         config.node_name
     ))
+}
+
+/// Whether Control refused `config`'s workspace credential, a gate-only
+/// desktop's relay-node credential: the broker's `401` (`token_invalid`,
+/// revoked or expired; it never passes Relaycast's own 401 through). Only
+/// for the desktop's credential, which the desktop can mint again; any
+/// other credential's 401 is waited out as before.
+fn desktop_credential_refused(config: &NodeConfig, error: &relaycast::RelayError) -> bool {
+    config.desktop_credential
+        && node_scoped(config)
+        && node_credential::rejects(crate::relay::workspace::KeyKind::NodeScoped, error)
 }
 
 /// Whether `config`'s workspace credential is node-scoped (`sh_wk_…`): it
@@ -171,6 +187,9 @@ pub(super) async fn enroll(
             }
             if node_credential::is_node_mismatch(&error) {
                 return node_mismatch(config, name);
+            }
+            if desktop_credential_refused(config, &error) {
+                return Refused::CredentialRejected;
             }
             let failed =
                 || Refused::Failed(format!("Agent Relay did not enroll this computer: {error}"));
@@ -393,6 +412,9 @@ pub(super) async fn saved(config: &NodeConfig) -> Result<Option<Enrollment>, Ref
             // another name. Kept as such, so the node stops (`connect_once`).
             if node_credential::is_node_mismatch(&error) {
                 return node_mismatch(config, &kept.node_name);
+            }
+            if desktop_credential_refused(config, &error) {
+                return Refused::CredentialRejected;
             }
             Refused::Failed(format!(
                 "Agent Relay did not say which node is this computer's: {error}"

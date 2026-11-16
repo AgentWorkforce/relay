@@ -1676,3 +1676,100 @@ async fn replay_fails_closed_when_the_server_omits_the_replay_capability_proof()
     assert!(requests[0].starts_with("POST /v1/actions/spawn/replay "));
     assert_eq!(second.log().last().unwrap(), "record:invoke:internal");
 }
+
+/// A desktop holding a relay-node credential Control bound to `desk-bound`.
+struct BoundDesktop;
+
+impl crate::relay::cloud_session::CloudAccess for BoundDesktop {
+    fn account(&self) -> Option<crate::relay::cloud_session::CloudAccount> {
+        None
+    }
+
+    fn agent_owner(&self) -> Option<crate::relay::cloud_session::AgentOwner> {
+        None
+    }
+
+    fn request(
+        &self,
+        _: &'static str,
+        _: String,
+        _: Option<Value>,
+    ) -> futures_util::future::BoxFuture<'_, Result<Value, crate::relay::cloud_session::CloudError>>
+    {
+        Box::pin(async { Err(crate::relay::cloud_session::CloudError::SignedOut) })
+    }
+
+    fn relay_node_credential(
+        &self,
+    ) -> Result<crate::relay::cloud_session::RelayNodeCredential, Option<String>> {
+        Ok(crate::relay::cloud_session::RelayNodeCredential {
+            control_url: "https://control.example".into(),
+            node_name: "desk-bound".into(),
+            token: Secret::new("sh_wk_fixture_bound"),
+        })
+    }
+}
+
+/// On a gate-only install this computer's node is the one the desktop's
+/// relay-node credential is bound to, whatever the computer's own name:
+/// a native spawn to it passes the own-node check (and is then held to
+/// the caller's scope), and the computer's own name is no longer its node.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_gate_only_native_spawn_targets_the_credentials_bound_node() {
+    let gate = Relaycast::new();
+    let stub = Stub::new(ExternalCaller {
+        harnesses: Some(vec!["codex".into()]),
+        ..service(true)
+    });
+    let home = tempfile::tempdir().unwrap();
+    let config = Config {
+        paths: CorePaths::for_socket(home.path().join("core.sock")).unwrap(),
+        home: home.path().into(),
+        app_data_dir: home.path().join("app-data"),
+        env: Default::default(),
+        version: "test".into(),
+        host_name: "Test Desk.local".into(),
+        rediscover_every: std::time::Duration::from_secs(3600),
+        push_timing: PushTiming::default(),
+        delivery_timing: DeliveryTiming::default(),
+    };
+    let plugins = Plugins {
+        spawn_callers: Some(stub.clone()),
+        cloud: Arc::new(BoundDesktop),
+        ..Plugins::default()
+    };
+    let core = Core::with_plugins(config, plugins).0;
+    *core.workspace.lock().unwrap() = Some(Workspace {
+        key: Secret::default(),
+        base_url: gate.base.clone(),
+        workspace_id: Some("rw_test".into()),
+        gate_url: Some(gate.base.clone()),
+        ..selected_workspace()
+    });
+    let own_node = crate::relay::spawn::node_name(&core.machine_prefix);
+    assert_ne!(own_node, "desk-bound");
+    assert_eq!(core.own_spawn_node_name(), "desk-bound");
+
+    let directory = home.path().to_str().unwrap().to_string();
+    let mut params = invoke_params(&core, "claude", &directory);
+    params["node_name"] = json!("desk-bound");
+    let error = bound(&core, "spawn.invoke", params).await.unwrap_err();
+    assert_eq!(
+        error.data.reason,
+        Some(RefusalReason::OutsideScope),
+        "{error:?}"
+    );
+
+    let error = bound(
+        &core,
+        "spawn.invoke",
+        invoke_params(&core, "codex", &directory),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        error.message, "Native spawn starts agents only on this computer's own spawn node.",
+        "{error:?}"
+    );
+    assert!(gate.untouched());
+}

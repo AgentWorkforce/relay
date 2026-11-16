@@ -4,18 +4,23 @@
 
 use super::lifecycle::{self, NodeSeen, WorkCounts};
 use super::node::{NodeConfig, NodeHost, NodeInfo, NodeLink, SpawnNode, GATE_ONLY_UNAVAILABLE};
+
+/// How a gate-only install's unavailable reason starts, the desktop's own
+/// included.
+const GATE_ONLY_UNAVAILABLE_PREFIX: &str = "Spawning is unavailable on this computer: ";
 use super::node_name;
 use super::resources;
 use super::wire::{
     self, Advertisement, Configured, HarnessConfigured, HarnessId, InventoryAgent, Invoke, Live,
     LiveAgent, SpawnFailure, MAX_RECENT_FOLDERS,
 };
+use crate::relay::cloud_session::RelayNodeCredential;
 use crate::relay::daemon::Core;
 use crate::relay::harness;
 use crate::relay::push::PushState;
 use crate::relay::state::{Level, SpawnSlots, SpawnState, SpawnStatus};
 use crate::relay::store::Store;
-use crate::relay::workspace::Secret;
+use crate::relay::workspace::{is_node_key, validated_base_url, Secret};
 use chrono::Utc;
 use futures_util::future::BoxFuture;
 use serde_json::Value;
@@ -73,8 +78,11 @@ impl Core {
 
     /// The node this computer should run now, if any: spawns are on, there
     /// is a workspace, and a harness it can spawn is installed. On a
-    /// gate-only install, also a relay-node credential for Control's bridge.
-    fn wanted_spawn_node(&self) -> Result<NodeConfig, Option<String>> {
+    /// gate-only install, also the desktop's relay-node credential for
+    /// Control's bridge ([`CloudAccess::relay_node_credential`]).
+    ///
+    /// [`CloudAccess::relay_node_credential`]: crate::relay::cloud_session::CloudAccess::relay_node_credential
+    pub(crate) fn wanted_spawn_node(&self) -> Result<NodeConfig, Option<String>> {
         let settings = self.spawn_settings();
         if !settings.accept {
             return Err(None);
@@ -84,15 +92,25 @@ impl Core {
             .ok_or_else(|| Some("No Agent Relay workspace on this computer.".to_string()))?;
         // A gate-only install keeps the node token in Control, which
         // bridges the node's socket for a node holding a relay-node
-        // credential (`sh_wk_…` with its Control origin). Without one there
-        // is no bridge to spawn through: reported as unavailable, never
-        // hidden.
-        if workspace.is_gate_only()
-            && !(crate::relay::workspace::is_node_key(workspace.key.expose())
-                && workspace.control_url.is_some())
-        {
-            return Err(Some(GATE_ONLY_UNAVAILABLE.into()));
-        }
+        // credential (`sh_wk_…` with its Control origin). The desktop mints
+        // that credential and hands it over here, in memory: it is the
+        // node's alone, never the workspace's, so nothing that saves or
+        // compares the workspace key (spawn intents, registrations) ever
+        // holds it, and it goes nowhere but Control. Without one there is
+        // no bridge to spawn through: reported as unavailable, in the
+        // desktop's words when it gave a reason, never hidden.
+        let desktop_credential = workspace.is_gate_only();
+        let (workspace_key, control_url, name) = if desktop_credential {
+            let node = gate_node_credential(self.plugins.cloud.relay_node_credential())?;
+            let name = self.bound_node_name(&node);
+            (node.token, Some(node.control_url), name)
+        } else {
+            (
+                workspace.key,
+                workspace.control_url,
+                node_name(&self.machine_prefix),
+            )
+        };
         let harnesses = self.plugins.spawner.available();
         if harnesses.is_empty() {
             return Err(Some(
@@ -101,14 +119,55 @@ impl Core {
         }
         Ok(NodeConfig {
             base_url: workspace.base_url,
-            workspace_key: workspace.key,
-            control_url: workspace.control_url,
-            node_name: node_name(&self.machine_prefix),
+            workspace_key,
+            control_url,
+            node_name: name,
             version: self.config.version.clone(),
             app_data_dir: self.config.app_data_dir.clone(),
             harnesses,
             repositories: settings.repositories,
+            desktop_credential,
         })
+    }
+
+    /// The name this computer's spawn node is configured under (before any
+    /// alternate it took): on a gate-only install with the desktop's
+    /// relay-node credential, the name Control bound it to; otherwise the
+    /// computer's own ([`node_name`]).
+    pub(crate) fn own_spawn_node_name(&self) -> String {
+        match self
+            .workspace()
+            .filter(|w| w.is_gate_only())
+            .map(|_| gate_node_credential(self.plugins.cloud.relay_node_credential()))
+        {
+            Some(Ok(node)) => self.bound_node_name(&node),
+            _ => node_name(&self.machine_prefix),
+        }
+    }
+
+    /// The name `node` is bound to, or the computer's own when it names none.
+    fn bound_node_name(&self, node: &RelayNodeCredential) -> String {
+        Some(node.node_name.trim())
+            .filter(|name| !name.is_empty())
+            .map_or_else(|| node_name(&self.machine_prefix), str::to_string)
+    }
+
+    /// Whether the spawn node, or the reason there is none, is not what
+    /// [`Core::wanted_spawn_node`] asks for now. A gate-only install's
+    /// node follows the desktop's relay-node credential, which a
+    /// rediscovery of an unchanged workspace does not see change.
+    pub(crate) fn spawn_node_outdated(&self) -> bool {
+        let wanted = self.wanted_spawn_node();
+        // A reconciliation holding the lock may have read the state before
+        // the change: one more is harmless.
+        let Ok(running) = self.spawn_node.try_lock() else {
+            return true;
+        };
+        match (running.as_ref(), wanted) {
+            (Some(node), Ok(config)) => node.config() != &config,
+            (None, Err(error)) => self.status().spawn.map(|spawn| spawn.error) != Some(error),
+            _ => true,
+        }
     }
 
     /// Starts, replaces or stops the spawn node to match the settings and
@@ -463,6 +522,32 @@ fn existing_spawn_folders(candidates: Vec<String>, home: &Path, limit: usize) ->
         .filter(|folder| Path::new(folder) != home && Path::new(folder).is_dir())
         .take(limit)
         .collect()
+}
+
+/// The relay-node credential a gate-only install's node reaches Control's
+/// bridge with: the desktop's, when it is one (`sh_wk_…`) with a bare https
+/// Control origin. Otherwise why spawning is unavailable: the desktop's own
+/// reason (`Err(Some(…))`), or [`GATE_ONLY_UNAVAILABLE`].
+fn gate_node_credential(
+    held: Result<RelayNodeCredential, Option<String>>,
+) -> Result<RelayNodeCredential, Option<String>> {
+    let unavailable = || Some(GATE_ONLY_UNAVAILABLE.to_string());
+    match held {
+        Ok(node) => {
+            let control_url = validated_base_url(&node.control_url)
+                .filter(|_| is_node_key(node.token.expose()))
+                .ok_or_else(unavailable)?;
+            Ok(RelayNodeCredential {
+                control_url,
+                ..node
+            })
+        }
+        Err(Some(reason)) if !reason.trim().is_empty() => Err(Some(format!(
+            "{GATE_ONLY_UNAVAILABLE_PREFIX}{}",
+            reason.trim()
+        ))),
+        Err(_) => Err(unavailable()),
+    }
 }
 
 #[cfg(test)]

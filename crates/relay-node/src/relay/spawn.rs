@@ -423,6 +423,7 @@ mod tests {
         }
     }
 
+    mod gate_credential;
     mod launch_gate;
     mod lifecycle_failures;
     mod native_sender;

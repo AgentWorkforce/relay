@@ -48,6 +48,22 @@ impl AgentOwner {
     }
 }
 
+/// The relay-node credential a gate-only desktop minted for this computer
+/// (relay-control's member self-mint, `POST /api/v1/workspaces/{id}/
+/// relay-node/self-tokens`) and keeps in its own keychain. The spawn node
+/// reaches Control's node bridge with it. `token` goes nowhere but Control:
+/// it is never logged and never written to the store.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RelayNodeCredential {
+    /// Control's origin, a bare https origin (`https://control.example`).
+    pub control_url: String,
+    /// The node name Control bound `token` to: the spawn node enrols under
+    /// it, as Control refuses any other (`403 node_mismatch`).
+    pub node_name: String,
+    /// The relay-node credential (`sh_wk_…`).
+    pub token: Secret,
+}
+
 /// Why a Cloud request failed. Messages are safe to show.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CloudError {
@@ -141,6 +157,18 @@ pub trait CloudAccess: Send + Sync + 'static {
     /// enrols its agents at relaygate with it; it is sent nowhere else.
     fn device_token(&self) -> BoxFuture<'_, Option<Secret>> {
         Box::pin(async { None })
+    }
+
+    /// The relay-node credential this desktop holds for a gate-only
+    /// install's spawn node. `Err(Some(reason))` is the desktop's own,
+    /// printable reason spawning is unavailable here (shown after
+    /// "Spawning is unavailable on this computer: "); `Err(None)` is no
+    /// credential and no reason. Read whenever the workspace is
+    /// rediscovered, so a new credential (or a forgotten one) takes effect
+    /// on the next `rediscover_workspace` / `refresh_workspace`. It must
+    /// not block: answer from what the desktop already holds.
+    fn relay_node_credential(&self) -> Result<RelayNodeCredential, Option<String>> {
+        Err(None)
     }
 }
 
