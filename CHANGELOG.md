@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Minor]
 
+### Fixed
+
+- `agent-relay-node`: Copilot idle chats keep waiting through delayed journal writes and large model-log batches; incoming-message hooks also recognize bundled helper hard links and validate current session descriptors.
+- `agent-relay-node`: macOS development builds recognize their computed code-signing requirement, so native helper verification works while still requiring the running helper to satisfy the core's own requirement.
+
 ### Added
 
 - `agent-relay-node`: self-hosted installs whose Control API returns `urls.relaygateUrl` (relaygate gate-only mode) register each agent at relaygate with the person's device token instead of the shared workspace key. Agents renew their relaygate token before it expires, publish their session details and presence, read the roster and are removed through the gate. A removed name registers again as the same agent. Installs without a relaygate URL, including default and hosted ones, are unchanged.

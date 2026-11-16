@@ -20,7 +20,11 @@ pub fn copilot_hook(development: bool, event: &str) -> Result<()> {
     if value["relayEvent"] == "stop" && value["stopReason"] == "end_turn" {
         let stamp = super::paths::home().ok().and_then(|home| {
             let config = CopilotConfig::from_env(&|key| std::env::var(key).ok(), &home);
-            stop_wait::snapshot(&config, value["sessionId"].as_str()?)
+            let sid = value["sessionId"].as_str()?;
+            match value["timestamp"].as_u64() {
+                Some(timestamp) => stop_wait::started_snapshot(&config, sid, timestamp),
+                None => stop_wait::snapshot(&config, sid),
+            }
         });
         if let Some(stamp) = stamp {
             value["relayJournal"] = stamp;
@@ -45,16 +49,23 @@ pub fn copilot_hook(development: bool, event: &str) -> Result<()> {
             "POST",
             "/copilot/hook",
             &input,
-            Duration::from_secs(if matches!(event, "before" | "start") {
-                18
-            } else {
-                8
+            Duration::from_secs(match event {
+                "before" | "start" => 18,
+                // A pending delivery revalidates the sealed native app. Let
+                // that proof finish under load while the stop hook remains
+                // alive; exiting after eight seconds invalidates its caller.
+                "stop" => 30,
+                _ => 8,
             }),
         );
         let Ok((status, bytes)) = response else {
+            #[cfg(debug_assertions)]
+            eprintln!("[copilot-hook] released: session socket transport");
             break;
         };
         if status != 200 {
+            #[cfg(debug_assertions)]
+            eprintln!("[copilot-hook] released: session socket HTTP {status}");
             break;
         }
         let Some(value) = answer(&bytes) else { break };

@@ -79,7 +79,26 @@ pub(super) fn installed_state(config: &CopilotConfig) -> io::Result<bool> {
     if !config.helper().is_absolute() {
         return Ok(false);
     }
-    Ok(document(config)?.is_some_and(|value| value == managed_value(config, &config.helper())))
+    let Some(value) = document(config)? else {
+        return Ok(false);
+    };
+    if value == managed_value(config, &config.helper()) {
+        return Ok(true);
+    }
+    let Some(helper) = managed_helper(&value).filter(|p| p.is_absolute()) else {
+        return Ok(false);
+    };
+    Ok(same_helper_file(&helper, &config.helper()) && value == managed_value(config, &helper))
+}
+
+fn managed_helper(value: &Value) -> Option<PathBuf> {
+    let command = value["hooks"]["sessionStart"][0]["command"].as_str()?;
+    let args = shell_words::split(command).ok()?;
+    args.get(1).filter(|p| !p.is_empty()).map(PathBuf::from)
+}
+
+fn same_helper_file(left: &Path, right: &Path) -> bool {
+    left == right || same_file::is_same_file(left, right).unwrap_or(false)
 }
 // Setup can repair or remove an old managed helper (including a legacy
 // relative path that is never accepted for discovery), but discovery and calls
@@ -154,8 +173,11 @@ pub(super) fn caller_is_hook(
     };
     let program = std::path::Path::new(&expected[1]);
     let resolved = std::fs::canonicalize(program).unwrap_or_else(|_| program.to_path_buf());
-    actual == resolved
-        && resolved == std::fs::canonicalize(config.helper()).unwrap_or_else(|_| config.helper())
+    // macOS may report either bundled hard-link name (the ordinary helper or
+    // its Sessions alias) for the very same running executable. A different
+    // file with identical bytes must still fail, as must an untrusted process.
+    same_helper_file(&actual, &resolved)
+        && same_helper_file(&resolved, &config.helper())
         && table.is_trusted_relay_helper(pid, &actual)
         && table.arguments(pid).get(1..) == Some(&expected[2..])
 }

@@ -4,6 +4,136 @@ use crate::relay::inject::InjectOutcome;
 use serde_json::json;
 
 #[test]
+fn a_native_hook_sees_a_session_opened_after_the_discovery_snapshot() {
+    use crate::relay::process::{ProcessSnapshot, ProcessTable};
+    let (_home, config, table, lock) = proof::tests::fixture();
+    CopilotSettings::new(&config, "/opt/agent-relay-desktop-probe".into())
+        .set_enabled(true)
+        .unwrap();
+    named_hook(&table, "start");
+    let table = Arc::new(table);
+    table
+        .processes
+        .lock()
+        .unwrap()
+        .get_mut(&102)
+        .unwrap()
+        .open_files
+        .clear();
+    let snapshot = ProcessSnapshot::with_window(table.clone(), std::time::Duration::from_secs(60));
+    assert!(snapshot.opened_files(102).is_empty());
+    table
+        .processes
+        .lock()
+        .unwrap()
+        .get_mut(&102)
+        .unwrap()
+        .open_files
+        .push(lock);
+    let payload = json!({"sessionId":"1069773c-0824-4fad-b7f9-d3dc3c4ed148","relayEvent":"start"});
+    assert_eq!(
+        hook_answer(&config, &snapshot, 501, 103, &payload),
+        Some(json!({}))
+    );
+    // The discovery view remains cached; only authentication bypasses it.
+    assert!(snapshot.opened_files(102).is_empty());
+}
+
+#[test]
+fn a_native_hook_cannot_claim_a_descriptor_closed_after_discovery() {
+    use crate::relay::process::{ProcessSnapshot, ProcessTable};
+    let (_home, config, table, _lock) = proof::tests::fixture();
+    CopilotSettings::new(&config, "/opt/agent-relay-desktop-probe".into())
+        .set_enabled(true)
+        .unwrap();
+    named_hook(&table, "start");
+    let table = Arc::new(table);
+    let snapshot = ProcessSnapshot::with_window(table.clone(), std::time::Duration::from_secs(60));
+    assert_eq!(snapshot.opened_files(102).len(), 1);
+    table
+        .processes
+        .lock()
+        .unwrap()
+        .get_mut(&102)
+        .unwrap()
+        .open_files
+        .clear();
+    let payload = json!({"sessionId":"1069773c-0824-4fad-b7f9-d3dc3c4ed148","relayEvent":"start"});
+    assert!(hook_answer(&config, &snapshot, 501, 103, &payload).is_none());
+}
+
+#[test]
+fn a_kernel_reported_hardlink_to_the_managed_helper_is_the_same_program() {
+    let (home, config, table, _) = proof::tests::fixture();
+    let helper = home.path().join("Agent Relay Helper");
+    let alias = home.path().join("Agent Relay Helper (Sessions)");
+    std::fs::write(&helper, "fixture helper").unwrap();
+    std::fs::hard_link(&helper, &alias).unwrap();
+    CopilotSettings::new(&config, helper.clone())
+        .set_enabled(true)
+        .unwrap();
+    table
+        .trusted_relay_helpers
+        .lock()
+        .unwrap()
+        .insert(alias.clone());
+    {
+        let mut processes = table.processes.lock().unwrap();
+        let hook = processes.get_mut(&103).unwrap();
+        hook.executable = Some(alias.clone());
+        hook.arguments = vec![
+            helper.to_string_lossy().into_owned(),
+            "copilot-hook".into(),
+            "--event".into(),
+            "start".into(),
+        ];
+    }
+    let payload = json!({"sessionId":"1069773c-0824-4fad-b7f9-d3dc3c4ed148","relayEvent":"start"});
+    assert_eq!(
+        hook_answer(&config, &table, 501, 103, &payload),
+        Some(json!({}))
+    );
+    // The core itself can also start under the Sessions hard-link name.
+    // Existing owned commands naming the ordinary helper remain equivalent.
+    config.set_helper(alias.clone());
+    assert!(config.enabled());
+    assert_eq!(
+        hook_answer(&config, &table, 501, 103, &payload),
+        Some(json!({}))
+    );
+    config.set_helper(helper.clone());
+    table.trusted_relay_helpers.lock().unwrap().clear();
+    assert!(hook_answer(&config, &table, 501, 103, &payload).is_none());
+    table
+        .trusted_relay_helpers
+        .lock()
+        .unwrap()
+        .insert(alias.clone());
+    table
+        .processes
+        .lock()
+        .unwrap()
+        .get_mut(&103)
+        .unwrap()
+        .arguments[3] = "stop".into();
+    assert!(hook_answer(&config, &table, 501, 103, &payload).is_none());
+    table
+        .processes
+        .lock()
+        .unwrap()
+        .get_mut(&103)
+        .unwrap()
+        .arguments[3] = "start".into();
+    // Equal bytes, a matching signature fixture and the same basename are not
+    // enough: a distinct file must not become the configured helper.
+    std::fs::remove_file(&alias).unwrap();
+    std::fs::copy(&helper, &alias).unwrap();
+    assert!(hook_answer(&config, &table, 501, 103, &payload).is_none());
+    std::fs::remove_file(&alias).unwrap();
+    assert!(hook_answer(&config, &table, 501, 103, &payload).is_none());
+}
+
+#[test]
 fn exact_hook_claim_survives_reopen_and_requires_native_acceptance() {
     let (_home, config, table, _) = proof::tests::fixture();
     let sid = "1069773c-0824-4fad-b7f9-d3dc3c4ed148";
