@@ -388,10 +388,32 @@ impl Core {
         registration: &Registration,
         agent_token: &Secret,
     ) -> WorkspaceScope {
+        if registration.gate.is_some() {
+            return self.relaycast_gate_scope(&registration.base_url);
+        }
         let key = self
             .key_for(registration)
             .unwrap_or_else(|| agent_token.clone());
         self.relaycast_scope(&registration.base_url, &key)
+    }
+
+    /// The one backoff scope of every agent enrolled through the gate at
+    /// `gate_url`: Relaycast's 429s pass through the gate for its one
+    /// workspace, not for one agent's rotating token. Keyed by the gate
+    /// alone, so it is the same before and after the device token is first
+    /// read (a delivery read after a restart can come first).
+    pub(crate) fn relaycast_gate_scope(&self, gate_url: &str) -> WorkspaceScope {
+        let label = self
+            .workspace()
+            .filter(|workspace| {
+                workspace.gate_url.as_deref() == Some(gate_url) || workspace.base_url == gate_url
+            })
+            .and_then(|_| {
+                let workspace = self.status().workspace;
+                workspace.workspace_name.or(workspace.workspace_id)
+            })
+            .unwrap_or_else(|| "this workspace".into());
+        WorkspaceScope::id(gate_url, "relaygate", label)
     }
 
     pub(crate) fn relaycast_workspace_id_scope(

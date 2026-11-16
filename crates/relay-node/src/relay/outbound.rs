@@ -1206,12 +1206,22 @@ impl Outbound {
             ),
             None => None,
         };
-        let token = match &registration.gate {
-            Some(_) => self
-                .core
+        // The sender may be an alias, with a token of its own. Read after
+        // the lock wait: only while the name is still this session's agent,
+        // never another session that took the name up meanwhile.
+        let gate_token = || {
+            self.core
                 .store
-                .read(|s| s.tokens.get(&registration.name).cloned())
-                .ok_or_else(OutboundError::not_registered)?,
+                .read(|s| s.credential_named(&registration.name))
+                .filter(|(current, _)| {
+                    current.agent_id == registration.agent_id
+                        && current.target == registration.target
+                })
+                .map(|(_, token)| token)
+                .ok_or_else(OutboundError::not_registered)
+        };
+        let mut token = match &registration.gate {
+            Some(_) => gate_token()?,
             None => token,
         };
         // Every file is uploaded before anything is claimed or sent: a file
@@ -1226,13 +1236,15 @@ impl Outbound {
                 .map_err(|error| OutboundError::from_rpc(&error, "save_failed"))?;
         }
         let base = &registration.base_url;
-        let send = |key| async {
-            if let Some(channel) = &channel {
-                self.post(&registration, &token, channel, text, &attachments, key)
+        let (channel, endpoint, reply_to, attachments, registration) =
+            (&channel, &endpoint, &reply_to, &attachments, &registration);
+        let send = |key, token: Secret| async move {
+            if let Some(channel) = channel {
+                self.post(registration, &token, channel, text, attachments, key)
                     .await
             } else {
                 let endpoint = endpoint.as_ref().expect("a direct-message endpoint");
-                match (&reply_to, attachments.is_empty()) {
+                match (reply_to, attachments.is_empty()) {
                     (Some(parent), _) => client::reply(base, &token, parent, text, key).await,
                     (None, true) => client::send_dm(base, &token, endpoint, text, key).await,
                     (None, false) => {
@@ -1241,7 +1253,7 @@ impl Outbound {
                             &token,
                             endpoint,
                             text,
-                            &attachments,
+                            attachments,
                             key,
                         )
                         .await
@@ -1249,7 +1261,24 @@ impl Outbound {
                 }
             }
         };
-        let sent = match send(idempotency_key.clone()).await {
+        let mut first = send(idempotency_key.clone(), token.clone()).await;
+        // relaygate refused the gate agent's token (it expired): nothing was
+        // sent, so it registers again, once, under the lock held above, and
+        // the send is repeated with the new token. A second refusal stands.
+        if registration.gate.is_some()
+            && first
+                .as_ref()
+                .is_err_and(crate::relay::sdk_gaps::is_gate_unauthenticated)
+            && self
+                .core
+                .renew_gate_locked(&registration.name, Some(&token))
+                .await
+                == crate::relay::agents::Renewal::Renewed
+        {
+            token = gate_token()?;
+            first = send(idempotency_key.clone(), token.clone()).await;
+        }
+        let sent = match first {
             // An unkeyed first attempt stays on Relaycast's fast path. A
             // refused TCP connection cannot have reached the server, so only
             // that unambiguous transport failure is retried with a generated
@@ -1257,15 +1286,18 @@ impl Outbound {
             // are returned to the caller instead of risking a second message.
             Err(error) if idempotency_key.is_none() && retry_unkeyed_after(&error) => {
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                send(Some(format!(
-                    "probe-send-v1-{}",
-                    crate::relay::store::random_uuid()
-                )))
+                send(
+                    Some(format!(
+                        "probe-send-v1-{}",
+                        crate::relay::store::random_uuid()
+                    )),
+                    token.clone(),
+                )
                 .await
             }
             result => result,
         };
-        let sent = self.settle(sent, &registration, &endpoint).await?;
+        let sent = self.settle(sent, registration, endpoint).await?;
         let mut answer = match (&channel, &endpoint) {
             (Some(channel), _) => json!({
                 "from": registration.name,

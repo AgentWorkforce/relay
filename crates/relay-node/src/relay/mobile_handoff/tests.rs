@@ -425,6 +425,7 @@ async fn mobile_owner_roundtrip_preserves_authority_and_idle_poll_is_local() {
         agent_id: alias.id.clone(),
         token: Secret::new(alias.token.clone()),
         registered_at: "2026-10-24T00:00:00Z".into(),
+        gate: None,
     });
     core.store
         .update(|store| store.update(renamed.clone()))
@@ -809,6 +810,7 @@ async fn renamed_disabled_registration_preserves_native_receipts_and_never_falls
         agent_id: "alias-agent".into(),
         token: Secret::new("at_alias"),
         registered_at: "2026-10-24T00:00:00Z".into(),
+        gate: None,
     });
     core.store
         .update(|store| {

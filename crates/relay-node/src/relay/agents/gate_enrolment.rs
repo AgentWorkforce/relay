@@ -16,12 +16,16 @@
 //! Removal and every renewal of one agent hold the same lock
 //! ([`Core::gate_locks`]), so a renewal can never register an agent again
 //! after its removal deleted it.
+//!
+//! An alias of a gate agent (a rename) is a gate agent of its own: enrolled
+//! under its name with its own recovery proof, renewed like any other, and
+//! deleted with its own token when it is released.
 
 use super::*;
 use crate::relay::sdk_gaps::{
     gate_delete_self, gate_patch_self, gate_register, new_recovery, GateError, GateSelfPatch,
 };
-use crate::relay::store::GateEnrolment;
+use crate::relay::store::{AgentAlias, GateEnrolment};
 use std::time::{Duration, Instant};
 
 /// How long a failed renewal waits when the gate named no `Retry-After`.
@@ -77,7 +81,29 @@ pub(crate) struct GateCleanup {
     token: Secret,
     name: String,
     agent_id: String,
+    /// An alias's recovery proof: a refused token is replaced by
+    /// registering the name again with it, then the delete is repeated.
+    recovery: Option<Secret>,
+    /// The gate refused `token` already: registered again before the
+    /// next delete.
+    refused: bool,
     not_before: Instant,
+}
+
+impl GateCleanup {
+    /// Waits for the gate's `Retry-After` when `error` named one, else
+    /// [`RENEW_RETRY`].
+    fn wait_after(&mut self, error: &GateError) {
+        self.not_before = match error {
+            GateError::RateLimited {
+                retry_after: Some(wait),
+            }
+            | GateError::Unavailable {
+                retry_after: Some(wait),
+            } => wait_until(*wait),
+            _ => Instant::now() + RENEW_RETRY,
+        };
+    }
 }
 
 impl Core {
@@ -164,13 +190,17 @@ impl Core {
         }
         if let Err(error) = gate_delete_self(base_url, token).await {
             if gate_delete_retryable(&error) {
-                self.gate_cleanups.lock().unwrap().push(GateCleanup {
+                let mut cleanup = GateCleanup {
                     base_url: base_url.to_owned(),
                     token: token.clone(),
                     name: name.to_owned(),
                     agent_id: agent_id.to_owned(),
-                    not_before: Instant::now() + RENEW_RETRY,
-                });
+                    recovery: None,
+                    refused: false,
+                    not_before: Instant::now(),
+                };
+                cleanup.wait_after(&error);
+                self.gate_cleanups.lock().unwrap().push(cleanup);
             }
             self.hub.activity(
                 Level::Warning,
@@ -179,13 +209,160 @@ impl Core {
         }
     }
 
+    /// Enrols `alias` at relaygate for gate agent `registration`'s session
+    /// (a rename): an agent of its own there, with its own recovery proof.
+    pub(super) async fn enrol_gate_alias(
+        &self,
+        registration: &Registration,
+        alias: &str,
+    ) -> Result<AgentAlias, RpcError> {
+        let (issued, enrolment) = self.enrol_at_gate(&registration.base_url, alias).await?;
+        Ok(AgentAlias {
+            name: alias.to_owned(),
+            agent_id: issued.agent_id,
+            token: issued.token,
+            registered_at: crate::relay::store::iso8601_now(),
+            gate: Some(enrolment),
+        })
+    }
+
+    /// Deletes `alias`, an alias of a gate agent this computer no longer
+    /// holds, at relaygate with its own token (`DELETE /v1/agent`). A token
+    /// the gate refused (it expired) is replaced first by registering the
+    /// alias again with its recovery proof, which reaches the same agent,
+    /// and the delete is sent once more with the new one. An outage, at
+    /// either step, is tried again on later passes from where it stopped
+    /// ([`Core::retry_gate_cleanups`]); a gate that still refuses leaves an
+    /// agent that expires with its token.
+    pub(super) async fn delete_gate_alias(&self, base_url: &str, alias: &AgentAlias) {
+        let recovery = self
+            .store
+            .read(|s| s.gate_recovery(base_url, &alias.name))
+            .or_else(|| alias.gate.as_ref().map(|gate| gate.recovery.clone()));
+        self.run_gate_cleanup(GateCleanup {
+            base_url: base_url.to_owned(),
+            token: alias.token.clone(),
+            name: alias.name.clone(),
+            agent_id: alias.agent_id.clone(),
+            recovery,
+            refused: false,
+            not_before: Instant::now(),
+        })
+        .await;
+        if !self.gate_name_held(base_url, &alias.name, &alias.agent_id) {
+            self.forget_gate_renewal(&alias.name);
+        }
+    }
+
+    /// Deletes `cleanup`'s agent at relaygate, or queues it again on an
+    /// outage with what it still needs (a new token first, when the gate
+    /// refused its own).
+    ///
+    /// The name is claimed for the whole removal, as every enrolment here
+    /// claims it until its registration is saved: one in flight is waited
+    /// out (the cleanup is queued), and none starts meanwhile. A name
+    /// enrolled here again reaches the same agent (same recovery proof),
+    /// so a registration that holds it keeps it and nothing is deleted.
+    async fn run_gate_cleanup(&self, mut cleanup: GateCleanup) {
+        let name = cleanup.name.clone();
+        if self.claim_name(&name).is_err() {
+            cleanup.not_before = Instant::now() + RENEW_RETRY;
+            self.gate_cleanups.lock().unwrap().push(cleanup);
+            return;
+        }
+        let failed = {
+            let lock = self.gate_locks.get(&name);
+            let _removing = lock.lock().await;
+            self.gate_cleanup_step(&mut cleanup).await
+        };
+        self.release_name(&name);
+        if let Some(error) = failed {
+            cleanup.wait_after(&error);
+            self.gate_cleanups.lock().unwrap().push(cleanup);
+            self.hub.activity(
+                Level::Warning,
+                format!("@{name} could not be removed from relaygate yet: {error}."),
+            );
+        }
+    }
+
+    /// One attempt at `cleanup`, under its name's claim and gate lock: the
+    /// error to wait out and try again after, if any.
+    async fn gate_cleanup_step(&self, cleanup: &mut GateCleanup) -> Option<GateError> {
+        let name = cleanup.name.clone();
+        let mut renewed = false;
+        loop {
+            if self.gate_name_held(&cleanup.base_url, &name, &cleanup.agent_id) {
+                return None;
+            }
+            if cleanup.refused {
+                let Some(recovery) = cleanup.recovery.clone() else {
+                    self.gate_left_behind(&name, &GateError::Unauthenticated);
+                    return None;
+                };
+                match self
+                    .register_gate_name_again(&cleanup.base_url, &name, &recovery)
+                    .await
+                {
+                    Ok(token) => {
+                        cleanup.token = token;
+                        cleanup.refused = false;
+                        renewed = true;
+                    }
+                    Err(error) if gate_delete_retryable(&error) => return Some(error),
+                    Err(error) => {
+                        self.gate_left_behind(&name, &error);
+                        return None;
+                    }
+                }
+            }
+            match gate_delete_self(&cleanup.base_url, &cleanup.token).await {
+                Ok(()) => return None,
+                Err(GateError::Unauthenticated) if !renewed && cleanup.recovery.is_some() => {
+                    cleanup.refused = true;
+                }
+                Err(error) if gate_delete_retryable(&error) => return Some(error),
+                Err(error) => {
+                    self.gate_left_behind(&name, &error);
+                    return None;
+                }
+            }
+        }
+    }
+
+    /// A new token for gate agent `name`, whose own was refused: registered
+    /// again with `recovery`, the proof kept for its name.
+    async fn register_gate_name_again(
+        &self,
+        base_url: &str,
+        name: &str,
+        recovery: &Secret,
+    ) -> Result<Secret, GateError> {
+        let device = self
+            .device_token()
+            .await
+            .map_err(|_| GateError::Unauthenticated)?;
+        let issued = gate_register(base_url, &device, name, recovery.expose()).await?;
+        Ok(issued.token)
+    }
+
     fn gate_agent_held(&self, agent_id: &str) -> bool {
         self.store
             .read(|s| s.registrations.iter().any(|r| r.agent_id == agent_id))
     }
 
-    /// Tries again each gate agent [`Core::undo_gate_enrolment`] could not
-    /// delete, once its wait is over. Nothing is kept for an install
+    /// Whether a registration here holds gate agent `agent_id` or the name
+    /// `name` at `base_url`, as any of its names.
+    fn gate_name_held(&self, base_url: &str, name: &str, agent_id: &str) -> bool {
+        self.store.read(|s| {
+            s.registrations
+                .iter()
+                .any(|r| r.agent_id == agent_id || (r.base_url == base_url && r.answers_to(name)))
+        })
+    }
+
+    /// Tries again each gate agent a removal could not delete yet, once its
+    /// wait is over, from where it stopped. Nothing is kept for an install
     /// without a gate, so this does nothing there.
     pub(crate) async fn retry_gate_cleanups(&self) {
         let due: Vec<GateCleanup> = {
@@ -200,18 +377,8 @@ impl Core {
             *cleanups = waiting;
             due
         };
-        for mut cleanup in due {
-            if self.gate_agent_held(&cleanup.agent_id) {
-                continue;
-            }
-            match gate_delete_self(&cleanup.base_url, &cleanup.token).await {
-                Err(error) if gate_delete_retryable(&error) => {
-                    cleanup.not_before = Instant::now() + RENEW_RETRY;
-                    self.gate_cleanups.lock().unwrap().push(cleanup);
-                }
-                Err(error) => self.gate_left_behind(&cleanup.name, &error),
-                Ok(()) => {}
-            }
+        for cleanup in due {
+            self.run_gate_cleanup(cleanup).await;
         }
     }
 
@@ -316,13 +483,15 @@ impl Core {
     /// unless one is running or it waits. Called on every delivery pass.
     pub(crate) fn renew_due_gate_registrations(self: &Arc<Self>) {
         let now = chrono::Utc::now();
+        // Each name with a token of its own: the agent, then its aliases.
         let due: Vec<String> = self.store.read(|store| {
             store
-                .registrations
-                .iter()
+                .credentials()
+                .into_iter()
+                .map(|(r, _)| r)
                 .filter(|r| r.missing_since.is_none() && r.archived_at.is_none())
                 .filter(|r| r.gate.as_ref().is_some_and(|gate| gate.due(now)))
-                .map(|r| r.name.clone())
+                .map(|r| r.name)
                 .collect()
         });
         for name in due {
@@ -361,18 +530,28 @@ impl Core {
     }
 
     /// [`Core::renew_gate_registration`] for a caller that holds `name`'s
-    /// entry in [`Core::gate_locks`] already (removal).
-    async fn renew_gate_locked(&self, name: &str, failed: Option<&Secret>) -> Renewal {
-        let Some((registration, token)) = self.store.read(|s| {
-            let registration = s.registration_named(name)?.clone();
-            let token = s.tokens.get(name)?.clone();
-            Some((registration, token))
+    /// entry in [`Core::gate_locks`] already (removal, a send). `name` may
+    /// be an alias: it renews with its own recovery proof.
+    pub(crate) async fn renew_gate_locked(&self, name: &str, failed: Option<&Secret>) -> Renewal {
+        let Some((registration, token, alias)) = self.store.read(|s| {
+            let (registration, token) = s.credential_named(name)?;
+            Some((registration, token, s.registration_named(name).is_none()))
         }) else {
             return Renewal::NotRenewed;
         };
-        let Some(gate) = registration.gate.clone() else {
+        let Some(mut gate) = registration.gate.clone() else {
             return Renewal::NotRenewed;
         };
+        if alias {
+            // Its own proof, never the agent's it is an alias of.
+            match self
+                .store
+                .read(|s| s.gate_recovery(&registration.base_url, name))
+            {
+                Some(recovery) => gate.recovery = recovery,
+                None => return Renewal::NotRenewed,
+            }
+        }
         match failed {
             Some(failed) if *failed != token => return Renewal::Renewed,
             None if !gate.due(chrono::Utc::now()) => return Renewal::NotRenewed,
@@ -436,16 +615,30 @@ impl Core {
         }
         let enrolment = GateEnrolment::issued(gate.recovery, chrono::Utc::now(), issued.expires_at);
         let saved = self.store.update(|store| {
-            let Some(current) = store
+            if let Some(current) = store
                 .registrations
                 .iter_mut()
                 .find(|r| r.name == name && r.agent_id == registration.agent_id)
-            else {
-                return false;
-            };
-            current.gate = Some(enrolment.clone());
-            store.tokens.insert(name.into(), issued.token.clone());
-            true
+            {
+                current.gate = Some(enrolment.clone());
+                store.tokens.insert(name.into(), issued.token.clone());
+                return true;
+            }
+            // An alias, current or still forwarding: its token is its own.
+            let held = store.registrations.iter_mut().find_map(|r| {
+                r.alias
+                    .iter_mut()
+                    .chain(r.retired_aliases.iter_mut().flatten().map(|r| &mut r.alias))
+                    .find(|a| a.name == name && a.agent_id == registration.agent_id)
+            });
+            match held {
+                Some(alias) => {
+                    alias.token = issued.token.clone();
+                    alias.gate = Some(enrolment.clone());
+                    true
+                }
+                None => false,
+            }
         });
         match saved {
             Ok(true) => {}
@@ -454,7 +647,7 @@ impl Core {
                 // removal (which holds the lock): the agent the register
                 // reached now answers only to the token just issued, so
                 // that is what takes it down.
-                if self.store.read(|s| s.registration_named(name).is_none()) {
+                if self.store.read(|s| s.credential_named(name).is_none()) {
                     self.undo_gate_enrolment(
                         &registration.base_url,
                         &issued.token,
@@ -489,9 +682,12 @@ impl Core {
 
     /// Tells relaygate what gate agent `registration` is (`PATCH
     /// /v1/agent` with its own token): the session metadata a workspace-key
-    /// install sends with its register, plus `extra` and its status. Only
-    /// the agent's own name is patched (relaygate lets an agent change
-    /// itself only); anything else answers `Ok` with nothing sent.
+    /// install sends with its register, plus `extra` and its status. Each
+    /// of its names patches itself (relaygate lets an agent change itself
+    /// only): an alias with its own token, naming the agent it is an alias
+    /// of. A name it does not hold answers `Ok` with nothing sent. A token
+    /// the gate refused is renewed once, unless a renewal or removal holds
+    /// the name, and the patch sent again.
     pub(super) async fn publish_at_gate(
         &self,
         registration: &Registration,
@@ -500,10 +696,14 @@ impl Core {
         extra: Option<Map<String, Value>>,
         status: &str,
     ) -> relaycast::Result<()> {
-        if name != registration.name {
-            return Ok(());
-        }
-        let Some(token) = self.store.read(|s| s.tokens.get(name).cloned()) else {
+        let held_token = || {
+            self.store.read(|s| {
+                s.credential_named(name)
+                    .filter(|(held, _)| held.target == registration.target)
+                    .map(|(_, token)| token)
+            })
+        };
+        let Some(token) = held_token() else {
             return Ok(());
         };
         let base = &registration.base_url;
@@ -527,13 +727,28 @@ impl Core {
             description,
             owner.as_ref(),
         );
+        if name != registration.name {
+            metadata.insert("alias_of".into(), Value::String(registration.name.clone()));
+        }
         metadata.extend(extra.unwrap_or_default());
         let patch = GateSelfPatch {
             status: Some(status.to_owned()),
             metadata: Some(metadata),
             ..GateSelfPatch::default()
         };
-        let result = gate_patch_self(base, &token, &patch).await;
+        let mut result = gate_patch_self(base, &token, &patch).await;
+        if matches!(result, Err(GateError::Unauthenticated)) {
+            // Never waits on a renewal or removal of the name in progress:
+            // the patch stays pending and is sent on a later pass.
+            let lock = self.gate_locks.get(name);
+            if let Ok(_renewing) = lock.clone().try_lock_owned() {
+                if self.renew_gate_locked(name, Some(&token)).await == Renewal::Renewed {
+                    if let Some(next) = held_token() {
+                        result = gate_patch_self(base, &next, &patch).await;
+                    }
+                }
+            }
+        }
         if let Err(
             GateError::RateLimited { retry_after } | GateError::Unavailable { retry_after },
         ) = &result

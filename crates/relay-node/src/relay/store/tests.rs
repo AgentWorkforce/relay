@@ -2455,6 +2455,7 @@ fn aliased(name: &str, alias: &str, target: Target) -> Registration {
             agent_id: format!("id-{alias}"),
             token: token(&format!("at_{alias}")),
             registered_at: iso8601_from_seconds(0.0),
+            gate: None,
         }),
         ..registration(name, target)
     }
@@ -2642,6 +2643,7 @@ fn a_replaced_alias_forwards_and_is_held_until_its_day_is_up() {
             agent_id: "id-earlier".into(),
             token: token("at_earlier"),
             registered_at: iso8601_from_seconds(0.0),
+            gate: None,
         },
         retired_at: "2026-10-17T00:00:00Z".into(),
     };
