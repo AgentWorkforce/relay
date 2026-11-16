@@ -1045,6 +1045,23 @@ impl Core {
                 );
                 self.handle_pending(&deliveries, &registration).await;
             }
+            // A gate agent's token expired or was revoked: it registers
+            // again, once, and its queue is read with the new token.
+            Err(error)
+                if registration.gate.is_some()
+                    && crate::relay::sdk_gaps::is_gate_unauthenticated(&error)
+                    && self.current(&registration) =>
+            {
+                match self.renew_gate_registration(name, Some(&token)).await {
+                    crate::relay::agents::Renewal::Renewed => self.request_drain(name),
+                    crate::relay::agents::Renewal::NotRenewed => {
+                        let message = self
+                            .gate_error(name)
+                            .unwrap_or_else(|| RpcError::from_relaycast(&error).message);
+                        self.set_queue_error(name, Some(format!("@{name}: {message}")));
+                    }
+                }
+            }
             // An agent removed while its queue was read reports nothing.
             Err(error) if self.current(&registration) => {
                 let mapped = RpcError::from_relaycast(&error);
@@ -1660,6 +1677,7 @@ impl Core {
     pub async fn poll_once(self: &Arc<Core>) {
         self.reconcile_sessions_if_due().await;
         self.retry_pending_cleanups().await;
+        self.renew_due_gate_registrations();
         let clean_integrations = {
             let mut state = self.delivery.lock().unwrap();
             let due = state

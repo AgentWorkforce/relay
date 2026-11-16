@@ -36,6 +36,7 @@ fn registration(name: &str, target: Target) -> Registration {
         alias: None,
         retired_aliases: None,
         cleared: None,
+        gate: None,
         control_url: None,
     }
 }
@@ -203,6 +204,67 @@ fn a_gate_url_round_trips_under_its_own_key() {
     };
     let restored = Store::decode(&store.encode(), PREFIX).unwrap().store;
     assert_eq!(restored.cloud, Some(gated));
+}
+
+// A registration saved before gate enrolment decodes and re-encodes to the
+// same bytes: no `gate` key appears for a Relaycast-key agent.
+#[test]
+fn a_registration_without_a_gate_round_trips_byte_for_byte() {
+    let old = serde_json::to_string(&registration("codex-x", target(THREAD))).unwrap();
+    assert!(!old.contains("\"gate\""));
+    let decoded: Registration = serde_json::from_str(&old).unwrap();
+    assert_eq!(decoded.gate, None);
+    assert_eq!(serde_json::to_string(&decoded).unwrap(), old);
+
+    let store = decode(&format!(
+        r#"{{"registrations":[{old}],"tokens":{{"codex-x":"at_live_x"}}}}"#
+    ));
+    assert_eq!(store.registrations[0].gate, None);
+    let encoded = store.encode();
+    assert!(!String::from_utf8_lossy(&encoded).contains("\"gate\""));
+    let again = Store::decode(&encoded, PREFIX).unwrap();
+    assert!(!again.migrated);
+    assert_eq!(again.store.encode(), encoded);
+}
+
+#[test]
+fn a_gate_enrolment_round_trips_with_its_recovery() {
+    let now = chrono::DateTime::parse_from_rfc3339("2026-11-16T08:00:00Z")
+        .unwrap()
+        .to_utc();
+    let expires = now + chrono::TimeDelta::hours(10);
+    let enrolment = GateEnrolment::issued(Secret::new("recovery-proof-0123456789"), now, expires);
+    assert_eq!(enrolment.expires_at, "2026-11-16T18:00:00.000Z");
+    // Renewed at 80% of the token's lifetime.
+    assert_eq!(enrolment.renew_at, "2026-11-16T16:00:00.000Z");
+    assert!(!enrolment.due(now + chrono::TimeDelta::hours(7)));
+    assert!(enrolment.due(now + chrono::TimeDelta::hours(8)));
+    let damaged = GateEnrolment {
+        renew_at: "soon".into(),
+        ..enrolment.clone()
+    };
+    assert!(damaged.due(now));
+
+    let gated = Registration {
+        base_url: "https://gate.corp.test".into(),
+        workspace_key: None,
+        gate: Some(enrolment.clone()),
+        ..registration("codex-x", target(THREAD))
+    };
+    let json = serde_json::to_value(&gated).unwrap();
+    assert_eq!(json["gate"]["recovery"], "recovery-proof-0123456789");
+    assert_eq!(json["gate"]["expiresAt"], "2026-11-16T18:00:00.000Z");
+    assert_eq!(json["gate"]["renewAt"], "2026-11-16T16:00:00.000Z");
+    let store = Store {
+        registrations: vec![gated.clone()],
+        ..Store::default()
+    };
+    let restored = Store::decode(&store.encode(), PREFIX).unwrap().store;
+    assert_eq!(restored.registrations[0], gated);
+    let encoded = restored.encode();
+    let again = Store::decode(&encoded, PREFIX).unwrap();
+    assert!(!again.migrated);
+    assert_eq!(again.store.encode(), encoded);
 }
 
 fn delivery(id: &str, reason: &str) -> Delivery {

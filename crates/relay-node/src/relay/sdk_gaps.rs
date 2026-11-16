@@ -48,7 +48,6 @@ pub use gate::{
     GateSelfPatch, GATE_DENIED, GATE_NAME_SCOPE, GATE_NAME_TAKEN, GATE_UNAUTHENTICATED,
 };
 // For the agent-token calls to classify an expired `rg_` token by (re-register).
-#[allow(unused_imports)]
 pub(crate) use gate::is_gate_unauthenticated;
 
 use crate::relay::diagnostic_http::HttpClient;

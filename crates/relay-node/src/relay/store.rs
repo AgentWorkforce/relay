@@ -298,6 +298,54 @@ pub struct Registration {
     /// and is not delivered into this one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cleared: Option<i64>,
+    /// For an agent enrolled through relaygate (a gate-only install): what
+    /// it re-registers with. Absent for every agent registered with a
+    /// workspace key, so their records are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<GateEnrolment>,
+}
+
+/// How an agent enrolled through relaygate stays enrolled. Its `rg_` token
+/// is kept with the other agent tokens, `base_url` is the gate, and there
+/// is no workspace key.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateEnrolment {
+    /// The recovery proof made for this agent when it first enrolled; every
+    /// re-registration sends the same one, so relaygate keeps its agent id.
+    /// Never logged.
+    pub recovery: Secret,
+    /// When the current token stops working (RFC 3339).
+    #[serde(rename = "expiresAt")]
+    pub expires_at: String,
+    /// When it is registered again for a new token: 80% of the way from
+    /// issue to `expires_at` (RFC 3339).
+    #[serde(rename = "renewAt")]
+    pub renew_at: String,
+}
+
+impl GateEnrolment {
+    /// The enrolment for a token issued `now` that expires at `expires_at`.
+    pub fn issued(
+        recovery: Secret,
+        now: chrono::DateTime<chrono::Utc>,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> GateEnrolment {
+        let lifetime = (expires_at - now).max(chrono::TimeDelta::zero());
+        let renew_at = now + lifetime * 4 / 5;
+        GateEnrolment {
+            recovery,
+            expires_at: expires_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            renew_at: renew_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        }
+    }
+
+    /// Whether the token is due for renewal at `now`. An unreadable time is
+    /// due, so a damaged record renews instead of expiring silently.
+    pub fn due(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
+        chrono::DateTime::parse_from_rfc3339(&self.renew_at)
+            .map(|at| at <= now)
+            .unwrap_or(true)
+    }
 }
 
 impl Registration {
