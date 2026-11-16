@@ -33,7 +33,7 @@ fn fixture() -> (tempfile::TempDir, CopilotConfig, PathBuf, Value) {
 }
 
 #[test]
-fn a_delayed_stop_anchor_keeps_the_original_snapshot_and_starts_the_wait() {
+fn a_delayed_stop_anchor_keeps_the_file_identity_and_observed_length() {
     let (_home, config, path, _) = fixture();
     let original = snapshot(&config, SID).unwrap();
     let mut retries = 0;
@@ -45,7 +45,8 @@ fn a_delayed_stop_anchor_keeps_the_original_snapshot_and_starts_the_wait() {
     .unwrap();
     assert_eq!(retries, 1);
     assert_eq!(stamp["identity"], original["identity"]);
-    assert_eq!(stamp["length"], original["length"]);
+    assert_eq!(stamp["length"], std::fs::metadata(&path).unwrap().len());
+    assert!(stamp["length"].as_u64().unwrap() > original["length"].as_u64().unwrap());
     assert!(stamp["offset"].is_u64());
     assert!(!cancelled(
         &config,
@@ -124,6 +125,54 @@ fn a_cancel_during_delayed_startup_is_not_lost() {
         SID,
         &json!({"timestamp":300,"relayJournal":stamp})
     ));
+}
+
+#[test]
+fn truncation_cannot_erase_a_cancel_observed_with_a_delayed_anchor() {
+    let (_home, config, path, _) = fixture();
+    let mut anchor_end = 0;
+    let stamp = snapshot_after_start(&config, SID, 300, || {
+        append(&path, start(300));
+        anchor_end = std::fs::metadata(&path).unwrap().len();
+        append(&path, json!({"type":"abort"}));
+        true
+    })
+    .unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(anchor_end)
+        .unwrap();
+    assert!(cancelled(
+        &config,
+        SID,
+        &json!({"timestamp":300,"relayJournal":stamp})
+    ));
+}
+
+#[test]
+fn delayed_startup_retains_the_length_floor_before_its_anchor_arrives() {
+    let (_home, config, path, _) = fixture();
+    let original = std::fs::read(&path).unwrap();
+    let mut retries = 0;
+    let stamp = snapshot_after_start(&config, SID, 300, || {
+        retries += 1;
+        if retries == 1 {
+            append(
+                &path,
+                json!({"type":"model.messages_snapshot","data":"x".repeat(4096)}),
+            );
+        } else {
+            // Erase an already observed append, while still leaving a file
+            // larger than the original snapshot and containing our anchor.
+            std::fs::write(&path, &original).unwrap();
+            append(&path, start(300));
+        }
+        true
+    });
+    assert!(stamp.is_none());
+    assert_eq!(retries, 2);
 }
 
 #[test]

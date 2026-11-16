@@ -52,3 +52,10 @@
 - **Live cancellation/re-arm pass:** normal Cancel ended the idle hook without claiming a message, its helper exited, a normal new user turn re-armed the hook, and a fresh DM woke the chat without inbox polling. Evidence: `cancellation-release.json` and `WAKE_LIVE_AFTER_CANCEL_1116_1529_1.json` in the same local results directory.
 - The user explicitly requested taking PR #2198 out of draft; it is ready for review. No main merge or release was performed. The original app bundle remains untouched; the verified candidate is running in the existing local test-app slot.
 - Native MCP `server/discover` negotiation is a separate desktop companion investigation. No native MCP tool-execution success is claimed by these injection tests.
+
+## Final review hardening
+
+- The user explicitly authorized an admin merge of PR #2198 when ready.
+- Final review identified repeated startup lookback scans and a stale initial length floor that could accept truncation erasing a delayed anchor's abort. The new delayed-anchor length assertion and two truncation regressions failed before the fix.
+- Startup now scans existing complete records once, resumes at the unfinished record, and retains the greatest successfully read length with the original file identity. All 59 Copilot tests pass, with one manual live proof ignored; partial-write and cancellation coverage remains passing.
+- The running desktop candidate and the companion session's ongoing MCP investigation were left undisturbed. The final review hardening is covered by local regressions; the preceding candidate supplied the live wake/cancel evidence above.

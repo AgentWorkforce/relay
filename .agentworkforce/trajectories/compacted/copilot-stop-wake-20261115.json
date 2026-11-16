@@ -54,7 +54,8 @@
     "Commit6301881a3 adds current process-table hook proof, a 30-second stop-request validation budget, debug-only elapsed/boolean diagnostics, and descriptor-open/close regressions. 54 Copilot, 3 snapshot and 2 macOS signing tests pass.",
     "Final source5d5677fee passed57 Copilot,3snapshot and2macOSsigning tests. Combined candidate appa948ff8/coree4bcb805a (production-equivalent peer app8f2df994/corea87a3ef55) passed126 desktopCopilot and275GTK tests, Swiftappbuild and deepstrictseal; Swiftunit tests unavailable(noXCTest).",
     "November16 final live validation passed three consecutive idle DM wakes without UI intervention, each with one native stop block, one exact message receipt and completed reply, with no inbox polling. Native normal cancellation ended the old hook without a claim and its helper exited; re-arm and one fresh post-cancel DM wake passed.",
-    "PR2198 was taken out of draft on the user explicit request. No main merge or release. NativeMCPserver/discover negotiation remains a separate companion investigation; not a verified tool-use pass."
+    "PR2198 was taken out of draft on the user explicit request. No main merge or release. NativeMCPserver/discover negotiation remains a separate companion investigation; not a verified tool-use pass.",
+    "The user subsequently authorized admin merge of PR2198 when ready. Final review found repeated lookback scans and a stale initial length floor that could lose an abort after truncation. The new delayed-anchor length assertion and two truncation regressions failed before the fix. Startup now resumes at the last complete record and retains the greatest successfully read length with its original identity. All59Copilot tests pass,1manualignored. This hardening was regression-tested without disturbing the active desktop candidate or companion MCP work."
   ],
   "filesAffected": [
     "crates/relay-node/src/relay/cli/copilot_hook.rs",

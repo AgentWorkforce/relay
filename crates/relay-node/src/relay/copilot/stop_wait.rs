@@ -45,7 +45,8 @@ pub(crate) fn snapshot(config: &CopilotConfig, sid: &str) -> Option<Value> {
 /// Copilot queues hook lifecycle records for asynchronous persistence. Its
 /// command can start before its own hook.start reaches events.jsonl. Wait for
 /// that exact anchor before asking Core to check cancellation; an absent anchor
-/// must never authorize a delivery. Keep the first file incarnation throughout.
+/// must never authorize a delivery. Keep the first file incarnation and the
+/// greatest successfully read length throughout.
 pub(crate) fn started_snapshot(config: &CopilotConfig, sid: &str, timestamp: u64) -> Option<Value> {
     let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
     snapshot_after_start(config, sid, timestamp, || {
@@ -68,11 +69,20 @@ fn snapshot_after_start(
     search["offset"] = json!(stamp["length"].as_u64()?.saturating_sub(MAX_SCAN / 2));
     loop {
         let (offset, tail) = bytes(config, sid, &search)?;
+        // Retain every observed append, including an abort alongside a delayed
+        // anchor. A later truncation must not erase that cancellation evidence.
+        stamp["length"] = json!(offset.checked_add(tail.len() as u64)?);
+        search["length"] = stamp["length"].clone();
         // Both an active and a cancelled anchor are ready for Core: it still
         // makes the cancellation decision, including any subsequent appends.
         if let Some((_, anchor)) = scan_at(&tail, sid, timestamp) {
             stamp["offset"] = json!(offset.checked_add(anchor)?);
             return Some(stamp);
+        }
+        // Scan the lookback only once. Resume at the last complete record so
+        // an asynchronously persisted partial anchor is still read in full.
+        if let Some(last) = tail.iter().rposition(|byte| *byte == b'\n') {
+            search["offset"] = json!(offset.checked_add(last as u64 + 1)?);
         }
         if !retry() {
             return None;
