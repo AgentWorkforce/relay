@@ -1,6 +1,6 @@
-# Copilot in VS Code
+# Copilot desktop and VS Code
 
-The `copilot` session route serves the **Copilot** harness in VS Code on macOS.
+The `copilot` session route serves GitHub Copilot desktop and the **Copilot** harness in VS Code on macOS.
 The older **Local** harness and standalone Copilot CLI are not live delivery
 routes. Hosted MCP configuration and native Copilot history remain available
 on other platforms; verified messaging and wake support are unavailable there.
@@ -27,10 +27,31 @@ harness wrapper is not used. The SessionStart and post-tool hooks identify the c
 `sessionId`. The stop hook waits up to 59 minutes after a completed turn,
 without model calls, and returns `decision: block` with the next message as its
 `reason`. This resumes the same chat. Post-tool delivery uses top-level
-`additionalContext`. Closing the chat, cancelling its hook, closing VS Code,
+`additionalContext`. Closing the chat, cancelling its hook, closing the host app,
 sleeping the computer or exceeding the wait ends that wake opportunity.
 Delivery waits for the next active hook; it does not create a chat or launch a
 new model executor. Copilot may impose its own consecutive stop-hook limits.
+
+## GitHub Copilot desktop
+
+GitHub Copilot desktop 1.4.2 uses the same native journal and hooks as the
+VS Code harness. Its GitHub-signed `Contents/MacOS/github` host starts
+`copilot-runtime --server --stdio` directly from the versioned
+`~/Library/Caches/github-copilot-sdk/cli/copilot-sdk-runtime-*/` directory.
+The core verifies both live code objects against GitHub's signing team,
+strictly validates the installed `com.github.githubapp` bundle, and checks
+the runtime's UID, process incarnation and native held session inode before
+accepting a hook. A copied runtime, an unrelated parent, debugging flags or
+an unsealed app bundle cannot identify a chat. Host checks bracket signature
+and resource validation with the bundle and main executable identities, and
+re-read the kernel image path, refusing a renamed or replaced install. Multiple
+chats held by one runtime stay separate. The desktop host is shown as **GitHub Copilot**.
+
+The shared native MCP configuration and owned lifecycle hooks apply to both
+hosts. Start a new chat after provider setup so it loads them. History remains
+owned by RelayHistory's `copilot` provider; there is no second desktop parser.
+A private local verification of the installed desktop runtime journal retained
+every user/assistant message ID across all 15 local Copilot sessions.
 
 ## Identity and delivery proof
 

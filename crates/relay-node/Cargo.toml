@@ -92,8 +92,9 @@ schemars = { version = "1", default-features = false, features = ["derive", "std
 # Signals, process groups, uids and file modes, which Windows has no
 # counterpart for; the modules that use them gate the Windows build.
 [target.'cfg(unix)'.dependencies]
+socket2 = { version = "0.6", features = ["all"] }
 signal-hook = "=0.3.18"
-nix = { version = "=0.25.1", default-features = false, features = ["signal", "process", "fs", "user"] }
+nix = { version = "=0.25.1", default-features = false, features = ["signal", "process", "fs", "user", "poll"] }
 
 # Codex is trusted on macOS only with OpenAI's code signature (see
 # src/relay/process.rs), and Claude Code's login lives in the login Keychain;

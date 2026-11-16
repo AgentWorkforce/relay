@@ -50,7 +50,11 @@ pub fn copilot_hook(development: bool, event: &str) -> Result<()> {
             "/copilot/hook",
             &input,
             Duration::from_secs(match event {
-                "before" | "start" => 18,
+                // Native MCP attestation revalidates the sealed host and
+                // held chat before issuing its exact-call capability. Keep
+                // this caller alive while those checks finish under load.
+                "before" => 58,
+                "start" => 18,
                 // A pending delivery revalidates the sealed native app. Let
                 // that proof finish under load while the stop hook remains
                 // alive; exiting after eight seconds invalidates its caller.

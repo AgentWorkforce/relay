@@ -69,7 +69,7 @@ fn managed_value(config: &CopilotConfig, executable: &Path) -> Value {
             if config.development { " --dev" } else { "" }
         );
         hooks.insert((*event).into(), json!([{"type":"command","command":command,
-            "timeoutSec":if *flag == "stop" { 3600 } else if matches!(*flag, "before" | "start") { 20 } else { 10 }}]));
+            "timeoutSec":if *flag == "stop" { 3600 } else if *flag == "before" { 60 } else if *flag == "start" { 20 } else { 10 }}]));
     }
     json!({"version":1,"agentRelayManagedBy":OWNER,"hooks":hooks})
 }
@@ -120,7 +120,13 @@ fn owned_state(config: &CopilotConfig) -> io::Result<bool> {
     if value == expected {
         return Ok(true);
     }
-    // The initial adapter used a 10-second start timeout.
+    // Earlier managed adapters used a 20-second pre-tool timeout and the
+    // initial adapter also used a 10-second start timeout. Recognize only
+    // these complete owned documents; other edits still remain untouched.
+    expected["hooks"]["preToolUse"][0]["timeoutSec"] = json!(20);
+    if value == expected {
+        return Ok(true);
+    }
     expected["hooks"]["sessionStart"][0]["timeoutSec"] = json!(10);
     Ok(value == expected)
 }

@@ -41,6 +41,7 @@ dependencies = [
  "sha2",
  "shell-words",
  "signal-hook",
+ "socket2",
  "sysinfo",
  "tempfile",
  "tokio",

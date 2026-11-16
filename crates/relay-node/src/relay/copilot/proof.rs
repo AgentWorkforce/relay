@@ -27,7 +27,9 @@ pub fn runtime(table: &dyn ProcessTable, pid: i32, uid: u32) -> Option<ProcessIn
         return None;
     }
     let exe = table.executable(pid)?;
-    let root = contents(&exe)?;
+    let Some(root) = contents(&exe) else {
+        return super::desktop::runtime(table, process, &exe);
+    };
     let relative = exe
         .strip_prefix(root.join("Resources/app/node_modules.asar.unpacked/@github"))
         .ok()?;
