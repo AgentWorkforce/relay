@@ -1,0 +1,15 @@
+# Copilot desktop support — 2026-11-16
+
+GitHub Copilot desktop 1.4.2 uses a GitHub-signed Tauri host and cached SDK runtime in server/stdio mode. Relay verifies the host, runtime, installed bundle seal, UID, process incarnation and exact held native session inode. The existing VS Code path is preserved. The desktop host is labelled GitHub Copilot; native history stays with RelayHistory’s existing copilot provider.
+
+Core PR #2199 is consolidated onto main 10d4f8cec after the separately authorized PR #2198 landed. Its shared hook wake, cancellation, signature and scanner fixes are now inherited from main rather than duplicated. The standalone desktop changes pass 63 Copilot tests (one pre-existing ignored) on this checkout. Snapshot/signature and live wake/cancellation evidence from the companion candidate remains recorded privately under /tmp/relay-copilot-live-results.
+
+Standalone desktop incoming delivery passed three native journal checks on the existing Working directory thread, including a true idle wake: each produced exactly one injected user message and the expected assistant response. A printed marker without a tool event was rejected as MCP success. The companion native VS Code checks passed three consecutive idle wakes and cancellation followed by a new user turn and successful wake, without inbox polling.
+
+RelayHistory’s eight conformance tests pass. A private full acquisition retained every native user/assistant ID across 15 local Copilot sessions, 187 messages, 63 tool calls and 1,499 markers. No private transcript is committed. Sharing mode and exclusions are preserved; the target was Uploaded after enrichment.
+
+App branch review/codex-copilot-mcp-results at 54759b54aa56 adds legacy MCP negotiation fallback for server/discover after existing native/account/provider gates, plus regressions proving no network and no consumed intent. It also removes unsupported streaming capabilities and preserves ordinary CallToolResult shape. All 128 Copilot tests and the complete signed Swift app build pass. Swift unit tests require Xcode because this host’s Command Line Tools omit XCTest.
+
+UI automation recovered after resetting the connection; no lock was confirmed. A separate regular Relay KeepAlive job repeatedly replaced the test service. It is temporarily booted out at runtime, with its plist unchanged and restoration recorded in /tmp/relay-copilot-live-results/isolated-discovery-service.json. The isolated 54759b54aa56 test core is PID 83042. Copilot now visibly reports Agent Relay Connected after a fresh SDK launch. Actual native MCP tool execution remains under investigation; the original thread has reported TOOL_UNAVAILABLE, so no outbound MCP success is claimed. Original app bundles, signed fallback candidate and native history are retained.
+
+Code/security/secrets reviews passed for the implementation. Core PR #2199 and RelayHistory PR #589 remain draft. This user has not approved their main merges or any release. The app maintainer receives one final consolidated SHA only when native validation is complete.

@@ -121,6 +121,13 @@ pub trait ProcessTable: Send + Sync {
     fn is_trusted_vscode_bundle(&self, _bundle: &Path) -> bool {
         false
     }
+    /// GitHub-signed Copilot desktop code, checked against its live process.
+    fn is_trusted_copilot(&self, _pid: i32, _executable: &Path) -> bool {
+        false
+    }
+    fn is_trusted_copilot_bundle(&self, _bundle: &Path) -> bool {
+        false
+    }
     fn is_trusted_relay_helper(&self, _pid: i32, _executable: &Path) -> bool {
         false
     }
@@ -681,6 +688,8 @@ pub struct SystemProcesses {
     cursor_signatures: macos_signing::SignatureCache,
     #[cfg(target_os = "macos")]
     vscode_signatures: macos_signing::SignatureCache,
+    #[cfg(target_os = "macos")]
+    copilot_signatures: macos_signing::SignatureCache,
     #[cfg(windows)]
     windows: windows::Cache,
 }
@@ -921,6 +930,13 @@ mod macos {
         }
         fn is_trusted_vscode_bundle(&self, bundle: &Path) -> bool {
             macos_signing::trusted_vscode_bundle(bundle)
+        }
+        fn is_trusted_copilot(&self, pid: i32, executable: &Path) -> bool {
+            self.copilot_signatures.trusted_copilot(executable)
+                && macos_signing::trusted_copilot_process(pid)
+        }
+        fn is_trusted_copilot_bundle(&self, bundle: &Path) -> bool {
+            macos_signing::trusted_copilot_bundle(bundle)
         }
         fn is_trusted_relay_helper(&self, pid: i32, _executable: &Path) -> bool {
             macos_signing::trusted_relay_helper(pid)

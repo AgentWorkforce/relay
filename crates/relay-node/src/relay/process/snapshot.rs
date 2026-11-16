@@ -160,6 +160,12 @@ impl ProcessTable for ProcessSnapshot {
     fn is_trusted_vscode_bundle(&self, bundle: &Path) -> bool {
         self.inner.is_trusted_vscode_bundle(bundle)
     }
+    fn is_trusted_copilot(&self, pid: i32, executable: &Path) -> bool {
+        self.inner.is_trusted_copilot(pid, executable)
+    }
+    fn is_trusted_copilot_bundle(&self, bundle: &Path) -> bool {
+        self.inner.is_trusted_copilot_bundle(bundle)
+    }
     fn is_trusted_relay_helper(&self, pid: i32, executable: &Path) -> bool {
         self.inner.is_trusted_relay_helper(pid, executable)
     }
