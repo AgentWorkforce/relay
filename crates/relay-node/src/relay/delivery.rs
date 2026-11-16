@@ -1982,19 +1982,18 @@ impl Core {
         // through the send: a renewal revokes the token it replaces, and
         // a send with that one would be recorded as in doubt and never
         // retried. A workspace-key agent's token never changes this way.
+        // A renamed one sends as its alias, which renews under its own name.
+        let sender = registration.display_name();
         let _renewals = match &registration.gate {
-            Some(_) => Some(self.gate_locks.get(&registration.name).lock_owned().await),
+            Some(_) => Some(self.gate_locks.get(sender).lock_owned().await),
             None => None,
         };
         let token = match &registration.gate {
             Some(_) => {
-                let Some(current) = self
-                    .store
-                    .read(|s| s.tokens.get(&registration.name).cloned())
-                else {
+                let Some((_, current)) = self.store.read(|s| s.credential_named(sender)) else {
                     return;
                 };
-                registration.sender_token(current)
+                current
             }
             None => token,
         };

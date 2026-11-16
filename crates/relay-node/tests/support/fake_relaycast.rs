@@ -243,8 +243,8 @@ struct Shared {
     held: BTreeMap<String, u32>,
     /// Explicit API errors for pacing tests; healthy routes are unchanged.
     api_errors: BTreeMap<String, (u16, String)>,
-    /// The `Retry-After` header an explicit API error carries, by request.
-    api_retry_after: BTreeMap<String, String>,
+    /// The `Retry-After` every error from `api_errors` carries, if any.
+    api_retry_after: Option<String>,
 }
 
 enum SocketCommand {
@@ -737,18 +737,9 @@ impl FakeRelaycast {
         }
     }
 
-    /// The `Retry-After` header the error [`FakeRelaycast::set_api_error`]
-    /// set for `request` answers with.
-    pub fn set_api_retry_after(&self, request: &str, retry_after: Option<&str>) {
-        let mut shared = self.shared.lock().unwrap();
-        match retry_after {
-            Some(value) => {
-                shared.api_retry_after.insert(request.into(), value.into());
-            }
-            None => {
-                shared.api_retry_after.remove(request);
-            }
-        }
+    /// The `Retry-After` header each error set with `set_api_error` carries.
+    pub fn set_api_retry_after(&self, retry_after: Option<&str>) {
+        self.shared.lock().unwrap().api_retry_after = retry_after.map(str::to_string);
     }
 
     /// How long the `rg_` tokens the fake relaygate issues from now on live.
@@ -1182,8 +1173,13 @@ async fn http(
     if let Some(mut hold) = hold {
         let _ = hold.wait_for(|released| *released).await;
     }
-    let ((status, payload), retry_after) = {
+    let (status, payload, retry_after) = {
         let mut shared = shared.lock().unwrap();
+        let retry_after = shared
+            .api_errors
+            .contains_key(&request)
+            .then(|| shared.api_retry_after.clone())
+            .flatten();
         shared.requests.push(Recorded {
             received_at: std::time::Instant::now(),
             method: method.clone(),
@@ -1197,13 +1193,8 @@ async fn http(
             ),
             body: body.clone(),
         });
-        let answer = route(&mut shared, &method, &path, &query, &bearer, &body);
-        let retry_after = shared
-            .api_errors
-            .contains_key(&request)
-            .then(|| shared.api_retry_after.get(&request).cloned())
-            .flatten();
-        (answer, retry_after)
+        let (status, payload) = route(&mut shared, &method, &path, &query, &bearer, &body);
+        (status, payload, retry_after)
     };
     let retry_after = retry_after
         .map(|value| format!("Retry-After: {value}\r\n"))
@@ -1219,7 +1210,7 @@ async fn http(
         _ => "Error",
     };
     let response = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\n{retry_after}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status} {reason}\r\n{retry_after}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     let _ = stream.write_all(response.as_bytes()).await;
@@ -1342,10 +1333,12 @@ fn route(
                     .as_ref()
                     .map(|a| a.id.clone())
                     .unwrap_or_else(|| "agent-1".into());
+                // relaygate mints its own rgn_ node token for an rg_ agent.
+                let prefix = if bearer.starts_with("rg_") { "rgn" } else { "nt_live" };
                 ok(json!({
                     "node_id": format!("node_direct_{id}"),
                     "node_name": shared.behaviour.node_name,
-                    "token": format!("nt_live_{}", shared.minted)
+                    "token": format!("{prefix}_{}", shared.minted)
                 }))
             }
             status => error(status, "unauthorized"),
@@ -1425,6 +1418,21 @@ fn route(
             let Some(agent) = caller else {
                 return error(401, "unauthorized");
             };
+            // relaygate never hands out a group DM: it marks it failed
+            // upstream so it does not come back.
+            if bearer.starts_with("rg_") {
+                for denied in world
+                    .deliveries
+                    .get_mut(&agent.name)
+                    .into_iter()
+                    .flatten()
+                    .filter(|d| d.state == "queued" && d.item["reason"] == "group_dm")
+                {
+                    denied.state = "failed".into();
+                    denied.retryable = Some(false);
+                    denied.error = Some("relaygate_denied".into());
+                }
+            }
             let items: Vec<Value> = world
                 .deliveries
                 .get(&agent.name)
@@ -1434,6 +1442,10 @@ fn route(
                 .map(|d| d.item.clone())
                 .collect();
             ok(json!(items))
+        }
+        // Served as relaygate serves it; recorded, never acted on.
+        ("POST", ["v1", "deliveries", _, "defer"]) if caller.is_some() => {
+            ok(json!({"status": "deferred"}))
         }
         ("POST", ["v1", "deliveries", id, action]) if *action == "ack" || *action == "fail" => {
             if caller.is_none() {
@@ -1825,6 +1837,9 @@ async fn socket(stream: TcpStream, target: String, shared: Arc<Mutex<Shared>>) {
     let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
         return;
     };
+    // relaygate's socket forces the node id and capabilities [] in what it
+    // accepts, and says so in its reply.
+    let gate = target.contains("token=rgn_");
     let (commands, mut command_rx) = mpsc::unbounded_channel();
     {
         let mut shared = shared.lock().unwrap();
@@ -1865,6 +1880,9 @@ async fn socket(stream: TcpStream, target: String, shared: Arc<Mutex<Shared>>) {
                                     reply["error"]["retry_after_ms"] = ms.into();
                                 }
                                 Some(reply)
+                            } else if register && shared.behaviour.reply_to_register && gate {
+                                Some(json!({"v": 1, "id": frame["id"], "type": "reply", "ok": true,
+                                    "data": {"node_id": "node_gate_forced", "capabilities": []}}))
                             } else if register && shared.behaviour.reply_to_register {
                                 Some(json!({"v": 1, "id": frame["id"], "type": "reply", "ok": true}))
                             } else if frame["type"] == "node.heartbeat" && shared.behaviour.acknowledge_presence {

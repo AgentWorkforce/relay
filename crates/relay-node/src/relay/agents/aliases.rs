@@ -164,32 +164,56 @@ impl Core {
         if registration != snapshot {
             return Err(busy());
         }
-        let key = self
-            .key_for(&registration)
-            .ok_or_else(|| key_gone(&registration.name))?;
+        // A gate agent has no workspace key: its alias enrols at relaygate
+        // as an agent of its own, and is undone with its own token.
+        let gate = registration.gate.is_some();
+        let key = if gate {
+            Secret::default()
+        } else {
+            self.key_for(&registration)
+                .ok_or_else(|| key_gone(&registration.name))?
+        };
         let retired = registration.retired().find(|a| a.name == new_name).cloned();
         let fresh = retired.is_none() && new_name != registration.name;
         let alias = if fresh {
             self.claim_name(&new_name)?;
-            let result = self.register_alias(&registration, &new_name, &key).await;
+            let result = if gate {
+                self.enrol_gate_alias(&registration, &new_name).await
+            } else {
+                self.register_alias(&registration, &new_name, &key).await
+            };
             self.release_name(&new_name);
             Some(result?)
         } else {
             retired
         };
+        let undo = |alias: AgentAlias| {
+            let key = key.clone();
+            let base = registration.base_url.clone();
+            async move {
+                if gate {
+                    self.undo_gate_enrolment(&base, &alias.token, &alias.name, &alias.agent_id)
+                        .await;
+                } else {
+                    self.delete_or_retry(&base, &key, &alias.name).await;
+                }
+            }
+        };
         if expected.is_some_and(|expected| !expected.current(self)) {
-            if let Some(alias) = alias.as_ref().filter(|_| fresh) {
-                self.delete_or_retry(&registration.base_url, &key, &alias.name)
-                    .await;
+            if let Some(alias) = alias.clone().filter(|_| fresh) {
+                undo(alias).await;
             }
             return Err(busy());
         }
         if let Err(error) = self.save_alias(&registration, alias.as_ref()) {
-            if let Some(alias) = alias.as_ref().filter(|_| fresh) {
-                self.delete_or_retry(&registration.base_url, &key, &alias.name)
-                    .await;
+            if let Some(alias) = alias.clone().filter(|_| fresh) {
+                undo(alias).await;
             }
             return Err(error);
+        }
+        if let Some(alias) = alias.as_ref().filter(|_| gate) {
+            // Renewed from now on like any gate agent.
+            self.forget_gate_renewal(&alias.name);
         }
         let current = self.registration_named(&registration.name)?;
         self.publish_names(&current, &key).await;
@@ -281,6 +305,7 @@ impl Core {
             agent_id: agent.id,
             token: agent.token,
             registered_at: iso8601_now(),
+            gate: None,
         })
     }
 
@@ -505,12 +530,17 @@ impl Core {
     /// delivery to it in flight finishes (and journals any refusal) first;
     /// expiry and refusals are checked again under both. Kept, forwarding,
     /// while no key can remove it from Relaycast.
+    /// A gate agent's alias needs no key: it is deleted at relaygate with
+    /// its own token once it has left the store.
     async fn release_expired_alias(&self, name: &str, alias: &str) -> bool {
         let Some(registration) = self.store.read(|s| s.registration_named(name).cloned()) else {
             return false;
         };
-        let Some(key) = self.key_for(&registration) else {
-            return false;
+        let gate = registration.gate.is_some();
+        let key = match self.key_for(&registration) {
+            Some(key) => Some(key),
+            None if gate => None,
+            None => return false,
         };
         let lock = self.target_locks.get(&registration.target.key());
         let Ok(_changing) = lock.try_lock() else {
@@ -518,7 +548,7 @@ impl Core {
         };
         let _delivering = self.agent_locks.get(alias).lock_owned().await;
         let now = chrono::Utc::now();
-        let Ok(Some(agent_id)) = self.store.update(|s| {
+        let Ok(Some(expired)) = self.store.update(|s| {
             let mut current = s.registration_named(name)?.clone();
             let retired = current.retired_aliases.as_mut()?;
             let at = retired.iter().position(|r| r.alias.name == alias)?;
@@ -531,18 +561,26 @@ impl Core {
             if retired.is_empty() {
                 current.retired_aliases = None;
             }
-            s.add_pending_cleanup(PendingCleanup {
-                kind: CleanupKind::Agent,
-                name: alias.to_owned(),
-                base_url: current.base_url.clone(),
-                workspace_key: key,
-            });
+            if let Some(key) = key.clone() {
+                s.add_pending_cleanup(PendingCleanup {
+                    kind: CleanupKind::Agent,
+                    name: alias.to_owned(),
+                    base_url: current.base_url.clone(),
+                    workspace_key: key,
+                });
+            }
             s.update(current);
-            Some(expired.alias.agent_id)
+            Some(expired.alias)
         }) else {
             return false;
         };
-        let _ = self.store.remember(|s| s.retire_refusals(&agent_id));
+        let _ = self
+            .store
+            .remember(|s| s.retire_refusals(&expired.agent_id));
+        if gate {
+            self.delete_gate_alias(&registration.base_url, &expired)
+                .await;
+        }
         self.forget_agent(alias);
         self.forget_name_marker(alias);
         true
@@ -611,6 +649,7 @@ mod tests {
             agent_id: "a2".into(),
             token: Secret::new("at_alias"),
             registered_at: "2026-10-14T00:00:00Z".into(),
+            gate: None,
         });
         registration
     }
