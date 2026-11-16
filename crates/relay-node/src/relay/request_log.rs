@@ -374,6 +374,9 @@ mod tests {
         }
         assert!(text.contains("created_at_ms=1"), "{text}");
         assert!(text.contains("org_id=2"), "{text}");
+        // Coloured by a terminal.
+        let coloured = scrub_text("refused \x1b[31msh_lt_fixture_coloured\x1b[0m", "");
+        assert!(!coloured.contains("sh_lt_fixture_coloured"), "{coloured}");
         let logged = body(
             &json!({"error": "refused launch_credential=sh_lt_fixture_launch"}),
             "",

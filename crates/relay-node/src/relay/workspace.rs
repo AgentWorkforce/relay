@@ -1185,6 +1185,14 @@ mod tests {
             .filter(|(_, value)| value.is_none())
             .map(|(name, _)| name.to_string_lossy().into_owned())
             .collect();
+        // Windows keeps one entry per name whatever its case.
+        let same = |a: &str, b: &str| {
+            if cfg!(windows) {
+                a.eq_ignore_ascii_case(b)
+            } else {
+                a == b
+            }
+        };
         for name in [
             "CLOUD_API_ACCESS_TOKEN",
             "CLOUD_API_REFRESH_TOKEN",
@@ -1193,9 +1201,9 @@ mod tests {
             "cloud_api_refresh_token",
             "Relay_Launch_Credential",
         ] {
-            assert!(removed.iter().any(|r| r == name), "{name}: {removed:?}");
+            assert!(removed.iter().any(|r| same(r, name)), "{name}: {removed:?}");
         }
-        assert!(!removed.iter().any(|r| r == "KEPT"));
+        assert!(!removed.iter().any(|r| same(r, "KEPT")));
     }
 
     /// Windows reads environment names in any case, so every spelling of a

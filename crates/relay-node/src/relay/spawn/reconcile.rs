@@ -188,7 +188,15 @@ impl Core {
                 .map(|n| n as u32);
             // Its launch is over: so is its relaygate registration, and
             // only that launch's (a new launch may hold the name by now).
-            if let Some(spawn) = &registration.spawn {
+            // An answer it still owes goes out with that registration, so
+            // it is kept until the agent leaves (`unregister_archived`,
+            // after the answer or its wait), which releases it then.
+            let owes_answer = self.store.read(|store| {
+                store.replies.iter().flatten().any(|reply| {
+                    reply.agent_id == registration.agent_id && reply.claimed != Some(true)
+                })
+            });
+            if let (Some(spawn), false) = (&registration.spawn, owes_answer) {
                 self.release_launch_gate(&registration.name, &spawn.invocation_id)
                     .await;
             }

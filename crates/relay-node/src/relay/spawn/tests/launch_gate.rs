@@ -543,3 +543,61 @@ async fn a_restart_leaves_a_launched_agent_without_a_token_and_says_so() {
         .iter()
         .all(|seen| seen.authorization.as_deref() != Some("Bearer at_live_lg9")));
 }
+
+/// Removing a launched agent of a gate-only install needs no workspace key:
+/// it is taken off this computer and its relaygate registration is ended
+/// with its own token.
+#[tokio::test]
+async fn removing_a_launched_agent_ends_its_registration_without_a_key() {
+    let gate = FakeGate::start().await;
+    let home = tempfile::tempdir().unwrap();
+    let core = gate_core(home.path(), Arc::new(FakeSpawner::default()), &gate.url);
+    observed(&core);
+    launch(&core, "lg10", Some(CREDENTIAL)).await;
+    core.unregister("lg10").await.unwrap();
+    assert!(core.store.read(|s| s.registration_named("lg10").is_none()));
+    assert!(launch_gate(&core, "lg10").is_none());
+    let deleted = gate.seen("DELETE", "/v1/agent");
+    assert_eq!(deleted.len(), 1);
+    assert_eq!(
+        deleted[0].authorization.as_deref(),
+        Some("Bearer rg_launch_1")
+    );
+}
+
+/// A launched agent whose process ended while it still owes an automatic
+/// answer keeps its relaygate registration, so the answer can go out; it
+/// is released when the agent leaves.
+#[tokio::test]
+async fn an_ended_launch_that_owes_an_answer_keeps_its_registration() {
+    let gate = FakeGate::start().await;
+    let home = tempfile::tempdir().unwrap();
+    let core = gate_core(home.path(), Arc::new(FakeSpawner::default()), &gate.url);
+    let observer = observed(&core);
+    launch(&core, "lg11", Some(CREDENTIAL)).await;
+    let agent_id = core
+        .store
+        .read(|s| s.registration_named("lg11").map(|r| r.agent_id.clone()))
+        .unwrap();
+    core.store
+        .update(|s| {
+            s.replies
+                .get_or_insert_with(Vec::new)
+                .push(crate::relay::spawn::report_back::owed(
+                    &agent_id, "msg_owed", "lead",
+                ))
+        })
+        .unwrap();
+    observer.set("lg11", ProcessLiveness::Exited, WorkState::Completed, false);
+    core.observe_spawned().await;
+    assert!(gate.seen("DELETE", "/v1/agent").is_empty());
+    assert_eq!(acting(&core, "lg11").unwrap().1, "rg_launch_1");
+    // It leaves: the registration is released with its own token.
+    core.unregister("lg11").await.unwrap();
+    let deleted = gate.seen("DELETE", "/v1/agent");
+    assert_eq!(deleted.len(), 1);
+    assert_eq!(
+        deleted[0].authorization.as_deref(),
+        Some("Bearer rg_launch_1")
+    );
+}

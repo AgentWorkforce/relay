@@ -136,6 +136,9 @@ fn sensitive(key: &str) -> bool {
 /// (`credential=sh_lt_…`, `(rg_…)`, `"sh_at_…"`), never inside an
 /// identifier (`org_id`, `created_at_ms`).
 pub(crate) fn credential_in_word(lower: &str, prefixes: &[&str]) -> bool {
+    // A terminal's colour codes (`\x1b[31m`) end where a word may begin.
+    let plain = without_ansi(lower);
+    let lower = plain.as_str();
     prefixes.iter().any(|prefix| {
         lower.match_indices(prefix).any(|(at, _)| {
             lower[..at]
@@ -144,6 +147,32 @@ pub(crate) fn credential_in_word(lower: &str, prefixes: &[&str]) -> bool {
                 .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'))
         })
     })
+}
+
+/// `text` without ANSI escape sequences (`ESC [ … final`, or `ESC` and one
+/// character).
+fn without_ansi(text: &str) -> String {
+    let mut plain = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            plain.push(c);
+            continue;
+        }
+        if chars.next_if_eq(&'[').is_some() {
+            // Parameters and intermediates, then one final byte.
+            for c in chars.by_ref() {
+                if ('@'..='~').contains(&c) {
+                    break;
+                }
+            }
+        } else {
+            chars.next();
+        }
+        // A boundary, so what follows starts a word of its own.
+        plain.push(' ');
+    }
+    plain
 }
 
 fn redact_with(message: &str, secrets: impl Iterator<Item = String>) -> String {
@@ -253,6 +282,9 @@ mod tests {
         }
         assert!(message.contains("relaygate refused"), "{message}");
         assert!(message.contains("org_id kept"), "{message}");
+        // Coloured by a terminal.
+        let message = redact_with("refused \x1b[31mrg_fixture_coloured\x1b[0m", [].into_iter());
+        assert!(!message.contains("rg_fixture_coloured"), "{message}");
     }
 
     #[test]

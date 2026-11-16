@@ -92,11 +92,18 @@ impl Core {
             Some(_) => Some(self.gate_locks.get(name).lock_owned().await),
             None => None,
         };
+        let launched_at_gate = registration
+            .spawn
+            .as_ref()
+            .is_some_and(|spawn| spawn.gate_launch);
         if registration.gate.is_some() {
             self.remove_at_gate(&registration, name).await?;
-        } else {
+        } else if !launched_at_gate {
             self.remove_with_key(&registration, name).await?;
         }
+        // A launched agent of a gate-only install has no workspace key: its
+        // relaygate registration is ended with its own token once the
+        // registration is dropped (`release_launch_gate`, below).
         self.store
             .update(|store| store.remove(name))
             .map_err(|error| {
