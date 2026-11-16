@@ -13,6 +13,7 @@ use agent_relay_node::relay::sessions::{
 };
 use agent_relay_node::relay::store::{SessionKind, Target};
 use agent_relay_node::relay::transport::{CoreReadHalf, CoreStream, CoreWriteHalf};
+use agent_relay_node::relay::workspace::Secret;
 use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -434,6 +435,8 @@ pub struct FakeCloud {
     pub account: Mutex<Option<CloudAccount>>,
     pub answers: Mutex<HashMap<String, Result<Value, CloudError>>>,
     pub calls: Mutex<Vec<(String, String, Option<Value>)>>,
+    /// What `device_token` hands out; `None` reads as signed out.
+    pub device_token: Mutex<Option<Secret>>,
 }
 
 impl FakeCloud {
@@ -446,6 +449,7 @@ impl FakeCloud {
             })),
             answers: Mutex::new(HashMap::new()),
             calls: Mutex::new(Vec::new()),
+            device_token: Mutex::new(None),
         }
     }
 
@@ -501,6 +505,11 @@ impl CloudAccess for FakeCloud {
                 message: None,
             }));
         Box::pin(async move { answer })
+    }
+
+    fn device_token(&self) -> BoxFuture<'_, Option<Secret>> {
+        let token = self.device_token.lock().unwrap().clone();
+        Box::pin(async move { token })
     }
 }
 
