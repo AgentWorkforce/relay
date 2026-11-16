@@ -365,7 +365,15 @@ async fn within<T>(
             .await
             .unwrap_or_else(|_| Err(io::Error::from(io::ErrorKind::TimedOut))),
         Some(Limit::Until(deadline)) => {
-            tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), work)
+            let mut work = std::pin::pin!(work);
+            let guarded = std::future::poll_fn(|context| {
+                if std::time::Instant::now() >= deadline {
+                    Poll::Ready(Err(io::ErrorKind::TimedOut.into()))
+                } else {
+                    work.as_mut().poll(context)
+                }
+            });
+            tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), guarded)
                 .await
                 .unwrap_or_else(|_| Err(io::ErrorKind::TimedOut.into()))
         }
@@ -407,11 +415,8 @@ impl BlockingStream {
             return Err(io::ErrorKind::TimedOut.into());
         }
         let name = pipe_name(path);
-        let pipe = run(async move {
-            tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), open_client(&name))
-                .await
-                .unwrap_or_else(|_| Err(io::ErrorKind::TimedOut.into()))
-        })?;
+        let pipe =
+            run(async move { within(Some(Limit::Until(deadline)), open_client(&name)).await })?;
         Ok(BlockingStream {
             pipe: Arc::new(pipe),
             timeouts: Arc::new(Mutex::new(Timeouts {
@@ -513,5 +518,22 @@ impl BlockingStream {
     /// Writes are handed to the pipe as they are made.
     pub fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn expired_deadline_does_not_poll_ready_work() {
+        let polled = std::cell::Cell::new(false);
+        let result = within(Some(Limit::Until(std::time::Instant::now())), async {
+            polled.set(true);
+            Ok(())
+        })
+        .await;
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert!(!polled.get());
     }
 }

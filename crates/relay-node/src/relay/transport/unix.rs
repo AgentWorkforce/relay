@@ -82,12 +82,28 @@ pub struct BlockingStream(std::os::unix::net::UnixStream, Option<Instant>);
 
 impl BlockingStream {
     pub fn connect_until(path: &Path, deadline: Instant) -> io::Result<BlockingStream> {
-        let remaining = deadline
-            .checked_duration_since(Instant::now())
-            .filter(|remaining| !remaining.is_zero())
-            .ok_or_else(|| io::Error::from(io::ErrorKind::TimedOut))?;
+        let address = socket2::SockAddr::unix(path)?;
         let socket = socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None)?;
-        socket.connect_timeout(&socket2::SockAddr::unix(path)?, remaining)?;
+        #[cfg(target_os = "linux")]
+        {
+            socket.set_nonblocking(true)?;
+            loop {
+                let remaining = remaining_until(deadline)?;
+                match socket.connect(&address) {
+                    // Linux AF_UNIX EAGAIN means no connection was queued. Polling
+                    // this socket would report HUP rather than wait for capacity.
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(remaining.min(Duration::from_millis(5)));
+                    }
+                    result => {
+                        result?;
+                        break;
+                    }
+                }
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        socket.connect_timeout(&address, remaining_until(deadline)?)?;
         if Instant::now() >= deadline {
             return Err(io::ErrorKind::TimedOut.into());
         }
@@ -172,5 +188,62 @@ impl BlockingStream {
                 result => return result,
             }
         }
+    }
+}
+
+fn remaining_until(deadline: Instant) -> io::Result<Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| io::Error::from(io::ErrorKind::TimedOut))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    fn full_queue() -> (
+        tempfile::TempDir,
+        socket2::Socket,
+        socket2::Socket,
+        std::path::PathBuf,
+    ) {
+        let directory = tempfile::tempdir_in("/tmp").unwrap();
+        let path = directory.path().join("queue.sock");
+        let address = socket2::SockAddr::unix(&path).unwrap();
+        let listener =
+            socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None).unwrap();
+        listener.bind(&address).unwrap();
+        listener.listen(0).unwrap();
+        let queued =
+            socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None).unwrap();
+        queued.connect(&address).unwrap();
+        (directory, listener, queued, path)
+    }
+
+    #[test]
+    fn full_accept_queue_retries_until_capacity_returns() {
+        let (_directory, listener, _queued, path) = full_queue();
+        let (release, released) = std::sync::mpsc::channel();
+        let accepting = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            let _accepted = listener.accept().unwrap();
+            // Keep the listener alive until the retry has connected.
+            let _ = released.recv_timeout(Duration::from_secs(3));
+        });
+        let started = Instant::now();
+        let _client =
+            BlockingStream::connect_until(&path, started + Duration::from_secs(2)).unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(50));
+        accepting.join().unwrap();
+    }
+
+    #[test]
+    fn full_accept_queue_stops_at_the_original_deadline() {
+        let (_directory, _listener, _queued, path) = full_queue();
+        let started = Instant::now();
+        let result = BlockingStream::connect_until(&path, started + Duration::from_millis(100));
+        assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::TimedOut));
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 }
