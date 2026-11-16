@@ -208,6 +208,10 @@ pub struct Core {
     /// Gate agents whose undo could not delete them yet; empty without a
     /// gate.
     pub(crate) gate_cleanups: Mutex<Vec<crate::relay::agents::GateCleanup>>,
+    /// The device token last used with relaygate. Every gate agent of
+    /// this computer shares one Relaycast backoff scope: the gate URL and
+    /// this token, hashed.
+    pub(crate) gate_device: Mutex<Option<Secret>>,
     pub(crate) delivery: Mutex<DeliveryState>,
     pub(crate) claude_delivery: ClaudeDeliveryPolicy,
     pub(crate) mobile_claude_plugins: crate::relay::claude_mobile_plugin::Installations,
@@ -330,6 +334,7 @@ impl Core {
             gate_locks: KeyedLocks::default(),
             gate_renewals: Mutex::default(),
             gate_cleanups: Mutex::default(),
+            gate_device: Mutex::default(),
             delivery: Mutex::default(),
             claude_delivery,
             mobile_claude_plugins: Default::default(),
@@ -388,10 +393,36 @@ impl Core {
         registration: &Registration,
         agent_token: &Secret,
     ) -> WorkspaceScope {
+        if registration.gate.is_some() {
+            return self.relaycast_gate_scope(&registration.base_url);
+        }
         let key = self
             .key_for(registration)
             .unwrap_or_else(|| agent_token.clone());
         self.relaycast_scope(&registration.base_url, &key)
+    }
+
+    /// The one backoff scope of every agent enrolled through the gate at
+    /// `gate_url`: Relaycast's 429s pass through the gate and apply to the
+    /// signed-in device, not to one agent's rotating token.
+    pub(crate) fn relaycast_gate_scope(&self, gate_url: &str) -> WorkspaceScope {
+        let device = self
+            .gate_device
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .unwrap_or_default();
+        let label = self
+            .workspace()
+            .filter(|workspace| {
+                workspace.gate_url.as_deref() == Some(gate_url) || workspace.base_url == gate_url
+            })
+            .and_then(|_| {
+                let workspace = self.status().workspace;
+                workspace.workspace_name.or(workspace.workspace_id)
+            })
+            .unwrap_or_else(|| "this workspace".into());
+        WorkspaceScope::credential(gate_url, &device, label)
     }
 
     pub(crate) fn relaycast_workspace_id_scope(

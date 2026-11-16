@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `agent-relay-node`: self-hosted installs whose Control API returns `urls.relaygateUrl` (relaygate gate-only mode) register each agent at relaygate with the person's device token instead of the shared workspace key. Agents renew their relaygate token before it expires, publish their session details and presence, read the roster and are removed through the gate. A removed name registers again as the same agent. Installs without a relaygate URL, including default and hosted ones, are unchanged.
+- `agent-relay-node`: on relaygate gate-only installs, renaming an agent works. The new name registers at relaygate with its own token, which is renewed before it expires and used to remove the old name when it is released or the agent is removed. A send or session update refused because the agent's relaygate token expired registers the agent again once and is retried, and all agents on an install share one relaycast slow-down.
 
 ## [18.8.0] - 2026-11-16
 

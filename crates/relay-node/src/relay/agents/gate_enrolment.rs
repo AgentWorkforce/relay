@@ -142,6 +142,12 @@ impl Core {
             .device_token()
             .await
             .filter(|token| !token.expose().trim().is_empty())
+            .inspect(|token| {
+                *self
+                    .gate_device
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(token.clone());
+            })
             .ok_or_else(|| {
                 RpcError::new(
                     ErrorKind::NotSignedIn,
