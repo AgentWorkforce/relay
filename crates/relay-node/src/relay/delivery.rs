@@ -2066,7 +2066,9 @@ impl Core {
         if registration.gate.is_some() {
             if let Err(error) = &sent {
                 if crate::relay::sdk_gaps::is_gate_unauthenticated(error) {
-                    let _ = self.store.update(|store| {
+                    // Kept in memory if the save fails, so a later pass
+                    // still sends it; a later save makes it durable.
+                    let _ = self.store.remember(|store| {
                         if let Some(entry) = store.replies.iter_mut().flatten().find(|r| {
                             r.agent_id == reply.agent_id && r.message_id == reply.message_id
                         }) {

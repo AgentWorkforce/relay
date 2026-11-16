@@ -29,6 +29,18 @@ const RENEW_RETRY: Duration = Duration::from_secs(30);
 /// The least time between two renewals of one agent, so a gate that
 /// refuses every token it issues is not asked again in a tight loop.
 const RENEW_SPACING: Duration = Duration::from_secs(1);
+/// The longest wait a gate's `Retry-After` is honoured for: a larger (or
+/// unrepresentable) one waits this long instead.
+const LONGEST_WAIT: Duration = Duration::from_secs(60 * 60);
+
+/// When a wait of `wait` (a gate's `Retry-After`, untrusted) ends: at least
+/// [`RENEW_SPACING`] and at most [`LONGEST_WAIT`] from now, so it can
+/// never overflow an `Instant`.
+fn wait_until(wait: Duration) -> Instant {
+    let wait = wait.clamp(RENEW_SPACING, LONGEST_WAIT);
+    let now = Instant::now();
+    now.checked_add(wait).unwrap_or(now)
+}
 
 /// What this run knows about renewals, by agent name. Nothing here is
 /// saved: after a restart every due agent is tried again.
@@ -526,12 +538,11 @@ impl Core {
             GateError::RateLimited { retry_after } | GateError::Unavailable { retry_after },
         ) = &result
         {
-            let wait = retry_after.unwrap_or(RENEW_RETRY).max(RENEW_SPACING);
-            self.gate_renewals
-                .lock()
-                .unwrap()
-                .patch_not_before
-                .insert(base.clone(), Instant::now() + wait);
+            // Worked out before the lock is taken; an earlier wait still
+            // running is never shortened by a later, shorter answer.
+            let until = wait_until(retry_after.unwrap_or(RENEW_RETRY));
+            let mut renewals = self.gate_renewals.lock().unwrap();
+            keep_later(&mut renewals.patch_not_before, base, until);
         }
         result.map(drop).map_err(|error| match error {
             GateError::Other(inner) => *inner,
@@ -563,11 +574,10 @@ impl Core {
 
     fn renewal_failed(&self, name: &str, message: String, wait: Option<Duration>, stop: bool) {
         {
+            let until = wait.map(wait_until);
             let mut renewals = self.gate_renewals.lock().unwrap();
-            if let Some(wait) = wait {
-                renewals
-                    .not_before
-                    .insert(name.into(), Instant::now() + wait.max(RENEW_SPACING));
+            if let Some(until) = until {
+                renewals.not_before.insert(name.into(), until);
             }
             if stop {
                 renewals.stopped.insert(name.into());
@@ -616,5 +626,48 @@ pub(super) fn gate_rpc_error(error: &GateError, name: &str) -> RpcError {
         GateError::Other(inner) => {
             relaycast_error(inner, format!("Could not register @{name} at relaygate."))
         }
+    }
+}
+
+/// Records `until` for `key` unless a later deadline is kept already.
+fn keep_later(deadlines: &mut HashMap<String, Instant>, key: &str, until: Instant) {
+    let kept = deadlines.entry(key.to_owned()).or_insert(until);
+    *kept = (*kept).max(until);
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use super::*;
+
+    #[test]
+    fn an_enormous_retry_after_is_capped_and_never_overflows() {
+        let before = Instant::now();
+        let until = wait_until(Duration::from_millis(u64::MAX));
+        assert!(until <= Instant::now() + LONGEST_WAIT);
+        assert!(until >= before + LONGEST_WAIT - Duration::from_secs(1));
+        let until = wait_until(Duration::MAX);
+        assert!(until <= Instant::now() + LONGEST_WAIT);
+    }
+
+    #[test]
+    fn a_shorter_later_wait_never_shortens_one_still_running() {
+        let mut deadlines = HashMap::new();
+        let long = wait_until(Duration::from_secs(120));
+        keep_later(&mut deadlines, "https://gate.corp.test", long);
+        keep_later(
+            &mut deadlines,
+            "https://gate.corp.test",
+            wait_until(Duration::from_secs(1)),
+        );
+        assert_eq!(deadlines["https://gate.corp.test"], long);
+        let longer = wait_until(Duration::from_secs(300));
+        keep_later(&mut deadlines, "https://gate.corp.test", longer);
+        assert_eq!(deadlines["https://gate.corp.test"], longer);
+    }
+
+    #[test]
+    fn a_tiny_retry_after_still_spaces_requests() {
+        let before = Instant::now();
+        assert!(wait_until(Duration::ZERO) >= before + RENEW_SPACING);
     }
 }
