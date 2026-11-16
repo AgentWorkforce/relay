@@ -99,7 +99,8 @@ impl Core {
         // holds it, and it goes nowhere but Control. Without one there is
         // no bridge to spawn through: reported as unavailable, in the
         // desktop's words when it gave a reason, never hidden.
-        let (workspace_key, control_url, name) = if workspace.is_gate_only() {
+        let desktop_credential = workspace.is_gate_only();
+        let (workspace_key, control_url, name) = if desktop_credential {
             let node = gate_node_credential(self.plugins.cloud.relay_node_credential())?;
             let name = self.bound_node_name(&node);
             (node.token, Some(node.control_url), name)
@@ -125,6 +126,7 @@ impl Core {
             app_data_dir: self.config.app_data_dir.clone(),
             harnesses,
             repositories: settings.repositories,
+            desktop_credential,
         })
     }
 

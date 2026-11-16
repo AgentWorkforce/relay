@@ -93,6 +93,12 @@ pub struct NodeConfig {
     /// `node.register`: a change reconnects the node. Everything else the
     /// node advertises is read again for each heartbeat.
     pub repositories: Vec<String>,
+    /// Whether `workspace_key` is a gate-only desktop's relay-node
+    /// credential (`CloudAccess::relay_node_credential`), which the desktop
+    /// mints again when told. Control refusing it (`401`, `token_invalid`)
+    /// at enrolment, the saved node's lookup or the bridge stops the node
+    /// with `credential_refused` set, never retried with the same one.
+    pub desktop_credential: bool,
 }
 
 /// The node as Relaycast enrolled it.
@@ -439,6 +445,7 @@ async fn bridge_refused(config: &NodeConfig, enrollment: &Enrollment, status: u1
         403 => match enroll(config, &enrollment.node_id, &enrollment.node_name, None).await {
             Ok(_) => Ended::Closed(refused.into()),
             Err(Refused::PlanLimit(limit)) => Ended::Refused(limit),
+            Err(Refused::CredentialRejected) => Ended::CredentialRefused,
             Err(Refused::IdTaken) => {
                 let _ = forget(&node_file(config));
                 Ended::Closed(refused.into())
@@ -478,6 +485,7 @@ async fn connect_once(
                 host.refused(reason.clone());
                 return Ended::GaveUp(reason);
             }
+            Err(Refused::CredentialRejected) => return Ended::CredentialRefused,
             Err(refused) => return Ended::Closed(refused.reason()),
         },
         // The saved node's credential is bound to another name: stopped,
@@ -486,6 +494,7 @@ async fn connect_once(
             host.refused(reason.clone());
             return Ended::GaveUp(reason);
         }
+        Err(Refused::CredentialRejected) => return Ended::CredentialRefused,
         Err(refused) => return Ended::Closed(refused.reason()),
     };
     let mut socket = match open(config, &enrollment).await {
@@ -507,6 +516,7 @@ async fn connect_once(
                 Err(Refused::ProofRefused(reason)) => {
                     Ended::TokenRefused(format!("{refused} {reason}"))
                 }
+                Err(Refused::CredentialRejected) => Ended::CredentialRefused,
                 Err(reason) => Ended::Closed(format!("{refused} {}", reason.reason())),
             };
         }
@@ -755,6 +765,7 @@ mod tests {
             app_data_dir: directory.to_path_buf(),
             harnesses: vec![codex::ID],
             repositories: Vec::new(),
+            desktop_credential: false,
         }
     }
 

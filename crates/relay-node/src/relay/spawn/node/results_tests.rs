@@ -100,6 +100,7 @@ fn config(folder: &Path, listener: &TcpListener) -> NodeConfig {
         app_data_dir: folder.to_path_buf(),
         harnesses: vec![codex::ID],
         repositories: Vec::new(),
+        desktop_credential: false,
     };
     let enrollment = Enrollment {
         node_id: "node_desktop_1".into(),

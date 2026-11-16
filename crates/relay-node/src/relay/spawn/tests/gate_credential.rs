@@ -118,6 +118,8 @@ async fn a_gate_only_node_uses_the_desktops_relay_node_credential() {
     assert_eq!(config.node_name, "desk-bound");
     // The gate stays the base URL.
     assert_eq!(config.base_url, GATE);
+    // The desktop's: Control refusing it stops and marks the node.
+    assert!(config.desktop_credential);
 
     // The workspace never carries it, and nothing saved holds it.
     let workspace = core.workspace().unwrap();
@@ -212,6 +214,7 @@ async fn key_mode_ignores_the_desktops_relay_node_credential() {
         assert_eq!(config.control_url, None);
         assert_eq!(config.node_name, node_name(&core.machine_prefix));
         assert_eq!(config.base_url, "http://localhost:9");
+        assert!(!config.desktop_credential);
     }
 }
 

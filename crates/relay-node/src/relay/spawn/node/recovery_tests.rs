@@ -93,6 +93,7 @@ async fn heartbeats_go_on_while_recovery_runs_and_the_inventory_follows_it() {
         app_data_dir: folder.path().to_path_buf(),
         harnesses: vec![codex::ID],
         repositories: Vec::new(),
+        desktop_credential: false,
     };
     // Already enrolled: no HTTP, only the socket.
     let enrollment = Enrollment {
