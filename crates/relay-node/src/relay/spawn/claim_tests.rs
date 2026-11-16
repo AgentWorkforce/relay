@@ -65,6 +65,7 @@ impl FakeCloud {
                         (401, json!({"error": "Unauthorized"}))
                     }
                     Err(CloudError::Unreachable) => (503, json!({})),
+                    Err(CloudError::GateOnly { .. }) => (403, json!({"error": "gate_only"})),
                 };
                 write_response(&mut stream, status, &body);
             }

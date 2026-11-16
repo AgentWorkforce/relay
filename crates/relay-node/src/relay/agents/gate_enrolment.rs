@@ -116,7 +116,7 @@ impl Core {
     /// Enrols `name` at `gate_url` for a new registration: a fresh recovery
     /// proof, the device token as the bearer. Nothing is sent for a `ctl:`
     /// name (relaygate's reserved control names) or when signed out.
-    pub(super) async fn enrol_at_gate(
+    pub(crate) async fn enrol_at_gate(
         &self,
         gate_url: &str,
         name: &str,
@@ -510,6 +510,61 @@ impl Core {
                 core.renew_gate_registration(&name, None).await;
             });
         }
+        self.renew_person_if_due();
+    }
+
+    /// Starts a renewal of your own gate identity (tracked as `@name`, a
+    /// key no agent name can take) when its token is due, unless one is in
+    /// flight, a refusal stopped it, or the gate's wait after a failure is
+    /// not over ([`Core::person_renewal_failed`]).
+    fn renew_person_if_due(self: &Arc<Self>) {
+        let Some(channel) = self.person_gate_channel() else {
+            return;
+        };
+        if !self.person_gate_due() || !self.may_renew(&channel) {
+            return;
+        }
+        if self.gate_locks.get(&channel).try_lock().is_err() {
+            return;
+        }
+        let core = self.clone();
+        tokio::spawn(async move {
+            let _ = core.person_identity(false).await;
+        });
+    }
+
+    /// When your gate identity may be enrolled again, if not yet: a failed
+    /// enrolment's wait (the gate's `Retry-After`, else [`RENEW_RETRY`]),
+    /// and why it failed. Foreground enrolments honour it as well as the
+    /// background renewal.
+    pub(crate) fn person_renewal_wait(&self, channel: &str) -> Option<(Duration, Option<String>)> {
+        let renewals = self.gate_renewals.lock().unwrap();
+        let wait = renewals
+            .not_before
+            .get(channel)?
+            .checked_duration_since(Instant::now())
+            .filter(|wait| !wait.is_zero())?;
+        Some((wait, renewals.errors.get(channel).cloned()))
+    }
+
+    /// Records a failed enrolment of your gate identity: not enrolled again
+    /// before the gate's `Retry-After` (else [`RENEW_RETRY`]); a refusal or
+    /// a taken name also stops the background renewal until an enrolment
+    /// succeeds. Unlike an agent's, it is not shown as a delivery error.
+    pub(crate) fn person_renewal_failed(&self, channel: &str, error: &RpcError) {
+        let stop = matches!(error.data.kind, ErrorKind::Refused | ErrorKind::Conflict);
+        let wait = error
+            .retry_after_secs
+            .map(Duration::from_secs)
+            .unwrap_or(RENEW_RETRY);
+        let mut renewals = self.gate_renewals.lock().unwrap();
+        renewals.not_before.insert(channel.into(), wait_until(wait));
+        if stop {
+            renewals.stopped.insert(channel.into());
+        }
+        renewals
+            .errors
+            .insert(channel.into(), error.message.clone());
     }
 
     /// Says once, on each launched agent whose relaygate registration this
