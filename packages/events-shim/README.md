@@ -9,8 +9,8 @@ npx @agent-relay/events-shim@latest setup '<mcp url>'
 ```
 
 It adds the inbox's MCP server to every supported agent CLI on the machine, or only the ones you name:
-`--claude`, `--codex`, `--copilot`, `--cursor`, `--opencode`, `--muse`, `--gemini`, `--grok`, `--devin` (or `--cli claude,codex`).
-Each tool gets it its own way (`claude`/`codex`/`copilot`/`gemini`/`grok`/`devin`/`muse mcp add` at user scope; Cursor's
+`--claude`, `--codex`, `--copilot`, `--cursor`, `--droid`, `--amp`, `--opencode`, `--muse`, `--gemini`, `--grok`, `--devin` (or `--cli claude,codex`).
+Each tool gets it its own way (`claude`/`codex`/`copilot`/`droid`/`amp`/`gemini`/`grok`/`devin`/`muse mcp add` at user scope; Cursor's
 `~/.cursor/mcp.json`, opencode's config file), re-running replaces it, and Claude Code and Codex also get
 the `agent-relay-webhooks` skill. The inbox is saved to `~/.config/agent-relay/webhooks.json` (0600). Then tell the
 agent "watch for webhooks". Each post wakes it:
@@ -48,7 +48,21 @@ agent "watch for webhooks". Each post wakes it:
   you the session stops waking until you send it one (the 8th post tells the agent to ask you). Beside Agent Relay's
   Gemini extension (installed, enabled and signed in), the hook still waits for posts, and lets go at once when the
   extension's Relay Stop Guard continues the turn with relay messages, so those are not kept waiting. `uninstall --copilot` / `--gemini` removes the hook and stops a waiting one.
-- **Cursor** gets a post on its next turn (Agent Relay's hooks); it cannot be woken while idle.
+- **Factory Droid, Cursor CLI and Amp, with or without Agent Relay, the same way.** `setup --droid` adds a `Stop` hook
+  (7-day timeout) to `~/.factory/hooks.json`, or to the `hooks` key of `~/.factory/settings.json` while hooks.json is
+  absent (Droid then reads only settings.json, so your hooks there keep working), and answers `decision: "block"`.
+  `setup --cursor` adds a `stop` hook to `~/.cursor/hooks.json` (`loop_limit: null`) that answers `followup_message`;
+  Cursor ends a hook after an hour, so a Cursor session idle for longer than an hour after its last turn is not woken
+  until you send it a message. `setup --amp` writes the plugin `~/.config/amp/plugins/agent-relay-webhooks.ts`: after
+  each turn its `agent.end` handler runs `listen --stop-hook amp` and starts the next turn with the post
+  (`action: "continue"`); older Amp builds load plugins only with `PLUGINS=all` set. **Send each a first message.**
+  While it waits, Droid shows "Streaming..." and keeps what you type for after the next post, so press Esc first;
+  Amp also shows "Streaming", and starting a turn yourself stops the wait (a post it had already taken comes after
+  your turn). Cursor's prompt stays usable. Cursor waits for every `stop` hook before it submits a follow-up, so while
+  Agent Relay's own Cursor CLI delivery is on (its `cursor-hook --wait` entry), events-shim's Cursor hook never holds
+  the turn and the agent reads posts when asked; setup says so. `uninstall --droid` / `--cursor` / `--amp` removes them.
+- **Replicas and Capy** run their agents in the cloud (the desktop apps are clients), so there is no local session to
+  wake; Agent Relay connects their cloud chats and threads instead (`bind_replica`, `bind_capy_thread`).
 - **Under Agent Relay** (Desktop or a headless relay on the machine) the agent links the inbox to its session's own
   relay webhook (`agent-relay-probe webhook --socket <socket>`, then the `link_relay_wake` tool). Every post is
   forwarded there and Agent Relay injects it into the session, **waking it even when idle**.
