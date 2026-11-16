@@ -48,7 +48,14 @@ pub(super) enum Refused {
     /// The node credential is bound to another node name (the broker's
     /// `403 node_mismatch`): the node does not start.
     NodeMismatch(String),
+    /// Control's `403 gate_only`: a gate-only install enrols no spawn node,
+    /// so spawning is unavailable here. Never retried.
+    GateOnly(String),
 }
+
+/// Why the node does not start on a gate-only install.
+pub(super) const GATE_ONLY: &str =
+    "Spawning from Agent Relay is unavailable on this computer: this is a gate-only install.";
 
 impl Refused {
     pub(super) fn reason(self) -> String {
@@ -61,7 +68,8 @@ impl Refused {
             | Refused::KeyRefused(reason)
             | Refused::Failed(reason)
             | Refused::NoName(reason)
-            | Refused::NodeMismatch(reason) => reason,
+            | Refused::NodeMismatch(reason)
+            | Refused::GateOnly(reason) => reason,
             Refused::PlanLimit(limit) => limit.message(),
         }
     }
@@ -159,6 +167,9 @@ pub(super) async fn enroll(
             }
             if node_credential::is_node_mismatch(&error) {
                 return node_mismatch(config, name);
+            }
+            if node_credential::is_gate_only(&error) {
+                return Refused::GateOnly(GATE_ONLY.into());
             }
             let failed =
                 || Refused::Failed(format!("Agent Relay did not enroll this computer: {error}"));
@@ -363,6 +374,9 @@ pub(super) async fn saved(config: &NodeConfig) -> Result<Option<Enrollment>, Ref
             // another name. Kept as such, so the node stops (`connect_once`).
             if node_credential::is_node_mismatch(&error) {
                 return node_mismatch(config, &kept.node_name);
+            }
+            if node_credential::is_gate_only(&error) {
+                return Refused::GateOnly(GATE_ONLY.into());
             }
             Refused::Failed(format!(
                 "Agent Relay did not say which node is this computer's: {error}"

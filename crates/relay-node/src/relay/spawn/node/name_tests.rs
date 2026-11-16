@@ -1093,6 +1093,44 @@ async fn a_node_credential_for_another_node_stops_the_node_and_says_so() {
     node.stop().await;
 }
 
+/// Control's `403 gate_only` for the node's enrolment: spawning is
+/// unavailable on a gate-only install. The node stops and says so at once;
+/// it is never retried as a transient failure.
+#[tokio::test]
+async fn a_gate_only_install_reports_spawning_unavailable_and_never_retries() {
+    for refusal in [
+        r#"{"ok":false,"error":{"code":"gate_only","message":"Gate-only workspace"}}"#,
+        // The flat shape a broker image older than relay-control 01614898
+        // sends.
+        r#"{"error":"gate_only","message":"Gate-only workspace"}"#,
+    ] {
+        let folder = tempfile::tempdir().unwrap();
+        let relaycast = Scripted::new().await;
+        let control = Scripted::new().await;
+        let config = node_scoped(&relaycast.base_url, &control.base_url, folder.path());
+        let host = Arc::new(Recording::default());
+        let node = SpawnNode::start(config, host.clone());
+        let request = control.answer(("403 Forbidden", refusal)).await;
+        assert!(
+            request.starts_with("post /relay-node/v1/nodes "),
+            "{request}"
+        );
+        until(&host, |states| {
+            states.iter().any(|s| s.state == SpawnState::Off)
+        })
+        .await;
+        // One request: no alternate, no retry after a backoff.
+        assert!(untouched(&control).await);
+        assert!(untouched(&relaycast).await);
+        let states = host.states.lock().unwrap().clone();
+        let error = states.last().unwrap().error.clone().unwrap();
+        assert!(error.contains("gate-only install"), "{error}");
+        assert!(error.contains("unavailable"), "{error}");
+        assert!(!states.iter().any(|s| s.state == SpawnState::Waiting));
+        node.stop().await;
+    }
+}
+
 /// A name another node holds, under a node credential: Control's broker
 /// passes Relaycast's `409 node_name_conflict` through, and the credential
 /// is bound to the name, so no alternate is asked for (the broker would

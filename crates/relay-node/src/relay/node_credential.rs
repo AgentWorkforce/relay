@@ -12,6 +12,8 @@
 //!   credential is not rejected.
 //! - `403 node_mismatch`: the credential belongs to another node name; the
 //!   node does not start.
+//! - `403 gate_only`: the install is gate-only, so no spawn node enrols;
+//!   spawning is reported unavailable and never retried.
 //! - `502 relaycast_unavailable`: Relaycast could not be reached, or answered
 //!   401 to the workspace key Control stores; retried like a Relaycast outage.
 //!
@@ -38,6 +40,8 @@ pub const UNAVAILABLE: &str = "Not available with a node credential.";
 pub const SCOPE_DENIED: &str = "scope_denied";
 /// The broker's code for a credential bound to another node name.
 pub const NODE_MISMATCH: &str = "node_mismatch";
+/// Control's code for an install that is gate-only: no spawn node enrols.
+pub const GATE_ONLY: &str = "gate_only";
 /// The broker's code for a revoked or expired credential.
 pub const TOKEN_INVALID: &str = "token_invalid";
 /// The broker's code when Relaycast could not be reached or refused it.
@@ -119,6 +123,12 @@ pub fn is_scope_denied(error: &RelayError) -> bool {
 /// `403 node_mismatch`: the node credential belongs to another node name.
 pub fn is_node_mismatch(error: &RelayError) -> bool {
     broker_answer(error, 403, NODE_MISMATCH)
+}
+
+/// `403 gate_only`: Control refuses to enrol a spawn node for a gate-only
+/// install. Trying again cannot help.
+pub fn is_gate_only(error: &RelayError) -> bool {
+    broker_answer(error, 403, GATE_ONLY)
 }
 
 /// Whether `error` rejects the credential itself (a refused workspace key, a
@@ -277,6 +287,8 @@ mod tests {
         assert!(!is_scope_denied(&api(401, SCOPE_DENIED)));
         assert!(is_node_mismatch(&api(403, NODE_MISMATCH)));
         assert!(!is_node_mismatch(&api(409, NODE_MISMATCH)));
+        assert!(is_gate_only(&api(403, GATE_ONLY)));
+        assert!(!is_gate_only(&api(409, GATE_ONLY)));
         // A quoted body is never searched for a code.
         let quoted = RelayError::api(
             "invalid_response_body",
