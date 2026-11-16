@@ -382,13 +382,15 @@ export class BridgeStore {
    * as gone only once it has been seen, so a name the core never lists cannot fail a task.
    */
   observeWorker(taskId: string, observation: WorkerObservation, now: number): void {
-    const sql = {
-      live: 'worker_seen_at=COALESCE(worker_seen_at, ?1), worker_gone_at=NULL',
-      exited: 'worker_seen_at=COALESCE(worker_seen_at, ?1), worker_gone_at=COALESCE(worker_gone_at, ?1)',
-      absent:
-        'worker_gone_at=CASE WHEN worker_seen_at IS NULL THEN NULL ELSE COALESCE(worker_gone_at, ?1) END',
-    }[observation];
-    this.db.prepare(`UPDATE tasks SET ${sql} WHERE task_id=?2 AND state='running'`).run(now, taskId);
+    // Plain `?` only: Node 22.14's node:sqlite does not bind numbered `?N` placeholders positionally.
+    const [sql, times] = {
+      live: ['worker_seen_at=COALESCE(worker_seen_at, ?), worker_gone_at=NULL', 1],
+      exited: ['worker_seen_at=COALESCE(worker_seen_at, ?), worker_gone_at=COALESCE(worker_gone_at, ?)', 2],
+      absent: ['worker_gone_at=CASE WHEN worker_seen_at IS NULL THEN NULL ELSE COALESCE(worker_gone_at, ?) END', 1],
+    }[observation] as [string, number];
+    this.db
+      .prepare(`UPDATE tasks SET ${sql} WHERE task_id=? AND state='running'`)
+      .run(...Array<number>(times).fill(now), taskId);
   }
 
   stopPending(): TaskRow[] {
