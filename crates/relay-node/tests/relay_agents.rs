@@ -6589,3 +6589,204 @@ async fn gate_agents_share_one_relaycast_backoff() {
     assert_eq!(h.fake.calls("GET", "/v1/deliveries").len(), held);
     h.stop().await;
 }
+
+// A replaced gate alias's cleanup holds its name until its delete is done:
+// another session asking for the name meanwhile is told it is busy, and
+// once it has the name the old cleanup never registers it again nor
+// deletes the agent now serving it.
+#[tokio::test]
+async fn a_gate_alias_cleanup_never_deletes_a_name_taken_up_again() {
+    let h = gate_harness(true).await;
+    let mut client = h.client().await;
+    client.ok("status.get", json!({})).await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    for new_name in ["mid-name", "new-name"] {
+        client
+            .ok(
+                "agents.rename",
+                json!({"name": "codex-api", "new_name": new_name}),
+            )
+            .await;
+    }
+    let release = h.fake.hold("DELETE /v1/agent");
+    a_day_passes(&h, &mut client).await;
+    eventually("the old alias's delete is in flight", || {
+        h.fake.held("DELETE /v1/agent") >= 1
+    })
+    .await;
+    // Another session asks for the name while that delete is parked.
+    let taken = client
+        .call(
+            "agents.register",
+            json!({"target": {"kind": "claude-terminal", "id": CLAUDE}, "name": "mid-name"}),
+        )
+        .await;
+    release.send(true).unwrap();
+    if taken.get("error").is_some() {
+        assert_eq!(taken["error"]["data"]["kind"], "conflict", "{taken}");
+        eventually("the old alias deleted", || {
+            h.fake.agent("mid-name").is_none()
+        })
+        .await;
+        h.register(&mut client, "claude-terminal", CLAUDE, Some("mid-name"))
+            .await;
+    }
+    eventually("the old alias's cleanup is done", || {
+        h.store()["registrations"][0]
+            .get("retiredAliases")
+            .is_none()
+    })
+    .await;
+    // Any delete or registration of the old cleanup has landed by now.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    // Only the parked delete was sent: the cleanup never registered the
+    // name again to delete the agent now serving the new holder.
+    assert_eq!(h.fake.calls("DELETE", "/v1/agent").len(), 1);
+    let holder = h
+        .fake
+        .agent("mid-name")
+        .expect("the new holder's agent is kept");
+    let store = h.store();
+    assert_eq!(store["tokens"]["mid-name"], json!(holder.token));
+    // And it still reads its queue.
+    h.fake.seed_agent("alice", "agent", json!({}));
+    let (delivery, _) = h.fake.send_dm("alice", "mid-name", "to the new holder");
+    eventually("acked", || {
+        delivered(&h.fake, &delivery).as_deref() == Some("acked")
+    })
+    .await;
+    h.stop().await;
+}
+
+// A replaced gate alias whose token expired, and whose registration again
+// meets an outage, is registered again and deleted once the gate is back:
+// the queued cleanup keeps what it needs to renew, not just the refused
+// token.
+#[tokio::test]
+async fn an_expired_gate_alias_cleanup_registers_again_after_an_outage() {
+    let h = gate_harness(true).await;
+    let mut client = h.client().await;
+    client.ok("status.get", json!({})).await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    for new_name in ["mid-name", "new-name"] {
+        client
+            .ok(
+                "agents.rename",
+                json!({"name": "codex-api", "new_name": new_name}),
+            )
+            .await;
+    }
+    let stale = h.fake.agent("mid-name").unwrap().token;
+    h.fake.expire_gate_token("mid-name");
+    h.fake.set_api_retry_after(Some("1"));
+    h.fake
+        .set_api_error("POST /v1/register", Some((503, "relaygate_unavailable")));
+    let registers = gate_registers(&h.fake).len();
+    a_day_passes(&h, &mut client).await;
+    eventually("the renewal met the outage", || {
+        gate_registers(&h.fake)
+            .iter()
+            .skip(registers)
+            .any(|r| r.body["name"] == "mid-name")
+    })
+    .await;
+    assert!(h
+        .fake
+        .calls("DELETE", "/v1/agent")
+        .iter()
+        .any(|r| r.authorization == bearer(&stale)));
+    assert!(h.fake.agent("mid-name").is_some());
+    h.fake.set_api_error("POST /v1/register", None);
+    eventually("released once the gate is back", || {
+        h.fake.agent("mid-name").is_none()
+    })
+    .await;
+    // Registered again with its recovery proof, then deleted with the new
+    // token, never the refused one again.
+    let again: Vec<_> = gate_registers(&h.fake)
+        .into_iter()
+        .skip(registers)
+        .filter(|r| r.body["name"] == "mid-name")
+        .collect();
+    assert!(again.len() >= 2);
+    assert!(again
+        .iter()
+        .all(|r| r.body["recovery"].as_str() == h.fake.gate_recovery("mid-name").as_deref()));
+    assert_eq!(
+        h.fake
+            .calls("DELETE", "/v1/agent")
+            .iter()
+            .filter(|r| r.authorization == bearer(&stale))
+            .count(),
+        1
+    );
+    assert!(h.fake.agent("codex-api").is_some() && h.fake.agent("new-name").is_some());
+    h.stop().await;
+}
+
+// The gate agents' shared backoff does not depend on whether the device
+// token has been read yet: a plan limit a restarted node's first queue read
+// meets (its saved agents read with their own tokens before the desktop's
+// sign-in is at hand) still holds every gate agent once an enrolment has
+// read the device token.
+#[tokio::test]
+async fn the_gate_backoff_holds_across_the_first_device_token_read() {
+    const RECOVERY: &str = "saved-recovery-proof-0123456789abcdef";
+    let seeded = std::sync::Mutex::new(None);
+    let cloud = gate_cloud(false);
+    let h = Harness::start_with_fake(
+        {
+            let cloud = cloud.clone();
+            move |_| Some(cloud)
+        },
+        |home, fake| {
+            let (id, token) = fake.seed_gate_agent("codex-api", RECOVERY);
+            fake.set_api_error("GET /v1/deliveries", Some((429, "plan_limit_exceeded")));
+            gate_only_store(
+                home,
+                fake,
+                json!({
+                    "registrations": [{"name": "codex-api", "agentID": id,
+                        "target": {"kind": "codex", "id": CODEX}, "title": "api",
+                        "baseURL": fake.base_url, "registeredAt": "2026-11-15T08:00:00Z",
+                        "machinePrefix": "test-desk",
+                        "gate": {"recovery": RECOVERY,
+                            "expiresAt": "2099-01-01T00:00:00.000Z",
+                            "renewAt": "2098-12-31T00:00:00.000Z"}}],
+                    "tokens": {"codex-api": token.clone()},
+                }),
+            );
+            *seeded.lock().unwrap() = Some(token);
+        },
+    )
+    .await;
+    let codex = seeded.lock().unwrap().clone().unwrap();
+    let mut client = h.client().await;
+    client.ok("status.get", json!({})).await;
+    eventually("the first read is refused", || {
+        h.fake
+            .calls("GET", "/v1/deliveries")
+            .iter()
+            .any(|r| r.authorization == bearer(&codex))
+    })
+    .await;
+    assert!(
+        gate_registers(&h.fake).is_empty(),
+        "no device token read yet"
+    );
+    // Signed in now: an enrolment reads the device token. The limit is then
+    // lifted at the fake, but this computer still waits it out.
+    *cloud.device_token.lock().unwrap() = Some(agent_relay_node::relay::workspace::Secret::new(
+        DEVICE_TOKEN.to_string(),
+    ));
+    h.register(&mut client, "claude-terminal", CLAUDE, Some("claude-api"))
+        .await;
+    h.fake.set_api_error("GET /v1/deliveries", None);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let held = h.fake.calls("GET", "/v1/deliveries").len();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(h.fake.calls("GET", "/v1/deliveries").len(), held);
+    h.stop().await;
+}

@@ -243,6 +243,8 @@ struct Shared {
     held: BTreeMap<String, u32>,
     /// Explicit API errors for pacing tests; healthy routes are unchanged.
     api_errors: BTreeMap<String, (u16, String)>,
+    /// The `Retry-After` every error from `api_errors` carries, if any.
+    api_retry_after: Option<String>,
 }
 
 enum SocketCommand {
@@ -735,6 +737,11 @@ impl FakeRelaycast {
         }
     }
 
+    /// The `Retry-After` header each error set with `set_api_error` carries.
+    pub fn set_api_retry_after(&self, retry_after: Option<&str>) {
+        self.shared.lock().unwrap().api_retry_after = retry_after.map(str::to_string);
+    }
+
     /// How long the `rg_` tokens the fake relaygate issues from now on live.
     pub fn set_gate_ttl(&self, ttl: Duration) {
         self.shared.lock().unwrap().world.gate.ttl =
@@ -1166,8 +1173,13 @@ async fn http(
     if let Some(mut hold) = hold {
         let _ = hold.wait_for(|released| *released).await;
     }
-    let (status, payload) = {
+    let (status, payload, retry_after) = {
         let mut shared = shared.lock().unwrap();
+        let retry_after = shared
+            .api_errors
+            .contains_key(&request)
+            .then(|| shared.api_retry_after.clone())
+            .flatten();
         shared.requests.push(Recorded {
             received_at: std::time::Instant::now(),
             method: method.clone(),
@@ -1181,8 +1193,12 @@ async fn http(
             ),
             body: body.clone(),
         });
-        route(&mut shared, &method, &path, &query, &bearer, &body)
+        let (status, payload) = route(&mut shared, &method, &path, &query, &bearer, &body);
+        (status, payload, retry_after)
     };
+    let retry_after = retry_after
+        .map(|value| format!("Retry-After: {value}\r\n"))
+        .unwrap_or_default();
     let body = if status == 204 {
         String::new()
     } else {
@@ -1194,7 +1210,7 @@ async fn http(
         _ => "Error",
     };
     let response = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status} {reason}\r\n{retry_after}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     let _ = stream.write_all(response.as_bytes()).await;
