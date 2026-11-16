@@ -747,6 +747,28 @@ describe('events shim', () => {
     expect(feed.events.map((event) => event.delivery)).toEqual(['pending']);
   });
 
+  it('does not claim posts for a wait whose client left while it re-read the inbox', async () => {
+    const controller = new AbortController();
+    const h = createHarness({ signal: controller.signal });
+    const shim = await h.create();
+    const agent = await h.connect(shim.mcp_url);
+    let armed = false;
+    const find = h.store.findByMcpTokenHash.bind(h.store);
+    h.store.findByMcpTokenHash = async (hash) => {
+      const found = await find(hash);
+      if (armed) controller.abort(); // the client leaves during a poll's re-read
+      return found;
+    };
+    const waiting = agent.call('wait_for_webhook', { timeout_seconds: 2 }).catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await h.post(shim.webhook_url, { waiting: true });
+    armed = true;
+    await waiting;
+    h.store.findByMcpTokenHash = find;
+    const feed = (await h.feed(shim.manage_token)).body;
+    expect(feed.events.map((event) => event.delivery)).toEqual(['pending']);
+  });
+
   it('generates a bearer token for a blank secret, and keeps long idempotency keys distinct', async () => {
     const h = createHarness();
     const shim = await h.create();

@@ -2730,6 +2730,49 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
  *
  * @returns The I/O \`runCli\` uses when run as \`events-shim\`.
  */
+/**
+ * Up to \`limit\` bytes of a file from \`offset\`, as text, and the byte offset the text ends at.
+ * The text never ends inside a UTF-8 character: a character cut by the limit (or still being
+ * written) is left for the next read, so \`end\` is always where that read should start.
+ *
+ * @param path - The file.
+ * @param offset - Where to start (clamped to the file).
+ * @param limit - The most bytes to read (4 MiB by default).
+ * @returns The text and its end, or null when the file cannot be read.
+ */
+export function readTextChunk(
+  path: string,
+  offset: number,
+  limit = 4 * 1024 * 1024
+): { text: string; end: number } | null {
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, 'r');
+    const size = fstatSync(fd).size;
+    const start = Math.min(Math.max(0, offset), size);
+    const buffer = Buffer.alloc(Math.min(size - start, limit));
+    const read = readSync(fd, buffer, 0, buffer.length, start);
+    const whole = completeUtf8(buffer.subarray(0, read));
+    return { text: buffer.subarray(0, whole).toString('utf8'), end: start + whole };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+}
+
+/** How many leading bytes of \`bytes\` end on a UTF-8 character boundary. */
+function completeUtf8(bytes: Uint8Array): number {
+  // A character is at most 4 bytes: look back over at most 3 continuation bytes for its lead.
+  for (let back = 1; back <= Math.min(4, bytes.length); back += 1) {
+    const byte = bytes[bytes.length - back]!;
+    if ((byte & 0xc0) === 0x80) continue; // a continuation byte
+    const length = byte < 0x80 ? 1 : byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1;
+    return length > back ? bytes.length - back : bytes.length;
+  }
+  return bytes.length; // not UTF-8 there; read it as it is
+}
+
 export function processIo(): CliIo {
   return {
     env: process.env,
@@ -2759,21 +2802,7 @@ export function processIo(): CliIo {
         return null;
       }
     },
-    readFrom: (path, offset) => {
-      let fd: number | null = null;
-      try {
-        fd = openSync(path, 'r');
-        const end = fstatSync(fd).size;
-        const start = Math.min(Math.max(0, offset), end);
-        const buffer = Buffer.alloc(Math.min(end - start, 4 * 1024 * 1024));
-        const read = readSync(fd, buffer, 0, buffer.length, start);
-        return { text: buffer.subarray(0, read).toString('utf8'), end: start + read };
-      } catch {
-        return null;
-      } finally {
-        if (fd !== null) closeSync(fd);
-      }
-    },
+    readFrom: (path, offset) => readTextChunk(path, offset),
     pid: process.pid,
     listDir: (path) => {
       try {

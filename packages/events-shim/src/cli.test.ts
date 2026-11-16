@@ -26,6 +26,7 @@ import {
   desktopCoreBinaries,
   configPath,
   HOOK_COMMAND,
+  readTextChunk,
   runCli,
   stopHookCommand,
   skillText,
@@ -1254,10 +1255,7 @@ describe('events-shim CLI', () => {
     const reads: number[] = [];
     w.io.readFrom = (path, offset) => {
       reads.push(offset);
-      const bytes = readFileSync(path);
-      const start = Math.min(offset, bytes.length);
-      const part = bytes.subarray(start, Math.min(bytes.length, start + 100));
-      return { text: part.toString('utf8'), end: start + part.length };
+      return readTextChunk(path, offset, 100);
     };
     await runCli(['setup', w.created.mcp_url], w.io);
     await w.post({ for: 'the long session' });
@@ -1278,6 +1276,51 @@ describe('events-shim CLI', () => {
     expect(await runCli(['listen', '--hook'], w.io)).toBe(2);
     expect(w.err.join('\n')).toContain('{"for":"the long session"}');
     expect(Math.min(...reads)).toBeGreaterThanOrEqual(scanned - 100);
+  });
+
+  it('readTextChunk never ends inside a character, so a chunk boundary in é loses no bytes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'events-shim-chunk-'));
+    const file = join(dir, 't.jsonl');
+    const call = JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', id: 't1', name: 'mcp__webhooks__watch_webhooks', input: {} }],
+      },
+    });
+    // "aé": 'a' then é's two bytes (0xc3 0xa9); a 2-byte read stops after 'a'.
+    writeFileSync(file, `aé\n${call}\n`);
+    const first = readTextChunk(file, 0, 2)!;
+    expect(first).toEqual({ text: 'a', end: 1 });
+    const second = readTextChunk(file, first.end, 3)!;
+    expect(second).toEqual({ text: 'é\n', end: 4 });
+    expect(readTextChunk(file, second.end, 10_000)!.text).toBe(`${call}\n`);
+    // A boundary inside a 4-byte character too.
+    writeFileSync(file, 'x😀y');
+    expect(readTextChunk(file, 0, 3)).toEqual({ text: 'x', end: 1 });
+    expect(readTextChunk(file, 1, 4)).toEqual({ text: '😀', end: 5 });
+  });
+
+  it('listen --hook finds an opt-in right after a chunk boundary inside a character', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'events-shim-transcript-'));
+    const transcript = join(dir, 'split-1.jsonl');
+    const call = JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', id: 't1', name: 'mcp__webhooks__watch_webhooks', input: {} }],
+      },
+    });
+    const user = JSON.stringify({ type: 'user', message: { content: 'café' } });
+    writeFileSync(transcript, `${user}\n${call}\n`);
+    // Every read stops inside é the first time.
+    const split = Buffer.byteLength(user) - 4;
+    const w = await fileWorld({
+      stdin: JSON.stringify({ session_id: 'split-1', transcript_path: transcript }),
+    });
+    w.io.readFrom = (path, offset) => readTextChunk(path, offset, offset === 0 ? split : 1_000_000);
+    await runCli(['setup', w.created.mcp_url], w.io);
+    await w.post({ for: 'split' });
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(2);
+    expect(w.err.join('\n')).toContain('{"for":"split"}');
   });
 
   it('listen --hook: a webhooks tool name inside another call is not an opt-in', async () => {

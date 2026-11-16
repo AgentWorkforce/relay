@@ -19,7 +19,7 @@ export interface EventsShimMcpContext {
   pollIntervalMs?: number;
   /**
    * Re-reads the inbox before a tool reports its wake state, and on each
-   * \`wait_for_webhook\` poll, since a delivery pass or another request may
+   * `wait_for_webhook` poll, since a delivery pass or another request may
    * have linked, unlinked or broken the link since `shim` was read.
    */
   reloadShim?: () => Promise<ShimRecord | null>;
@@ -347,10 +347,17 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
       const deadline = Date.now() + timeoutMs;
       const interval = ctx.pollIntervalMs ?? 1_000;
       const signals = [ctx.signal, extra?.signal].filter((signal): signal is AbortSignal => Boolean(signal));
-      // \`seen\` just read the inbox; later polls read it again.
+      // `seen` just read the inbox; later polls read it again.
       let polled = false;
       for (;;) {
-        // Never claim for a client that is gone: claimed posts are marked read.
+        // Re-read the link on every poll: one made or broken while this waits counts at once.
+        if (polled && ctx.reloadShim) {
+          const fresh = await ctx.reloadShim();
+          if (fresh) ctx.shim = fresh;
+        }
+        polled = true;
+        // Never claim for a client that is gone (checked after the re-read, which takes time):
+        // claimed posts are marked read.
         if (signals.some((signal) => signal.aborted)) {
           return result({ events: [], more: false, next_steps: ['Cancelled. Call wait_for_webhook again.'] });
         }
@@ -358,12 +365,6 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
         // made the link, and a waiter here (another session's wake hook, say) would mark it read
         // first and take it from that session. Wait out the timeout without claiming, so a
         // listener that calls again at once does not spin.
-        // Re-read the link on every poll: one made or broken while this waits counts at once.
-        if (polled && ctx.reloadShim) {
-          const fresh = await ctx.reloadShim();
-          if (fresh) ctx.shim = fresh;
-        }
-        polled = true;
         const linked = wakeState(ctx.shim) === 'linked';
         const batch = linked ? { events: [], more: false } : await handOver(ctx);
         if (batch.events.length > 0) {
