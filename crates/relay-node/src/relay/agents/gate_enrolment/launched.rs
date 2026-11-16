@@ -63,8 +63,46 @@ impl Core {
     /// reported without the token; the registration expires at the gate
     /// with it.
     pub(crate) async fn release_launch_gate(&self, name: &str, invocation_id: &str) {
+        self.release_launch_gate_unless(name, invocation_id, None)
+            .await;
+    }
+
+    /// Like [`Core::release_launch_gate`] for a launch whose process ended,
+    /// except while agent `agent_id` still owes an automatic answer: that
+    /// answer goes out with this registration, which is then kept until the
+    /// agent leaves. Decided under the gate lock an answer's send holds, so
+    /// a send whose claim is then released (a refused token) is seen as
+    /// still owed.
+    pub(crate) async fn release_ended_launch_gate(
+        &self,
+        name: &str,
+        invocation_id: &str,
+        agent_id: &str,
+    ) {
+        self.release_launch_gate_unless(name, invocation_id, Some(agent_id))
+            .await;
+    }
+
+    async fn release_launch_gate_unless(
+        &self,
+        name: &str,
+        invocation_id: &str,
+        owing: Option<&str>,
+    ) {
         let lock = self.gate_locks.get(name);
         let _renewals = lock.lock().await;
+        if let Some(agent_id) = owing {
+            let owes_answer = self.store.read(|store| {
+                store
+                    .replies
+                    .iter()
+                    .flatten()
+                    .any(|reply| reply.agent_id == agent_id && reply.claimed != Some(true))
+            });
+            if owes_answer {
+                return;
+            }
+        }
         let Some(launched) = self.store.launch_gates(|gates| match gates.0.get(name) {
             Some(held) if held.invocation_id == invocation_id => gates.0.remove(name),
             _ => None,

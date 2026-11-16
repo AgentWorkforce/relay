@@ -191,14 +191,13 @@ impl Core {
             // An answer it still owes goes out with that registration, so
             // it is kept until the agent leaves (`unregister_archived`,
             // after the answer or its wait), which releases it then.
-            let owes_answer = self.store.read(|store| {
-                store.replies.iter().flatten().any(|reply| {
-                    reply.agent_id == registration.agent_id && reply.claimed != Some(true)
-                })
-            });
-            if let (Some(spawn), false) = (&registration.spawn, owes_answer) {
-                self.release_launch_gate(&registration.name, &spawn.invocation_id)
-                    .await;
+            if let Some(spawn) = &registration.spawn {
+                self.release_ended_launch_gate(
+                    &registration.name,
+                    &spawn.invocation_id,
+                    &registration.agent_id,
+                )
+                .await;
             }
             {
                 let mut state = ledger.lock();

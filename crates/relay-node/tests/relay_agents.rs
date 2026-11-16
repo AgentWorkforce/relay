@@ -6630,8 +6630,23 @@ async fn a_gate_alias_cleanup_never_deletes_a_name_taken_up_again() {
         h.fake.agent("mid-name").is_none()
     })
     .await;
-    h.register(&mut client, "claude-terminal", CLAUDE, Some("mid-name"))
-        .await;
+    // The cleanup lets go of the name once its delete has returned: until
+    // then a registration is still refused as busy.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let taken = client
+            .call(
+                "agents.register",
+                json!({"target": {"kind": "claude-terminal", "id": CLAUDE}, "name": "mid-name"}),
+            )
+            .await;
+        if taken.get("error").is_none() {
+            break;
+        }
+        assert_eq!(taken["error"]["data"]["kind"], "conflict", "{taken}");
+        assert!(tokio::time::Instant::now() < deadline, "{taken}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     eventually("the old alias's cleanup is done", || {
         h.store()["registrations"][0]
             .get("retiredAliases")
