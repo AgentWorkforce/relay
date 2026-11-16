@@ -4,6 +4,66 @@ use crate::relay::inject::InjectOutcome;
 use serde_json::json;
 
 #[test]
+fn a_kernel_reported_hardlink_to_the_managed_helper_is_the_same_program() {
+    let (home, config, table, _) = proof::tests::fixture();
+    let helper = home.path().join("Agent Relay Helper");
+    let alias = home.path().join("Agent Relay Helper (Sessions)");
+    std::fs::write(&helper, "fixture helper").unwrap();
+    std::fs::hard_link(&helper, &alias).unwrap();
+    CopilotSettings::new(&config, helper.clone())
+        .set_enabled(true)
+        .unwrap();
+    table
+        .trusted_relay_helpers
+        .lock()
+        .unwrap()
+        .insert(alias.clone());
+    {
+        let mut processes = table.processes.lock().unwrap();
+        let hook = processes.get_mut(&103).unwrap();
+        hook.executable = Some(alias.clone());
+        hook.arguments = vec![
+            helper.to_string_lossy().into_owned(),
+            "copilot-hook".into(),
+            "--event".into(),
+            "start".into(),
+        ];
+    }
+    let payload = json!({"sessionId":"1069773c-0824-4fad-b7f9-d3dc3c4ed148","relayEvent":"start"});
+    assert_eq!(
+        hook_answer(&config, &table, 501, 103, &payload),
+        Some(json!({}))
+    );
+    table.trusted_relay_helpers.lock().unwrap().clear();
+    assert!(hook_answer(&config, &table, 501, 103, &payload).is_none());
+    table
+        .trusted_relay_helpers
+        .lock()
+        .unwrap()
+        .insert(alias.clone());
+    table
+        .processes
+        .lock()
+        .unwrap()
+        .get_mut(&103)
+        .unwrap()
+        .arguments[3] = "stop".into();
+    assert!(hook_answer(&config, &table, 501, 103, &payload).is_none());
+    table
+        .processes
+        .lock()
+        .unwrap()
+        .get_mut(&103)
+        .unwrap()
+        .arguments[3] = "start".into();
+    // Equal bytes, a matching signature fixture and the same basename are not
+    // enough: a distinct file must not become the configured helper.
+    std::fs::remove_file(&alias).unwrap();
+    std::fs::copy(&helper, &alias).unwrap();
+    assert!(hook_answer(&config, &table, 501, 103, &payload).is_none());
+}
+
+#[test]
 fn exact_hook_claim_survives_reopen_and_requires_native_acceptance() {
     let (_home, config, table, _) = proof::tests::fixture();
     let sid = "1069773c-0824-4fad-b7f9-d3dc3c4ed148";
