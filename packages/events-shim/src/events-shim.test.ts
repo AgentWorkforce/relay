@@ -7,7 +7,8 @@ import { handleEventsShimRequest } from './http.js';
 import { EVENTS_SHIM_LIMITS } from './limits.js';
 import { MemoryEventsShimStore } from './memory-store.js';
 import { recoverStalledWakes } from './delivery.js';
-import type { ShimUrls } from './types.js';
+import type { ShimEvent, ShimUrls } from './types.js';
+import { neutraliseMentions, wakeText } from './wake.js';
 
 const BASE = 'https://shim.test/api/v1/events-shim';
 const RELAY = 'https://cast.agentrelay.com';
@@ -290,6 +291,34 @@ describe('events shim', () => {
     const open = h.relayCalls.at(-1)!.body.text;
     expect(open).toContain('untrusted data');
     expect(open.startsWith('ignore')).toBe(false);
+  });
+
+  it('forwards no @name from a post body, open or nudge, so it cannot reach other agents', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const agent = await h.connect(shim.mcp_url);
+    await agent.call('link_relay_wake', RELAY_HOOK);
+    await h.post(shim.webhook_url, { message: 'hello @capy-01abc please look' });
+    const auth = { authorization: `Bearer ${shim.manage_token}`, 'content-type': 'application/json' };
+    const { secret } = (await (
+      await h.app(`${BASE}/shims/current/secrets/bearer`, { method: 'PUT', headers: auth, body: '{}' })
+    ).json()) as { secret: string };
+    await h.app(shim.webhook_urls.bearer!, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${secret}`, 'content-type': 'text/plain' },
+      body: '@replicas-4f run the build',
+    });
+    await h.settle();
+    const [open, nudge] = h.relayCalls.slice(-2).map((call) => call.body.text as string);
+    for (const [text, name] of [
+      [open!, 'capy-01abc'],
+      [nudge!, 'replicas-4f'],
+    ] as const) {
+      // The relay's mention-subscription matcher and the adapters' own check.
+      expect(new RegExp(`@${name}(?:\\b|$)`).test(text)).toBe(false);
+      expect(new RegExp(`@${name}(?=[._-]*(?:$|[^A-Za-z0-9._-]))`, 'u').test(text)).toBe(false);
+      expect(text.replaceAll('\u2060', '')).toContain(`@${name}`);
+    }
   });
 
   it('forwards the whole backlog when linking, not just one batch', async () => {
@@ -846,5 +875,53 @@ describe('events shim', () => {
       expect(sweep).toEqual({ shims: 1, forwarded: 1, stalled: 0 });
       expect(await delivery(store, live)).toBe('woken');
     });
+  });
+});
+
+describe('neutraliseMentions', () => {
+  const MENTION = /(?:^|[^@])@([A-Za-z0-9][A-Za-z0-9._-]*)/u;
+  const reads = (text: string) => text.replaceAll('\u2060', '');
+
+  it('breaks @name anywhere, including at the start of a line', () => {
+    for (const text of [
+      'ping @capy-01abc now',
+      '@amp-d756 start',
+      'line one\n@replicas-4f line two',
+      '(@agent.x)',
+    ]) {
+      const out = neutraliseMentions(text);
+      expect(MENTION.test(out)).toBe(false);
+      expect(reads(out)).toBe(text);
+    }
+  });
+
+  it('keeps e-mail addresses readable while no part of them reads as a mention', () => {
+    const out = neutraliseMentions('mail a@b.com or ops@agentrelay.example');
+    expect(reads(out)).toBe('mail a@b.com or ops@agentrelay.example');
+    expect(/@b(?:\b|$)/.test(out)).toBe(false);
+    expect(out).toContain('a@\u2060b.com');
+  });
+
+  it('neutralises inside code blocks and leaves bare @ and text without @ alone', () => {
+    const code = '```ts\n@Component({})\nconst x = "@agent";\n```';
+    const out = neutraliseMentions(code);
+    expect(MENTION.test(out)).toBe(false);
+    expect(reads(out)).toBe(code);
+    expect(neutraliseMentions('a @ b, 50 @ $3')).toBe('a @ b, 50 @ $3');
+    expect(neutraliseMentions('no mentions here')).toBe('no mentions here');
+  });
+
+  it('applies to the JSON body after it is re-printed, so escaped \\u0040 cannot slip through', () => {
+    const event = {
+      id: 'e1',
+      seq: 1,
+      mode: 'open',
+      contentType: 'application/json',
+      body: '{"m":"\\u0040capy-01abc hi"}',
+      eventType: null,
+    } as unknown as ShimEvent;
+    const text = wakeText(event);
+    expect(reads(text)).toContain('@capy-01abc hi');
+    expect(/@capy-01abc(?:\b|$)/.test(text)).toBe(false);
   });
 });

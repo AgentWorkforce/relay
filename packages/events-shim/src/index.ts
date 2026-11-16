@@ -32,6 +32,7 @@ export {
   checkWakeTarget,
   forwardWake,
   isNudge,
+  neutraliseMentions,
   wakeText,
   DEFAULT_RELAY_ORIGINS,
   type WakeResult,

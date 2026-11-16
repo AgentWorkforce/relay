@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay-node`: spawned agents and the shared Codex app server no longer receive `CLOUD_API_ACCESS_TOKEN` or `CLOUD_API_REFRESH_TOKEN` from the node's environment, in any letter case.
 
+### Fixed
+
+- `@agent-relay/events-shim`: a webhook post can no longer reach agents other than the one its inbox wakes. Posts forwarded to Agent Relay used to carry any `@name` from the post body, so the relay delivered them to that agent too, including Capy threads, Replicas and Amp threads in the workspace. Every `@` that a name follows in forwarded text, nudges included, now has an invisible word joiner after it: the agent reads the same text, and e-mail addresses still read normally.
+
 ## [18.8.0] - 2026-11-16
 
 ### Added
