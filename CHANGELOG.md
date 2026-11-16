@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `agent-relay-node`: self-hosted installs whose Control API returns `urls.relaygateUrl` (relaygate gate-only mode) register each agent at relaygate with the person's device token instead of the shared workspace key. Agents renew their relaygate token before it expires, publish their session details and presence, read the roster and are removed through the gate. A removed name registers again as the same agent. Installs without a relaygate URL, including default and hosted ones, are unchanged.
+- `agent-relay-node`: messaging as yourself works on gate-only installs. Your own identity enrols at relaygate as one more agent (named from your user id) with the device token, sends and reads through the gate, and renews its token like an agent does. This also happens when the Control API refuses the messaging identity with `gate_only` and names the gate. Signed out, messaging says it is unavailable until you sign in again.
 - `agent-relay-node`: when the Control API refuses node enrolment with `gate_only`, spawning from Agent Relay is reported as unavailable on that computer ("gate-only install") and is not retried.
 
 ## [18.8.0] - 2026-11-16

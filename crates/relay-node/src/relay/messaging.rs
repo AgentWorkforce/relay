@@ -14,6 +14,19 @@
 //!
 //! Cloud can recover the identity (a fresh token) at any time, which retires
 //! the copy held here: a token Relaycast refuses is fetched again, once.
+//!
+//! On a gate-only install (the workspace names a relaygate, or the identity
+//! route answers 403 `gate_only` with the gate's address, which is then
+//! kept like the one a gate-only resolve names) there is no Cloud identity:
+//! you enrol at the gate as one more agent, under a name derived from your
+//! user id ([`gate_person_name`]), with the device token. Everything you
+//! send and read then goes through the gate with the `rg_` token it issued,
+//! which is renewed like an agent's (same name and recovery proof, so the
+//! same agent id): at 80% of its lifetime, and once when the gate refuses it.
+//!
+//! ```text
+//! POST <gate>/v1/register {name, recovery}  (device token) ─▶ agent_id, rg_ token
+//! ```
 //! Relaycast queues every reply to you as a delivery; they are acknowledged
 //! when your conversations are read, and the identity's push socket wakes an
 //! open conversation the moment one arrives.
@@ -43,6 +56,7 @@ use crate::relay::protocol::{ErrorKind, RpcError};
 use crate::relay::push::PushTarget;
 use crate::relay::sdk_gaps;
 use crate::relay::state::Listing;
+use crate::relay::store::GateEnrolment;
 use crate::relay::workspace::{validated_base_url, Secret, Workspace};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -68,17 +82,34 @@ pub struct PersonIdentity {
     pub base_url: String,
 }
 
+/// The name your own messaging identity enrols under at relaygate on a
+/// gate-only install: `person-` and the first 16 hex digits of the sha256
+/// of your Cloud user id (the owner hash agents already publish,
+/// [`crate::relay::people::identity_hash`]), e.g. `person-c6c289e49e9c05b2`
+/// for `user-1`. It is the same on every enrolment, so registering again
+/// (same name, same recovery proof) keeps the same agent, and it names no
+/// account detail. It never starts with relaygate's reserved `ctl:`.
+pub fn gate_person_name(user_id: &str) -> String {
+    let hash = crate::relay::people::identity_hash(user_id);
+    format!("person-{}", &hash[..16])
+}
+
 /// Whether `workspace` is the Relaycast workspace `identity` sends in. The
 /// identity is minted for the signed-in account's Cloud workspace, whose
 /// Relaycast key is `account_key`: the daemon's workspace is that one only
 /// when it uses the same key on the identity's origin. A CLI workspace on
 /// the same origin (two workspaces on `cast.agentrelay.com`) is another
-/// workspace, so its roster proves nothing about your sends.
+/// workspace, so its roster proves nothing about your sends. A gate-only
+/// workspace has no key: it is yours when your identity enrolled at its
+/// gate.
 fn is_identity_workspace(
     identity: &PersonIdentity,
     workspace: &Workspace,
     account_key: Option<&Secret>,
 ) -> bool {
+    if workspace.is_gate_only() {
+        return workspace.base_url == identity.base_url;
+    }
     workspace.base_url == identity.base_url && account_key == Some(&workspace.key)
 }
 
@@ -109,6 +140,9 @@ pub struct MessagingState {
     /// `(account key, identity)`: the identity belongs to one signed-in
     /// person in one Cloud workspace on one site.
     identity: Option<(String, PersonIdentity)>,
+    /// When the identity enrolled at relaygate (gate-only), its recovery
+    /// proof and when its `rg_` token is due for renewal.
+    gate: Option<GateEnrolment>,
     /// Conversation ids by `(identity name, endpoint key)`: search hints only.
     conversations: HashMap<(String, String), String>,
     /// Exact-address lookups that found no proof, by `(workspace, identity, endpoint key)`.
@@ -352,6 +386,18 @@ fn sign_in_required() -> RpcError {
     )
 }
 
+/// An enrolment at the gate that failed, as messaging reports it: signed
+/// out says what to do about it for your own messages.
+fn gate_identity_error(error: RpcError) -> RpcError {
+    match error.data.kind {
+        ErrorKind::NotSignedIn => RpcError::new(
+            ErrorKind::NotSignedIn,
+            "Messaging as yourself is unavailable: this computer is signed out of Agent Relay, so it cannot enrol you through relaygate. Sign in again.",
+        ),
+        _ => error,
+    }
+}
+
 /// Who an identity and everything read with it belong to.
 fn account_key(account: &CloudAccount) -> String {
     format!(
@@ -385,26 +431,42 @@ impl Core {
         }
     }
 
-    /// Your relay identity for the signed-in account, from memory or Cloud.
-    /// `refresh` asks Cloud again, for a token Relaycast refused.
+    /// Your relay identity for the signed-in account, from memory or Cloud
+    /// (or relaygate, on a gate-only install). `refresh` asks again, for a
+    /// token Relaycast refused.
     pub(crate) async fn person_identity(&self, refresh: bool) -> Result<PersonIdentity, RpcError> {
         let account = self.plugins.cloud.account().ok_or_else(sign_in_required)?;
-        if let Some(identity) = self.current_identity().filter(|_| !refresh) {
+        let gate_url = self.person_gate_url();
+        if let Some(identity) = self.current_identity().filter(|identity| {
+            !refresh
+                && !self.person_gate_due()
+                && gate_url
+                    .as_ref()
+                    .is_none_or(|gate| *gate == identity.base_url)
+        }) {
             return Ok(identity);
+        }
+        if let Some(gate_url) = gate_url {
+            return self.person_identity_at_gate(&account, &gate_url).await;
         }
         let path = format!(
             "/workspaces/{}/messaging/identity/credential",
             segment(&account.workspace_id)
         );
-        let body = self
+        let body = match self
             .plugins
             .cloud
             .request("POST", path, Some(json!({})))
             .await
-            .map_err(|error| match error {
-                CloudError::SignedOut | CloudError::Rejected => sign_in_required(),
-                error => RpcError::cloud(&error),
-            })?;
+        {
+            Ok(body) => body,
+            Err(CloudError::GateOnly { relaygate_url }) => {
+                let gate_url = self.adopt_gate_url(relaygate_url)?;
+                return self.person_identity_at_gate(&account, &gate_url).await;
+            }
+            Err(CloudError::SignedOut | CloudError::Rejected) => return Err(sign_in_required()),
+            Err(error) => return Err(RpcError::cloud(&error)),
+        };
         let identity = &body["identity"];
         let (Some(name), Some(agent_id), Some(token), Some(base_url)) = (
             text(&identity["name"]),
@@ -435,7 +497,125 @@ impl Core {
                 *state = MessagingState::default();
             }
             state.identity = Some((account_key(&account), identity.clone()));
+            state.gate = None;
         }
+        if let Some(core) = self.arc() {
+            tokio::spawn(async move { core.sync_agents().await });
+        }
+        Ok(identity)
+    }
+
+    /// The relaygate your identity enrols at: the gate-only workspace's, or
+    /// one kept in the store (adopted from a `gate_only` refusal) before
+    /// the workspace was resolved again. None with a workspace key.
+    fn person_gate_url(&self) -> Option<String> {
+        self.workspace()
+            .filter(Workspace::is_gate_only)
+            .and_then(|workspace| workspace.gate_url)
+            .or_else(|| {
+                self.store.read(|store| {
+                    store
+                        .cloud
+                        .as_ref()
+                        .and_then(|cloud| cloud.gate_url.as_deref())
+                        .and_then(validated_base_url)
+                })
+            })
+    }
+
+    /// The gate a `gate_only` refusal of the identity route named, kept in
+    /// the store as a gate-only resolve keeps it, unless a gate is known
+    /// already (then that one is used). A refusal that names no valid gate
+    /// leaves nothing to message through.
+    fn adopt_gate_url(&self, offered: Option<String>) -> Result<String, RpcError> {
+        if let Some(known) = self.person_gate_url() {
+            return Ok(known);
+        }
+        let gate = offered.ok_or_else(|| {
+            RpcError::new(
+                ErrorKind::CloudRefused,
+                "Messaging as yourself is unavailable: this workspace is gate-only, and Agent Relay named no relaygate to message through.",
+            )
+        })?;
+        // A failed save is not fatal here: you still message through the
+        // gate now, and the next refusal adopts it again.
+        let _ = self.store.update_latest(|store| {
+            if let Some(cloud) = store.cloud.as_mut().filter(|c| c.gate_url.is_none()) {
+                cloud.gate_url = Some(gate.clone());
+            }
+        });
+        Ok(gate)
+    }
+
+    /// Whether your identity's `rg_` token (gate-only) is due for renewal.
+    pub(crate) fn person_gate_due(&self) -> bool {
+        let state = self.messaging.lock().unwrap();
+        state
+            .gate
+            .as_ref()
+            .is_some_and(|gate| gate.due(chrono::Utc::now()))
+    }
+
+    /// The renewal key of your gate identity, `@name`, when it is held.
+    pub(crate) fn person_gate_channel(&self) -> Option<String> {
+        let state = self.messaging.lock().unwrap();
+        state.gate.as_ref()?;
+        state
+            .identity
+            .as_ref()
+            .map(|(_, identity)| person_channel(&identity.name))
+    }
+
+    /// Enrols (or enrols again, for a new token) your identity at
+    /// `gate_url` as one more agent: [`gate_person_name`], the device token,
+    /// and the recovery proof kept for that name. One enrolment runs at a
+    /// time; a caller that waited for another's uses the token it got.
+    async fn person_identity_at_gate(
+        &self,
+        account: &CloudAccount,
+        gate_url: &str,
+    ) -> Result<PersonIdentity, RpcError> {
+        let user_id = account
+            .user_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .ok_or_else(sign_in_required)?;
+        let name = gate_person_name(user_id);
+        let channel = person_channel(&name);
+        let held = self.current_identity().map(|identity| identity.token);
+        let lock = self.gate_locks.get(&channel);
+        let _enrolling = lock.lock().await;
+        if let Some(identity) = self.current_identity().filter(|identity| {
+            identity.base_url == gate_url
+                && identity.name == name
+                && Some(&identity.token) != held.as_ref()
+                && !self.person_gate_due()
+        }) {
+            return Ok(identity);
+        }
+        let (issued, enrolment) = self
+            .enrol_at_gate(gate_url, &name)
+            .await
+            .map_err(gate_identity_error)?;
+        let identity = PersonIdentity {
+            name,
+            agent_id: issued.agent_id,
+            token: issued.token,
+            base_url: gate_url.to_owned(),
+        };
+        {
+            let mut state = self.messaging.lock().unwrap();
+            if state
+                .identity
+                .as_ref()
+                .is_some_and(|(owner, _)| *owner != account_key(account))
+            {
+                *state = MessagingState::default();
+            }
+            state.identity = Some((account_key(account), identity.clone()));
+            state.gate = Some(enrolment);
+        }
+        self.forget_gate_renewal(&channel);
         if let Some(core) = self.arc() {
             tokio::spawn(async move { core.sync_agents().await });
         }
@@ -1047,6 +1227,46 @@ mod tests {
             person_workspace_scope(&person, Some(&cli), account_key),
             WorkspaceScope::credential(&person.base_url, &person.token, "your messaging workspace"),
         );
+    }
+
+    #[test]
+    fn a_gate_only_workspace_is_yours_when_you_enrolled_at_its_gate() {
+        let gate = Workspace {
+            key: Secret::default(),
+            base_url: "https://gate.example".into(),
+            workspace_id: Some("rw_account".into()),
+            source: Default::default(),
+            control_url: None,
+            gate_url: Some("https://gate.example".into()),
+        };
+        let person = PersonIdentity {
+            name: gate_person_name("user-1"),
+            agent_id: "agent_person".into(),
+            token: Secret::new("rg_person"),
+            base_url: gate.base_url.clone(),
+        };
+        // The store's key is empty beside a gate, and never what decides.
+        for account_key in [
+            None,
+            Some(&Secret::default()),
+            Some(&Secret::new("rk_live_x")),
+        ] {
+            assert!(is_identity_workspace(&person, &gate, account_key));
+        }
+        let elsewhere = Workspace {
+            base_url: "https://other-gate.example".into(),
+            gate_url: Some("https://other-gate.example".into()),
+            ..gate.clone()
+        };
+        assert!(!is_identity_workspace(&person, &elsewhere, None));
+    }
+
+    #[test]
+    fn the_gate_name_of_a_person_is_stable_and_derived_from_the_user_id() {
+        assert_eq!(gate_person_name("user-1"), "person-c6c289e49e9c05b2");
+        assert_eq!(gate_person_name("user-1"), gate_person_name("user-1"));
+        assert_ne!(gate_person_name("user-1"), gate_person_name("user-2"));
+        assert!(!gate_person_name("ctl:x").starts_with("ctl:"));
     }
 
     #[test]

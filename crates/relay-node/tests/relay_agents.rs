@@ -10,7 +10,7 @@ mod support {
     pub mod fake_relaycast;
 }
 
-use agent_relay_node::relay::cloud_session::CloudAccess;
+use agent_relay_node::relay::cloud_session::{CloudAccess, CloudError};
 use agent_relay_node::relay::daemon::{self, BoundSocket, Config, Core, Plugins};
 use agent_relay_node::relay::delivery::DeliveryTiming;
 use agent_relay_node::relay::harness::HarnessId;
@@ -6273,5 +6273,221 @@ async fn a_rate_limited_gate_update_waits_before_it_is_sent_again() {
     assert!(h.store()["pendingNameMarkers"]
         .as_array()
         .is_some_and(|p| p.iter().any(|n| n == "codex-api")));
+    h.stop().await;
+}
+
+// MARK: Messaging as yourself on a gate-only install
+
+/// Your gate name: `person-` and 16 hex digits of sha256("user-1").
+const GATE_PERSON: &str = "person-c6c289e49e9c05b2";
+
+/// No request a gate saw carried a workspace key or an `at_live_` token.
+fn assert_gate_saw_only_gate_credentials(gate: &FakeRelaycast) {
+    for request in gate.requests() {
+        let bearer = request.authorization.unwrap_or_default();
+        assert!(
+            !bearer.contains("rk_") && !bearer.contains("at_live_"),
+            "{} {} carried a non-gate credential",
+            request.method,
+            request.path
+        );
+    }
+}
+
+/// `peer` (enrolled at `gate`) answers you with `text` through the gate.
+async fn gate_peer_says(gate: &FakeRelaycast, token: &str, text: &str) {
+    let token = agent_relay_node::relay::workspace::Secret::new(token.to_string());
+    agent_relay_node::relay::client::send_dm(
+        &gate.base_url,
+        &token,
+        &agent_relay_node::relay::links::Endpoint::Name(GATE_PERSON.into()),
+        text,
+        None,
+    )
+    .await
+    .unwrap();
+}
+
+fn texts(history: &Value) -> Vec<String> {
+    history["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["text"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn the_gate_name_of_a_person_is_documented_and_stable() {
+    assert_eq!(
+        agent_relay_node::relay::messaging::gate_person_name("user-1"),
+        GATE_PERSON
+    );
+}
+
+#[tokio::test]
+async fn a_gate_only_refusal_of_the_identity_route_enrols_you_at_the_gate() {
+    // Control refuses the identity route (403 gate_only) and names the
+    // gate; the workspace itself still resolved with its key.
+    let gate = FakeRelaycast::start(Behaviour::default()).await;
+    let gate_url = gate.base_url.clone();
+    let h = Harness::start_with(
+        |_| {
+            let cloud = gate_cloud(true);
+            cloud.answer(
+                "POST",
+                "/workspaces/50587328-441d-4acb-b8f3-dbe1b3c5de99/messaging/identity/credential",
+                Err(CloudError::GateOnly {
+                    relaygate_url: Some(gate_url),
+                }),
+            );
+            Some(cloud)
+        },
+        |_, _| {},
+    )
+    .await;
+    let mut client = h.client().await;
+    let (_, reviewer_token) = gate.seed_gate_agent("reviewer", "reviewer-recovery-0123456789");
+
+    let sent = client
+        .ok(
+            "messages.send",
+            json!({"to": "reviewer", "text": "through the gate"}),
+        )
+        .await;
+    assert_eq!(sent["to"], "reviewer");
+    // You enrolled as one more agent, with the device token.
+    let registers: Vec<_> = gate
+        .calls("POST", "/v1/register")
+        .into_iter()
+        .filter(|r| r.body["name"] == GATE_PERSON)
+        .collect();
+    assert_eq!(registers.len(), 1);
+    assert_eq!(
+        registers[0].authorization.as_deref(),
+        Some(format!("Bearer {DEVICE_TOKEN}").as_str())
+    );
+    let person = gate.agent(GATE_PERSON).unwrap();
+    assert!(person.token.starts_with("rg_"));
+    let dm = gate.calls("POST", "/v1/dm").pop().unwrap();
+    assert_eq!(dm.body["text"], "through the gate");
+    assert_eq!(
+        dm.authorization.as_deref(),
+        Some(format!("Bearer {}", person.token).as_str())
+    );
+    assert!(h.fake.calls("POST", "/v1/dm").is_empty());
+    // The gate is kept like the one a gate-only resolve names.
+    assert_eq!(h.store()["cloud"]["relaygateURL"], json!(gate.base_url));
+
+    // The reply comes back through the gate too.
+    gate_peer_says(&gate, &reviewer_token, "reply from the gate").await;
+    let history = client
+        .ok("messages.history", json!({"endpoint": "reviewer"}))
+        .await;
+    assert_eq!(history["identity"], GATE_PERSON);
+    assert_eq!(texts(&history), ["through the gate", "reply from the gate"]);
+    // One refusal from the identity route; the gate is used from then on.
+    let cloud = h.cloud.clone().unwrap();
+    let fetches = cloud
+        .paths()
+        .iter()
+        .filter(|p| p.ends_with("/messaging/identity/credential"))
+        .count();
+    assert_eq!(fetches, 1);
+    assert_gate_saw_only_gate_credentials(&gate);
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn on_a_gate_only_install_you_message_through_the_gate_and_your_token_is_renewed() {
+    let h = gate_harness(true).await;
+    h.fake.set_gate_ttl(Duration::from_secs(2));
+    let mut client = h.client().await;
+    let (_, reviewer_token) = h
+        .fake
+        .seed_gate_agent("reviewer", "reviewer-recovery-0123456789");
+
+    client
+        .ok("messages.send", json!({"to": "reviewer", "text": "first"}))
+        .await;
+    let first = h.fake.agent(GATE_PERSON).unwrap();
+    let recovery = h.fake.gate_recovery(GATE_PERSON).unwrap();
+    let person_registers = |fake: &FakeRelaycast| {
+        gate_registers(fake)
+            .into_iter()
+            .filter(|r| r.body["name"] == GATE_PERSON)
+            .count()
+    };
+    assert_eq!(person_registers(&h.fake), 1);
+
+    // At 80% of its two-second lifetime it registers again: same name,
+    // same recovery proof, so the same agent with a new token.
+    h.fake.set_gate_ttl(Duration::from_secs(3600));
+    eventually_for("renewed", Duration::from_secs(10), || {
+        person_registers(&h.fake) >= 2
+    })
+    .await;
+    let renewed = h.fake.agent(GATE_PERSON).unwrap();
+    assert_eq!(renewed.id, first.id);
+    assert_ne!(renewed.token, first.token);
+    assert_eq!(h.fake.gate_recovery(GATE_PERSON), Some(recovery));
+
+    // The new token is used from then on, and the reply reads through it.
+    client
+        .ok("messages.send", json!({"to": "reviewer", "text": "second"}))
+        .await;
+    let dm = h.fake.calls("POST", "/v1/dm").pop().unwrap();
+    let current = h.fake.agent(GATE_PERSON).unwrap();
+    assert_eq!(
+        dm.authorization.as_deref(),
+        Some(format!("Bearer {}", current.token).as_str())
+    );
+    gate_peer_says(&h.fake, &reviewer_token, "answer").await;
+    let history = client
+        .ok("messages.history", json!({"endpoint": "reviewer"}))
+        .await;
+    assert_eq!(texts(&history), ["first", "second", "answer"]);
+    // A token the gate refuses (401) is renewed once, and the send goes on.
+    let before = person_registers(&h.fake);
+    h.fake.expire_gate_token(GATE_PERSON);
+    client
+        .ok("messages.send", json!({"to": "reviewer", "text": "third"}))
+        .await;
+    assert_eq!(person_registers(&h.fake), before + 1);
+    assert_eq!(h.fake.agent(GATE_PERSON).unwrap().id, first.id);
+    // Never the identity route, and never a non-gate credential.
+    let cloud = h.cloud.clone().unwrap();
+    assert!(!cloud
+        .paths()
+        .iter()
+        .any(|p| p.ends_with("/messaging/identity/credential")));
+    assert_gate_saw_only_gate_credentials(&h.fake);
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn signed_out_on_a_gate_only_install_messaging_says_so_and_sends_nothing() {
+    let h = gate_harness(false).await;
+    let mut client = h.client().await;
+    let (kind, message) = client
+        .error("messages.send", json!({"to": "reviewer", "text": "hello"}))
+        .await;
+    assert_eq!(kind, "not_signed_in");
+    assert!(message.contains("unavailable"), "{message}");
+    assert!(message.contains("signed out"), "{message}");
+    let (kind, _) = client
+        .error("messages.history", json!({"endpoint": "reviewer"}))
+        .await;
+    assert_eq!(kind, "not_signed_in");
+    assert!(gate_registers(&h.fake).is_empty());
+    assert!(h.fake.calls("POST", "/v1/dm").is_empty());
+    let cloud = h.cloud.clone().unwrap();
+    assert!(!cloud
+        .paths()
+        .iter()
+        .any(|p| p.ends_with("/messaging/identity/credential")));
+    assert_gate_saw_only_gate_credentials(&h.fake);
+    // The core is still up and answering.
+    client.ok("status.get", json!({})).await;
     h.stop().await;
 }

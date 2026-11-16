@@ -84,7 +84,7 @@ impl Core {
     /// Enrols `name` at `gate_url` for a new registration: a fresh recovery
     /// proof, the device token as the bearer. Nothing is sent for a `ctl:`
     /// name (relaygate's reserved control names) or when signed out.
-    pub(super) async fn enrol_at_gate(
+    pub(crate) async fn enrol_at_gate(
         &self,
         gate_url: &str,
         name: &str,
@@ -334,6 +334,28 @@ impl Core {
                 core.renew_gate_registration(&name, None).await;
             });
         }
+        self.renew_person_if_due();
+    }
+
+    /// Starts a renewal of your own gate identity (tracked as `@name`, a
+    /// key no agent name can take) when its token is due, at most once per
+    /// [`RENEW_RETRY`] while renewals fail.
+    fn renew_person_if_due(self: &Arc<Self>) {
+        let Some(channel) = self.person_gate_channel() else {
+            return;
+        };
+        if !self.person_gate_due() || !self.may_renew(&channel) {
+            return;
+        }
+        self.gate_renewals
+            .lock()
+            .unwrap()
+            .not_before
+            .insert(channel, wait_until(RENEW_RETRY));
+        let core = self.clone();
+        tokio::spawn(async move {
+            let _ = core.person_identity(true).await;
+        });
     }
 
     fn may_renew(&self, name: &str) -> bool {

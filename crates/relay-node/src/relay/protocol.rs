@@ -288,6 +288,7 @@ impl RpcError {
         use crate::relay::cloud_session::CloudError;
         let kind = match error {
             CloudError::SignedOut | CloudError::Rejected => ErrorKind::NotSignedIn,
+            CloudError::GateOnly { .. } => ErrorKind::CloudRefused,
             CloudError::Status { status, .. } if (400..500).contains(status) && *status != 429 => {
                 ErrorKind::CloudRefused
             }
