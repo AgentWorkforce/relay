@@ -4,6 +4,33 @@ use crate::relay::inject::InjectOutcome;
 use serde_json::json;
 
 #[test]
+fn managed_hook_timeout_upgrade_preserves_unrecognized_edits() {
+    for start_timeout in [10, 20] {
+        let (_home, config, _table, _) = proof::tests::fixture();
+        let settings = CopilotSettings::new(&config, "/opt/agent-relay-desktop-probe".into());
+        settings.set_enabled(true).unwrap();
+        let path = config.hooks_file();
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        legacy["hooks"]["sessionStart"][0]["timeoutSec"] = json!(start_timeout);
+        legacy["hooks"]["preToolUse"][0]["timeoutSec"] = json!(20);
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert!(!settings.enabled());
+        settings.set_enabled(true).unwrap();
+        assert!(settings.enabled());
+        let upgraded: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(upgraded["hooks"]["preToolUse"][0]["timeoutSec"], 60);
+
+        legacy["hooks"]["postToolUse"][0]["timeoutSec"] = json!(15);
+        let edited = serde_json::to_vec(&legacy).unwrap();
+        std::fs::write(&path, &edited).unwrap();
+        assert!(settings.set_enabled(true).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), edited);
+    }
+}
+
+#[test]
 fn a_native_hook_sees_a_session_opened_after_the_discovery_snapshot() {
     use crate::relay::process::{ProcessSnapshot, ProcessTable};
     let (_home, config, table, lock) = proof::tests::fixture();
