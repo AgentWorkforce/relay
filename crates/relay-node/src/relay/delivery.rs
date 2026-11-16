@@ -1045,6 +1045,24 @@ impl Core {
                 );
                 self.handle_pending(&deliveries, &registration).await;
             }
+            // A gate agent's token expired or was revoked: it registers
+            // again, once, and its queue is read with the new token.
+            Err(error)
+                if registration.gate.is_some()
+                    && crate::relay::sdk_gaps::is_gate_unauthenticated(&error)
+                    && self.current(&registration) =>
+            {
+                match self.renew_gate_registration(name, Some(&token)).await {
+                    crate::relay::agents::Renewal::Renewed => self.request_drain(name),
+                    crate::relay::agents::Renewal::Stopped
+                    | crate::relay::agents::Renewal::NotRenewed => {
+                        let message = self
+                            .gate_error(name)
+                            .unwrap_or_else(|| RpcError::from_relaycast(&error).message);
+                        self.set_queue_error(name, Some(format!("@{name}: {message}")));
+                    }
+                }
+            }
             // An agent removed while its queue was read reports nothing.
             Err(error) if self.current(&registration) => {
                 let mapped = RpcError::from_relaycast(&error);
@@ -1660,6 +1678,8 @@ impl Core {
     pub async fn poll_once(self: &Arc<Core>) {
         self.reconcile_sessions_if_due().await;
         self.retry_pending_cleanups().await;
+        self.retry_gate_cleanups().await;
+        self.renew_due_gate_registrations();
         let clean_integrations = {
             let mut state = self.delivery.lock().unwrap();
             let due = state
@@ -1958,6 +1978,26 @@ impl Core {
         if changing() || !self.requester_still_named(reply, &registration).await {
             return;
         }
+        // A gate agent's token is read again under its renewal lock, held
+        // through the send: a renewal revokes the token it replaces, and
+        // a send with that one would be recorded as in doubt and never
+        // retried. A workspace-key agent's token never changes this way.
+        let _renewals = match &registration.gate {
+            Some(_) => Some(self.gate_locks.get(&registration.name).lock_owned().await),
+            None => None,
+        };
+        let token = match &registration.gate {
+            Some(_) => {
+                let Some(current) = self
+                    .store
+                    .read(|s| s.tokens.get(&registration.name).cloned())
+                else {
+                    return;
+                };
+                registration.sender_token(current)
+            }
+            None => token,
+        };
         // Claimed on disk before anything is sent: a socket send racing this
         // read, or an uncertain network result, must never produce a second
         // answer.
@@ -2020,6 +2060,25 @@ impl Core {
                 .await
             }
         };
+        // The gate refused a gate agent's token (it expired, and its renewal
+        // has not landed): the answer was not accepted, so its claim is
+        // released and a later pass sends it with the renewed token.
+        if registration.gate.is_some() {
+            if let Err(error) = &sent {
+                if crate::relay::sdk_gaps::is_gate_unauthenticated(error) {
+                    // Kept in memory if the save fails, so a later pass
+                    // still sends it; a later save makes it durable.
+                    let _ = self.store.remember(|store| {
+                        if let Some(entry) = store.replies.iter_mut().flatten().find(|r| {
+                            r.agent_id == reply.agent_id && r.message_id == reply.message_id
+                        }) {
+                            entry.claimed = None;
+                        }
+                    });
+                    return;
+                }
+            }
+        }
         let (outcome, detail, preview) = match sent {
             Ok(_) => (
                 DeliveryOutcome::Answered,

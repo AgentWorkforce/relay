@@ -10,6 +10,7 @@ fn selected_workspace() -> Workspace {
         workspace_id: None,
         source: Default::default(),
         control_url: None,
+        gate_url: None,
     }
 }
 #[test]

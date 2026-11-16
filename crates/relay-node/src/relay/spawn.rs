@@ -513,6 +513,7 @@ mod tests {
             workspace_id: None,
             source: Default::default(),
             control_url: None,
+            gate_url: None,
         };
         *core.workspace.lock().unwrap() = Some(workspace("rk_live_before"));
 
@@ -2060,6 +2061,7 @@ mod tests {
             workspace_id: id.map(str::to_string),
             source: Default::default(),
             control_url: None,
+            gate_url: None,
         };
         let mut intent = interrupted("w1", true, None);
         intent.workspace_id = Some("rw_1".into());

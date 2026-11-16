@@ -494,6 +494,7 @@ mod tests {
             alias: None,
             retired_aliases: None,
             cleared: None,
+            gate: None,
             control_url: None,
         }
     }

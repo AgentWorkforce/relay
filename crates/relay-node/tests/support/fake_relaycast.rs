@@ -202,6 +202,24 @@ struct World {
     /// `METHOD /path` requests that answer 503; a trailing `*` matches any
     /// rest of the path.
     failing: Vec<String>,
+    /// relaygate's side of the agents enrolled through `POST /v1/register`.
+    gate: Gate,
+}
+
+/// What the fake relaygate keeps: each enrolled name's recovery proof and
+/// gid, and when each `rg_` token it issued expires. A token not current
+/// for its agent (renewed, expired, or the agent deleted) is answered 401
+/// `relaygate_unauthenticated` on every path.
+#[derive(Default)]
+struct Gate {
+    recoveries: BTreeMap<String, (String, u64)>,
+    expiries: BTreeMap<String, chrono::DateTime<chrono::Utc>>,
+    /// How long an issued token lives; one hour when unset.
+    ttl: Option<chrono::TimeDelta>,
+    next_gid: u64,
+    /// Registers are carried out, then answered 503 as if the answer was
+    /// lost on the way back.
+    lose_register_replies: bool,
 }
 
 #[derive(Default)]
@@ -717,6 +735,57 @@ impl FakeRelaycast {
         }
     }
 
+    /// How long the `rg_` tokens the fake relaygate issues from now on live.
+    pub fn set_gate_ttl(&self, ttl: Duration) {
+        self.shared.lock().unwrap().world.gate.ttl =
+            Some(chrono::TimeDelta::from_std(ttl).unwrap());
+    }
+
+    /// Carries out each `POST /v1/register` but answers it 503, as if the
+    /// answer was lost on the way back.
+    pub fn lose_gate_register_replies(&self, lose: bool) {
+        self.shared.lock().unwrap().world.gate.lose_register_replies = lose;
+    }
+
+    /// Expires `name`'s current `rg_` token now, as if its lifetime ran out.
+    pub fn expire_gate_token(&self, name: &str) {
+        let mut shared = self.shared.lock().unwrap();
+        let world = &mut shared.world;
+        if let Some(agent) = world.agents.get(name) {
+            world.gate.expiries.insert(
+                agent.token.clone(),
+                chrono::Utc::now() - chrono::TimeDelta::seconds(1),
+            );
+        }
+    }
+
+    /// Enrols `name` with `recovery` as a device would have before this
+    /// test began; returns its agent id and `rg_` token.
+    pub fn seed_gate_agent(&self, name: &str, recovery: &str) -> (String, String) {
+        let mut shared = self.shared.lock().unwrap();
+        let (status, answer) = gate_register(
+            &mut shared.world,
+            "sh_at_seeded",
+            &json!({"name": name, "recovery": recovery}),
+        );
+        assert_eq!(status, 200, "{answer}");
+        (
+            answer["agent_id"].as_str().unwrap().into(),
+            answer["token"].as_str().unwrap().into(),
+        )
+    }
+
+    /// The recovery proof relaygate holds for `name`, if it enrolled.
+    pub fn gate_recovery(&self, name: &str) -> Option<String> {
+        let shared = self.shared.lock().unwrap();
+        shared
+            .world
+            .gate
+            .recoveries
+            .get(name)
+            .map(|(recovery, _)| recovery.clone())
+    }
+
     /// Makes acks and fails of these deliveries fail with 503.
     pub fn set_unsettleable(&self, ids: &[&str]) {
         self.shared.lock().unwrap().world.unsettleable =
@@ -741,6 +810,77 @@ fn create_agent(world: &mut World, name: &str, prefix: &str, metadata: Value, ki
     };
     world.agents.insert(name.into(), agent.clone());
     agent
+}
+
+/// Whether `token` is an `rg_` token relaygate issued that is still its
+/// agent's current one and has not expired.
+fn gate_token_current(world: &World, token: &str) -> bool {
+    world.agents.values().any(|a| a.token == token)
+        && world
+            .gate
+            .expiries
+            .get(token)
+            .is_some_and(|expires| *expires > chrono::Utc::now())
+}
+
+/// `POST /v1/register` as relaygate answers it: a device token (`sh_at_`)
+/// enrols `name`; the same name with the same recovery proof gets the same
+/// agent id and a new token, and the previous token stops working.
+fn gate_register(world: &mut World, bearer: &str, body: &Value) -> (u16, Value) {
+    if !bearer.starts_with("sh_at_") {
+        return error(401, "relaygate_unauthenticated");
+    }
+    let name = body["name"].as_str().unwrap_or_default().to_string();
+    let recovery = body["recovery"].as_str().unwrap_or_default().to_string();
+    if name.starts_with("ctl:") {
+        return error(403, "relaygate_name_scope");
+    }
+    let gid = match world.gate.recoveries.get(&name) {
+        Some((held, _)) if *held != recovery => return error(409, "relaygate_name_taken"),
+        Some((_, gid)) => *gid,
+        None if world.agents.contains_key(&name) => return error(409, "relaygate_name_taken"),
+        None => {
+            world.gate.next_gid += 1;
+            let gid = 4200 + world.gate.next_gid;
+            world.gate.recoveries.insert(name.clone(), (recovery, gid));
+            gid
+        }
+    };
+    world.next += 1;
+    let token = format!("rg_{name}_{}", world.next);
+    let agent = match world.agents.get_mut(&name) {
+        Some(agent) => {
+            world.gate.expiries.remove(&agent.token);
+            agent.token = token.clone();
+            agent.clone()
+        }
+        None => {
+            // A deleted agent registered again keeps its agent id.
+            let id = world
+                .gate
+                .recoveries
+                .get(&name)
+                .map(|(_, gid)| format!("agent_gate_{gid}"))
+                .unwrap_or_default();
+            let mut agent = create_agent(world, &name, "gate", json!({}), "agent");
+            agent.id = id;
+            agent.token = token.clone();
+            world.agents.insert(name.clone(), agent.clone());
+            agent
+        }
+    };
+    let expires = chrono::Utc::now() + world.gate.ttl.unwrap_or(chrono::TimeDelta::hours(1));
+    world.gate.expiries.insert(token.clone(), expires);
+    (
+        200,
+        json!({
+            "agent_id": agent.id,
+            "gid": gid,
+            "token": token,
+            "expires_at": expires.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            "user_id": "user_fake",
+        }),
+    )
 }
 
 fn conversation_id(a: &str, b: &str) -> String {
@@ -1114,6 +1254,9 @@ fn route(
         return error(503, "unavailable");
     }
     let world = &mut shared.world;
+    if bearer.starts_with("rg_") && !gate_token_current(world, bearer) {
+        return error(401, "relaygate_unauthenticated");
+    }
     let caller = world.agents.values().find(|a| a.token == bearer).cloned();
     match (method, segments.as_slice()) {
         ("GET", ["v1", "workspace"]) if !bearer.starts_with("rk_") => error(401, "unauthorized"),
@@ -1130,7 +1273,41 @@ fn route(
                     "message": "key rk_live_secret0000 is revoked"}}),
             ),
         },
-        ("POST", ["v1", "agent", "node-token"]) if !bearer.starts_with("at_") => {
+        ("POST", ["v1", "register"]) => {
+            let answer = gate_register(world, bearer, body);
+            if world.gate.lose_register_replies && answer.0 == 200 {
+                return error(503, "relaygate_unavailable");
+            }
+            answer
+        }
+        ("PATCH", ["v1", "agent"]) if bearer.starts_with("rg_") => {
+            let Some(agent) = caller.and_then(|c| world.agents.get_mut(&c.name)) else {
+                return error(401, "relaygate_unauthenticated");
+            };
+            if let (Value::Object(metadata), Value::Object(update)) =
+                (&mut agent.metadata, &body["metadata"])
+            {
+                metadata.extend(update.clone());
+            }
+            ok(json!({"id": agent.id, "name": agent.name, "type": agent.kind,
+                "status": "online", "persona": null, "metadata": agent.metadata}))
+        }
+        ("DELETE", ["v1", "agent"]) if bearer.starts_with("rg_") => {
+            let Some(agent) = caller else {
+                return error(401, "relaygate_unauthenticated");
+            };
+            if world.undeletable.contains(&agent.name) {
+                return error(503, "relaygate_unavailable");
+            }
+            // The gate keeps the name's recovery: the same person can
+            // register it again and gets the same agent id.
+            world.agents.remove(&agent.name);
+            world.gate.expiries.remove(&agent.token);
+            no_content()
+        }
+        ("POST", ["v1", "agent", "node-token"])
+            if !bearer.starts_with("at_") && !bearer.starts_with("rg_") =>
+        {
             error(401, "unauthorized")
         }
         ("POST", ["v1", "agent", "node-token"]) => match shared.behaviour.node_token_status {

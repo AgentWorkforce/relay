@@ -975,6 +975,7 @@ mod tests {
             workspace_id: Some("rw_team".into()),
             source: Default::default(),
             control_url: None,
+            gate_url: None,
         };
         let person = PersonIdentity {
             name: "person".into(),
@@ -1009,6 +1010,7 @@ mod tests {
             workspace_id: Some("rw_account".into()),
             source: Default::default(),
             control_url: None,
+            gate_url: None,
         };
         let person = PersonIdentity {
             name: "person".into(),

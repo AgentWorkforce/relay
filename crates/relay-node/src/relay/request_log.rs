@@ -104,9 +104,11 @@ fn scrub_text(value: &str, secret: &str) -> String {
         .scan(false, |bearer, word| {
             let lower = word.to_ascii_lowercase();
             let hide = *bearer
-                || ["rk_", "at_", "ar_", "sk_", "sh_wk_", "eyj"]
-                    .iter()
-                    .any(|prefix| lower.trim_start_matches(['\"', '\'']).starts_with(prefix));
+                || [
+                    "rk_", "at_", "ar_", "sk_", "sh_wk_", "sh_at_", "rg_", "rgn_", "eyj",
+                ]
+                .iter()
+                .any(|prefix| lower.trim_start_matches(['\"', '\'']).starts_with(prefix));
             *bearer = lower.trim() == "bearer";
             Some(if hide {
                 "[redacted] ".to_owned()
@@ -343,6 +345,15 @@ mod tests {
         let text = scrub_text("refused ar_ws_secret for ar_ag_secret", "");
         assert!(!text.contains("ar_ws_secret"), "{text}");
         assert!(!text.contains("ar_ag_secret"), "{text}");
+    }
+
+    #[test]
+    fn a_service_echo_of_a_relaygate_credential_is_redacted() {
+        let text = scrub_text("refused rg_agent1 rgn_node1 sh_at_device1 here", "");
+        for credential in ["rg_agent1", "rgn_node1", "sh_at_device1"] {
+            assert!(!text.contains(credential), "{text}");
+        }
+        assert!(text.contains("refused"), "{text}");
     }
     static TEST_LOCK: Mutex<()> = Mutex::new(());
     #[test]

@@ -253,6 +253,7 @@ fn transport(
                 workspace_id: None,
                 source: selection.source,
                 control_url,
+                gate_url: None,
             });
         }
     }
@@ -313,6 +314,7 @@ fn transport(
         workspace_id: None,
         source: selection.source,
         control_url,
+        gate_url: None,
     })
 }
 

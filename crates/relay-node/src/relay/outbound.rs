@@ -1192,6 +1192,28 @@ impl Outbound {
             ));
         }
         self.admit(&session.target.key())?;
+        // A gate agent's token is read again under its renewal lock, held
+        // through the uploads and the send: a renewal revokes the token it
+        // replaces, and a send refused with that one would leave a claimed
+        // automatic answer unsent. A workspace-key agent takes no lock.
+        let _renewals = match &registration.gate {
+            Some(_) => Some(
+                self.core
+                    .gate_locks
+                    .get(&registration.name)
+                    .lock_owned()
+                    .await,
+            ),
+            None => None,
+        };
+        let token = match &registration.gate {
+            Some(_) => self
+                .core
+                .store
+                .read(|s| s.tokens.get(&registration.name).cloned())
+                .ok_or_else(OutboundError::not_registered)?,
+            None => token,
+        };
         // Every file is uploaded before anything is claimed or sent: a file
         // that cannot be sent leaves no half-sent message and no lost
         // automatic answer behind.
@@ -1420,7 +1442,17 @@ impl Outbound {
         };
         let (session, registration, _) = self.authorize(pid, uid).await?;
         self.admit(&session.target.key())?;
-        let key = self.core.key_for(&registration).ok_or_else(|| {
+        // A gate agent has no workspace key: relaygate answers the roster
+        // to its own token, filtered to the agents it may reach.
+        let gate = registration.gate.is_some();
+        let key = if gate {
+            self.core
+                .store
+                .read(|s| s.tokens.get(&registration.name).cloned())
+        } else {
+            self.core.key_for(&registration)
+        }
+        .ok_or_else(|| {
             OutboundError::new(
                 401,
                 "not_signed_in",
@@ -1441,7 +1473,12 @@ impl Outbound {
             fetched_at_ms,
             items,
             stale,
-        } = self.roster(&base, &key, include_idle).await?;
+        } = if gate {
+            self.gate_roster(&base, &registration.name, &key, include_idle)
+                .await?
+        } else {
+            self.roster(&base, &key, include_idle).await?
+        };
 
         // This computer's agents are the registrations whose sessions the
         // delivery pass last found running (`missing_since` unset), and the
@@ -1455,7 +1492,11 @@ impl Outbound {
                 .filter(|r| {
                     (r.missing_since.is_none() || r.name == registration.name)
                         && r.base_url == base
-                        && self.core.key_for(r).as_ref() == Some(&key)
+                        && if gate {
+                            r.gate.is_some()
+                        } else {
+                            self.core.key_for(r).as_ref() == Some(&key)
+                        }
                 })
                 .flat_map(|r| r.names().into_iter().map(|name| (name, true)))
                 .collect()
@@ -1525,6 +1566,32 @@ impl Outbound {
         include_idle: bool,
     ) -> Result<RosterAnswer, OutboundError> {
         let cache_key = format!("{base}\n{}\n{include_idle}", key.expose());
+        self.roster_cached_as(base, key, cache_key, include_idle)
+            .await
+    }
+
+    /// [`Outbound::roster`] read with a gate agent's `rg_` token, cached
+    /// under the agent's name instead: the token changes at every renewal,
+    /// and one copy per agent is kept, not one per token it ever held.
+    async fn gate_roster(
+        &self,
+        base: &str,
+        name: &str,
+        token: &Secret,
+        include_idle: bool,
+    ) -> Result<RosterAnswer, OutboundError> {
+        let cache_key = format!("{base}\ngate:{name}\n{include_idle}");
+        self.roster_cached_as(base, token, cache_key, include_idle)
+            .await
+    }
+
+    async fn roster_cached_as(
+        &self,
+        base: &str,
+        key: &Secret,
+        cache_key: String,
+        include_idle: bool,
+    ) -> Result<RosterAnswer, OutboundError> {
         let (last, read) = {
             let mut rosters = self.rosters.lock().unwrap();
             let last = rosters.cached.get(&cache_key).cloned();

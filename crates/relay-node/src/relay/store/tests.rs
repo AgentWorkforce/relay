@@ -36,6 +36,7 @@ fn registration(name: &str, target: Target) -> Registration {
         alias: None,
         retired_aliases: None,
         cleared: None,
+        gate: None,
         control_url: None,
     }
 }
@@ -153,7 +154,192 @@ fn cloud() -> CloudWorkspace {
         account_workspace_id: None,
         name: None,
         relayfile_workspace_id: None,
+        gate_url: None,
     }
+}
+
+// A cloud record written before relaygate decodes and re-encodes to the
+// same bytes: no `relaygateURL` key appears when there is no gate.
+#[test]
+fn a_cloud_record_without_a_gate_round_trips_byte_for_byte() {
+    let old = r#"{"key":"rk_live_cloudcloud","baseURL":"https://cast.agentrelay.com","workspaceID":"rw_cloud","accountWorkspaceID":"workspace","name":"Acme","relayfileWorkspaceID":"rf_1"}"#;
+    let decoded: CloudWorkspace = serde_json::from_str(old).unwrap();
+    assert_eq!(decoded.gate_url, None);
+    assert_eq!(serde_json::to_string(&decoded).unwrap(), old);
+    let minimal = r#"{"key":"rk_live_cloudcloud","baseURL":""}"#;
+    let decoded: CloudWorkspace = serde_json::from_str(minimal).unwrap();
+    assert_eq!(serde_json::to_string(&decoded).unwrap(), minimal);
+
+    let store = decode(&format!(
+        r#"{{"registrations":[],"tokens":{{}},"cloud":{old}}}"#
+    ));
+    assert_eq!(
+        store.cloud,
+        Some(CloudWorkspace {
+            account_workspace_id: Some("workspace".into()),
+            name: Some("Acme".into()),
+            relayfile_workspace_id: Some("rf_1".into()),
+            ..cloud()
+        })
+    );
+    let encoded = store.encode();
+    assert!(!String::from_utf8_lossy(&encoded).contains("relaygateURL"));
+    let encoded: Value = serde_json::from_slice(&encoded).unwrap();
+    let old: Value = serde_json::from_str(old).unwrap();
+    assert_eq!(encoded["cloud"], old);
+}
+
+#[test]
+fn a_gate_url_round_trips_under_its_own_key() {
+    let gated = CloudWorkspace {
+        key: Secret::default(),
+        gate_url: Some("https://gate.corp.test".into()),
+        ..cloud()
+    };
+    let json = serde_json::to_value(&gated).unwrap();
+    assert_eq!(json["relaygateURL"], "https://gate.corp.test");
+    let store = Store {
+        cloud: Some(gated.clone()),
+        ..Store::default()
+    };
+    let restored = Store::decode(&store.encode(), PREFIX).unwrap().store;
+    assert_eq!(restored.cloud, Some(gated));
+}
+
+// A registration saved before gate enrolment decodes and re-encodes to the
+// same bytes: no `gate` key appears for a Relaycast-key agent.
+#[test]
+fn a_registration_without_a_gate_round_trips_byte_for_byte() {
+    let old = serde_json::to_string(&registration("codex-x", target(THREAD))).unwrap();
+    assert!(!old.contains("\"gate\""));
+    let decoded: Registration = serde_json::from_str(&old).unwrap();
+    assert_eq!(decoded.gate, None);
+    assert_eq!(serde_json::to_string(&decoded).unwrap(), old);
+
+    let store = decode(&format!(
+        r#"{{"registrations":[{old}],"tokens":{{"codex-x":"at_live_x"}}}}"#
+    ));
+    assert_eq!(store.registrations[0].gate, None);
+    let encoded = store.encode();
+    assert!(!String::from_utf8_lossy(&encoded).contains("\"gate\""));
+    let again = Store::decode(&encoded, PREFIX).unwrap();
+    assert!(!again.migrated);
+    assert_eq!(again.store.encode(), encoded);
+}
+
+#[test]
+fn a_gate_enrolment_round_trips_with_its_recovery() {
+    let now = chrono::DateTime::parse_from_rfc3339("2026-11-16T08:00:00Z")
+        .unwrap()
+        .to_utc();
+    let expires = now + chrono::TimeDelta::hours(10);
+    let enrolment = GateEnrolment::issued(Secret::new("recovery-proof-0123456789"), now, expires);
+    assert_eq!(enrolment.expires_at, "2026-11-16T18:00:00.000Z");
+    // Renewed at 80% of the token's lifetime.
+    assert_eq!(enrolment.renew_at, "2026-11-16T16:00:00.000Z");
+    assert!(!enrolment.due(now + chrono::TimeDelta::hours(7)));
+    assert!(enrolment.due(now + chrono::TimeDelta::hours(8)));
+    let damaged = GateEnrolment {
+        renew_at: "soon".into(),
+        ..enrolment.clone()
+    };
+    assert!(damaged.due(now));
+
+    let gated = Registration {
+        base_url: "https://gate.corp.test".into(),
+        workspace_key: None,
+        gate: Some(enrolment.clone()),
+        ..registration("codex-x", target(THREAD))
+    };
+    let json = serde_json::to_value(&gated).unwrap();
+    assert_eq!(json["gate"]["recovery"], "recovery-proof-0123456789");
+    assert_eq!(json["gate"]["expiresAt"], "2026-11-16T18:00:00.000Z");
+    assert_eq!(json["gate"]["renewAt"], "2026-11-16T16:00:00.000Z");
+    let store = Store {
+        registrations: vec![gated.clone()],
+        ..Store::default()
+    };
+    let restored = Store::decode(&store.encode(), PREFIX).unwrap().store;
+    assert_eq!(restored.registrations[0], gated);
+    let encoded = restored.encode();
+    let again = Store::decode(&encoded, PREFIX).unwrap();
+    assert!(!again.migrated);
+    assert_eq!(again.store.encode(), encoded);
+}
+
+// A name's recovery proof is kept once and never replaced, and outlives
+// the registration's removal: relaygate keeps the name for that proof.
+#[test]
+fn a_gate_recovery_is_kept_once_and_outlives_removal() {
+    const GATE: &str = "https://gate.corp.test";
+    let mut store = Store::default();
+    assert_eq!(store.gate_recovery(GATE, "codex-x"), None);
+    let kept = store.keep_gate_recovery(GATE, "codex-x", Secret::new("first-proof-0123456789"));
+    assert_eq!(kept.expose(), "first-proof-0123456789");
+    let again = store.keep_gate_recovery(GATE, "codex-x", Secret::new("second-proof-0123456789"));
+    assert_eq!(again.expose(), "first-proof-0123456789");
+    assert_eq!(store.gate_recoveries.as_ref().unwrap().len(), 1);
+    // Scoped to the gate.
+    assert_eq!(
+        store.gate_recovery("https://other.corp.test", "codex-x"),
+        None
+    );
+
+    // A registration enrolled before recoveries were kept leaves its own.
+    let now = chrono::Utc::now();
+    let gated = Registration {
+        base_url: GATE.into(),
+        workspace_key: None,
+        gate: Some(GateEnrolment::issued(
+            Secret::new("registration-proof-0123456789"),
+            now,
+            now + chrono::TimeDelta::hours(1),
+        )),
+        ..registration("claude-x", target(THREAD))
+    };
+    store.registrations.push(gated);
+    store
+        .tokens
+        .insert("claude-x".into(), Secret::new("rg_claude"));
+    store.remove("claude-x");
+    assert!(store.registrations.is_empty());
+    assert_eq!(
+        store
+            .gate_recovery(GATE, "claude-x")
+            .map(|r| r.expose().to_owned()),
+        Some("registration-proof-0123456789".into())
+    );
+    let restored = Store::decode(&store.encode(), PREFIX).unwrap().store;
+    assert_eq!(restored.gate_recoveries, store.gate_recoveries);
+}
+
+// Removing a workspace-key agent keeps no recovery, and a store without a
+// gate never writes the key.
+#[test]
+fn a_key_agent_removal_keeps_no_gate_recovery() {
+    let mut store = Store::default();
+    store
+        .registrations
+        .push(registration("codex-x", target(THREAD)));
+    store
+        .tokens
+        .insert("codex-x".into(), Secret::new("at_live_x"));
+    store.remove("codex-x");
+    assert_eq!(store.gate_recoveries, None);
+    assert!(!String::from_utf8_lossy(&store.encode()).contains("gateRecoveries"));
+}
+
+#[test]
+fn concurrent_saves_keep_both_gate_recoveries() {
+    const GATE: &str = "https://gate.corp.test";
+    let base = Store::default();
+    let mut ours = base.clone();
+    ours.keep_gate_recovery(GATE, "a", Secret::new("proof-a-0123456789"));
+    let mut theirs = base.clone();
+    theirs.keep_gate_recovery(GATE, "b", Secret::new("proof-b-0123456789"));
+    let merged = Store::merged(&base, &ours, &theirs);
+    assert!(merged.gate_recovery(GATE, "a").is_some());
+    assert!(merged.gate_recovery(GATE, "b").is_some());
 }
 
 fn delivery(id: &str, reason: &str) -> Delivery {
@@ -199,6 +385,7 @@ fn desktop_identity_clear_generations_keep_their_own_sessions() {
             account_workspace_id: Some("workspace".into()),
             name: None,
             relayfile_workspace_id: None,
+            gate_url: None,
         }),
         ..Store::default()
     };

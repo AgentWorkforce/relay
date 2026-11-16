@@ -361,14 +361,22 @@ impl Core {
         // state, serialized with presence updates so older writes finish first.
         // A key rotated since registration is replaced; a workspace out of
         // reach is not tried again, as no write there can land.
-        let (result, unreachable) = self
-            .write_with_saved_key(&registration, key, |key| {
+        let (result, unreachable) = if registration.gate.is_some() {
+            // A gate agent patches itself with its own token; `key` is
+            // unused (it has none).
+            let published = self
+                .publish_at_gate(&registration, name, None, Some(metadata), status)
+                .await;
+            (published, false)
+        } else {
+            self.write_with_saved_key(&registration, key, |key| {
                 let metadata = metadata.clone();
                 async move {
                     client::update_agent_metadata(base, &key, name, metadata, Some(status)).await
                 }
             })
-            .await;
+            .await
+        };
         if let (Some((activity, _)), Ok(())) = (activity, &result) {
             self.activity_published(name, activity);
         }
@@ -445,6 +453,9 @@ impl Core {
         let Some(registration) = current else {
             return self.forget_name_marker(name);
         };
+        if registration.gate.is_some() {
+            return self.publish_marker(name, &Secret::default()).await;
+        }
         let Some(key) = self.key_for(&registration) else {
             return;
         };

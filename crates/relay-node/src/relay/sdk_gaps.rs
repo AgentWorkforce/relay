@@ -36,6 +36,19 @@
 //!   `MessageWithMeta` has no `agent_address` or `thread_id`.
 //! - `RelayCast` and `AgentClient` cannot set the origin client and version;
 //!   the clients here send `relay-desktop` and the desktop's version.
+//!
+//! The relaygate calls (`POST /v1/register`, `PATCH`/`DELETE /v1/agent`)
+//! are in [`gate`]: they are relaygate's, not Relaycast's, so no SDK will
+//! have them, and they are read outside the SDK's `HttpClient` (one attempt,
+//! either answer shape, both forms of `Retry-After`).
+
+mod gate;
+pub use gate::{
+    gate_delete_self, gate_patch_self, gate_register, new_recovery, GateError, GateRegistration,
+    GateSelfPatch, GATE_DENIED, GATE_NAME_SCOPE, GATE_NAME_TAKEN, GATE_UNAUTHENTICATED,
+};
+// For the agent-token calls to classify an expired `rg_` token by (re-register).
+pub(crate) use gate::is_gate_unauthenticated;
 
 use crate::relay::diagnostic_http::HttpClient;
 use crate::relay::workspace::{Secret, Workspace, WorkspaceRoute};

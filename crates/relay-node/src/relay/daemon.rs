@@ -201,6 +201,13 @@ pub struct Core {
     /// Agents being renamed away from: what is already addressed to them
     /// is still delivered, to the same session, until they are removed.
     pub(crate) retiring: Mutex<BTreeMap<String, (Registration, Secret)>>,
+    /// Renewals of agents enrolled through relaygate: one at a time per
+    /// agent, and when each may be tried again.
+    pub(crate) gate_locks: KeyedLocks,
+    pub(crate) gate_renewals: Mutex<crate::relay::agents::GateRenewals>,
+    /// Gate agents whose undo could not delete them yet; empty without a
+    /// gate.
+    pub(crate) gate_cleanups: Mutex<Vec<crate::relay::agents::GateCleanup>>,
     pub(crate) delivery: Mutex<DeliveryState>,
     pub(crate) claude_delivery: ClaudeDeliveryPolicy,
     pub(crate) mobile_claude_plugins: crate::relay::claude_mobile_plugin::Installations,
@@ -320,6 +327,9 @@ impl Core {
             integration_settings: std::sync::Mutex::new(()),
             presence_pending: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             retiring: Mutex::default(),
+            gate_locks: KeyedLocks::default(),
+            gate_renewals: Mutex::default(),
+            gate_cleanups: Mutex::default(),
             delivery: Mutex::default(),
             claude_delivery,
             mobile_claude_plugins: Default::default(),
@@ -1114,6 +1124,7 @@ mod key_migration_tests {
             workspace_id: None,
             source: Default::default(),
             control_url: None,
+            gate_url: None,
         }
     }
 
@@ -1144,6 +1155,7 @@ mod key_migration_tests {
             alias: None,
             retired_aliases: None,
             cleared: None,
+            gate: None,
             control_url: None,
         }
     }
