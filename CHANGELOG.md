@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay-node`: session-socket requests share one deadline across connection setup and partial reads and writes, so slow replies cannot extend a native hook beyond its wait budget.
 - `agent-relay-node`: Copilot idle chats keep waiting through delayed journal writes and large model-log batches; incoming-message hooks also recognize bundled helper hard links and validate current session descriptors.
 - `agent-relay-node`: macOS development builds recognize their computed code-signing requirement, so native helper verification works while still requiring the running helper to satisfy the core's own requirement.
 

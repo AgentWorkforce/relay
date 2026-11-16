@@ -42,8 +42,10 @@ The core verifies both live code objects against GitHub's signing team,
 strictly validates the installed `com.github.githubapp` bundle, and checks
 the runtime's UID, process incarnation and native held session inode before
 accepting a hook. A copied runtime, an unrelated parent, debugging flags or
-an unsealed app bundle cannot identify a chat. Multiple chats held by one
-runtime stay separate. The desktop host is shown as **GitHub Copilot**.
+an unsealed app bundle cannot identify a chat. Host checks bracket signature
+and resource validation with the bundle and main executable identities, and
+re-read the kernel image path, refusing a renamed or replaced install. Multiple
+chats held by one runtime stay separate. The desktop host is shown as **GitHub Copilot**.
 
 The shared native MCP configuration and owned lifecycle hooks apply to both
 hosts. Start a new chat after provider setup so it loads them. History remains

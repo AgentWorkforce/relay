@@ -14,7 +14,7 @@ use anyhow::Result;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 mod socket_request;
 
@@ -624,16 +624,29 @@ fn socket_response_with(
     timeout: Duration,
     headers: &[(&str, &str)],
 ) -> Result<(u16, Vec<u8>)> {
-    let mut stream = BlockingCoreStream::connect(socket)
-        .map_err(|_| SafeError("Agent Relay's session socket is unavailable.".into()))?;
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| timeout_error(method, path, timeout))?;
+    let on_timeout = |error: std::io::Error| -> anyhow::Error {
+        if timed_out(&error) {
+            timeout_error(method, path, timeout).into()
+        } else {
+            error.into()
+        }
+    };
+    let mut stream = BlockingCoreStream::connect_until(socket, deadline).map_err(|error| {
+        if timed_out(&error) {
+            timeout_error(method, path, timeout)
+        } else {
+            SafeError("Agent Relay's session socket is unavailable.".into())
+        }
+    })?;
     if stream.peer_credentials().map(|peer| peer.uid).ok() != Some(current_uid()) {
         return Err(SafeError(
             "The session socket is not served by your own Agent Relay core.".into(),
         )
         .into());
     }
-    stream.set_read_timeout(Some(timeout))?;
-    stream.set_write_timeout(Some(timeout))?;
     let content_type = if matches!(
         path,
         "/register"
@@ -646,13 +659,6 @@ fn socket_response_with(
         "application/json"
     } else {
         "text/plain; charset=utf-8"
-    };
-    let on_timeout = |error: std::io::Error| -> anyhow::Error {
-        if timed_out(&error) {
-            timeout_error(method, path, timeout).into()
-        } else {
-            error.into()
-        }
     };
     write!(
         stream,
@@ -670,6 +676,9 @@ fn socket_response_with(
         .take(4 * 1024 * 1024 + 1)
         .read_to_end(&mut response)
         .map_err(on_timeout)?;
+    if Instant::now() >= deadline {
+        return Err(timeout_error(method, path, timeout).into());
+    }
     if response.len() > 4 * 1024 * 1024 {
         return Err(SafeError("The session socket response was too large.".into()).into());
     }
@@ -797,6 +806,49 @@ mod tests {
         let head = served.join().unwrap();
         assert!(head.starts_with("POST /copilot/mcp HTTP/1.1\r\n"));
         assert!(head.contains("\r\nContent-Type: application/json\r\n"));
+    }
+
+    #[test]
+    fn a_trickling_response_cannot_renew_the_whole_request_deadline() {
+        let (_directory, socket, served) = serve_once(|stream| async move {
+            let (read, mut write) = stream.into_split();
+            let mut reader = tokio::io::BufReader::new(read);
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).await.unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            for byte in b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}" {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                if write.write_all(&[*byte]).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let error = socket_response(
+            &socket,
+            "POST",
+            "/copilot/hook",
+            b"",
+            Duration::from_millis(150),
+        )
+        .unwrap_err();
+        assert!(error
+            .downcast_ref::<SafeError>()
+            .unwrap()
+            .0
+            .contains("POST /copilot/hook"));
+        served.join().unwrap();
+    }
+
+    #[test]
+    fn an_expired_session_deadline_never_attempts_connection_setup() {
+        let error = match BlockingCoreStream::connect_until(Path::new("/unused"), Instant::now()) {
+            Ok(_) => panic!("an expired deadline connected"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
     }
 
     #[test]

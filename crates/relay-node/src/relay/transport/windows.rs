@@ -357,21 +357,32 @@ fn run<T: Send + 'static>(
 }
 
 async fn within<T>(
-    limit: Option<Duration>,
+    limit: Option<Limit>,
     work: impl Future<Output = io::Result<T>>,
 ) -> io::Result<T> {
     match limit {
-        Some(limit) => tokio::time::timeout(limit, work)
+        Some(Limit::After(limit)) => tokio::time::timeout(limit, work)
             .await
             .unwrap_or_else(|_| Err(io::Error::from(io::ErrorKind::TimedOut))),
+        Some(Limit::Until(deadline)) => {
+            tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), work)
+                .await
+                .unwrap_or_else(|_| Err(io::ErrorKind::TimedOut.into()))
+        }
         None => work.await,
     }
 }
 
 #[derive(Clone, Copy, Default)]
 struct Timeouts {
-    read: Option<Duration>,
-    write: Option<Duration>,
+    read: Option<Limit>,
+    write: Option<Limit>,
+}
+
+#[derive(Clone, Copy)]
+enum Limit {
+    After(Duration),
+    Until(std::time::Instant),
 }
 
 pub struct BlockingStream {
@@ -391,6 +402,25 @@ fn checked(timeout: Option<Duration>) -> io::Result<Option<Duration>> {
 }
 
 impl BlockingStream {
+    pub fn connect_until(path: &Path, deadline: std::time::Instant) -> io::Result<BlockingStream> {
+        if std::time::Instant::now() >= deadline {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        let name = pipe_name(path);
+        let pipe = run(async move {
+            tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), open_client(&name))
+                .await
+                .unwrap_or_else(|_| Err(io::ErrorKind::TimedOut.into()))
+        })?;
+        Ok(BlockingStream {
+            pipe: Arc::new(pipe),
+            timeouts: Arc::new(Mutex::new(Timeouts {
+                read: Some(Limit::Until(deadline)),
+                write: Some(Limit::Until(deadline)),
+            })),
+        })
+    }
+
     pub fn connect(path: &Path) -> io::Result<BlockingStream> {
         let name = pipe_name(path);
         Self::connect_named(&name)
@@ -411,13 +441,13 @@ impl BlockingStream {
 
     pub fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         let timeout = checked(timeout)?;
-        self.timeouts.lock().unwrap().read = timeout;
+        self.timeouts.lock().unwrap().read = timeout.map(Limit::After);
         Ok(())
     }
 
     pub fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         let timeout = checked(timeout)?;
-        self.timeouts.lock().unwrap().write = timeout;
+        self.timeouts.lock().unwrap().write = timeout.map(Limit::After);
         Ok(())
     }
 

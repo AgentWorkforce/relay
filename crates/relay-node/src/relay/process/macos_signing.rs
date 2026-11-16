@@ -6,6 +6,7 @@ use std::path::Path;
 /// One file's identity: replacing or changing the file changes it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Identity {
+    device: u64,
     inode: u64,
     mtime: (i64, i64),
     ctime: (i64, i64),
@@ -14,6 +15,7 @@ struct Identity {
 fn identity(path: &Path) -> Option<Identity> {
     let m = std::fs::metadata(path).ok()?;
     Some(Identity {
+        device: m.dev(),
         inode: m.ino(),
         mtime: (m.mtime(), m.mtime_nsec()),
         ctime: (m.ctime(), m.ctime_nsec()),
@@ -117,6 +119,22 @@ pub(super) fn trusted_copilot_process(pid: i32) -> bool {
 
 pub(super) fn trusted_copilot_bundle(bundle: &Path) -> bool {
     trusted_bundle(bundle, GITHUB, "com.github.githubapp")
+}
+
+/// Keep the checked bundle and main executable fixed across live-process and
+/// sealed-resource validation. The caller also re-reads the kernel image path:
+/// macOS updates that path when a running application's bundle is renamed.
+pub(super) fn stable_copilot_bundle(
+    bundle: &Path,
+    executable: &Path,
+    verify: impl FnOnce() -> bool,
+) -> bool {
+    let (Some(bundle_before), Some(image_before)) = (identity(bundle), identity(executable)) else {
+        return false;
+    };
+    verify()
+        && identity(bundle) == Some(bundle_before)
+        && identity(executable) == Some(image_before)
 }
 
 /// Bind validation to the live process, not a signed file replacing its path.
@@ -244,6 +262,46 @@ fn the_running_helper_can_derive_and_validate_its_own_designated_requirement() {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn copilot_host_binding_rejects_bundle_or_image_replacement_during_validation() {
+        for replace_bundle in [true, false] {
+            let temp = tempfile::tempdir().unwrap();
+            let bundle = temp.path().join("GitHub Copilot.app");
+            let executable = bundle.join("Contents/MacOS/github");
+            std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+            std::fs::write(&executable, b"fixture image").unwrap();
+            assert!(stable_copilot_bundle(&bundle, &executable, || true));
+            assert!(!stable_copilot_bundle(&bundle, &executable, || {
+                if replace_bundle {
+                    std::fs::rename(&bundle, temp.path().join("previous.app")).unwrap();
+                    std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+                } else {
+                    std::fs::rename(&executable, executable.with_extension("previous")).unwrap();
+                }
+                std::fs::write(&executable, b"fixture image").unwrap();
+                true
+            }));
+        }
+    }
+
+    #[test]
+    fn copilot_host_binding_rejects_a_renamed_bundle_restored_before_return() {
+        let temp = tempfile::tempdir().unwrap();
+        let bundle = temp.path().join("GitHub Copilot.app");
+        let executable = bundle.join("Contents/MacOS/github");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::write(&executable, b"fixture image").unwrap();
+        assert!(!stable_copilot_bundle(&bundle, &executable, || {
+            let moved = temp.path().join("previous.app");
+            std::fs::rename(&bundle, &moved).unwrap();
+            std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+            std::fs::write(&executable, b"replacement image").unwrap();
+            std::fs::remove_dir_all(&bundle).unwrap();
+            std::fs::rename(&moved, &bundle).unwrap();
+            true
+        }));
+    }
 
     #[test]
     fn a_file_outside_the_app_folders_is_never_installed() {

@@ -45,19 +45,73 @@ fn runtime_with_home(
         || table.zombie(host.pid)
         || bundle.file_name()? != "GitHub Copilot.app"
         || host_exe != bundle.join("Contents/MacOS/github")
-        || !table.is_trusted_copilot(host.pid, &host_exe)
-        || !table.is_trusted_copilot_bundle(bundle)
+        || !table.is_trusted_copilot_host(host.pid, &host_exe, bundle)
     {
         return None;
     }
-    (table.process(host.pid) == Some(host) && table.process(process.pid) == Some(process))
-        .then_some(process)
+    (table.process(host.pid) == Some(host)
+        && table.process(process.pid) == Some(process)
+        && table.executable(host.pid).as_deref() == Some(host_exe.as_path()))
+    .then_some(process)
 }
 
 #[cfg(test)]
 mod tests {
     use crate::relay::copilot::proof;
-    use crate::relay::process::FakeProcesses;
+    use crate::relay::process::{FakeProcesses, ProcessInfo, ProcessTable};
+
+    #[test]
+    fn a_host_renamed_during_bundle_validation_is_not_the_checked_install() {
+        struct RenamedHost(FakeProcesses);
+        impl ProcessTable for RenamedHost {
+            fn process(&self, pid: i32) -> Option<ProcessInfo> {
+                self.0.process(pid)
+            }
+            fn all_pids(&self) -> Vec<i32> {
+                self.0.all_pids()
+            }
+            fn executable(&self, pid: i32) -> Option<std::path::PathBuf> {
+                self.0.executable(pid)
+            }
+            fn is_trusted_codex(&self, executable: &std::path::Path) -> bool {
+                self.0.is_trusted_codex(executable)
+            }
+            fn command_line(&self, pid: i32) -> crate::relay::process::CommandLine {
+                self.0.command_line(pid)
+            }
+            fn arguments(&self, pid: i32) -> Vec<String> {
+                self.0.arguments(pid)
+            }
+            fn open_files(&self, pid: i32) -> Vec<std::path::PathBuf> {
+                self.0.open_files(pid)
+            }
+            fn cwd(&self, pid: i32) -> Option<std::path::PathBuf> {
+                self.0.cwd(pid)
+            }
+            fn start_clock(&self) -> crate::relay::process::StartClock {
+                self.0.start_clock()
+            }
+            fn is_trusted_copilot(&self, pid: i32, executable: &std::path::Path) -> bool {
+                self.0.is_trusted_copilot(pid, executable)
+            }
+            fn is_trusted_copilot_bundle(&self, bundle: &std::path::Path) -> bool {
+                let valid = self.0.is_trusted_copilot_bundle(bundle);
+                self.0
+                    .processes
+                    .lock()
+                    .unwrap()
+                    .get_mut(&100)
+                    .unwrap()
+                    .executable =
+                    Some("/Applications/Renamed Copilot.app/Contents/MacOS/github".into());
+                valid
+            }
+        }
+        let (_home, _config, table) = fixture();
+        let process = table.process(102).unwrap();
+        let exe = table.executable(102).unwrap();
+        assert!(super::runtime(&RenamedHost(table), process, &exe).is_none());
+    }
 
     fn fixture() -> (
         tempfile::TempDir,

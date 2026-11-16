@@ -128,6 +128,13 @@ pub trait ProcessTable: Send + Sync {
     fn is_trusted_copilot_bundle(&self, _bundle: &Path) -> bool {
         false
     }
+    /// The running host must still name the bundle whose seal was checked.
+    fn is_trusted_copilot_host(&self, pid: i32, executable: &Path, bundle: &Path) -> bool {
+        self.executable(pid).as_deref() == Some(executable)
+            && self.is_trusted_copilot(pid, executable)
+            && self.is_trusted_copilot_bundle(bundle)
+            && self.executable(pid).as_deref() == Some(executable)
+    }
     fn is_trusted_relay_helper(&self, _pid: i32, _executable: &Path) -> bool {
         false
     }
@@ -937,6 +944,14 @@ mod macos {
         }
         fn is_trusted_copilot_bundle(&self, bundle: &Path) -> bool {
             macos_signing::trusted_copilot_bundle(bundle)
+        }
+        fn is_trusted_copilot_host(&self, pid: i32, executable: &Path, bundle: &Path) -> bool {
+            macos_signing::stable_copilot_bundle(bundle, executable, || {
+                self.executable(pid).as_deref() == Some(executable)
+                    && self.is_trusted_copilot(pid, executable)
+                    && self.is_trusted_copilot_bundle(bundle)
+                    && self.executable(pid).as_deref() == Some(executable)
+            })
         }
         fn is_trusted_relay_helper(&self, pid: i32, _executable: &Path) -> bool {
             macos_signing::trusted_relay_helper(pid)
