@@ -9,9 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay-node`: Copilot hook delivery recognizes bundled helper hard links, so macOS reporting the helper's Sessions name no longer rejects idle wake or post-tool delivery.
+- `agent-relay-node`: Copilot hooks recognize bundled helper hard links, authenticate against current session descriptors, and allow delayed journal writes and native validation to finish, so incoming messages can wake an idle chat reliably.
 - `agent-relay-node`: macOS development builds recognize their computed code-signing requirement, so native helper verification works while still requiring the running helper to satisfy the core's own requirement.
-- `agent-relay-node`: Copilot's idle wake hook waits for its native start record to reach the journal, so delayed journal writes no longer end the wait before an incoming message can wake the chat.
 
 ### Added
 

@@ -49,10 +49,13 @@ pub fn copilot_hook(development: bool, event: &str) -> Result<()> {
             "POST",
             "/copilot/hook",
             &input,
-            Duration::from_secs(if matches!(event, "before" | "start") {
-                18
-            } else {
-                8
+            Duration::from_secs(match event {
+                "before" | "start" => 18,
+                // A pending delivery revalidates the sealed native app. Let
+                // that proof finish under load while the stop hook remains
+                // alive; exiting after eight seconds invalidates its caller.
+                "stop" => 30,
+                _ => 8,
             }),
         );
         let Ok((status, bytes)) = response else {

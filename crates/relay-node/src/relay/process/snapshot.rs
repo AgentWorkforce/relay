@@ -113,6 +113,10 @@ impl ProcessSnapshot {
 }
 
 impl ProcessTable for ProcessSnapshot {
+    fn uncached(&self) -> Option<&dyn ProcessTable> {
+        Some(self.inner.uncached().unwrap_or(self.inner.as_ref()))
+    }
+
     fn process(&self, pid: i32) -> Option<ProcessInfo> {
         self.facts(pid)
             .process
