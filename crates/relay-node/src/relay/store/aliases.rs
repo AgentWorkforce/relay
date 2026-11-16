@@ -4,7 +4,7 @@
 //! what was sent to it: the registered one until the agent leaves the relay,
 //! a replaced alias for `RETIRED_FORWARDING` (see `RetiredAlias`).
 
-use super::{CleanupKind, PendingCleanup, Registration, Store, Target};
+use super::{CleanupKind, GateEnrolment, PendingCleanup, Registration, Store, Target};
 use crate::relay::workspace::Secret;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -22,6 +22,11 @@ pub struct AgentAlias {
     pub token: Secret,
     #[serde(rename = "registeredAt", deserialize_with = "super::timestamp")]
     pub registered_at: String,
+    /// How an alias of a gate agent stays enrolled at relaygate: an agent
+    /// of its own there, with its own recovery proof and token expiry.
+    /// Absent for every alias registered with a workspace key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<GateEnrolment>,
 }
 
 /// An alias a later rename replaced. It still forwards what was sent to it,
@@ -123,6 +128,8 @@ impl Registration {
             integrations: None,
             alias: None,
             retired_aliases: None,
+            // An alias of a gate agent renews with its own enrolment.
+            gate: alias.gate.clone().or_else(|| self.gate.clone()),
             ..self.clone()
         };
         (view, alias.token.clone())

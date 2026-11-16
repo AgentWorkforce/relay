@@ -108,6 +108,13 @@ impl Core {
         self.stop_spawned(&registration);
         self.forget_agent_and_alias(&registration);
         self.forget_gate_renewal(name);
+        if registration.gate.is_some() {
+            // Its aliases are gate agents of their own: each is deleted with
+            // its own token, now that nothing here holds it.
+            for alias in registration.alias.iter().chain(registration.retired()) {
+                self.delete_gate_alias(&registration.base_url, alias).await;
+            }
+        }
         self.sync_agents().await;
         self.hub.invalidated(Listing::Agents);
         let left = match registration.alias_name() {

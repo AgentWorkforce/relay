@@ -6275,3 +6275,317 @@ async fn a_rate_limited_gate_update_waits_before_it_is_sent_again() {
         .is_some_and(|p| p.iter().any(|n| n == "codex-api")));
     h.stop().await;
 }
+
+/// No request in `fake`'s log carried a workspace key: a gate-only install
+/// has none to send.
+fn assert_no_workspace_key(fake: &FakeRelaycast) {
+    let keyed: Vec<String> = fake
+        .requests()
+        .into_iter()
+        .filter(|r| {
+            r.authorization
+                .as_deref()
+                .is_some_and(|a| a.contains("rk_"))
+        })
+        .map(|r| format!("{} {}", r.method, r.path))
+        .collect();
+    assert!(keyed.is_empty(), "sent with a workspace key: {keyed:?}");
+}
+
+fn bearer(token: &str) -> Option<String> {
+    Some(format!("Bearer {token}"))
+}
+
+// A gate agent's rename enrols the alias at relaygate with the device token
+// and a recovery proof of its own; the alias is then an agent of its own:
+// it patches its metadata and reads its queue with its own rg_ token, and
+// removal deletes every name with that name's token.
+#[tokio::test]
+async fn a_gate_agent_rename_enrols_the_alias_at_the_gate() {
+    let h = gate_harness(true).await;
+    let mut client = h.client().await;
+    client.ok("status.get", json!({})).await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+
+    let renamed = client
+        .ok(
+            "agents.rename",
+            json!({"name": "codex-api", "new_name": "nickname"}),
+        )
+        .await;
+    assert_eq!(renamed["name"], "nickname");
+    let registers = gate_registers(&h.fake);
+    assert_eq!(registers.len(), 2);
+    assert_eq!(registers[1].body["name"], "nickname");
+    assert_eq!(registers[1].authorization, bearer(DEVICE_TOKEN));
+    let owner_recovery = h.fake.gate_recovery("codex-api").unwrap();
+    let alias_recovery = h.fake.gate_recovery("nickname").unwrap();
+    assert_ne!(owner_recovery, alias_recovery);
+    let store = h.store();
+    assert_eq!(store["registrations"][0]["name"], "codex-api");
+    assert_eq!(store["registrations"][0]["alias"]["name"], "nickname");
+    assert_eq!(
+        store["registrations"][0]["alias"]["gate"]["recovery"],
+        alias_recovery
+    );
+    let alias = h.fake.agent("nickname").unwrap();
+    assert!(alias.token.starts_with("rg_"));
+    assert_eq!(store["registrations"][0]["alias"]["agentID"], alias.id);
+    // Never a workspace-key write.
+    assert!(h.fake.calls("POST", "/v1/agents").is_empty());
+
+    // Its marker is patched with its own token and names the agent it is.
+    eventually("the alias is published", || {
+        h.fake.agent("nickname").unwrap().metadata["alias_of"] == "codex-api"
+    })
+    .await;
+    eventually("the original forwards", || {
+        h.fake.agent("codex-api").unwrap().metadata["renamed_to"] == "nickname"
+    })
+    .await;
+    assert!(h
+        .fake
+        .calls("PATCH", "/v1/agent")
+        .iter()
+        .any(|r| r.authorization == bearer(&alias.token)));
+
+    // A DM to the new name is read with the alias's token and arrives.
+    h.fake.seed_agent("alice", "agent", json!({}));
+    let (delivery, _) = h.fake.send_dm("alice", "nickname", "to the alias");
+    eventually("acked", || {
+        delivered(&h.fake, &delivery).as_deref() == Some("acked")
+    })
+    .await;
+    assert!(h
+        .injector
+        .injected()
+        .iter()
+        .any(|i| i.text.contains("to the alias")));
+
+    // Renamed again, the first alias forwards; removal releases all three
+    // names, each with its own token.
+    client
+        .ok(
+            "agents.rename",
+            json!({"name": "codex-api", "new_name": "third"}),
+        )
+        .await;
+    let owner = h.fake.agent("codex-api").unwrap().token;
+    let first = h.fake.agent("nickname").unwrap().token;
+    let third = h.fake.agent("third").unwrap().token;
+    client
+        .ok("agents.unregister", json!({"name": "codex-api"}))
+        .await;
+    for name in ["codex-api", "nickname", "third"] {
+        assert!(h.fake.agent(name).is_none(), "{name} released");
+    }
+    let mut deleted: Vec<Option<String>> = h
+        .fake
+        .calls("DELETE", "/v1/agent")
+        .into_iter()
+        .map(|r| r.authorization)
+        .collect();
+    deleted.sort();
+    let mut expected = vec![bearer(&owner), bearer(&first), bearer(&third)];
+    expected.sort();
+    assert_eq!(deleted, expected);
+    assert_no_workspace_key(&h.fake);
+    h.stop().await;
+}
+
+// A replaced gate alias is released after its day with its own token; one
+// whose token has expired meanwhile registers again with its recovery
+// proof first, then deletes itself.
+#[tokio::test]
+async fn a_replaced_gate_alias_is_released_with_its_own_token() {
+    let h = gate_harness(true).await;
+    let mut client = h.client().await;
+    client.ok("status.get", json!({})).await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    for new_name in ["mid-name", "late-name", "new-name"] {
+        client
+            .ok(
+                "agents.rename",
+                json!({"name": "codex-api", "new_name": new_name}),
+            )
+            .await;
+    }
+    let mid = h.fake.agent("mid-name").unwrap();
+    // late-name's token runs out; mid-name's is still current.
+    h.fake.expire_gate_token("late-name");
+    let registers = gate_registers(&h.fake).len();
+    a_day_passes(&h, &mut client).await;
+    eventually("both released", || {
+        h.fake.agent("mid-name").is_none() && h.fake.agent("late-name").is_none()
+    })
+    .await;
+    let deletes = h.fake.calls("DELETE", "/v1/agent");
+    assert!(deletes
+        .iter()
+        .any(|r| r.authorization == bearer(&mid.token)));
+    // The expired token was refused, then a new one deleted it.
+    let again: Vec<_> = gate_registers(&h.fake)
+        .into_iter()
+        .skip(registers)
+        .filter(|r| r.body["name"] == "late-name")
+        .collect();
+    assert!(!again.is_empty());
+    assert_eq!(again[0].authorization, bearer(DEVICE_TOKEN));
+    assert_eq!(
+        again[0].body["recovery"].as_str(),
+        Some(h.fake.gate_recovery("late-name").unwrap().as_str())
+    );
+    assert!(h.store()["registrations"][0]
+        .get("retiredAliases")
+        .is_none());
+    assert!(h.fake.agent("codex-api").is_some() && h.fake.agent("new-name").is_some());
+    assert_no_workspace_key(&h.fake);
+    h.stop().await;
+}
+
+// An alias's rg_ token is renewed before it expires, with the alias's own
+// recovery proof, like any gate agent's.
+#[tokio::test]
+async fn a_gate_alias_token_is_renewed_with_its_own_recovery() {
+    let h = gate_harness(true).await;
+    let mut client = h.client().await;
+    client.ok("status.get", json!({})).await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    h.fake.set_gate_ttl(Duration::from_secs(2));
+    client
+        .ok(
+            "agents.rename",
+            json!({"name": "codex-api", "new_name": "nickname"}),
+        )
+        .await;
+    h.fake.set_gate_ttl(Duration::from_secs(3600));
+    let first = h.fake.agent("nickname").unwrap();
+    eventually("renewed", || {
+        h.fake.agent("nickname").unwrap().token != first.token
+    })
+    .await;
+    let renewed = h.fake.agent("nickname").unwrap();
+    assert_eq!(renewed.id, first.id);
+    let store = h.store();
+    assert_eq!(store["registrations"][0]["alias"]["agentID"], first.id);
+    let renewals: Vec<_> = gate_registers(&h.fake)
+        .into_iter()
+        .filter(|r| r.body["name"] == "nickname")
+        .collect();
+    assert!(renewals.len() >= 2);
+    assert!(renewals
+        .iter()
+        .all(|r| r.body["recovery"] == renewals[0].body["recovery"]));
+    // The owner was never registered again for it.
+    assert_eq!(
+        gate_registers(&h.fake)
+            .iter()
+            .filter(|r| r.body["name"] == "codex-api")
+            .count(),
+        1
+    );
+    // And it still reads its queue.
+    h.fake.seed_agent("alice", "agent", json!({}));
+    let (delivery, _) = h.fake.send_dm("alice", "nickname", "after renewal");
+    eventually("acked", || {
+        delivered(&h.fake, &delivery).as_deref() == Some("acked")
+    })
+    .await;
+    assert_no_workspace_key(&h.fake);
+    h.stop().await;
+}
+
+// A PATCH refused with 401 registers the agent again once and is sent
+// again with the new token.
+#[tokio::test]
+async fn a_refused_gate_patch_registers_once_and_patches_again() {
+    let h = gate_harness(true).await;
+    let mut client = h.client().await;
+    client.ok("status.get", json!({})).await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    eventually("first patch", || {
+        h.fake.agent("codex-api").unwrap().metadata["session_id"] == CODEX
+    })
+    .await;
+    // Hold the queue reads so only the PATCH can find the token refused.
+    h.fake
+        .set_api_error("GET /v1/deliveries", Some((503, "unavailable")));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let stale = h.fake.agent("codex-api").unwrap().token;
+    h.fake.expire_gate_token("codex-api");
+    let patches = h.fake.calls("PATCH", "/v1/agent").len();
+    let registers = gate_registers(&h.fake).len();
+    client
+        .ok(
+            "agents.rename",
+            json!({"name": "codex-api", "new_name": "nickname"}),
+        )
+        .await;
+    eventually("the marker lands", || {
+        h.fake.agent("codex-api").unwrap().metadata["renamed_to"] == "nickname"
+    })
+    .await;
+    let renewed = h.fake.agent("codex-api").unwrap().token;
+    assert_ne!(renewed, stale);
+    let owner_registers = gate_registers(&h.fake)
+        .into_iter()
+        .skip(registers)
+        .filter(|r| r.body["name"] == "codex-api")
+        .count();
+    assert_eq!(owner_registers, 1);
+    let later: Vec<_> = h
+        .fake
+        .calls("PATCH", "/v1/agent")
+        .into_iter()
+        .skip(patches)
+        .collect();
+    assert!(later.iter().any(|r| r.authorization == bearer(&stale)));
+    assert!(later.iter().any(|r| r.authorization == bearer(&renewed)));
+    h.fake.set_api_error("GET /v1/deliveries", None);
+    assert_no_workspace_key(&h.fake);
+    h.stop().await;
+}
+
+// Every gate agent of this computer shares one Relaycast backoff: a plan
+// limit one agent's queue read meets holds every gate agent's reads.
+#[tokio::test]
+async fn gate_agents_share_one_relaycast_backoff() {
+    let h = gate_harness(true).await;
+    let mut client = h.client().await;
+    client.ok("status.get", json!({})).await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    h.register(&mut client, "claude-terminal", CLAUDE, Some("claude-api"))
+        .await;
+    let codex = h.fake.agent("codex-api").unwrap().token;
+    let claude = h.fake.agent("claude-api").unwrap().token;
+    let reads_by = |token: &str| {
+        h.fake
+            .calls("GET", "/v1/deliveries")
+            .into_iter()
+            .filter(|r| r.authorization == bearer(token))
+            .count()
+    };
+    eventually("both read", || {
+        reads_by(&codex) > 0 && reads_by(&claude) > 0
+    })
+    .await;
+    h.fake
+        .set_api_error("GET /v1/deliveries", Some((429, "plan_limit_exceeded")));
+    let before = h.fake.calls("GET", "/v1/deliveries").len();
+    eventually("refused", || {
+        h.fake.calls("GET", "/v1/deliveries").len() > before
+    })
+    .await;
+    h.fake.set_api_error("GET /v1/deliveries", None);
+    // Reads already in flight may land; then nobody reads.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let held = h.fake.calls("GET", "/v1/deliveries").len();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(h.fake.calls("GET", "/v1/deliveries").len(), held);
+    h.stop().await;
+}
