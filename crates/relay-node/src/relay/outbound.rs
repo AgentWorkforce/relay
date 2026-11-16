@@ -1206,11 +1206,17 @@ impl Outbound {
             ),
             None => None,
         };
-        // The sender may be an alias, with a token of its own.
+        // The sender may be an alias, with a token of its own. Read after
+        // the lock wait: only while the name is still this session's agent,
+        // never another session that took the name up meanwhile.
         let gate_token = || {
             self.core
                 .store
                 .read(|s| s.credential_named(&registration.name))
+                .filter(|(current, _)| {
+                    current.agent_id == registration.agent_id
+                        && current.target == registration.target
+                })
                 .map(|(_, token)| token)
                 .ok_or_else(OutboundError::not_registered)
         };
