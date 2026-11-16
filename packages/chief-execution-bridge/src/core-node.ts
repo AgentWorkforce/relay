@@ -1,6 +1,6 @@
 import { connectCore, CoreRpcError, spawnTargets } from '@agent-relay/core-bridge';
 import type { CoreClient } from '@agent-relay/core-bridge';
-import type { NodePort } from './ports.js';
+import type { NodePort, WorkerLiveness } from './ports.js';
 
 export type ConnectCore = () => Promise<CoreClient>;
 
@@ -8,6 +8,12 @@ interface SpawnSettingsView {
   accept_spawns?: unknown;
   spawn_requester_approvals?: unknown;
   [key: string]: unknown;
+}
+
+/** The part of an `agents.list` row read here (`LocalAgent` in relay-node). */
+interface AgentRowView {
+  name?: unknown;
+  spawn?: { process?: { state?: unknown }; work?: { state?: unknown } } | null;
 }
 
 /**
@@ -53,6 +59,31 @@ export class CoreNode implements NodePort {
       });
     } catch {
       return 'core_unavailable';
+    }
+  }
+
+  /**
+   * Reads `agents.list`. A spawned agent's row carries `spawn.process.state` and
+   * `spawn.work.state`; `exited` or `completed` mean its session is over. A row without that
+   * evidence counts as live, so an older core can only delay a failure, never cause one.
+   */
+  async listAgents(): Promise<Map<string, WorkerLiveness> | undefined> {
+    try {
+      return await this.withCore(async (client) => {
+        const methods = client.hello?.methods;
+        if (Array.isArray(methods) && !methods.includes('agents.list')) return undefined;
+        const listed = (await client.call('agents.list')) as { agents?: unknown } | null;
+        if (!listed || !Array.isArray(listed.agents)) return undefined;
+        const agents = new Map<string, WorkerLiveness>();
+        for (const row of listed.agents as Array<AgentRowView | null>) {
+          if (!row || typeof row.name !== 'string') return undefined;
+          const ended = row.spawn?.process?.state === 'exited' || row.spawn?.work?.state === 'completed';
+          agents.set(row.name, ended ? 'exited' : 'live');
+        }
+        return agents;
+      });
+    } catch {
+      return undefined;
     }
   }
 

@@ -33,6 +33,198 @@ fn fixture() -> (tempfile::TempDir, CopilotConfig, PathBuf, Value) {
 }
 
 #[test]
+fn a_delayed_stop_anchor_keeps_the_file_identity_and_observed_length() {
+    let (_home, config, path, _) = fixture();
+    let original = snapshot(&config, SID).unwrap();
+    let mut retries = 0;
+    let stamp = snapshot_after_start(&config, SID, 300, || {
+        retries += 1;
+        append(&path, start(300));
+        true
+    })
+    .unwrap();
+    assert_eq!(retries, 1);
+    assert_eq!(stamp["identity"], original["identity"]);
+    assert_eq!(stamp["length"], std::fs::metadata(&path).unwrap().len());
+    assert!(stamp["length"].as_u64().unwrap() > original["length"].as_u64().unwrap());
+    assert!(stamp["offset"].is_u64());
+    assert!(!cancelled(
+        &config,
+        SID,
+        &json!({"timestamp":300,"relayJournal":stamp})
+    ));
+}
+
+#[test]
+fn queued_model_records_do_not_evict_the_active_stop_anchor() {
+    let (_home, config, path, _) = fixture();
+    let stamp = snapshot_after_start(&config, SID, 200, || false).unwrap();
+    for _ in 0..5 {
+        append(
+            &path,
+            json!({"type":"model.messages_snapshot","data":{"content":"x".repeat(20_000)}}),
+        );
+    }
+    let payload = json!({"timestamp":200,"relayJournal":stamp});
+    assert!(!cancelled(&config, SID, &payload));
+    append(&path, json!({"type":"abort"}));
+    assert!(cancelled(&config, SID, &payload));
+}
+
+#[test]
+fn startup_finds_its_anchor_beneath_an_already_flushed_model_batch() {
+    let (_home, config, path, _) = fixture();
+    append(
+        &path,
+        json!({"type":"model.messages_snapshot","data":"x".repeat(2 * LIMIT as usize)}),
+    );
+    let stamp = snapshot_after_start(&config, SID, 200, || false).unwrap();
+    let payload = json!({"timestamp":200,"relayJournal":stamp});
+    assert!(!cancelled(&config, SID, &payload));
+    append(&path, json!({"type":"user.message"}));
+    assert!(cancelled(&config, SID, &payload));
+}
+
+#[test]
+fn anchored_scans_remain_bounded_and_reject_invalid_offsets_and_corruption() {
+    let (_home, config, path, _) = fixture();
+    let stamp = snapshot_after_start(&config, SID, 200, || false).unwrap();
+    let mut payload = json!({"timestamp":200,"relayJournal":stamp});
+    let mut invalid = payload.clone();
+    invalid["relayJournal"]["offset"] = json!(u64::MAX);
+    assert!(cancelled(&config, SID, &invalid));
+    invalid["relayJournal"]["offset"] = json!("not-an-offset");
+    assert!(cancelled(&config, SID, &invalid));
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(b"invalid\n")
+        .unwrap();
+    assert!(cancelled(&config, SID, &payload));
+    // A sparse oversized append must fail before allocating or reading it.
+    let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    file.set_len(payload["relayJournal"]["offset"].as_u64().unwrap() + MAX_SCAN + 1)
+        .unwrap();
+    assert!(cancelled(&config, SID, &payload));
+    payload["relayJournal"]["offset"] = json!(0);
+    assert!(cancelled(&config, SID, &payload));
+}
+
+#[test]
+fn a_cancel_during_delayed_startup_is_not_lost() {
+    let (_home, config, path, _) = fixture();
+    let stamp = snapshot_after_start(&config, SID, 300, || {
+        append(&path, start(300));
+        append(&path, json!({"type":"abort"}));
+        true
+    })
+    .unwrap();
+    assert!(cancelled(
+        &config,
+        SID,
+        &json!({"timestamp":300,"relayJournal":stamp})
+    ));
+}
+
+#[test]
+fn truncation_cannot_erase_a_cancel_observed_with_a_delayed_anchor() {
+    let (_home, config, path, _) = fixture();
+    let mut anchor_end = 0;
+    let stamp = snapshot_after_start(&config, SID, 300, || {
+        append(&path, start(300));
+        anchor_end = std::fs::metadata(&path).unwrap().len();
+        append(&path, json!({"type":"abort"}));
+        true
+    })
+    .unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(anchor_end)
+        .unwrap();
+    assert!(cancelled(
+        &config,
+        SID,
+        &json!({"timestamp":300,"relayJournal":stamp})
+    ));
+}
+
+#[test]
+fn delayed_startup_retains_the_length_floor_before_its_anchor_arrives() {
+    let (_home, config, path, _) = fixture();
+    let original = std::fs::read(&path).unwrap();
+    let mut retries = 0;
+    let stamp = snapshot_after_start(&config, SID, 300, || {
+        retries += 1;
+        if retries == 1 {
+            append(
+                &path,
+                json!({"type":"model.messages_snapshot","data":"x".repeat(4096)}),
+            );
+        } else {
+            // Erase an already observed append, while still leaving a file
+            // larger than the original snapshot and containing our anchor.
+            std::fs::write(&path, &original).unwrap();
+            append(&path, start(300));
+        }
+        true
+    });
+    assert!(stamp.is_none());
+    assert_eq!(retries, 2);
+}
+
+#[test]
+fn a_partial_start_record_waits_for_its_newline() {
+    let (_home, config, path, _) = fixture();
+    let mut retries = 0;
+    let stamp = snapshot_after_start(&config, SID, 300, || {
+        retries += 1;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        if retries == 1 {
+            write!(file, "{}", start(300)).unwrap();
+        } else {
+            writeln!(file).unwrap();
+        }
+        true
+    })
+    .unwrap();
+    assert_eq!(retries, 2);
+    assert!(!cancelled(
+        &config,
+        SID,
+        &json!({"timestamp":300,"relayJournal":stamp})
+    ));
+}
+
+#[test]
+fn a_missing_anchor_times_out_and_a_replaced_or_truncated_journal_is_not_rebased() {
+    let (_home, config, _, _) = fixture();
+    assert!(snapshot_after_start(&config, SID, 300, || false).is_none());
+    for replace in [true, false] {
+        let (_home, config, path, _) = fixture();
+        let mut retries = 0;
+        assert!(snapshot_after_start(&config, SID, 300, || {
+            retries += 1;
+            if replace {
+                let replacement = path.with_extension("replacement");
+                std::fs::write(&replacement, format!("{}\n", start(300))).unwrap();
+                std::fs::rename(replacement, &path).unwrap();
+            } else {
+                std::fs::write(&path, format!("{}\n", start(300))).unwrap();
+            }
+            true
+        })
+        .is_none());
+        assert_eq!(retries, 1);
+    }
+}
+
+#[test]
 fn an_abort_after_this_stop_releases_the_wait_but_old_aborts_do_not() {
     let (_home, config, path, payload) = fixture();
     assert!(!cancelled(&config, SID, &payload));
@@ -79,6 +271,7 @@ fn non_object_or_untyped_complete_records_are_unverifiable_after_the_anchor() {
     for value in [
         json!(null),
         json!([]),
+        json!(["fixture"]),
         json!(true),
         json!(42),
         json!("bad"),

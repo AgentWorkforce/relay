@@ -63,6 +63,11 @@ pub enum CloudError {
     },
     /// Cloud could not be reached, or answered with something unreadable.
     Unreachable,
+    /// The workspace is gate-only (a 403 whose error is `gate_only`): the
+    /// call is not made there, and agents and the person message through
+    /// relaygate instead. `relaygate_url` is the gate the answer named
+    /// (`urls.relaygateUrl`), validated as a bare origin, if it named one.
+    GateOnly { relaygate_url: Option<String> },
 }
 
 impl std::fmt::Display for CloudError {
@@ -81,6 +86,9 @@ impl std::fmt::Display for CloudError {
                 )
             }
             CloudError::Unreachable => f.write_str("Agent Relay could not be reached."),
+            CloudError::GateOnly { .. } => {
+                f.write_str("This workspace is gate-only: messaging goes through relaygate.")
+            }
         }
     }
 }
@@ -222,10 +230,25 @@ pub fn status_error(answer: &Answer) -> CloudError {
     if answer.status == 401 {
         return CloudError::Rejected;
     }
+    if answer.status == 403 && is_gate_only(&answer.body) {
+        let relaygate_url = answer.body["urls"]["relaygateUrl"]
+            .as_str()
+            .and_then(validated_base_url);
+        return CloudError::GateOnly { relaygate_url };
+    }
     CloudError::Status {
         status: answer.status,
         message: (answer.status < 500).then(|| answer.message()).flatten(),
     }
+}
+
+/// Whether a 403 body is Control's gate-only refusal: the flat
+/// `{"error":"gate_only","message":…,"urls":{…}}` the messaging identity
+/// route answers, or the `{"ok":false,"error":{"code":"gate_only"}}`
+/// envelope.
+fn is_gate_only(body: &Value) -> bool {
+    body["error"].as_str() == Some("gate_only")
+        || body["error"]["code"].as_str() == Some("gate_only")
 }
 
 /// `method <site>/cloud/api/v1<path>` with `bearer`; the JSON of a 2xx
@@ -395,6 +418,54 @@ pub fn identity_from_whoami(value: Value) -> Result<Identity, CloudError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Control's gate-only refusal is told apart from any other 403, in
+    /// its flat shape (the messaging identity route) and as an envelope;
+    /// the gate it names is kept only when it is a valid origin.
+    #[test]
+    fn a_gate_only_refusal_names_its_gate() {
+        let answer = |status: u16, body: Value| Answer { status, body };
+        let flat = answer(
+            403,
+            json!({"error": "gate_only", "message": "Use relaygate",
+                "urls": {"relaycastUrl": "https://cast.corp.test",
+                    "relaygateUrl": "https://gate.corp.test"}}),
+        );
+        assert_eq!(
+            status_error(&flat),
+            CloudError::GateOnly {
+                relaygate_url: Some("https://gate.corp.test".into())
+            }
+        );
+        let envelope = answer(403, json!({"ok": false, "error": {"code": "gate_only"}}));
+        assert_eq!(
+            status_error(&envelope),
+            CloudError::GateOnly {
+                relaygate_url: None
+            }
+        );
+        let bad = answer(
+            403,
+            json!({"error": "gate_only", "urls": {"relaygateUrl": "ftp://gate/x"}}),
+        );
+        assert_eq!(
+            status_error(&bad),
+            CloudError::GateOnly {
+                relaygate_url: None
+            }
+        );
+        // Any other 403, and `gate_only` on another status, is a status.
+        let denied = answer(403, json!({"error": "forbidden"}));
+        assert!(matches!(
+            status_error(&denied),
+            CloudError::Status { status: 403, .. }
+        ));
+        let other = answer(409, json!({"error": "gate_only"}));
+        assert!(matches!(
+            status_error(&other),
+            CloudError::Status { status: 409, .. }
+        ));
+    }
     #[test]
     fn whoami_reads_the_workspace_plan_and_tolerates_a_cloud_without_one() {
         // Cloud's route keys the workspace `currentWorkspace` (camelCase) with

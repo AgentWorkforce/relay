@@ -65,6 +65,7 @@ impl FakeCloud {
                         (401, json!({"error": "Unauthorized"}))
                     }
                     Err(CloudError::Unreachable) => (503, json!({})),
+                    Err(CloudError::GateOnly { .. }) => (403, json!({"error": "gate_only"})),
                 };
                 write_response(&mut stream, status, &body);
             }
@@ -231,7 +232,7 @@ async fn check(
         }
         Next::Ask(asked, blocked) => {
             memory.begin(asked.clone());
-            let answer = ask(cloud, &asked, token).await;
+            let answer = ask(cloud, &asked, token, &node().node_name).await;
             memory.settle(dir, asked, answer, blocked, now).unwrap()
         }
     };
@@ -377,7 +378,13 @@ async fn a_credential_that_is_someone_else_s_never_claims() {
     assert!(!folder.path().join(CLAIM_FILE).exists());
     // A refused credential is a sign-in to make again.
     *cloud.me.lock().unwrap() = None;
-    let answer = ask(&cloud, &memory.tried.clone().unwrap().0, &token("one1one1")).await;
+    let answer = ask(
+        &cloud,
+        &memory.tried.clone().unwrap().0,
+        &token("one1one1"),
+        &node().node_name,
+    )
+    .await;
     assert_eq!(answer.claim.state, SpawnClaimState::SignedOut);
 }
 
@@ -416,7 +423,7 @@ async fn an_answer_for_a_node_since_replaced_is_dropped() {
         other => panic!("{other:?}"),
     };
     memory.begin(new);
-    let late = ask(&cloud, &old, &token("one1one1")).await;
+    let late = ask(&cloud, &old, &token("one1one1"), &node().node_name).await;
     assert_eq!(memory.settle(dir, old, late, false, NOW), None);
     assert!(
         !dir.join(CLAIM_FILE).exists(),
@@ -603,7 +610,7 @@ async fn cloud_s_own_refusal_of_another_owner_is_read_as_one() {
         Next::Ask(asked, _) => asked,
         other => panic!("a first check asks: {other:?}"),
     };
-    let answer = ask(&cloud, &asked, &one).await;
+    let answer = ask(&cloud, &asked, &one, &node().node_name).await;
     assert_eq!(answer.claim.state, SpawnClaimState::OwnedByOther);
     assert_eq!(answer.owner, Some(Owner::Other));
     let requests = server.join().unwrap();
@@ -741,4 +748,27 @@ async fn a_held_credential_cloud_refuses_is_renewed_once_for_the_whole_claim() {
             pair("/fleet/nodes/claim", "Bearer-renewed"),
         ]
     );
+}
+
+#[tokio::test]
+async fn a_node_bridged_through_control_is_claimed_by_its_name_without_a_token() {
+    let folder = tempfile::tempdir().unwrap();
+    let cloud = FakeCloud::answering(Ok(
+        json!({"nodeId": "node_desktop_1", "claimed": true, "owner": "you"}),
+    ));
+    let mut memory = Memory::default();
+    // A bridged node holds no token: Control keeps it.
+    let none = Secret::new(String::new());
+    let answer = check(&cloud, folder.path(), &mut memory, &none, NOW).await;
+    assert_eq!(answer, claimed());
+    let claims = cloud.claims();
+    assert_eq!(claims.len(), 1);
+    assert_eq!(
+        claims[0].2,
+        Some(
+            json!({"workspaceId": "8d1c6f2e-7b1a-4c55-9a0e-3f1b2c4d5e6f",
+            "nodeName": "test-desk-desktop"})
+        )
+    );
+    assert!(claims[0].2.as_ref().unwrap().get("nodeToken").is_none());
 }

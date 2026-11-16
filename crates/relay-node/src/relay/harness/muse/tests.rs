@@ -51,6 +51,7 @@ fn registry(adapter: &MuseAdapter, capable: bool) {
 fn intent() -> Intent {
     Intent {
         invocation_id: "inv_muse".into(),
+        gate_launch: false,
         name: "muse-test".into(),
         harness: ID,
         node_id: "node-test".into(),

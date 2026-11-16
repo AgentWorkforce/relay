@@ -437,6 +437,10 @@ pub struct FakeCloud {
     pub calls: Mutex<Vec<(String, String, Option<Value>)>>,
     /// What `device_token` hands out; `None` reads as signed out.
     pub device_token: Mutex<Option<Secret>>,
+    /// Runs as the request `METHOD path` arrives, before it is answered:
+    /// what changes while that request is in flight.
+    #[allow(clippy::type_complexity)]
+    pub during: Mutex<HashMap<String, Box<dyn Fn() + Send + Sync>>>,
 }
 
 impl FakeCloud {
@@ -450,6 +454,7 @@ impl FakeCloud {
             answers: Mutex::new(HashMap::new()),
             calls: Mutex::new(Vec::new()),
             device_token: Mutex::new(None),
+            during: Mutex::new(HashMap::new()),
         }
     }
 
@@ -494,6 +499,9 @@ impl CloudAccess for FakeCloud {
             .lock()
             .unwrap()
             .push((method.into(), path.clone(), body));
+        if let Some(during) = self.during.lock().unwrap().get(&format!("{method} {path}")) {
+            during();
+        }
         let answer = self
             .answers
             .lock()

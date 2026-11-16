@@ -79,6 +79,13 @@ fn command(executable: &Path, arguments: &[String]) -> Command {
         .args(arguments)
         .current_dir(std::env::temp_dir())
         .stdin(Stdio::null());
+    // The app server it may start is shared by every spawned Codex agent:
+    // it never inherits the core's Cloud tokens, nor a launch credential
+    // (`workspace::AGENT_SECRET_ENV`), in any spelling.
+    crate::relay::workspace::remove_agent_secret_env(
+        &mut command,
+        std::env::vars_os().map(|(name, _)| name),
+    );
     // Its own process group (a job object on Windows), so stopping it stops
     // whatever it started (an npm launcher's child would otherwise hold the
     // pipes).

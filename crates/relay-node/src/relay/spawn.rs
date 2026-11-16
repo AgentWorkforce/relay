@@ -301,6 +301,9 @@ mod tests {
         /// A paused launch starts its session (`THREAD`) before it pauses,
         /// as Codex starts a thread before its first turn is confirmed.
         starts_before_pause: bool,
+        /// The `RELAY_LAUNCH_CREDENTIAL` each launch's agent would start
+        /// with (`launch::agent_environment`): never one.
+        credentials: Mutex<Vec<Option<String>>>,
     }
 
     /// Answers each agent by name; `Running`/`Idle` for one not set.
@@ -356,6 +359,12 @@ mod tests {
             let mut launched = self.launched.lock().unwrap();
             launched.push(launch.clone());
             drop(launched);
+            let environment = super::launch::agent_environment(&Default::default());
+            self.credentials.lock().unwrap().push(
+                environment
+                    .get(crate::relay::workspace::LAUNCH_CREDENTIAL_ENV)
+                    .cloned(),
+            );
             if self.panics {
                 started_session(&Target::new(SessionKind::Codex, THREAD), None);
                 panic!("the launch worker panicked");
@@ -414,6 +423,7 @@ mod tests {
         }
     }
 
+    mod launch_gate;
     mod lifecycle_failures;
     mod native_sender;
     mod owner_framing;
@@ -672,6 +682,7 @@ mod tests {
             task: "Fix CI".into(),
             directory: None,
             fork_from: None,
+            launch_credential: None,
         }
     }
 
@@ -1761,6 +1772,7 @@ mod tests {
     fn interrupted(name: &str, registered: bool, target: Option<Target>) -> intents::Intent {
         intents::Intent {
             invocation_id: format!("inv_{name}"),
+            gate_launch: false,
             name: name.into(),
             harness: codex::ID,
             node_id: node().node_id,
@@ -2275,6 +2287,60 @@ mod tests {
             assert_eq!(store.spawn_billing_codex, None);
             assert_eq!(store.spawn_repositories, None);
         });
+    }
+
+    /// Control's one-time launch credential never reaches the launched
+    /// agent's environment and nothing the node writes keeps it. Without a
+    /// relaygate URL the node has nowhere to present it, so it drops it.
+    #[tokio::test]
+    async fn a_launch_credential_never_reaches_the_agent_and_is_never_written() {
+        const CREDENTIAL: &str = "sh_lt_fixture_one_time_launch";
+        let home = tempfile::tempdir().unwrap();
+        let spawner = Arc::new(FakeSpawner::default());
+        let core = core(home.path(), spawner.clone());
+        observed(&core);
+        let frame = json!({"v": 1, "type": "action.invoke", "invocation_id": "inv_lc1",
+            "action": "spawn:codex", "caller_id": "agent_lead",
+            "input": {"name": "lc1", "task": "build it", "launch_credential": CREDENTIAL}});
+        let Some(Ok(Invoke::Spawn(request))) = wire::invoke(&frame) else {
+            panic!("not a spawn")
+        };
+        let (link, sent) = NodeLink::detached(node());
+        let _frames = relaycast(link.clone(), sent);
+        let answer = core.clone().answer_spawn(link, request).await;
+        assert!(!answer.to_string().contains(CREDENTIAL));
+        named(&core, "lc1");
+
+        let frame = json!({"v": 1, "type": "action.invoke", "invocation_id": "inv_lc2",
+            "action": "spawn:codex", "caller_id": "agent_lead",
+            "input": {"name": "lc2", "task": "build it"}});
+        let Some(Ok(Invoke::Spawn(request))) = wire::invoke(&frame) else {
+            panic!("not a spawn")
+        };
+        let (link, sent) = NodeLink::detached(node());
+        let _frames = relaycast(link.clone(), sent);
+        core.clone().answer_spawn(link, request).await;
+        assert_eq!(*spawner.credentials.lock().unwrap(), [None, None]);
+        core.store.flush().unwrap();
+        let mut folders = vec![home.path().to_path_buf()];
+        let mut files = 0;
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(folder).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else if let Ok(bytes) = std::fs::read(&path) {
+                    files += 1;
+                    let text = String::from_utf8_lossy(&bytes);
+                    assert!(
+                        !text.contains("sh_lt_") && !text.contains("rg_"),
+                        "{} keeps a launch credential or relaygate token",
+                        path.display()
+                    );
+                }
+            }
+        }
+        assert!(files > 0, "the node wrote nothing to inspect");
     }
 
     #[tokio::test]

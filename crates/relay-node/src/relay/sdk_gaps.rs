@@ -44,8 +44,9 @@
 
 mod gate;
 pub use gate::{
-    gate_delete_self, gate_patch_self, gate_register, new_recovery, GateError, GateRegistration,
-    GateSelfPatch, GATE_DENIED, GATE_NAME_SCOPE, GATE_NAME_TAKEN, GATE_UNAUTHENTICATED,
+    gate_delete_self, gate_patch_self, gate_refresh, gate_register, gate_register_launch,
+    new_recovery, GateError, GateRefresh, GateRegistration, GateSelfPatch, GATE_DENIED,
+    GATE_NAME_SCOPE, GATE_NAME_TAKEN, GATE_UNAUTHENTICATED, GATE_UNAVAILABLE,
 };
 // For the agent-token calls to classify an expired `rg_` token by (re-register).
 pub(crate) use gate::is_gate_unauthenticated;
@@ -500,22 +501,30 @@ pub fn segment(value: &str) -> String {
 /// `{ws|wss}://host/v1/node/ws?token=…&origin_surface=desktop&…` for an
 /// already validated origin.
 pub fn node_socket_url(base_url: &str, node_token: &str, version: &str) -> String {
-    node_socket(base_url, Some(node_token), version)
+    node_socket(base_url, "/v1/node/ws", Some(node_token), version)
 }
 
 /// `{ws|wss}://host/v1/node/ws?origin_surface=desktop&…`: the spawn node's
 /// socket, whose token goes in the `Authorization` header instead.
 pub fn broker_node_socket_url(base_url: &str, version: &str) -> String {
-    node_socket(base_url, None, version)
+    node_socket(base_url, "/v1/node/ws", None, version)
 }
 
-fn node_socket(base_url: &str, node_token: Option<&str>, version: &str) -> String {
+/// `{ws|wss}://host/relay-node/v1/ws?origin_surface=desktop&…`: Control's
+/// bridge of the spawn node's socket on a gate-only install, where Control
+/// holds the node token. The relay-node credential goes in the
+/// `Authorization` header only, never in the URL.
+pub fn control_node_socket_url(control_url: &str, version: &str) -> String {
+    node_socket(control_url, "/relay-node/v1/ws", None, version)
+}
+
+fn node_socket(base_url: &str, path: &str, node_token: Option<&str>, version: &str) -> String {
     let (scheme, host) = match base_url.split_once("://") {
         Some(("http", host)) => ("ws", host),
         Some((_, host)) => ("wss", host),
         None => ("wss", base_url),
     };
-    let socket = format!("{scheme}://{}/v1/node/ws", host.trim_end_matches('/'));
+    let socket = format!("{scheme}://{}{path}", host.trim_end_matches('/'));
     // A validated origin always forms a URL; anything else is returned as
     // it is, for the connection to refuse, rather than stopping the core.
     let Ok(mut url) = url::Url::parse(&socket) else {
@@ -871,6 +880,20 @@ mod tests {
             node_name: "desk".into(),
             token: "nt_live_x".into(),
         }
+    }
+
+    #[test]
+    fn the_control_bridge_socket_never_carries_a_credential_in_its_url() {
+        assert_eq!(
+            control_node_socket_url("https://control.example.com/", "1.2"),
+            "wss://control.example.com/relay-node/v1/ws?origin_surface=desktop&origin_client=relay-desktop&origin_version=1.2"
+        );
+        assert_eq!(
+            broker_node_socket_url("https://cast.example.com", "1.2"),
+            "wss://cast.example.com/v1/node/ws?origin_surface=desktop&origin_client=relay-desktop&origin_version=1.2"
+        );
+        assert!(control_node_socket_url("http://127.0.0.1:9", "1")
+            .starts_with("ws://127.0.0.1:9/relay-node/v1/ws?"));
     }
 
     #[test]

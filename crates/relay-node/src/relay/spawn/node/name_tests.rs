@@ -116,6 +116,7 @@ fn enrollment(config: &NodeConfig, id: &str, name: &str, key: &str) -> Enrollmen
         base_url: config.base_url.clone(),
         workspace: fingerprint(&Secret::new(key.to_string())),
         rotation_key: None,
+        bridged: false,
     }
 }
 
@@ -1226,4 +1227,288 @@ async fn a_saved_node_whose_credential_is_for_another_name_stops_the_node() {
     assert!(!error.contains("sh_wk_"), "{error}");
     assert!(!states.iter().any(|s| s.state == SpawnState::Waiting));
     node.stop().await;
+}
+
+// ---------------------------------------------------------------------------
+// A gate-only install: Control keeps the node token and bridges the socket.
+
+/// Control's broker answer to an enrolment on a gate-only install: the
+/// node's id and name, never its token.
+const BRIDGED: (&str, &str) = (
+    "201 Created",
+    r#"{"ok":true,"data":{"id":"node_desktop_new","name":"mac-desktop"}}"#,
+);
+
+/// The node enrols through Control without a node token and without
+/// requiring one, keeps none on disk, opens Control's `/relay-node/v1/ws`
+/// with its relay-node credential in the header only, registers, tolerates
+/// a `deliver` frame, and is claimed by name.
+#[tokio::test]
+async fn a_gate_only_node_enrols_without_a_token_and_connects_through_control() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let control = Scripted::new().await;
+    let config = node_scoped(&relaycast.base_url, &control.base_url, folder.path());
+    let host = Arc::new(Recording::default());
+    let node = SpawnNode::start(config.clone(), host.clone());
+    let request = control.answer(BRIDGED).await;
+    assert!(
+        request.starts_with("post /relay-node/v1/nodes "),
+        "{request}"
+    );
+    assert!(!request.contains("x-relaycast-node-token:"), "{request}");
+    assert!(idempotency_key(&request).is_none(), "{request}");
+
+    // The socket opens only once the record is saved.
+    let (stream, _) = control.listener.accept().await.unwrap();
+    let kept = std::fs::read_to_string(node_file(&config)).unwrap();
+    let kept: Value = serde_json::from_str(&kept).unwrap();
+    assert_eq!(kept["bridged"], true);
+    assert_eq!(kept["token"], "");
+    assert_eq!(kept["nodeID"], "node_desktop_new");
+    let seen = Arc::new(Mutex::new(None));
+    let record = seen.clone();
+    // tungstenite's callback shape, whose error is its own response type.
+    #[allow(clippy::result_large_err)]
+    let callback = move |request: &tungstenite::handshake::server::Request,
+                         response: tungstenite::handshake::server::Response| {
+        let bearer = request
+            .headers()
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        *record.lock().unwrap() = Some((request.uri().to_string(), bearer));
+        Ok(response)
+    };
+    let mut socket = tokio_tungstenite::accept_hdr_async(stream, callback)
+        .await
+        .unwrap();
+    let (uri, bearer) = seen.lock().unwrap().clone().unwrap();
+    assert!(uri.starts_with("/relay-node/v1/ws?"), "{uri}");
+    assert!(!uri.contains("sh_wk_") && !uri.contains("token="), "{uri}");
+    assert_eq!(
+        bearer.as_deref(),
+        Some(format!("Bearer {NODE_KEY}").as_str())
+    );
+    let register = loop {
+        let message = tokio::time::timeout(Duration::from_secs(5), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        if let Message::Text(text) = message {
+            break serde_json::from_str::<Value>(&text).unwrap();
+        }
+    };
+    assert_eq!(register["type"], "node.register");
+    assert_eq!(register["node_id"], "node_desktop_new");
+    assert_eq!(*host.claims.lock().unwrap(), ["mac-desktop".to_string()]);
+    socket
+        .send(Message::Text(
+            json!({"v": 1, "id": register["id"], "type": "reply", "ok": true}).to_string(),
+        ))
+        .await
+        .unwrap();
+    until(&host, |states| {
+        states.iter().any(|s| s.state == SpawnState::Live)
+    })
+    .await;
+    // A `deliver` frame (Control drops them, but one may still pass) is
+    // tolerated: the connection stays up.
+    socket
+        .send(Message::Text(
+            json!({"v": 1, "type": "deliver", "agent": "mac-desktop-a1", "delivery_id": "d1"})
+                .to_string(),
+        ))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!host
+        .states
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|s| s.state == SpawnState::Waiting));
+    assert!(untouched(&relaycast).await);
+    node.stop().await;
+}
+
+fn bridged(config: &NodeConfig) -> Enrollment {
+    Enrollment {
+        token: Secret::new(String::new()),
+        bridged: true,
+        ..enrollment(config, "node_desktop_1", "mac-desktop", NODE_KEY)
+    }
+}
+
+/// Control refuses to bridge a saved node (`403`: no usable node token for
+/// it): the node enrols again under its own id and name, with no token
+/// header to prove it (Control sends the one it keeps), never a rotation.
+#[tokio::test]
+async fn a_bridge_refusal_enrols_the_node_again_without_a_token() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let control = Scripted::new().await;
+    let config = node_scoped(&relaycast.base_url, &control.base_url, folder.path());
+    save(&node_file(&config), &bridged(&config)).unwrap();
+    let host = Arc::new(Recording::default());
+    let node = SpawnNode::start(config.clone(), host.clone());
+    let upgrade = control.answer(("403 Forbidden", "")).await;
+    assert!(upgrade.starts_with("get /relay-node/v1/ws?"), "{upgrade}");
+    assert!(upgrade.contains(&format!("authorization: bearer {NODE_KEY}")));
+    let request = control
+        .answer((
+            "201 Created",
+            r#"{"ok":true,"data":{"id":"node_desktop_1","name":"mac-desktop"}}"#,
+        ))
+        .await;
+    assert!(
+        request.starts_with("post /relay-node/v1/nodes "),
+        "{request}"
+    );
+    assert!(!request.contains("x-relaycast-node-token:"), "{request}");
+    assert_eq!(body(&request)["node_id"], "node_desktop_1");
+    until(&host, |states| {
+        states.iter().any(|s| s.state == SpawnState::Waiting)
+    })
+    .await;
+    assert_eq!(load(&config), Some(bridged(&config)));
+    assert!(untouched(&relaycast).await);
+    node.stop().await;
+}
+
+/// Control answers `404` to the bridge: the install is no longer gate-only,
+/// so the bridged node is forgotten and the next attempt enrols afresh.
+#[tokio::test]
+async fn a_bridge_that_is_gone_forgets_the_bridged_node() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let control = Scripted::new().await;
+    let config = node_scoped(&relaycast.base_url, &control.base_url, folder.path());
+    save(&node_file(&config), &bridged(&config)).unwrap();
+    let host = Arc::new(Recording::default());
+    let node = SpawnNode::start(config.clone(), host.clone());
+    let upgrade = control.answer(("404 Not Found", "")).await;
+    assert!(upgrade.starts_with("get /relay-node/v1/ws?"), "{upgrade}");
+    until(&host, |states| {
+        states.iter().any(|s| s.state == SpawnState::Waiting)
+    })
+    .await;
+    assert!(!node_file(&config).exists());
+    node.stop().await;
+}
+
+/// Control answers `401` to the bridge: it refused the install's
+/// relay-node credential. Enrolling again cannot change that, so the node
+/// stops and says why, never enrols again, and keeps the saved node.
+#[tokio::test]
+async fn a_refused_relay_node_credential_stops_the_bridged_node() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let control = Scripted::new().await;
+    let config = node_scoped(&relaycast.base_url, &control.base_url, folder.path());
+    save(&node_file(&config), &bridged(&config)).unwrap();
+    let host = Arc::new(Recording::default());
+    let node = SpawnNode::start(config.clone(), host.clone());
+    let upgrade = control.answer(("401 Unauthorized", "")).await;
+    assert!(upgrade.starts_with("get /relay-node/v1/ws?"), "{upgrade}");
+    until(&host, |states| {
+        states.iter().any(|s| s.state == SpawnState::Off)
+    })
+    .await;
+    assert!(untouched(&control).await);
+    let states = host.states.lock().unwrap().clone();
+    assert_eq!(
+        states.last().unwrap().error.as_deref(),
+        Some(BRIDGE_CREDENTIAL_REFUSED)
+    );
+    assert!(!states.iter().any(|s| s.state == SpawnState::Waiting));
+    assert_eq!(load(&config), Some(bridged(&config)));
+    assert!(untouched(&relaycast).await);
+    node.stop().await;
+}
+
+/// Control answers the bridge with `status` (`429` at a limit, `503`
+/// shutting down): the node waits out the backoff and opens the same
+/// bridged socket again, never enrolling again or forgetting the node.
+async fn a_busy_bridge_is_tried_again_after_the_backoff(status: &str) {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let control = Scripted::new().await;
+    let config = node_scoped(&relaycast.base_url, &control.base_url, folder.path());
+    save(&node_file(&config), &bridged(&config)).unwrap();
+    let kept = std::fs::read(node_file(&config)).unwrap();
+    let host = Arc::new(Recording::default());
+    let node = SpawnNode::start(config.clone(), host.clone());
+    let upgrade = control.answer((status, "")).await;
+    assert!(upgrade.starts_with("get /relay-node/v1/ws?"), "{upgrade}");
+    until(&host, |states| {
+        states.iter().any(|s| s.state == SpawnState::Waiting)
+    })
+    .await;
+    assert_eq!(std::fs::read(node_file(&config)).unwrap(), kept);
+    // Tried again after the backoff: the same socket, not an enrolment.
+    let next = tokio::time::timeout(Duration::from_secs(30), control.answer((status, "")))
+        .await
+        .expect("tried again");
+    assert!(next.starts_with("get /relay-node/v1/ws?"), "{next}");
+    assert!(next.contains(&format!("authorization: bearer {NODE_KEY}")));
+    assert_eq!(std::fs::read(node_file(&config)).unwrap(), kept);
+    let states = host.states.lock().unwrap().clone();
+    assert!(!states.iter().any(|s| s.state == SpawnState::Off));
+    assert!(untouched(&relaycast).await);
+    node.stop().await;
+}
+
+#[tokio::test]
+async fn a_bridge_shutting_down_is_tried_again_without_enrolling() {
+    a_busy_bridge_is_tried_again_after_the_backoff("503 Service Unavailable").await;
+}
+
+#[tokio::test]
+async fn a_bridge_at_its_limit_is_tried_again_without_enrolling() {
+    a_busy_bridge_is_tried_again_after_the_backoff("429 Too Many Requests").await;
+}
+
+/// A workspace key's enrolment answer without a token is still refused:
+/// only Control's broker bridges a node.
+#[tokio::test]
+async fn a_workspace_key_enrolment_without_a_token_is_still_refused() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let config = config(&relaycast.base_url, folder.path());
+    let (enrolled, _) = tokio::join!(enroll_named(&config, None), relaycast.answer(BRIDGED));
+    let Err(refused) = enrolled else {
+        panic!("{enrolled:?}");
+    };
+    assert!(refused.reason().contains("without a node token"));
+    assert!(!node_file(&config).exists());
+}
+
+/// A tokenless bridged record is never used where there is no bridge: after
+/// a switch to a workspace key at the same origin it is not adopted (nothing
+/// is asked of Relaycast for it, and no empty token is sent), and neither is
+/// one saved under the same key once Control's origin is gone.
+#[tokio::test]
+async fn a_bridged_node_is_never_used_without_the_bridge() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let keyed = config(&relaycast.base_url, folder.path());
+    save(&node_file(&keyed), &bridged(&keyed)).unwrap();
+    let adopted = tokio::time::timeout(Duration::from_secs(2), saved(&keyed)).await;
+    assert_eq!(adopted, Ok(Ok(None)));
+    assert!(untouched(&relaycast).await);
+
+    let control = Scripted::new().await;
+    let scoped = node_scoped(&relaycast.base_url, &control.base_url, folder.path());
+    save(&node_file(&scoped), &bridged(&scoped)).unwrap();
+    let without_control = NodeConfig {
+        control_url: None,
+        ..scoped.clone()
+    };
+    let loaded = tokio::time::timeout(Duration::from_secs(2), saved(&without_control)).await;
+    assert_eq!(loaded, Ok(Ok(None)));
+    // Where the bridge is, it is this computer's node.
+    assert_eq!(saved(&scoped).await, Ok(Some(bridged(&scoped))));
+    assert!(untouched(&relaycast).await);
 }

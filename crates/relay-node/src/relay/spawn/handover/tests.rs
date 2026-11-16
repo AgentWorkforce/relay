@@ -163,6 +163,7 @@ fn core(home: &std::path::Path, spawner: Arc<FakeClaude>) -> (Arc<Core>, Arc<Tur
 fn spawned(core: &Core, name: &str, kind: SessionKind, harness: HarnessId) {
     let intent = Intent {
         invocation_id: format!("inv_{name}"),
+        gate_launch: false,
         name: name.into(),
         harness,
         node_id: "node_desktop_1".into(),

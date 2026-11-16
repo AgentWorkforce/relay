@@ -241,8 +241,16 @@ fn failed(reason: &str) -> SpawnClaim {
 /// credential Cloud requests go out with, once Cloud confirmed that
 /// credential is theirs. Both requests are made with that one credential,
 /// held for them (`CloudAccess::credential`), so the claim never goes out as
-/// anyone but the person just confirmed.
-pub(super) async fn ask(cloud: &dyn CloudAccess, ask: &Ask, token: &Secret) -> Answer {
+/// anyone but the person just confirmed. A node bridged through Control on
+/// a gate-only install holds no token (`token` is empty): it is proved by
+/// its enrolled `node_name` instead, which Control checks against the
+/// node's enrolment.
+pub(super) async fn ask(
+    cloud: &dyn CloudAccess,
+    ask: &Ask,
+    token: &Secret,
+    node_name: &str,
+) -> Answer {
     // A held credential Cloud refuses is renewed once, as other requests'
     // are, and the whole claim made again with the renewed one.
     let mut refused = None;
@@ -250,7 +258,7 @@ pub(super) async fn ask(cloud: &dyn CloudAccess, ask: &Ask, token: &Secret) -> A
         let Some((site, bearer)) = cloud.credential(refused.take()).await else {
             break;
         };
-        match ask_with(&site, &bearer, ask, token).await {
+        match ask_with(&site, &bearer, ask, token, node_name).await {
             Ok(answer) => return answer,
             Err(_) => refused = Some(bearer),
         }
@@ -260,7 +268,13 @@ pub(super) async fn ask(cloud: &dyn CloudAccess, ask: &Ask, token: &Secret) -> A
 
 /// One claim with one credential: whose it is, then the claim. `Err` when
 /// Cloud refused the credential itself.
-async fn ask_with(site: &str, bearer: &Secret, ask: &Ask, token: &Secret) -> Result<Answer, ()> {
+async fn ask_with(
+    site: &str,
+    bearer: &Secret,
+    ask: &Ask,
+    token: &Secret,
+    node_name: &str,
+) -> Result<Answer, ()> {
     let send =
         |method, path: &'static str, body| cloud_session::api(site, bearer, method, path, body);
     let signed_in = match send("GET", "/auth/whoami", None).await {
@@ -278,10 +292,21 @@ async fn ask_with(site: &str, bearer: &Secret, ask: &Ask, token: &Secret) -> Res
             limited: false,
         });
     }
-    let body = json!({"workspaceId": ask.workspace_id, "nodeToken": token.expose()});
+    let body = claim_body(ask, token, node_name);
     match send("POST", "/fleet/nodes/claim", Some(body)).await {
         Err(CloudError::Rejected) => Err(()),
         result => Ok(answered(result)),
+    }
+}
+
+/// The claim's body: the node proved by its token, or, for a node bridged
+/// through Control (no token here), by its enrolled name. Control refuses a
+/// `nodeToken` of any value for a gate-only node, so none is sent.
+fn claim_body(ask: &Ask, token: &Secret, node_name: &str) -> Value {
+    if token.expose().is_empty() {
+        json!({"workspaceId": ask.workspace_id, "nodeName": node_name})
+    } else {
+        json!({"workspaceId": ask.workspace_id, "nodeToken": token.expose()})
     }
 }
 
@@ -415,9 +440,10 @@ impl Core {
         self.show_spawn_claim(shown.unwrap_or(pending), blocked);
         let Some(core) = self.arc() else { return };
         let token = token.clone();
+        let node_name = node.node_name.clone();
         tokio::spawn(async move {
             let cloud = core.plugins.cloud.clone();
-            let answer = ask(cloud.as_ref(), &asked, &token).await;
+            let answer = ask(cloud.as_ref(), &asked, &token, &node_name).await;
             let settled = core
                 .ledger()
                 .memory()

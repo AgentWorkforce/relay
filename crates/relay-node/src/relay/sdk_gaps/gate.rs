@@ -1,7 +1,8 @@
 //! The relaygate calls a gate-only install makes besides the Relaycast paths
 //! the gate serves: enrolment with the desktop's device token
-//! (`POST /v1/register`), and an agent changing or removing itself with its
-//! own `rg_` token (`PATCH`/`DELETE /v1/agent`).
+//! (`POST /v1/register`) or with a launch's one-time credential, and an
+//! agent changing, refreshing or removing itself with its own `rg_` token
+//! (`PATCH`/`DELETE /v1/agent`, `POST /v1/token/refresh`).
 //!
 //! They go through the same guarded transport as the SDK (no redirects, the
 //! platform's trust, a 30 s timeout) and the same request log, but are read
@@ -31,6 +32,8 @@ pub const GATE_DENIED: &str = "relaygate_denied";
 pub const GATE_NAME_SCOPE: &str = "relaygate_name_scope";
 /// Another person owns the name, or the recovery proof is wrong.
 pub const GATE_NAME_TAKEN: &str = "relaygate_name_taken";
+/// relaygate cannot reach what it needs to answer; try again later.
+pub const GATE_UNAVAILABLE: &str = "relaygate_unavailable";
 
 /// The shortest and longest recovery proof relaygate accepts.
 const RECOVERY_CHARS: std::ops::RangeInclusive<usize> = 16..=512;
@@ -184,6 +187,71 @@ pub async fn gate_register(
     )
     .await?;
     registration_of(&data)
+}
+
+/// `POST {gate}/v1/register` with a launch's one-time credential
+/// (`sh_lt_…`) as the bearer: registers the launched agent `name` and
+/// returns its `rg_` token. The body is the name alone, with no recovery
+/// proof: the registration is renewed with [`gate_refresh`] and ends with
+/// the launch. The credential is spent by this call whatever it answers, so
+/// the caller presents it once and never again.
+pub async fn gate_register_launch(
+    gate_url: &str,
+    credential: &Secret,
+    name: &str,
+) -> Result<GateRegistration, GateError> {
+    let body = json!({"name": name});
+    let data = call(
+        reqwest::Method::POST,
+        gate_url,
+        "/v1/register",
+        credential,
+        Some(body.clone()),
+        body,
+    )
+    .await?;
+    registration_of(&data)
+}
+
+/// A token [`gate_refresh`] issued.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GateRefresh {
+    /// The new `rg_` token; the one it replaces is revoked at once.
+    pub token: Secret,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// `POST {gate}/v1/token/refresh` with an agent's current `rg_` token:
+/// relaygate issues a new token for the same agent and revokes this one.
+pub async fn gate_refresh(gate_url: &str, token: &Secret) -> Result<GateRefresh, GateError> {
+    let data = call(
+        reqwest::Method::POST,
+        gate_url,
+        "/v1/token/refresh",
+        token,
+        None,
+        Value::Null,
+    )
+    .await?;
+    let invalid = |what: &str| GateError::Other(Box::new(RelayError::InvalidResponse(what.into())));
+    let field = |key: &str| {
+        data.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| invalid(&format!("relaygate refresh without {key}")))
+    };
+    let token = field("token")?;
+    if !token.starts_with("rg_") {
+        return Err(invalid("relaygate refresh without an rg_ token"));
+    }
+    let expires_at = chrono::DateTime::parse_from_rfc3339(field("expires_at")?)
+        .map_err(|_| invalid("relaygate refresh with an unreadable expires_at"))?
+        .with_timezone(&chrono::Utc);
+    Ok(GateRefresh {
+        token: Secret::new(token.to_string()),
+        expires_at,
+    })
 }
 
 /// `PATCH {gate}/v1/agent` with the agent's own `rg_` token: relaygate

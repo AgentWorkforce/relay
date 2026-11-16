@@ -52,12 +52,36 @@ export function checkWakeTarget(
 /**
  * The message Agent Relay injects into the session. Agent Relay adds its own
  * frame (sender `webhook`, message ref); this is the body inside it. A nudge
- * (see `isNudge`) is returned verbatim.
+ * (see `isNudge`) keeps its words. Every `@name` in it is neutralised (see
+ * `neutraliseMentions`), so a post cannot address other agents on the relay.
  *
  * @param event - The post.
  * @returns The text to deliver.
  */
 export function wakeText(event: ShimEvent): string {
+  return neutraliseMentions(rawWakeText(event));
+}
+
+/** Placed after `@`: invisible when read, but no `@name` matcher sees a name there. */
+const WORD_JOINER = '\u2060';
+
+/**
+ * Puts a word joiner (U+2060) after every `@` that a name could follow, so
+ * the text reads the same but nothing in it is an `@name` mention. The relay
+ * routes a channel message to every agent whose `@name` its text contains
+ * (mention subscriptions, which wake Capy threads, Replicas and Amp threads),
+ * whether or not that agent is in the channel; post bodies are written by
+ * whoever holds the webhook URL, so they must not name agents. Applies to
+ * e-mail addresses and code too: a matcher cannot tell `a@agent` from a mention.
+ *
+ * @param text - Text built from a post.
+ * @returns The same text with no `@name` left in it.
+ */
+export function neutraliseMentions(text: string): string {
+  return text.replace(/@(?=[\p{L}\p{N}_.-])/gu, `@${WORD_JOINER}`);
+}
+
+function rawWakeText(event: ShimEvent): string {
   // A nudge: an authenticated sender (any mode but open) posting text/plain
   // chooses the exact words the agent sees, e.g. "New task 42 — read it with
   // the acme MCP". Agent Relay's own frame still names the sender as webhook.
