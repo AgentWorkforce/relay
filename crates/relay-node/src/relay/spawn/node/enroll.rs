@@ -48,8 +48,10 @@ pub(super) enum Refused {
     /// The node credential is bound to another node name (the broker's
     /// `403 node_mismatch`): the node does not start.
     NodeMismatch(String),
-    /// Control's `403 gate_only`: a gate-only install enrols no spawn node,
-    /// so spawning is unavailable here. Never retried.
+    /// A gate-only install: Control's broker enrolled the node but kept its
+    /// Relaycast node token (`{id, name}`, no token), and the node would
+    /// connect through Control's socket bridge, which this build does not
+    /// use. Spawning is unavailable here. Never retried.
     GateOnly(String),
 }
 
@@ -168,9 +170,6 @@ pub(super) async fn enroll(
             if node_credential::is_node_mismatch(&error) {
                 return node_mismatch(config, name);
             }
-            if node_credential::is_gate_only(&error) {
-                return Refused::GateOnly(GATE_ONLY.into());
-            }
             let failed =
                 || Refused::Failed(format!("Agent Relay did not enroll this computer: {error}"));
             match error.code() {
@@ -190,12 +189,16 @@ pub(super) async fn enroll(
                 _ => failed(),
             }
         })?;
-    let token = data["token"]
-        .as_str()
-        .filter(|token| !token.is_empty())
-        .ok_or_else(|| {
+    let Some(token) = data["token"].as_str().filter(|token| !token.is_empty()) else {
+        // Through Control's broker (a node credential), an answer without
+        // a token is a gate-only install's: Control keeps the token. Under
+        // a workspace key it is a broken answer, tried again.
+        return Err(if node_scoped(config) && data["id"].is_string() {
+            Refused::GateOnly(GATE_ONLY.into())
+        } else {
             Refused::Failed("Agent Relay enrolled this computer without a node token.".into())
-        })?;
+        });
+    };
     let enrollment = Enrollment {
         node_id: data["id"].as_str().unwrap_or(node_id).to_string(),
         node_name: name.to_string(),
@@ -374,9 +377,6 @@ pub(super) async fn saved(config: &NodeConfig) -> Result<Option<Enrollment>, Ref
             // another name. Kept as such, so the node stops (`connect_once`).
             if node_credential::is_node_mismatch(&error) {
                 return node_mismatch(config, &kept.node_name);
-            }
-            if node_credential::is_gate_only(&error) {
-                return Refused::GateOnly(GATE_ONLY.into());
             }
             Refused::Failed(format!(
                 "Agent Relay did not say which node is this computer's: {error}"

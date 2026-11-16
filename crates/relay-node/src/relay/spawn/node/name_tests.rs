@@ -1,5 +1,6 @@
 //! A name another node holds: the node takes an alternate of it, keeps it,
 //! and never retries the conflict forever.
+use super::enroll::enroll;
 use super::enrollment::named_for;
 use super::*;
 use crate::relay::harness::codex;
@@ -1093,24 +1094,23 @@ async fn a_node_credential_for_another_node_stops_the_node_and_says_so() {
     node.stop().await;
 }
 
-/// Control's `403 gate_only` for the node's enrolment: spawning is
-/// unavailable on a gate-only install. The node stops and says so at once;
+/// On a gate-only install Control's broker enrols the node and keeps its
+/// Relaycast node token: it answers `{id, name}` and no token. Spawning is
+/// unavailable on this computer then. The node stops and says so at once;
 /// it is never retried as a transient failure.
 #[tokio::test]
 async fn a_gate_only_install_reports_spawning_unavailable_and_never_retries() {
-    for refusal in [
-        r#"{"ok":false,"error":{"code":"gate_only","message":"Gate-only workspace"}}"#,
-        // The flat shape a broker image older than relay-control 01614898
-        // sends.
-        r#"{"error":"gate_only","message":"Gate-only workspace"}"#,
+    for answer in [
+        r#"{"ok":true,"data":{"id":"node_desktop_new","name":"mac-desktop"}}"#,
+        r#"{"ok":true,"data":{"id":"node_desktop_new","name":"mac-desktop","token":""}}"#,
     ] {
         let folder = tempfile::tempdir().unwrap();
         let relaycast = Scripted::new().await;
         let control = Scripted::new().await;
         let config = node_scoped(&relaycast.base_url, &control.base_url, folder.path());
         let host = Arc::new(Recording::default());
-        let node = SpawnNode::start(config, host.clone());
-        let request = control.answer(("403 Forbidden", refusal)).await;
+        let node = SpawnNode::start(config.clone(), host.clone());
+        let request = control.answer(("201 Created", answer)).await;
         assert!(
             request.starts_with("post /relay-node/v1/nodes "),
             "{request}"
@@ -1127,8 +1127,35 @@ async fn a_gate_only_install_reports_spawning_unavailable_and_never_retries() {
         assert!(error.contains("gate-only install"), "{error}");
         assert!(error.contains("unavailable"), "{error}");
         assert!(!states.iter().any(|s| s.state == SpawnState::Waiting));
+        // Nothing without a token is saved as this computer's node.
+        assert_eq!(load(&config), None);
         node.stop().await;
     }
+}
+
+/// Key mode is unchanged: Relaycast answering an enrolment under a
+/// workspace key without a token is a failure to try again, never the
+/// gate-only stop.
+#[tokio::test]
+async fn a_tokenless_enrolment_under_a_workspace_key_is_a_failure_not_gate_only() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let config = config(&relaycast.base_url, folder.path());
+    let (enrolled, request) = tokio::join!(
+        enroll(&config, "node_desktop_new", "mac-desktop", None),
+        relaycast.answer((
+            "201 Created",
+            r#"{"ok":true,"data":{"id":"node_desktop_new","name":"mac-desktop"}}"#,
+        ))
+    );
+    assert!(request.starts_with("post /v1/nodes "), "{request}");
+    match enrolled {
+        Err(Refused::Failed(reason)) => {
+            assert!(reason.contains("without a node token"), "{reason}")
+        }
+        other => panic!("expected a failure to retry, got {other:?}"),
+    }
+    assert_eq!(load(&config), None);
 }
 
 /// A name another node holds, under a node credential: Control's broker

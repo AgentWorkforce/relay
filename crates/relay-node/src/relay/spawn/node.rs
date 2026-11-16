@@ -385,7 +385,8 @@ async fn connect_once(
             Ok(enrollment) => enrollment,
             Err(Refused::PlanLimit(limit)) => return Ended::Refused(limit),
             Err(Refused::NoName(reason)) => return Ended::GaveUp(reason),
-            // A gate-only install enrols no node: spawning is unavailable
+            // On a gate-only install Control keeps the node token (an
+            // enrolment answered without one): spawning is unavailable
             // here, and trying again cannot change that.
             Err(Refused::NodeMismatch(reason) | Refused::GateOnly(reason)) => {
                 host.refused(reason.clone());
@@ -393,9 +394,9 @@ async fn connect_once(
             }
             Err(refused) => return Ended::Closed(refused.reason()),
         },
-        // The saved node's credential is bound to another name, or the
-        // install is gate-only: stopped, as for a new enrollment.
-        Err(Refused::NodeMismatch(reason) | Refused::GateOnly(reason)) => {
+        // The saved node's credential is bound to another name: stopped,
+        // as for a new enrollment.
+        Err(Refused::NodeMismatch(reason)) => {
             host.refused(reason.clone());
             return Ended::GaveUp(reason);
         }
