@@ -20,7 +20,11 @@ pub fn copilot_hook(development: bool, event: &str) -> Result<()> {
     if value["relayEvent"] == "stop" && value["stopReason"] == "end_turn" {
         let stamp = super::paths::home().ok().and_then(|home| {
             let config = CopilotConfig::from_env(&|key| std::env::var(key).ok(), &home);
-            stop_wait::snapshot(&config, value["sessionId"].as_str()?)
+            let sid = value["sessionId"].as_str()?;
+            match value["timestamp"].as_u64() {
+                Some(timestamp) => stop_wait::started_snapshot(&config, sid, timestamp),
+                None => stop_wait::snapshot(&config, sid),
+            }
         });
         if let Some(stamp) = stamp {
             value["relayJournal"] = stamp;
