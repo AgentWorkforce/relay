@@ -287,6 +287,31 @@ mod tests {
         assert!(!message.contains("rg_fixture_coloured"), "{message}");
     }
 
+    /// A gate-only desktop's relay-node credential never reaches a
+    /// diagnostic, wherever it sits in a word, as relaygate's tokens do not.
+    #[test]
+    fn relay_node_credentials_never_reach_a_diagnostic_like_gate_tokens() {
+        let message = redact_with(
+            "control refused token=sh_wk_fixture_one (sh_wk_fixture_two) \"sh_wk_fixture_three\" rg_fixture_four; node desk kept",
+            [].into_iter(),
+        );
+        for secret in [
+            "sh_wk_fixture_one",
+            "sh_wk_fixture_two",
+            "sh_wk_fixture_three",
+            "rg_fixture_four",
+        ] {
+            assert!(!message.contains(secret), "{message}");
+        }
+        assert!(message.contains("control refused"), "{message}");
+        assert!(message.contains("node desk kept"), "{message}");
+        let message = redact_with(
+            "refused \x1b[31msh_wk_fixture_coloured\x1b[0m",
+            [].into_iter(),
+        );
+        assert!(!message.contains("sh_wk_fixture_coloured"), "{message}");
+    }
+
     #[test]
     fn armadillo_credentials_never_reach_a_diagnostic() {
         let message = redact_with(

@@ -1422,6 +1422,12 @@ async fn a_refused_relay_node_credential_stops_the_bridged_node() {
         states.last().unwrap().error.as_deref(),
         Some(BRIDGE_CREDENTIAL_REFUSED)
     );
+    // Marked for the desktop, which forgets the credential and mints
+    // another; never marked before the refusal.
+    assert_eq!(states.last().unwrap().credential_refused, Some(true));
+    assert!(states[..states.len() - 1]
+        .iter()
+        .all(|s| s.credential_refused.is_none()));
     assert!(!states.iter().any(|s| s.state == SpawnState::Waiting));
     assert_eq!(load(&config), Some(bridged(&config)));
     assert!(untouched(&relaycast).await);

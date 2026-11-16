@@ -518,9 +518,14 @@ impl Core {
             // The spawn node follows the workspace. At start the first agent
             // sync can run before discovery, and nothing else would bring
             // the node up once the workspace is found.
-            if let (Some(core), Ok(runtime)) = (self.arc(), tokio::runtime::Handle::try_current()) {
-                runtime.spawn(async move { core.sync_spawn_node().await });
-            }
+            self.sync_spawn_node_soon();
+        } else if found.as_ref().is_some_and(Workspace::is_gate_only) && self.spawn_node_outdated()
+        {
+            // A gate-only install's node follows the desktop's relay-node
+            // credential (`CloudAccess::relay_node_credential`), which can
+            // be minted, replaced or forgotten while the workspace stays
+            // the same: the desktop rediscovers to have it read again.
+            self.sync_spawn_node_soon();
         }
         let verification = self.status().workspace.verification;
         found.is_some()
@@ -529,6 +534,14 @@ impl Core {
                     verification,
                     Verification::Pending | Verification::Unreachable
                 ))
+    }
+
+    /// Reconciles the spawn node in the background, when there is a
+    /// runtime to do it on.
+    fn sync_spawn_node_soon(&self) {
+        if let (Some(core), Ok(runtime)) = (self.arc(), tokio::runtime::Handle::try_current()) {
+            runtime.spawn(async move { core.sync_spawn_node().await });
+        }
     }
 
     /// Keeps one push channel per target (the delivery runtime's call). A

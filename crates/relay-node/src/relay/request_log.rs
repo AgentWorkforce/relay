@@ -390,6 +390,34 @@ mod tests {
         assert!(!frame.contains("sh_lt_fixture_launch"), "{frame}");
         assert!(frame.contains("spawn:claude"), "{frame}");
     }
+    /// A gate-only desktop's relay-node credential is scrubbed wherever a
+    /// service echoes it, as relaygate's `rg_` tokens are.
+    #[test]
+    fn a_relay_node_credential_is_redacted_like_a_gate_token() {
+        let text = scrub_text(
+            "refused token=sh_wk_fixture_one (sh_wk_fixture_two) \"sh_wk_fixture_three\" Bearer sh_wk_fixture_four rg_fixture_five node_name=desk",
+            "",
+        );
+        for secret in [
+            "sh_wk_fixture_one",
+            "sh_wk_fixture_two",
+            "sh_wk_fixture_three",
+            "sh_wk_fixture_four",
+            "rg_fixture_five",
+        ] {
+            assert!(!text.contains(secret), "{text}");
+        }
+        assert!(text.contains("node_name=desk"), "{text}");
+        let coloured = scrub_text("refused \x1b[31msh_wk_fixture_coloured\x1b[0m", "");
+        assert!(!coloured.contains("sh_wk_fixture_coloured"), "{coloured}");
+        let logged = body(
+            &json!({"error": "relay-node credential sh_wk_fixture_echoed refused",
+                "token": "sh_wk_fixture_field", "nodeName": "desk"}),
+            "",
+        );
+        assert!(!logged.contains("sh_wk_fixture"), "{logged}");
+        assert!(logged.contains("desk"), "{logged}");
+    }
     static TEST_LOCK: Mutex<()> = Mutex::new(());
     #[test]
     fn removes_secrets_and_bounds_bodies() {
