@@ -116,6 +116,38 @@ on:
 
 A task already invoked before the flag was turned on keeps its original task text.
 
+## Dead worker detection
+
+An agent that ends without a final answer, or is ended on the node, otherwise holds its task
+`running`, and its slot, until `maxRuntimeMs`. With `"detectDeadWorkers": true`, each pass
+with a `running` task and no claimed result reads the core's `agents.list` once:
+
+- A row with the task's agent name counts as seen. It is gone when its spawn evidence says
+  `process.state: exited` or `work.state: completed`, otherwise live.
+- A name missing from the list is gone, but only once that agent has been seen, so a name
+  the core never lists cannot fail a task.
+- The first gone observation is recorded in the ledger. Once the agent has been gone for
+  `deadWorkerGraceMs` (default `60000`, at most one hour) and still no result has been
+  claimed, the task fails: `worker_gone` in the ledger and log, `agent_failed` as a report
+  reason. The usual stop and its slot release follow.
+- An agent listed live again clears the mark, and the window starts over next time.
+- A result read within the window wins and the task finishes as the agent claimed.
+- A core that cannot be reached, lacks `agents.list`, or answers in a shape the bridge cannot
+  read is no evidence either way: nothing is recorded or failed, `worker_check_unavailable`
+  is logged and the runtime limit still applies.
+
+The mark survives a restart, so a window that runs out while the bridge is down fails the
+task on the first pass that still finds the agent gone. A result the agent sends after the
+task has failed is ignored.
+
+**Deploy order.** `detectDeadWorkers` defaults to `false`, and then the core is never asked
+and nothing changes. It needs no change on the chief, since `agent_failed` is already a
+report reason. Set `deadWorkerGraceMs` longer than the time a final answer takes to reach
+Relay after the agent's session ends.
+
+The `agents.list` row shape was checked against relay-node's source at v17.2.1. Reading it
+from a real core has not been verified.
+
 ## Requirements
 
 | Requirement                                        | Status                                                                                                                                                                                                                                                                                                                                                                        |

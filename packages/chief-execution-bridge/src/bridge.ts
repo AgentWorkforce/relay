@@ -10,6 +10,7 @@ import {
   type RelayMessage,
   type RelayPort,
   type SpawnReceipt,
+  type WorkerLiveness,
 } from './ports.js';
 import { execGit, GitError, refreshRepository, type GitRunner } from './repository.js';
 import type { BridgeStore, TaskRow } from './store.js';
@@ -271,6 +272,7 @@ export class ExecutionBridge {
         this.log('invocation_unavailable', { taskId: task.taskId, code: error.code });
       }
     }
+    if (this.config.detectDeadWorkers) await this.detectDeadWorkers();
     // A finished task keeps its slot and repository until its agent has actually stopped.
     const occupying = [
       ...this.store.activeTasks().filter((t) => t.state !== 'queued'),
@@ -392,6 +394,40 @@ export class ExecutionBridge {
     }
     if (task.state === 'launched' && task.invocationId) {
       this.applyReceipt(task, await this.relay.invocation(task.invocationId), now);
+    }
+  }
+
+  /**
+   * Fails a running task whose agent the core has listed as gone for the whole grace window
+   * without a result. A core that cannot be reached is no evidence either way: the task is kept
+   * and the runtime limit still applies.
+   */
+  private async detectDeadWorkers(): Promise<void> {
+    const watched = () => this.store.activeTasks().filter((t) => t.state === 'running' && !t.pendingResult);
+    if (watched().length === 0) return;
+    let agents: Map<string, WorkerLiveness> | undefined;
+    try {
+      agents = await this.node.listAgents();
+    } catch {
+      agents = undefined;
+    }
+    if (!agents) {
+      this.log('worker_check_unavailable');
+      return;
+    }
+    const now = this.now();
+    // Read afresh: a result may have been claimed while the core answered.
+    for (const task of watched()) {
+      const observation = agents.get(task.agentName) ?? 'absent';
+      this.store.observeWorker(task.taskId, observation, now);
+      const goneAt = this.store.task(task.taskId)?.workerGoneAt;
+      if (goneAt === undefined) {
+        if (task.workerGoneAt !== undefined) this.log('worker_returned', { taskId: task.taskId });
+        continue;
+      }
+      if (task.workerGoneAt === undefined) this.log('worker_gone', { taskId: task.taskId, observation });
+      // Reported to the chief as `agent_failed`.
+      if (now - goneAt >= this.config.deadWorkerGraceMs) this.fail(task, 'worker_gone');
     }
   }
 
