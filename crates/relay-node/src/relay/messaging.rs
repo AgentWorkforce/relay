@@ -448,6 +448,29 @@ impl Core {
     /// (or relaygate, on a gate-only install). `refresh` asks again, for a
     /// token Relaycast refused.
     pub(crate) async fn person_identity(&self, refresh: bool) -> Result<PersonIdentity, RpcError> {
+        let refused = refresh
+            .then(|| self.current_identity().map(|identity| identity.token))
+            .flatten();
+        self.person_identity_unless(refresh, refused).await
+    }
+
+    /// Your relay identity again after `refused` (the token a call used)
+    /// was rejected. With a key this asks Cloud again, as
+    /// `person_identity(true)` does. Through a gate, a token renewed
+    /// meanwhile is kept: only `refused` is never handed out again.
+    pub(crate) async fn person_identity_refused(
+        &self,
+        refused: &Secret,
+    ) -> Result<PersonIdentity, RpcError> {
+        self.person_identity_unless(true, Some(refused.clone()))
+            .await
+    }
+
+    async fn person_identity_unless(
+        &self,
+        refresh: bool,
+        refused: Option<Secret>,
+    ) -> Result<PersonIdentity, RpcError> {
         let account = self.plugins.cloud.account().ok_or_else(sign_in_required)?;
         let gate_url = self.person_gate_url();
         if let Some(identity) = self.current_identity().filter(|identity| {
@@ -461,7 +484,7 @@ impl Core {
         }
         if let Some(gate_url) = gate_url {
             return self
-                .person_identity_at_gate(&account, &gate_url, refresh)
+                .person_identity_at_gate(&account, &gate_url, refused.as_ref())
                 .await;
         }
         let path = format!(
@@ -478,7 +501,7 @@ impl Core {
             Err(CloudError::GateOnly { relaygate_url }) => {
                 let gate_url = self.adopt_gate_url(relaygate_url)?;
                 return self
-                    .person_identity_at_gate(&account, &gate_url, refresh)
+                    .person_identity_at_gate(&account, &gate_url, refused.as_ref())
                     .await;
             }
             Err(CloudError::SignedOut | CloudError::Rejected) => return Err(sign_in_required()),
@@ -596,7 +619,7 @@ impl Core {
     /// `gate_url` as one more agent: [`gate_person_name`], the device token,
     /// and the recovery proof kept for that name. One enrolment runs at a
     /// time; a caller that waited for another's uses the token it got.
-    /// `refused`: the token held now was refused, so it is never kept.
+    /// `refused`: a token the gate rejected, never handed out again.
     ///
     /// A token that is due but has not expired keeps working: when
     /// enrolling again fails, or the gate's wait after a failure is not
@@ -606,7 +629,7 @@ impl Core {
         &self,
         account: &CloudAccount,
         gate_url: &str,
-        refused: bool,
+        refused: Option<&Secret>,
     ) -> Result<PersonIdentity, RpcError> {
         let user_id = account
             .user_id
@@ -615,15 +638,12 @@ impl Core {
             .ok_or_else(sign_in_required)?;
         let name = gate_person_name(user_id);
         let channel = person_channel(&name);
-        let refused = refused
-            .then(|| self.current_identity().map(|identity| identity.token))
-            .flatten();
         let lock = self.gate_locks.get(&channel);
         let _enrolling = lock.lock().await;
         let held = self.current_identity().filter(|identity| {
             identity.base_url == gate_url
                 && identity.name == name
-                && Some(&identity.token) != refused.as_ref()
+                && Some(&identity.token) != refused
         });
         if let Some(identity) = held.clone().filter(|_| !self.person_gate_due()) {
             return Ok(identity);
@@ -632,7 +652,14 @@ impl Core {
         if let Some((wait, why)) = self.person_renewal_wait(&channel) {
             return usable.ok_or_else(|| person_gate_waiting(wait, why));
         }
-        let (issued, enrolment) = match self.enrol_at_gate(gate_url, &name).await {
+        let enrolled = self.enrol_at_gate(gate_url, &name).await;
+        // Signed out, or another account signed in, while it enrolled:
+        // neither the new token nor the one held before is this person's
+        // to keep or hand out.
+        if self.plugins.cloud.account().map(|a| account_key(&a)) != Some(account_key(account)) {
+            return Err(sign_in_required());
+        }
+        let (issued, enrolment) = match enrolled {
             Ok(enrolled) => enrolled,
             Err(error) => {
                 // Signed out, nothing was sent: nothing to wait for.
@@ -642,11 +669,6 @@ impl Core {
                 return usable.ok_or_else(|| gate_identity_error(error));
             }
         };
-        // Signed out, or another account signed in, while it enrolled:
-        // the identity is not this person's to keep or hand out.
-        if self.plugins.cloud.account().map(|a| account_key(&a)) != Some(account_key(account)) {
-            return Err(sign_in_required());
-        }
         let identity = PersonIdentity {
             name,
             agent_id: issued.agent_id,
@@ -721,7 +743,7 @@ impl Core {
         let identity = self.person_identity(false).await?;
         let (identity, sent) = match send(identity.clone()).await {
             Err(error) if error.is_auth_rejection() => {
-                let fresh = self.person_identity(true).await?;
+                let fresh = self.person_identity_refused(&identity.token).await?;
                 (fresh.clone(), send(fresh).await)
             }
             other => (identity, other),
@@ -880,7 +902,7 @@ impl Core {
         self.person_read_allowed(&scope)?;
         let result = match self.history_as(&identity, endpoint, before).await {
             Err(error) if error.is_auth_rejection() => {
-                let fresh = self.person_identity(true).await?;
+                let fresh = self.person_identity_refused(&identity.token).await?;
                 self.history_as(&fresh, endpoint, before)
                     .await
                     .map(|m| (fresh, m))
@@ -1138,7 +1160,7 @@ impl Core {
         };
         let (identity, listing) = match list(identity.clone()).await {
             Err(error) if error.is_auth_rejection() => {
-                let fresh = self.person_identity(true).await?;
+                let fresh = self.person_identity_refused(&identity.token).await?;
                 (fresh.clone(), list(fresh).await)
             }
             other => (identity, other),

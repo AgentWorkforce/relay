@@ -6647,3 +6647,74 @@ async fn without_a_gate_url_messaging_as_you_stays_on_the_cloud_identity() {
     assert!(h.store()["cloud"]["relaygateURL"].is_null());
     h.stop().await;
 }
+
+// An enrolment that fails after you signed out reports the sign-out, not
+// the gate's failure, and hands out nothing.
+#[tokio::test]
+async fn signing_out_during_a_failing_person_enrolment_says_you_are_signed_out() {
+    let h = gate_harness(true).await;
+    let mut client = h.client().await;
+    h.fake
+        .seed_gate_agent("reviewer", "reviewer-recovery-0123456789");
+    h.fake
+        .set_api_error("POST /v1/register", Some((503, "relaygate_unavailable")));
+    let cloud = h.cloud.clone().unwrap();
+    let release = h.fake.hold("POST /v1/register");
+    let ((kind, _), ()) = tokio::join!(
+        client.error("messages.send", json!({"to": "reviewer", "text": "hello"})),
+        async {
+            eventually_for("enrolment parked", Duration::from_secs(10), || {
+                h.fake.held("POST /v1/register") >= 1
+            })
+            .await;
+            *cloud.account.lock().unwrap() = None;
+            release.send(true).unwrap();
+        }
+    );
+    assert_eq!(kind, "not_signed_in");
+    assert!(h.fake.calls("POST", "/v1/dm").is_empty());
+    h.stop().await;
+}
+
+// A send whose token was replaced by a renewal while it was on the way:
+// the gate refuses the old token, and the send goes on with the renewed one
+// without enrolling a third time.
+#[tokio::test]
+async fn a_send_refused_after_a_renewal_uses_the_renewed_token() {
+    let h = gate_harness(true).await;
+    h.fake.set_gate_ttl(Duration::from_secs(2));
+    let mut client = h.client().await;
+    h.fake
+        .seed_gate_agent("reviewer", "reviewer-recovery-0123456789");
+    client
+        .ok("messages.send", json!({"to": "reviewer", "text": "first"}))
+        .await;
+    let first = h.fake.agent(GATE_PERSON).unwrap();
+    h.fake.set_gate_ttl(Duration::from_secs(3600));
+    let release = h.fake.hold("POST /v1/dm");
+    let (sent, ()) = tokio::join!(
+        client.ok("messages.send", json!({"to": "reviewer", "text": "second"})),
+        async {
+            eventually_for("send parked", Duration::from_secs(10), || {
+                h.fake.held("POST /v1/dm") >= 1
+            })
+            .await;
+            // Renewed in the background while the send waited.
+            eventually_for("renewed", Duration::from_secs(10), || {
+                person_registers(&h.fake) >= 2
+            })
+            .await;
+            release.send(true).unwrap();
+        }
+    );
+    assert_eq!(sent["to"], "reviewer");
+    let renewed = h.fake.agent(GATE_PERSON).unwrap();
+    assert_ne!(renewed.token, first.token);
+    let dms = h.fake.calls("POST", "/v1/dm");
+    assert_eq!(
+        dms.last().unwrap().authorization.as_deref(),
+        Some(format!("Bearer {}", renewed.token).as_str())
+    );
+    assert_eq!(person_registers(&h.fake), 2);
+    h.stop().await;
+}
