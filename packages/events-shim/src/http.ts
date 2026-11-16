@@ -179,6 +179,8 @@ async function handleMcp(request: Request, token: string, options: EventsShimHtt
     deps: options.deps,
     shim,
     urls: options.urls,
+    // A long wait must see a wake link made, removed or broken by another request meanwhile.
+    reloadShim: () => findShimByMcpToken(options.deps, token),
     relayOrigins: options.relayOrigins,
     pollIntervalMs: options.pollIntervalMs,
     signal: request.signal,

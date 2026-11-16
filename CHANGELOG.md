@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `@agent-relay/events-shim`: webhook posts no longer go to the wrong session. `setup --claude` installs its wake hooks for every Claude Code session on the machine, and they all share one inbox. Each hook listener took (and marked read) whichever post it saw first, so posts went to unrelated sessions, including posts for a session woken through a relay wake link. Now `listen --hook` listens only in a session whose transcript shows it used the `webhooks` MCP. Any hook listener (Claude Code and turn-end hooks) stands down while the inbox has a working relay wake link, and `wait_for_webhook` takes no posts while one is linked.
 - `agent-relay-node`: Copilot idle chats keep waiting through delayed journal writes and large model-log batches; incoming-message hooks also recognize bundled helper hard links and validate current session descriptors.
 - `agent-relay-node`: macOS development builds recognize their computed code-signing requirement, so native helper verification works while still requiring the running helper to satisfy the core's own requirement.
 

@@ -1712,6 +1712,11 @@ async function listenAsSessionOwner(
             if (exit !== null) return exit;
             continue;
           }
+          // A relay wake link delivers every post to the session that linked it. Claiming one here
+          // (wait_for_webhook marks it read) would take it from that session, so stand down.
+          if (await relayWakeLinked(io, mcpUrl)) return 0;
+          // The session may have closed while that was asked: start no wait for it.
+          if (!alive()) return 0;
           const controller = new AbortController();
           // While \`drain()\`, a wait in flight is not cut off: the inbox may already have handed it
           // posts, which \`deliver\` then keeps for the next owner.
@@ -1757,14 +1762,112 @@ async function listenAsSessionOwner(
   }
 }
 
-/** The hook's JSON input on stdin (Claude Code and Codex both send \`session_id\`). */
-async function hookSession(io: CliIo): Promise<string> {
+/**
+ * Whether the inbox forwards its posts to an Agent Relay session (\`link_relay_wake\`
+ * succeeded and the link is not broken). Unknown (the inbox could not be asked) reads as not
+ * linked: the listener keeps its old behaviour rather than going quiet.
+ */
+async function relayWakeLinked(io: CliIo, mcpUrl: string): Promise<boolean> {
   try {
-    const input = JSON.parse((await io.readStdin()) || '{}') as { session_id?: unknown };
-    return typeof input.session_id === 'string' ? input.session_id : '';
+    const state = await callTool(io, mcpUrl, 'watch_webhooks', {}, AbortSignal.timeout(15_000));
+    return state.wake === 'linked';
   } catch {
-    return '';
+    return false;
   }
+}
+
+/** The hook's JSON input on stdin (Claude Code and Codex both send \`session_id\`). */
+async function hookInput(io: CliIo): Promise<{ session: string; transcript: string }> {
+  try {
+    const input = JSON.parse((await io.readStdin()) || '{}') as {
+      session_id?: unknown;
+      transcript_path?: unknown;
+    };
+    return {
+      session: typeof input.session_id === 'string' ? input.session_id : '',
+      transcript: typeof input.transcript_path === 'string' ? input.transcript_path : '',
+    };
+  } catch {
+    return { session: '', transcript: '' };
+  }
+}
+
+/** The webhooks MCP tools whose call opts a Claude Code session in (\`mcp__webhooks__watch_webhooks\`). */
+const WEBHOOKS_TOOL = new RegExp(
+  `^mcp__${MCP_SERVER_NAME}__(watch_webhooks|link_relay_wake|wait_for_webhook|get_webhook_events)$`
+);
+
+/** The longest transcript line read for an opt-in; a tool call record is far shorter. */
+const TRANSCRIPT_LINE_LIMIT = 16 * 1024 * 1024;
+
+/** Whether one transcript line is an assistant turn that called a webhooks MCP tool. */
+function callsWebhooksTool(line: string): boolean {
+  if (!line.includes(`mcp__${MCP_SERVER_NAME}__`)) return false;
+  try {
+    const record = JSON.parse(line) as { type?: unknown; message?: { content?: unknown } };
+    const content = record.type === 'assistant' ? record.message?.content : undefined;
+    return (
+      Array.isArray(content) &&
+      content.some(
+        (block: { type?: unknown; name?: unknown } | null) =>
+          block?.type === 'tool_use' && typeof block.name === 'string' && WEBHOOKS_TOOL.test(block.name)
+      )
+    );
+  } catch {
+    return false; // a malformed or partly written line
+  }
+}
+
+/**
+ * Whether this Claude Code session asked for webhook posts: its transcript shows an assistant
+ * \`tool_use\` of one of the webhooks MCP tools (the skill starts with \`watch_webhooks\`).
+ * \`setup --claude\` installs the wake hooks for every session on the machine, but all of them
+ * share one inbox, so a session that never opted in would otherwise take posts meant for another.
+ * The transcript is read in chunks, whole lines only, from where the last check stopped (kept in a
+ * per-session file), so a long transcript is read once in all, not once per turn; the answer is
+ * remembered once seen.
+ */
+function sessionOptedIn(io: CliIo, mcpUrl: string, session: string, transcript: string): boolean {
+  if (!session || !transcript) return false;
+  const digest = createHash('sha256').update(`${mcpUrl}\n${session}`).digest('hex').slice(0, 16);
+  const marker = join(dirname(configPath(io)), `optin-${digest}`);
+  if (io.exists(marker)) return true;
+  const progress = `${marker}.scanned`;
+  const saved = Number(io.readText(progress)?.trim());
+  // \`offset\`: where the first line not yet checked starts; \`carry\`: that line so far, when it is
+  // longer than one read.
+  let offset = Number.isSafeInteger(saved) && saved > 0 ? saved : 0;
+  let position = offset;
+  let carry = '';
+  for (;;) {
+    const chunk = io.readFrom(transcript, position);
+    if (!chunk || chunk.end <= position) break;
+    const cut = chunk.text.lastIndexOf('\n');
+    if (cut < 0) {
+      carry += chunk.text;
+      position = chunk.end;
+      // No call record is this long: skip the line rather than hold it.
+      if (carry.length > TRANSCRIPT_LINE_LIMIT) {
+        carry = '';
+        offset = position;
+      }
+      continue;
+    }
+    // Everything up to the chunk's last newline is whole lines; only the bytes after it can end
+    // inside a character, so this offset is exact.
+    const head = chunk.text.slice(0, cut + 1);
+    if ((carry + head).split('\n').some(callsWebhooksTool)) {
+      writePrivate(marker, `${session}\n`);
+      rmSync(progress, { force: true });
+      return true;
+    }
+    offset = position + Buffer.byteLength(head, 'utf8');
+    position = offset;
+    carry = '';
+  }
+  // A line still being written is read again next time, from its start.
+  if (offset > 0) writePrivate(progress, `${offset}\n`);
+  return false;
 }
 
 /**
@@ -1776,7 +1879,9 @@ async function hookSession(io: CliIo): Promise<string> {
 async function listenHook(io: CliIo, flags: Record<string, string>): Promise<number> {
   const mcpUrl = mcpUrlFor(io, flags);
   if (!mcpUrl) return 0;
-  const session = await hookSession(io);
+  const { session, transcript } = await hookInput(io);
+  // Only a session that asked to watch the inbox listens on it.
+  if (!sessionOptedIn(io, mcpUrl, session, transcript)) return 0;
   const claude = io.ancestor('claude');
   return listenAsSessionOwner(
     io,
@@ -2438,7 +2543,7 @@ async function serve(io: CliIo, flags: Record<string, string>): Promise<number> 
  */
 async function link(io: CliIo, flags: Record<string, string>): Promise<number> {
   if (flags['codex-hook'] === 'true') {
-    const session = await hookSession(io);
+    const { session } = await hookInput(io);
     const bin = process.argv[1];
     if (!/^[A-Za-z0-9_-]{6,100}$/.test(session) || !bin) return 0;
     io.spawnDetached(process.execPath, [bin, 'link', '--kind', 'codex', '--session', session]);
@@ -2625,6 +2730,49 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
  *
  * @returns The I/O \`runCli\` uses when run as \`events-shim\`.
  */
+/**
+ * Up to \`limit\` bytes of a file from \`offset\`, as text, and the byte offset the text ends at.
+ * The text never ends inside a UTF-8 character: a character cut by the limit (or still being
+ * written) is left for the next read, so \`end\` is always where that read should start.
+ *
+ * @param path - The file.
+ * @param offset - Where to start (clamped to the file).
+ * @param limit - The most bytes to read (4 MiB by default).
+ * @returns The text and its end, or null when the file cannot be read.
+ */
+export function readTextChunk(
+  path: string,
+  offset: number,
+  limit = 4 * 1024 * 1024
+): { text: string; end: number } | null {
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, 'r');
+    const size = fstatSync(fd).size;
+    const start = Math.min(Math.max(0, offset), size);
+    const buffer = Buffer.alloc(Math.min(size - start, limit));
+    const read = readSync(fd, buffer, 0, buffer.length, start);
+    const whole = completeUtf8(buffer.subarray(0, read));
+    return { text: buffer.subarray(0, whole).toString('utf8'), end: start + whole };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+}
+
+/** How many leading bytes of \`bytes\` end on a UTF-8 character boundary. */
+function completeUtf8(bytes: Uint8Array): number {
+  // A character is at most 4 bytes: look back over at most 3 continuation bytes for its lead.
+  for (let back = 1; back <= Math.min(4, bytes.length); back += 1) {
+    const byte = bytes[bytes.length - back]!;
+    if ((byte & 0xc0) === 0x80) continue; // a continuation byte
+    const length = byte < 0x80 ? 1 : byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1;
+    return length > back ? bytes.length - back : bytes.length;
+  }
+  return bytes.length; // not UTF-8 there; read it as it is
+}
+
 export function processIo(): CliIo {
   return {
     env: process.env,
@@ -2654,21 +2802,7 @@ export function processIo(): CliIo {
         return null;
       }
     },
-    readFrom: (path, offset) => {
-      let fd: number | null = null;
-      try {
-        fd = openSync(path, 'r');
-        const end = fstatSync(fd).size;
-        const start = Math.min(Math.max(0, offset), end);
-        const buffer = Buffer.alloc(Math.min(end - start, 4 * 1024 * 1024));
-        const read = readSync(fd, buffer, 0, buffer.length, start);
-        return { text: buffer.subarray(0, read).toString('utf8'), end: start + read };
-      } catch {
-        return null;
-      } finally {
-        if (fd !== null) closeSync(fd);
-      }
-    },
+    readFrom: (path, offset) => readTextChunk(path, offset),
     pid: process.pid,
     listDir: (path) => {
       try {

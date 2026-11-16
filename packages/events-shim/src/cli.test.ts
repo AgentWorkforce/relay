@@ -26,6 +26,7 @@ import {
   desktopCoreBinaries,
   configPath,
   HOOK_COMMAND,
+  readTextChunk,
   runCli,
   stopHookCommand,
   skillText,
@@ -40,6 +41,54 @@ const VERSION = (
 ).version;
 
 const BASE = 'https://shim.test/api/v1/events-shim';
+
+/**
+ * Claude Code's hook input for a session that opted in to the inbox: its
+ * transcript records a call to the webhooks MCP's \`watch_webhooks\`.
+ */
+/** Calls one of the inbox's MCP tools directly and returns its structured result. */
+async function inboxTool(
+  w: { shimFetch: typeof fetch; created: { mcp_url: string } },
+  name: string,
+  args: Record<string, unknown> = {}
+): Promise<Record<string, unknown>> {
+  const response = await w.shimFetch(w.created.mcp_url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+      'mcp-protocol-version': '2025-06-18',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+  });
+  const text = await response.text();
+  const data = text.split('\n').find((line) => line.startsWith('data:'));
+  const parsed = JSON.parse(data ? data.slice(5) : text) as {
+    result: { structuredContent?: Record<string, unknown>; content?: { text?: string }[] };
+  };
+  return parsed.result.structuredContent ?? JSON.parse(parsed.result.content?.[0]?.text ?? '{}');
+}
+
+function claudeHook(session: string, extra: Record<string, unknown> = {}, optedIn = true): string {
+  const dir = mkdtempSync(join(tmpdir(), 'events-shim-transcript-'));
+  const transcript = join(dir, `${session}.jsonl`);
+  const lines = [
+    JSON.stringify({ type: 'user', message: { role: 'user', content: 'watch for webhooks' } }),
+    JSON.stringify({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          optedIn
+            ? { type: 'tool_use', id: 't1', name: 'mcp__webhooks__watch_webhooks', input: {} }
+            : { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } },
+        ],
+      },
+    }),
+  ];
+  writeFileSync(transcript, `${lines.join('\n')}\n`);
+  return JSON.stringify({ session_id: session, transcript_path: transcript, ...extra });
+}
 
 /** A real inbox served in-process, and a CLI environment pointed at a temp HOME. */
 async function setupWorld(
@@ -639,7 +688,7 @@ describe('events-shim CLI', () => {
   });
 
   it('listen --hook runs one hook process per session; uninstall also stops a waiting hook', async () => {
-    const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'sess-1' }) });
+    const w = await setupWorld({ stdin: claudeHook('sess-1') });
     w.io.readText = (path) => {
       try {
         return readFileSync(path, 'utf8');
@@ -1157,7 +1206,7 @@ describe('events-shim CLI', () => {
   });
 
   it('listen --hook wakes the session: exits 2 with the post on stderr', async () => {
-    const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'abc-123', hook_event_name: 'Stop' }) });
+    const w = await setupWorld({ stdin: claudeHook('abc-123', { hook_event_name: 'Stop' }) });
     w.io.readText = (path) => {
       try {
         return readFileSync(path, 'utf8');
@@ -1176,8 +1225,165 @@ describe('events-shim CLI', () => {
     expect(woke).toContain('untrusted data');
   });
 
+  it('listen --hook listens only in a session that opted in to the inbox, and remembers it', async () => {
+    const w = await fileWorld({ stdin: claudeHook('other-1', {}, false) });
+    await runCli(['setup', w.created.mcp_url], w.io);
+    await w.post({ for: 'the session that asked' });
+    // Every Claude Code session runs the hook, but this one never used the webhooks MCP: it takes nothing.
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
+    expect(w.err).toEqual([]);
+    expect((await inboxTool(w, 'watch_webhooks')).waiting).toBe(1); // still there for the session that asked
+    const optedIn = await fileWorld({ stdin: claudeHook('mine-1') });
+    await runCli(['setup', optedIn.created.mcp_url], optedIn.io);
+    await optedIn.post({ for: 'me' });
+    expect(await runCli(['listen', '--hook'], optedIn.io)).toBe(2);
+    expect(optedIn.err.join('\n')).toContain('{"for":"me"}');
+    const dir = join(optedIn.home, '.config', 'agent-relay');
+    expect(readdirSync(dir).some((file) => file.startsWith('optin-'))).toBe(true);
+  });
+
+  it('listen --hook finds an opt-in past the first chunk of a long transcript, reading each part once', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'events-shim-transcript-'));
+    const transcript = join(dir, 'long-1.jsonl');
+    const turn = (n: number) =>
+      JSON.stringify({ type: 'user', message: { role: 'user', content: `turn ${n} é ${'x'.repeat(40)}` } });
+    writeFileSync(transcript, `${Array.from({ length: 30 }, (_, n) => turn(n)).join('\n')}\n`);
+    const w = await fileWorld({
+      stdin: JSON.stringify({ session_id: 'long-1', transcript_path: transcript }),
+    });
+    // The real reader returns at most 4 MiB a call; this one 100 bytes, so the transcript takes many.
+    const reads: number[] = [];
+    w.io.readFrom = (path, offset) => {
+      reads.push(offset);
+      return readTextChunk(path, offset, 100);
+    };
+    await runCli(['setup', w.created.mcp_url], w.io);
+    await w.post({ for: 'the long session' });
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(0); // no webhooks call yet
+    const scanned = Math.max(...reads);
+    expect(scanned).toBeGreaterThan(1_000);
+    // The session calls watch_webhooks late in a long transcript; the next turn's hook starts where the last stopped.
+    appendFileSync(
+      transcript,
+      `${JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{ type: 'tool_use', id: 't9', name: 'mcp__webhooks__watch_webhooks', input: {} }],
+        },
+      })}\n`
+    );
+    reads.length = 0;
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(2);
+    expect(w.err.join('\n')).toContain('{"for":"the long session"}');
+    expect(Math.min(...reads)).toBeGreaterThanOrEqual(scanned - 100);
+  });
+
+  it('readTextChunk never ends inside a character, so a chunk boundary in é loses no bytes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'events-shim-chunk-'));
+    const file = join(dir, 't.jsonl');
+    const call = JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', id: 't1', name: 'mcp__webhooks__watch_webhooks', input: {} }],
+      },
+    });
+    // "aé": 'a' then é's two bytes (0xc3 0xa9); a 2-byte read stops after 'a'.
+    writeFileSync(file, `aé\n${call}\n`);
+    const first = readTextChunk(file, 0, 2)!;
+    expect(first).toEqual({ text: 'a', end: 1 });
+    const second = readTextChunk(file, first.end, 3)!;
+    expect(second).toEqual({ text: 'é\n', end: 4 });
+    expect(readTextChunk(file, second.end, 10_000)!.text).toBe(`${call}\n`);
+    // A boundary inside a 4-byte character too.
+    writeFileSync(file, 'x😀y');
+    expect(readTextChunk(file, 0, 3)).toEqual({ text: 'x', end: 1 });
+    expect(readTextChunk(file, 1, 4)).toEqual({ text: '😀', end: 5 });
+  });
+
+  it('listen --hook finds an opt-in right after a chunk boundary inside a character', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'events-shim-transcript-'));
+    const transcript = join(dir, 'split-1.jsonl');
+    const call = JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', id: 't1', name: 'mcp__webhooks__watch_webhooks', input: {} }],
+      },
+    });
+    const user = JSON.stringify({ type: 'user', message: { content: 'café' } });
+    writeFileSync(transcript, `${user}\n${call}\n`);
+    // Every read stops inside é the first time.
+    const split = Buffer.byteLength(user) - 4;
+    const w = await fileWorld({
+      stdin: JSON.stringify({ session_id: 'split-1', transcript_path: transcript }),
+    });
+    w.io.readFrom = (path, offset) => readTextChunk(path, offset, offset === 0 ? split : 1_000_000);
+    await runCli(['setup', w.created.mcp_url], w.io);
+    await w.post({ for: 'split' });
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(2);
+    expect(w.err.join('\n')).toContain('{"for":"split"}');
+  });
+
+  it('listen --hook: a webhooks tool name inside another call is not an opt-in', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'events-shim-transcript-'));
+    const transcript = join(dir, 'other-2.jsonl');
+    writeFileSync(
+      transcript,
+      [
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            content: [
+              { type: 'tool_use', id: 't1', name: 'Bash', input: { name: 'mcp__webhooks__watch_webhooks' } },
+            ],
+          },
+        }),
+        JSON.stringify({ type: 'user', message: { content: '"name": "mcp__webhooks__watch_webhooks"' } }),
+        '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__webhooks__watch_webhooks"',
+      ].join('\n')
+    );
+    const w = await fileWorld({
+      stdin: JSON.stringify({ session_id: 'other-2', transcript_path: transcript }),
+    });
+    await runCli(['setup', w.created.mcp_url], w.io);
+    await w.post({ for: 'someone else' });
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
+    expect((await inboxTool(w, 'watch_webhooks')).waiting).toBe(1);
+  });
+
+  it('listen --hook takes nothing when its session closes while it asks about the relay link', async () => {
+    const w = await fileWorld({ stdin: claudeHook('closing-1') });
+    await runCli(['setup', w.created.mcp_url], w.io);
+    await w.post({ for: 'a live session' });
+    const fetchImpl = w.io.fetchImpl;
+    w.io.fetchImpl = async (input, init) => {
+      const response = await fetchImpl(input, init);
+      if (typeof init?.body === 'string' && init.body.includes('"watch_webhooks"')) {
+        w.io.pidAlive = (pid) => pid === 4242; // Claude (777) exits meanwhile
+      }
+      return response;
+    };
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
+    expect(w.err).toEqual([]);
+    w.io.fetchImpl = fetchImpl;
+    expect((await inboxTool(w, 'watch_webhooks')).waiting).toBe(1);
+  });
+
+  it('listen --hook stands down while the inbox forwards posts through a relay wake link', async () => {
+    const w = await fileWorld({ stdin: claudeHook('abc-123') });
+    await runCli(['setup', w.created.mcp_url], w.io);
+    const linked = await inboxTool(w, 'link_relay_wake', {
+      url: 'https://cast.agentrelay.com/v1/hooks/h1',
+      secret: 'wh_live_0123456789abcdef',
+    });
+    expect(linked.wake).toBe('linked');
+    // The hook leaves without waiting: a wait would mark the next post read and take it from the
+    // session the relay link wakes.
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
+    expect(w.err).toEqual([]);
+  });
+
   it('listen --hook: one listener per inbox; a waiting session takes over when the owner is gone; a closed one claims nothing', async () => {
-    const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'abc-123' }) });
+    const w = await setupWorld({ stdin: claudeHook('abc-123') });
     w.io.readText = (path) => {
       try {
         return readFileSync(path, 'utf8');
@@ -1888,7 +2094,7 @@ describe('events-shim CLI', () => {
   });
 
   it('listen --hook (Claude Code) also takes a post a turn-end hook kept for the inbox', async () => {
-    const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'claude-1' }) });
+    const w = await setupWorld({ stdin: claudeHook('claude-1') });
     w.io.readText = (path) => {
       try {
         return readFileSync(path, 'utf8');
@@ -2076,7 +2282,7 @@ describe('events-shim CLI', () => {
   });
 
   it('listen --hook (Claude Code) wakes its session with a post a stop-hook listener kept', async () => {
-    const w = await fileWorld({ stdin: JSON.stringify({ session_id: 'd-1' }) });
+    const w = await fileWorld({ stdin: claudeHook('d-1') });
     await runCli(['setup', w.created.mcp_url], w.io);
     const stopped = runCli(['listen', '--stop-hook', 'droid'], w.io);
     await new Promise((resolve) => setTimeout(resolve, 30));
