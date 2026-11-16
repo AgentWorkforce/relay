@@ -37,6 +37,41 @@ pub(crate) fn snapshot(config: &CopilotConfig, sid: &str) -> Option<Value> {
     Some(json!({"identity":identity(&metadata)?,"length":metadata.len()}))
 }
 
+/// Copilot queues hook lifecycle records for asynchronous persistence. Its
+/// command can start before its own hook.start reaches events.jsonl. Wait for
+/// that exact anchor before asking Core to check cancellation; an absent anchor
+/// must never authorize a delivery. Keep the first file incarnation throughout.
+pub(crate) fn started_snapshot(config: &CopilotConfig, sid: &str, timestamp: u64) -> Option<Value> {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    snapshot_after_start(config, sid, timestamp, || {
+        if std::time::Instant::now() >= until {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        true
+    })
+}
+
+fn snapshot_after_start(
+    config: &CopilotConfig,
+    sid: &str,
+    timestamp: u64,
+    mut retry: impl FnMut() -> bool,
+) -> Option<Value> {
+    let stamp = snapshot(config, sid)?;
+    loop {
+        let tail = bytes(config, sid, &stamp)?;
+        // Both an active and a cancelled anchor are ready for Core: it still
+        // makes the cancellation decision, including any subsequent appends.
+        if scan(&tail, sid, timestamp).is_some() {
+            return Some(stamp);
+        }
+        if !retry() {
+            return None;
+        }
+    }
+}
+
 fn open(path: &std::path::Path) -> Option<File> {
     std::fs::symlink_metadata(path)
         .ok()?

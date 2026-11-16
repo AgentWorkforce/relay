@@ -33,6 +33,91 @@ fn fixture() -> (tempfile::TempDir, CopilotConfig, PathBuf, Value) {
 }
 
 #[test]
+fn a_delayed_stop_anchor_keeps_the_original_snapshot_and_starts_the_wait() {
+    let (_home, config, path, _) = fixture();
+    let original = snapshot(&config, SID).unwrap();
+    let mut retries = 0;
+    let stamp = snapshot_after_start(&config, SID, 300, || {
+        retries += 1;
+        append(&path, start(300));
+        true
+    })
+    .unwrap();
+    assert_eq!(retries, 1);
+    assert_eq!(stamp, original);
+    assert!(!cancelled(
+        &config,
+        SID,
+        &json!({"timestamp":300,"relayJournal":stamp})
+    ));
+}
+
+#[test]
+fn a_cancel_during_delayed_startup_is_not_lost() {
+    let (_home, config, path, _) = fixture();
+    let stamp = snapshot_after_start(&config, SID, 300, || {
+        append(&path, start(300));
+        append(&path, json!({"type":"abort"}));
+        true
+    })
+    .unwrap();
+    assert!(cancelled(
+        &config,
+        SID,
+        &json!({"timestamp":300,"relayJournal":stamp})
+    ));
+}
+
+#[test]
+fn a_partial_start_record_waits_for_its_newline() {
+    let (_home, config, path, _) = fixture();
+    let mut retries = 0;
+    let stamp = snapshot_after_start(&config, SID, 300, || {
+        retries += 1;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        if retries == 1 {
+            write!(file, "{}", start(300)).unwrap();
+        } else {
+            writeln!(file).unwrap();
+        }
+        true
+    })
+    .unwrap();
+    assert_eq!(retries, 2);
+    assert!(!cancelled(
+        &config,
+        SID,
+        &json!({"timestamp":300,"relayJournal":stamp})
+    ));
+}
+
+#[test]
+fn a_missing_anchor_times_out_and_a_replaced_or_truncated_journal_is_not_rebased() {
+    let (_home, config, _, _) = fixture();
+    assert!(snapshot_after_start(&config, SID, 300, || false).is_none());
+    for replace in [true, false] {
+        let (_home, config, path, _) = fixture();
+        let mut retries = 0;
+        assert!(snapshot_after_start(&config, SID, 300, || {
+            retries += 1;
+            if replace {
+                let replacement = path.with_extension("replacement");
+                std::fs::write(&replacement, format!("{}\n", start(300))).unwrap();
+                std::fs::rename(replacement, &path).unwrap();
+            } else {
+                std::fs::write(&path, format!("{}\n", start(300))).unwrap();
+            }
+            true
+        })
+        .is_none());
+        assert_eq!(retries, 1);
+    }
+}
+
+#[test]
 fn an_abort_after_this_stop_releases_the_wait_but_old_aborts_do_not() {
     let (_home, config, path, payload) = fixture();
     assert!(!cancelled(&config, SID, &payload));
