@@ -1192,6 +1192,28 @@ impl Outbound {
             ));
         }
         self.admit(&session.target.key())?;
+        // A gate agent's token is read again under its renewal lock, held
+        // through the uploads and the send: a renewal revokes the token it
+        // replaces, and a send refused with that one would leave a claimed
+        // automatic answer unsent. A workspace-key agent takes no lock.
+        let _renewals = match &registration.gate {
+            Some(_) => Some(
+                self.core
+                    .gate_locks
+                    .get(&registration.name)
+                    .lock_owned()
+                    .await,
+            ),
+            None => None,
+        };
+        let token = match &registration.gate {
+            Some(_) => self
+                .core
+                .store
+                .read(|s| s.tokens.get(&registration.name).cloned())
+                .ok_or_else(OutboundError::not_registered)?,
+            None => token,
+        };
         // Every file is uploaded before anything is claimed or sent: a file
         // that cannot be sent leaves no half-sent message and no lost
         // automatic answer behind.

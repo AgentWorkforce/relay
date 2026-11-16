@@ -3481,6 +3481,36 @@ async fn a_gate_agent_lists_its_teammates_with_its_own_token() {
     h.stop().await;
 }
 
+// A renewal that falls due while a gate agent's send is in flight waits
+// for it: the send is never refused with a token the renewal revoked.
+#[tokio::test]
+async fn a_gate_agent_send_in_flight_is_not_cut_off_by_a_renewal() {
+    let h = Harness::start_gate().await;
+    h.fake.set_gate_ttl(Duration::from_secs(3));
+    let issued = Instant::now();
+    h.register(IN_CODEX, json!({"name": "codex-api"})).await;
+    h.fake.set_gate_ttl(Duration::from_secs(3600));
+    h.fake.seed_agent("alice", "agent", json!({}));
+    let release = h.fake.hold("POST /v1/dm");
+    let (sent, ()) = tokio::join!(
+        h.call(
+            IN_CODEX,
+            "POST",
+            "/send",
+            json!({"to": "alice", "text": "mid-renewal"})
+        ),
+        async {
+            eventually("send parked", || h.fake.held("POST /v1/dm") >= 1).await;
+            // Past the renewal time (80% of 3 s), before the token expires.
+            tokio::time::sleep_until((issued + Duration::from_millis(2750)).into()).await;
+            assert!(h.fake.calls("POST", "/v1/register").len() == 1);
+            release.send(true).unwrap();
+        }
+    );
+    sent.unwrap();
+    h.stop().await;
+}
+
 #[tokio::test]
 async fn agents_lists_the_callers_workspace_and_caches_it() {
     let h = Harness::start().await;
