@@ -3508,6 +3508,11 @@ async fn a_gate_agent_send_in_flight_is_not_cut_off_by_a_renewal() {
         }
     );
     sent.unwrap();
+    // The renewal was due all along: it runs once the send lets go.
+    eventually("renewed after the send", || {
+        h.fake.calls("POST", "/v1/register").len() == 2
+    })
+    .await;
     h.stop().await;
 }
 
