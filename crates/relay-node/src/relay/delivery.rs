@@ -1930,13 +1930,15 @@ impl Core {
 
     async fn check_reply(self: &Arc<Core>, reply: &Reply) {
         let owner = self.store.read(|s| {
-            let registration = s
+            let name = &s
                 .registrations
                 .iter()
                 .find(|r| r.agent_id == reply.agent_id)?
-                .clone();
+                .name;
+            // A launched agent's view carries its relaygate registration.
+            let (registration, token) = s.credential_named(name)?;
             // One name per session: the answer goes out under its current name.
-            let token = registration.sender_token(s.tokens.get(&registration.name)?.clone());
+            let token = registration.sender_token(token);
             Some((registration, token))
         });
         let Some((registration, token)) = owner else {
@@ -1989,8 +1991,23 @@ impl Core {
             None => None,
         };
         let token = match &registration.gate {
+            // Read again after the lock wait, and only while `sender` is
+            // still the session's current name: a rename meanwhile leaves
+            // the answer unclaimed, for a later pass to send under the new
+            // name.
             Some(_) => {
-                let Some((_, current)) = self.store.read(|s| s.credential_named(sender)) else {
+                let current = self.store.read(|s| {
+                    let owner = s
+                        .registrations
+                        .iter()
+                        .find(|r| r.agent_id == reply.agent_id)?;
+                    if owner.display_name() != sender {
+                        return None;
+                    }
+                    let (holder, token) = s.credential_named(sender)?;
+                    (holder.target == owner.target).then_some(token)
+                });
+                let Some(current) = current else {
                     return;
                 };
                 current

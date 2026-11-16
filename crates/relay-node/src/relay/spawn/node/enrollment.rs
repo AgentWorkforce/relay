@@ -10,9 +10,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-/// The enrolled node, as kept on disk. A record without a token (none is
-/// ever written) is not an enrollment: an id is never sent as this
-/// computer's node without its token as proof.
+/// The enrolled node, as kept on disk. A record without a token is not an
+/// enrollment (an id is never sent as this computer's node without its
+/// token as proof), except a `bridged` one: on a gate-only install Control
+/// holds the node token and bridges the node's socket, so none is ever
+/// written here.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Enrollment {
     #[serde(rename = "nodeID")]
@@ -32,6 +34,13 @@ pub(super) struct Enrollment {
         skip_serializing_if = "Option::is_none"
     )]
     pub(super) rotation_key: Option<String>,
+    /// Enrolled through Control on a gate-only install: Control keeps the
+    /// node token (`token` is empty) and bridges the socket
+    /// (`/relay-node/v1/ws`), which the node opens with its relay-node
+    /// credential. Absent on every other node, so their record is
+    /// unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) bridged: bool,
 }
 
 /// A node being enrolled for the first time: the id and name it is asked

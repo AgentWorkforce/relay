@@ -370,6 +370,7 @@ mod tests {
             task: "go on".into(),
             directory: directory.map(Path::to_path_buf),
             fork_from: Some("planner".into()),
+            launch_credential: None,
         }
     }
 

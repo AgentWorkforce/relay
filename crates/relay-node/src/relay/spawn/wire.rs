@@ -31,6 +31,7 @@
 use super::lifecycle::WorkCounts;
 use super::resources::Resources;
 use crate::relay::state::{ProcessEvidence, SpawnSlots, UnfinishedWork, WorkEvidence};
+use crate::relay::workspace::Secret;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -538,7 +539,21 @@ pub struct SpawnRequest {
     /// The agent on this computer whose session the new agent starts as a
     /// copy of (`fork_from`), continuing its conversation.
     pub fork_from: Option<String>,
+    /// The one-time `sh_lt_` credential Control added for this launch on a
+    /// gate-only install (`input.launch_credential`), for the agent's
+    /// relaygate registration. Read once from the frame, taken out of the
+    /// request when the spawn is answered, and presented by the node to
+    /// relaygate once, inside the launch and before the harness starts
+    /// (`Core::register_launch_at_gate`); dropped as soon as that returns.
+    /// Never handed to the agent's process and never kept anywhere else:
+    /// not in the intent, the ledger or any file, and never logged (its
+    /// `Debug` shows only the prefix). `None` when Control sent none: a
+    /// spawn exactly as before.
+    pub launch_credential: Option<Secret>,
 }
+
+/// What a launch credential starts with.
+pub const LAUNCH_CREDENTIAL_PREFIX: &str = "sh_lt_";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReleaseRequest {
@@ -614,6 +629,19 @@ pub fn invoke(frame: &Value) -> Option<Result<Invoke, (String, String)>> {
         },
         _ => return fail("spawn_invalid_input: fork_from must name another agent"),
     };
+    // Absent is a spawn as before. A value that is not a launch credential
+    // is refused rather than handed to the agent or dropped: the agent
+    // could not register at the gate with it.
+    let launch_credential = match &input["launch_credential"] {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(credential)
+            if credential.len() > LAUNCH_CREDENTIAL_PREFIX.len()
+                && credential.starts_with(LAUNCH_CREDENTIAL_PREFIX) =>
+        {
+            Some(Secret::new(credential.clone()))
+        }
+        _ => return fail("spawn_invalid_input: launch_credential is not a launch credential"),
+    };
     Some(Ok(Invoke::Spawn(SpawnRequest {
         invocation_id,
         harness,
@@ -621,6 +649,7 @@ pub fn invoke(frame: &Value) -> Option<Result<Invoke, (String, String)>> {
         task,
         directory,
         fork_from,
+        launch_credential,
     })))
 }
 
@@ -980,6 +1009,47 @@ mod tests {
         assert_eq!(request.task, "fix CI");
         assert_eq!(request.directory, Some(PathBuf::from(repo)));
         assert_eq!(request.fork_from, None);
+        // No launch credential sent: none read, a spawn as before.
+        assert_eq!(request.launch_credential, None);
+    }
+
+    /// Control's launch credential is read from the spawn's input, and a
+    /// value that is not one is refused, never presented to relaygate.
+    #[test]
+    fn a_launch_credential_is_read_once_from_the_spawn_input() {
+        let spawn = |input: Value| {
+            invoke(&json!({"type": "action.invoke", "invocation_id": "inv_1",
+                "action": "spawn:claude", "input": input}))
+        };
+        let Some(Ok(Invoke::Spawn(request))) =
+            spawn(json!({"name": "w1", "task": "go", "launch_credential": "sh_lt_fixture0123"}))
+        else {
+            panic!("not a spawn")
+        };
+        assert_eq!(
+            request.launch_credential,
+            Some(Secret::new("sh_lt_fixture0123"))
+        );
+        // Its `Debug` (anything that prints the request) never shows it.
+        assert!(!format!("{request:?}").contains("fixture0123"));
+        let Some(Ok(Invoke::Spawn(request))) =
+            spawn(json!({"name": "w1", "launch_credential": null}))
+        else {
+            panic!("not a spawn")
+        };
+        assert_eq!(request.launch_credential, None);
+        for credential in [
+            json!(""),
+            json!("sh_lt_"),
+            json!("rk_live_fixture"),
+            json!(7),
+            json!({"token": "sh_lt_fixture"}),
+        ] {
+            assert!(matches!(
+                spawn(json!({"name": "w1", "launch_credential": credential})),
+                Some(Err((_, error))) if error.starts_with("spawn_invalid_input")
+            ));
+        }
     }
 
     #[test]

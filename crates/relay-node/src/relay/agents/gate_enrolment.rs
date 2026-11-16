@@ -20,6 +20,10 @@
 //! An alias of a gate agent (a rename) is a gate agent of its own: enrolled
 //! under its name with its own recovery proof, renewed like any other, and
 //! deleted with its own token when it is released.
+//!
+//! An agent spawned on a gate-only install is registered with its launch's
+//! one-time credential instead, and refreshed with its own token
+//! ([`launched`]).
 
 use super::*;
 use crate::relay::sdk_gaps::{
@@ -27,6 +31,8 @@ use crate::relay::sdk_gaps::{
 };
 use crate::relay::store::{AgentAlias, GateEnrolment};
 use std::time::{Duration, Instant};
+
+mod launched;
 
 /// How long a failed renewal waits when the gate named no `Retry-After`.
 const RENEW_RETRY: Duration = Duration::from_secs(30);
@@ -238,7 +244,7 @@ impl Core {
         let recovery = self
             .store
             .read(|s| s.gate_recovery(base_url, &alias.name))
-            .or_else(|| alias.gate.as_ref().map(|gate| gate.recovery.clone()));
+            .or_else(|| alias.gate.as_ref().and_then(|gate| gate.recovery.clone()));
         self.run_gate_cleanup(GateCleanup {
             base_url: base_url.to_owned(),
             token: alias.token.clone(),
@@ -482,6 +488,7 @@ impl Core {
     /// Starts a renewal for every present gate agent whose token is due,
     /// unless one is running or it waits. Called on every delivery pass.
     pub(crate) fn renew_due_gate_registrations(self: &Arc<Self>) {
+        self.report_lost_launch_gates();
         let now = chrono::Utc::now();
         // Each name with a token of its own: the agent, then its aliases.
         let due: Vec<String> = self.store.read(|store| {
@@ -560,6 +567,32 @@ impl Core {
             .insert(channel.into(), error.message.clone());
     }
 
+    /// Says once, on each launched agent whose relaygate registration this
+    /// run does not hold (it lived in memory alone, so a restart lost it),
+    /// that it needs a relaunch: its launch credential was spent, so it
+    /// cannot be registered again here, and it acts with no other token.
+    fn report_lost_launch_gates(&self) {
+        let lost: Vec<String> = self.store.read(|store| {
+            store
+                .registrations
+                .iter()
+                .filter(|r| r.spawn.as_ref().is_some_and(|spawn| spawn.gate_launch))
+                .filter(|r| r.archived_at.is_none() && store.launch_gate_of(r).is_none())
+                .map(|r| r.name.clone())
+                .collect()
+        });
+        for name in lost {
+            if self.gate_error(&name).is_some() {
+                continue;
+            }
+            let message = format!(
+                "@{name}: its relaygate registration ended when Agent Relay restarted, and its launch credential can be used only once. Relaunch the agent."
+            );
+            self.hub.activity(Level::Warning, message.clone());
+            self.renewal_failed(&name, message, None, true);
+        }
+    }
+
     fn may_renew(&self, name: &str) -> bool {
         let renewals = self.gate_renewals.lock().unwrap();
         !renewals.stopped.contains(name)
@@ -603,7 +636,7 @@ impl Core {
                 .store
                 .read(|s| s.gate_recovery(&registration.base_url, name))
             {
-                Some(recovery) => gate.recovery = recovery,
+                Some(recovery) => gate.recovery = Some(recovery),
                 None => return Renewal::NotRenewed,
             }
         }
@@ -623,6 +656,13 @@ impl Core {
             .unwrap()
             .not_before
             .insert(name.into(), Instant::now() + RENEW_SPACING);
+        // A launched agent's registration has no recovery proof: it is
+        // refreshed with its own token instead.
+        let Some(recovery) = gate.recovery.clone() else {
+            return self
+                .refresh_launch_gate(name, &registration.base_url, &token, &gate)
+                .await;
+        };
         let device = match self.device_token().await {
             Ok(device) => device,
             Err(error) => {
@@ -630,13 +670,7 @@ impl Core {
                 return Renewal::NotRenewed;
             }
         };
-        let result = gate_register(
-            &registration.base_url,
-            &device,
-            name,
-            gate.recovery.expose(),
-        )
-        .await;
+        let result = gate_register(&registration.base_url, &device, name, recovery.expose()).await;
         let issued = match result {
             Ok(issued) => issued,
             Err(error) => {
@@ -668,7 +702,7 @@ impl Core {
             );
             return Renewal::Stopped;
         }
-        let enrolment = GateEnrolment::issued(gate.recovery, chrono::Utc::now(), issued.expires_at);
+        let enrolment = GateEnrolment::issued(recovery, chrono::Utc::now(), issued.expires_at);
         let saved = self.store.update(|store| {
             if let Some(current) = store
                 .registrations

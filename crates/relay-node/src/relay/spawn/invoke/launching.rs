@@ -161,6 +161,7 @@ impl Core {
             task: String::new(),
             directory: None,
             fork_from: None,
+            launch_credential: None,
         };
         let saved = self.workspace().is_some_and(|workspace| {
             super::Scope::workspace(&workspace)

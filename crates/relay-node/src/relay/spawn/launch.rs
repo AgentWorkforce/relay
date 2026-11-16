@@ -702,14 +702,23 @@ pub(crate) fn stop_process(table: &dyn ProcessTable, pid: i32, start: Option<u64
     }
 }
 
-/// A spawned agent's environment: `environment` without the workspace
-/// credential variables, so no agent inherits the node's credential.
-fn child_environment(
+/// A spawned agent's environment: `environment` without the credential
+/// variables (`agent_environment`), so no agent inherits the node's
+/// credential.
+fn child_environment(environment: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    agent_environment(environment)
+}
+
+/// The environment an agent process starts with: `environment` without
+/// the workspace credential variables or the other secrets no child
+/// inherits (`workspace::without_workspace_key_env`: `CLOUD_API_ACCESS_TOKEN`,
+/// a `RELAY_LAUNCH_CREDENTIAL` left in the node's environment). A launch's
+/// one-time credential never reaches the agent: the node redeems it at
+/// relaygate itself before the harness starts (`spawn::launch_gate`).
+pub(crate) fn agent_environment(
     environment: &BTreeMap<String, String>,
-) -> impl Iterator<Item = (&String, &String)> {
-    environment
-        .iter()
-        .filter(|(name, _)| !crate::relay::workspace::is_workspace_key_env(name))
+) -> BTreeMap<String, String> {
+    crate::relay::workspace::without_workspace_key_env(environment.clone())
 }
 
 #[cfg(test)]
@@ -745,6 +754,25 @@ mod tests {
             );
         }
     }
+    /// A child never gets a `RELAY_LAUNCH_CREDENTIAL` (the node redeems a
+    /// launch's credential itself), not even a stale one from the node's
+    /// environment, and never `CLOUD_API_ACCESS_TOKEN`.
+    #[test]
+    fn a_child_gets_no_launch_credential_and_no_cloud_token() {
+        let environment: BTreeMap<String, String> = [
+            ("CLOUD_API_ACCESS_TOKEN", "at_fixture_cloud"),
+            ("RELAY_LAUNCH_CREDENTIAL", "sh_lt_fixture_stale"),
+            ("KEPT_VARIABLE", "kept"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+        let child = child_environment(&environment);
+        assert_eq!(child.get("KEPT_VARIABLE").map(String::as_str), Some("kept"));
+        assert!(!child.contains_key("RELAY_LAUNCH_CREDENTIAL"));
+        assert!(!child.contains_key("CLOUD_API_ACCESS_TOKEN"));
+    }
+
     use std::time::{Duration, Instant};
 
     #[test]

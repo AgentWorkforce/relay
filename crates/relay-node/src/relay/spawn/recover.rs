@@ -321,6 +321,7 @@ impl Core {
             task: String::new(),
             directory: None,
             fork_from: None,
+            launch_credential: None,
         };
         let error = super::invoke::SpawnError::from(
             "spawn_failed: Agent Relay recovered an ended launch without a recorded result; the original harness reason is unavailable.");

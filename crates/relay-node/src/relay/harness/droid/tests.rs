@@ -144,6 +144,7 @@ fn restart_finds_only_its_live_host_and_never_adopts_a_reused_pid() {
     std::fs::write(&cli, "").unwrap();
     let intent = Intent {
         invocation_id: "test-invocation".into(),
+        gate_launch: false,
         name: "worker".into(),
         harness: ID,
         node_id: "test-node".into(),
