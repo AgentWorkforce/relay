@@ -702,14 +702,59 @@ pub(crate) fn stop_process(table: &dyn ProcessTable, pid: i32, start: Option<u64
     }
 }
 
-/// A spawned agent's environment: `environment` without the workspace
-/// credential variables, so no agent inherits the node's credential.
-fn child_environment(
+/// A spawned agent's environment: `environment` without the credential
+/// variables (`agent_environment`), so no agent inherits the node's
+/// credential, and with the launch credential of the launch under way.
+fn child_environment(environment: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    agent_environment(environment)
+}
+
+thread_local! {
+    /// The launch credential of the launch running on this thread
+    /// (`with_launch_credential`).
+    static LAUNCH_CREDENTIAL: std::cell::RefCell<Option<crate::relay::workspace::Secret>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `launch` with `credential` as the launch credential of what it
+/// starts: every agent process a launch starts goes through
+/// `agent_environment` (`child_environment` here and in `detach`) on the
+/// thread the launch runs on, which is the only place the credential is
+/// read. It is held in memory for the launch alone and cleared when it
+/// returns or panics, so no later launch, and nothing written to disk,
+/// ever sees it. `None` is a launch without one, as before.
+pub(crate) fn with_launch_credential<R>(
+    credential: Option<&crate::relay::workspace::Secret>,
+    launch: impl FnOnce() -> R,
+) -> R {
+    struct Clear;
+    impl Drop for Clear {
+        fn drop(&mut self) {
+            LAUNCH_CREDENTIAL.with(|current| current.borrow_mut().take());
+        }
+    }
+    LAUNCH_CREDENTIAL.with(|current| *current.borrow_mut() = credential.cloned());
+    let _clear = Clear;
+    launch()
+}
+
+/// The environment an agent process starts with: `environment` without
+/// the workspace credential variables or the other secrets no child
+/// inherits (`workspace::without_workspace_key_env`: `CLOUD_API_ACCESS_TOKEN`,
+/// a `RELAY_LAUNCH_CREDENTIAL` left from an earlier spawn), and with
+/// `RELAY_LAUNCH_CREDENTIAL` only when the launch under way on this thread
+/// was given one (`with_launch_credential`).
+pub(crate) fn agent_environment(
     environment: &BTreeMap<String, String>,
-) -> impl Iterator<Item = (&String, &String)> {
+) -> BTreeMap<String, String> {
+    let mut environment = crate::relay::workspace::without_workspace_key_env(environment.clone());
+    if let Some(credential) = LAUNCH_CREDENTIAL.with(|current| current.borrow().clone()) {
+        environment.insert(
+            crate::relay::workspace::LAUNCH_CREDENTIAL_ENV.to_string(),
+            credential.expose().to_string(),
+        );
+    }
     environment
-        .iter()
-        .filter(|(name, _)| !crate::relay::workspace::is_workspace_key_env(name))
 }
 
 #[cfg(test)]
@@ -745,6 +790,42 @@ mod tests {
             );
         }
     }
+    /// A child gets `RELAY_LAUNCH_CREDENTIAL` only from the launch under
+    /// way, never a stale one from the node's environment, and never
+    /// `CLOUD_API_ACCESS_TOKEN`; outside the launch it has none.
+    #[test]
+    fn a_child_gets_only_its_own_launch_credential_and_no_cloud_token() {
+        let environment: BTreeMap<String, String> = [
+            ("CLOUD_API_ACCESS_TOKEN", "at_fixture_cloud"),
+            ("RELAY_LAUNCH_CREDENTIAL", "sh_lt_fixture_stale"),
+            ("KEPT_VARIABLE", "kept"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+        let credential = crate::relay::workspace::Secret::new("sh_lt_fixture_fresh");
+        let during = with_launch_credential(Some(&credential), || child_environment(&environment));
+        assert_eq!(
+            during.get("KEPT_VARIABLE").map(String::as_str),
+            Some("kept")
+        );
+        assert_eq!(
+            during.get("RELAY_LAUNCH_CREDENTIAL").map(String::as_str),
+            Some("sh_lt_fixture_fresh")
+        );
+        assert!(!during.contains_key("CLOUD_API_ACCESS_TOKEN"));
+        let after = child_environment(&environment);
+        assert!(!after.contains_key("RELAY_LAUNCH_CREDENTIAL"));
+        assert!(!after.contains_key("CLOUD_API_ACCESS_TOKEN"));
+        let without = with_launch_credential(None, || child_environment(&environment));
+        assert!(!without.contains_key("RELAY_LAUNCH_CREDENTIAL"));
+        // A panicking launch clears it too.
+        let _ = std::panic::catch_unwind(|| {
+            with_launch_credential(Some(&credential), || panic!("launch failed"))
+        });
+        assert!(!child_environment(&environment).contains_key("RELAY_LAUNCH_CREDENTIAL"));
+    }
+
     use std::time::{Duration, Instant};
 
     #[test]

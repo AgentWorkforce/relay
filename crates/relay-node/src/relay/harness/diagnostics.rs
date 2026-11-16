@@ -142,9 +142,11 @@ fn redact_with(message: &str, secrets: impl Iterator<Item = String>) -> String {
     let parts: Vec<_> = message.split_whitespace().collect();
     for (index, word) in parts.iter().copied().enumerate() {
         let lower = word.to_ascii_lowercase();
-        let credential = ["rk_", "at_", "ar_", "sk_", "sh_wk_", "sk-", "xai-", "eyj"]
-            .iter()
-            .any(|prefix| lower.contains(prefix));
+        let credential = [
+            "rk_", "at_", "ar_", "sk_", "sh_wk_", "sh_lt_", "sk-", "xai-", "eyj",
+        ]
+        .iter()
+        .any(|prefix| lower.contains(prefix));
         let assignment = word.split_once('=').or_else(|| word.split_once(':'));
         let secret_field = assignment.is_some_and(|(key, _)| sensitive(&key.to_ascii_lowercase()));
         let hide = hide_next

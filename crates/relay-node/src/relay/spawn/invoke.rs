@@ -450,7 +450,10 @@ impl Core {
             session_id: in_flight.intent.session_id.clone(),
             fork: fork.map(|fork| fork.session_id),
         };
-        let launched = match self.launch_registered(launch, &mut in_flight).await {
+        let launched = match self
+            .launch_registered(launch, request.launch_credential.as_ref(), &mut in_flight)
+            .await
+        {
             Ok(launched) => launched,
             Err(LaunchFailure::Launch(
                 LaunchError::Unavailable(reason) | LaunchError::Failed(reason),

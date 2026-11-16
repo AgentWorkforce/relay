@@ -266,6 +266,7 @@ impl Core {
             task: String::new(),
             directory: None,
             fork_from: None,
+            launch_credential: None,
         };
         Scope::new(&registration.base_url, key)
             .save(

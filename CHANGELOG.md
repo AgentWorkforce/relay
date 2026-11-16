@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay-node`: self-hosted installs whose Control API returns `urls.relaygateUrl` (relaygate gate-only mode) register each agent at relaygate with the person's device token instead of the shared workspace key. Agents renew their relaygate token before it expires, publish their session details and presence, read the roster and are removed through the gate. A removed name registers again as the same agent. Installs without a relaygate URL, including default and hosted ones, are unchanged.
 
+### Fixed
+
+- `agent-relay-node`: spawned agents no longer receive `CLOUD_API_ACCESS_TOKEN` from the node's environment.
+
 ## [18.8.0] - 2026-11-16
 
 ### Added

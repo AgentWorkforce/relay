@@ -105,7 +105,7 @@ fn scrub_text(value: &str, secret: &str) -> String {
             let lower = word.to_ascii_lowercase();
             let hide = *bearer
                 || [
-                    "rk_", "at_", "ar_", "sk_", "sh_wk_", "sh_at_", "rg_", "rgn_", "eyj",
+                    "rk_", "at_", "ar_", "sk_", "sh_wk_", "sh_at_", "sh_lt_", "rg_", "rgn_", "eyj",
                 ]
                 .iter()
                 .any(|prefix| lower.trim_start_matches(['\"', '\'']).starts_with(prefix));
@@ -354,6 +354,19 @@ mod tests {
             assert!(!text.contains(credential), "{text}");
         }
         assert!(text.contains("refused"), "{text}");
+    }
+    #[test]
+    fn a_launch_credential_is_redacted_in_text_and_in_an_invoke_frame() {
+        let text = scrub_text("refused sh_lt_fixture_launch here", "");
+        assert!(!text.contains("sh_lt_fixture_launch"), "{text}");
+        assert!(text.contains("refused"), "{text}");
+        let frame = body(
+            &json!({"type": "action.invoke", "action": "spawn:claude",
+                "input": {"name": "a1", "launch_credential": "sh_lt_fixture_launch"}}),
+            "",
+        );
+        assert!(!frame.contains("sh_lt_fixture_launch"), "{frame}");
+        assert!(frame.contains("spawn:claude"), "{frame}");
     }
     static TEST_LOCK: Mutex<()> = Mutex::new(());
     #[test]

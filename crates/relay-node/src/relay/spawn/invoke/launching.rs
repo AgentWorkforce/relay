@@ -2,11 +2,12 @@
 //! before its intent is marked ended.
 
 use super::super::intents::{self, InFlight};
-use super::super::launch::{Launch, LaunchError, Launched, SpawnedProcess};
+use super::super::launch::{with_launch_credential, Launch, LaunchError, Launched, SpawnedProcess};
 use super::unsaved_intent;
 use crate::relay::daemon::Core;
 use crate::relay::state::Level;
 use crate::relay::store::Target;
+use crate::relay::workspace::Secret;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -16,11 +17,16 @@ impl Core {
     /// intent could not record is ended here, and only once its end is
     /// confirmed is its intent marked ended, so a restart never keeps it;
     /// one that may still run is `Running`, its evidence left for recovery.
+    /// `launch_credential`, Control's one-time credential for this launch,
+    /// reaches the agent's process alone (`with_launch_credential`) and is
+    /// dropped when the launch returns.
     pub(super) async fn launch_registered(
         &self,
         launch: Launch,
+        launch_credential: Option<&Secret>,
         in_flight: &mut InFlight,
     ) -> Result<Launched, LaunchFailure> {
+        let launch_credential = launch_credential.cloned();
         let spawner = self.plugins.spawner.clone();
         let (app_data_dir, intent) = (in_flight.app_data_dir.clone(), in_flight.intent.clone());
         let seen: Arc<Mutex<Option<Seen>>> = Arc::default();
@@ -39,7 +45,9 @@ impl Core {
                         unrecorded.store(true, Ordering::SeqCst);
                     }
                 };
-                spawner.launch(&launch, &started)
+                with_launch_credential(launch_credential.as_ref(), || {
+                    spawner.launch(&launch, &started)
+                })
             }
         };
         let failure = match tokio::task::spawn_blocking(launching).await {
@@ -161,6 +169,7 @@ impl Core {
             task: String::new(),
             directory: None,
             fork_from: None,
+            launch_credential: None,
         };
         let saved = self.workspace().is_some_and(|workspace| {
             super::Scope::workspace(&workspace)

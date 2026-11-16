@@ -177,24 +177,45 @@ pub fn is_workspace_key_env(name: &str) -> bool {
         .any(|key| key.eq_ignore_ascii_case(name))
 }
 
-/// `environment` for a child process: without [`WORKSPACE_KEY_ENV`].
+/// The variable a spawned agent reads its one-time launch credential
+/// (`sh_lt_…`) from, for its relaygate registration. Set only for the one
+/// launch Control minted it for (`spawn::launch::agent_environment`).
+pub const LAUNCH_CREDENTIAL_ENV: &str = "RELAY_LAUNCH_CREDENTIAL";
+
+/// Other credential variables no child process the core starts inherits,
+/// in production builds too: the Cloud access token the core may run with,
+/// and a launch credential left in an environment by an earlier spawn.
+pub const AGENT_SECRET_ENV: [&str; 2] = ["CLOUD_API_ACCESS_TOKEN", LAUNCH_CREDENTIAL_ENV];
+
+/// Whether `name` is a variable no child process inherits: one of
+/// [`WORKSPACE_KEY_ENV`] or [`AGENT_SECRET_ENV`], in any ASCII case
+/// ([`is_workspace_key_env`]).
+pub fn is_child_secret_env(name: &str) -> bool {
+    is_workspace_key_env(name)
+        || AGENT_SECRET_ENV
+            .iter()
+            .any(|secret| secret.eq_ignore_ascii_case(name))
+}
+
+/// `environment` for a child process: without [`WORKSPACE_KEY_ENV`] and
+/// [`AGENT_SECRET_ENV`].
 pub fn without_workspace_key_env(
     mut environment: std::collections::BTreeMap<String, String>,
 ) -> std::collections::BTreeMap<String, String> {
-    environment.retain(|name, _| !is_workspace_key_env(name));
+    environment.retain(|name, _| !is_child_secret_env(name));
     environment
 }
 
-/// Removes [`WORKSPACE_KEY_ENV`] from a child `command`'s environment, for
-/// a command that inherits the core's own.
+/// Removes [`WORKSPACE_KEY_ENV`] and [`AGENT_SECRET_ENV`] from a child
+/// `command`'s environment, for a command that inherits the core's own.
 /// Every spelling of them the core's environment has is removed
-/// ([`is_workspace_key_env`]).
+/// ([`is_child_secret_env`]).
 pub fn remove_workspace_key_env(command: &mut std::process::Command) {
-    for name in WORKSPACE_KEY_ENV {
+    for name in WORKSPACE_KEY_ENV.iter().chain(AGENT_SECRET_ENV.iter()) {
         command.env_remove(name);
     }
     for (name, _) in std::env::vars_os() {
-        if name.to_str().is_some_and(is_workspace_key_env) {
+        if name.to_str().is_some_and(is_child_secret_env) {
             command.env_remove(name);
         }
     }
@@ -1101,6 +1122,12 @@ mod tests {
             ("AGENT_RELAY_WORKSPACE_KEY", "rk_live_fixture"),
             ("RELAY_API_KEY", "ar_ws_fixture"),
             ("RELAY_BASE_URL", "https://cast.example"),
+            ("CLOUD_API_ACCESS_TOKEN", "fixture-cloud-access"),
+            ("Cloud_Api_Access_Token", "fixture-cloud-access"),
+            (
+                "RELAY_LAUNCH_CREDENTIAL",
+                "sh_lt_fixture_from_an_earlier_spawn",
+            ),
         ]
         .into_iter()
         .map(|(name, value)| (name.to_string(), value.to_string()))

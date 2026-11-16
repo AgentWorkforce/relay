@@ -31,13 +31,17 @@ pub(crate) fn record_exit(path: &Path, status: &str) -> std::io::Result<()> {
 }
 
 /// `environment` for a detached process, without the workspace credential
-/// variables ([`WORKSPACE_KEY_ENV`], in any case): every detached launch
-/// (Devin's helper, Muse, OpenCode, Grok, managed providers) goes through
-/// [`start`], so no process it starts inherits the node's credential.
+/// variables ([`WORKSPACE_KEY_ENV`], in any case) or the other secrets no
+/// child inherits ([`AGENT_SECRET_ENV`]): every detached launch (Devin's
+/// helper, Muse, OpenCode, Grok, managed providers) goes through [`start`],
+/// so no process it starts inherits the node's credential or the core's
+/// Cloud access token. A spawn's launch credential is added for the launch
+/// it was given to only (`spawn::launch::agent_environment`).
 ///
 /// [`WORKSPACE_KEY_ENV`]: crate::relay::workspace::WORKSPACE_KEY_ENV
+/// [`AGENT_SECRET_ENV`]: crate::relay::workspace::AGENT_SECRET_ENV
 fn child_environment(environment: &BTreeMap<String, String>) -> BTreeMap<String, String> {
-    crate::relay::workspace::without_workspace_key_env(environment.clone())
+    crate::relay::spawn::launch::agent_environment(environment)
 }
 
 /// Starts `executable arguments` in `directory` with exactly `environment`,
