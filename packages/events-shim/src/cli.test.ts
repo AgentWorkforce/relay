@@ -41,6 +41,54 @@ const VERSION = (
 
 const BASE = 'https://shim.test/api/v1/events-shim';
 
+/**
+ * Claude Code's hook input for a session that opted in to the inbox: its
+ * transcript records a call to the webhooks MCP's \`watch_webhooks\`.
+ */
+/** Calls one of the inbox's MCP tools directly and returns its structured result. */
+async function inboxTool(
+  w: { shimFetch: typeof fetch; created: { mcp_url: string } },
+  name: string,
+  args: Record<string, unknown> = {}
+): Promise<Record<string, unknown>> {
+  const response = await w.shimFetch(w.created.mcp_url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+      'mcp-protocol-version': '2025-06-18',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+  });
+  const text = await response.text();
+  const data = text.split('\n').find((line) => line.startsWith('data:'));
+  const parsed = JSON.parse(data ? data.slice(5) : text) as {
+    result: { structuredContent?: Record<string, unknown>; content?: { text?: string }[] };
+  };
+  return parsed.result.structuredContent ?? JSON.parse(parsed.result.content?.[0]?.text ?? '{}');
+}
+
+function claudeHook(session: string, extra: Record<string, unknown> = {}, optedIn = true): string {
+  const dir = mkdtempSync(join(tmpdir(), 'events-shim-transcript-'));
+  const transcript = join(dir, `${session}.jsonl`);
+  const lines = [
+    JSON.stringify({ type: 'user', message: { role: 'user', content: 'watch for webhooks' } }),
+    JSON.stringify({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          optedIn
+            ? { type: 'tool_use', id: 't1', name: 'mcp__webhooks__watch_webhooks', input: {} }
+            : { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } },
+        ],
+      },
+    }),
+  ];
+  writeFileSync(transcript, `${lines.join('\n')}\n`);
+  return JSON.stringify({ session_id: session, transcript_path: transcript, ...extra });
+}
+
 /** A real inbox served in-process, and a CLI environment pointed at a temp HOME. */
 async function setupWorld(
   options: {
@@ -639,7 +687,7 @@ describe('events-shim CLI', () => {
   });
 
   it('listen --hook runs one hook process per session; uninstall also stops a waiting hook', async () => {
-    const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'sess-1' }) });
+    const w = await setupWorld({ stdin: claudeHook('sess-1') });
     w.io.readText = (path) => {
       try {
         return readFileSync(path, 'utf8');
@@ -1157,7 +1205,7 @@ describe('events-shim CLI', () => {
   });
 
   it('listen --hook wakes the session: exits 2 with the post on stderr', async () => {
-    const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'abc-123', hook_event_name: 'Stop' }) });
+    const w = await setupWorld({ stdin: claudeHook('abc-123', { hook_event_name: 'Stop' }) });
     w.io.readText = (path) => {
       try {
         return readFileSync(path, 'utf8');
@@ -1176,8 +1224,39 @@ describe('events-shim CLI', () => {
     expect(woke).toContain('untrusted data');
   });
 
+  it('listen --hook listens only in a session that opted in to the inbox, and remembers it', async () => {
+    const w = await fileWorld({ stdin: claudeHook('other-1', {}, false) });
+    await runCli(['setup', w.created.mcp_url], w.io);
+    await w.post({ for: 'the session that asked' });
+    // Every Claude Code session runs the hook, but this one never used the webhooks MCP: it takes nothing.
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
+    expect(w.err).toEqual([]);
+    expect((await inboxTool(w, 'watch_webhooks')).waiting).toBe(1); // still there for the session that asked
+    const optedIn = await fileWorld({ stdin: claudeHook('mine-1') });
+    await runCli(['setup', optedIn.created.mcp_url], optedIn.io);
+    await optedIn.post({ for: 'me' });
+    expect(await runCli(['listen', '--hook'], optedIn.io)).toBe(2);
+    expect(optedIn.err.join('\n')).toContain('{"for":"me"}');
+    const dir = join(optedIn.home, '.config', 'agent-relay');
+    expect(readdirSync(dir).some((file) => file.startsWith('optin-'))).toBe(true);
+  });
+
+  it('listen --hook stands down while the inbox forwards posts through a relay wake link', async () => {
+    const w = await fileWorld({ stdin: claudeHook('abc-123') });
+    await runCli(['setup', w.created.mcp_url], w.io);
+    const linked = await inboxTool(w, 'link_relay_wake', {
+      url: 'https://cast.agentrelay.com/v1/hooks/h1',
+      secret: 'wh_live_0123456789abcdef',
+    });
+    expect(linked.wake).toBe('linked');
+    // The hook leaves without waiting: a wait would mark the next post read and take it from the
+    // session the relay link wakes.
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
+    expect(w.err).toEqual([]);
+  });
+
   it('listen --hook: one listener per inbox; a waiting session takes over when the owner is gone; a closed one claims nothing', async () => {
-    const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'abc-123' }) });
+    const w = await setupWorld({ stdin: claudeHook('abc-123') });
     w.io.readText = (path) => {
       try {
         return readFileSync(path, 'utf8');
@@ -1888,7 +1967,7 @@ describe('events-shim CLI', () => {
   });
 
   it('listen --hook (Claude Code) also takes a post a turn-end hook kept for the inbox', async () => {
-    const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'claude-1' }) });
+    const w = await setupWorld({ stdin: claudeHook('claude-1') });
     w.io.readText = (path) => {
       try {
         return readFileSync(path, 'utf8');
@@ -2076,7 +2155,7 @@ describe('events-shim CLI', () => {
   });
 
   it('listen --hook (Claude Code) wakes its session with a post a stop-hook listener kept', async () => {
-    const w = await fileWorld({ stdin: JSON.stringify({ session_id: 'd-1' }) });
+    const w = await fileWorld({ stdin: claudeHook('d-1') });
     await runCli(['setup', w.created.mcp_url], w.io);
     const stopped = runCli(['listen', '--stop-hook', 'droid'], w.io);
     await new Promise((resolve) => setTimeout(resolve, 30));

@@ -325,7 +325,7 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
     'wait_for_webhook',
     {
       title: 'Wait for a webhook post',
-      description: `Blocks until a post arrives (or timeout_seconds pass, at most ${EVENTS_SHIM_LIMITS.maxWaitMs / 1000}), then returns the posts and marks them read. Run it in the background and call it again after each return. Not needed once link_relay_wake succeeded.`,
+      description: `Blocks until a post arrives (or timeout_seconds pass, at most ${EVENTS_SHIM_LIMITS.maxWaitMs / 1000}), then returns the posts and marks them read. Run it in the background and call it again after each return. While a relay wake link works (link_relay_wake), it takes no posts and returns none when the timeout passes: the link delivers them.`,
       inputSchema: {
         timeout_seconds: z
           .number()
@@ -353,7 +353,12 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
         if (signals.some((signal) => signal.aborted)) {
           return result({ events: [], more: false, next_steps: ['Cancelled. Call wait_for_webhook again.'] });
         }
-        const batch = await handOver(ctx);
+        // A working relay wake link owns the posts: each one is forwarded to the session that
+        // made the link, and a waiter here (another session's wake hook, say) would mark it read
+        // first and take it from that session. Wait out the timeout without claiming, so a
+        // listener that calls again at once does not spin.
+        const linked = wakeState(ctx.shim) === 'linked';
+        const batch = linked ? { events: [], more: false } : await handOver(ctx);
         if (batch.events.length > 0) {
           return result({
             ...batch,
@@ -364,7 +369,12 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
           return result({
             events: [],
             more: false,
-            next_steps: ['Nothing yet. Call wait_for_webhook again.'],
+            ...(linked ? { wake: 'linked' } : {}),
+            next_steps: [
+              linked
+                ? 'This inbox forwards each post to the Agent Relay session that linked it (link_relay_wake), so wait_for_webhook does not take posts. Read one with get_webhook_events and its event_id, or call unlink_relay_wake to wait for posts here instead.'
+                : 'Nothing yet. Call wait_for_webhook again.',
+            ],
           });
         }
         await sleep(interval, signals);

@@ -1712,6 +1712,9 @@ async function listenAsSessionOwner(
             if (exit !== null) return exit;
             continue;
           }
+          // A relay wake link delivers every post to the session that linked it. Claiming one here
+          // (wait_for_webhook marks it read) would take it from that session, so stand down.
+          if (await relayWakeLinked(io, mcpUrl)) return 0;
           const controller = new AbortController();
           // While \`drain()\`, a wait in flight is not cut off: the inbox may already have handed it
           // posts, which \`deliver\` then keeps for the next owner.
@@ -1757,14 +1760,56 @@ async function listenAsSessionOwner(
   }
 }
 
-/** The hook's JSON input on stdin (Claude Code and Codex both send \`session_id\`). */
-async function hookSession(io: CliIo): Promise<string> {
+/**
+ * Whether the inbox forwards its posts to an Agent Relay session (\`link_relay_wake\`
+ * succeeded and the link is not broken). Unknown (the inbox could not be asked) reads as not
+ * linked: the listener keeps its old behaviour rather than going quiet.
+ */
+async function relayWakeLinked(io: CliIo, mcpUrl: string): Promise<boolean> {
   try {
-    const input = JSON.parse((await io.readStdin()) || '{}') as { session_id?: unknown };
-    return typeof input.session_id === 'string' ? input.session_id : '';
+    const state = await callTool(io, mcpUrl, 'watch_webhooks', {}, AbortSignal.timeout(15_000));
+    return state.wake === 'linked';
   } catch {
-    return '';
+    return false;
   }
+}
+
+/** The hook's JSON input on stdin (Claude Code and Codex both send \`session_id\`). */
+async function hookInput(io: CliIo): Promise<{ session: string; transcript: string }> {
+  try {
+    const input = JSON.parse((await io.readStdin()) || '{}') as {
+      session_id?: unknown;
+      transcript_path?: unknown;
+    };
+    return {
+      session: typeof input.session_id === 'string' ? input.session_id : '',
+      transcript: typeof input.transcript_path === 'string' ? input.transcript_path : '',
+    };
+  } catch {
+    return { session: '', transcript: '' };
+  }
+}
+
+/** A webhooks MCP tool call as Claude Code records it in a transcript (\`mcp__webhooks__watch_webhooks\`). */
+const WEBHOOKS_TOOL_USE = new RegExp(
+  `"name"\\s*:\\s*"mcp__${MCP_SERVER_NAME}__(watch_webhooks|link_relay_wake|wait_for_webhook|get_webhook_events)"`
+);
+
+/**
+ * Whether this Claude Code session asked for webhook posts: its transcript shows a call to one of
+ * the webhooks MCP tools (the skill starts with \`watch_webhooks\`). \`setup --claude\` installs the
+ * wake hooks for every session on the machine, but all of them share one inbox, so a session that
+ * never opted in would otherwise take posts meant for another. Remembered per session once seen.
+ */
+function sessionOptedIn(io: CliIo, mcpUrl: string, session: string, transcript: string): boolean {
+  if (!session || !transcript) return false;
+  const digest = createHash('sha256').update(`${mcpUrl}\n${session}`).digest('hex').slice(0, 16);
+  const marker = join(dirname(configPath(io)), `optin-${digest}`);
+  if (io.exists(marker)) return true;
+  const text = io.readFrom(transcript, 0)?.text;
+  if (!text || !WEBHOOKS_TOOL_USE.test(text)) return false;
+  writePrivate(marker, `${session}\n`);
+  return true;
 }
 
 /**
@@ -1776,7 +1821,9 @@ async function hookSession(io: CliIo): Promise<string> {
 async function listenHook(io: CliIo, flags: Record<string, string>): Promise<number> {
   const mcpUrl = mcpUrlFor(io, flags);
   if (!mcpUrl) return 0;
-  const session = await hookSession(io);
+  const { session, transcript } = await hookInput(io);
+  // Only a session that asked to watch the inbox listens on it.
+  if (!sessionOptedIn(io, mcpUrl, session, transcript)) return 0;
   const claude = io.ancestor('claude');
   return listenAsSessionOwner(
     io,
@@ -2438,7 +2485,7 @@ async function serve(io: CliIo, flags: Record<string, string>): Promise<number> 
  */
 async function link(io: CliIo, flags: Record<string, string>): Promise<number> {
   if (flags['codex-hook'] === 'true') {
-    const session = await hookSession(io);
+    const { session } = await hookInput(io);
     const bin = process.argv[1];
     if (!/^[A-Za-z0-9_-]{6,100}$/.test(session) || !bin) return 0;
     io.spawnDetached(process.execPath, [bin, 'link', '--kind', 'codex', '--session', session]);

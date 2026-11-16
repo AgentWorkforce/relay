@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Minor]
 
+### Fixed
+
+- `@agent-relay/events-shim`: webhook posts no longer go to the wrong session. `setup --claude` installs its wake hooks for every Claude Code session on the machine, and they all share one inbox. Each hook listener took (and marked read) whichever post it saw first, so posts went to unrelated sessions, including posts for a session woken through a relay wake link. Now `listen --hook` listens only in a session whose transcript shows it used the `webhooks` MCP. Any hook listener (Claude Code and turn-end hooks) stands down while the inbox has a working relay wake link, and `wait_for_webhook` takes no posts while one is linked.
+
 ### Added
 
 - `agent-relay-node`: self-hosted installs whose Control API returns `urls.relaygateUrl` (relaygate gate-only mode) register each agent at relaygate with the person's device token instead of the shared workspace key. Agents renew their relaygate token before it expires, publish their session details and presence, read the roster and are removed through the gate. A removed name registers again as the same agent. Installs without a relaygate URL, including default and hosted ones, are unchanged.

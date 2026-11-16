@@ -1,6 +1,6 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { hmacSha256Hex, sha256Hex } from './crypto.js';
 import { handleEventsShimRequest } from './http.js';
@@ -503,6 +503,25 @@ describe('events shim', () => {
     expect(result.structuredContent?.events).toHaveLength(1);
     const empty = await agent.call('wait_for_webhook', { timeout_seconds: 1 });
     expect(empty.structuredContent?.events).toHaveLength(0);
+  });
+
+  it('wait_for_webhook does not take posts while a relay wake link delivers them', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const agent = await h.connect(shim.mcp_url);
+    await agent.call('link_relay_wake', RELAY_HOOK);
+    await h.post(shim.webhook_url, { for: 'the linked session' });
+    const waited = await agent.call('wait_for_webhook', { timeout_seconds: 1 });
+    expect(waited.structuredContent).toMatchObject({ events: [], wake: 'linked' });
+    // The relay got the post, and nobody else marked it read.
+    await vi.waitFor(async () => {
+      const [event] = (await h.feed(shim.manage_token)).body.events as { delivery: string }[];
+      expect(event?.delivery).toBe('woken');
+    });
+    expect((await agent.call('unlink_relay_wake', {})).isError).not.toBe(true);
+    await h.post(shim.webhook_url, { after: 'unlink' });
+    const unlinked = await agent.call('wait_for_webhook', { timeout_seconds: 5 });
+    expect(unlinked.structuredContent?.events).toHaveLength(1);
   });
 
   it('delivers a retried post once per Idempotency-Key but counts it', async () => {
