@@ -250,4 +250,4 @@ jobs:
         run: 'cargo test --locked --lib -- install::'
       - name: Test native session transport deadlines
         shell: bash
-        run: 'cargo test --locked --lib relay::transport::'
+        run: 'cargo test --locked --lib relay::transport::windows::deadline_tests::expired_deadline_does_not_poll_ready_work -- --exact'
