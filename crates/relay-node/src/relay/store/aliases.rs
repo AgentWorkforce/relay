@@ -4,7 +4,7 @@
 //! what was sent to it: the registered one until the agent leaves the relay,
 //! a replaced alias for `RETIRED_FORWARDING` (see `RetiredAlias`).
 
-use super::{CleanupKind, GateEnrolment, PendingCleanup, Registration, Store, Target};
+use super::{CleanupKind, GateEnrolment, LaunchGate, PendingCleanup, Registration, Store, Target};
 use crate::relay::workspace::Secret;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -240,12 +240,58 @@ impl Store {
     /// an agent's own, or one of its aliases'.
     pub fn credential_named(&self, name: &str) -> Option<(Registration, Secret)> {
         if let Some(registration) = self.registration_named(name) {
-            let token = self.tokens.get(name)?;
-            return Some((registration.clone(), token.clone()));
+            return self.own_credential(registration);
         }
         self.credentials()
             .into_iter()
             .find(|(registration, _)| registration.name == name)
+    }
+
+    /// A registration with its own token. A launched agent registered at
+    /// relaygate ([`Store::launch_gates`]) acts there with its `rg_` token,
+    /// renewed by refresh.
+    ///
+    /// The launch registration is used only by the registration of the
+    /// launch it was made for. A launched agent whose registration is gone
+    /// (a restart: it lived in memory alone) acts with no token at all,
+    /// never with the one saved beside it.
+    fn own_credential(&self, registration: &Registration) -> Option<(Registration, Secret)> {
+        if let Some(launched) = self.launch_gate_of(registration) {
+            let view = Registration {
+                base_url: launched.gate_url.clone(),
+                gate: Some(launched.gate.clone()),
+                ..registration.clone()
+            };
+            return Some((view, launched.token.clone()));
+        }
+        if registration
+            .spawn
+            .as_ref()
+            .is_some_and(|spawn| spawn.gate_launch)
+        {
+            return None;
+        }
+        let token = self.tokens.get(&registration.name)?;
+        Some((registration.clone(), token.clone()))
+    }
+
+    /// `registration`'s relaygate launch registration, when it holds one
+    /// made for its own launch.
+    pub fn launch_gate_of(&self, registration: &Registration) -> Option<&LaunchGate> {
+        let invocation = &registration.spawn.as_ref()?.invocation_id;
+        self.launch_gates
+            .0
+            .get(&registration.name)
+            .filter(|launched| launched.invocation_id == *invocation)
+    }
+
+    /// The token registration `name` acts with: its launch registration's
+    /// at relaygate when it has one, its own otherwise. Not an alias's.
+    pub fn token(&self, name: &str) -> Option<Secret> {
+        match self.registration_named(name) {
+            Some(registration) => self.own_credential(registration).map(|(_, token)| token),
+            None => self.tokens.get(name).cloned(),
+        }
     }
 
     /// Like `credential_named`, by Relaycast agent id.
@@ -259,10 +305,10 @@ impl Store {
     /// token, then each alias, current or still forwarding, as an agent of
     /// its own.
     pub fn credentials(&self) -> Vec<(Registration, Secret)> {
-        let own = self.registrations.iter().filter_map(|registration| {
-            let token = self.tokens.get(&registration.name)?;
-            Some((registration.clone(), token.clone()))
-        });
+        let own = self
+            .registrations
+            .iter()
+            .filter_map(|registration| self.own_credential(registration));
         let aliases = self.registrations.iter().flat_map(|registration| {
             registration
                 .alias_credential()

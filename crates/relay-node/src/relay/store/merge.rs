@@ -271,6 +271,8 @@ impl Store {
                 &theirs.in_doubt_delivery_ids,
                 |id| id.clone(),
             ),
+            // Never saved: the holder keeps its own (`HandleState::saved`).
+            launch_gates: Default::default(),
         };
         for list in [
             &mut result.in_doubt_delivery_ids,

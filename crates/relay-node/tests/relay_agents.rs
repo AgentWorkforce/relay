@@ -6616,21 +6616,36 @@ async fn a_gate_alias_cleanup_never_deletes_a_name_taken_up_again() {
     })
     .await;
     // Another session asks for the name while that delete is parked.
-    let taken = client
-        .call(
+    // The cleanup claims the name before its delete is sent, so this is
+    // refused while the delete is parked.
+    let (kind, _) = client
+        .error(
             "agents.register",
             json!({"target": {"kind": "claude-terminal", "id": CLAUDE}, "name": "mid-name"}),
         )
         .await;
+    assert_eq!(kind, "conflict");
     release.send(true).unwrap();
-    if taken.get("error").is_some() {
-        assert_eq!(taken["error"]["data"]["kind"], "conflict", "{taken}");
-        eventually("the old alias deleted", || {
-            h.fake.agent("mid-name").is_none()
-        })
-        .await;
-        h.register(&mut client, "claude-terminal", CLAUDE, Some("mid-name"))
+    eventually("the old alias deleted", || {
+        h.fake.agent("mid-name").is_none()
+    })
+    .await;
+    // The cleanup lets go of the name once its delete has returned: until
+    // then a registration is still refused as busy.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let taken = client
+            .call(
+                "agents.register",
+                json!({"target": {"kind": "claude-terminal", "id": CLAUDE}, "name": "mid-name"}),
+            )
             .await;
+        if taken.get("error").is_none() {
+            break;
+        }
+        assert_eq!(taken["error"]["data"]["kind"], "conflict", "{taken}");
+        assert!(tokio::time::Instant::now() < deadline, "{taken}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
     eventually("the old alias's cleanup is done", || {
         h.store()["registrations"][0]
@@ -6685,18 +6700,19 @@ async fn an_expired_gate_alias_cleanup_registers_again_after_an_outage() {
         .set_api_error("POST /v1/register", Some((503, "relaygate_unavailable")));
     let registers = gate_registers(&h.fake).len();
     a_day_passes(&h, &mut client).await;
-    eventually("the renewal met the outage", || {
-        gate_registers(&h.fake)
+    // The cleanup's delete is refused, and its registration again meets
+    // the outage (the alias's own renewal may meet it first).
+    eventually("the cleanup met the outage", || {
+        h.fake
+            .calls("DELETE", "/v1/agent")
             .iter()
-            .skip(registers)
-            .any(|r| r.body["name"] == "mid-name")
+            .any(|r| r.authorization == bearer(&stale))
+            && gate_registers(&h.fake)
+                .iter()
+                .skip(registers)
+                .any(|r| r.body["name"] == "mid-name")
     })
     .await;
-    assert!(h
-        .fake
-        .calls("DELETE", "/v1/agent")
-        .iter()
-        .any(|r| r.authorization == bearer(&stale)));
     assert!(h.fake.agent("mid-name").is_some());
     h.fake.set_api_error("POST /v1/register", None);
     eventually("released once the gate is back", || {

@@ -69,6 +69,18 @@ pub struct SpawnOrigin {
         skip_serializing_if = "Option::is_none"
     )]
     pub task_unconfirmed: Option<String>,
+    /// Registered at relaygate with its launch's one-time credential (a
+    /// gate-only install): it acts there only with the `rg_` token that
+    /// answered, which is kept in memory alone (`Store::launch_gates`).
+    /// After a restart that token is gone and the credential is spent, so
+    /// the agent acts with no other token and needs a relaunch. Holds no
+    /// secret.
+    #[serde(
+        rename = "gateLaunch",
+        default,
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub gate_launch: bool,
 }
 
 /// The agent that asked for a spawn.

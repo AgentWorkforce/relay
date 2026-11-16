@@ -186,6 +186,19 @@ impl Core {
                 .await
                 .ok()
                 .map(|n| n as u32);
+            // Its launch is over: so is its relaygate registration, and
+            // only that launch's (a new launch may hold the name by now).
+            // An answer it still owes goes out with that registration, so
+            // it is kept until the agent leaves (`unregister_archived`,
+            // after the answer or its wait), which releases it then.
+            if let Some(spawn) = &registration.spawn {
+                self.release_ended_launch_gate(
+                    &registration.name,
+                    &spawn.invocation_id,
+                    &registration.agent_id,
+                )
+                .await;
+            }
             {
                 let mut state = ledger.lock();
                 if let Some(unfinished) = state

@@ -519,6 +519,7 @@ fn a_restart_finds_the_session_by_its_record_and_ends_a_half_started_leader() {
     };
     let intent = |target: Option<&str>, process: Option<SpawnedProcess>| Intent {
         invocation_id: "inv-1".into(),
+        gate_launch: false,
         name: "g1".into(),
         harness: ID,
         node_id: "node-1".into(),
@@ -899,6 +900,7 @@ fn only_a_spawned_grok_takes_messages_through_its_leader() {
     let injector = RecordingInjector::default();
     let intent = Intent {
         invocation_id: "inv-1".into(),
+        gate_launch: false,
         name: "g1".into(),
         harness: ID,
         node_id: "node-1".into(),

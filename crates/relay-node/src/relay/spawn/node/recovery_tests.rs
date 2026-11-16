@@ -102,6 +102,7 @@ async fn heartbeats_go_on_while_recovery_runs_and_the_inventory_follows_it() {
         base_url: config.base_url.clone(),
         workspace: fingerprint(&config.workspace_key),
         rotation_key: None,
+        bridged: false,
     };
     save(&node_file(&config), &enrollment).unwrap();
     let (release, released) = oneshot::channel();
