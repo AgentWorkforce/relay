@@ -34,6 +34,15 @@ fn a_kernel_reported_hardlink_to_the_managed_helper_is_the_same_program() {
         hook_answer(&config, &table, 501, 103, &payload),
         Some(json!({}))
     );
+    // The core itself can also start under the Sessions hard-link name.
+    // Existing owned commands naming the ordinary helper remain equivalent.
+    config.set_helper(alias.clone());
+    assert!(config.enabled());
+    assert_eq!(
+        hook_answer(&config, &table, 501, 103, &payload),
+        Some(json!({}))
+    );
+    config.set_helper(helper.clone());
     table.trusted_relay_helpers.lock().unwrap().clear();
     assert!(hook_answer(&config, &table, 501, 103, &payload).is_none());
     table
@@ -60,6 +69,8 @@ fn a_kernel_reported_hardlink_to_the_managed_helper_is_the_same_program() {
     // enough: a distinct file must not become the configured helper.
     std::fs::remove_file(&alias).unwrap();
     std::fs::copy(&helper, &alias).unwrap();
+    assert!(hook_answer(&config, &table, 501, 103, &payload).is_none());
+    std::fs::remove_file(&alias).unwrap();
     assert!(hook_answer(&config, &table, 501, 103, &payload).is_none());
 }
 

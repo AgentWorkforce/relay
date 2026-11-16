@@ -179,26 +179,54 @@ pub(super) fn trusted_relay_helper(pid: i32) -> bool {
 }
 
 fn own_requirement() -> Option<String> {
+    use core_foundation::base::{CFTypeRef, TCFType};
+    use core_foundation::string::{CFString, CFStringRef};
     use security_framework::os::macos::code_signing::{Flags, SecCode, SecRequirement};
-    let executable = std::env::current_exe().ok()?;
-    let output = std::process::Command::new("/usr/bin/codesign")
-        .args(["--display", "--requirements", "-"])
-        .arg(executable)
-        .output()
-        .ok()?;
-    if !output.status.success() {
+
+    // security-framework 3 does not yet wrap these public Security APIs. Ask
+    // the running code object for its requirement rather than parsing codesign
+    // output from an executable path (which can have changed since launch).
+    #[link(name = "Security", kind = "framework")]
+    extern "C" {
+        fn SecCodeCopyDesignatedRequirement(
+            code: CFTypeRef,
+            flags: u32,
+            requirement: *mut CFTypeRef,
+        ) -> i32;
+        fn SecRequirementCopyString(
+            requirement: CFTypeRef,
+            flags: u32,
+            text: *mut CFStringRef,
+        ) -> i32;
+    }
+
+    let code = SecCode::for_self(Flags::NONE).ok()?;
+    let mut raw = std::ptr::null();
+    // SAFETY: code is a live SecCode object; raw is an initialized out-pointer.
+    // The Copy API returns an owned requirement, adopted below only on success.
+    if unsafe { SecCodeCopyDesignatedRequirement(code.as_CFTypeRef(), 0, &mut raw) } != 0
+        || raw.is_null()
+    {
         return None;
     }
-    let text = std::str::from_utf8(&output.stdout).ok()?;
-    let requirement = text
-        .lines()
-        .find_map(|line| line.strip_prefix("designated => "))?;
-    let parsed = requirement.parse::<SecRequirement>().ok()?;
-    SecCode::for_self(Flags::NONE)
-        .ok()?
-        .check_validity(Flags::STRICT_VALIDATE, &parsed)
+    let requirement = unsafe { SecRequirement::wrap_under_create_rule(raw as _) };
+    code.check_validity(Flags::STRICT_VALIDATE, &requirement)
         .ok()?;
-    Some(requirement.into())
+    let mut text = std::ptr::null();
+    // SAFETY: requirement is a valid owned object; text receives a retained
+    // CFString and is adopted only after a successful non-null return.
+    if unsafe { SecRequirementCopyString(requirement.as_CFTypeRef(), 0, &mut text) } != 0
+        || text.is_null()
+    {
+        return None;
+    }
+    Some(unsafe { CFString::wrap_under_create_rule(text) }.to_string())
+}
+
+#[cfg(test)]
+#[test]
+fn the_running_helper_can_derive_and_validate_its_own_designated_requirement() {
+    assert!(own_requirement().is_some());
 }
 
 #[cfg(test)]
