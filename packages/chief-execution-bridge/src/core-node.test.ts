@@ -103,3 +103,85 @@ describe('CoreNode preflight against a fake core', () => {
     await expect(new CoreNode({ connect: failing('internal') }).endAgent('x')).rejects.toBeInstanceOf(Error);
   });
 });
+
+describe('CoreNode listAgents against a fake core', () => {
+  function listing(
+    answer: unknown,
+    methods = ['agents.list'],
+    calls: string[] = []
+  ): () => Promise<CoreClient> {
+    return async () =>
+      ({
+        hello: { methods },
+        call: async (method: string) => {
+          calls.push(method);
+          return answer;
+        },
+        close: async () => undefined,
+      }) as unknown as CoreClient;
+  }
+
+  it('reads liveness from the spawned agent evidence of agents.list', async () => {
+    const calls: string[] = [];
+    const core = new CoreNode({
+      connect: listing(
+        {
+          agents: [
+            { name: 'running', spawn: { process: { state: 'running' }, work: { state: 'working' } } },
+            { name: 'crashed', spawn: { process: { state: 'exited' }, work: { state: 'unknown' } } },
+            { name: 'done', spawn: { process: { state: 'unknown' }, work: { state: 'completed' } } },
+            { name: 'unknown', spawn: { process: { state: 'unknown' }, work: { state: 'unknown' } } },
+            { name: 'older-core' },
+          ],
+          archived: [{ name: 'archived' }],
+        },
+        ['agents.list'],
+        calls
+      ),
+    });
+    const agents = await core.listAgents();
+    expect(calls).toEqual(['agents.list']);
+    expect(agents && Object.fromEntries(agents)).toEqual({
+      running: 'live',
+      crashed: 'exited',
+      done: 'exited',
+      unknown: 'live',
+      'older-core': 'live',
+    });
+  });
+
+  it.each([
+    ['no agents array', {}],
+    ['a null answer', null],
+    ['a row without a name', { agents: [{ spawn: null }] }],
+  ])('answers nothing for %s', async (_label, answer) => {
+    await expect(new CoreNode({ connect: listing(answer) }).listAgents()).resolves.toBeUndefined();
+  });
+
+  it('answers nothing when the core does not offer agents.list', async () => {
+    const calls: string[] = [];
+    const core = new CoreNode({ connect: listing({ agents: [] }, ['agents.end'], calls) });
+    await expect(core.listAgents()).resolves.toBeUndefined();
+    expect(calls).toEqual([]);
+  });
+
+  it('answers nothing when the core cannot be reached or refuses', async () => {
+    const unreachable = new CoreNode({
+      connect: async () => {
+        throw new Error('nope');
+      },
+    });
+    await expect(unreachable.listAgents()).resolves.toBeUndefined();
+    const refusing = new CoreNode({
+      connect: async () =>
+        ({
+          hello: { methods: ['agents.list'] },
+          call: async () => {
+            throw new CoreRpcError('x', { kind: 'internal' as never });
+          },
+          close: async () => undefined,
+        }) as unknown as CoreClient,
+    });
+    await expect(refusing.listAgents()).resolves.toBeUndefined();
+  });
+});
