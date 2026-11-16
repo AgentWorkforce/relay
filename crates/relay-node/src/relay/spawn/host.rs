@@ -101,9 +101,7 @@ impl Core {
         // desktop's words when it gave a reason, never hidden.
         let (workspace_key, control_url, name) = if workspace.is_gate_only() {
             let node = gate_node_credential(self.plugins.cloud.relay_node_credential())?;
-            let name = Some(node.node_name.trim())
-                .filter(|name| !name.is_empty())
-                .map_or_else(|| node_name(&self.machine_prefix), str::to_string);
+            let name = self.bound_node_name(&node);
             (node.token, Some(node.control_url), name)
         } else {
             (
@@ -128,6 +126,28 @@ impl Core {
             harnesses,
             repositories: settings.repositories,
         })
+    }
+
+    /// The name this computer's spawn node is configured under (before any
+    /// alternate it took): on a gate-only install with the desktop's
+    /// relay-node credential, the name Control bound it to; otherwise the
+    /// computer's own ([`node_name`]).
+    pub(crate) fn own_spawn_node_name(&self) -> String {
+        match self
+            .workspace()
+            .filter(|w| w.is_gate_only())
+            .map(|_| gate_node_credential(self.plugins.cloud.relay_node_credential()))
+        {
+            Some(Ok(node)) => self.bound_node_name(&node),
+            _ => node_name(&self.machine_prefix),
+        }
+    }
+
+    /// The name `node` is bound to, or the computer's own when it names none.
+    fn bound_node_name(&self, node: &RelayNodeCredential) -> String {
+        Some(node.node_name.trim())
+            .filter(|name| !name.is_empty())
+            .map_or_else(|| node_name(&self.machine_prefix), str::to_string)
     }
 
     /// Whether the spawn node, or the reason there is none, is not what

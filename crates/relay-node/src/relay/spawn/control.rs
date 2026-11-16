@@ -508,13 +508,15 @@ async fn invoke(
     key(&params.idempotency_key)?;
     let workspace = workspace(core)?;
     // Only this computer's own node, under the name it enrolled with (an
-    // alternate when another node held its own): status and release bind a
-    // worker to the exact identity its local registration saved, which a
-    // spawn on another computer never leaves here.
+    // alternate when another node held its own; on a gate-only install the
+    // name Control bound the desktop's relay-node credential to): status
+    // and release bind a worker to the exact identity its local
+    // registration saved, which a spawn on another computer never leaves
+    // here.
     let own = super::node::enrolled_name(
         &core.config.app_data_dir,
         &workspace.base_url,
-        &super::node_name(&core.machine_prefix),
+        &core.own_spawn_node_name(),
     );
     if params.node_name != own {
         return Err(RpcError::new(
