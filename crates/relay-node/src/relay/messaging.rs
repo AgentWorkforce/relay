@@ -386,6 +386,14 @@ fn sign_in_required() -> RpcError {
     )
 }
 
+/// Another workspace was saved while a request for the one before was out.
+fn workspace_changed() -> RpcError {
+    RpcError::new(
+        ErrorKind::CloudFailed,
+        "Your Agent Relay workspace changed while you were being enrolled. Try again.",
+    )
+}
+
 /// An enrolment at the gate that failed, as messaging reports it: signed
 /// out says what to do about it for your own messages.
 fn gate_identity_error(error: RpcError) -> RpcError {
@@ -607,10 +615,7 @@ impl Core {
             .update_latest(|store| stored_workspace_of(store) == asked_in)
             .unwrap_or_else(|_| self.stored_workspace() == asked_in);
         if !unchanged {
-            return Err(RpcError::new(
-                ErrorKind::CloudFailed,
-                "Your Agent Relay workspace changed while you were being enrolled. Try again.",
-            ));
+            return Err(workspace_changed());
         }
         if let Some(known) = self.person_gate_url() {
             return Ok(known);
@@ -624,15 +629,19 @@ impl Core {
         // A failed save is not fatal here: you still message through the
         // gate now, and the next refusal adopts it again.
         // Checked again as it saves, so a workspace saved in between keeps
-        // its own credentials.
-        let _ = self.store.update_latest(|store| {
+        // its own credentials and the gate is not used either.
+        let saved = self.store.update_latest(|store| {
             if stored_workspace_of(store) != asked_in {
-                return;
+                return false;
             }
             if let Some(cloud) = store.cloud.as_mut().filter(|c| c.gate_url.is_none()) {
                 cloud.gate_url = Some(gate.clone());
             }
+            true
         });
+        if let Ok(false) = saved {
+            return Err(workspace_changed());
+        }
         Ok(gate)
     }
 
