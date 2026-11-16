@@ -34,7 +34,8 @@
     "The installed Copilot SDK emits hook lifecycle events through asynchronous persistence, so a native hook command can precede its matching journal anchor.",
     "A native runtime proof and component tests do not prove idle message wake in the installed signed Desktop build.",
     "Copilot window reload leaves its shared native agent host and cached helper commands running; use Developer: Restart Local Agent Host to load a relocated test helper.",
-    "Discovery snapshots must not authorize a native hook claim: newly opened and already-closed descriptors need a current kernel read."
+    "Discovery snapshots must not authorize a native hook claim: newly opened and already-closed descriptors need a current kernel read.",
+    "A rolling 64 KiB journal tail is not a stable cancellation anchor: delayed model events can append more than that after agentStop. The managed helper must locate its exact invocation once and preserve its byte offset, with bounded, validated reads afterward."
   ],
   "keyFindings": [
     "The current VS Code chat returned three empty stop-hook outputs in 23\u2013160 ms; one earlier message arrived through post-tool additionalContext and a later message remained offered.",
@@ -50,7 +51,10 @@
     "The ad-hoc live candidate failed helper verification because codesign prints its computed requirement as a comment. Replaced subprocess/path parsing with native Security.framework requirement derivation from the running code object, retaining strict self and guest validation.",
     "Native designated-requirement self-validation failed before the fix and passed after it. All 52 Copilot tests and both macOS signing tests pass; actual signed-candidate idle wake remains pending the rebuilt candidate.",
     "A combined V2 candidate completed one actual idle DM wake with exactly one native stop block, one injected user message for DM247988130483310592, a completed assistant response and no inbox polling. A repeated wake failed native proof, so completion remains pending combined V3 validation.",
-    "Commit6301881a3 adds current process-table hook proof, a 30-second stop-request validation budget, debug-only elapsed/boolean diagnostics, and descriptor-open/close regressions. 54 Copilot, 3 snapshot and 2 macOS signing tests pass."
+    "Commit6301881a3 adds current process-table hook proof, a 30-second stop-request validation budget, debug-only elapsed/boolean diagnostics, and descriptor-open/close regressions. 54 Copilot, 3 snapshot and 2 macOS signing tests pass.",
+    "Final source5d5677fee passed57 Copilot,3snapshot and2macOSsigning tests. Combined candidate appa948ff8/coree4bcb805a (production-equivalent peer app8f2df994/corea87a3ef55) passed126 desktopCopilot and275GTK tests, Swiftappbuild and deepstrictseal; Swiftunit tests unavailable(noXCTest).",
+    "November16 final live validation passed three consecutive idle DM wakes without UI intervention, each with one native stop block, one exact message receipt and completed reply, with no inbox polling. Native normal cancellation ended the old hook without a claim and its helper exited; re-arm and one fresh post-cancel DM wake passed.",
+    "PR2198 was taken out of draft on the user explicit request. No main merge or release. NativeMCPserver/discover negotiation remains a separate companion investigation; not a verified tool-use pass."
   ],
   "filesAffected": [
     "crates/relay-node/src/relay/cli/copilot_hook.rs",

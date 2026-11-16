@@ -42,3 +42,13 @@
 - Copilot's shared agent host retains hook/MCP helper commands across window reload. Developer: Restart Local Agent Host refreshes the native runtime.
 - Current process-table hook authentication avoids stale discovered descriptors; regressions accept newly opened descriptors and reject closed descriptors hidden by the snapshot. The stop request gets 30 seconds for native validation, retaining the existing bounded native hook lifetime.
 - 54 Copilot tests, 3 snapshot tests and 2 macOS signing tests pass. Veto used host analysis fallback, not an independent reviewer. The original installed app bundle is untouched; tests use a separate candidate and preserve message claims.
+
+## Final outcome — November 16
+
+- The rolling 64 KiB control scan also lost a valid stop anchor after 81,189 bytes of ordinary delayed native model records. New regressions failed before the fix. The helper now fixes the exact invocation offset, validates opaque JSON records without constructing their model payloads, and retains file-incarnation, initial-length, corruption, cancellation and scan-size checks.
+- Final public core source: `5d5677fee` in PR #2198. The combined test candidate uses equivalent source `e4bcb805a` with app `a948ff8` (consolidated peer equivalents: core `a87a3ef55`, app `8f2df994`).
+- Passing validation: 57 Copilot, 3 process snapshot, 2 macOS signing, 126 desktop Copilot and 275 GTK tests; Swift app build and deep strict bundle seal. Swift unit tests cannot run with this Mac's missing XCTest module.
+- **Live final-candidate pass:** three consecutive idle DM wakes, without UI intervention between them, each produced one native stop block, one receipt for the actual relay message ID and a completed response, with no inbox polling. Evidence: `/tmp/relay-copilot-live-results/WAKE_LIVE_FINAL_1116_1527-summary.json` and the three per-message records.
+- **Live cancellation/re-arm pass:** normal Cancel ended the idle hook without claiming a message, its helper exited, a normal new user turn re-armed the hook, and a fresh DM woke the chat without inbox polling. Evidence: `cancellation-release.json` and `WAKE_LIVE_AFTER_CANCEL_1116_1529_1.json` in the same local results directory.
+- The user explicitly requested taking PR #2198 out of draft; it is ready for review. No main merge or release was performed. The original app bundle remains untouched; the verified candidate is running in the existing local test-app slot.
+- Native MCP `server/discover` negotiation is a separate desktop companion investigation. No native MCP tool-execution success is claimed by these injection tests.
