@@ -903,7 +903,10 @@ remote names no repository. The config is read as git reads it (comments,
 quotes, the old `[remote.origin]` spelling), `url.<base>.insteadOf` rewrites
 from the repository's, `~/.gitconfig` and `$XDG_CONFIG_HOME/git/config` are
 applied first, `include` files and `includeIf "gitdir:…"` files are followed
-(other `includeIf` conditions are not), a linked work tree's own
+(matched against the work tree's own git directory, `.git/worktrees/<name>`
+for a linked one; other `includeIf` conditions are not), within a budget of
+64 files and 1 MiB per lookup; a config that includes itself or exceeds the
+budget names no repository, a linked work tree's own
 `config.worktree` applies when the repository enables
 `extensions.worktreeConfig`, the last `url` set wins, and a directory reached
 through a link is looked up where it really is. A one-letter host (`g:acme/web`) is an SSH alias except on

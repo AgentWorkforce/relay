@@ -204,11 +204,65 @@ fn include_applies(condition: &str, git_dir: Option<&Path>, including: &Path) ->
 
 /// The config at `path` with its `include` and applicable `includeIf` files
 /// put in where git reads them, as one text.
-fn expanded(path: &Path, git_dir: Option<&Path>, depth: usize) -> Option<String> {
-    let text = read_small(path)?;
-    if depth >= MAX_INCLUDE_DEPTH {
-        return Some(text);
+/// What one repository lookup may read through `include` files: a bound on
+/// files and bytes shared by every config of the lookup, so a config that
+/// includes itself or fans out cannot stall it. Spending past it fails the
+/// lookup (no repository, so nothing is forced or labelled).
+pub(crate) struct Budget {
+    files: usize,
+    bytes: usize,
+}
+
+impl Budget {
+    /// The bound for one lookup.
+    pub(crate) fn new() -> Budget {
+        Budget {
+            files: MAX_INCLUDE_FILES,
+            bytes: MAX_INCLUDE_BYTES,
+        }
     }
+
+    /// Takes one file of `len` bytes from the budget; `false` when it is spent.
+    fn take(&mut self, len: usize) -> bool {
+        if self.files == 0 || len > self.bytes {
+            self.files = 0;
+            return false;
+        }
+        self.files -= 1;
+        self.bytes -= len;
+        true
+    }
+}
+
+/// The most config files one lookup reads, includes counted.
+const MAX_INCLUDE_FILES: usize = 64;
+/// The most config text one lookup reads, includes counted.
+const MAX_INCLUDE_BYTES: usize = 1024 * 1024;
+
+fn expanded(path: &Path, git_dir: Option<&Path>, budget: &mut Budget) -> Option<String> {
+    let mut chain = Vec::new();
+    expanded_in(path, git_dir, budget, &mut chain, 0)
+}
+
+/// [`expanded`], within the files already being expanded (`chain`): a file
+/// that includes itself, directly or through others, fails the lookup.
+fn expanded_in(
+    path: &Path,
+    git_dir: Option<&Path>,
+    budget: &mut Budget,
+    chain: &mut Vec<PathBuf>,
+    depth: usize,
+) -> Option<String> {
+    let text = read_small(path)?;
+    if !budget.take(text.len()) {
+        return None;
+    }
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if chain.contains(&canonical) || depth >= MAX_INCLUDE_DEPTH {
+        budget.files = 0;
+        return None;
+    }
+    chain.push(canonical);
     let mut out = String::new();
     let mut header = String::new();
     let mut include: Option<Option<String>> = None;
@@ -255,7 +309,12 @@ fn expanded(path: &Path, git_dir: Option<&Path>, depth: usize) -> Option<String>
             },
             None => path.parent().unwrap_or(Path::new("")).join(&value),
         };
-        if let Some(included) = expanded(&target, git_dir, depth + 1) {
+        let included = expanded_in(&target, git_dir, budget, chain, depth + 1);
+        if budget.files == 0 {
+            chain.pop();
+            return None;
+        }
+        if let Some(included) = included {
             out.push_str(&included);
             out.push('\n');
             // What follows the include line is still in this section.
@@ -263,6 +322,7 @@ fn expanded(path: &Path, git_dir: Option<&Path>, depth: usize) -> Option<String>
             out.push('\n');
         }
     }
+    chain.pop();
     Some(out)
 }
 
@@ -382,7 +442,7 @@ fn rewritten(url: &str, configs: &[String]) -> String {
 /// The person's own git configs, which hold `insteadOf` rewrites as often as
 /// a repository's does: `$XDG_CONFIG_HOME/git/config` (or
 /// `~/.config/git/config`) and `~/.gitconfig`.
-fn global_configs(git_dir: Option<&Path>) -> Vec<String> {
+fn global_configs(git_dir: Option<&Path>, budget: &mut Budget) -> Vec<String> {
     let home = home();
     let xdg = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -393,7 +453,7 @@ fn global_configs(git_dir: Option<&Path>) -> Vec<String> {
     ]
     .into_iter()
     .flatten()
-    .filter_map(|path| expanded(&path, git_dir, 0))
+    .filter_map(|path| expanded(&path, git_dir, budget))
     .collect()
 }
 
@@ -406,8 +466,11 @@ pub fn repository_of(directory: &Path) -> Option<String> {
     // In git's order, each later file overriding the earlier ones: the
     // person's, the repository's, and the work tree's own when the
     // repository enables per-work-tree config.
-    let mut configs = global_configs(Some(&common));
-    let shared = expanded(&common.join("config"), Some(&common), 0)?;
+    // `includeIf "gitdir:"` is matched against the work tree's own git
+    // directory (`.git/worktrees/<name>` for a linked one), as git does.
+    let mut budget = Budget::new();
+    let mut configs = global_configs(Some(&own), &mut budget);
+    let shared = expanded(&common.join("config"), Some(&own), &mut budget)?;
     let per_tree = config_entries(&shared)
         .into_iter()
         .any(|(section, sub, key, value)| {
@@ -421,9 +484,12 @@ pub fn repository_of(directory: &Path) -> Option<String> {
         });
     configs.push(shared);
     if per_tree {
-        if let Some(tree) = expanded(&own.join("config.worktree"), Some(&common), 0) {
+        if let Some(tree) = expanded(&own.join("config.worktree"), Some(&own), &mut budget) {
             configs.push(tree);
         }
+    }
+    if budget.files == 0 {
+        return None;
     }
     let origin = origin_url(&configs.concat())?;
     normalize_remote(&rewritten(&origin, &configs))
@@ -673,6 +739,48 @@ mod tests {
         )
         .unwrap();
         assert_eq!(repository_of(&included).as_deref(), Some("acme/api"));
+        // An includeIf scoped to a linked work tree's own git directory
+        // applies to that work tree only.
+        std::fs::write(
+            main_git.join("config"),
+            format!(
+                "[remote \"origin\"]\n\turl = git@github.com:Acme/Web.git\n[includeIf \"gitdir:{}/\"]\n\tpath = fork.inc\n",
+                admin.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            main_git.join("fork.inc"),
+            "[remote \"origin\"]\n\turl = git@github.com:me/fork.git\n",
+        )
+        .unwrap();
+        assert_eq!(repository_of(&linked).as_deref(), Some("me/fork"));
+        assert_eq!(repository_of(&nested).as_deref(), Some("acme/web"));
+        // A config that includes itself, or fans out past the budget, names
+        // no repository rather than stalling the lookup.
+        let looping = temp.path().join("loop");
+        repo(&looping, "https://github.com/acme/loop");
+        let config = looping.join(".git/config");
+        let text = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(&config, format!("{text}[include]\n\tpath = config\n")).unwrap();
+        assert_eq!(repository_of(&looping), None);
+        let fanning = temp.path().join("fan");
+        repo(&fanning, "https://github.com/acme/fan");
+        std::fs::write(
+            fanning.join(".git/a.inc"),
+            "[include]\n".to_string() + &"\tpath = b.inc\n".repeat(10),
+        )
+        .unwrap();
+        std::fs::write(
+            fanning.join(".git/b.inc"),
+            "[include]\n".to_string() + &"\tpath = c.inc\n".repeat(10),
+        )
+        .unwrap();
+        std::fs::write(fanning.join(".git/c.inc"), "[x]\n\ty = 1\n").unwrap();
+        let config = fanning.join(".git/config");
+        let text = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(&config, format!("{text}[include]\n\tpath = a.inc\n")).unwrap();
+        assert_eq!(repository_of(&fanning), None);
         // A local-path origin names no repository.
         let local = temp.path().join("local");
         repo(&local, "/srv/git/web.git");
