@@ -61,6 +61,7 @@ pub fn process_sessions(
             start: process.start,
             authorizes_callers,
         };
+        let mut environment_authorizes = false;
         if let Some(thread) = table
             .environment_var(pid, "CODEX_THREAD_ID")
             .map(|id| id.to_lowercase())
@@ -68,7 +69,7 @@ pub fn process_sessions(
         {
             if codex_caller_thread(table, pid, uid).as_deref() == Some(thread.as_str()) {
                 found.push(session(&thread, true));
-                continue;
+                environment_authorizes = true;
             }
         }
         let Some(executable) = table.executable(pid) else {
@@ -79,6 +80,11 @@ pub fn process_sessions(
         }
         for thread in codex_locked_threads(table, pid).intersection(threads) {
             found.push(session(thread, false));
+        }
+        // Caller authorization and writer-lock evidence serve different
+        // consumers. Keep both, but do not duplicate resume authorization.
+        if environment_authorizes {
+            continue;
         }
         // The same older Codex can still be an authorizing `resume`.
         let arguments = table.arguments(pid);
@@ -93,8 +99,8 @@ pub fn process_sessions(
 }
 
 /// Whether a Codex that drains `codex queue` runs `thread` now: the
-/// interactive TUI, or the app-server Conductor runs for one of its
-/// sessions. A shared app-server's writer lock is not enough.
+/// interactive TUI, or a per-session app-server hosted by Conductor, Paseo
+/// or OpenIDEA. A shared app-server's writer lock is not enough.
 pub fn terminal_thread_is_live(table: &dyn ProcessTable, uid: u32, thread: &str) -> bool {
     let thread = thread.to_lowercase();
     if !crate::relay::store::is_uuid(&thread) {
@@ -115,11 +121,47 @@ pub fn thread_is_live(table: &dyn ProcessTable, uid: u32, thread: &str) -> bool 
 }
 
 /// Whether `pid` is a trusted Codex that runs queued messages for the
-/// threads it holds: the TUI, or a Conductor session's app-server.
+/// threads it holds: the TUI, or a Conductor, Paseo or OpenIDEA app-server.
 pub fn drains_queue(table: &dyn ProcessTable, uid: u32, pid: i32) -> bool {
     is_terminal_codex(table, pid)
         || is_conductor_codex(table, uid, pid)
         || is_paseo_codex(table, uid, pid)
+        || is_openidea_codex(table, uid, pid)
+}
+
+/// A trusted Codex app-server started by this user's OpenIDEA. OpenIDEA
+/// keeps one stdio server per task; process_sessions supplies the thread's
+/// writer-lock evidence before discovery checks whether it drains queues.
+pub fn is_openidea_codex(table: &dyn ProcessTable, uid: u32, pid: i32) -> bool {
+    let Some(process) = table.process(pid).filter(|p| p.uid == uid) else {
+        return false;
+    };
+    table
+        .executable(pid)
+        .is_some_and(|exe| table.is_trusted_codex(&exe))
+        && table.arguments(pid).iter().any(|a| a == "app-server")
+        && crate::relay::openidea::under_app(table, uid, pid)
+        && table.process(pid) == Some(process)
+}
+
+/// The trusted OpenIDEA app-server executable holding `thread`'s writer
+/// lock. It may be the only queue-capable Codex installed, outside every
+/// configured CLI search path. A command below it is not the lock holder.
+pub fn openidea_executable(table: &dyn ProcessTable, uid: u32, thread: &str) -> Option<PathBuf> {
+    let thread = thread.to_lowercase();
+    if !crate::relay::store::is_uuid(&thread) {
+        return None;
+    }
+    process_sessions(table, uid, &BTreeSet::from([thread]))
+        .iter()
+        .filter(|session| !session.authorizes_callers)
+        .find(|session| {
+            table
+                .process(session.pid)
+                .is_some_and(|process| process.start == session.start)
+                && is_openidea_codex(table, uid, session.pid)
+        })
+        .and_then(|session| table.executable(session.pid))
 }
 
 /// A trusted Codex app-server owned by Paseo. Paseo keeps one such server
@@ -476,6 +518,20 @@ pub(crate) mod tests {
             codex_caller_thread(&table, 700, UID).as_deref(),
             Some(SESSION)
         );
+        // Environment authorization must not hide the lock or duplicate
+        // the same process's legacy resume authorization.
+        table.insert(
+            600,
+            FakeProcess {
+                environment: [("CODEX_THREAD_ID".into(), SESSION.into())].into(),
+                open_files: vec![lock(SESSION)],
+                ..codex_process(123, &["codex", "resume", SESSION])
+            },
+        );
+        let sessions = process_sessions(&table, UID, &threads(&[SESSION]));
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions.contains(&session(SESSION, 600, 123, false)));
+        assert!(sessions.contains(&session(SESSION, 600, 123, true)));
     }
 
     // OutboundTests.testCodexDiscoveryAcceptsThreadEnvironmentOnlyBelowTrustedAncestor.
@@ -767,6 +823,153 @@ pub(crate) mod tests {
             },
         );
         assert!(!terminal_thread_is_live(&table, UID, SESSION));
+    }
+
+    #[test]
+    fn an_environment_authorized_openidea_server_keeps_all_its_writer_locks() {
+        let table = trusted_table();
+        table.insert(
+            500,
+            FakeProcess {
+                executable: Some(crate::relay::openidea::tests::app()),
+                ..process(1, 5)
+            },
+        );
+        table.insert(
+            600,
+            FakeProcess {
+                parent: 500,
+                environment: [("CODEX_THREAD_ID".into(), SESSION.into())].into(),
+                open_files: vec![lock(SESSION), lock(OTHER)],
+                ..codex_process(10, &["codex", "app-server"])
+            },
+        );
+        let sessions = process_sessions(&table, UID, &threads(&[SESSION, OTHER]));
+        assert_eq!(sessions.len(), 3);
+        assert!(sessions.contains(&session(SESSION, 600, 10, true)));
+        assert!(sessions.contains(&session(SESSION, 600, 10, false)));
+        assert!(sessions.contains(&session(OTHER, 600, 10, false)));
+        assert_eq!(openidea_executable(&table, UID, SESSION), Some(codex()));
+        assert_eq!(openidea_executable(&table, UID, OTHER), Some(codex()));
+    }
+
+    #[test]
+    fn an_openidea_app_server_drains_only_its_locked_threads() {
+        let table = trusted_table();
+        table.insert(
+            500,
+            FakeProcess {
+                executable: Some(crate::relay::openidea::tests::app()),
+                ..process(1, 5)
+            },
+        );
+        let server = |parent| FakeProcess {
+            parent,
+            open_files: vec![lock(SESSION)],
+            ..codex_process(10, &["codex", "app-server"])
+        };
+        table.insert(600, server(500));
+        assert!(is_openidea_codex(&table, UID, 600));
+        assert!(drains_queue(&table, UID, 600));
+        assert!(terminal_thread_is_live(&table, UID, SESSION));
+        assert!(!terminal_thread_is_live(&table, UID, OTHER));
+        assert_eq!(openidea_executable(&table, UID, SESSION), Some(codex()));
+        assert_eq!(openidea_executable(&table, UID, OTHER), None);
+        assert_eq!(openidea_executable(&table, UID + 1, SESSION), None);
+        assert_eq!(openidea_executable(&table, UID, "not-a-thread"), None);
+        // A launcher between the host and its app-server also counts.
+        table.insert(
+            550,
+            FakeProcess {
+                executable: Some("/bin/sh".into()),
+                ..process(500, 6)
+            },
+        );
+        table.insert(600, server(550));
+        assert!(terminal_thread_is_live(&table, UID, SESSION));
+        table.insert(
+            600,
+            FakeProcess {
+                open_files: vec![],
+                ..server(550)
+            },
+        );
+        assert!(!terminal_thread_is_live(&table, UID, SESSION));
+        assert_eq!(openidea_executable(&table, UID, SESSION), None);
+        table.insert(600, server(550));
+        table.trusted_codex.lock().unwrap().clear();
+        assert!(!drains_queue(&table, UID, 600), "an untrusted binary");
+        assert!(!terminal_thread_is_live(&table, UID, SESSION));
+        assert_eq!(openidea_executable(&table, UID, SESSION), None);
+        table.trust(codex());
+        table.insert(
+            500,
+            FakeProcess {
+                arguments: vec!["openidea".into()],
+                executable: Some("/bin/sh".into()),
+                ..process(1, 5)
+            },
+        );
+        assert!(!drains_queue(&table, UID, 600), "argv is not host proof");
+        table.insert(
+            500,
+            FakeProcess {
+                executable: Some(crate::relay::openidea::tests::app()),
+                ..process(1, 5)
+            },
+        );
+        table.insert(
+            600,
+            FakeProcess {
+                parent: 500,
+                open_files: vec![lock(SESSION)],
+                ..codex_process(10, &["codex", "exec", "resume", SESSION])
+            },
+        );
+        assert!(!drains_queue(&table, UID, 600), "exec is not a chat");
+        table.remove(600);
+        assert!(!terminal_thread_is_live(&table, UID, SESSION));
+    }
+
+    #[test]
+    fn an_integrated_terminals_app_server_needs_a_loaded_thread() {
+        let table = trusted_table();
+        table.insert(
+            500,
+            FakeProcess {
+                executable: Some(crate::relay::openidea::tests::app()),
+                ..process(1, 5)
+            },
+        );
+        table.insert(
+            550,
+            FakeProcess {
+                executable: Some("/bin/sh".into()),
+                arguments: vec!["sh".into(), "-l".into()],
+                has_terminal: true,
+                ..process(500, 6)
+            },
+        );
+        let server = FakeProcess {
+            parent: 550,
+            has_terminal: true,
+            ..codex_process(10, &["codex", "app-server"])
+        };
+        table.insert(600, server.clone());
+        assert!(!terminal_thread_is_live(&table, UID, SESSION));
+        assert_eq!(openidea_executable(&table, UID, SESSION), None);
+        // Ancestry identifies the host, not whether its task UI or a
+        // terminal client loaded the thread. Either needs the same lock.
+        table.insert(
+            600,
+            FakeProcess {
+                open_files: vec![lock(SESSION)],
+                ..server
+            },
+        );
+        assert!(terminal_thread_is_live(&table, UID, SESSION));
+        assert!(!terminal_thread_is_live(&table, UID, OTHER));
+        assert_eq!(openidea_executable(&table, UID, SESSION), Some(codex()));
     }
 
     // CodexBridge.openThreadIDs (the process half).

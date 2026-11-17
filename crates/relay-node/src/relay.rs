@@ -119,6 +119,7 @@ pub mod openclaw;
 pub mod opencode;
 pub mod opencode_existing;
 pub mod opencode_serve;
+pub mod openidea;
 pub mod outbound;
 pub mod paseo;
 pub mod paths;

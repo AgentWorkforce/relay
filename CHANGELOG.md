@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay-node`: Codex chats hosted by OpenIDEA are discovered as live while their trusted app-server holds the thread's writer lock, and queue delivery uses that server's verified executable even when no separate Codex CLI is configured.
 - `agent-relay-node`: a spawn whose harness is installed but did not start now fails as `spawn_failed: <reason>` instead of `spawn_harness_unavailable` (which Cloud showed as the node not providing the harness); a new spawn with a fresh idempotency key may then succeed. Claude Code's readiness timeout now says whether Claude was still running and how much output it wrote.
 - `agent-relay-node`: session-socket requests share one deadline across connection setup and partial reads and writes, so slow replies cannot extend a native hook beyond its wait budget.
 
@@ -52,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay-node`: an agent removed because its session was archived, ended or excluded from upload now unsubscribes its integrations first. Before, its relayfile webhook and reply subscriptions stayed live for good, which filled the workspace's webhook subscription cap. If the cleanup cannot finish (the agent store cannot be saved, the service is unreachable), the agent is kept and the cleanup retried.
 - `agent-relay-node`: a build made for a self-hosted site can join a public Relay Connect invitation on agentrelay.com as a guest. It used to refuse every such link with `invalid_link`. Links from any other site are still refused.
 - `agent-relay-node`: direct-node sockets back off when the Relaycast gateway is overloaded instead of reconnecting every few seconds. Reconnects wait up to about 4 minutes; a 429 or 503 upgrade, or a 1013 or 1008 close, pauses the workspace's new sockets for the server's `Retry-After`; another install holding the node (`provider_instance_conflict`) means a 30-60 s wait, or the one asked for. `node.register` now names this install's provider instance, and a node token it refuses is replaced.
+
 
 ## [18.7.3] - 2026-11-15
 
