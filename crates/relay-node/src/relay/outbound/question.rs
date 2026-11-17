@@ -27,6 +27,7 @@ impl Outbound {
     ) -> Result<Value, OutboundError> {
         let fields = payload(request, Purpose::Json)?;
         let session = self.identify(pid, uid).await?;
+        self.admit(&session.target.key())?;
         let cwd = fields["cwd"]
             .as_str()
             .map(str::to_string)

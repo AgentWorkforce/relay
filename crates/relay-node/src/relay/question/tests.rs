@@ -188,7 +188,6 @@ fn numbers_map_to_labels_and_text_is_taken_as_written() {
     assert!(text::resolve(&one, "1,2")
         .unwrap_err()
         .contains("one choice"));
-    assert!(text::resolve(&one, "3").unwrap_err().contains("1 to 2"));
     assert!(text::resolve(&one, "").is_err());
     let several = [pick(true)];
     let answers = text::resolve(&several, "2, 1,2").unwrap();
@@ -199,6 +198,7 @@ fn numbers_map_to_labels_and_text_is_taken_as_written() {
         ..pick(false)
     }];
     assert!(text::resolve(&strict, "maybe").is_err());
+    assert!(text::resolve(&strict, "3").unwrap_err().contains("1 to 2"));
     let two = [
         pick(false),
         Question {
@@ -212,6 +212,30 @@ fn numbers_map_to_labels_and_text_is_taken_as_written() {
         "[Answer to question q0123abcd] Database: 1. Postgres; Port: my own"
     );
     assert!(text::resolve(&two, "1").is_err());
+}
+
+/// A number that names no option is free text when the question takes free
+/// text, and refused when it does not.
+#[test]
+fn a_number_out_of_range_is_free_text_when_the_question_takes_text() {
+    let one = [pick(false)];
+    for answer in ["3", "0", "1,3"] {
+        let answers = text::resolve(&one, answer).unwrap();
+        assert_eq!(answers[0].values, vec![answer], "{answer}");
+        assert_eq!(answers[0].shown, answer);
+    }
+    let strict = [Question {
+        free: false,
+        ..pick(false)
+    }];
+    for answer in ["3", "0"] {
+        assert!(
+            text::resolve(&strict, answer)
+                .unwrap_err()
+                .contains("1 to 2"),
+            "{answer}"
+        );
+    }
 }
 
 fn record(registration: &Registration, base_key: &str) -> Record {
@@ -271,7 +295,8 @@ fn only_the_inbox_answers_an_open_question_once_before_it_expires() {
         "https://cast.test",
     );
     assert!(check(&reference, &other, Some("agent-triage"), "1").is_err());
-    let Err(Unchecked::Refused(unreadable)) = check(&reference, &asker, Some("agent-triage"), "7")
+    let Err(Unchecked::Refused(unreadable)) =
+        check(&reference, &asker, Some("agent-triage"), "1,2")
     else {
         panic!("an unreadable answer is refused");
     };

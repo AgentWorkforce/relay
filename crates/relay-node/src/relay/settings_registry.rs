@@ -36,11 +36,10 @@ pub const RECORDS: [&str; 2] = ["agent_changes", "detected_tools"];
 /// Claude Code's Keychain login; mobile handoff changes where sessions
 /// run; mobile continuation permits native owner input; approvals from the
 /// spawning agent let it answer its session's permission prompts;
-/// `connect_detected_tools` turns on the routes into the tools found here;
-/// `question_escalation` lets an inbox's reply be typed into the person's
-/// sessions as their answer). An agent may turn them off. A setting whose
+/// `connect_detected_tools` turns on the routes into the tools found here).
+/// An agent may turn them off. A setting whose
 /// value is `"on"`/`"off"` rather than a boolean counts `"on"` as on.
-pub const PERSON_TURNS_ON: [&str; 28] = [
+pub const PERSON_TURNS_ON: [&str; 27] = [
     "accept_spawns",
     "allow_self_registration",
     "auto_activate",
@@ -61,7 +60,6 @@ pub const PERSON_TURNS_ON: [&str; 28] = [
     "opencode_plugin",
     "pi_auto_activate",
     "pi_extension",
-    "question_escalation",
     "spawn_allow_teammates",
     "spawn_full_access_claude",
     "spawn_full_access_codex",
@@ -83,7 +81,8 @@ pub const PERSON_ADDS: [&str; 3] = [
 
 /// Settings only the person sets to a value, in Settings: the inbox whose
 /// replies are typed into the person's sessions as answers. An agent may
-/// clear it.
+/// clear it. (An agent may turn `question_escalation` itself on and off:
+/// with the inbox unset, questions go to the person.)
 pub const PERSON_SETS: [&str; 1] = ["question_escalation_inbox"];
 
 /// Settings with a part only the person turns on: a watched folder's
@@ -339,6 +338,7 @@ mod tests {
             "auto_join_general",
             "claude_session_hook",
             "history_retention_days",
+            "question_escalation",
             "show_relay_messages",
             "spawn_billing_claude",
             "spawn_billing_codex",

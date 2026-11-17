@@ -573,7 +573,9 @@ impl Core {
         if workspace.base_url != registration.base_url
             || registration.workspace_key.as_ref() != Some(&workspace.key)
         {
-            return Err(format!("@{} is in another workspace", registration.name));
+            return Err(
+                "the asking agent is in a different workspace from the question inbox".into(),
+            );
         }
         let http = sdk_gaps::workspace_http(&workspace)
             .map_err(|error| format!("the workspace is unreachable: {error}"))?;
@@ -696,12 +698,15 @@ impl Core {
                         self.refuse_reply(delivery, token, &refusal).await
                     }
                     _ => {
-                        settle(&reference);
-                        if self
+                        // Recorded before it is settled, as the Codex path
+                        // does: a redelivery after a failed save finds the
+                        // reply handled, not a question already answered.
+                        let saved = self
                             .store
                             .remember(|store| store.record_injected(&delivery.id))
-                            .is_err()
-                        {
+                            .is_ok();
+                        settle(&reference);
+                        if !saved {
                             return OwnerReply::Unsaved;
                         }
                         self.reply_to_sender(delivery, token, &delivered).await;

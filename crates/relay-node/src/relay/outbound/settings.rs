@@ -243,14 +243,14 @@ fn widens(
     }
     if PERSON_SETS.contains(&key) {
         // A value other than the one set now; clearing it widens nothing.
-        let text = |value: Option<&Value>| {
+        fn text(value: Option<&Value>) -> &str {
             value
                 .and_then(Value::as_str)
-                .map(|text| text.trim().to_lowercase())
+                .map(str::trim)
                 .unwrap_or_default()
-        };
+        }
         let wanted = text(Some(asked));
-        return !wanted.is_empty() && wanted != text(now.as_ref());
+        return !wanted.is_empty() && !wanted.eq_ignore_ascii_case(text(now.as_ref()));
     }
     if PERSON_ADDS.contains(&key) {
         return added(values, saved_folder, key, asked);
@@ -524,12 +524,7 @@ mod tests {
     #[test]
     fn an_agent_may_turn_off_but_not_on_what_widens_trust() {
         for key in PERSON_TURNS_ON {
-            // `question_escalation` is read and written as `"on"`/`"off"`.
-            let (yes, no) = if key == "question_escalation" {
-                (json!("on"), json!("off"))
-            } else {
-                (json!(true), json!(false))
-            };
+            let (yes, no) = (json!(true), json!(false));
             let (status, code, message) =
                 refusal(json!({key: no.clone()}), json!({key: yes.clone()})).expect(key);
             assert_eq!((status, code.as_str()), (403, "person_only_setting"));
@@ -710,36 +705,38 @@ mod tests {
         assert_eq!(core.settings()["direct_delivery"], false);
     }
 
-    /// Question escalation lets an inbox answer as the person: an agent may
-    /// neither turn it on nor set the inbox, only turn it off and clear the
-    /// inbox; the person may do both.
+    /// Question escalation's inbox answers as the person: an agent may turn
+    /// escalation on and off, but only the person sets the inbox; an agent
+    /// may clear it.
     #[tokio::test]
-    async fn only_the_person_turns_on_question_escalation_or_sets_its_inbox() {
+    async fn an_agent_turns_question_escalation_on_but_only_the_person_sets_its_inbox() {
         let temp = tempfile::tempdir().unwrap();
         let core = core(temp.path());
-        for (key, value, message) in [
+        let error = apply(
+            &core,
+            &map(json!({"question_escalation_inbox": "mallory"})),
+            "api",
+        )
+        .unwrap_err();
+        assert_eq!(
+            (error.status, error.code.as_str(), error.message.as_str()),
             (
-                "question_escalation",
-                "on",
-                "Only the person can turn question_escalation on, in Agent Relay's Settings. An agent may turn it off.",
-            ),
-            (
-                "question_escalation_inbox",
-                "mallory",
-                "Only the person can set question_escalation_inbox, in Agent Relay's Settings. An agent may clear it.",
-            ),
-        ] {
-            let error = apply(&core, &map(json!({key: value})), "api").unwrap_err();
-            assert_eq!(
-                (error.status, error.code.as_str(), error.message.as_str()),
-                (403, "person_only_setting", message),
-                "{key}"
-            );
-        }
+                403,
+                "person_only_setting",
+                "Only the person can set question_escalation_inbox, in Agent Relay's Settings. An agent may clear it."
+            )
+        );
         let values = core.settings();
         assert_eq!(values["question_escalation"], "off");
         assert_eq!(values["question_escalation_inbox"], "");
         assert_eq!(values["agent_changes"], json!([]));
+        // An agent may turn escalation on (and off again).
+        let on = map(json!({"question_escalation": "on"}));
+        assert!(apply(&core, &on, "api").unwrap().1.is_ok());
+        assert_eq!(core.settings()["question_escalation"], "on");
+        let off = map(json!({"question_escalation": "off"}));
+        assert!(apply(&core, &off, "api").unwrap().1.is_ok());
+        assert_eq!(core.settings()["question_escalation"], "off");
         // The person may.
         core.set_settings(&map(json!({
             "question_escalation": "on",

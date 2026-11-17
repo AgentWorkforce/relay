@@ -1,11 +1,10 @@
 //! The question escalation settings: `question_escalation` (`off` or `on`,
 //! off unless set) and `question_escalation_inbox` (the agent questions go
 //! to; empty means the owner's person identity). The store keeps them;
-//! `settings.set` checks them here. Both widen who can answer as the person,
-//! so only the person (and fleet policy) turns escalation on or sets the
-//! inbox: `question_escalation` is in `PERSON_TURNS_ON` and
-//! `question_escalation_inbox` in `PERSON_SETS`. An agent may turn
-//! escalation off or clear the inbox.
+//! `settings.set` checks them here. An agent may turn escalation on and off.
+//! The inbox decides who can answer as the person, so only the person (and
+//! fleet policy) sets it: `question_escalation_inbox` is in `PERSON_SETS`.
+//! An agent may clear it.
 
 use crate::relay::store::Store;
 use serde_json::{json, Map, Value};

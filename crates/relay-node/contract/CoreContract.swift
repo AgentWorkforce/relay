@@ -4175,8 +4175,8 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
     /// Turns question escalation `on` or `off`: questions a Claude Code
     /// session or a spawned Codex session asks go over Agent Relay to
     /// `question_escalation_inbox` instead of a dialog, and expire after 30
-    /// minutes. Only the person (or fleet policy) turns it on; an agent may
-    /// turn it off.
+    /// minutes. An agent may turn it on or off; only the person (or fleet
+    /// policy) sets `question_escalation_inbox`.
     public let questionEscalation: String?
     /// The agent name escalated questions go to: 1 to 128 characters with
     /// no control characters, trimmed. An empty string sends them to the

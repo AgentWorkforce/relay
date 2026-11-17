@@ -284,29 +284,35 @@ fn resolve_one(question: &Question, part: &str) -> Result<Answer, String> {
                 .collect()
         })
         .flatten();
-    let Some(numbers) = numbers else {
-        if !question.free {
-            return Err(format!(
-                "choose a number from 1 to {}",
-                question.options.len()
-            ));
-        }
+    let choose = || format!("choose a number from 1 to {}", question.options.len());
+    let text = || {
         let words = clean(part);
-        return Ok(Answer {
+        Answer {
             values: vec![words.clone()],
             shown: words,
-        });
+        }
     };
+    let Some(numbers) = numbers else {
+        if !question.free {
+            return Err(choose());
+        }
+        return Ok(text());
+    };
+    // A number that names no option is free text when the question takes it.
+    if question.free
+        && numbers
+            .iter()
+            .any(|&number| number == 0 || number > question.options.len())
+    {
+        return Ok(text());
+    }
     if numbers.len() > 1 && !question.multi {
         return Err("this question takes one choice".into());
     }
     let mut chosen: Vec<usize> = Vec::new();
     for number in numbers {
         if number == 0 || number > question.options.len() {
-            return Err(format!(
-                "choose a number from 1 to {}",
-                question.options.len()
-            ));
+            return Err(choose());
         }
         if !chosen.contains(&number) {
             chosen.push(number);
