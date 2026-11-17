@@ -905,8 +905,10 @@ from the repository's, `~/.gitconfig` and `$XDG_CONFIG_HOME/git/config` are
 applied first, `include` files and `includeIf "gitdir:…"` files are followed
 (matched against the work tree's own git directory, `.git/worktrees/<name>`
 for a linked one; other `includeIf` conditions are not), within a budget of
-64 files and 1 MiB per lookup; a config that includes itself or exceeds the
-budget names no repository, a linked work tree's own
+64 files and 1 MiB per lookup; a config file over 256 KiB (global, shared,
+included or per-work-tree) or unreadable, a config that includes itself or
+exceeds the budget, and an `includeIf` pattern over 1 KiB, a git directory
+path over 4 KiB or a match over a fixed work budget all name no repository, a linked work tree's own
 `config.worktree` applies when the repository enables
 `extensions.worktreeConfig`, the last `url` set wins, and a directory reached
 through a link is looked up where it really is. A one-letter host (`g:acme/web`) is an SSH alias except on

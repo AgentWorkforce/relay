@@ -141,59 +141,121 @@ fn home() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// The longest `includeIf` pattern and git directory path matched; longer
+/// ones fail the lookup.
+const MAX_GLOB_PATTERN: usize = 1024;
+const MAX_GLOB_TEXT: usize = 4096;
+/// The most steps one match may take; more fails the lookup.
+const MAX_GLOB_WORK: usize = 1_000_000;
+
 /// Whether `text` matches the wildcard `pattern`: `**/` is zero or more
 /// whole directories, a trailing `**` anything, `*` and `?` stay within one
-/// name. Each (pattern, text) position is decided once, so the work is
-/// bounded by their lengths' product whatever the pattern.
-fn glob(pattern: &[u8], text: &[u8]) -> bool {
-    let mut memo = vec![None; (pattern.len() + 1) * (text.len() + 1)];
-    glob_at(pattern, text, 0, 0, &mut memo)
-}
-
-fn glob_at(pattern: &[u8], text: &[u8], p: usize, t: usize, memo: &mut [Option<bool>]) -> bool {
-    let slot = p * (text.len() + 1) + t;
-    if let Some(known) = memo[slot] {
-        return known;
+/// name. `None` when the pattern or path is too long or the match takes too
+/// much work: each (pattern, text) position is decided once (one byte each,
+/// at most about 4 MiB) and every step counts against a fixed budget.
+fn glob(pattern: &[u8], text: &[u8]) -> Option<bool> {
+    if pattern.len() > MAX_GLOB_PATTERN || text.len() > MAX_GLOB_TEXT {
+        return None;
     }
-    let rest = &text[t..];
-    let answer = match &pattern[p..] {
-        [] => rest.is_empty(),
-        [b'*', b'*', b'/', ..] => {
-            glob_at(pattern, text, p + 3, t, memo)
-                || (t..text.len())
-                    .any(|at| text[at] == b'/' && glob_at(pattern, text, p + 3, at + 1, memo))
-        }
-        [b'*', b'*', ..] => (t..=text.len()).any(|at| glob_at(pattern, text, p + 2, at, memo)),
-        [b'*', ..] => (t..=text.len())
-            .take_while(|&at| at == t || text[at - 1] != b'/')
-            .any(|at| glob_at(pattern, text, p + 1, at, memo)),
-        [b'?', ..] => {
-            rest.first().is_some_and(|c| *c != b'/') && glob_at(pattern, text, p + 1, t + 1, memo)
-        }
-        [c, ..] => rest.first() == Some(c) && glob_at(pattern, text, p + 1, t + 1, memo),
+    let mut matcher = Glob {
+        pattern,
+        text,
+        memo: vec![0; (pattern.len() + 1) * (text.len() + 1)],
+        work: MAX_GLOB_WORK,
     };
-    memo[slot] = Some(answer);
-    answer
+    matcher.at(0, 0)
 }
 
-/// Whether an `includeIf` condition holds for the repository at `git_dir`:
+struct Glob<'a> {
+    pattern: &'a [u8],
+    text: &'a [u8],
+    /// 0 unknown, 1 no match, 2 match, per (pattern, text) position.
+    memo: Vec<u8>,
+    work: usize,
+}
+
+impl Glob<'_> {
+    fn step(&mut self) -> Option<()> {
+        self.work = self.work.checked_sub(1)?;
+        Some(())
+    }
+
+    fn at(&mut self, p: usize, t: usize) -> Option<bool> {
+        let slot = p * (self.text.len() + 1) + t;
+        match self.memo[slot] {
+            1 => return Some(false),
+            2 => return Some(true),
+            _ => {}
+        }
+        self.step()?;
+        let (pattern, text) = (self.pattern, self.text);
+        let answer = match &pattern[p..] {
+            [] => t == text.len(),
+            [b'*', b'*', b'/', ..] => {
+                let mut found = self.at(p + 3, t)?;
+                let mut at = t;
+                while !found && at < text.len() {
+                    self.step()?;
+                    if text[at] == b'/' {
+                        found = self.at(p + 3, at + 1)?;
+                    }
+                    at += 1;
+                }
+                found
+            }
+            [b'*', b'*', ..] => {
+                let mut found = false;
+                for at in t..=text.len() {
+                    self.step()?;
+                    if self.at(p + 2, at)? {
+                        found = true;
+                        break;
+                    }
+                }
+                found
+            }
+            [b'*', ..] => {
+                let mut found = false;
+                for at in t..=text.len() {
+                    self.step()?;
+                    if at > t && text[at - 1] == b'/' {
+                        break;
+                    }
+                    if self.at(p + 1, at)? {
+                        found = true;
+                        break;
+                    }
+                }
+                found
+            }
+            [b'?', ..] => t < text.len() && text[t] != b'/' && self.at(p + 1, t + 1)?,
+            [c, ..] => t < text.len() && text[t] == *c && self.at(p + 1, t + 1)?,
+        };
+        self.memo[slot] = if answer { 2 } else { 1 };
+        Some(answer)
+    }
+}
+
+/// Whether an `includeIf` condition holds for the repository at `git_dir`
+/// (`None` when its pattern is too long or costly to match, which fails the
+/// lookup):
 /// `gitdir:` and `gitdir/i:` as git reads them; any other condition
 /// (`onbranch:`, `hasconfig:`) is taken as not holding.
-fn include_applies(condition: &str, git_dir: Option<&Path>, including: &Path) -> bool {
+fn include_applies(condition: &str, git_dir: Option<&Path>, including: &Path) -> Option<bool> {
     let (pattern, fold) = if let Some(p) = condition.strip_prefix("gitdir/i:") {
         (p, true)
     } else if let Some(p) = condition.strip_prefix("gitdir:") {
         (p, false)
     } else {
-        return false;
+        return Some(false);
     };
     let Some(git_dir) = git_dir else {
-        return false;
+        return Some(false);
     };
     let mut pattern = if let Some(rest) = pattern.strip_prefix("~/") {
         match home() {
             Some(home) => format!("{}/{rest}", home.display()),
-            None => return false,
+            None => return Some(false),
         }
     } else if let Some(rest) = pattern.strip_prefix("./") {
         format!(
@@ -217,8 +279,10 @@ fn include_applies(condition: &str, git_dir: Option<&Path>, including: &Path) ->
     } else {
         (pattern, text)
     };
-    glob(pattern.as_bytes(), text.as_bytes())
-        || glob(pattern.as_bytes(), text.trim_end_matches('/').as_bytes())
+    Some(
+        glob(pattern.as_bytes(), text.as_bytes())?
+            || glob(pattern.as_bytes(), text.trim_end_matches('/').as_bytes())?,
+    )
 }
 
 /// The config at `path` with its `include` and applicable `includeIf` files
@@ -230,6 +294,9 @@ fn include_applies(condition: &str, git_dir: Option<&Path>, including: &Path) ->
 pub(crate) struct Budget {
     files: usize,
     bytes: usize,
+    /// The lookup failed: a bound was passed, a file was too large or
+    /// unreadable, an include looped, or a pattern took too much work.
+    failed: bool,
 }
 
 impl Budget {
@@ -238,13 +305,14 @@ impl Budget {
         Budget {
             files: MAX_INCLUDE_FILES,
             bytes: MAX_INCLUDE_BYTES,
+            failed: false,
         }
     }
 
     /// Takes one file of `len` bytes from the budget; `false` when it is spent.
     fn take(&mut self, len: usize) -> bool {
         if self.files == 0 || len > self.bytes {
-            self.files = 0;
+            self.failed = true;
             return false;
         }
         self.files -= 1;
@@ -272,13 +340,20 @@ fn expanded_in(
     chain: &mut Vec<PathBuf>,
     depth: usize,
 ) -> Option<String> {
-    let text = read_small(path)?;
+    let text = match read_config(path) {
+        Ok(Some(text)) => text,
+        Ok(None) => return None,
+        Err(()) => {
+            budget.failed = true;
+            return None;
+        }
+    };
     if !budget.take(text.len()) {
         return None;
     }
     let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     if chain.contains(&canonical) || depth >= MAX_INCLUDE_DEPTH {
-        budget.files = 0;
+        budget.failed = true;
         return None;
     }
     chain.push(canonical);
@@ -317,8 +392,14 @@ fn expanded_in(
             continue;
         }
         if let Some(condition) = condition {
-            if !include_applies(condition, git_dir, path) {
-                continue;
+            match include_applies(condition, git_dir, path) {
+                Some(true) => {}
+                Some(false) => continue,
+                None => {
+                    budget.failed = true;
+                    chain.pop();
+                    return None;
+                }
             }
         }
         let target = match value.strip_prefix("~/") {
@@ -329,7 +410,7 @@ fn expanded_in(
             None => path.parent().unwrap_or(Path::new("")).join(&value),
         };
         let included = expanded_in(&target, git_dir, budget, chain, depth + 1);
-        if budget.files == 0 {
+        if budget.failed {
             chain.pop();
             return None;
         }
@@ -343,6 +424,27 @@ fn expanded_in(
     }
     chain.pop();
     Some(out)
+}
+
+/// A config file as a lookup reads it: `Ok(None)` when there is none (git
+/// skips a missing include), `Err` when it exists but is larger than a
+/// config can be or cannot be read, which fails the lookup: a config is used
+/// whole or not at all, never its prefix.
+fn read_config(path: &Path) -> Result<Option<String>, ()> {
+    use std::io::Read;
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(()),
+    };
+    let mut text = String::new();
+    file.take(MAX_CONFIG_BYTES + 1)
+        .read_to_string(&mut text)
+        .map_err(drop)?;
+    if text.len() as u64 > MAX_CONFIG_BYTES {
+        return Err(());
+    }
+    Ok(Some(text))
 }
 
 /// The text of `path`, or `None` when it cannot be read or is larger than
@@ -363,8 +465,7 @@ fn logical_lines(config: &str) -> Vec<String> {
     let mut lines = Vec::new();
     let mut current = String::new();
     for line in config.lines() {
-        let trailing = line.len() - line.trim_end_matches('\\').len();
-        if trailing % 2 == 1 {
+        if continues(line) {
             current.push_str(&line[..line.len() - 1]);
             continue;
         }
@@ -375,6 +476,30 @@ fn logical_lines(config: &str) -> Vec<String> {
         lines.push(current);
     }
     lines
+}
+
+/// Whether `line` ends in a `\` that continues it: not inside a comment
+/// (a whole-line one, or one after the value), and not escaped.
+fn continues(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with('#') || trimmed.starts_with(';') {
+        return false;
+    }
+    let mut quoted = false;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                if chars.next().is_none() {
+                    return true;
+                }
+            }
+            '"' => quoted = !quoted,
+            '#' | ';' if !quoted => return false,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// A git config value as git reads it: quotes removed, a `#` or `;`
@@ -488,10 +613,8 @@ fn rewritten(url: &str, configs: &[String]) -> String {
     }
 }
 
-/// The person's own git configs, which hold `insteadOf` rewrites as often as
-/// a repository's does: `$XDG_CONFIG_HOME/git/config` (or
-/// `~/.config/git/config`) and `~/.gitconfig`.
-fn global_configs(git_dir: Option<&Path>, budget: &mut Budget) -> Vec<String> {
+/// Where the person's global git configs are.
+fn global_paths() -> Vec<PathBuf> {
     let home = home();
     let xdg = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -502,13 +625,17 @@ fn global_configs(git_dir: Option<&Path>, budget: &mut Budget) -> Vec<String> {
     ]
     .into_iter()
     .flatten()
-    .filter_map(|path| expanded(&path, git_dir, budget))
     .collect()
 }
 
 /// The `owner/name` of the repository `directory` is in, from its `origin`
 /// remote; `None` outside a repository or without a hosted origin.
 pub fn repository_of(directory: &Path) -> Option<String> {
+    repository_with(directory, &global_paths())
+}
+
+/// [`repository_of`] with the person's global configs at `globals`.
+fn repository_with(directory: &Path, globals: &[PathBuf]) -> Option<String> {
     // A directory reached through a link is looked up where it really is.
     let directory = std::fs::canonicalize(directory).unwrap_or_else(|_| directory.to_path_buf());
     let (own, common) = git_dirs(&directory)?;
@@ -518,7 +645,10 @@ pub fn repository_of(directory: &Path) -> Option<String> {
     // `includeIf "gitdir:"` is matched against the work tree's own git
     // directory (`.git/worktrees/<name>` for a linked one), as git does.
     let mut budget = Budget::new();
-    let mut configs = global_configs(Some(&own), &mut budget);
+    let mut configs: Vec<String> = globals
+        .iter()
+        .filter_map(|path| expanded(path, Some(&own), &mut budget))
+        .collect();
     let shared = expanded(&common.join("config"), Some(&own), &mut budget)?;
     let per_tree = config_entries(&shared)
         .into_iter()
@@ -537,7 +667,7 @@ pub fn repository_of(directory: &Path) -> Option<String> {
             configs.push(tree);
         }
     }
-    if budget.files == 0 {
+    if budget.failed {
         return None;
     }
     let origin = origin_url(&configs.concat())?;
@@ -632,40 +762,52 @@ mod tests {
         assert_eq!(normalize_remote("C:/src/acme/web"), None);
     }
 
+    fn include_applies_is(condition: &str, git_dir: Option<&Path>, including: &Path) -> bool {
+        include_applies(condition, git_dir, including).expect("within bounds")
+    }
+
     #[test]
     fn include_if_matches_the_git_directory() {
         let including = Path::new("/home/me/.gitconfig");
         let git = Path::new("/home/me/work/acme/web/.git");
-        assert!(include_applies(
+        assert!(include_applies_is(
             "gitdir:/home/me/work/",
             Some(git),
             including
         ));
-        assert!(include_applies("gitdir:work/acme/", Some(git), including));
-        assert!(include_applies(
+        assert!(include_applies_is(
+            "gitdir:work/acme/",
+            Some(git),
+            including
+        ));
+        assert!(include_applies_is(
             "gitdir/i:/HOME/ME/WORK/",
             Some(git),
             including
         ));
-        assert!(!include_applies(
+        assert!(!include_applies_is(
             "gitdir:/home/me/play/",
             Some(git),
             including
         ));
-        assert!(!include_applies("onbranch:main", Some(git), including));
+        assert!(!include_applies_is("onbranch:main", Some(git), including));
         // A relative pattern matches whole directories only, as in git.
         let elsewhere = Path::new("/home/me/notwork/acme/web/.git");
-        assert!(!include_applies("gitdir:work/", Some(elsewhere), including));
-        assert!(include_applies(
+        assert!(!include_applies_is(
+            "gitdir:work/",
+            Some(elsewhere),
+            including
+        ));
+        assert!(include_applies_is(
             "gitdir:work/",
             Some(Path::new("/work/acme/.git")),
             including
         ));
-        assert!(glob(b"/a/**/c/", b"/a/b/x/c/"));
-        assert!(glob(b"**/work/**", b"/home/work/x"));
-        assert!(!glob(b"**/work/**", b"/home/notwork/x"));
-        assert!(glob(b"/a/*/c", b"/a/b/c"));
-        assert!(!glob(b"/a/*/c", b"/a/b/x/c"));
+        assert!(glob_is(b"/a/**/c/", b"/a/b/x/c/"));
+        assert!(glob_is(b"**/work/**", b"/home/work/x"));
+        assert!(!glob_is(b"**/work/**", b"/home/notwork/x"));
+        assert!(glob_is(b"/a/*/c", b"/a/b/c"));
+        assert!(!glob_is(b"/a/*/c", b"/a/b/x/c"));
     }
 
     /// The first origin is the one git fetches; a value continued with `\`
@@ -684,20 +826,69 @@ mod tests {
                 .as_deref(),
             Some("https://github.com/acme/web.git")
         );
+        // A comment ending in `\` does not continue onto the next line.
+        assert_eq!(
+            origin_url(
+                "[remote \"origin\"]\n\t# old fork \\\n\turl = https://github.com/acme/web\n"
+            )
+            .as_deref(),
+            Some("https://github.com/acme/web")
+        );
+        assert_eq!(
+            origin_url("[remote \"origin\"]\n\turl = https://github.com/acme/web ; note \\\n")
+                .as_deref(),
+            Some("https://github.com/acme/web")
+        );
         let temp = tempfile::tempdir().unwrap();
         let big = temp.path().join("big");
         std::fs::write(&big, "#".repeat(MAX_CONFIG_BYTES as usize + 1)).unwrap();
         assert_eq!(read_small(&big), None);
+        // An oversized global config, include or work-tree config fails the
+        // lookup, whatever the rest names.
+        let checkout = temp.path().join("web");
+        repo(&checkout, "https://github.com/acme/web");
+        assert_eq!(repository_with(&checkout, &[]).as_deref(), Some("acme/web"));
+        assert_eq!(repository_with(&checkout, std::slice::from_ref(&big)), None);
+        assert_eq!(
+            repository_with(&checkout, &[temp.path().join("absent")]).as_deref(),
+            Some("acme/web")
+        );
+        let config = checkout.join(".git/config");
+        let text = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(
+            &config,
+            format!("{text}[include]\n\tpath = {}\n", big.display()),
+        )
+        .unwrap();
+        assert_eq!(repository_with(&checkout, &[]), None);
+        std::fs::write(&config, format!("[extensions]\n\tworktreeConfig\n{text}")).unwrap();
+        assert_eq!(repository_with(&checkout, &[]).as_deref(), Some("acme/web"));
+        std::fs::copy(&big, checkout.join(".git/config.worktree")).unwrap();
+        assert_eq!(repository_with(&checkout, &[]), None);
     }
 
-    /// A pattern built to backtrack is decided in bounded time.
+    fn glob_is(pattern: &[u8], text: &[u8]) -> bool {
+        glob(pattern, text).expect("within bounds")
+    }
+
+    /// A pattern built to backtrack is decided in bounded time and memory;
+    /// one too long, or too costly, fails instead of answering.
     #[test]
     fn glob_work_is_bounded() {
         let pattern = "*a".repeat(40) + "b";
         let text = "a".repeat(60);
         let started = std::time::Instant::now();
-        assert!(!glob(pattern.as_bytes(), text.as_bytes()));
+        assert_eq!(glob(pattern.as_bytes(), text.as_bytes()), Some(false));
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        let long = "a".repeat(MAX_GLOB_PATTERN + 1);
+        assert_eq!(glob(long.as_bytes(), b"a"), None);
+        let path = "a".repeat(MAX_GLOB_TEXT + 1);
+        assert_eq!(glob(b"**", path.as_bytes()), None);
+        let costly = "**/".repeat(300) + "x";
+        let deep = "a/".repeat(2000);
+        let started = std::time::Instant::now();
+        assert_eq!(glob(costly.as_bytes(), deep.as_bytes()), None);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 
     /// Git's own reading of a config: comments, quotes, the old subsection
