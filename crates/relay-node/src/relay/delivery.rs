@@ -1305,7 +1305,10 @@ impl Core {
         match outcome {
             InjectOutcome::Delivered => {
                 self.settled(&delivery.id);
-                if registration.target.kind == SessionKind::ClaudeTerminal {
+                if self
+                    .claude_delivery
+                    .records_outcome(registration, &delivery.id)
+                {
                     let _ = self.claude_delivery.consume(
                         &delivery.id,
                         &registration.name,
@@ -1338,7 +1341,10 @@ impl Core {
                 // session: keep the reply paths as for a confirmed injection.
                 // Reported only once the in-doubt record is on disk; until
                 // then the next pass saves it and reports it.
-                if registration.target.kind == SessionKind::ClaudeTerminal {
+                if self
+                    .claude_delivery
+                    .records_outcome(registration, &delivery.id)
+                {
                     let _ = self.claude_delivery.consume(
                         &delivery.id,
                         &registration.name,
@@ -1411,7 +1417,10 @@ impl Core {
                 // A terminal event is not disposable even when its text cannot
                 // enter the session. Save the retirement marker before making
                 // Relaycast's non-retryable settlement durable.
-                if registration.target.kind == SessionKind::ClaudeTerminal {
+                if self
+                    .claude_delivery
+                    .records_outcome(registration, &delivery.id)
+                {
                     let _ = self.claude_delivery.consume(
                         &delivery.id,
                         &registration.name,

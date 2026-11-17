@@ -137,6 +137,21 @@ impl ClaudeDeliveryPolicy {
             .is_some()
     }
 
+    /// Whether an injection's outcome into `registration` is recorded here
+    /// (`consume`) until the main store has it, so a failed main-store write
+    /// never injects it twice: always for Claude Code, and for any harness
+    /// while the organization holds messages or the person approved this one.
+    pub fn records_outcome(&self, registration: &Registration, id: &str) -> bool {
+        registration.target.kind == SessionKind::ClaudeTerminal
+            || self.organization_holds()
+            || self
+                .saved
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .approved
+                .contains(id)
+    }
+
     /// The person's own restriction (known senders only).
     pub fn restricted(&self) -> bool {
         self.saved
@@ -225,18 +240,19 @@ impl ClaudeDeliveryPolicy {
             .unwrap_or_else(|p| p.into_inner())
             .clone();
         let saved = self.saved.lock().unwrap_or_else(|p| p.into_inner());
-        // A dismissal stands in every harness, even after the organization
-        // lifts the rule that held the message.
+        // A dismissal, and an injection already made, stand in every
+        // harness, even after the organization lifts the rule that held the
+        // message: neither is undone or repeated.
         if saved.dismissed.contains(&delivery.id) {
             return Decision::Dismiss;
-        }
-        if registration.target.kind != SessionKind::ClaudeTerminal && organization.is_none() {
-            return Decision::Deliver;
         }
         if let Some(outcome) = saved.consumed.get(&delivery.id) {
             return Decision::Handled(outcome.clone());
         }
         if saved.approved.contains(&delivery.id) {
+            return Decision::Deliver;
+        }
+        if registration.target.kind != SessionKind::ClaudeTerminal && organization.is_none() {
             return Decision::Deliver;
         }
         if let Some(admins) = organization {
@@ -641,6 +657,22 @@ mod tests {
         // Lifted: every harness but Claude delivers as before.
         assert!(policy.set_organization_hold(None));
         assert_eq!(policy.decide(&codex, &from_kim), Decision::Dismiss);
+        // An approved message whose injection is recorded is not injected
+        // again once the rule is lifted, in any harness.
+        let from_lee = delivery("del-7", "lee");
+        assert!(policy.set_organization_hold(Some(BTreeSet::from(["lead".to_string()]))));
+        assert!(policy.hold(&codex, &from_lee).unwrap());
+        policy.approve("del-7").unwrap();
+        assert!(policy.records_outcome(&codex, "del-7"));
+        policy
+            .consume("del-7", "claude-review", PriorOutcome::Delivered)
+            .unwrap();
+        assert!(policy.set_organization_hold(None));
+        assert_eq!(
+            policy.decide(&codex, &from_lee),
+            Decision::Handled(PriorOutcome::Delivered)
+        );
+        assert!(!policy.records_outcome(&codex, "del-8"));
         assert_eq!(
             policy.decide(&codex, &delivery("del-5", "kim")),
             Decision::Deliver
