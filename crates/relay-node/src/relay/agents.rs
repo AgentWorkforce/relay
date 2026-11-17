@@ -1589,7 +1589,6 @@ impl Core {
         let title_revision = self
             .roster_revision
             .load(std::sync::atomic::Ordering::SeqCst);
-        let forced = self.forced_repositories();
         let pi_auto_join = self.workspace().is_some()
             && auto_activation::activation_applies(
                 &self.store.read(auto_activation::ActivationSettings::of),
@@ -1597,7 +1596,6 @@ impl Core {
             );
         let discovered = tokio::task::spawn_blocking(move || {
             sessions.pi_auto_join(pi_auto_join);
-            sessions.forced_repositories(forced);
             let all = sessions.sessions();
             let live = sessions.present_targets(&all);
             let targets: Vec<Target> = registered.iter().map(|(_, t)| t.clone()).collect();

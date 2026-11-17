@@ -164,8 +164,9 @@ pub struct LocalSessions {
     /// a broker cannot be read.
     fleet_owned: std::sync::Mutex<HashSet<Target>>,
     /// The repositories the organization makes join the relay by
-    /// themselves, as the core last said (`SessionDirectory::forced_repositories`).
-    forced_repositories: std::sync::Mutex<Vec<String>>,
+    /// themselves, read on every check
+    /// (`SessionDirectory::forced_repositories_from`).
+    forced_repositories: std::sync::Mutex<Option<crate::relay::sessions::ForcedRepositories>>,
     /// Codex's threads as last read, kept while Codex holds its database.
     codex_threads: std::sync::Mutex<session_directory::CodexDiscoveryCache>,
     /// The app-server's loaded threads as last read.
@@ -3470,9 +3471,13 @@ mod tests {
         std::fs::write(&registry, record.to_string()).unwrap();
         world.sessions.config.auto_activate_excluded_dirs = vec![world._temp.path().join("work")];
         assert!(world.sessions.auto_activation_sessions().is_empty());
-        world.sessions.forced_repositories(vec!["acme/api".into()]);
+        world
+            .sessions
+            .forced_repositories_from(std::sync::Arc::new(|| vec!["acme/api".into()]));
         assert!(world.sessions.auto_activation_sessions().is_empty());
-        world.sessions.forced_repositories(vec!["acme/*".into()]);
+        world
+            .sessions
+            .forced_repositories_from(std::sync::Arc::new(|| vec!["acme/*".into()]));
         assert_eq!(world.sessions.auto_activation_sessions().len(), 1);
     }
 

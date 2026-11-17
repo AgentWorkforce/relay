@@ -232,11 +232,11 @@ impl SessionDirectory for LocalSessions {
         self.config.pi.sync_auto_join(auto_join);
     }
 
-    fn forced_repositories(&self, entries: Vec<String>) {
+    fn forced_repositories_from(&self, source: crate::relay::sessions::ForcedRepositories) {
         *self
             .forced_repositories
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) = entries;
+            .unwrap_or_else(|e| e.into_inner()) = Some(source);
     }
 
     fn auto_activates(&self, session: &DiscoveredSession) -> bool {
@@ -537,11 +537,12 @@ impl LocalSessions {
     /// Whether `directory` is in a repository the organization makes join
     /// the relay by itself, which no excluded directory keeps off.
     fn in_forced_repository(&self, directory: &str) -> bool {
-        let entries = self
+        let source = self
             .forced_repositories
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
+        let entries = source.map(|source| source()).unwrap_or_default();
         crate::relay::repositories::matched(&entries, Some(directory)).is_some()
     }
 

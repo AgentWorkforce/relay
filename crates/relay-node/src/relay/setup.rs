@@ -283,15 +283,9 @@ impl Setup {
             return false;
         }
         let directory = self.core.plugins.sessions.clone();
-        // The directory sees the organization's list as it is now, not as the
-        // last reconcile pass gave it.
-        let given = forced.clone();
-        let found = tokio::task::spawn_blocking(move || {
-            directory.forced_repositories(given);
-            directory.auto_activation_sessions()
-        })
-        .await
-        .unwrap_or_default();
+        let found = tokio::task::spawn_blocking(move || directory.auto_activation_sessions())
+            .await
+            .unwrap_or_default();
         let settings = self
             .core
             .store
@@ -639,13 +633,9 @@ impl Setup {
             && {
                 let directory = self.core.plugins.sessions.clone();
                 let session = session.clone();
-                let given = forced.clone();
-                tokio::task::spawn_blocking(move || {
-                    directory.forced_repositories(given);
-                    directory.auto_activates(&session)
-                })
-                .await
-                .unwrap_or(false)
+                tokio::task::spawn_blocking(move || directory.auto_activates(&session))
+                    .await
+                    .unwrap_or(false)
             }
     }
 
