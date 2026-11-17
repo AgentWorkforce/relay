@@ -143,12 +143,14 @@ fn home() -> Option<PathBuf> {
 fn glob(pattern: &[u8], text: &[u8]) -> bool {
     match pattern {
         [] => text.is_empty(),
-        [b'*', b'*', rest @ ..] => {
-            let rest = rest.strip_prefix(b"/").unwrap_or(rest);
-            (0..=text.len()).any(|at| glob(rest, &text[at..]))
-                || (0..=text.len())
-                    .any(|at| at > 0 && text[at - 1] == b'/' && glob(rest, &text[at..]))
+        // `**/` is zero or more whole directories: what follows starts at
+        // the beginning or right after a `/`, never inside a name.
+        [b'*', b'*', b'/', rest @ ..] => {
+            glob(rest, text)
+                || (0..text.len()).any(|at| text[at] == b'/' && glob(rest, &text[at + 1..]))
         }
+        // A `**` that ends the pattern (or a `/**`) is anything.
+        [b'*', b'*', rest @ ..] => (0..=text.len()).any(|at| glob(rest, &text[at..])),
         [b'*', rest @ ..] => (0..=text.len())
             .take_while(|&at| at == 0 || text[at - 1] != b'/')
             .any(|at| glob(rest, &text[at..])),
@@ -515,6 +517,17 @@ pub fn matched(entries: &[String], directory: Option<&str>) -> Option<String> {
     matches(entries, &repository).then_some(repository)
 }
 
+/// The list a policy locks `auto_join_repositories` to, as the setting saves
+/// it; `None` when it locks none, or a value that is not a valid list (which
+/// then forces nothing).
+pub(crate) fn locked_list(
+    policy: &crate::relay::settings_policy::SettingsPolicy,
+) -> Option<Vec<String>> {
+    let value = policy.locked.get(SETTING)?;
+    let entries: Vec<String> = serde_json::from_value(value.clone()).ok()?;
+    list(&entries).ok()
+}
+
 impl crate::relay::daemon::Core {
     /// The person's `auto_join_repositories`, as saved.
     pub fn auto_join_repositories(&self) -> Vec<String> {
@@ -528,14 +541,9 @@ impl crate::relay::daemon::Core {
     /// (`settings_policy`). A list the person holds, given or defaulted,
     /// adds no activation: its sessions follow automatic activation.
     pub fn forced_repositories(&self) -> Vec<String> {
-        let locked = self
-            .settings_policy()
-            .is_some_and(|policy| policy.locked.contains_key(SETTING));
-        if locked {
-            self.auto_join_repositories()
-        } else {
-            Vec::new()
-        }
+        self.settings_policy()
+            .and_then(|policy| locked_list(&policy))
+            .unwrap_or_default()
     }
 
     /// The `owner/name` a session in `directory` names in its registration:
@@ -598,7 +606,17 @@ mod tests {
             including
         ));
         assert!(!include_applies("onbranch:main", Some(git), including));
+        // A relative pattern matches whole directories only, as in git.
+        let elsewhere = Path::new("/home/me/notwork/acme/web/.git");
+        assert!(!include_applies("gitdir:work/", Some(elsewhere), including));
+        assert!(include_applies(
+            "gitdir:work/",
+            Some(Path::new("/work/acme/.git")),
+            including
+        ));
         assert!(glob(b"/a/**/c/", b"/a/b/x/c/"));
+        assert!(glob(b"**/work/**", b"/home/work/x"));
+        assert!(!glob(b"**/work/**", b"/home/notwork/x"));
         assert!(glob(b"/a/*/c", b"/a/b/c"));
         assert!(!glob(b"/a/*/c", b"/a/b/x/c"));
     }

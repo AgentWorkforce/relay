@@ -818,6 +818,16 @@ mod tests {
         assert!(core
             .set_settings(&map(json!({"auto_join_repositories": []})))
             .is_err());
+        // The lock forces its own list, whatever the saved one says.
+        core.write_settings(&map(json!({"auto_join_repositories": ["me/fork"]})))
+            .unwrap();
+        assert_eq!(core.forced_repositories(), vec!["acme/*"]);
+        // A lock that is not a valid list forces nothing.
+        let malformed: crate::relay::settings_policy::SettingsPolicy =
+            serde_json::from_value(json!({"locked": {"auto_join_repositories": ["/home/me/web"]}}))
+                .unwrap();
+        core.apply_settings_policy(Some(malformed)).unwrap();
+        assert!(core.forced_repositories().is_empty());
         core.apply_settings_policy(None).unwrap();
         assert!(core.forced_repositories().is_empty());
     }
