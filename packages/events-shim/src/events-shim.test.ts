@@ -565,6 +565,7 @@ describe('events shim', () => {
     const events = wait.structuredContent?.events as { id: string }[];
     expect(events).toHaveLength(1);
     const eventId = events[0]!.id;
+    const claimToken = wait.structuredContent?.claim_token as string;
 
     // In the feed, the post is still 'pending' because it was not auto-acked
     const [beforeAck] = (await h.feed(shim.manage_token)).body.events as { id: string; delivery: string }[];
@@ -576,7 +577,7 @@ describe('events shim', () => {
     expect(emptyWait.structuredContent?.events).toHaveLength(0);
 
     // Now acknowledge the event
-    const ackResult = await agent.call('ack_webhook_events', { ids: [eventId] });
+    const ackResult = await agent.call('ack_webhook_events', { ids: [eventId], claim_token: claimToken });
     expect(ackResult.structuredContent).toMatchObject({ acked: [eventId] });
 
     // In the feed, the post has transitioned to 'read'
@@ -608,9 +609,10 @@ describe('events shim', () => {
     const reoffered = await agent.call('wait_for_webhook', { timeout_seconds: 2, auto_ack: false });
     expect(reoffered.structuredContent?.events).toHaveLength(1);
     expect((reoffered.structuredContent?.events as { id: string }[])[0]!.id).toBe(eventId);
+    const reofferedToken = reoffered.structuredContent?.claim_token as string;
 
     // Acknowledging marks it read permanently
-    await agent.call('ack_webhook_events', { ids: [eventId] });
+    await agent.call('ack_webhook_events', { ids: [eventId], claim_token: reofferedToken });
     const [finalState] = (await h.feed(shim.manage_token)).body.events as { id: string; delivery: string }[];
     expect(finalState?.delivery).toBe('read');
   });
@@ -660,6 +662,69 @@ describe('events shim', () => {
     expect(feedAfter?.delivery).toBe('read');
   });
 
+  it('an ID-only release without claim_token cannot release a token-bearing claim', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const agent = await h.connect(shim.mcp_url);
+
+    await h.post(shim.webhook_url, { post: 'id-only-test' });
+    const wait = await agent.call('wait_for_webhook', { timeout_seconds: 2, auto_ack: false });
+    const eventId = (wait.structuredContent?.events as { id: string }[])[0]!.id;
+    const claimToken = wait.structuredContent?.claim_token as string;
+    expect(claimToken).toBeTruthy();
+
+    // Calling release_webhook_events without claim_token is rejected
+    const badRelease = await agent.call('release_webhook_events', { ids: [eventId] });
+    expect(badRelease.isError).toBe(true);
+
+    // Direct store call without claimToken also refuses to release a token-bearing claim
+    const record = (await h.store.findByHookTokenHash(await sha256Hex(shim.webhook_url.split('/h/')[1]!)))!;
+    await h.store.releasePending(record.id, [eventId]);
+    const nextWait = await agent.call('wait_for_webhook', { timeout_seconds: 1, auto_ack: false });
+    expect(nextWait.structuredContent?.events).toHaveLength(0);
+
+    // Releasing with valid claim_token works
+    const goodRelease = await agent.call('release_webhook_events', { ids: [eventId], claim_token: claimToken });
+    expect(goodRelease.isError).toBeFalsy();
+    const retaken = await agent.call('wait_for_webhook', { timeout_seconds: 2, auto_ack: true });
+    expect(retaken.structuredContent?.events).toHaveLength(1);
+  });
+
+  it('fixed-clock regression: two claims within the same millisecond remain isolated', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const agent = await h.connect(shim.mcp_url);
+
+    await h.post(shim.webhook_url, { post: 'fixed-clock-test' });
+
+    // Claim 1 with frozen clock
+    const first = await agent.call('wait_for_webhook', { timeout_seconds: 2, auto_ack: false });
+    const eventId = (first.structuredContent?.events as { id: string }[])[0]!.id;
+    const token1 = first.structuredContent?.claim_token as string;
+    const time1 = first.structuredContent?.claimed_at as string;
+
+    // Release Claim 1 immediately (clock has not advanced at all)
+    await agent.call('release_webhook_events', { ids: [eventId], claim_token: token1 });
+
+    // Claim 2 at the exact same clock millisecond
+    const second = await agent.call('wait_for_webhook', { timeout_seconds: 2, auto_ack: false });
+    const token2 = second.structuredContent?.claim_token as string;
+    const time2 = second.structuredContent?.claimed_at as string;
+
+    expect(time2).toBe(time1);
+    expect(token2).not.toBe(token1);
+
+    // Late ack using token1 cannot ack Claim 2
+    await agent.call('ack_webhook_events', { ids: [eventId], claim_token: token1 });
+    const [feed] = (await h.feed(shim.manage_token)).body.events as { id: string; delivery: string }[];
+    expect(feed?.delivery).toBe('pending');
+
+    // Ack with token2 succeeds
+    await agent.call('ack_webhook_events', { ids: [eventId], claim_token: token2 });
+    const [finalFeed] = (await h.feed(shim.manage_token)).body.events as { id: string; delivery: string }[];
+    expect(finalFeed?.delivery).toBe('read');
+  });
+
   it('wait_for_webhook with ack_ids acknowledges previous batch and claims the next pending posts', async () => {
     const h = createHarness();
     const shim = await h.create();
@@ -668,12 +733,17 @@ describe('events shim', () => {
     await h.post(shim.webhook_url, { first: 1 });
     const firstWait = await agent.call('wait_for_webhook', { timeout_seconds: 2, auto_ack: false });
     const firstId = (firstWait.structuredContent?.events as { id: string }[])[0]!.id;
+    const firstToken = firstWait.structuredContent?.claim_token as string;
 
     // Second post arrives
     await h.post(shim.webhook_url, { second: 2 });
 
     // Call wait_for_webhook passing ack_ids for the first event
-    const secondWait = await agent.call('wait_for_webhook', { timeout_seconds: 2, ack_ids: [firstId] });
+    const secondWait = await agent.call('wait_for_webhook', {
+      timeout_seconds: 2,
+      ack_ids: [firstId],
+      ack_claim_token: firstToken,
+    });
     expect(secondWait.structuredContent?.events).toHaveLength(1);
     const secondId = (secondWait.structuredContent?.events as { id: string }[])[0]!.id;
     expect(secondId).not.toBe(firstId);
@@ -692,9 +762,10 @@ describe('events shim', () => {
     await h.post(shim.webhook_url, { release_me: true });
     const first = await agent.call('wait_for_webhook', { timeout_seconds: 2, auto_ack: false });
     const eventId = (first.structuredContent?.events as { id: string }[])[0]!.id;
+    const claimToken = first.structuredContent?.claim_token as string;
 
     // Client lets go and releases the post
-    const released = await agent.call('release_webhook_events', { ids: [eventId] });
+    const released = await agent.call('release_webhook_events', { ids: [eventId], claim_token: claimToken });
     expect(released.structuredContent).toMatchObject({ released: [eventId] });
 
     // Immediately claimable again without waiting for lease expiry

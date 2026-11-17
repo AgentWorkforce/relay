@@ -487,13 +487,14 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
         claim_token: z
           .string()
           .trim()
+          .min(1)
           .optional()
-          .describe('Unique claim token of the posts. If set, only releases claims that match.'),
+          .describe('Unique claim token of the posts. Required to release claims.'),
         claimed_at: z
           .string()
           .trim()
           .optional()
-          .describe('Claim timestamp of the posts. If set, only releases claims that match.'),
+          .describe('Deprecated: use claim_token instead.'),
       },
       annotations: {
         readOnlyHint: false,
@@ -504,7 +505,11 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
     },
     async (input) => {
       await seen(ctx);
-      await ctx.deps.store.releasePending(ctx.shim.id, input.ids, input.claim_token ?? input.claimed_at);
+      const token = input.claim_token ?? input.claimed_at;
+      if (!token) {
+        return failure('claim_token is required to release claimed posts.');
+      }
+      await ctx.deps.store.releasePending(ctx.shim.id, input.ids, token);
       return result({ released: input.ids });
     }
   );

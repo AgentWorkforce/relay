@@ -218,9 +218,13 @@ export class MemoryEventsShimStore implements EventsShimStore {
     for (const event of row.events) {
       if (
         ids.includes(event.id) &&
-        (event.delivery === 'pending' || event.delivery === 'sending') &&
-        (!claimToken || event.claimToken === claimToken || event.deliveredAt === claimToken)
+        (event.delivery === 'pending' || event.delivery === 'sending')
       ) {
+        if (event.claimToken) {
+          if (!claimToken || event.claimToken !== claimToken) continue;
+        } else if (claimToken && event.deliveredAt !== claimToken) {
+          continue;
+        }
         event.delivery = 'read';
         event.deliveredAt = at;
         delete event.claimToken;
@@ -231,11 +235,12 @@ export class MemoryEventsShimStore implements EventsShimStore {
   async releasePending(shimId: string, ids: string[], claimToken?: string) {
     const row = this.row(shimId);
     for (const event of row.events) {
-      if (
-        ids.includes(event.id) &&
-        event.delivery === 'pending' &&
-        (!claimToken || event.claimToken === claimToken || event.deliveredAt === claimToken)
-      ) {
+      if (ids.includes(event.id) && event.delivery === 'pending') {
+        if (event.claimToken) {
+          if (!claimToken || event.claimToken !== claimToken) continue;
+        } else if (claimToken && event.deliveredAt !== claimToken) {
+          continue;
+        }
         delete event.deliveredAt;
         delete event.claimToken;
       }
