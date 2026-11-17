@@ -460,10 +460,22 @@ impl Core {
         policy: &SettingsPolicy,
         record: &mut BTreeMap<String, AppliedDefault>,
     ) {
-        self.sync_organization_hold_with(Some(policy));
-        if policy.locked.contains_key(INBOUND) {
-            return;
+        // The person's restriction is put in place before the organization's
+        // hold changes, so a delivery decided in between is held by one or
+        // the other, never by neither.
+        if !policy.locked.contains_key(INBOUND) {
+            self.seed_inbound_default(policy, record);
         }
+        self.sync_organization_hold_with(Some(policy));
+    }
+
+    /// A defaulted `inbound_default`, written once into the person's own
+    /// restriction like any default.
+    fn seed_inbound_default(
+        &self,
+        policy: &SettingsPolicy,
+        record: &mut BTreeMap<String, AppliedDefault>,
+    ) {
         let Some(hold) = policy.defaults.get(INBOUND).and_then(inbound_holds) else {
             return;
         };

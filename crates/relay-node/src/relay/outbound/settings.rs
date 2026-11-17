@@ -877,6 +877,34 @@ mod tests {
         assert!(!core.claude_delivery_status().restricted);
     }
 
+    /// Moving between a locked hold and a defaulted one never leaves a
+    /// moment when neither the organization nor the person holds unknown
+    /// senders.
+    #[tokio::test]
+    async fn a_hold_handed_between_organization_and_person_never_opens() {
+        use crate::relay::settings_policy::SettingsPolicy;
+        let temp = tempfile::tempdir().unwrap();
+        let core = core(temp.path());
+        let locked: SettingsPolicy = serde_json::from_value(json!({
+            "locked": {"inbound_default": "hold", "admin_senders": ["lead"]},
+        }))
+        .unwrap();
+        let defaulted: SettingsPolicy =
+            serde_json::from_value(json!({"defaults": {"inbound_default": "hold"}})).unwrap();
+        core.apply_settings_policy(Some(locked.clone())).unwrap();
+        core.claude_delivery.states.lock().unwrap().clear();
+        core.apply_settings_policy(Some(defaulted)).unwrap();
+        let states = core.claude_delivery.states.lock().unwrap().clone();
+        assert!(!states.contains(&(false, false)), "{states:?}");
+        assert_eq!(states.last(), Some(&(false, true)));
+        // And back: the organization's hold is in place before anything else.
+        core.claude_delivery.states.lock().unwrap().clear();
+        core.apply_settings_policy(Some(locked)).unwrap();
+        let states = core.claude_delivery.states.lock().unwrap().clone();
+        assert!(!states.contains(&(false, false)), "{states:?}");
+        assert_eq!(states.last(), Some(&(true, true)));
+    }
+
     #[test]
     fn a_change_records_the_value_before_and_after() {
         let before = map(json!({"auto_join_general": false, "auto_activate": true}));

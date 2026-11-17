@@ -96,6 +96,10 @@ pub struct ClaudeDeliveryPolicy {
     /// The organization's admins, by name and address, while it holds every
     /// other sender's messages; `None` when it does not.
     organization: Mutex<Option<BTreeSet<String>>>,
+    /// Each (organization holds, person restricts) state after a change, for
+    /// tests of the order changes are made in.
+    #[cfg(test)]
+    pub(crate) states: Mutex<Vec<(bool, bool)>>,
 }
 
 impl ClaudeDeliveryPolicy {
@@ -114,7 +118,15 @@ impl ClaudeDeliveryPolicy {
             path,
             saved: Mutex::new(saved),
             organization: Mutex::new(None),
+            #[cfg(test)]
+            states: Mutex::new(Vec::new()),
         }
+    }
+
+    #[cfg(test)]
+    fn note_state(&self) {
+        let state = (self.organization_holds(), self.restricted());
+        self.states.lock().unwrap().push(state);
     }
 
     /// Sets the organization's hold: `Some(admins)` holds every message from
@@ -126,6 +138,9 @@ impl ClaudeDeliveryPolicy {
             return false;
         }
         *current = admins;
+        drop(current);
+        #[cfg(test)]
+        self.note_state();
         true
     }
 
@@ -460,7 +475,10 @@ impl ClaudeDeliveryPolicy {
     }
 
     pub fn set_restricted(&self, restricted: bool) -> Result<(), String> {
-        self.change(|saved| saved.restricted = restricted)
+        self.change(|saved| saved.restricted = restricted)?;
+        #[cfg(test)]
+        self.note_state();
+        Ok(())
     }
 
     pub fn set_session(&self, session_id: &str, direct: bool) -> Result<(), String> {
