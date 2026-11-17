@@ -2419,19 +2419,25 @@ mod tests {
         *core.workspace.lock().unwrap() = Some(signed_in());
         core.integration_defaults.store(false, Ordering::SeqCst);
 
+        // A CLI-managed core returns at once, starting no pass.
         core.connect_detected_tools_soon();
-        tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(!codex.on.load(Ordering::SeqCst));
         assert_eq!(
             core.store.read(|s| s.integration_defaults_applied.clone()),
             None
         );
 
-        // The same sign-in in a core the app hosts does connect it.
+        // The same sign-in in a core the app hosts does connect it, on a
+        // blocking thread that may wait behind other tests.
         core.integration_defaults.store(true, Ordering::SeqCst);
         core.connect_detected_tools_soon();
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(codex.on.load(Ordering::SeqCst));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !codex.on.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the default pass connects the tool");
     }
 
     /// An organization's lock decides a tool's setting: the default pass
