@@ -67,14 +67,39 @@ impl McpAccess {
 
 impl Core {
     /// What the session `target` can use: socket commands alone for a
-    /// Relay Connect guest or a Cursor session, the tools when Cloud
-    /// reported a hosted MCP link to it, otherwise what its registration
-    /// declared. Cursor's MCP calls name no chat, so Cloud refuses to act as
-    /// any Cursor session's desktop identity, whatever it declared.
+    /// Relay Connect guest, the tools when Cloud reported a hosted MCP link
+    /// to it, otherwise what its registration declared.
+    ///
+    /// Cursor's own MCP calls name no chat. Only when the account's Cursor
+    /// calls carry Cloud-verified chat proofs
+    /// ([`AccountPlugin::cursor_calls_attested`](crate::relay::daemon::AccountPlugin::cursor_calls_attested))
+    /// can Cloud act as a Cursor session's desktop identity, so a Cursor
+    /// session gets the tools only then, and only when its registration
+    /// declared them (or Cloud reported its link); otherwise the socket.
     pub fn relay_mcp_access(&self, target: &Target) -> McpAccess {
-        if self.connect_for(target).is_some() || target.kind == SessionKind::CursorCli {
+        if self.connect_for(target).is_some() {
             return McpAccess::SocketOnly;
         }
+        if target.kind == SessionKind::CursorCli {
+            let attested = self
+                .plugins
+                .account
+                .as_ref()
+                .is_some_and(|account| account.cursor_calls_attested());
+            if !attested {
+                return McpAccess::SocketOnly;
+            }
+            return match self.declared_mcp_access(target) {
+                McpAccess::Declared => McpAccess::Declared,
+                McpAccess::Unknown | McpAccess::SocketOnly => McpAccess::SocketOnly,
+            };
+        }
+        self.declared_mcp_access(target)
+    }
+
+    /// The tools when Cloud reported a hosted MCP link made since `target`
+    /// registered, otherwise what its registration declared.
+    fn declared_mcp_access(&self, target: &Target) -> McpAccess {
         let Some((agent_id, registered_at, declared)) = self.store.read(|store| {
             let r = store.registration_for(target)?;
             Some((r.agent_id.clone(), r.registered_at.clone(), r.mcp.clone()))
@@ -495,6 +520,100 @@ pub fn codex_preamble(identity: Option<(&str, &str)>, commands: &CodexSocketComm
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// A core whose store holds one registration for `target` declaring
+    /// `mcp`, with an account whose Cursor calls are (or are not) attested.
+    fn core_with(
+        target: &Target,
+        mcp: Option<&str>,
+        account: Option<bool>,
+    ) -> (std::sync::Arc<Core>, tempfile::TempDir) {
+        let temp = tempfile::tempdir().unwrap();
+        let config = crate::relay::daemon::Config {
+            paths: crate::relay::paths::CorePaths::for_socket(temp.path().join("core.sock"))
+                .unwrap(),
+            home: temp.path().into(),
+            app_data_dir: temp.path().join("app-data"),
+            env: Default::default(),
+            version: "0.0.0-test".into(),
+            host_name: "Test Desk.local".into(),
+            rediscover_every: std::time::Duration::from_secs(3600),
+            push_timing: crate::relay::push::PushTiming::default(),
+            delivery_timing: crate::relay::delivery::DeliveryTiming::default(),
+        };
+        let plugins = crate::relay::daemon::Plugins {
+            account: account.map(|attested| {
+                let mut account = crate::relay::test_account::TestAccount::new();
+                account.cursor_calls_attested = attested;
+                account.into_plugin()
+            }),
+            ..crate::relay::daemon::Plugins::default()
+        };
+        let (core, _signals) = Core::with_plugins(config, plugins);
+        let mut registration: crate::relay::store::Registration =
+            serde_json::from_value(serde_json::json!({
+                "name": "cursor-chat",
+                "agentID": "agent-1",
+                "target": target,
+                "baseURL": "http://localhost:9",
+                "registeredAt": "2026-11-16T12:00:00Z",
+            }))
+            .unwrap();
+        registration.mcp = mcp.map(str::to_string);
+        core.store
+            .update(|store| store.registrations.push(registration))
+            .unwrap();
+        (core, temp)
+    }
+
+    #[test]
+    fn a_cursor_session_keeps_the_socket_until_its_calls_are_attested() {
+        let cursor = Target::new(
+            SessionKind::CursorCli,
+            "c41cbfce-e202-4f59-822e-9d8dc86a1a9a",
+        );
+        // No account, or an account whose Cursor calls carry no chat proof:
+        // Cloud cannot act as the chat, whatever the registration declared.
+        for account in [None, Some(false)] {
+            for mcp in [Some(SERVER_NAME), None, Some(NO_SERVER)] {
+                let (core, _temp) = core_with(&cursor, mcp, account);
+                assert_eq!(
+                    core.relay_mcp_access(&cursor),
+                    McpAccess::SocketOnly,
+                    "{account:?} {mcp:?}"
+                );
+            }
+        }
+        // Attested: the tools when the registration declared them, the
+        // socket otherwise (never both forms, which would steer it to either).
+        for (mcp, expected) in [
+            (Some(SERVER_NAME), McpAccess::Declared),
+            (None, McpAccess::SocketOnly),
+            (Some(NO_SERVER), McpAccess::SocketOnly),
+        ] {
+            let (core, _temp) = core_with(&cursor, mcp, Some(true));
+            assert_eq!(core.relay_mcp_access(&cursor), expected, "{mcp:?}");
+        }
+    }
+
+    #[test]
+    fn cursor_attestation_does_not_change_other_kinds() {
+        let codex = Target::new(SessionKind::Codex, "11111111-2222-4333-8444-555555555555");
+        for attested in [None, Some(false), Some(true)] {
+            for (mcp, expected) in [
+                (Some(SERVER_NAME), McpAccess::Declared),
+                (None, McpAccess::Unknown),
+                (Some(NO_SERVER), McpAccess::SocketOnly),
+            ] {
+                let (core, _temp) = core_with(&codex, mcp, attested);
+                assert_eq!(
+                    core.relay_mcp_access(&codex),
+                    expected,
+                    "{attested:?} {mcp:?}"
+                );
+            }
+        }
+    }
 
     fn codex_commands() -> CodexSocketCommands {
         CodexSocketCommands::for_probe(Path::new("/p"), Path::new("/s")).unwrap()

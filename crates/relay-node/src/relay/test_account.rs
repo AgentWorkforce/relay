@@ -16,6 +16,9 @@ pub struct TestAccount {
     /// The account's automatic-activation default
     /// ([`AccountPlugin::auto_activate_by_default`]).
     pub auto_activate_by_default: bool,
+    /// Whether Cursor chats' hosted MCP calls are attested
+    /// ([`AccountPlugin::cursor_calls_attested`]).
+    pub cursor_calls_attested: bool,
 }
 
 impl TestAccount {
@@ -23,6 +26,7 @@ impl TestAccount {
         TestAccount {
             usage: Default::default(),
             auto_activate_by_default: false,
+            cursor_calls_attested: false,
         }
     }
 
@@ -62,6 +66,10 @@ impl AccountPlugin for TestAccount {
 
     fn mcp_linked_at(&self, _agent_id: &str) -> Option<String> {
         None
+    }
+
+    fn cursor_calls_attested(&self) -> bool {
+        self.cursor_calls_attested
     }
 
     fn cloud_identity_sync(&self, _core: &Core) -> Value {
