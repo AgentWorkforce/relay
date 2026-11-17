@@ -257,6 +257,10 @@ pub struct DeliveryState {
     channel_pins: Option<channel::pins::ChannelPins>,
     /// Channel names by id, as the agents' channel lists gave them.
     channel_names: HashMap<String, String>,
+    /// Run once, in a test, after a channel batch is prepared and before
+    /// its pin is saved: where an organization hold can begin.
+    #[cfg(test)]
+    before_pin: Option<Box<dyn FnOnce() + Send>>,
     /// Terminal Claude Code sessions holding relay messages not yet seen
     /// read, by agent name (`inbox_watch`).
     inbox: inbox_watch::Inboxes,

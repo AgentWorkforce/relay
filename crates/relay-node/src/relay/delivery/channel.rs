@@ -249,6 +249,10 @@ impl Core {
             reply_post: settle::automatic_answer_post(registration, &posts, true)
                 .map(pins::ReplyPost::from),
         };
+        #[cfg(test)]
+        if let Some(hook) = self.delivery_state().before_pin.take() {
+            hook();
+        }
         // The pin is the hand-over: once saved, every retry hands this batch
         // over as it is. A hold that began while the batch was prepared is
         // checked here, with no await before the pin is saved; the batch then
@@ -395,11 +399,9 @@ mod tests {
         );
     }
 
-    /// A channel batch admitted before the organization's hold began is
-    /// not pinned once the hold covers a post: the batch goes back to be
-    /// handled post by post, and nothing is handed over.
-    #[tokio::test]
-    async fn a_hold_that_starts_before_pinning_returns_the_batch() {
+    /// A core and a registration whose channel's name is already known, so
+    /// preparing a batch of plain posts touches no network.
+    fn channel_core() -> (tempfile::TempDir, Arc<Core>, Registration) {
         let home = tempfile::tempdir().unwrap();
         let config = crate::relay::daemon::Config {
             paths: crate::relay::paths::CorePaths::for_socket(home.path().join("core.sock"))
@@ -414,6 +416,9 @@ mod tests {
             delivery_timing: Default::default(),
         };
         let (core, _) = Core::with_plugins(config, crate::relay::daemon::Plugins::default());
+        core.delivery_state()
+            .channel_names
+            .insert("ch_swarm".into(), "swarm".into());
         let registration: Registration = serde_json::from_value(serde_json::json!({
             "name": "codex-api", "agentID": "agent-1",
             "target": {"kind": "codex", "id": "thread-1"},
@@ -421,7 +426,11 @@ mod tests {
             "registeredAt": "2026-11-17T00:00:00Z"
         }))
         .unwrap();
-        let post = |id: &str, sender: &str| Delivery {
+        (home, core, registration)
+    }
+
+    fn post(id: &str, sender: &str) -> Delivery {
+        Delivery {
             id: id.into(),
             message_id: format!("m-{id}"),
             channel_id: Some("ch_swarm".into()),
@@ -429,9 +438,15 @@ mod tests {
             sender_address: Some(format!("{sender}@desk")),
             text: Some("hello".into()),
             ..Delivery::default()
-        };
+        }
+    }
+
+    /// The gate at the start of `inject_posts`: a hold already on when the
+    /// batch arrives returns it unpinned.
+    #[tokio::test]
+    async fn a_hold_already_on_returns_the_batch() {
+        let (_home, core, registration) = channel_core();
         let batch = vec![post("1", "lead"), post("2", "stranger")];
-        // Admitted before the hold: the hold begins as the batch is prepared.
         core.claude_delivery
             .set_organization_hold(Some(["lead".to_string()].into()));
         let back = core
@@ -441,8 +456,37 @@ mod tests {
         assert!(core
             .with_pins(|pins| pins.keys_for(&registration.agent_id))
             .is_empty());
-        // Without the hold, a batch of admins' posts alone is not held.
-        assert!(!core.batch_held(&registration, &batch[..1]));
+    }
+
+    /// The gate at the pin: with the hold off when the batch arrives and
+    /// turned on while it is prepared, nothing is pinned or handed over, and
+    /// the batch goes back to be handled post by post, where the admin's
+    /// post delivers and the other is held.
+    #[tokio::test]
+    async fn a_hold_that_starts_while_the_batch_is_prepared_is_caught_at_the_pin() {
+        let (_home, core, registration) = channel_core();
+        let batch = vec![post("1", "lead"), post("2", "stranger")];
+        let holder = core.clone();
+        core.delivery_state().before_pin = Some(Box::new(move || {
+            holder
+                .claude_delivery
+                .set_organization_hold(Some(["lead".to_string()].into()));
+        }));
+        assert!(!core.claude_delivery.organization_holds());
+        let back = core
+            .inject_posts(&registration, &Secret::new("token"), batch.clone())
+            .await;
+        assert!(core.claude_delivery.organization_holds(), "the hook ran");
+        assert_eq!(back, batch);
+        assert!(core
+            .with_pins(|pins| pins.keys_for(&registration.agent_id))
+            .is_empty());
+        assert!(core.delivery_state().before_pin.is_none());
+        let decided: Vec<_> = back
+            .iter()
+            .map(|post| core.claude_delivery.decide(&registration, post))
+            .collect();
+        assert_eq!(decided, vec![ClaudeConsent::Deliver, ClaudeConsent::Hold]);
     }
 
     #[test]
