@@ -1543,6 +1543,17 @@ describe('events-shim CLI', () => {
     });
   }
 
+  it('listen --hook takes a post a release before canonical inbox URLs kept under the trailing-slash name', async () => {
+    const w = await fileWorld({
+      stdin: claudeHook('up-1', { hook_event_name: 'SessionStart', source: 'startup' }, false),
+    });
+    await runCli(['setup', w.created.mcp_url, '--claude'], w.io);
+    const digest = createHash('sha256').update(`${w.created.mcp_url}/`).digest('hex').slice(0, 16);
+    writeFileSync(join(w.home, '.config', 'agent-relay', `held-${digest}.txt`), 'kept by an older release');
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(2);
+    expect(w.err.join('\n')).toContain('kept by an older release');
+  });
+
   it('listen --hook: a claude -p run never takes a vacant inbox by itself', async () => {
     const w = await fileWorld({ stdin: claudeHook('print-2', { hook_event_name: 'Stop' }, false) });
     await runCli(['setup', w.created.mcp_url, '--claude'], w.io);

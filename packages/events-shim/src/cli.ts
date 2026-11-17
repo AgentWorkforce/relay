@@ -212,6 +212,28 @@ function checkMcpUrl(raw: string): string | null {
   }
 }
 
+/** Whether the inbox leases \`wait_for_webhook\` claims (it lists \`release_webhook_events\`); false when unknown. */
+async function inboxLeases(io: CliIo, mcpUrl: string): Promise<boolean> {
+  try {
+    const response = await io.fetchImpl(mcpUrl, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        'mcp-protocol-version': '2025-06-18',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    const text = await response.text();
+    const data = text.split('\n').find((line) => line.startsWith('data:'));
+    const parsed = JSON.parse(data ? data.slice(5) : text) as { result?: { tools?: { name?: string }[] } };
+    return (parsed.result?.tools ?? []).some((tool) => tool.name === 'release_webhook_events');
+  } catch {
+    return false;
+  }
+}
+
 /** Calls one tool on the inbox's MCP server (Streamable HTTP, JSON response). */
 async function callTool(
   io: CliIo,
@@ -1925,6 +1947,9 @@ async function listenAsSessionOwner(
   }
   try {
     let backoff = 1_000;
+    // Whether the inbox holds claims on a lease (it offers release_webhook_events); unknown reads as no.
+    let leased = false;
+    let leasesKnown = false;
     for (;;) {
       // While another session's listener owns the inbox, keep waiting to take over.
       while (!tryLock(io, inboxLock)) {
@@ -1941,11 +1966,18 @@ async function listenAsSessionOwner(
           if (await relayWakeLinked(io, mcpUrl)) return 0;
           // The session may have closed (or been taken over) while that was asked: start no wait for it.
           if (!alive() || !owns()) return 0;
+          if (!leasesKnown) {
+            leased = await inboxLeases(io, mcpUrl);
+            leasesKnown = true;
+          }
           const controller = new AbortController();
           // While \`drain()\`, a wait in flight is not cut off: the inbox may already have handed it
           // posts, which \`deliver\` then lets go (leased) or keeps for the next owner.
+          // A takeover cuts the wait off only on an inbox with leases, which gives back a batch it
+          // claimed for a client that left. Without leases the inbox may already have marked a batch
+          // read, so the wait finishes and the check below keeps it for the next owner.
           const watch = setInterval(() => {
-            if ((!alive() && !drain()) || !owns()) controller.abort();
+            if ((!alive() && !drain()) || (!owns() && leased)) controller.abort();
           }, 2_000);
           const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(65_000)]);
           try {
@@ -2223,16 +2255,19 @@ function keepForNextOwner(io: CliIo, mcpUrl: string, text: string): void {
 
 /** Takes the kept post, if any: one owner gets it (an atomic rename). */
 function takeHeldPost(io: CliIo, mcpUrl: string): string | null {
-  const held = heldPostPath(io, mcpUrl);
-  const mine = `${held}.${io.pid}`;
-  try {
-    renameSync(held, mine);
-  } catch {
-    return null;
+  // A release before inbox URLs were canonical may have kept one under the \`…/mcp/\` form's name.
+  for (const held of [heldPostPath(io, mcpUrl), heldPostPath(io, `${mcpUrl}/`)]) {
+    const mine = `${held}.${io.pid}`;
+    try {
+      renameSync(held, mine);
+    } catch {
+      continue;
+    }
+    const kept = io.readText(mine);
+    rmSync(mine, { force: true });
+    return kept;
   }
-  const kept = io.readText(mine);
-  rmSync(mine, { force: true });
-  return kept;
+  return null;
 }
 
 /** The agent CLIs whose turn-end hook can hold a finished turn open and hand it the next post. */
