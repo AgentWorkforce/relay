@@ -49,7 +49,7 @@ fn group_post(groups: &mut Vec<Group>, channel: &str, post: Delivery) {
 }
 
 impl Core {
-    pub(super) fn delivery_state(&self) -> MutexGuard<'_, DeliveryState> {
+    pub(crate) fn delivery_state(&self) -> MutexGuard<'_, DeliveryState> {
         self.delivery.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -253,17 +253,32 @@ impl Core {
         if let Some(hook) = self.delivery_state().before_pin.take() {
             hook();
         }
+        #[cfg(test)]
+        let between = self.delivery_state().between_check_and_pin.take();
         // The pin is the hand-over: once saved, every retry hands this batch
         // over as it is. A hold that began while the batch was prepared is
-        // checked here, with no await before the pin is saved; the batch then
-        // goes back to be handled post by post.
-        if self.batch_held(registration, &original) {
-            return original;
-        }
-        if let Err(error) = self.with_pins(|pins| pins.insert(pin.clone())) {
-            let settle = Settle::new(registration, token, &workspace, &posts);
-            self.posts_failed(&settle, format!("Could not save the injection. {error}"));
-            return Vec::new();
+        // checked here, in one step with the save, under the delivery lock
+        // the hold setter also takes (`Core::set_organization_hold`): if it
+        // now covers a post, nothing is pinned and the batch goes back to be
+        // handled post by post.
+        let saved = self.with_pins(|pins| {
+            if self.batch_held(registration, &original) {
+                return Ok(false);
+            }
+            #[cfg(test)]
+            if let Some(hook) = between {
+                hook();
+            }
+            pins.insert(pin.clone()).map(|()| true)
+        });
+        match saved {
+            Ok(true) => {}
+            Ok(false) => return original,
+            Err(error) => {
+                let settle = Settle::new(registration, token, &workspace, &posts);
+                self.posts_failed(&settle, format!("Could not save the injection. {error}"));
+                return Vec::new();
+            }
         }
         // Every new thread may be answered once the prompt is visible.
         for route in &pin.routes {
@@ -487,6 +502,45 @@ mod tests {
             .map(|post| core.claude_delivery.decide(&registration, post))
             .collect();
         assert_eq!(decided, vec![ClaudeConsent::Deliver, ClaudeConsent::Hold]);
+    }
+
+    /// A hold set through the core while a batch is between its final check
+    /// and its pin save waits for the save: the check and the save are one
+    /// step, so the batch is either caught or already handed over.
+    #[tokio::test]
+    async fn a_hold_cannot_slip_between_the_check_and_the_pin() {
+        let (_home, core, registration) = channel_core();
+        let batch = vec![post("1", "lead"), post("2", "stranger")];
+        let setter = core.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let finished = done.clone();
+        let thread = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let handle = thread.clone();
+        core.delivery_state().between_check_and_pin = Some(Box::new(move || {
+            *handle.lock().unwrap() = Some(std::thread::spawn(move || {
+                started_tx.send(()).unwrap();
+                setter.set_organization_hold(Some(["lead".to_string()].into()));
+                finished.store(true, std::sync::atomic::Ordering::SeqCst);
+            }));
+            started_rx.recv().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            // The setter is blocked on the lock this step holds.
+            assert!(!done.load(std::sync::atomic::Ordering::SeqCst));
+        }));
+        let back = core
+            .inject_posts(&registration, &Secret::new("token"), batch)
+            .await;
+        thread.lock().unwrap().take().unwrap().join().unwrap();
+        // The hold arrived after the pin: the batch was handed over whole,
+        // as the documented rule says, and the hold is now on.
+        assert!(back.is_empty());
+        assert_eq!(
+            core.with_pins(|pins| pins.keys_for(&registration.agent_id))
+                .len(),
+            1
+        );
+        assert!(core.claude_delivery.organization_holds());
     }
 
     #[test]

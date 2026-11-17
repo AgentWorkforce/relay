@@ -919,9 +919,11 @@ methods and fields for compatibility):
   route's and native continuation's blocking calls, right before the route,
   and right before the mobile journal takes the turn. If the hold now
   applies, it waits in the queue, to be held on the next pass. A channel
-  batch is gated right before its pin is saved (the pin is its hand-over):
-  if the hold now covers any of its posts, nothing is pinned and the posts go
-  one by one, held or delivered on their own. A message whose route call has
+  batch is gated as its pin is saved (the pin is its hand-over): the check and
+  the save are one step under the delivery lock, which every hold change also
+  takes (`Core::set_organization_hold`), so a hold arrives either before the
+  check or after the save. If the hold covers any of its posts, nothing is
+  pinned and the posts go one by one, held or delivered on their own. A message whose route call has
   already begun, or a batch already pinned, completes.
 
 ### Repositories that join by themselves

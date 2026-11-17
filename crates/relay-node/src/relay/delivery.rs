@@ -261,6 +261,10 @@ pub struct DeliveryState {
     /// its pin is saved: where an organization hold can begin.
     #[cfg(test)]
     before_pin: Option<Box<dyn FnOnce() + Send>>,
+    /// Run once, in a test, between a channel batch's final hold check and
+    /// its pin save, while both hold the delivery lock.
+    #[cfg(test)]
+    between_check_and_pin: Option<Box<dyn FnOnce() + Send>>,
     /// Terminal Claude Code sessions holding relay messages not yet seen
     /// read, by agent name (`inbox_watch`).
     inbox: inbox_watch::Inboxes,

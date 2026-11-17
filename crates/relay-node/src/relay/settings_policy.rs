@@ -530,7 +530,7 @@ impl Core {
                     .collect::<BTreeSet<String>>()
             })
         });
-        if self.claude_delivery.set_organization_hold(admins) {
+        if self.set_organization_hold(admins) {
             // Held or released messages are read again under the new rule.
             let names = self.store.read(|store| {
                 store
@@ -543,6 +543,16 @@ impl Core {
                 self.request_drain(&name);
             }
         }
+    }
+
+    /// Sets the organization's hold under the delivery lock, which a channel
+    /// batch's final hold check and pin save also hold: a hold either
+    /// arrives before that check, which sees it, or after the pin is saved,
+    /// when the batch is already handed over. Lock order: delivery, then the
+    /// hold. Answers whether the hold changed.
+    pub(crate) fn set_organization_hold(&self, admins: Option<BTreeSet<String>>) -> bool {
+        let _pins = self.delivery_state();
+        self.claude_delivery.set_organization_hold(admins)
     }
 
     /// `settings.get`'s `organization_policy`, for `values`.
