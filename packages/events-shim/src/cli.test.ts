@@ -404,6 +404,9 @@ describe('events-shim CLI', () => {
     expect(w.out.join('\n')).toContain(
       'each post wakes the most recently started Claude Code session by itself, with nothing to tell it'
     );
+    expect(w.out.join('\n')).toContain(
+      'Claude Code: MCP server "webhooks" added, skill installed; its most recently started session is woken by every post'
+    );
     // One CLI on the inbox: nothing about sharing it.
     expect(w.out.join('\n')).not.toContain('One inbox wakes one session');
   });

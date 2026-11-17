@@ -1288,7 +1288,8 @@ function chosenClis(io: CliIo, flags: Record<string, string>): { clis: AgentCli[
 }
 
 const WAKE_TEXT: Record<AgentCli['wake'], string> = {
-  listener: 'each new session is woken by every post (wake hooks installed; no Agent Relay needed)',
+  listener:
+    'its most recently started session is woken by every post (wake hooks installed; no Agent Relay needed)',
   core: 'its newest open session is woken by every post (through Agent Relay: Desktop, or its own headless core)',
   'relay-only': 'woken by each post under Agent Relay; without it, reads posts when asked',
   'when-asked': 'reads posts when asked (no background wake in this client)',
