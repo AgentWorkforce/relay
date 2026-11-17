@@ -464,11 +464,17 @@ fn read_small(path: &Path) -> Option<String> {
 fn logical_lines(config: &str) -> Vec<String> {
     let mut lines = Vec::new();
     let mut current = String::new();
+    // Whether the logical line so far ends inside quotes: a continued
+    // value keeps its quoting on the next physical line, as git reads it.
+    let mut quoted = false;
     for line in config.lines() {
-        if continues(line) {
+        let (more, still_quoted) = continues(line, quoted);
+        if more {
             current.push_str(&line[..line.len() - 1]);
+            quoted = still_quoted;
             continue;
         }
+        quoted = false;
         current.push_str(line);
         lines.push(std::mem::take(&mut current));
     }
@@ -478,28 +484,30 @@ fn logical_lines(config: &str) -> Vec<String> {
     lines
 }
 
-/// Whether `line` ends in a `\` that continues it: not inside a comment
-/// (a whole-line one, or one after the value), and not escaped.
-fn continues(line: &str) -> bool {
+/// Whether `line` ends in a `\` that continues it (not inside a comment,
+/// whole-line or after the value, and not escaped), and whether it ends
+/// inside quotes; `quoted` is whether it starts inside quotes, carried from
+/// the line it continues, where `#` and `;` are text, not comments.
+fn continues(line: &str, quoted: bool) -> (bool, bool) {
     let trimmed = line.trim_start();
-    if trimmed.starts_with('#') || trimmed.starts_with(';') {
-        return false;
+    if !quoted && (trimmed.starts_with('#') || trimmed.starts_with(';')) {
+        return (false, false);
     }
-    let mut quoted = false;
+    let mut quoted = quoted;
     let mut chars = line.chars();
     while let Some(c) = chars.next() {
         match c {
             '\\' => {
                 if chars.next().is_none() {
-                    return true;
+                    return (true, quoted);
                 }
             }
             '"' => quoted = !quoted,
-            '#' | ';' if !quoted => return false,
+            '#' | ';' if !quoted => return (false, false),
             _ => {}
         }
     }
-    false
+    (false, quoted)
 }
 
 /// A git config value as git reads it: quotes removed, a `#` or `;`
@@ -825,6 +833,18 @@ mod tests {
             origin_url("[remote \"origin\"]\n\turl = https://github.com/\\\nacme/web.git\n")
                 .as_deref(),
             Some("https://github.com/acme/web.git")
+        );
+        // A quoted value continued across lines keeps its quoting, so a `#`
+        // or `;` on a middle line is text, not a comment.
+        let config = "[include]\n\tpath = \"foo\\\n#bar\\\nbaz.inc\"\n";
+        assert_eq!(
+            config_entries(config),
+            vec![(
+                "include".into(),
+                None,
+                "path".into(),
+                "foo#barbaz.inc".into()
+            )]
         );
         // A comment ending in `\` does not continue onto the next line.
         assert_eq!(
