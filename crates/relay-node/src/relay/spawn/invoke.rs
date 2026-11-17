@@ -500,10 +500,10 @@ impl Core {
         };
         let launched = match self.launch_registered(launch, &mut in_flight).await {
             Ok(launched) => launched,
-            // Only a harness this computer cannot run is refused for good;
-            // one that is here but did not start (a session-ready timeout
-            // under load, say) is `spawn_failed`, which may succeed when
-            // asked again, with its reason.
+            // Only a harness this computer cannot run is refused as
+            // unavailable; one that is here but did not start (no session
+            // record before its readiness deadline, say) is `spawn_failed`,
+            // with its reason: a new spawn may succeed.
             Err(LaunchFailure::Launch(LaunchError::Unavailable(reason))) => {
                 released(&request.name).await;
                 deregister(&in_flight.intent);

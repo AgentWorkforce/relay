@@ -63,19 +63,21 @@ fn adapter(cx: &HarnessContext) -> Arc<dyn HarnessAdapter> {
 }
 
 /// How long a new Claude process gets to publish its session and show
-/// that it took its first message. A loaded computer can take well over
-/// 20 s just to register the session, so this matches Muse's minute.
-const READY_TIMEOUT: Duration = Duration::from_secs(60);
+/// that it took its first message. Kept under Relaycast's 30 s dispatch
+/// timeout, after which it may dispatch the spawn again and reject this
+/// node's late answer.
+const READY_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Why a Claude process did not register its session: it ended (or its
-/// pid went to another process) first, or it was still running at the
-/// deadline; with how much it had written to `log` by then.
+/// Why no relay-ready session record matched a Claude process (a record
+/// for its session, pid and start time, with a messaging socket): it ended
+/// (or its pid went to another process) first, or it was still running at
+/// the deadline; with how much it had written to `log` by then.
 fn not_ready(ended: bool, log: &Path) -> String {
     let what = if ended {
-        "ended before it registered its session".to_owned()
+        "ended before a matching relay-ready session record appeared".to_owned()
     } else {
         format!(
-            "was still running but did not register its session within {} s",
+            "was still running but no matching relay-ready session record appeared within {} s",
             READY_TIMEOUT.as_secs()
         )
     };

@@ -321,7 +321,7 @@ fn readiness_gives_up_on_a_recycled_pid_at_once_without_claiming_it() {
     );
     assert_eq!(
         ready,
-        Err("Claude Code ended before it registered its session (no output); see c.jsonl".into())
+        Err("Claude Code ended before a matching relay-ready session record appeared (no output); see c.jsonl".into())
     );
     // Not left to the readiness timeout: the launched process is gone.
     assert!(began.elapsed() < Duration::from_secs(5));
@@ -341,8 +341,8 @@ fn readiness_that_times_out_says_claude_was_still_running_and_what_it_wrote() {
     assert_eq!(
         ready,
         Err(format!(
-            "Claude Code was still running but did not register its session within 60 s \
-             (0 bytes of output); see {}",
+            "Claude Code was still running but no matching relay-ready session record appeared \
+             within 20 s (0 bytes of output); see {}",
             log.display()
         ))
     );
@@ -372,7 +372,7 @@ fn readiness_gives_up_on_an_unreaped_claude_at_once_and_says_it_ended() {
     );
     assert_eq!(
         ready,
-        Err("Claude Code ended before it registered its session (no output); see c.jsonl".into())
+        Err("Claude Code ended before a matching relay-ready session record appeared (no output); see c.jsonl".into())
     );
     // Not left to the readiness timeout: a zombie has already ended.
     assert!(began.elapsed() < Duration::from_secs(5));
