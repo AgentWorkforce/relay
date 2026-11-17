@@ -44,6 +44,11 @@ impl Store {
             registrations,
             tokens,
             agent_owners: merge_maps(&base.agent_owners, &ours.agent_owners, &theirs.agent_owners),
+            organization_policy: pick(
+                &base.organization_policy,
+                &ours.organization_policy,
+                &theirs.organization_policy,
+            ),
             allow_self_registration: pick(
                 &base.allow_self_registration,
                 &ours.allow_self_registration,

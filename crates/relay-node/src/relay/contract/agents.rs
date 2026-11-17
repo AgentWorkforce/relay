@@ -332,8 +332,9 @@ pub struct IntegrationChange {
 
 mod settings;
 pub use settings::{
-    history_retention, AgentSettingsChange, ClaudeConfigDir, ClaudeConfigDirChange, SettingsChange,
-    SettingsValues, SpawnHarnessSettings, TrustedWorkspaceMember,
+    history_retention, AgentSettingsChange, ClaudeConfigDir, ClaudeConfigDirChange,
+    OrganizationPolicyState, SettingsChange, SettingsValues, SpawnHarnessSettings,
+    TrustedWorkspaceMember,
 };
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize)]

@@ -1277,12 +1277,27 @@ impl Core {
             settings.extend(extension.get());
         }
         settings.insert("detected_tools".into(), json!(self.detected_tools()));
+        if let Some(policy) = self.settings_policy_state(&settings) {
+            settings.insert(crate::relay::settings_policy::SETTING.into(), policy);
+        }
         settings
     }
 
-    /// Applies each given setting; an unknown key or a wrong type changes
-    /// nothing.
+    /// Applies each given setting; an unknown key, a wrong type or a
+    /// setting the organization locked (`settings_policy`) changes nothing.
     pub fn set_settings(
+        &self,
+        changes: &Map<String, Value>,
+    ) -> Result<Map<String, Value>, RpcError> {
+        if let Some(refused) = self.settings_policy_refusal(&self.settings(), changes) {
+            return Err(refused);
+        }
+        self.write_settings(changes)
+    }
+
+    /// [`Self::set_settings`] without the organization's locks: how the
+    /// organization's own values are written.
+    pub(crate) fn write_settings(
         &self,
         changes: &Map<String, Value>,
     ) -> Result<Map<String, Value>, RpcError> {

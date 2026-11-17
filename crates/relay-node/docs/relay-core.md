@@ -846,6 +846,43 @@ its stage lands.
 | `daemon::Plugins::session_policy` | `src/relay/daemon/plugins.rs`   | Which sessions join by themselves, may be asked to join, and publish activity                                   | every session may join by itself; none is asked; none publishes | 4      |
 | `session_sources::SessionSources` | `src/relay/session_sources.rs`  | Remote sessions (Devin Cloud, Claude Code on the web) a build lists and delivers into; Hermes's homes           | none: only this computer's sessions                           | 2b       |
 
+### The organization's settings policy
+
+A build's account hands the core the settings part of the organization's
+workspace policy with `Core::apply_settings_policy(Some(SettingsPolicy {
+locked, defaults, managed, consent }))`, whenever it reads a new one, and
+`None` when none applies any more (`src/relay/settings_policy.rs`). The core
+keeps the last one in the store (`organizationPolicy`), so a lock holds
+across a restart before the account reads the policy again. A headless core
+without an account has no policy and is unchanged.
+
+- **Locked** values are written into their settings once and every later
+  change to them is refused, from the apps (`settings.set`) and from agents
+  (`PATCH /settings`), with `refused` "This setting is set by your
+  organization." Setting a locked key to its locked value is accepted.
+  `GET /settings` lists it `writable: false` with that sentence in
+  `organization`.
+- **Defaults** are written once, as a starting value the person may change.
+  A changed default is written again only while the setting still holds the
+  previous default, so the person's own choice is never reversed.
+  `GET /settings` says "Managed by your organization." in `organization`.
+- **Person-only settings** (`settings_policy::PERSON_ONLY`, the policy
+  allowlist's person-only column, each also in `PERSON_TURNS_ON` or
+  `PERSON_ADDS`): an operator value that **widens** one, turning it on or
+  adding entries to its list, applies (locked or default) only when the
+  computer is `managed` (enrolled with the organization's consent) **and**
+  the key is in `consent`. Otherwise the person's own value stays and the key
+  is listed as mismatched. A value that **narrows** one, turning it off or
+  keeping only some of its entries, applies on every computer.
+- **`analytics_enabled`**: locked or defaulted off applies on every
+  computer; on applies only on a managed one (no `consent` entry), otherwise
+  the person's value stays and it is listed as mismatched.
+- A key the core has no setting for (its tool has not run here, or it is a
+  policy key the core does not enforce here) is skipped.
+- `settings.get` carries the read-only record `organization_policy`:
+  `{locked, defaults, mismatched, managed}`, key names only, for Settings to
+  label each row; absent when no policy applies.
+
 `serve` builds its plugins with `local::plugins`: `LocalSessions`
 (Codex and Claude discovery over a `process::ProcessTable`, fleet-owned
 sessions left out), `LocalInjector`, `ClaudeSettings` and the relay-send

@@ -691,6 +691,60 @@ mod tests {
         assert_eq!(core.settings()["direct_delivery"], false);
     }
 
+    /// The organization's locks are written once and refused to the app
+    /// and to agents alike; its defaults stay the person's to change.
+    #[tokio::test]
+    async fn an_organization_lock_is_applied_and_refused_to_everyone() {
+        use crate::relay::settings_policy::{SettingsPolicy, LOCKED};
+        let temp = tempfile::tempdir().unwrap();
+        let core = core(temp.path());
+        let policy: SettingsPolicy = serde_json::from_value(json!({
+            "locked": {"spawn_max_agents": 2, "accept_spawns": true},
+            "defaults": {"auto_join_general": true},
+        }))
+        .unwrap();
+        core.apply_settings_policy(Some(policy)).unwrap();
+        let values = core.settings();
+        assert_eq!(values["spawn_max_agents"], 2);
+        assert_eq!(values["auto_join_general"], true);
+        assert_eq!(
+            values["organization_policy"],
+            json!({
+                "locked": ["spawn_max_agents"],
+                "defaults": ["auto_join_general"],
+                "mismatched": ["accept_spawns"],
+                "managed": false,
+            })
+        );
+        let refused = core
+            .set_settings(&map(json!({"spawn_max_agents": 6})))
+            .unwrap_err();
+        assert_eq!(refused.message, LOCKED);
+        let (_, outcome, _) = apply(&core, &map(json!({"spawn_max_agents": 6})), "api").unwrap();
+        assert_eq!(outcome.unwrap_err().message, LOCKED);
+        assert_eq!(core.settings()["spawn_max_agents"], 2);
+        // A default is the person's to change, and stays changed.
+        core.set_settings(&map(json!({"auto_join_general": false})))
+            .unwrap();
+        core.apply_settings_policy(core.settings_policy()).unwrap();
+        assert_eq!(core.settings()["auto_join_general"], false);
+        // Agents see the lock in GET /settings.
+        let listed = crate::relay::settings_registry::describe(&core.settings());
+        let max = listed
+            .iter()
+            .find(|entry| entry["key"] == "spawn_max_agents")
+            .unwrap();
+        assert_eq!(
+            (max["writable"].clone(), max["organization"].clone()),
+            (json!(false), json!(LOCKED))
+        );
+        // No policy any more: the values stay, and are the person's again.
+        core.apply_settings_policy(None).unwrap();
+        assert!(core.settings().get("organization_policy").is_none());
+        core.set_settings(&map(json!({"spawn_max_agents": 6})))
+            .unwrap();
+    }
+
     #[test]
     fn a_change_records_the_value_before_and_after() {
         let before = map(json!({"auto_join_general": false, "auto_activate": true}));

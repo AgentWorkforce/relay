@@ -2843,6 +2843,55 @@ public struct OpenClawToolsStatus: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+/// What the organization's workspace policy does to this computer's
+/// settings, by key, for Settings to label each row.
+public struct OrganizationPolicyState: Codable, Equatable, Hashable, Sendable {
+    /// Settings whose value came from the organization as a starting point
+    /// the person may change. Settings labels each "Managed by your
+    /// organization."
+    public let defaults: [String]
+    /// Settings the organization set: the person cannot change them. Settings
+    /// labels each "This setting is set by your organization."
+    public let locked: [String]
+    /// Whether this computer was enrolled with the organization's consent.
+    public let managed: Bool
+    /// Settings the organization would turn on or widen but that only the
+    /// person turns on: they apply only on a computer enrolled with the
+    /// organization's consent for that setting, so here the person's own
+    /// value stays and the organization sees the difference.
+    public let mismatched: [String]
+
+    public init(defaults: [String], locked: [String], managed: Bool, mismatched: [String]) {
+        self.defaults = defaults
+        self.locked = locked
+        self.managed = managed
+        self.mismatched = mismatched
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case defaults
+        case locked
+        case managed
+        case mismatched
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.defaults = try c.decode([String].self, forKey: .defaults)
+        self.locked = try c.decode([String].self, forKey: .locked)
+        self.managed = try c.decode(Bool.self, forKey: .managed)
+        self.mismatched = try c.decode([String].self, forKey: .mismatched)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.defaults, forKey: .defaults)
+        try c.encode(self.locked, forKey: .locked)
+        try c.encode(self.managed, forKey: .managed)
+        try c.encode(self.mismatched, forKey: .mismatched)
+    }
+}
+
 /// `people.list`'s result, sorted by name.
 public struct People: Codable, Equatable, Hashable, Sendable {
     public let people: [WorkspacePerson]
@@ -4469,6 +4518,10 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// global `plugins/`, the route into a plain OpenCode session. Absent
     /// where OpenCode has never run.
     public let opencodePlugin: Bool?
+    /// Read-only: the settings the organization's workspace policy decides
+    /// on this computer (`relay::settings_policy`). Absent when no policy
+    /// applies. A record, not a setting.
+    public let organizationPolicy: OrganizationPolicyState?
     /// Whether an open Pi session joins the relay by itself while
     /// `auto_activate` is on. Off unless turned on (`relay init` turns it on
     /// for a person who chose Pi): with it off, a Pi session joins only when
@@ -4536,7 +4589,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// off, signed out, or Cloud's list has not been read lately.
     public let workspaceMembers: [TrustedWorkspaceMember]?
 
-    public init(acceptSpawns: Bool? = nil, agentChanges: [AgentSettingsChange]? = nil, allowSelfRegistration: Bool, analyticsEnabled: Bool? = nil, autoActivate: Bool, autoJoinGeneral: Bool? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDirs: [ClaudeConfigDir]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, connectDetectedTools: Bool? = nil, contractorAccess: Bool? = nil, cursorDirectDelivery: Bool? = nil, detectedTools: [String]? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryManaged: String? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileClaudeHandoffSupported: Bool? = nil, mobileNativeContinuation: Bool? = nil, mobileNativeContinuationSupported: Bool? = nil, openclawGateway: Bool? = nil, openclawUnlimitedVersion: String? = nil, opencodeAutoActivate: Bool? = nil, opencodePlugin: Bool? = nil, piAutoActivate: Bool? = nil, piExtension: Bool? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnMaxAgents: Int? = nil, spawnNativeInput: Bool? = nil, spawnRepositories: [String]? = nil, spawnRequesterApprovals: Bool? = nil, teammateNativeInput: Bool? = nil, trustWorkspaceMembers: Bool? = nil, trustedRelaySenders: [String]? = nil, workspaceMembers: [TrustedWorkspaceMember]? = nil) {
+    public init(acceptSpawns: Bool? = nil, agentChanges: [AgentSettingsChange]? = nil, allowSelfRegistration: Bool, analyticsEnabled: Bool? = nil, autoActivate: Bool, autoJoinGeneral: Bool? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDirs: [ClaudeConfigDir]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, connectDetectedTools: Bool? = nil, contractorAccess: Bool? = nil, cursorDirectDelivery: Bool? = nil, detectedTools: [String]? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryManaged: String? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileClaudeHandoffSupported: Bool? = nil, mobileNativeContinuation: Bool? = nil, mobileNativeContinuationSupported: Bool? = nil, openclawGateway: Bool? = nil, openclawUnlimitedVersion: String? = nil, opencodeAutoActivate: Bool? = nil, opencodePlugin: Bool? = nil, organizationPolicy: OrganizationPolicyState? = nil, piAutoActivate: Bool? = nil, piExtension: Bool? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnMaxAgents: Int? = nil, spawnNativeInput: Bool? = nil, spawnRepositories: [String]? = nil, spawnRequesterApprovals: Bool? = nil, teammateNativeInput: Bool? = nil, trustWorkspaceMembers: Bool? = nil, trustedRelaySenders: [String]? = nil, workspaceMembers: [TrustedWorkspaceMember]? = nil) {
         self.acceptSpawns = acceptSpawns
         self.agentChanges = agentChanges
         self.allowSelfRegistration = allowSelfRegistration
@@ -4565,6 +4618,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         self.openclawUnlimitedVersion = openclawUnlimitedVersion
         self.opencodeAutoActivate = opencodeAutoActivate
         self.opencodePlugin = opencodePlugin
+        self.organizationPolicy = organizationPolicy
         self.piAutoActivate = piAutoActivate
         self.piExtension = piExtension
         self.showRelayMessages = showRelayMessages
@@ -4613,6 +4667,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         case openclawUnlimitedVersion = "openclaw_unlimited_version"
         case opencodeAutoActivate = "opencode_auto_activate"
         case opencodePlugin = "opencode_plugin"
+        case organizationPolicy = "organization_policy"
         case piAutoActivate = "pi_auto_activate"
         case piExtension = "pi_extension"
         case showRelayMessages = "show_relay_messages"
@@ -4662,6 +4717,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         self.openclawUnlimitedVersion = try c.decodeIfPresent(String.self, forKey: .openclawUnlimitedVersion)
         self.opencodeAutoActivate = try c.decodeIfPresent(Bool.self, forKey: .opencodeAutoActivate)
         self.opencodePlugin = try c.decodeIfPresent(Bool.self, forKey: .opencodePlugin)
+        self.organizationPolicy = try c.decodeIfPresent(OrganizationPolicyState.self, forKey: .organizationPolicy)
         self.piAutoActivate = try c.decodeIfPresent(Bool.self, forKey: .piAutoActivate)
         self.piExtension = try c.decodeIfPresent(Bool.self, forKey: .piExtension)
         self.showRelayMessages = try c.decodeIfPresent(Bool.self, forKey: .showRelayMessages)
@@ -4711,6 +4767,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         try c.encodeIfPresent(self.openclawUnlimitedVersion, forKey: .openclawUnlimitedVersion)
         try c.encodeIfPresent(self.opencodeAutoActivate, forKey: .opencodeAutoActivate)
         try c.encodeIfPresent(self.opencodePlugin, forKey: .opencodePlugin)
+        try c.encodeIfPresent(self.organizationPolicy, forKey: .organizationPolicy)
         try c.encodeIfPresent(self.piAutoActivate, forKey: .piAutoActivate)
         try c.encodeIfPresent(self.piExtension, forKey: .piExtension)
         try c.encodeIfPresent(self.showRelayMessages, forKey: .showRelayMessages)
