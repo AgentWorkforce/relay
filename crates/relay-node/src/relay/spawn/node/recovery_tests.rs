@@ -34,6 +34,7 @@ impl NodeHost for Recovering {
                 machine: "mac".into(),
                 teammates: false,
                 repositories: repositories.to_vec(),
+                recent_folders: None,
                 harnesses: Vec::new(),
             },
             live: Live {
@@ -92,6 +93,7 @@ async fn heartbeats_go_on_while_recovery_runs_and_the_inventory_follows_it() {
         app_data_dir: folder.path().to_path_buf(),
         harnesses: vec![codex::ID],
         repositories: Vec::new(),
+        desktop_credential: false,
     };
     // Already enrolled: no HTTP, only the socket.
     let enrollment = Enrollment {
@@ -101,6 +103,7 @@ async fn heartbeats_go_on_while_recovery_runs_and_the_inventory_follows_it() {
         base_url: config.base_url.clone(),
         workspace: fingerprint(&config.workspace_key),
         rotation_key: None,
+        bridged: false,
     };
     save(&node_file(&config), &enrollment).unwrap();
     let (release, released) = oneshot::channel();

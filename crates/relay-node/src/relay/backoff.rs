@@ -15,6 +15,9 @@ const PLAN_RECHECK: Duration = Duration::from_secs(15 * 60);
 const FAR_RETRY_AFTER: Duration = PLAN_RECHECK;
 const TRANSIENT_BASE: Duration = Duration::from_secs(2);
 const TRANSIENT_CAP: Duration = Duration::from_secs(15 * 60);
+/// The longest a node socket refusal pauses a workspace's writes, the most
+/// a socket's own reconnect waits.
+const SOCKET_CAP: Duration = Duration::from_secs(5 * 60);
 const PROBE_LEASE: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -168,6 +171,17 @@ impl RelaycastBackoff {
             .any(|entry| entry.retry_at > now)
     }
 
+    /// The time left in the workspace's pause, without claiming the recheck
+    /// that `remaining` hands the first caller after it: a pass of reads
+    /// that holds that recheck asks this before each further read.
+    pub fn pause_left(&self, workspace: &WorkspaceScope) -> Option<Duration> {
+        let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries
+            .get(&workspace.key)
+            .and_then(|entry| entry.retry_at.checked_duration_since(Instant::now()))
+            .filter(|left| !left.is_zero())
+    }
+
     pub fn allowed(&self, workspace: &WorkspaceScope) -> bool {
         self.remaining(workspace).is_none()
     }
@@ -234,6 +248,41 @@ impl RelaycastBackoff {
             }
             return None;
         };
+        self.record_limit(workspace, limit, retry_after, now_ms, TRANSIENT_CAP, false)
+    }
+
+    /// Pauses `workspace`'s writes for a refusal outside the Relaycast API:
+    /// the node socket's upgrade answered 429 or 503, or the gateway closed
+    /// the socket asking to try again later. The pause is `retry_after`
+    /// (at least a second) when the server named one, else the transient
+    /// schedule, both capped at five minutes. Like `workspace_busy` it holds
+    /// writes only, so queue reads keep delivering while the socket is down.
+    /// It never shortens a pause already running: many sockets of one
+    /// workspace fail together, and the one with no `Retry-After` must not
+    /// release the wait another was told to take.
+    pub fn record_write_pause(&self, workspace: &WorkspaceScope, retry_after: Option<Duration>) {
+        let retry_after = retry_after.map(|delay| delay.max(Duration::from_secs(1)));
+        self.record_limit(
+            &workspace.write_admission(),
+            Limit::Transient,
+            retry_after,
+            chrono::Utc::now().timestamp_millis(),
+            SOCKET_CAP,
+            true,
+        );
+    }
+
+    /// Records `limit`; a transient wait is capped at `cap`. With
+    /// `keep_later`, a pause already running past the new one is kept.
+    fn record_limit(
+        &self,
+        workspace: &WorkspaceScope,
+        limit: Limit,
+        retry_after: Option<Duration>,
+        now_ms: i64,
+        cap: Duration,
+        keep_later: bool,
+    ) -> Option<BackoffNotice> {
         let mut entries = self.entries.lock().unwrap();
         let attempts = entries
             .get(&workspace.key)
@@ -248,20 +297,23 @@ impl RelaycastBackoff {
                 let exponent = attempts.min(9);
                 let exponential =
                     TRANSIENT_BASE.mul_f64(2f64.powi((exponent - 1) as i32) * (self.jitter)());
-                retry_after
-                    .unwrap_or_default()
-                    .max(exponential)
-                    .min(TRANSIENT_CAP)
+                retry_after.unwrap_or_default().max(exponential).min(cap)
             }
         };
         let notify = matches!(limit, Limit::Plan { .. })
             && entries
                 .get(&workspace.key)
                 .is_none_or(|entry| !matches!(entry.limit, Limit::Plan { .. }));
+        let mut retry_at = Instant::now() + delay.max(Duration::from_millis(1));
+        if keep_later {
+            if let Some(running) = entries.get(&workspace.key) {
+                retry_at = retry_at.max(running.retry_at);
+            }
+        }
         entries.insert(
             workspace.key.clone(),
             Entry {
-                retry_at: Instant::now() + delay.max(Duration::from_millis(1)),
+                retry_at,
                 probe_until: None,
                 attempts,
                 limit,
@@ -506,6 +558,69 @@ mod tests {
             assert!(!gate.allowed(&workspace));
             assert!(!gate.allowed_write(&workspace));
         }
+    }
+
+    #[test]
+    fn a_write_pause_holds_writes_for_its_retry_after_and_leaves_reads() {
+        let gate = RelaycastBackoff::new(|| 1.0);
+        let workspace = WorkspaceScope::id("https://relay.example", "workspace-a", "A");
+        gate.record_write_pause(&workspace, Some(Duration::from_secs(7)));
+        let held = gate.remaining_write(&workspace).unwrap();
+        assert!(
+            held > Duration::from_millis(6_900) && held <= Duration::from_secs(7),
+            "{held:?}"
+        );
+        assert!(gate.allowed(&workspace), "queue reads keep going");
+    }
+
+    #[test]
+    fn a_write_pause_without_retry_after_follows_the_transient_schedule() {
+        let gate = RelaycastBackoff::new(|| 1.0);
+        let workspace = WorkspaceScope::id("https://relay.example", "workspace-a", "A");
+        gate.record_write_pause(&workspace, None);
+        let first = gate.remaining_write(&workspace).unwrap();
+        assert!(first > TRANSIENT_BASE - Duration::from_millis(100) && first <= TRANSIENT_BASE);
+        gate.record_write_pause(&workspace, None);
+        assert!(gate.remaining_write(&workspace).unwrap() > TRANSIENT_BASE);
+        // A zero Retry-After still waits a second; a huge one is capped.
+        let other = WorkspaceScope::id("https://relay.example", "workspace-b", "B");
+        gate.record_write_pause(&other, Some(Duration::ZERO));
+        assert!(gate.remaining_write(&other).unwrap() > Duration::from_millis(900));
+        let far = WorkspaceScope::id("https://relay.example", "workspace-c", "C");
+        gate.record_write_pause(&far, Some(Duration::from_secs(86_400)));
+        assert!(gate.remaining_write(&far).unwrap() <= SOCKET_CAP);
+    }
+
+    #[test]
+    fn a_socket_pause_is_capped_at_five_minutes_even_as_it_grows() {
+        let gate = RelaycastBackoff::new(|| 1.0);
+        let workspace = WorkspaceScope::id("https://relay.example", "workspace-a", "A");
+        gate.record_write_pause(&workspace, Some(Duration::from_secs(600)));
+        assert!(gate.remaining_write(&workspace).unwrap() <= SOCKET_CAP);
+        let growing = WorkspaceScope::id("https://relay.example", "workspace-b", "B");
+        for _ in 0..12 {
+            gate.record_write_pause(&growing, None);
+        }
+        let held = gate.remaining_write(&growing).unwrap();
+        assert!(
+            held > SOCKET_CAP - Duration::from_secs(1) && held <= SOCKET_CAP,
+            "{held:?}"
+        );
+    }
+
+    #[test]
+    fn a_socket_pause_does_not_shorten_a_longer_one_already_running() {
+        let gate = RelaycastBackoff::new(|| 1.0);
+        let workspace = WorkspaceScope::id("https://relay.example", "workspace-a", "A");
+        gate.record_write_pause(&workspace, Some(Duration::from_secs(120)));
+        // Another socket of the workspace, shed without a Retry-After.
+        gate.record_write_pause(&workspace, None);
+        assert!(gate.remaining_write(&workspace).unwrap() > Duration::from_secs(119));
+        gate.record_write_pause(&workspace, Some(Duration::from_secs(30)));
+        assert!(gate.remaining_write(&workspace).unwrap() > Duration::from_secs(119));
+        // A longer one still extends it.
+        gate.record_write_pause(&workspace, Some(Duration::from_secs(200)));
+        assert!(gate.remaining_write(&workspace).unwrap() > Duration::from_secs(199));
     }
 
     #[test]

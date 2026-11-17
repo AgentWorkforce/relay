@@ -10,7 +10,9 @@ import {
   type RelayMessage,
   type RelayPort,
   type SpawnReceipt,
+  type WorkerLiveness,
 } from './ports.js';
+import { execGit, GitError, refreshRepository, type GitRunner } from './repository.js';
 import type { BridgeStore, TaskRow } from './store.js';
 
 const PAGE_SIZE = 100;
@@ -23,6 +25,8 @@ const CAPACITY_REFUSAL = 'node_at_capacity';
 const INVOKE_REPLAY_WINDOW_MS = 3_600_000;
 /** A launch can still be under way this long after the invoke, so not-found is not yet proof. */
 const STOP_GRACE_MS = 600_000;
+/** Stands in for a refreshed revision when sizing a task before the refresh. SHA-256 length. */
+const REVISION_PLACEHOLDER = '0'.repeat(64);
 
 const short = (value: string, length: number) =>
   createHash('sha256').update(value).digest('hex').slice(0, length);
@@ -34,6 +38,8 @@ export interface BridgeDeps {
   node: NodePort;
   now?: () => number;
   log?: BridgeLog;
+  /** Runs git for `refreshRepositories`. Defaults to the real `git` binary. */
+  git?: GitRunner;
 }
 
 /**
@@ -50,6 +56,9 @@ export class ExecutionBridge {
   private readonly now: () => number;
   private readonly log: BridgeLog;
   private readonly policy: AssignmentPolicy;
+  private readonly git: GitRunner;
+  /** Folders being refreshed right now, so no two refreshes or spawns share one. */
+  private readonly refreshing = new Set<string>();
   private identity: RelayIdentity | undefined;
 
   constructor(deps: BridgeDeps) {
@@ -59,6 +68,7 @@ export class ExecutionBridge {
     this.node = deps.node;
     this.now = deps.now ?? Date.now;
     this.log = deps.log ?? (() => undefined);
+    this.git = deps.git ?? execGit;
     const { chief, repositories, actions, limits, maxEvidenceAgeMs } = deps.config;
     this.policy = {
       chiefAgentId: chief.agentId,
@@ -262,6 +272,7 @@ export class ExecutionBridge {
         this.log('invocation_unavailable', { taskId: task.taskId, code: error.code });
       }
     }
+    if (this.config.detectDeadWorkers) await this.detectDeadWorkers();
     // A finished task keeps its slot and repository until its agent has actually stopped.
     const occupying = [
       ...this.store.activeTasks().filter((t) => t.state !== 'queued'),
@@ -271,7 +282,7 @@ export class ExecutionBridge {
     let active = occupying.length;
     for (const task of queued) {
       // Fails here, while nothing was launched, so no stop is owed and no slot is held.
-      const input = this.spawnInput(task);
+      const input = this.spawnInput(task, this.config.refreshRepositories ? REVISION_PLACEHOLDER : undefined);
       if ('refused' in input) {
         this.fail(task, input.refused);
         continue;
@@ -284,16 +295,64 @@ export class ExecutionBridge {
         return;
       }
       // Earlier spawns in this pass can take a while.
+      if (this.now() - task.createdAt > maxQueuedMs) {
+        this.fail(task, 'queue_timeout');
+        continue;
+      }
+      let revision: string | undefined;
+      if (this.config.refreshRepositories) {
+        const refreshed = await this.refresh(task, input.directory);
+        if (refreshed === 'busy') continue;
+        if (refreshed === 'failed') {
+          this.fail(task, 'repository_refresh_failed');
+          continue;
+        }
+        revision = refreshed.revision;
+      }
       const invokingAt = this.now();
+      // The refresh can take a while too.
       if (invokingAt - task.createdAt > maxQueuedMs) {
         this.fail(task, 'queue_timeout');
         continue;
       }
-      if (!this.store.markInvoking(task.taskId, invokingAt)) continue;
+      if (!this.store.markInvoking(task.taskId, invokingAt, revision)) continue;
       active += 1;
       busy.add(task.repository);
-      await this.invoke({ ...task, state: 'invoking', invokingAt });
+      await this.invoke({ ...task, state: 'invoking', invokingAt, revision });
     }
+  }
+
+  /**
+   * Brings the task's folder to the remote default branch, but only while no other task of
+   * this bridge holds that folder. The check reads the ledger afresh, after every await.
+   */
+  private async refresh(task: TaskRow, directory: string): Promise<{ revision: string } | 'busy' | 'failed'> {
+    if (this.refreshing.has(directory) || this.directoryInUse(directory)) {
+      this.log('repository_busy', { taskId: task.taskId });
+      return 'busy';
+    }
+    this.refreshing.add(directory);
+    try {
+      // Another pass may have started this very task while this one waited.
+      if (this.store.task(task.taskId)?.state !== 'queued') return 'busy';
+      const refreshed = await refreshRepository(this.git, directory);
+      this.log('repository_refreshed', { taskId: task.taskId, revision: refreshed.revision });
+      return refreshed;
+    } catch (error) {
+      if (!(error instanceof GitError)) throw error;
+      this.log('repository_refresh_failed', { taskId: task.taskId, code: error.code });
+      return 'failed';
+    } finally {
+      this.refreshing.delete(directory);
+    }
+  }
+
+  /** Whether any started or not-yet-stopped task works in this folder, by any repository name. */
+  private directoryInUse(directory: string): boolean {
+    return [
+      ...this.store.activeTasks().filter((t) => t.state !== 'queued'),
+      ...this.store.stopPending(),
+    ].some((t) => this.config.repositories[t.repository] === directory);
   }
 
   private preflight(): Promise<string | undefined> {
@@ -338,11 +397,48 @@ export class ExecutionBridge {
     }
   }
 
+  /**
+   * Fails a running task whose agent the core has listed as gone for the whole grace window
+   * without a result. A core that cannot be reached is no evidence either way: the task is kept
+   * and the runtime limit still applies.
+   */
+  private async detectDeadWorkers(): Promise<void> {
+    const watched = () => this.store.activeTasks().filter((t) => t.state === 'running' && !t.pendingResult);
+    if (watched().length === 0) return;
+    let agents: Map<string, WorkerLiveness> | undefined;
+    try {
+      agents = await this.node.listAgents();
+    } catch {
+      agents = undefined;
+    }
+    if (!agents) {
+      this.log('worker_check_unavailable');
+      return;
+    }
+    const now = this.now();
+    // Read afresh: a result may have been claimed while the core answered.
+    for (const task of watched()) {
+      const observation = agents.get(task.agentName) ?? 'absent';
+      this.store.observeWorker(task.taskId, observation, now);
+      const goneAt = this.store.task(task.taskId)?.workerGoneAt;
+      if (goneAt === undefined) {
+        if (task.workerGoneAt !== undefined) this.log('worker_returned', { taskId: task.taskId });
+        continue;
+      }
+      if (task.workerGoneAt === undefined) this.log('worker_gone', { taskId: task.taskId, observation });
+      // Reported to the chief as `agent_failed`.
+      if (now - goneAt >= this.config.deadWorkerGraceMs) this.fail(task, 'worker_gone');
+    }
+  }
+
   /** The spawn's folder and first message, or why this task can never be spawned. */
-  private spawnInput(task: TaskRow): { directory: string; prompt: string } | { refused: string } {
+  private spawnInput(
+    task: TaskRow,
+    revision = task.revision
+  ): { directory: string; prompt: string } | { refused: string } {
     const directory = this.config.repositories[task.repository];
     if (!directory) return { refused: 'repository_not_configured' };
-    const prompt = buildTask(task.assignment, task.digest);
+    const prompt = buildTask(task.assignment, task.digest, revision);
     return prompt ? { directory, prompt } : { refused: 'task_too_large' };
   }
 

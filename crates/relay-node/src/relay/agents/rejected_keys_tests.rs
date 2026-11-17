@@ -3,6 +3,7 @@
 //! the current workspace holds no such agent.
 
 use super::*;
+use crate::relay::protocol::{ErrorKind, RpcError};
 use crate::relay::store::{CleanupKind, PendingCleanup, Registration};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -119,6 +120,7 @@ fn core(base: &str) -> (Arc<Core>, tempfile::TempDir) {
         workspace_id: None,
         source: crate::relay::workspace::WorkspaceSource::Cloud,
         control_url: None,
+        gate_url: None,
     });
     (core, temp)
 }
@@ -450,4 +452,154 @@ async fn a_presence_change_out_of_reach_is_dropped_not_retried() {
     let before = seen.lock().unwrap().len();
     core.announce_pending_presence().await;
     assert_eq!(seen.lock().unwrap().len(), before, "nothing retried");
+}
+
+/// Agent Relay Cloud for these tests: hands out relayfile credentials for
+/// the stand-in at `base`, which also answers relayfile's routes.
+struct RelayfileCloud {
+    base: String,
+}
+
+impl crate::relay::cloud_session::CloudAccess for RelayfileCloud {
+    fn account(&self) -> Option<crate::relay::cloud_session::CloudAccount> {
+        None
+    }
+    fn agent_owner(&self) -> Option<crate::relay::cloud_session::AgentOwner> {
+        None
+    }
+    fn request(
+        &self,
+        _: &'static str,
+        path: String,
+        _: Option<serde_json::Value>,
+    ) -> futures_util::future::BoxFuture<
+        '_,
+        Result<serde_json::Value, crate::relay::cloud_session::CloudError>,
+    > {
+        Box::pin(async move {
+            assert!(path.ends_with("/relayfile/delegated-token"), "{path}");
+            Ok(serde_json::json!({
+                "relayfileToken": RELAYFILE, "relayfileUrl": self.base, "relayfileWorkspaceId": "ws1",
+            }))
+        })
+    }
+}
+
+const RELAYFILE: &str = "rf_token";
+
+fn core_with_relayfile(base: &str) -> (Arc<Core>, tempfile::TempDir) {
+    let (plain, temp) = core(base);
+    let config = plain.config.clone();
+    drop(plain);
+    let plugins = crate::relay::daemon::Plugins {
+        cloud: Arc::new(RelayfileCloud { base: base.into() }),
+        ..Default::default()
+    };
+    let (core, _signals) = Core::with_plugins(config, plugins);
+    *core.workspace.lock().unwrap() = Some(crate::relay::workspace::Workspace {
+        key: Secret::new(CURRENT),
+        base_url: base.into(),
+        workspace_id: None,
+        source: crate::relay::workspace::WorkspaceSource::Cloud,
+        control_url: None,
+        gate_url: None,
+    });
+    (core, temp)
+}
+
+/// `gone` holds integrations for `resources`, with saved workspace key
+/// `key` and agent token `at_gone`.
+fn integrated(core: &Core, base: &str, key: &str, resources: &[&str]) {
+    let integrations: Vec<serde_json::Value> = resources
+        .iter()
+        .enumerate()
+        .map(|(i, resource)| {
+            serde_json::json!({
+                "id": format!("int_{i}"), "provider": "github", "resource": resource,
+                "workspaceID": "ws1", "cloudSubscriptionID": format!("rf_sub_{i}"),
+            })
+        })
+        .collect();
+    core.store
+        .update(|store| {
+            let mut gone = registration("gone", "01a0c221-6806-7210-af25-97e104b15049", base);
+            gone.workspace_key = Some(Secret::new(key));
+            gone.integration_channel_id = Some("ch_int".into());
+            gone.integration_channel_name = Some("agent-events-gone".into());
+            gone.integrations =
+                serde_json::from_value(serde_json::Value::Array(integrations)).unwrap();
+            store.registrations.push(gone);
+            store.tokens.insert("gone".into(), Secret::new("at_gone"));
+        })
+        .unwrap();
+}
+
+fn empty_list() -> (u16, String) {
+    (200, r#"{"ok":true,"data":[]}"#.into())
+}
+
+#[tokio::test]
+async fn a_revoked_agent_token_does_not_keep_an_agent_whose_integrations_are_removed() {
+    // The workspace key works; only the agent's own token is revoked. The
+    // agent is deleted next, so its integration channel is not left with
+    // that token, and removal finishes instead of repeating forever.
+    let (base, seen) = relaycast(|method, _, key| match (method, key) {
+        (_, "at_gone") => rejected(),
+        ("GET", RELAYFILE) => (200, r#"{"subscriptions":[]}"#.into()),
+        ("GET", CURRENT) => empty_list(),
+        _ => (204, String::new()),
+    });
+    let (core, _temp) = core_with_relayfile(&base);
+    integrated(&core, &base, CURRENT, &["acme/api#1"]);
+
+    core.unregister_archived("gone").await.unwrap();
+
+    assert!(names(&core).is_empty());
+    let seen = seen.lock().unwrap();
+    assert!(!seen.iter().any(|(_, _, key)| key == "at_gone"), "{seen:?}");
+    assert!(seen
+        .iter()
+        .any(|(method, path, _)| method == "DELETE" && path.ends_with("/webhooks/rf_sub_0")));
+}
+
+#[tokio::test]
+async fn a_workspace_proved_out_of_reach_lets_every_later_integration_go() {
+    // The saved key is rejected and the current workspace holds another
+    // agent of that name. The first integration proves the workspace out
+    // of reach; the second must not keep the agent for the same rejection.
+    let (base, _) = relaycast(|method, path, key| match (method, key) {
+        (_, OLD) => rejected(),
+        ("GET", RELAYFILE) => (200, r#"{"subscriptions":[]}"#.into()),
+        ("GET", CURRENT) if path.starts_with("/v1/agents/") => agent("someone-else", "gone"),
+        _ => not_found(),
+    });
+    let (core, _temp) = core_with_relayfile(&base);
+    integrated(&core, &base, OLD, &["acme/api#1", "acme/api#2"]);
+
+    let warnings = warnings_during(&core, async {
+        core.unregister_archived("gone").await.unwrap();
+    })
+    .await;
+
+    assert!(names(&core).is_empty());
+    let warning = warnings.join("\n");
+    for resource in ["acme/api#1", "acme/api#2"] {
+        assert!(
+            warning.contains(resource),
+            "{resource} not named: {warning}"
+        );
+    }
+}
+
+#[test]
+fn a_kept_cleanup_error_keeps_its_kind_and_retry_after() {
+    let mut limited = RpcError::new(ErrorKind::RateLimited, "relayfile returned HTTP 429.");
+    limited.retry_after_secs = Some(30);
+    let kept = super::super::removal::cleanup_kept(limited, "gone", "github");
+    assert_eq!(kept.data.kind, ErrorKind::RateLimited);
+    assert!(kept.data.retryable);
+    assert_eq!(kept.retry_after_secs, Some(30));
+    assert!(kept
+        .message
+        .starts_with("Could not remove @gone's github subscription: relayfile returned HTTP 429."));
 }

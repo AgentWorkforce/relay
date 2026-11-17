@@ -30,8 +30,10 @@ use url::Url;
 
 mod create;
 mod event_filters;
+mod relayfile_error;
 use create::SubscriptionIntent;
 pub(crate) use event_filters::normalize_event_types;
+pub(crate) use relayfile_error::retry_after_seconds;
 
 pub const PROVIDERS: [&str; 4] = ["github", "linear", "slack", "jira"];
 
@@ -127,15 +129,13 @@ impl Relayfile {
                     ErrorKind::NotFound,
                     "relayfile has no such resource.",
                 )),
-                Err(ureq::Error::Status(status, _)) => {
-                    let kind = if (400..500).contains(&status) && status != 429 {
-                        ErrorKind::CloudRefused
-                    } else {
-                        ErrorKind::CloudFailed
-                    };
-                    Err(RpcError::new(
-                        kind,
-                        format!("relayfile returned HTTP {status}."),
+                Err(ureq::Error::Status(status, response)) => {
+                    let retry_after = response.header("Retry-After").map(str::to_owned);
+                    let body = response.into_string().unwrap_or_default();
+                    Err(relayfile_error::relayfile_status_error(
+                        status,
+                        retry_after.as_deref(),
+                        &body,
                     ))
                 }
                 Err(_) => Err(failed("relayfile could not be reached.")),
@@ -624,13 +624,35 @@ impl Core {
         // Read again under the lock: a change that finished meanwhile is
         // what this undoes.
         let held = registration;
-        let (registration, key) = self.integration_target(name)?;
+        let (registration, _) = self.integration_target(name)?;
         if registration.target != held.target {
             return Err(RpcError::new(
                 ErrorKind::Busy,
                 format!("@{name} changed meanwhile. Try again."),
             ));
         }
+        // Boxed: the cleanup's state lives on the heap, so every caller up to
+        // the outbound router (one future per request) stays small.
+        Box::pin(self.unsubscribe_integration_held(name, provider, resource, false)).await
+    }
+
+    /// [`Core::unsubscribe_integration`] for a caller that already holds the
+    /// agent's target lock and the integration lock (agent removal).
+    ///
+    /// `agent_leaving`: the agent itself is deleted from Relaycast next,
+    /// which ends its channel memberships, so its integration channel is
+    /// not left with the agent's own token. That token may already be
+    /// revoked while the workspace key still works; leaving with it would
+    /// fail on every pass and the agent could never be removed.
+    pub(crate) async fn unsubscribe_integration_held(
+        &self,
+        name: &str,
+        provider: &str,
+        resource: &str,
+        agent_leaving: bool,
+    ) -> Result<IntegrationChange, RpcError> {
+        let resource = resource.trim();
+        let (registration, key) = self.integration_target(name)?;
         // The same subscription may be named another way than it was made:
         // `owner/repo#123` and that pull request's address are one resource.
         let glob = relayfile_glob(provider, resource);
@@ -741,7 +763,7 @@ impl Core {
                             && url.contains(&marker)
                     })
                 });
-        if !current.has_integrations() && !others_use_channel {
+        if !current.has_integrations() && !others_use_channel && !agent_leaving {
             let token = self
                 .store
                 .read(|s| s.tokens.get(name).cloned())

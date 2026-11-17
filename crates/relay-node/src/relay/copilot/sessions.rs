@@ -17,6 +17,8 @@ struct Record {
     cwd: Option<String>,
     #[serde(default)]
     context_after: u64,
+    #[serde(default)]
+    host: Option<String>,
 }
 fn read(config: &CopilotConfig, sid: &str) -> io::Result<Option<Record>> {
     if !is_uuid(sid) {
@@ -39,7 +41,7 @@ fn discovered(sid: &str, record: Record) -> DiscoveredSession {
         title: record.title,
         directory: record.cwd,
         updated_at_ms: None,
-        host: Some("VS Code".into()),
+        host: Some(record.host.unwrap_or_else(|| "VS Code".into())),
         live: true,
         holder: None,
     }
@@ -135,9 +137,14 @@ pub fn hook_answer(
     pid: i32,
     payload: &Value,
 ) -> Option<Value> {
+    // Authenticate against current descriptors, executable and incarnation,
+    // never the discovery scan's two-second snapshot.
+    let table = table.uncached().unwrap_or(table);
     let sid = payload["sessionId"].as_str().filter(|s| is_uuid(s))?;
     let event = payload["relayEvent"].as_str()?;
     if !matches!(event, "start" | "before" | "tool" | "stop") || !config.enabled() {
+        #[cfg(debug_assertions)]
+        eprintln!("[copilot-hook] rejected: event or managed settings");
         return None;
     }
     let hook = table.process(pid).filter(|p| p.uid == uid)?;
@@ -145,9 +152,13 @@ pub fn hook_answer(
         .process(hook.parent)
         .filter(|p| p.uid == uid && !table.zombie(p.pid))?;
     if !super::settings::caller_is_hook(config, table, pid, event) {
+        #[cfg(debug_assertions)]
+        eprintln!("[copilot-hook] rejected: managed helper proof");
         return None;
     }
     if cancelled_stop(config, payload, sid, event) {
+        #[cfg(debug_assertions)]
+        eprintln!("[copilot-hook] released: native stop journal");
         return None;
     }
     // A previously verified runtime's incarnation is enough to stop orphaned
@@ -161,10 +172,14 @@ pub fn hook_answer(
         }
         // Recover a missed SessionStart or stale incarnation with full native proof below.
     }
-    if !proof::hook_holds(config, table, pid, uid, sid)
-        || table.process(pid) != Some(hook)
-        || table.process(runtime.pid) != Some(runtime)
-    {
+    #[cfg(debug_assertions)]
+    let began = std::time::Instant::now();
+    let holds = proof::hook_holds(config, table, pid, uid, sid);
+    let hook_same = table.process(pid) == Some(hook);
+    let runtime_same = table.process(runtime.pid) == Some(runtime);
+    if !holds || !hook_same || !runtime_same {
+        #[cfg(debug_assertions)]
+        eprintln!("[copilot-hook] rejected: native session proof (held={holds}, hook_current={hook_same}, runtime_current={runtime_same}, elapsed_ms={})", began.elapsed().as_millis());
         return None;
     }
     observe(config, table, uid, sid, runtime, payload)?;
@@ -226,6 +241,16 @@ fn observe(
     let record = Record {
         pid: runtime.pid,
         start: runtime.start,
+        host: Some(
+            if table
+                .executable(runtime.parent)
+                .is_some_and(|exe| exe.ends_with("GitHub Copilot.app/Contents/MacOS/github"))
+            {
+                "GitHub Copilot".into()
+            } else {
+                "VS Code".into()
+            },
+        ),
         context_after: if payload["relayEvent"] == "start"
             || old
                 .as_ref()

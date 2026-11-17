@@ -9,8 +9,8 @@ npx @agent-relay/events-shim@latest setup '<mcp url>'
 ```
 
 It adds the inbox's MCP server to every supported agent CLI on the machine, or only the ones you name:
-`--claude`, `--codex`, `--cursor`, `--opencode`, `--muse`, `--gemini`, `--grok`, `--devin` (or `--cli claude,codex`).
-Each tool gets it its own way (`claude`/`codex`/`gemini`/`grok`/`devin`/`muse mcp add` at user scope; Cursor's
+`--claude`, `--codex`, `--copilot`, `--cursor`, `--droid`, `--amp`, `--opencode`, `--muse`, `--gemini`, `--grok`, `--devin` (or `--cli claude,codex`).
+Each tool gets it its own way (`claude`/`codex`/`copilot`/`droid`/`amp`/`gemini`/`grok`/`devin`/`muse mcp add` at user scope; Cursor's
 `~/.cursor/mcp.json`, opencode's config file), re-running replaces it, and Claude Code and Codex also get
 the `agent-relay-webhooks` skill. The inbox is saved to `~/.config/agent-relay/webhooks.json` (0600). Then tell the
 agent "watch for webhooks". Each post wakes it:
@@ -18,7 +18,11 @@ agent "watch for webhooks". Each post wakes it:
 - **Claude Code, with or without Agent Relay: nothing to do.** `setup --claude` also installs SessionStart and Stop
   hooks (`async`, `asyncRewake`) in `~/.claude/settings.json` that run `events-shim listen --hook`. It waits for the
   next post and exits 2 with it, which wakes the idle session with the post; each turn's Stop hook re-arms it. One
-  listener per session, and none for a closed session. `npx @agent-relay/events-shim uninstall --claude` removes it.
+  listener per session, and none for a closed session. The hooks run in every Claude Code session, but only a
+  session that used the `webhooks` MCP (its transcript shows a `watch_webhooks`, `link_relay_wake`,
+  `wait_for_webhook` or `get_webhook_events` call) listens. While the inbox has a working relay wake link
+  (`link_relay_wake`), no hook listener takes posts: the link delivers each one to the session that made it.
+  `npx @agent-relay/events-shim uninstall --claude` removes the hooks.
 - **Codex, with or without Agent Relay Desktop: nothing to do.** `setup --codex` installs a SessionStart hook in
   `~/.codex/hooks.json` (trusted for you) that runs `events-shim link --codex-hook`. On the session's first message
   it creates the session's relay webhook and links the inbox to it, so every post is injected and wakes the idle
@@ -36,7 +40,33 @@ agent "watch for webhooks". Each post wakes it:
   up. A session opened later takes the link, and when the linked one closes the link moves to the most recent one
   still open. Setup turns on opencode's auto-join on its own core, and the core turns on Grok's leader mode, so start
   a new Grok session after setup. `uninstall` stops the service and the core once no CLI uses them.
-- **Cursor and Copilot** get a post on their next turn (Agent Relay's hooks); they cannot be woken while idle.
+- **GitHub Copilot CLI and Gemini CLI, with or without Agent Relay.** `setup --copilot` writes an `agentStop` hook to
+  `~/.copilot/hooks/agent-relay-webhooks.json` (`COPILOT_HOME` respected); `setup --gemini` adds an `AfterAgent` hook to
+  `~/.gemini/settings.json`, keeping your own hooks. Both run `events-shim listen --stop-hook <cli>` with a 7-day
+  timeout. When a turn ends, the hook waits for the next post and answers with it as the agent's next prompt
+  (Copilot `decision: "block"`, Gemini `decision: "deny"`), so the session takes a new turn by itself; each turn
+  re-arms it. **Send the session a first message**: it can be woken only once it has finished a turn. While it waits
+  the CLI shows its turn as running ("Working" / "Executing Hook") and holds what you type, so press Ctrl+C
+  (Copilot) or Esc (Gemini) first; the hook sees that in the session's transcript and lets go, and it waits again
+  after your turn. Copilot continues a turn from a hook at most 8 times in a row, so after 8 posts with no message from
+  you the session stops waking until you send it one (the 8th post tells the agent to ask you). Beside Agent Relay's
+  Gemini extension (installed, enabled and signed in), the hook still waits for posts, and lets go at once when the
+  extension's Relay Stop Guard continues the turn with relay messages, so those are not kept waiting. `uninstall --copilot` / `--gemini` removes the hook and stops a waiting one.
+- **Factory Droid, Cursor CLI and Amp, with or without Agent Relay, the same way.** `setup --droid` adds a `Stop` hook
+  (7-day timeout) to `~/.factory/hooks.json`, or to the `hooks` key of `~/.factory/settings.json` while hooks.json is
+  absent (Droid then reads only settings.json, so your hooks there keep working), and answers `decision: "block"`.
+  `setup --cursor` adds a `stop` hook to `~/.cursor/hooks.json` (`loop_limit: null`) that answers `followup_message`;
+  Cursor ends a hook after an hour, so a Cursor session idle for longer than an hour after its last turn is not woken
+  until you send it a message. `setup --amp` writes the plugin `~/.config/amp/plugins/agent-relay-webhooks.ts`: after
+  each turn its `agent.end` handler runs `listen --stop-hook amp` and starts the next turn with the post
+  (`action: "continue"`); older Amp builds load plugins only with `PLUGINS=all` set. **Send each a first message.**
+  While it waits, Droid shows "Streaming..." and keeps what you type for after the next post, so press Esc first;
+  Amp also shows "Streaming", and starting a turn yourself stops the wait (a post it had already taken comes after
+  your turn). Cursor's prompt stays usable. Cursor waits for every `stop` hook before it submits a follow-up, so while
+  Agent Relay's own Cursor CLI delivery is on (its `cursor-hook --wait` entry), events-shim's Cursor hook never holds
+  the turn and the agent reads posts when asked; setup says so. `uninstall --droid` / `--cursor` / `--amp` removes them.
+- **Replicas and Capy** run their agents in the cloud (the desktop apps are clients), so there is no local session to
+  wake; Agent Relay connects their cloud chats and threads instead (`bind_replica`, `bind_capy_thread`).
 - **Under Agent Relay** (Desktop or a headless relay on the machine) the agent links the inbox to its session's own
   relay webhook (`agent-relay-probe webhook --socket <socket>`, then the `link_relay_wake` tool). Every post is
   forwarded there and Agent Relay injects it into the session, **waking it even when idle**.

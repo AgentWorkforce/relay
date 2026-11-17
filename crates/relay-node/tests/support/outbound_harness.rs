@@ -254,19 +254,26 @@ impl Harness {
     }
 
     async fn start_full(serve: bool, agent_led_defaults_at_start: bool) -> Harness {
-        Harness::start_inner(serve, agent_led_defaults_at_start, true).await
+        Harness::start_inner(serve, agent_led_defaults_at_start, true, false).await
     }
 
     /// A core whose person never chose Auto-activate: live sessions join
     /// on their own in the background.
     async fn start_unchosen() -> Harness {
-        Harness::start_inner(true, false, false).await
+        Harness::start_inner(true, false, false, false).await
+    }
+
+    /// A gate-only install: the account's workspace names a relaygate (the
+    /// fake) and no key, and the sign-in hands out a device token.
+    async fn start_gate() -> Harness {
+        Harness::start_inner(true, false, true, true).await
     }
 
     async fn start_inner(
         serve: bool,
         agent_led_defaults_at_start: bool,
         opt_out: bool,
+        gate: bool,
     ) -> Harness {
         let fake = FakeRelaycast::start(Behaviour::default()).await;
         let connect_fake = FakeRelaycast::start(Behaviour::default()).await;
@@ -303,6 +310,16 @@ impl Harness {
         let home = temp.path().to_path_buf();
         let relay = home.join(".agentworkforce/relay");
         std::fs::create_dir_all(&relay).unwrap();
+        if gate {
+            std::fs::create_dir_all(home.join("app-data")).unwrap();
+            std::fs::write(
+                home.join("app-data/injectable-agents.json"),
+                json!({"cloud": {"key": "", "baseURL": fake.base_url,
+                    "relaygateURL": fake.base_url, "workspaceID": "rw_fake"}})
+                .to_string(),
+            )
+            .unwrap();
+        }
         support::fake_relaycast::sign_in_store(
             &home.join("app-data"),
             WORKSPACE_KEY,
@@ -380,7 +397,9 @@ impl Harness {
             injector: injector.clone(),
             sessions: sessions.clone(),
             connect_cloud: join.clone(),
-            codex_stop_hook: Some(Arc::new(agent_relay_node::relay::codex::stop_hook::StopHookInbox::default())),
+            codex_stop_hook: Some(Arc::new(
+                agent_relay_node::relay::codex::stop_hook::StopHookInbox::default(),
+            )),
             relay_send: serve.then(|| RelaySend {
                 socket: relay_socket.clone(),
                 pointer: outbound::pointer_path(&home, &home.join("app-data")),
@@ -388,6 +407,14 @@ impl Harness {
                 serving: serving.clone(),
                 agent_led_defaults_at_start,
             }),
+            cloud: if gate {
+                let cloud = support::bridge::FakeCloud::new("user-1");
+                *cloud.device_token.lock().unwrap() =
+                    Some(Secret::new("sh_at_test_device_session"));
+                Arc::new(cloud)
+            } else {
+                Plugins::default().cloud
+            },
             ..Plugins::default()
         };
         let (core, signals) = Core::with_plugins(config.clone(), plugins);
@@ -507,7 +534,9 @@ impl Harness {
             injector: self.injector.clone(),
             sessions: self.sessions.clone(),
             connect_cloud: self.join.clone(),
-            codex_stop_hook: Some(Arc::new(agent_relay_node::relay::codex::stop_hook::StopHookInbox::default())),
+            codex_stop_hook: Some(Arc::new(
+                agent_relay_node::relay::codex::stop_hook::StopHookInbox::default(),
+            )),
             relay_send: self.serve.then(|| RelaySend {
                 socket: self.relay_socket.clone(),
                 pointer: outbound::pointer_path(&self.home, &self.home.join("app-data")),
@@ -808,4 +837,3 @@ fn inbox_stall(h: &Harness, name: &str) -> Option<u32> {
         .and_then(|a| a.inbox_stall)
         .map(|s| s.undrained_count)
 }
-

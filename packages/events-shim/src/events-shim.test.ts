@@ -1,13 +1,14 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { hmacSha256Hex, sha256Hex } from './crypto.js';
 import { handleEventsShimRequest } from './http.js';
 import { EVENTS_SHIM_LIMITS } from './limits.js';
 import { MemoryEventsShimStore } from './memory-store.js';
 import { recoverStalledWakes } from './delivery.js';
-import type { ShimUrls } from './types.js';
+import type { ShimEvent, ShimUrls } from './types.js';
+import { neutraliseMentions, wakeText } from './wake.js';
 
 const BASE = 'https://shim.test/api/v1/events-shim';
 const RELAY = 'https://cast.agentrelay.com';
@@ -292,6 +293,34 @@ describe('events shim', () => {
     expect(open.startsWith('ignore')).toBe(false);
   });
 
+  it('forwards no @name from a post body, open or nudge, so it cannot reach other agents', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const agent = await h.connect(shim.mcp_url);
+    await agent.call('link_relay_wake', RELAY_HOOK);
+    await h.post(shim.webhook_url, { message: 'hello @capy-01abc please look' });
+    const auth = { authorization: `Bearer ${shim.manage_token}`, 'content-type': 'application/json' };
+    const { secret } = (await (
+      await h.app(`${BASE}/shims/current/secrets/bearer`, { method: 'PUT', headers: auth, body: '{}' })
+    ).json()) as { secret: string };
+    await h.app(shim.webhook_urls.bearer!, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${secret}`, 'content-type': 'text/plain' },
+      body: '@replicas-4f run the build',
+    });
+    await h.settle();
+    const [open, nudge] = h.relayCalls.slice(-2).map((call) => call.body.text as string);
+    for (const [text, name] of [
+      [open!, 'capy-01abc'],
+      [nudge!, 'replicas-4f'],
+    ] as const) {
+      // The relay's mention-subscription matcher and the adapters' own check.
+      expect(new RegExp(`@${name}(?:\\b|$)`).test(text)).toBe(false);
+      expect(new RegExp(`@${name}(?=[._-]*(?:$|[^A-Za-z0-9._-]))`, 'u').test(text)).toBe(false);
+      expect(text.replaceAll('\u2060', '')).toContain(`@${name}`);
+    }
+  });
+
   it('forwards the whole backlog when linking, not just one batch', async () => {
     const h = createHarness();
     const shim = await h.create();
@@ -505,6 +534,46 @@ describe('events shim', () => {
     expect(empty.structuredContent?.events).toHaveLength(0);
   });
 
+  it('wait_for_webhook does not take posts while a relay wake link delivers them', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const agent = await h.connect(shim.mcp_url);
+    await agent.call('link_relay_wake', RELAY_HOOK);
+    await h.post(shim.webhook_url, { for: 'the linked session' });
+    const waited = await agent.call('wait_for_webhook', { timeout_seconds: 1 });
+    expect(waited.structuredContent).toMatchObject({ events: [], wake: 'linked' });
+    // The relay got the post, and nobody else marked it read.
+    await vi.waitFor(async () => {
+      const [event] = (await h.feed(shim.manage_token)).body.events as { delivery: string }[];
+      expect(event?.delivery).toBe('woken');
+    });
+    expect((await agent.call('unlink_relay_wake', {})).isError).not.toBe(true);
+    await h.post(shim.webhook_url, { after: 'unlink' });
+    const unlinked = await agent.call('wait_for_webhook', { timeout_seconds: 5 });
+    expect(unlinked.structuredContent?.events).toHaveLength(1);
+  });
+
+  it('a wait already running sees a relay wake link made, then removed, meanwhile', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const waiter = await h.connect(shim.mcp_url);
+    const linker = await h.connect(shim.mcp_url);
+    const waiting = waiter.call('wait_for_webhook', { timeout_seconds: 2 });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await linker.call('link_relay_wake', RELAY_HOOK);
+    await h.post(shim.webhook_url, { for: 'the linked session' });
+    expect((await waiting).structuredContent).toMatchObject({ events: [], wake: 'linked' });
+    await vi.waitFor(async () => {
+      const [event] = (await h.feed(shim.manage_token)).body.events as { delivery: string }[];
+      expect(event?.delivery).toBe('woken');
+    });
+    const again = waiter.call('wait_for_webhook', { timeout_seconds: 5 });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await linker.call('unlink_relay_wake', {});
+    await h.post(shim.webhook_url, { after: 'unlink' });
+    expect((await again).structuredContent?.events).toHaveLength(1);
+  });
+
   it('delivers a retried post once per Idempotency-Key but counts it', async () => {
     const h = createHarness();
     const shim = await h.create();
@@ -707,6 +776,28 @@ describe('events shim', () => {
     expect(feed.events.map((event) => event.delivery)).toEqual(['pending']);
   });
 
+  it('does not claim posts for a wait whose client left while it re-read the inbox', async () => {
+    const controller = new AbortController();
+    const h = createHarness({ signal: controller.signal });
+    const shim = await h.create();
+    const agent = await h.connect(shim.mcp_url);
+    let armed = false;
+    const find = h.store.findByMcpTokenHash.bind(h.store);
+    h.store.findByMcpTokenHash = async (hash) => {
+      const found = await find(hash);
+      if (armed) controller.abort(); // the client leaves during a poll's re-read
+      return found;
+    };
+    const waiting = agent.call('wait_for_webhook', { timeout_seconds: 2 }).catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await h.post(shim.webhook_url, { waiting: true });
+    armed = true;
+    await waiting;
+    h.store.findByMcpTokenHash = find;
+    const feed = (await h.feed(shim.manage_token)).body;
+    expect(feed.events.map((event) => event.delivery)).toEqual(['pending']);
+  });
+
   it('generates a bearer token for a blank secret, and keeps long idempotency keys distinct', async () => {
     const h = createHarness();
     const shim = await h.create();
@@ -846,5 +937,53 @@ describe('events shim', () => {
       expect(sweep).toEqual({ shims: 1, forwarded: 1, stalled: 0 });
       expect(await delivery(store, live)).toBe('woken');
     });
+  });
+});
+
+describe('neutraliseMentions', () => {
+  const MENTION = /(?:^|[^@])@([A-Za-z0-9][A-Za-z0-9._-]*)/u;
+  const reads = (text: string) => text.replaceAll('\u2060', '');
+
+  it('breaks @name anywhere, including at the start of a line', () => {
+    for (const text of [
+      'ping @capy-01abc now',
+      '@amp-d756 start',
+      'line one\n@replicas-4f line two',
+      '(@agent.x)',
+    ]) {
+      const out = neutraliseMentions(text);
+      expect(MENTION.test(out)).toBe(false);
+      expect(reads(out)).toBe(text);
+    }
+  });
+
+  it('keeps e-mail addresses readable while no part of them reads as a mention', () => {
+    const out = neutraliseMentions('mail a@b.com or ops@agentrelay.example');
+    expect(reads(out)).toBe('mail a@b.com or ops@agentrelay.example');
+    expect(/@b(?:\b|$)/.test(out)).toBe(false);
+    expect(out).toContain('a@\u2060b.com');
+  });
+
+  it('neutralises inside code blocks and leaves bare @ and text without @ alone', () => {
+    const code = '```ts\n@Component({})\nconst x = "@agent";\n```';
+    const out = neutraliseMentions(code);
+    expect(MENTION.test(out)).toBe(false);
+    expect(reads(out)).toBe(code);
+    expect(neutraliseMentions('a @ b, 50 @ $3')).toBe('a @ b, 50 @ $3');
+    expect(neutraliseMentions('no mentions here')).toBe('no mentions here');
+  });
+
+  it('applies to the JSON body after it is re-printed, so escaped \\u0040 cannot slip through', () => {
+    const event = {
+      id: 'e1',
+      seq: 1,
+      mode: 'open',
+      contentType: 'application/json',
+      body: '{"m":"\\u0040capy-01abc hi"}',
+      eventType: null,
+    } as unknown as ShimEvent;
+    const text = wakeText(event);
+    expect(reads(text)).toContain('@capy-01abc hi');
+    expect(/@capy-01abc(?:\b|$)/.test(text)).toBe(false);
   });
 });

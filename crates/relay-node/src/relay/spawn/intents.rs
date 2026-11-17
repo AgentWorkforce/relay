@@ -84,6 +84,17 @@ pub struct Intent {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub launch_failed: bool,
+    /// Its launch registers the agent at relaygate with Control's one-time
+    /// launch credential (a gate-only install). The registration lives in
+    /// memory alone, so a registration recovered from this intent after a
+    /// restart has none: it is marked (`SpawnOrigin::gate_launch`) and
+    /// never acts with another token.
+    #[serde(
+        rename = "gateLaunch",
+        default,
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub gate_launch: bool,
     /// Set once `agent.register` is sent and until Relaycast refuses it:
     /// an agent may be registered whose id never arrived (the answer late,
     /// or the spawn cancelled), and recovery has to find it (`unanswered`).
@@ -147,6 +158,7 @@ impl Intent {
             alias: None,
             retired_aliases: None,
             cleared: None,
+            gate: None,
             spawn: Some(SpawnOrigin {
                 node_id: node_id.to_string(),
                 node_name: node_name.to_string(),
@@ -165,6 +177,7 @@ impl Intent {
                 // task (`with_task`): a spawn kept after a restart never
                 // saw its launch finish.
                 task_unconfirmed: Some(INTERRUPTED.to_string()),
+                gate_launch: self.gate_launch,
             }),
             control_url: self.control_url.clone(),
         }
@@ -470,6 +483,7 @@ pub(super) mod tests {
     pub(crate) fn intent(name: &str) -> Intent {
         Intent {
             invocation_id: format!("inv_{name}"),
+            gate_launch: false,
             name: name.into(),
             harness: claude::ID,
             node_id: "node_desktop_1".into(),

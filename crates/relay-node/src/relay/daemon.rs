@@ -201,6 +201,13 @@ pub struct Core {
     /// Agents being renamed away from: what is already addressed to them
     /// is still delivered, to the same session, until they are removed.
     pub(crate) retiring: Mutex<BTreeMap<String, (Registration, Secret)>>,
+    /// Renewals of agents enrolled through relaygate: one at a time per
+    /// agent, and when each may be tried again.
+    pub(crate) gate_locks: KeyedLocks,
+    pub(crate) gate_renewals: Mutex<crate::relay::agents::GateRenewals>,
+    /// Gate agents whose undo could not delete them yet; empty without a
+    /// gate.
+    pub(crate) gate_cleanups: Mutex<Vec<crate::relay::agents::GateCleanup>>,
     pub(crate) delivery: Mutex<DeliveryState>,
     pub(crate) claude_delivery: ClaudeDeliveryPolicy,
     pub(crate) mobile_claude_plugins: crate::relay::claude_mobile_plugin::Installations,
@@ -255,26 +262,31 @@ impl Core {
         );
         let (signals, signal_rx) = mpsc::unbounded_channel();
         let relaycast_backoff = Arc::new(RelaycastBackoff::default());
-        let push = PushManager::new(PushContext::new(
-            config.version.clone(),
-            machine_prefix.clone(),
-            config.push_timing,
-            signals,
-            relaycast_backoff.clone(),
-        ));
         let (shutdown, _) = watch::channel(false);
         let store = StoreHandle::open_agent_store(
             config.app_data_dir.join(app_store::STORE_FILE),
             &machine_prefix,
         );
+        // Persist the installation-scoped Cloud reconciliation id before
+        // any credential-bearing identity sync can run. It also names this
+        // install's provider instance on every node socket.
+        let _ = store.update(|store| store.ensure_desktop_sync_source_id());
+        let mut push_context = PushContext::new(
+            config.version.clone(),
+            machine_prefix.clone(),
+            config.push_timing,
+            signals,
+            relaycast_backoff.clone(),
+        );
+        if let Some(install_id) = store.read(|store| store.desktop_sync_source_id.clone()) {
+            push_context = push_context.with_install_id(install_id);
+        }
+        let push = PushManager::new(push_context);
         let mut connect = ConnectState::load(config.app_data_dir.join(CONNECT_STORE_FILE));
         // This runs before the core is exposed or begins other startup work:
         // a queued terminal handoff from an expired Connect must not become a
         // turn merely because the probe restarted after its expiry.
         connect.reconcile_expired(plugins.injector.as_ref());
-        // Persist the installation-scoped Cloud reconciliation id before
-        // any credential-bearing identity sync can run.
-        let _ = store.update(|store| store.ensure_desktop_sync_source_id());
         // The account's default for automatic activation: an unset setting
         // becomes on, and a saved choice either way is left alone.
         if plugins
@@ -315,6 +327,9 @@ impl Core {
             integration_settings: std::sync::Mutex::new(()),
             presence_pending: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             retiring: Mutex::default(),
+            gate_locks: KeyedLocks::default(),
+            gate_renewals: Mutex::default(),
+            gate_cleanups: Mutex::default(),
             delivery: Mutex::default(),
             claude_delivery,
             mobile_claude_plugins: Default::default(),
@@ -373,10 +388,32 @@ impl Core {
         registration: &Registration,
         agent_token: &Secret,
     ) -> WorkspaceScope {
+        if registration.gate.is_some() {
+            return self.relaycast_gate_scope(&registration.base_url);
+        }
         let key = self
             .key_for(registration)
             .unwrap_or_else(|| agent_token.clone());
         self.relaycast_scope(&registration.base_url, &key)
+    }
+
+    /// The one backoff scope of every agent enrolled through the gate at
+    /// `gate_url`: Relaycast's 429s pass through the gate for its one
+    /// workspace, not for one agent's rotating token. Keyed by the gate
+    /// alone, so it is the same before and after the device token is first
+    /// read (a delivery read after a restart can come first).
+    pub(crate) fn relaycast_gate_scope(&self, gate_url: &str) -> WorkspaceScope {
+        let label = self
+            .workspace()
+            .filter(|workspace| {
+                workspace.gate_url.as_deref() == Some(gate_url) || workspace.base_url == gate_url
+            })
+            .and_then(|_| {
+                let workspace = self.status().workspace;
+                workspace.workspace_name.or(workspace.workspace_id)
+            })
+            .unwrap_or_else(|| "this workspace".into());
+        WorkspaceScope::id(gate_url, "relaygate", label)
     }
 
     pub(crate) fn relaycast_workspace_id_scope(
@@ -481,9 +518,14 @@ impl Core {
             // The spawn node follows the workspace. At start the first agent
             // sync can run before discovery, and nothing else would bring
             // the node up once the workspace is found.
-            if let (Some(core), Ok(runtime)) = (self.arc(), tokio::runtime::Handle::try_current()) {
-                runtime.spawn(async move { core.sync_spawn_node().await });
-            }
+            self.sync_spawn_node_soon();
+        } else if found.as_ref().is_some_and(Workspace::is_gate_only) && self.spawn_node_outdated()
+        {
+            // A gate-only install's node follows the desktop's relay-node
+            // credential (`CloudAccess::relay_node_credential`), which can
+            // be minted, replaced or forgotten while the workspace stays
+            // the same: the desktop rediscovers to have it read again.
+            self.sync_spawn_node_soon();
         }
         let verification = self.status().workspace.verification;
         found.is_some()
@@ -492,6 +534,14 @@ impl Core {
                     verification,
                     Verification::Pending | Verification::Unreachable
                 ))
+    }
+
+    /// Reconciles the spawn node in the background, when there is a
+    /// runtime to do it on.
+    fn sync_spawn_node_soon(&self) {
+        if let (Some(core), Ok(runtime)) = (self.arc(), tokio::runtime::Handle::try_current()) {
+            runtime.spawn(async move { core.sync_spawn_node().await });
+        }
     }
 
     /// Keeps one push channel per target (the delivery runtime's call). A
@@ -1109,6 +1159,7 @@ mod key_migration_tests {
             workspace_id: None,
             source: Default::default(),
             control_url: None,
+            gate_url: None,
         }
     }
 
@@ -1139,6 +1190,7 @@ mod key_migration_tests {
             alias: None,
             retired_aliases: None,
             cleared: None,
+            gate: None,
             control_url: None,
         }
     }

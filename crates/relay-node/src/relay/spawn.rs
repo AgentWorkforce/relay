@@ -285,6 +285,9 @@ mod tests {
         /// The first `available` call waits for this receiver when set.
         pause_first_available: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
         refuse: bool,
+        /// Its refusals say the harness is not here, rather than that it
+        /// did not start.
+        unavailable: bool,
         unconfirmed: bool,
         /// Every session it is asked about has ended.
         dead: bool,
@@ -301,6 +304,9 @@ mod tests {
         /// A paused launch starts its session (`THREAD`) before it pauses,
         /// as Codex starts a thread before its first turn is confirmed.
         starts_before_pause: bool,
+        /// The `RELAY_LAUNCH_CREDENTIAL` each launch's agent would start
+        /// with (`launch::agent_environment`): never one.
+        credentials: Mutex<Vec<Option<String>>>,
     }
 
     /// Answers each agent by name; `Running`/`Idle` for one not set.
@@ -353,16 +359,29 @@ mod tests {
             launch: &Launch,
             started_session: super::launch::Started,
         ) -> Result<Launched, LaunchError> {
+            let refused = |reason: &str| {
+                if self.unavailable {
+                    LaunchError::Unavailable(reason.into())
+                } else {
+                    LaunchError::Failed(reason.into())
+                }
+            };
             let mut launched = self.launched.lock().unwrap();
             launched.push(launch.clone());
             drop(launched);
+            let environment = super::launch::agent_environment(&Default::default());
+            self.credentials.lock().unwrap().push(
+                environment
+                    .get(crate::relay::workspace::LAUNCH_CREDENTIAL_ENV)
+                    .cloned(),
+            );
             if self.panics {
                 started_session(&Target::new(SessionKind::Codex, THREAD), None);
                 panic!("the launch worker panicked");
             }
             if self.fails_started {
                 started_session(&Target::new(SessionKind::Codex, THREAD), None);
-                return Err(LaunchError::Failed("Codex refused the first turn".into()));
+                return Err(refused("Codex refused the first turn"));
             }
             let started_thread = self.starts_before_pause;
             if let Some((started, proceed)) = self.pause.lock().unwrap().take() {
@@ -374,7 +393,7 @@ mod tests {
             }
             let launched = self.launched.lock().unwrap();
             if self.refuse {
-                return Err(LaunchError::Failed("Codex refused the first turn".into()));
+                return Err(refused("Codex refused the first turn"));
             }
             // A thread of its own for each launch.
             let thread = if started_thread {
@@ -414,6 +433,8 @@ mod tests {
         }
     }
 
+    mod gate_credential;
+    mod launch_gate;
     mod lifecycle_failures;
     mod native_sender;
     mod owner_framing;
@@ -513,6 +534,7 @@ mod tests {
             workspace_id: None,
             source: Default::default(),
             control_url: None,
+            gate_url: None,
         };
         *core.workspace.lock().unwrap() = Some(workspace("rk_live_before"));
 
@@ -671,6 +693,7 @@ mod tests {
             task: "Fix CI".into(),
             directory: None,
             fork_from: None,
+            launch_credential: None,
         }
     }
 
@@ -1216,9 +1239,11 @@ mod tests {
         let frames = relaycast(link.clone(), sent);
         let failed = core.clone().answer_spawn(link, request("w2")).await;
         CoreHost(Arc::downgrade(&core)).sent(&failed);
+        // A harness that is here but did not start may start when asked
+        // again: not reported as one this node does not provide.
         assert_eq!(
             failed["error"],
-            "spawn_harness_unavailable: Codex refused the first turn"
+            "spawn_failed: Codex refused the first turn"
         );
         let frames = frames.await.unwrap();
         assert_eq!(frames[1]["type"], "agent.deregister");
@@ -1242,6 +1267,33 @@ mod tests {
         let (link, _sent) = NodeLink::detached(node());
         let off = core.clone().answer_spawn(link, request("w4")).await;
         assert!(off["error"].as_str().unwrap().starts_with("spawn_disabled"));
+    }
+
+    #[tokio::test]
+    async fn only_a_harness_that_is_not_here_is_reported_unavailable() {
+        for (unavailable, error) in [
+            (false, "spawn_failed: Codex refused the first turn"),
+            (
+                true,
+                "spawn_harness_unavailable: Codex refused the first turn",
+            ),
+        ] {
+            let home = tempfile::tempdir().unwrap();
+            let spawner = Arc::new(FakeSpawner {
+                refuse: true,
+                unavailable,
+                ..FakeSpawner::default()
+            });
+            let core = core(home.path(), spawner.clone());
+            let (link, sent) = NodeLink::detached(node());
+            let frames = relaycast(link.clone(), sent);
+            let failed = core.clone().answer_spawn(link, request("w1")).await;
+            CoreHost(Arc::downgrade(&core)).sent(&failed);
+            assert_eq!(failed["error"], error);
+            // Either way the agent is taken back off the node.
+            assert_eq!(frames.await.unwrap()[1]["type"], "agent.deregister");
+            assert!(core.store.read(|store| store.registrations.is_empty()));
+        }
     }
 
     // Windows has no mode bits to make a folder unreadable with.
@@ -1760,6 +1812,7 @@ mod tests {
     fn interrupted(name: &str, registered: bool, target: Option<Target>) -> intents::Intent {
         intents::Intent {
             invocation_id: format!("inv_{name}"),
+            gate_launch: false,
             name: name.into(),
             harness: codex::ID,
             node_id: node().node_id,
@@ -2060,6 +2113,7 @@ mod tests {
             workspace_id: id.map(str::to_string),
             source: Default::default(),
             control_url: None,
+            gate_url: None,
         };
         let mut intent = interrupted("w1", true, None);
         intent.workspace_id = Some("rw_1".into());
@@ -2207,6 +2261,12 @@ mod tests {
             assert!(change(bad.clone()).is_err(), "{bad}");
         }
         assert_eq!(core.settings()["spawn_allow_teammates"], false);
+        assert_eq!(
+            core.spawn_advertisement(&[codex::ID], &[])
+                .configured
+                .recent_folders,
+            None
+        );
         let settings = core
             .set_settings(
                 json!({"spawn_max_agents": 3, "spawn_billing_codex": "subscription",
@@ -2234,6 +2294,7 @@ mod tests {
         assert_eq!(advertised.configured.max_agents, 3);
         assert!(advertised.configured.teammates);
         assert_eq!(advertised.configured.repositories, ["AgentWorkforce/relay"]);
+        assert_eq!(advertised.configured.recent_folders, Some(Vec::new()));
         assert_eq!(
             advertised.configured.harnesses[0].billing,
             Billing::Subscription
@@ -2266,6 +2327,60 @@ mod tests {
             assert_eq!(store.spawn_billing_codex, None);
             assert_eq!(store.spawn_repositories, None);
         });
+    }
+
+    /// Control's one-time launch credential never reaches the launched
+    /// agent's environment and nothing the node writes keeps it. Without a
+    /// relaygate URL the node has nowhere to present it, so it drops it.
+    #[tokio::test]
+    async fn a_launch_credential_never_reaches_the_agent_and_is_never_written() {
+        const CREDENTIAL: &str = "sh_lt_fixture_one_time_launch";
+        let home = tempfile::tempdir().unwrap();
+        let spawner = Arc::new(FakeSpawner::default());
+        let core = core(home.path(), spawner.clone());
+        observed(&core);
+        let frame = json!({"v": 1, "type": "action.invoke", "invocation_id": "inv_lc1",
+            "action": "spawn:codex", "caller_id": "agent_lead",
+            "input": {"name": "lc1", "task": "build it", "launch_credential": CREDENTIAL}});
+        let Some(Ok(Invoke::Spawn(request))) = wire::invoke(&frame) else {
+            panic!("not a spawn")
+        };
+        let (link, sent) = NodeLink::detached(node());
+        let _frames = relaycast(link.clone(), sent);
+        let answer = core.clone().answer_spawn(link, request).await;
+        assert!(!answer.to_string().contains(CREDENTIAL));
+        named(&core, "lc1");
+
+        let frame = json!({"v": 1, "type": "action.invoke", "invocation_id": "inv_lc2",
+            "action": "spawn:codex", "caller_id": "agent_lead",
+            "input": {"name": "lc2", "task": "build it"}});
+        let Some(Ok(Invoke::Spawn(request))) = wire::invoke(&frame) else {
+            panic!("not a spawn")
+        };
+        let (link, sent) = NodeLink::detached(node());
+        let _frames = relaycast(link.clone(), sent);
+        core.clone().answer_spawn(link, request).await;
+        assert_eq!(*spawner.credentials.lock().unwrap(), [None, None]);
+        core.store.flush().unwrap();
+        let mut folders = vec![home.path().to_path_buf()];
+        let mut files = 0;
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(folder).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else if let Ok(bytes) = std::fs::read(&path) {
+                    files += 1;
+                    let text = String::from_utf8_lossy(&bytes);
+                    assert!(
+                        !text.contains("sh_lt_") && !text.contains("rg_"),
+                        "{} keeps a launch credential or relaygate token",
+                        path.display()
+                    );
+                }
+            }
+        }
+        assert!(files > 0, "the node wrote nothing to inspect");
     }
 
     #[tokio::test]

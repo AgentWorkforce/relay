@@ -58,6 +58,7 @@ impl NodeHost for Host {
                 machine: "Test-Desk".into(),
                 teammates: false,
                 repositories: repositories.to_vec(),
+                recent_folders: None,
                 harnesses: Vec::new(),
             },
             live: Live {
@@ -99,6 +100,7 @@ fn config(folder: &Path, listener: &TcpListener) -> NodeConfig {
         app_data_dir: folder.to_path_buf(),
         harnesses: vec![codex::ID],
         repositories: Vec::new(),
+        desktop_credential: false,
     };
     let enrollment = Enrollment {
         node_id: "node_desktop_1".into(),
@@ -107,6 +109,7 @@ fn config(folder: &Path, listener: &TcpListener) -> NodeConfig {
         base_url: config.base_url.clone(),
         workspace: fingerprint(&config.workspace_key),
         rotation_key: None,
+        bridged: false,
     };
     save(&node_file(&config), &enrollment).unwrap();
     config

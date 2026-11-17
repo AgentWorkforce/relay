@@ -3453,6 +3453,69 @@ async fn registering_and_removing_one_session_take_turns() {
     h.stop().await;
 }
 
+// A gate agent has no workspace key: it reads the roster through relaygate
+// with its own rg_ token instead of answering not signed in.
+#[tokio::test]
+async fn a_gate_agent_lists_its_teammates_with_its_own_token() {
+    let h = Harness::start_gate().await;
+    h.register(IN_CODEX, json!({"name": "codex-api"})).await;
+    h.register(IN_CLAUDE, json!({"name": "claude-api"})).await;
+    h.fake.seed_agent("alice", "human", json!({}));
+    let token = h.fake.agent("codex-api").unwrap().token;
+    assert!(token.starts_with("rg_"));
+    let listed = h
+        .call(IN_CODEX, "GET", "/agents", Value::Null)
+        .await
+        .unwrap();
+    let rows = listed["agents"].as_array().unwrap();
+    let row = |name: &str| rows.iter().find(|r| r["name"] == name).unwrap().clone();
+    assert_eq!(row("codex-api")["is_self"], true);
+    assert_eq!(row("claude-api")["where"], "this_computer");
+    assert_eq!(row("alice")["where"], "other_desktop");
+    let reads = h.fake.calls("GET", "/v1/agents");
+    assert!(!reads.is_empty());
+    assert!(reads
+        .iter()
+        .all(|r| r.authorization.as_deref() == Some(format!("Bearer {token}").as_str())));
+    assert!(!listed.to_string().contains("rg_"), "{listed}");
+    h.stop().await;
+}
+
+// A renewal that falls due while a gate agent's send is in flight waits
+// for it: the send is never refused with a token the renewal revoked.
+#[tokio::test]
+async fn a_gate_agent_send_in_flight_is_not_cut_off_by_a_renewal() {
+    let h = Harness::start_gate().await;
+    h.fake.set_gate_ttl(Duration::from_secs(3));
+    let issued = Instant::now();
+    h.register(IN_CODEX, json!({"name": "codex-api"})).await;
+    h.fake.set_gate_ttl(Duration::from_secs(3600));
+    h.fake.seed_agent("alice", "agent", json!({}));
+    let release = h.fake.hold("POST /v1/dm");
+    let (sent, ()) = tokio::join!(
+        h.call(
+            IN_CODEX,
+            "POST",
+            "/send",
+            json!({"to": "alice", "text": "mid-renewal"})
+        ),
+        async {
+            eventually("send parked", || h.fake.held("POST /v1/dm") >= 1).await;
+            // Past the renewal time (80% of 3 s), before the token expires.
+            tokio::time::sleep_until((issued + Duration::from_millis(2750)).into()).await;
+            assert!(h.fake.calls("POST", "/v1/register").len() == 1);
+            release.send(true).unwrap();
+        }
+    );
+    sent.unwrap();
+    // The renewal was due all along: it runs once the send lets go.
+    eventually("renewed after the send", || {
+        h.fake.calls("POST", "/v1/register").len() == 2
+    })
+    .await;
+    h.stop().await;
+}
+
 #[tokio::test]
 async fn agents_lists_the_callers_workspace_and_caches_it() {
     let h = Harness::start().await;
@@ -5734,6 +5797,7 @@ async fn copilot_verified_hook_gets_late_identity_once_and_only_core_registratio
                 agent_id: "renamed-agent".into(),
                 token: agent_relay_node::relay::workspace::Secret::new("test-alias-token"),
                 registered_at: registration.registered_at.clone(),
+                gate: None,
             });
             store.update(registration);
         })
@@ -5813,6 +5877,7 @@ async fn copilot_claimed_message_survives_rename_and_same_workspace_replacement(
                             agent_id: "renamed-agent".into(),
                             token: Secret::new("test-alias-token"),
                             registered_at: registration.registered_at.clone(),
+                            gate: None,
                         });
                     }
                     store.update(registration);
@@ -5842,4 +5907,227 @@ async fn copilot_claimed_message_survives_rename_and_same_workspace_replacement(
         }));
         h.stop().await;
     }
+}
+
+// MARK: Gate-only sends and realtime (relaygate)
+
+fn gate_bearer(token: &str) -> Option<String> {
+    Some(format!("Bearer {token}"))
+}
+
+/// No request carried a workspace key: a gate-only install has none.
+fn assert_no_workspace_key(fake: &FakeRelaycast) {
+    let keyed: Vec<String> = fake
+        .requests()
+        .into_iter()
+        .filter(|r| {
+            r.authorization
+                .as_deref()
+                .is_some_and(|a| a.contains("rk_"))
+        })
+        .map(|r| format!("{} {}", r.method, r.path))
+        .collect();
+    assert!(keyed.is_empty(), "sent with a workspace key: {keyed:?}");
+}
+
+// A send refused with 401 because the gate agent's token expired registers
+// the agent again, once, and is sent again with the new token.
+#[tokio::test]
+async fn a_gate_agent_send_with_an_expired_token_registers_once_and_sends() {
+    let h = Harness::start_gate().await;
+    h.register(IN_CODEX, json!({"name": "codex-api"})).await;
+    h.fake.seed_agent("alice", "agent", json!({}));
+    // Queue reads fail, so only the send can find the token refused.
+    h.fake
+        .set_api_error("GET /v1/deliveries", Some((503, "unavailable")));
+    let stale = h.fake.agent("codex-api").unwrap().token;
+    h.fake.expire_gate_token("codex-api");
+    let registers = h.fake.calls("POST", "/v1/register").len();
+    let sent = h
+        .call(
+            IN_CODEX,
+            "POST",
+            "/send",
+            json!({"to": "alice", "text": "after expiry"}),
+        )
+        .await
+        .unwrap();
+    assert!(sent["message_id"].is_string(), "{sent}");
+    let renewed = h.fake.agent("codex-api").unwrap().token;
+    assert_ne!(renewed, stale);
+    assert_eq!(h.fake.calls("POST", "/v1/register").len(), registers + 1);
+    let dms = h.fake.calls("POST", "/v1/dm");
+    assert_eq!(dms.len(), 2);
+    assert_eq!(dms[0].authorization, gate_bearer(&stale));
+    assert_eq!(dms[1].authorization, gate_bearer(&renewed));
+    assert_eq!(
+        h.fake
+            .messages()
+            .iter()
+            .filter(|m| m.text == "after expiry")
+            .count(),
+        1
+    );
+    h.fake.set_api_error("GET /v1/deliveries", None);
+    assert_no_workspace_key(&h.fake);
+    h.stop().await;
+}
+
+// A second 401 after the agent registered again stands: the send fails
+// and the agent is not registered a third time.
+#[tokio::test]
+async fn a_gate_agent_send_refused_twice_stops() {
+    let h = Harness::start_gate().await;
+    h.register(IN_CODEX, json!({"name": "codex-api"})).await;
+    h.fake.seed_agent("alice", "agent", json!({}));
+    h.fake
+        .set_api_error("GET /v1/deliveries", Some((503, "unavailable")));
+    h.fake
+        .set_api_error("POST /v1/dm", Some((401, "relaygate_unauthenticated")));
+    let registers = h.fake.calls("POST", "/v1/register").len();
+    let refused = h
+        .call(
+            IN_CODEX,
+            "POST",
+            "/send",
+            json!({"to": "alice", "text": "refused"}),
+        )
+        .await;
+    assert!(refused.is_err(), "{refused:?}");
+    assert_eq!(h.fake.calls("POST", "/v1/register").len(), registers + 1);
+    assert_eq!(h.fake.calls("POST", "/v1/dm").len(), 2);
+    h.fake.set_api_error("POST /v1/dm", None);
+    h.fake.set_api_error("GET /v1/deliveries", None);
+    h.stop().await;
+}
+
+// A renamed gate agent sends as its new name, with that name's own token.
+#[tokio::test]
+async fn a_renamed_gate_agent_sends_as_its_new_name() {
+    let h = Harness::start_gate().await;
+    h.register(IN_CODEX, json!({"name": "codex-api"})).await;
+    h.fake.seed_agent("alice", "agent", json!({}));
+    let renamed = h
+        .call(IN_CODEX, "POST", "/register", json!({"name": "reviewer"}))
+        .await
+        .unwrap();
+    assert_eq!(renamed["name"], "reviewer");
+    let reviewer = h.fake.agent("reviewer").unwrap();
+    assert!(reviewer.token.starts_with("rg_"));
+    let sent = h
+        .call(
+            IN_CODEX,
+            "POST",
+            "/send",
+            json!({"to": "alice", "text": "Hi."}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(sent["from"], "reviewer");
+    let dm = h.fake.calls("POST", "/v1/dm");
+    assert_eq!(
+        dm.last().unwrap().authorization,
+        gate_bearer(&reviewer.token)
+    );
+    assert_no_workspace_key(&h.fake);
+    h.stop().await;
+}
+
+// Realtime through the gate: the agent's rg_ token mints an rgn_ node
+// token, node.register carries machine_id and provider, and a reply that
+// forces the node id and capabilities [] is taken. A pushed DM is put in
+// the session once and acknowledged over HTTP; nothing is ever deferred,
+// and a group DM the gate filtered never arrives.
+#[tokio::test]
+async fn a_gate_agent_goes_live_through_the_gate_and_acks_over_http() {
+    let h = Harness::start_gate().await;
+    h.register(IN_CODEX, json!({"name": "codex-api"})).await;
+    let agent = h.fake.agent("codex-api").unwrap();
+    eventually("push live", || {
+        h.core
+            .status()
+            .push
+            .get("codex-api")
+            .map(|s| format!("{s:?}"))
+            == Some("Live".into())
+    })
+    .await;
+    let minted = h.fake.calls("POST", "/v1/agent/node-token");
+    assert!(minted
+        .iter()
+        .all(|r| r.authorization == gate_bearer(&agent.token)));
+    assert!(h
+        .fake
+        .socket_queries()
+        .iter()
+        .any(|q| q.contains("token=rgn_")));
+    let register = h
+        .fake
+        .frames()
+        .into_iter()
+        .find(|f| f["type"] == "node.register")
+        .unwrap();
+    assert!(register["machine_id"]
+        .as_str()
+        .is_some_and(|m| !m.is_empty()));
+    assert!(register["provider"]["name"].is_string(), "{register}");
+    assert!(
+        register["provider"]["instance_id"].is_string(),
+        "{register}"
+    );
+    // Only the frames relaygate accepts from a client.
+    for frame in h.fake.frames() {
+        let kind = frame["type"].as_str().unwrap_or_default();
+        assert!(
+            ["node.register", "node.heartbeat", "delivery.ack"].contains(&kind),
+            "{frame}"
+        );
+    }
+
+    // A group DM: relaygate marks it failed upstream and never hands it out.
+    h.fake.seed_agent("alice", "agent", json!({}));
+    let (group, _) = h.fake.queue(
+        "codex-api",
+        "group_dm",
+        Some("gdm_1"),
+        "alice",
+        "to the group",
+    );
+    let (delivery, message) = h.fake.send_dm("alice", "codex-api", "one to one");
+    h.fake
+        .push(json!({"type": "deliver", "delivery_id": delivery,
+        "msg_id": message, "payload": {"type": "dm.received", "data": {"message": {
+            "id": message, "agent_name": "alice", "text": "one to one"}}}}));
+    eventually("acked", || {
+        h.fake.delivery_state(&delivery).map(|d| d.state).as_deref() == Some("acked")
+    })
+    .await;
+    let acks = h
+        .fake
+        .calls("POST", &format!("/v1/deliveries/{delivery}/ack"));
+    assert!(!acks.is_empty());
+    assert!(acks
+        .iter()
+        .all(|r| r.authorization == gate_bearer(&agent.token)));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let texts: Vec<String> = h.injector.injected().into_iter().map(|i| i.text).collect();
+    assert_eq!(
+        texts.iter().filter(|t| t.contains("one to one")).count(),
+        1,
+        "{texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t.contains("to the group")),
+        "{texts:?}"
+    );
+    let group_state = h.fake.delivery_state(&group).unwrap();
+    assert_eq!(group_state.state, "failed");
+    assert_eq!(group_state.error.as_deref(), Some("relaygate_denied"));
+    assert!(h
+        .fake
+        .requests()
+        .iter()
+        .all(|r| !r.path.ends_with("/defer")));
+    assert_no_workspace_key(&h.fake);
+    h.stop().await;
 }

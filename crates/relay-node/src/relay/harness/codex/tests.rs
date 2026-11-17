@@ -147,7 +147,7 @@ fn install_codex(home: &Path, relative: &str) -> PathBuf {
 
 /// codex-cli 0.154, installed through a version manager, exits `daemon start`
 /// when the home has `packages/app-server-daemon` and no `packages/standalone`.
-/// The proxy then closes and the spawn reports `spawn_harness_unavailable`.
+/// The proxy then closes and the spawn fails (`spawn_failed`).
 #[test]
 fn spawn_starts_the_managed_package_not_the_older_cli() {
     let root = tempfile::tempdir().unwrap();
@@ -384,6 +384,7 @@ fn it_owns_codex_threads_only() {
     // A thread recorded on the intent is found as it is.
     let intent = Intent {
         invocation_id: "inv_w1".into(),
+        gate_launch: false,
         name: "w1".into(),
         harness: ID,
         node_id: "node_desktop_1".into(),

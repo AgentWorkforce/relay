@@ -20,12 +20,17 @@ import { createHash } from 'node:crypto';
 import {
   appendFileSync,
   chmodSync,
+  closeSync,
   existsSync,
+  fstatSync,
   linkSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
   renameSync,
+  statSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -49,6 +54,13 @@ export interface CliIo {
   exists: (path: string) => boolean;
   /** A small text file's contents, or null when it cannot be read. */
   readText: (path: string) => string | null;
+  /**
+   * A file's bytes from \`offset\` (at most its end) to its end, as text, and
+   * where it ends; null when it cannot be read.
+   */
+  readFrom: (path: string, offset: number) => { text: string; end: number } | null;
+  /** When a file was last modified (epoch ms), or null when it does not exist. */
+  modifiedAt: (path: string) => number | null;
   /** All of standard input (for \`forward --stdin\`). */
   readStdin: () => Promise<string>;
   /** Replaces the wait between failed polls; tests pass one that does not sleep. */
@@ -59,6 +71,8 @@ export interface CliIo {
   pidAlive: (pid: number) => boolean;
   /** The nearest ancestor process whose executable is named \`name\` (\`claude\`, \`codex\`), if any. */
   ancestor: (name: string) => number | null;
+  /** Calls \`handler\` instead of exiting when this process is asked to stop (SIGTERM); returns the undo. */
+  onTerminate: (handler: () => void) => () => void;
   /** Starts a process that outlives this one, with extra environment. */
   spawnDetached: (file: string, args: string[], env?: Record<string, string>) => void;
   /** Runs a program and returns its stdout, or null when it fails. */
@@ -101,7 +115,7 @@ interface Config {
 }
 
 const USAGE = `Usage:
-  npx @agent-relay/events-shim setup <mcp-url> [--claude] [--codex] [--cursor] [--opencode] [--muse] [--gemini] [--grok] [--devin]
+  npx @agent-relay/events-shim setup <mcp-url> [--claude] [--codex] [--copilot] [--cursor] [--droid] [--amp] [--opencode] [--muse] [--gemini] [--grok] [--devin]
                                                  Add the inbox's MCP server to those agent CLIs (default: every one
                                                  installed here) and install the webhooks skill
   npx @agent-relay/events-shim uninstall [--claude] [--codex] …
@@ -312,6 +326,8 @@ interface AgentCli {
   coreKind?: string;
   /** Replaces the wake text when this tool's sessions are linked but not yet woken in practice. */
   caveat?: string;
+  /** Why its wake hook stands down on this machine, if it does (replaces the wake text). */
+  heldBack?: (io: CliIo) => string | null;
   /** Removes the MCP server again (\`uninstall\`). */
   remove: (io: CliIo) => boolean;
   /** Hooks that wake this tool's sessions by themselves (Claude Code, Codex). */
@@ -319,7 +335,7 @@ interface AgentCli {
     install: (io: CliIo) => Promise<{ ok: true } | { ok: false; manual: string }>;
     remove: (io: CliIo) => Promise<boolean>;
     /** The listener argument its processes run with, to stop them on uninstall. */
-    listener: '--hook' | '--session';
+    listener: '--hook' | '--session' | `--stop-hook ${StopHookId}`;
   };
 }
 
@@ -458,6 +474,365 @@ function editClaudeHooks(io: CliIo, remove = false): { ok: true } | { ok: false;
   writeFileSync(temporary, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
   renameSync(temporary, path);
   return { ok: true };
+}
+
+/**
+ * The command a turn-end hook (Copilot's \`agentStop\`, Gemini's
+ * \`AfterAgent\`) runs to hold a finished turn open until the next post. It
+ * runs from \`$HOME\`, like Claude Code's.
+ *
+ * @param id - The CLI the hook belongs to: \`copilot\` or \`gemini\`.
+ * @returns The shell command that waits for the next post and answers with it.
+ */
+export function stopHookCommand(id: StopHookId): string {
+  return `cd "$HOME" && npx -y @agent-relay/events-shim@latest listen --stop-hook ${id}`;
+}
+
+/** Copilot CLI's home (\`COPILOT_HOME\` or \`~/.copilot\`). */
+function copilotHome(io: CliIo): string {
+  return io.env.COPILOT_HOME || join(home(io), '.copilot');
+}
+
+/** events-shim's own Copilot CLI hooks file: Copilot reads every \`<home>/hooks/*.json\`. */
+function copilotHooksPath(io: CliIo): string {
+  return join(copilotHome(io), 'hooks', 'agent-relay-webhooks.json');
+}
+
+/**
+ * Writes (or, with \`remove\`, deletes) events-shim's own Copilot CLI hooks
+ * file: one \`agentStop\` hook that waits for the next post, for up to the
+ * inbox's 7 idle days. The file is events-shim's alone; the person's hooks
+ * live in their own files.
+ */
+function editCopilotHooks(io: CliIo, remove = false): { ok: true } | { ok: false; manual: string } {
+  const path = copilotHooksPath(io);
+  const command = stopHookCommand('copilot');
+  const manual = `add an agentStop hook running "${command}" with "timeoutSec": ${HOOK_TIMEOUT_SECONDS} to ${path}`;
+  try {
+    if (remove) {
+      rmSync(path, { force: true });
+      return { ok: true };
+    }
+    const hooks = { agentStop: [{ type: 'command', bash: command, timeoutSec: HOOK_TIMEOUT_SECONDS }] };
+    mkdirSync(dirname(path), { recursive: true });
+    const temporary = `${path}.${process.pid}.tmp`;
+    writeFileSync(temporary, `${JSON.stringify({ version: 1, hooks }, null, 2)}\n`, { mode: 0o600 });
+    renameSync(temporary, path);
+    return { ok: true };
+  } catch {
+    return { ok: false, manual };
+  }
+}
+
+/** Gemini CLI's user settings file. */
+function geminiSettingsPath(io: CliIo): string {
+  return join(home(io), '.gemini', 'settings.json');
+}
+
+/**
+ * Adds (or, with \`remove\`, takes out) the \`AfterAgent\` hook that holds a
+ * finished Gemini CLI turn open until the next post, keeping every other
+ * setting and hook. Never replaces a settings file it cannot read.
+ */
+function editGeminiHooks(io: CliIo, remove = false): { ok: true } | { ok: false; manual: string } {
+  const path = geminiSettingsPath(io);
+  const command = stopHookCommand('gemini');
+  const manual = `add an AfterAgent hook running "${command}" with "timeout": ${HOOK_TIMEOUT_SECONDS * 1000} to ${path}`;
+  const raw = io.readText(path);
+  if (raw === null && io.exists(path)) return { ok: false, manual };
+  let settings: Record<string, unknown> = {};
+  if (raw && raw.trim()) {
+    try {
+      settings = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return { ok: false, manual };
+    }
+  }
+  const hooks = (settings.hooks && typeof settings.hooks === 'object' ? settings.hooks : {}) as Record<
+    string,
+    HookGroup[]
+  >;
+  const kept: HookGroup[] = [];
+  for (const group of Array.isArray(hooks.AfterAgent) ? hooks.AfterAgent : []) {
+    const others = (group.hooks ?? []).filter((hook) => !hook.command?.includes('@agent-relay/events-shim'));
+    if (others.length > 0) kept.push({ ...group, hooks: others });
+    else if (!isOurs(group)) kept.push(group);
+  }
+  if (!remove) {
+    kept.push({
+      hooks: [{ type: 'command', name: SKILL_NAME, command, timeout: HOOK_TIMEOUT_SECONDS * 1000 }],
+    });
+  }
+  if (kept.length > 0) hooks.AfterAgent = kept;
+  else delete hooks.AfterAgent;
+  if (Object.keys(hooks).length > 0) settings.hooks = hooks;
+  else delete settings.hooks;
+  mkdirSync(dirname(path), { recursive: true });
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temporary, path);
+  return { ok: true };
+}
+
+/** Reads a JSON object file: \`{}\` when missing, null when it exists but cannot be read or parsed. */
+function readJsonObject(io: CliIo, path: string): Record<string, unknown> | null {
+  const raw = io.readText(path);
+  if (raw === null) return io.exists(path) ? null : {};
+  if (!raw.trim()) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Writes a JSON file owner-only, beside it and renamed into place. */
+function writeJsonPrivate(path: string, value: unknown): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temporary, path);
+}
+
+/** Takes our command out of one event's hook groups, keeping the person's own and their matchers. */
+function withoutOurHooks(groups: unknown): HookGroup[] {
+  const kept: HookGroup[] = [];
+  for (const group of Array.isArray(groups) ? (groups as HookGroup[]) : []) {
+    const others = (group.hooks ?? []).filter((hook) => !hook.command?.includes('@agent-relay/events-shim'));
+    if (others.length > 0) kept.push({ ...group, hooks: others });
+    else if (!isOurs(group)) kept.push(group);
+  }
+  return kept;
+}
+
+/** Factory Droid's home. */
+function factoryHome(io: CliIo): string {
+  return join(home(io), '.factory');
+}
+
+/**
+ * Adds (or, with \`remove\`, takes out) the \`Stop\` hook that holds a
+ * finished Droid turn open until the next post. Droid reads
+ * \`~/.factory/hooks.json\` and, only while that file is absent, the
+ * \`hooks\` key of \`~/.factory/settings.json\`: the hook goes into the one
+ * Droid reads, so a person whose hooks live in settings.json keeps them.
+ * Never replaces a file it cannot read.
+ */
+function editDroidHooks(io: CliIo, remove = false): { ok: true } | { ok: false; manual: string } {
+  const command = stopHookCommand('droid');
+  const hooksFile = join(factoryHome(io), 'hooks.json');
+  const settingsFile = join(factoryHome(io), 'settings.json');
+  const target = !io.exists(hooksFile) && io.exists(settingsFile) ? settingsFile : hooksFile;
+  /** Puts ours into (or only takes it out of) one file; false when the file cannot be read. */
+  const edit = (path: string, add: boolean): boolean => {
+    if (!add && !io.exists(path)) return true;
+    const file = readJsonObject(io, path);
+    if (!file) return false;
+    const nested = path === settingsFile;
+    if (nested && file.hooks !== undefined && (typeof file.hooks !== 'object' || file.hooks === null)) {
+      return false;
+    }
+    const hooks = (nested ? ((file.hooks as Record<string, unknown>) ?? {}) : file) as Record<
+      string,
+      unknown
+    >;
+    const before = JSON.stringify(hooks.Stop);
+    const kept = withoutOurHooks(hooks.Stop);
+    if (add) kept.push({ hooks: [{ type: 'command', command, timeout: HOOK_TIMEOUT_SECONDS }] });
+    if (kept.length > 0) hooks.Stop = kept;
+    else delete hooks.Stop;
+    if (!add && JSON.stringify(hooks.Stop) === before) return true; // none of ours there
+    if (nested) {
+      if (Object.keys(hooks).length > 0) file.hooks = hooks;
+      else delete file.hooks;
+    }
+    writeJsonPrivate(path, file);
+    return true;
+  };
+  // Ours also comes out of the file Droid does not read, so it cannot come back when that one is read again.
+  const other = target === hooksFile ? settingsFile : hooksFile;
+  const ok = remove
+    ? edit(hooksFile, false) && edit(settingsFile, false)
+    : edit(target, true) && edit(other, false);
+  return ok
+    ? { ok: true }
+    : {
+        ok: false,
+        manual: `add a Stop hook running "${command}" with "timeout": ${HOOK_TIMEOUT_SECONDS} to ${target}`,
+      };
+}
+
+/** Cursor's user hooks file (Cursor CLI and the editor read it). */
+function cursorHooksPath(io: CliIo): string {
+  return join(home(io), '.cursor', 'hooks.json');
+}
+
+/**
+ * Cursor's longest hook timeout, in seconds, that it takes without warning
+ * (an hour): a session idle for longer is not woken until its next turn.
+ */
+const CURSOR_HOOK_TIMEOUT_SECONDS = 60 * 60;
+
+/**
+ * True when Agent Relay's own waiting Cursor \`stop\` hook (\`cursor-hook
+ * --wait\`, Cursor CLI delivery turned on in Agent Relay) is installed.
+ * Cursor waits for every \`stop\` hook before it submits any follow-up, so
+ * two waiting hooks would hold each other's messages back: ours then never
+ * holds the turn.
+ */
+function cursorHasRelayWait(io: CliIo): boolean {
+  const hooks = readJsonObject(io, cursorHooksPath(io))?.hooks as { stop?: unknown } | undefined;
+  return (Array.isArray(hooks?.stop) ? (hooks.stop as HookEntry[]) : []).some(
+    (hook) =>
+      typeof hook.command === 'string' &&
+      !hook.command.includes('@agent-relay/events-shim') &&
+      /\bcursor-hook\b.*\s--wait\b/.test(hook.command)
+  );
+}
+
+/**
+ * Adds (or, with \`remove\`, takes out) the \`stop\` hook that holds a
+ * finished Cursor turn open until the next post (\`loop_limit: null\`, so
+ * Cursor takes every post), keeping every other hook. Never replaces a file
+ * it cannot read.
+ */
+function editCursorHooks(io: CliIo, remove = false): { ok: true } | { ok: false; manual: string } {
+  const path = cursorHooksPath(io);
+  const command = stopHookCommand('cursor');
+  const manual = `add a stop hook {"command": "${command}", "timeout": ${CURSOR_HOOK_TIMEOUT_SECONDS}, "loop_limit": null} to ${path}`;
+  const file = readJsonObject(io, path);
+  if (!file) return { ok: false, manual };
+  if (file.hooks !== undefined && (typeof file.hooks !== 'object' || file.hooks === null)) {
+    return { ok: false, manual };
+  }
+  const hooks = (file.hooks ?? {}) as Record<string, unknown>;
+  if (hooks.stop !== undefined && !Array.isArray(hooks.stop)) return { ok: false, manual };
+  const kept = ((hooks.stop as HookEntry[] | undefined) ?? []).filter(
+    (hook) => !hook.command?.includes('@agent-relay/events-shim')
+  );
+  if (!remove) kept.push({ command, timeout: CURSOR_HOOK_TIMEOUT_SECONDS, loop_limit: null });
+  if (kept.length > 0) hooks.stop = kept;
+  else delete hooks.stop;
+  if (remove && !io.exists(path)) return { ok: true };
+  writeJsonPrivate(path, { version: 1, ...file, hooks });
+  return { ok: true };
+}
+
+/** Amp's system plugins directory. */
+function ampPluginPath(io: CliIo): string {
+  return join(xdgConfig(io), 'amp', 'plugins', `${SKILL_NAME}.ts`);
+}
+
+/**
+ * How many posts in a row Amp turns into new turns before the person types
+ * again (Amp's own default is 5).
+ */
+export const AMP_MAX_CONTINUATIONS = 1000;
+
+/**
+ * events-shim's Amp plugin. Amp runs plugins under Bun and lets an
+ * \`agent.end\` handler start the next turn (\`action: 'continue'\`); the
+ * thread is idle while the handler waits. So after each turn it runs
+ * \`listen --stop-hook amp\` and answers with the next post. When the person
+ * starts a turn first, it stops that wait; a post it had already claimed is
+ * kept for the end of that turn.
+ *
+ * @param command - The shell command that waits for the next post.
+ * @returns The plugin's TypeScript source.
+ */
+export function ampPluginSource(command: string): string {
+  return `// Agent Relay webhook inbox: each post wakes this Amp thread. Written by @agent-relay/events-shim setup --amp.
+// @i-know-the-amp-plugin-api-is-wip-and-very-experimental-right-now
+import { spawn } from 'node:child_process'
+
+const COMMAND = ${JSON.stringify(command)}
+const waits = new Map<string, { child: ReturnType<typeof spawn>; released: boolean }>()
+const kept = new Map<string, string>()
+// The last post each thread was continued with: a turn it started is one of Amp's plugin continuations.
+const sent = new Map<string, string>()
+
+function stop(thread: string) {
+  const wait = waits.get(thread)
+  if (!wait) return
+  wait.released = true
+  waits.delete(thread)
+  try {
+    if (wait.child.pid) process.kill(-wait.child.pid, 'SIGTERM')
+  } catch {}
+}
+
+/** The fields of Amp's agent.start and agent.end events this plugin reads. */
+interface TurnEvent {
+  thread?: { id?: unknown }
+  status?: unknown
+  message?: unknown
+}
+
+export default function (amp: { on: (event: string, handler: (event: TurnEvent) => unknown) => void }) {
+  amp.on('agent.start', (event) => {
+    const thread = String(event?.thread?.id ?? '')
+    if (thread) stop(thread)
+    return {}
+  })
+  amp.on('agent.end', async (event) => {
+    const thread = String(event?.thread?.id ?? '')
+    if (!thread) return
+    const continued = typeof event?.message === 'string' && sent.get(thread) === event.message
+    sent.delete(thread)
+    const held = kept.get(thread)
+    if (held) {
+      kept.delete(thread)
+      sent.set(thread, held)
+      return { action: 'continue', userMessage: held, maxContinuations: ${AMP_MAX_CONTINUATIONS} }
+    }
+    stop(thread)
+    const child = spawn('/bin/sh', ['-c', COMMAND], { detached: true, stdio: ['pipe', 'pipe', 'ignore'] })
+    const wait = { child, released: false }
+    waits.set(thread, wait)
+    const status = typeof event?.status === 'string' ? event.status : 'done'
+    child.stdin?.end(
+      JSON.stringify({ thread_id: thread, status, stop_hook_active: continued, timestamp: Date.now() })
+    )
+    let out = ''
+    child.stdout?.on('data', (chunk) => (out += chunk))
+    await new Promise((resolve) => child.on('close', resolve))
+    if (waits.get(thread) === wait) waits.delete(thread)
+    let answer: { userMessage?: unknown } = {}
+    try {
+      answer = JSON.parse(out.trim().split('\\n').pop() || '{}')
+    } catch {}
+    if (typeof answer.userMessage !== 'string' || !answer.userMessage) return
+    // The person started a turn meanwhile: this post wakes the thread once that turn ends.
+    if (wait.released) {
+      kept.set(thread, answer.userMessage)
+      return
+    }
+    sent.set(thread, answer.userMessage)
+    return answer
+  })
+}
+`;
+}
+
+/** Writes (or, with \`remove\`, deletes) events-shim's Amp plugin; the file is events-shim's alone. */
+function editAmpPlugin(io: CliIo, remove = false): { ok: true } | { ok: false; manual: string } {
+  const path = ampPluginPath(io);
+  try {
+    if (remove) {
+      rmSync(path, { force: true });
+      return { ok: true };
+    }
+    mkdirSync(dirname(path), { recursive: true });
+    const temporary = `${path}.${process.pid}.tmp`;
+    writeFileSync(temporary, ampPluginSource(stopHookCommand('amp')), { mode: 0o600 });
+    renameSync(temporary, path);
+    return { ok: true };
+  } catch {
+    return { ok: false, manual: `save the plugin \`ampPluginSource\` writes as ${path}` };
+  }
 }
 
 /** Deletes \`<root>.webhooks\` from a JSON config file (\`uninstall\`); true when it is gone. */
@@ -705,6 +1080,26 @@ export const AGENT_CLIS: readonly AgentCli[] = [
     hooks: { install: installCodexHook, remove: removeCodexHook, listener: '--session' },
   },
   {
+    id: 'copilot',
+    label: 'GitHub Copilot CLI',
+    present: onPath('copilot'),
+    install: (io, url) =>
+      viaCommand(
+        'copilot',
+        ['mcp', 'add', '--transport', 'http', MCP_SERVER_NAME, url],
+        ['mcp', 'remove', MCP_SERVER_NAME]
+      )(io, url),
+    wake: 'listener',
+    caveat:
+      'after each turn it waits for the next post and takes it as a new prompt (it shows "Working" while it waits; press Ctrl+C before you type)',
+    remove: (io) => io.run('copilot', ['mcp', 'remove', MCP_SERVER_NAME]),
+    hooks: {
+      install: async (io) => editCopilotHooks(io),
+      remove: async (io) => editCopilotHooks(io, true).ok,
+      listener: '--stop-hook copilot',
+    },
+  },
+  {
     id: 'cursor',
     label: 'Cursor',
     present: (io) => io.run('cursor-agent', ['--version']) || io.exists(join(home(io), '.cursor')),
@@ -713,8 +1108,57 @@ export const AGENT_CLIS: readonly AgentCli[] = [
       'mcpServers',
       (url) => ({ url })
     ),
-    wake: 'when-asked',
+    wake: 'listener',
+    caveat:
+      'after each turn it waits for the next post and submits it as your next message, for up to an hour after that turn (a session idle for longer wakes after your next turn)',
+    heldBack: (io) =>
+      cursorHasRelayWait(io)
+        ? "not woken by posts here: Agent Relay's own Cursor CLI delivery holds each finished turn for relay messages, and Cursor waits for every such hook, so the agent reads posts when asked (turn that delivery off in Agent Relay to have posts wake Cursor)"
+        : null,
     remove: removeJson((io) => join(home(io), '.cursor', 'mcp.json'), 'mcpServers'),
+    hooks: {
+      install: async (io) => editCursorHooks(io),
+      remove: async (io) => editCursorHooks(io, true).ok,
+      listener: '--stop-hook cursor',
+    },
+  },
+  {
+    id: 'droid',
+    label: 'Factory Droid',
+    present: onPath('droid'),
+    install: (io, url) =>
+      viaCommand(
+        'droid',
+        ['mcp', 'add', MCP_SERVER_NAME, url, '--type', 'http'],
+        ['mcp', 'remove', MCP_SERVER_NAME]
+      )(io, url),
+    skillsDir: (io) => join(factoryHome(io), 'skills'),
+    wake: 'listener',
+    caveat:
+      'after each turn it waits for the next post and takes it as its next instruction (it shows "Streaming..." while it waits; press Esc before you type, or what you type waits for the next post)',
+    remove: (io) => io.run('droid', ['mcp', 'remove', MCP_SERVER_NAME]),
+    hooks: {
+      install: async (io) => editDroidHooks(io),
+      remove: async (io) => editDroidHooks(io, true).ok,
+      listener: '--stop-hook droid',
+    },
+  },
+  {
+    id: 'amp',
+    label: 'Amp',
+    present: onPath('amp'),
+    install: (io, url) =>
+      viaCommand('amp', ['mcp', 'add', MCP_SERVER_NAME, url], ['mcp', 'remove', MCP_SERVER_NAME])(io, url),
+    skillsDir: (io) => join(xdgConfig(io), 'agents', 'skills'),
+    wake: 'listener',
+    caveat:
+      'after each turn a plugin waits for the next post and sends it as your next message (it shows "Streaming" while it waits; older Amp builds load plugins only with PLUGINS=all set)',
+    remove: (io) => io.run('amp', ['mcp', 'remove', MCP_SERVER_NAME]),
+    hooks: {
+      install: async (io) => editAmpPlugin(io),
+      remove: async (io) => editAmpPlugin(io, true).ok,
+      listener: '--stop-hook amp',
+    },
   },
   {
     id: 'opencode',
@@ -756,8 +1200,15 @@ export const AGENT_CLIS: readonly AgentCli[] = [
         ['mcp', 'add', '--scope', 'user', '--transport', 'http', MCP_SERVER_NAME, url],
         ['mcp', 'remove', '--scope', 'user', MCP_SERVER_NAME]
       )(io, url),
-    wake: 'when-asked',
+    wake: 'listener',
+    caveat:
+      'after each turn it waits for the next post and takes it as a new prompt (it shows "Executing Hook" while it waits; press Esc before you type)',
     remove: (io) => io.run('gemini', ['mcp', 'remove', '--scope', 'user', MCP_SERVER_NAME]),
+    hooks: {
+      install: async (io) => editGeminiHooks(io),
+      remove: async (io) => editGeminiHooks(io, true).ok,
+      listener: '--stop-hook gemini',
+    },
   },
   {
     id: 'grok',
@@ -966,7 +1417,7 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
     }
     if (result.ok) {
       io.stdout(
-        `  ${cli.label}: MCP server "${MCP_SERVER_NAME}" added${cli.skillsDir ? ', skill installed' : ''}; ${cli.caveat ?? WAKE_TEXT[cli.wake]}.`
+        `  ${cli.label}: MCP server "${MCP_SERVER_NAME}" added${cli.skillsDir ? ', skill installed' : ''}; ${cli.heldBack?.(io) ?? cli.caveat ?? WAKE_TEXT[cli.wake]}.`
       );
     } else {
       failed.push(cli.label);
@@ -978,6 +1429,14 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
   io.stdout('');
   if (hooked.includes('claude')) {
     io.stdout('Start a new Claude Code session. Each post wakes it by itself; there is nothing to tell it.');
+  }
+  const holding = clis.filter(
+    (cli) => hooked.includes(cli.id) && cli.hooks?.listener.startsWith('--stop-hook') && !cli.heldBack?.(io)
+  );
+  if (holding.length > 0) {
+    io.stdout(
+      `${holding.map((cli) => cli.label).join(', ')}: start a new session and send it a first message. Once a turn ends it waits for the next post and takes it as a new prompt, by itself; a session that has not finished a turn yet cannot be woken.`
+    );
   }
   if (throughCore.length > 0) {
     const problem = await ensureCore(io, config);
@@ -1047,7 +1506,9 @@ async function uninstall(io: CliIo, flags: Record<string, string>): Promise<numb
       const args = isListener(io, pid) ? (io.processArgs(pid) ?? '') : '';
       if (kinds.some((kind) => new RegExp(`(^|\\s)${kind}(\\s|$)`).test(args))) {
         io.kill(pid);
-        rmSync(join(dir, name), { force: true });
+        // A stop-hook listener first finishes the wait it has in flight and keeps what it claimed, so it
+        // keeps its locks until then (it releases them itself); others stop at once.
+        if (!/(^|\s)--stop-hook(\s|$)/.test(args)) rmSync(join(dir, name), { force: true });
       } else if (!args) rmSync(join(dir, name), { force: true });
     }
   }
@@ -1151,7 +1612,8 @@ function isListener(io: CliIo, pid: number): boolean {
   return (
     /events-shim/.test(args) &&
     ((/\b(listen|link)\b/.test(args) && /(^|\s)--(hook|session)(\s|$)/.test(args)) ||
-      /(^|\s)serve(\s|$)/.test(args))
+      /(^|\s)serve(\s|$)/.test(args) ||
+      (/\blisten\b/.test(args) && /(^|\s)--stop-hook(\s|$)/.test(args)))
   );
 }
 
@@ -1196,6 +1658,11 @@ function unlock(io: CliIo, lock: string): void {
  * that finds the inbox owned waits to take over when the owner closes. Stops
  * as soon as \`alive\` turns false, before the inbox can hand a post to nobody.
  *
+ * With \`takeOver\`, a listener already waiting for the same session is
+ * stopped and this one waits instead: a turn-end hook that holds the turn
+ * open (Copilot, Gemini CLI) only runs again once that session took another
+ * turn, so the older one waits for a turn nobody reads.
+ *
  * @returns The exit code: \`deliver\`'s when it ends the listener, else 0.
  */
 async function listenAsSessionOwner(
@@ -1203,13 +1670,31 @@ async function listenAsSessionOwner(
   mcpUrl: string,
   sessionKey: string,
   alive: () => boolean,
-  deliver: (text: string) => Promise<number | null>
+  deliver: (text: string) => Promise<number | null>,
+  takeOver = false,
+  takeHeld?: () => string | null,
+  drain: () => boolean = () => false
 ): Promise<number> {
   const dir = dirname(configPath(io));
   const digest = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 16);
   const inboxLock = join(dir, `listen-${digest(mcpUrl)}.pid`);
   const sessionLock = join(dir, `wait-${digest(`${mcpUrl}\n${sessionKey}`)}.pid`);
-  if (!tryLock(io, sessionLock)) return 0;
+  if (!tryLock(io, sessionLock)) {
+    if (!takeOver) return 0;
+    const holder = Number(io.readText(sessionLock)?.trim());
+    if (isListener(io, holder)) io.kill(holder);
+    // A stop-hook listener asked to stop first finishes the wait it has in flight (up to ~65 s).
+    let taken = false;
+    for (
+      let tries = 0;
+      !(taken = tryLock(io, sessionLock)) &&
+      alive() &&
+      (tries < 10 || (tries < 160 && isListener(io, holder)));
+      tries += 1
+    )
+      await io.sleep(500);
+    if (!taken) return 0;
+  }
   try {
     let backoff = 1_000;
     for (;;) {
@@ -1220,9 +1705,23 @@ async function listenAsSessionOwner(
       }
       try {
         while (alive() && io.readText(inboxLock)?.trim() === String(io.pid)) {
+          // A post an earlier owner claimed but could not hand over goes first.
+          const kept = takeHeld?.();
+          if (kept) {
+            const exit = await deliver(kept);
+            if (exit !== null) return exit;
+            continue;
+          }
+          // A relay wake link delivers every post to the session that linked it. Claiming one here
+          // (wait_for_webhook marks it read) would take it from that session, so stand down.
+          if (await relayWakeLinked(io, mcpUrl)) return 0;
+          // The session may have closed while that was asked: start no wait for it.
+          if (!alive()) return 0;
           const controller = new AbortController();
+          // While \`drain()\`, a wait in flight is not cut off: the inbox may already have handed it
+          // posts, which \`deliver\` then keeps for the next owner.
           const watch = setInterval(() => {
-            if (!alive()) controller.abort();
+            if (!alive() && !drain()) controller.abort();
           }, 2_000);
           const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(65_000)]);
           try {
@@ -1263,14 +1762,112 @@ async function listenAsSessionOwner(
   }
 }
 
-/** The hook's JSON input on stdin (Claude Code and Codex both send \`session_id\`). */
-async function hookSession(io: CliIo): Promise<string> {
+/**
+ * Whether the inbox forwards its posts to an Agent Relay session (\`link_relay_wake\`
+ * succeeded and the link is not broken). Unknown (the inbox could not be asked) reads as not
+ * linked: the listener keeps its old behaviour rather than going quiet.
+ */
+async function relayWakeLinked(io: CliIo, mcpUrl: string): Promise<boolean> {
   try {
-    const input = JSON.parse((await io.readStdin()) || '{}') as { session_id?: unknown };
-    return typeof input.session_id === 'string' ? input.session_id : '';
+    const state = await callTool(io, mcpUrl, 'watch_webhooks', {}, AbortSignal.timeout(15_000));
+    return state.wake === 'linked';
   } catch {
-    return '';
+    return false;
   }
+}
+
+/** The hook's JSON input on stdin (Claude Code and Codex both send \`session_id\`). */
+async function hookInput(io: CliIo): Promise<{ session: string; transcript: string }> {
+  try {
+    const input = JSON.parse((await io.readStdin()) || '{}') as {
+      session_id?: unknown;
+      transcript_path?: unknown;
+    };
+    return {
+      session: typeof input.session_id === 'string' ? input.session_id : '',
+      transcript: typeof input.transcript_path === 'string' ? input.transcript_path : '',
+    };
+  } catch {
+    return { session: '', transcript: '' };
+  }
+}
+
+/** The webhooks MCP tools whose call opts a Claude Code session in (\`mcp__webhooks__watch_webhooks\`). */
+const WEBHOOKS_TOOL = new RegExp(
+  `^mcp__${MCP_SERVER_NAME}__(watch_webhooks|link_relay_wake|wait_for_webhook|get_webhook_events)$`
+);
+
+/** The longest transcript line read for an opt-in; a tool call record is far shorter. */
+const TRANSCRIPT_LINE_LIMIT = 16 * 1024 * 1024;
+
+/** Whether one transcript line is an assistant turn that called a webhooks MCP tool. */
+function callsWebhooksTool(line: string): boolean {
+  if (!line.includes(`mcp__${MCP_SERVER_NAME}__`)) return false;
+  try {
+    const record = JSON.parse(line) as { type?: unknown; message?: { content?: unknown } };
+    const content = record.type === 'assistant' ? record.message?.content : undefined;
+    return (
+      Array.isArray(content) &&
+      content.some(
+        (block: { type?: unknown; name?: unknown } | null) =>
+          block?.type === 'tool_use' && typeof block.name === 'string' && WEBHOOKS_TOOL.test(block.name)
+      )
+    );
+  } catch {
+    return false; // a malformed or partly written line
+  }
+}
+
+/**
+ * Whether this Claude Code session asked for webhook posts: its transcript shows an assistant
+ * \`tool_use\` of one of the webhooks MCP tools (the skill starts with \`watch_webhooks\`).
+ * \`setup --claude\` installs the wake hooks for every session on the machine, but all of them
+ * share one inbox, so a session that never opted in would otherwise take posts meant for another.
+ * The transcript is read in chunks, whole lines only, from where the last check stopped (kept in a
+ * per-session file), so a long transcript is read once in all, not once per turn; the answer is
+ * remembered once seen.
+ */
+function sessionOptedIn(io: CliIo, mcpUrl: string, session: string, transcript: string): boolean {
+  if (!session || !transcript) return false;
+  const digest = createHash('sha256').update(`${mcpUrl}\n${session}`).digest('hex').slice(0, 16);
+  const marker = join(dirname(configPath(io)), `optin-${digest}`);
+  if (io.exists(marker)) return true;
+  const progress = `${marker}.scanned`;
+  const saved = Number(io.readText(progress)?.trim());
+  // \`offset\`: where the first line not yet checked starts; \`carry\`: that line so far, when it is
+  // longer than one read.
+  let offset = Number.isSafeInteger(saved) && saved > 0 ? saved : 0;
+  let position = offset;
+  let carry = '';
+  for (;;) {
+    const chunk = io.readFrom(transcript, position);
+    if (!chunk || chunk.end <= position) break;
+    const cut = chunk.text.lastIndexOf('\n');
+    if (cut < 0) {
+      carry += chunk.text;
+      position = chunk.end;
+      // No call record is this long: skip the line rather than hold it.
+      if (carry.length > TRANSCRIPT_LINE_LIMIT) {
+        carry = '';
+        offset = position;
+      }
+      continue;
+    }
+    // Everything up to the chunk's last newline is whole lines; only the bytes after it can end
+    // inside a character, so this offset is exact.
+    const head = chunk.text.slice(0, cut + 1);
+    if ((carry + head).split('\n').some(callsWebhooksTool)) {
+      writePrivate(marker, `${session}\n`);
+      rmSync(progress, { force: true });
+      return true;
+    }
+    offset = position + Buffer.byteLength(head, 'utf8');
+    position = offset;
+    carry = '';
+  }
+  // A line still being written is read again next time, from its start.
+  if (offset > 0) writePrivate(progress, `${offset}\n`);
+  return false;
 }
 
 /**
@@ -1282,7 +1879,9 @@ async function hookSession(io: CliIo): Promise<string> {
 async function listenHook(io: CliIo, flags: Record<string, string>): Promise<number> {
   const mcpUrl = mcpUrlFor(io, flags);
   if (!mcpUrl) return 0;
-  const session = await hookSession(io);
+  const { session, transcript } = await hookInput(io);
+  // Only a session that asked to watch the inbox listens on it.
+  if (!sessionOptedIn(io, mcpUrl, session, transcript)) return 0;
   const claude = io.ancestor('claude');
   return listenAsSessionOwner(
     io,
@@ -1292,8 +1891,344 @@ async function listenHook(io: CliIo, flags: Record<string, string>): Promise<num
     async (text) => {
       io.stderr(text);
       return 2;
-    }
+    },
+    false,
+    () => takeHeldPost(io, mcpUrl)
   );
+}
+
+/**
+ * Where a turn-end hook keeps a post it claimed just as its CLI let go (the
+ * inbox had already marked it read), for the inbox's next owner.
+ */
+function heldPostPath(io: CliIo, mcpUrl: string): string {
+  const digest = createHash('sha256').update(mcpUrl).digest('hex').slice(0, 16);
+  return join(dirname(configPath(io)), `held-${digest}.txt`);
+}
+
+/** Takes the kept post, if any: one owner gets it (an atomic rename). */
+function takeHeldPost(io: CliIo, mcpUrl: string): string | null {
+  const held = heldPostPath(io, mcpUrl);
+  const mine = `${held}.${io.pid}`;
+  try {
+    renameSync(held, mine);
+  } catch {
+    return null;
+  }
+  const kept = io.readText(mine);
+  rmSync(mine, { force: true });
+  return kept;
+}
+
+/** The agent CLIs whose turn-end hook can hold a finished turn open and hand it the next post. */
+export type StopHookId = 'copilot' | 'gemini' | 'droid' | 'cursor' | 'amp';
+
+/** How one of them runs its turn-end hook, and how it reads the hook's answer. */
+interface StopHookCli {
+  /** The executable its hooks run under (the listener stops when it exits). */
+  process: string;
+  /** The hook input's session id and transcript path fields. */
+  session: string;
+  transcript: string;
+  /** Whether this hook run ends a finished turn (others are answered at once). */
+  endsTurn: (input: Record<string, unknown>) => boolean;
+  /**
+   * Another hook on the same event that may need the turn to end now: a check
+   * that turns true once it has (the CLI waits for every hook before it acts).
+   */
+  otherHook?: (io: CliIo, input: Record<string, unknown>, since: number | null) => (() => boolean) | null;
+  /** How many answers in a row the CLI turns into new turns, if it caps them. */
+  chainLimit?: number;
+  /** A transcript line the CLI appends once its person cancelled or typed: stop waiting. */
+  released: RegExp;
+  /** The hook's answer that hands the agent \`text\` as its next prompt. */
+  answer: (text: string) => Record<string, unknown>;
+  /** How long the CLI lets the hook run, in seconds, when it caps it below the inbox's 7 idle days. */
+  timeoutSeconds?: number;
+}
+
+const STOP_HOOK_CLIS: Record<StopHookId, StopHookCli> = {
+  // Copilot CLI's \`agentStop\` hook: \`decision: "block"\` makes \`reason\` the next user turn. Copilot
+  // honours at most 8 blocks in a row (\`stop_hook_active\` marks a continued turn), then ends the turn.
+  copilot: {
+    process: 'copilot',
+    session: 'sessionId',
+    transcript: 'transcriptPath',
+    endsTurn: (input) => input.stopReason === undefined || input.stopReason === 'end_turn',
+    chainLimit: 8,
+    released: /"type"\s*:\s*"(abort|user\.message|session\.error)"/,
+    answer: (reason) => ({ decision: 'block', reason }),
+  },
+  // Gemini CLI's \`AfterAgent\` hook: \`decision: "deny"\` sends \`reason\` to the agent as a new prompt.
+  // Gemini waits for every hook of the event before it acts. While Agent Relay's Gemini extension
+  // is active, its "Relay Stop Guard" may continue the turn with relay messages: this one keeps
+  // waiting for posts only until that guard has done so.
+  gemini: {
+    process: 'gemini',
+    session: 'session_id',
+    transcript: 'transcript_path',
+    endsTurn: () => true,
+    otherHook: (io, input, since) =>
+      geminiRelayGuardActive(io, typeof input.cwd === 'string' ? input.cwd : null)
+        ? geminiRelayGuardBlocked(io, input, since)
+        : null,
+    released: /"type"\s*:\s*"user"|"content"\s*:\s*"Request cancelled\."/,
+    answer: (reason) => ({ decision: 'deny', reason }),
+  },
+  // Factory Droid's \`Stop\` hook: \`decision: "block"\` makes \`reason\` Droid's next instruction. A
+  // cancelled turn runs no \`Stop\` hook; a typed message is a \`"role":"user"\` transcript line.
+  droid: {
+    process: 'droid',
+    session: 'session_id',
+    transcript: 'transcript_path',
+    endsTurn: (input) => input.hook_event_name === undefined || input.hook_event_name === 'Stop',
+    released: /"role"\s*:\s*"user"/,
+    answer: (reason) => ({ decision: 'block', reason }),
+  },
+  // Cursor's \`stop\` hook: a \`followup_message\` is submitted as the next user message. Cursor ends a
+  // hook after its timeout (an hour), so the wait stops a minute before.
+  cursor: {
+    process: 'cursor-agent',
+    session: 'conversation_id',
+    transcript: 'transcript_path',
+    endsTurn: (input) => input.status === undefined || input.status === 'completed',
+    released: /"role"\s*:\s*"user"/,
+    answer: (text) => ({ followup_message: text }),
+    timeoutSeconds: CURSOR_HOOK_TIMEOUT_SECONDS,
+    // Agent Relay's own waiting entry holds the turn too: ours lets go at once, so neither keeps the other waiting.
+    otherHook: (io) => (cursorHasRelayWait(io) ? () => true : null),
+  },
+  // events-shim's Amp plugin (\`ampPluginSource\`) runs this after each turn and returns the answer
+  // from its \`agent.end\` handler; it stops the wait itself when the person starts a turn.
+  amp: {
+    process: 'amp',
+    session: 'thread_id',
+    transcript: 'transcript_path',
+    endsTurn: () => true,
+    // Amp ignores a \`continue\` after this many in a row; the plugin marks a turn it continued.
+    chainLimit: AMP_MAX_CONTINUATIONS,
+    released: /$^/,
+    answer: (userMessage) => ({ action: 'continue', userMessage, maxContinuations: AMP_MAX_CONTINUATIONS }),
+  },
+};
+
+/**
+ * Whether Agent Relay's Gemini extension (\`agent-relay\`) may answer this
+ * \`AfterAgent\` run with relay messages: it is installed in
+ * \`~/.gemini/extensions\` (copied, or linked to its source), enabled for \`cwd\` by Gemini's own rules in
+ * \`extension-enablement.json\` (the last matching override wins; \`!\`
+ * disables, a trailing \`*\` takes subdirectories), and signed in
+ * (\`~/.relay/token\`, without which its guard always lets the turn end).
+ */
+function geminiRelayGuardActive(io: CliIo, cwd: string | null): boolean {
+  const extensions = join(home(io), '.gemini', 'extensions');
+  if (!io.readText(join(home(io), '.relay', 'token'))?.trim()) return false;
+  // A linked install (\`gemini extensions link\`) keeps only its metadata here; the manifest is at its source.
+  let manifestDir = join(extensions, 'agent-relay');
+  try {
+    const metadata = JSON.parse(io.readText(join(manifestDir, '.gemini-extension-install.json')) ?? '{}') as {
+      type?: unknown;
+      source?: unknown;
+    };
+    if (metadata.type === 'link' && typeof metadata.source === 'string') manifestDir = metadata.source;
+  } catch {
+    /* Not linked: a copied install holds its manifest. */
+  }
+  if (io.readText(join(manifestDir, 'gemini-extension.json')) === null) return false;
+  let overrides: unknown = [];
+  try {
+    const config = JSON.parse(io.readText(join(extensions, 'extension-enablement.json')) ?? '{}') as Record<
+      string,
+      { overrides?: unknown } | undefined
+    >;
+    overrides = config['agent-relay']?.overrides ?? [];
+  } catch {
+    /* Unreadable: Gemini treats the extension as enabled. */
+  }
+  if (!cwd || !Array.isArray(overrides)) return true;
+  const slashed = (path: string) =>
+    `${path.startsWith('/') ? '' : '/'}${path}${path.endsWith('/') ? '' : '/'}`;
+  const here = slashed(cwd.replace(/\\/g, '/'));
+  let enabled = true;
+  for (const rule of overrides) {
+    if (typeof rule !== 'string') continue;
+    const disable = rule.startsWith('!');
+    const glob = disable ? rule.slice(1) : rule;
+    const pattern = glob.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/(\/?)\*/g, '($1.*)?');
+    if (new RegExp(`^${pattern}$`).test(here)) enabled = !disable;
+  }
+  return enabled;
+}
+
+/**
+ * Turns true once the Relay Stop Guard (\`after-agent-inbox.sh\`) answered
+ * this turn with relay messages. It writes its retry count to
+ * \`$TMPDIR/relay-afteragent/<session>.count\` just before it blocks (and
+ * removes it when it lets the turn end), in the same \`TMPDIR\` Gemini gives
+ * every hook.
+ */
+function geminiRelayGuardBlocked(
+  io: CliIo,
+  input: Record<string, unknown>,
+  since: number | null
+): () => boolean {
+  const session = typeof input.session_id === 'string' && input.session_id ? input.session_id : 'default';
+  const file = join(
+    io.env.TMPDIR || '/tmp',
+    'relay-afteragent',
+    `${session.replace(/[^A-Za-z0-9._-]/g, '_')}.count`
+  );
+  // Written this turn: the guard and this hook start together, so allow for clock rounding.
+  const after = (since ?? Date.now()) - 1_000;
+  return () => (io.modifiedAt(file) ?? -Infinity) >= after;
+}
+
+/** How much of a transcript's end the hook reads for what happened since it started. */
+const TRANSCRIPT_LOOKBACK_BYTES = 256 * 1024;
+
+/** A transcript line's own time (\`"timestamp"\` as ISO text or epoch ms), if it has one. */
+function lineTime(line: string): number | null {
+  const match = /"timestamp"\s*:\s*(?:"([^"]+)"|(\d{10,}))/.exec(line);
+  if (!match) return null;
+  const time = match[1] !== undefined ? Date.parse(match[1]) : Number(match[2]);
+  return Number.isFinite(time) ? time : null;
+}
+
+/**
+ * Watches a CLI's session transcript for the person cancelling or typing
+ * after the hook started. The first successful read looks back over the
+ * transcript's end for such a line stamped at or after the hook's own time
+ * (the person may cancel while the hook is still starting); without that
+ * time it starts at the end. Nothing is read as released until a read
+ * succeeds.
+ */
+function transcriptWatch(io: CliIo, path: string, released: RegExp, since: number | null): () => boolean {
+  let offset: number | null = null;
+  let carry = '';
+  let done = false;
+  return () => {
+    if (done || !path) return done;
+    if (offset === null) {
+      const end = io.readFrom(path, Number.MAX_SAFE_INTEGER)?.end;
+      if (end === undefined) return false;
+      if (since === null) {
+        offset = end;
+        return false;
+      }
+      const start = Math.max(0, end - TRANSCRIPT_LOOKBACK_BYTES);
+      const tail = io.readFrom(path, start);
+      if (!tail) return false;
+      offset = tail.end;
+      const lines = tail.text.split('\n');
+      if (start > 0) lines.shift(); // a partial first line
+      carry = lines.pop() ?? '';
+      done = lines.some((line) => released.test(line) && (lineTime(line) ?? -Infinity) >= since);
+      return done;
+    }
+    const added = io.readFrom(path, offset);
+    if (added && added.end > offset) {
+      offset = added.end;
+      const lines = (carry + added.text).split('\n');
+      carry = lines.pop() ?? '';
+      done = lines.some((line) => released.test(line));
+    }
+    return done;
+  };
+}
+
+/**
+ * \`listen --stop-hook <copilot|gemini|droid|cursor|amp>\`: run by that CLI's turn-end hook
+ * (Copilot's \`agentStop\`, Gemini's \`AfterAgent\`, Droid's \`Stop\`, Cursor's \`stop\`, events-shim's
+ * Amp plugin's \`agent.end\`), which the CLI waits for
+ * before it settles the turn. It waits for the next post and answers with
+ * it as the agent's next prompt, so a session that finished its turn takes
+ * a new one by itself. It answers \`{}\` (the turn ends as usual) when the
+ * CLI exits, when the transcript shows the person cancelled the wait or
+ * typed, or when a newer turn's hook takes over. A post that arrives just as
+ * it lets go is kept for the next turn's hook instead of being lost. Every
+ * turn's hook starts it again.
+ */
+async function listenStopHook(io: CliIo, flags: Record<string, string>): Promise<number> {
+  const id = flags['stop-hook'] as StopHookId;
+  const cli = STOP_HOOK_CLIS[id];
+  const mcpUrl = mcpUrlFor(io, flags);
+  let input: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse((await io.readStdin()) || '{}') as unknown;
+    if (parsed && typeof parsed === 'object') input = parsed as Record<string, unknown>;
+  } catch {
+    /* No input: still a turn end. */
+  }
+  let answered = false;
+  if (cli && mcpUrl && cli.endsTurn(input)) {
+    const owner = io.ancestor(cli.process);
+    const session = typeof input[cli.session] === 'string' ? (input[cli.session] as string) : '';
+    const sessionKey = session || String(owner ?? 'machine');
+    const dir = dirname(configPath(io));
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 16);
+    // Answers in a row in this session: a turn the CLI did not continue from a hook starts over.
+    const chainFile = join(dir, `chain-${digest(`${id}\n${sessionKey}`)}`);
+    const chain = input.stop_hook_active === true ? Number(io.readText(chainFile)?.trim()) || 0 : 0;
+    if (cli.chainLimit === undefined || chain < cli.chainLimit) {
+      const answer = (text: string) => {
+        const last = cli.chainLimit !== undefined && chain + 1 >= cli.chainLimit;
+        io.stdout(
+          JSON.stringify(
+            cli.answer(
+              last
+                ? `${text}\n\n(This CLI hands at most ${cli.chainLimit} webhook posts in a row to a session. Tell the person to send you any message so later posts keep waking you.)`
+                : text
+            )
+          )
+        );
+        if (cli.chainLimit !== undefined) writePrivate(chainFile, `${chain + 1}\n`);
+        answered = true;
+      };
+      const held = heldPostPath(io, mcpUrl);
+      // When the CLI ran the hook (Copilot: epoch ms; Gemini: ISO text).
+      const stamp = input.timestamp;
+      const parsedStamp =
+        typeof stamp === 'number' ? stamp : typeof stamp === 'string' ? Date.parse(stamp) : NaN;
+      const since = Number.isFinite(parsedStamp) ? parsedStamp : null;
+      const transcript = typeof input[cli.transcript] === 'string' ? (input[cli.transcript] as string) : '';
+      const releasedByPerson = transcriptWatch(io, transcript, cli.released, since);
+      const otherHookDone = cli.otherHook?.(io, input, since) ?? (() => false);
+      // A minute before the CLI would end the hook, and with it any answer it printed.
+      const deadline =
+        cli.timeoutSeconds === undefined ? Infinity : Date.now() + (cli.timeoutSeconds - 60) * 1000;
+      // Asked to stop (a newer turn's hook taking over, the Amp plugin, the CLI cancelling the hook):
+      // finish the wait in flight and keep what it claimed for the next owner instead of losing it.
+      let stopping = false;
+      const undo = io.onTerminate(() => {
+        stopping = true;
+      });
+      const alive = () =>
+        !stopping &&
+        (owner === null || io.pidAlive(owner)) &&
+        !releasedByPerson() &&
+        !otherHookDone() &&
+        Date.now() < deadline;
+      await listenAsSessionOwner(
+        io,
+        mcpUrl,
+        sessionKey,
+        alive,
+        async (text) => {
+          // Let go meanwhile: the CLI would drop the answer, so the next turn's hook takes it.
+          if (!alive()) writePrivate(held, text);
+          else answer(text);
+          return 0;
+        },
+        true,
+        () => takeHeldPost(io, mcpUrl),
+        // Nobody waits on a hook asked to stop, so it lets a wait in flight finish; when the person
+        // cancels or types, the CLI does wait on it, so it lets go at once.
+        () => stopping
+      ).finally(undo);
+    }
+  }
+  if (!answered) io.stdout('{}');
+  return 0;
 }
 
 /**
@@ -1608,7 +2543,7 @@ async function serve(io: CliIo, flags: Record<string, string>): Promise<number> 
  */
 async function link(io: CliIo, flags: Record<string, string>): Promise<number> {
   if (flags['codex-hook'] === 'true') {
-    const session = await hookSession(io);
+    const { session } = await hookInput(io);
     const bin = process.argv[1];
     if (!/^[A-Za-z0-9_-]{6,100}$/.test(session) || !bin) return 0;
     io.spawnDetached(process.execPath, [bin, 'link', '--kind', 'codex', '--session', session]);
@@ -1619,12 +2554,23 @@ async function link(io: CliIo, flags: Record<string, string>): Promise<number> {
 
 async function listen(io: CliIo, flags: Record<string, string>): Promise<number> {
   if (flags.hook === 'true') return listenHook(io, flags);
+  if (flags['stop-hook']) return listenStopHook(io, flags);
   const mcpUrl = mcpUrlFor(io, flags);
   if (!mcpUrl) {
     io.stderr(
       'No inbox yet. Run: npx @agent-relay/events-shim setup <mcp-url> (or pass --mcp-url <mcp-url>)'
     );
     return 2;
+  }
+  // A post a stop-hook listener claimed but could not hand over comes first.
+  const kept = takeHeldPost(io, mcpUrl);
+  if (kept) {
+    io.stdout(kept);
+    io.stdout('');
+    io.stdout(
+      '(Act on it, then start the listener again in the background: npx -y @agent-relay/events-shim@latest listen)'
+    );
+    return 0;
   }
   // Seconds until giving up; default: wait as long as it takes.
   const limit = flags.timeout ? Number(flags.timeout) * 1000 : Infinity;
@@ -1784,6 +2730,49 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
  *
  * @returns The I/O \`runCli\` uses when run as \`events-shim\`.
  */
+/**
+ * Up to \`limit\` bytes of a file from \`offset\`, as text, and the byte offset the text ends at.
+ * The text never ends inside a UTF-8 character: a character cut by the limit (or still being
+ * written) is left for the next read, so \`end\` is always where that read should start.
+ *
+ * @param path - The file.
+ * @param offset - Where to start (clamped to the file).
+ * @param limit - The most bytes to read (4 MiB by default).
+ * @returns The text and its end, or null when the file cannot be read.
+ */
+export function readTextChunk(
+  path: string,
+  offset: number,
+  limit = 4 * 1024 * 1024
+): { text: string; end: number } | null {
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, 'r');
+    const size = fstatSync(fd).size;
+    const start = Math.min(Math.max(0, offset), size);
+    const buffer = Buffer.alloc(Math.min(size - start, limit));
+    const read = readSync(fd, buffer, 0, buffer.length, start);
+    const whole = completeUtf8(buffer.subarray(0, read));
+    return { text: buffer.subarray(0, whole).toString('utf8'), end: start + whole };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+}
+
+/** How many leading bytes of \`bytes\` end on a UTF-8 character boundary. */
+function completeUtf8(bytes: Uint8Array): number {
+  // A character is at most 4 bytes: look back over at most 3 continuation bytes for its lead.
+  for (let back = 1; back <= Math.min(4, bytes.length); back += 1) {
+    const byte = bytes[bytes.length - back]!;
+    if ((byte & 0xc0) === 0x80) continue; // a continuation byte
+    const length = byte < 0x80 ? 1 : byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1;
+    return length > back ? bytes.length - back : bytes.length;
+  }
+  return bytes.length; // not UTF-8 there; read it as it is
+}
+
 export function processIo(): CliIo {
   return {
     env: process.env,
@@ -1806,6 +2795,14 @@ export function processIo(): CliIo {
         return null;
       }
     },
+    modifiedAt: (path) => {
+      try {
+        return statSync(path).mtimeMs;
+      } catch {
+        return null;
+      }
+    },
+    readFrom: (path, offset) => readTextChunk(path, offset),
     pid: process.pid,
     listDir: (path) => {
       try {
@@ -1850,6 +2847,10 @@ export function processIo(): CliIo {
       } catch (error) {
         return (error as NodeJS.ErrnoException).code === 'EPERM';
       }
+    },
+    onTerminate: (handler) => {
+      process.on('SIGTERM', handler);
+      return () => process.off('SIGTERM', handler);
     },
     ancestor: (name) => {
       // Walk up with ps (Linux and macOS) to the nearest process whose executable is \`name\`.

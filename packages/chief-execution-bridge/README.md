@@ -60,10 +60,10 @@ Reports are `relay-chief.report.v1`:
 `"reportExtensions": true` in the configuration, two optional fields are added, still
 under `relay-chief.report.v1`:
 
-| Field      | On               | Value                                                                                                                                                                                                                 |
-| ---------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `findings` | `completed` only | The agent's final message with its first `CHIEF_RESULT:` line removed, trimmed, and cut to at most 3,000 UTF-16 code units without splitting a surrogate pair. Omitted if empty.                                      |
-| `reason`   | `failed` only    | The bridge's own recorded reason, never agent text: `runtime_exceeded`, `result_marker_missing`, `spawn_failed` (also for `spawn_refused` and `spawn_not_ready`), `stop_failed`, or `agent_failed` for anything else. |
+| Field      | On               | Value                                                                                                                                                                                                                                              |
+| ---------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `findings` | `completed` only | The agent's final message with its first `CHIEF_RESULT:` line removed, trimmed, and cut to at most 3,000 UTF-16 code units without splitting a surrogate pair. Omitted if empty.                                                                   |
+| `reason`   | `failed` only    | The bridge's own recorded reason, never agent text: `runtime_exceeded`, `result_marker_missing`, `spawn_failed` (also for `spawn_refused`, `spawn_not_ready` and `repository_refresh_failed`), `stop_failed`, or `agent_failed` for anything else. |
 
 `accepted` and `running` reports never carry either field. `findings` is untrusted agent
 text: the bridge keeps it in the ledger only to build the report, never logs it and never
@@ -75,6 +75,78 @@ unknown fields, so turn it on only after relay-chief and relaychief-control with
 matching change are deployed. A report is fixed when it is queued, so reports already in
 the outbox keep the shape they were queued with, and findings are kept only for results
 received while the flag is on.
+
+## Repository refresh
+
+Each configured folder in `repositories` is the spawned agent's working copy. Without help
+it stays at whatever commit it was cloned at, so findings cite stale files and lines. With
+`"refreshRepositories": true`, before every spawn the bridge brings that folder to the tip
+of `origin`'s default branch and tells the agent the commit:
+
+1. `git rev-parse --show-toplevel` must be the configured folder itself, because the next
+   steps act on the whole repository.
+2. `git fetch --prune origin`.
+3. The default branch is `refs/remotes/origin/HEAD`; if that is unset,
+   `git remote set-head origin --auto` sets it first.
+4. `git reset --hard` to that branch, then `git clean -fdx`, which also removes ignored
+   files such as `node_modules` and `.env`.
+5. `git rev-parse HEAD` is recorded in the ledger with the invoke and named in the agent's
+   task, so a repeated invoke carries the same task text.
+
+git runs through `execFile` with no shell, a timeout per step, and an environment of only
+`PATH`, `HOME`, `LANG` and `GIT_TERMINAL_PROMPT=0`, with the repository's own fsmonitor and
+hooks overridden. A failure is logged as `repository_refresh_failed` with a short code
+naming the step, never git's output or a remote URL. The task then fails without a spawn:
+`repository_refresh_failed` in the ledger, `spawn_failed` as a report reason. A folder is
+never refreshed while another task of this bridge that uses it is started or not yet
+stopped.
+
+**Deploy order.** `refreshRepositories` defaults to `false`, and then nothing changes.
+Everything local in a configured folder is destroyed on every spawn, so before turning it
+on:
+
+- Give each configured folder to the bridge alone. Nothing else may keep work there, and
+  no two bridges may share one.
+- Check, as the service user, that `git fetch origin` in each folder works without a
+  prompt. Only `HOME` reaches git, so the remote must authenticate through that user's
+  git configuration or credential helper. An SSH remote that needs `SSH_AUTH_SOCK` will
+  fail.
+- Expect each spawn to start without installed dependencies, since `git clean -fdx`
+  removes them.
+
+A task already invoked before the flag was turned on keeps its original task text.
+
+## Dead worker detection
+
+An agent that ends without a final answer, or is ended on the node, otherwise holds its task
+`running`, and its slot, until `maxRuntimeMs`. With `"detectDeadWorkers": true`, each pass
+with a `running` task and no claimed result reads the core's `agents.list` once:
+
+- A row with the task's agent name counts as seen. It is gone when its spawn evidence says
+  `process.state: exited` or `work.state: completed`, otherwise live.
+- A name missing from the list is gone, but only once that agent has been seen, so a name
+  the core never lists cannot fail a task.
+- The first gone observation is recorded in the ledger. Once the agent has been gone for
+  `deadWorkerGraceMs` (default `60000`, at most one hour) and still no result has been
+  claimed, the task fails: `worker_gone` in the ledger and log, `agent_failed` as a report
+  reason. The usual stop and its slot release follow.
+- An agent listed live again clears the mark, and the window starts over next time.
+- A result read within the window wins and the task finishes as the agent claimed.
+- A core that cannot be reached, lacks `agents.list`, or answers in a shape the bridge cannot
+  read is no evidence either way: nothing is recorded or failed, `worker_check_unavailable`
+  is logged and the runtime limit still applies.
+
+The mark survives a restart, so a window that runs out while the bridge is down fails the
+task on the first pass that still finds the agent gone. A result the agent sends after the
+task has failed is ignored.
+
+**Deploy order.** `detectDeadWorkers` defaults to `false`, and then the core is never asked
+and nothing changes. It needs no change on the chief, since `agent_failed` is already a
+report reason. Set `deadWorkerGraceMs` longer than the time a final answer takes to reach
+Relay after the agent's session ends.
+
+The `agents.list` row shape was checked against relay-node's source at v17.2.1. Reading it
+from a real core has not been verified.
 
 ## Requirements
 

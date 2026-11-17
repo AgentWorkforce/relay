@@ -1,8 +1,9 @@
-//! Copilot in VS Code: native, kernel-held sessions and lifecycle-hook delivery.
+//! Copilot desktop and VS Code: kernel-held sessions and lifecycle-hook delivery.
 //! History acquisition remains in RelayHistory's `copilot` provider.
 use crate::relay::codex::turn_hook::TurnInbox;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+mod desktop;
 pub mod proof;
 mod settings;
 pub use settings::CopilotSettings;

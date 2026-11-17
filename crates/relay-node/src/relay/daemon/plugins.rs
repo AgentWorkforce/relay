@@ -48,6 +48,15 @@ pub trait AccountPlugin: Send + Sync + 'static {
     /// When a hosted MCP session linked itself to this agent, as Cloud last
     /// reported it.
     fn mcp_linked_at(&self, agent_id: &str) -> Option<String>;
+    /// Whether this account's Cursor chats call the hosted MCP with a signed
+    /// per-call chat proof Cloud verifies: the desktop routes Cursor's
+    /// `agent-relay` MCP entry through its proof-attaching helper, and Cloud
+    /// advertised `cursor_session_attestation`. Cursor itself names no chat
+    /// in an MCP call, so without this Cloud cannot act as any Cursor
+    /// session and its sessions keep the socket.
+    fn cursor_calls_attested(&self) -> bool {
+        false
+    }
     /// The identity sync state `/setup/status` reports.
     fn cloud_identity_sync(&self, core: &Core) -> Value;
     /// Refreshes what the account set up for this computer's tools, and

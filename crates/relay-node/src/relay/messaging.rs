@@ -14,6 +14,19 @@
 //!
 //! Cloud can recover the identity (a fresh token) at any time, which retires
 //! the copy held here: a token Relaycast refuses is fetched again, once.
+//!
+//! On a gate-only install (the workspace names a relaygate, or the identity
+//! route answers 403 `gate_only` with the gate's address, which is then
+//! kept like the one a gate-only resolve names) there is no Cloud identity:
+//! you enrol at the gate as one more agent, under a name derived from your
+//! user id ([`gate_person_name`]), with the device token. Everything you
+//! send and read then goes through the gate with the `rg_` token it issued,
+//! which is renewed like an agent's (same name and recovery proof, so the
+//! same agent id): at 80% of its lifetime, and once when the gate refuses it.
+//!
+//! ```text
+//! POST <gate>/v1/register {name, recovery}  (device token) ─▶ agent_id, rg_ token
+//! ```
 //! Relaycast queues every reply to you as a delivery; they are acknowledged
 //! when your conversations are read, and the identity's push socket wakes an
 //! open conversation the moment one arrives.
@@ -24,7 +37,12 @@
 //! the peer's id. A cached conversation id or a matching name is never
 //! enough, so a reused name or machine cannot inherit another identity's
 //! history. A conversation without proof is looked for again at most once a
-//! minute, sooner when a reply arrives.
+//! minute, sooner when a reply arrives, and then only in the conversations
+//! that changed since they were read.
+//!
+//! Every read as you is paced by the workspace's Relaycast pause
+//! ([`crate::relay::backoff`]): while it lasts, a read is refused with the
+//! time left instead of reaching Relaycast.
 
 use crate::relay::backoff::WorkspaceScope;
 use crate::relay::client::{self, Sent};
@@ -38,11 +56,14 @@ use crate::relay::protocol::{ErrorKind, RpcError};
 use crate::relay::push::PushTarget;
 use crate::relay::sdk_gaps;
 use crate::relay::state::Listing;
+use crate::relay::store::GateEnrolment;
 use crate::relay::workspace::{validated_base_url, Secret, Workspace};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::time::{Duration, Instant};
 
 /// Messages per history page.
@@ -61,17 +82,34 @@ pub struct PersonIdentity {
     pub base_url: String,
 }
 
+/// The name your own messaging identity enrols under at relaygate on a
+/// gate-only install: `person-` and the first 16 hex digits of the sha256
+/// of your Cloud user id (the owner hash agents already publish,
+/// [`crate::relay::people::identity_hash`]), e.g. `person-c6c289e49e9c05b2`
+/// for `user-1`. It is the same on every enrolment, so registering again
+/// (same name, same recovery proof) keeps the same agent, and it names no
+/// account detail. It never starts with relaygate's reserved `ctl:`.
+pub fn gate_person_name(user_id: &str) -> String {
+    let hash = crate::relay::people::identity_hash(user_id);
+    format!("person-{}", &hash[..16])
+}
+
 /// Whether `workspace` is the Relaycast workspace `identity` sends in. The
 /// identity is minted for the signed-in account's Cloud workspace, whose
 /// Relaycast key is `account_key`: the daemon's workspace is that one only
 /// when it uses the same key on the identity's origin. A CLI workspace on
 /// the same origin (two workspaces on `cast.agentrelay.com`) is another
-/// workspace, so its roster proves nothing about your sends.
+/// workspace, so its roster proves nothing about your sends. A gate-only
+/// workspace has no key: it is yours when your identity enrolled at its
+/// gate.
 fn is_identity_workspace(
     identity: &PersonIdentity,
     workspace: &Workspace,
     account_key: Option<&Secret>,
 ) -> bool {
+    if workspace.is_gate_only() {
+        return workspace.base_url == identity.base_url;
+    }
     workspace.base_url == identity.base_url && account_key == Some(&workspace.key)
 }
 
@@ -102,12 +140,74 @@ pub struct MessagingState {
     /// `(account key, identity)`: the identity belongs to one signed-in
     /// person in one Cloud workspace on one site.
     identity: Option<(String, PersonIdentity)>,
+    /// When the identity enrolled at relaygate (gate-only), its recovery
+    /// proof and when its `rg_` token is due for renewal.
+    gate: Option<GateEnrolment>,
+    /// The identity's `rg_` token relaygate rejected (401): never handed
+    /// out again, while the identity and its renewal timing are kept,
+    /// until an enrolment issues another.
+    refused: Option<Secret>,
     /// Conversation ids by `(identity name, endpoint key)`: search hints only.
     conversations: HashMap<(String, String), String>,
     /// Exact-address lookups that found no proof, by `(workspace, identity, endpoint key)`.
     misses: HashMap<(String, String, String), Instant>,
+    /// The conversations an exact-address lookup read without finding
+    /// proof, by the same key as `misses` and then conversation id.
+    checked: HashMap<(String, String, String), HashMap<String, Checked>>,
     /// `GET /v1/messages/{id}` answers, scoped to the credential that read them.
     details: HashMap<(String, Secret, String), Value>,
+}
+
+impl MessagingState {
+    /// A reply or a send may be the proof a lookup lacked: lookups run
+    /// again, and a conversation whose listing cannot show that it changed
+    /// is read again. `key` limits this to one lookup.
+    fn forget_misses(&mut self, key: Option<&(String, String, String)>) {
+        match key {
+            Some(key) => {
+                self.misses.remove(key);
+                if let Some(checked) = self.checked.get_mut(key) {
+                    checked.retain(|_, c| c.marked);
+                }
+            }
+            None => {
+                self.misses.clear();
+                for checked in self.checked.values_mut() {
+                    checked.retain(|_, c| c.marked);
+                }
+            }
+        }
+    }
+}
+
+/// What `/v1/dm/conversations` said of a conversation that was read without
+/// finding proof. Relaycast lists each conversation with its last message
+/// (`last_message`: id, text, sender, time), so while the listing says the
+/// same nothing new can be in it. A server that lists no last message
+/// cannot show a change: such a conversation is read again after
+/// [`EXACT_MISS_TTL`], or when a reply arrives.
+struct Checked {
+    listing: String,
+    marked: bool,
+    at: Instant,
+}
+
+impl Checked {
+    fn of(conversation: &Value) -> Checked {
+        Checked {
+            listing: format!("{:x}", Sha256::digest(conversation.to_string())),
+            marked: conversation
+                .get("last_message")
+                .is_some_and(|last| !last.is_null()),
+            at: Instant::now(),
+        }
+    }
+
+    /// Whether reading the conversation listed as `now` again would only
+    /// read what this check already read.
+    fn covers(&self, now: &Checked) -> bool {
+        self.listing == now.listing && (self.marked || self.at.elapsed() < EXACT_MISS_TTL)
+    }
 }
 
 /// One message as a conversation shows it.
@@ -123,11 +223,28 @@ pub struct DirectMessage {
     pub mine: bool,
 }
 
+/// The code of a read refused here, without reaching Relaycast, because
+/// the workspace's pause started during the pass.
+const PAUSED: &str = "relaycast_paused";
+
+/// A read as you refused while the workspace's Relaycast pause lasts, with
+/// the time left as the error's `Retry-After`.
+fn paused(wait: Duration) -> RpcError {
+    let mut error = RpcError::new(
+        ErrorKind::RateLimited,
+        "Your messages are paused while Agent Relay recovers.",
+    );
+    error.retry_after_secs = Some(wait.as_secs() + u64::from(wait.subsec_nanos() > 0));
+    error
+}
+
 fn text(value: &Value) -> Option<String> {
     value.as_str().filter(|s| !s.is_empty()).map(str::to_string)
 }
 
 mod conversations;
+#[cfg(test)]
+mod history_tests;
 pub use conversations::{direct_conversations, find_conversation};
 
 /// The agent id a desktop address carries: `name@<machine prefix>-<id>`,
@@ -273,6 +390,53 @@ fn sign_in_required() -> RpcError {
     )
 }
 
+/// Another workspace was saved while a request for the one before was out.
+fn workspace_changed() -> RpcError {
+    RpcError::new(
+        ErrorKind::CloudFailed,
+        "Your Agent Relay workspace changed while you were being enrolled. Try again.",
+    )
+}
+
+/// An enrolment at the gate that failed, as messaging reports it: signed
+/// out says what to do about it for your own messages.
+fn gate_identity_error(error: RpcError) -> RpcError {
+    match error.data.kind {
+        ErrorKind::NotSignedIn => RpcError::new(
+            ErrorKind::NotSignedIn,
+            "Messaging as yourself is unavailable: this computer is signed out of Agent Relay, so it cannot enrol you through relaygate. Sign in again.",
+        ),
+        _ => error,
+    }
+}
+
+/// Your gate identity cannot be enrolled before `wait` is over (the gate's
+/// `Retry-After` after a failure, `why`), and no unexpired token is held.
+fn person_gate_waiting(wait: std::time::Duration, why: Option<String>) -> RpcError {
+    let secs = wait.as_secs().max(1);
+    let why = why.map(|why| format!(" {why}")).unwrap_or_default();
+    let mut error = RpcError::new(
+        ErrorKind::RelaycastUnreachable,
+        format!("Messaging as yourself is waiting for relaygate.{why} Try again in {secs}s."),
+    );
+    error.retry_after_secs = Some(secs);
+    error
+}
+
+/// The stored workspace's key, address and Agent Relay workspace: what
+/// tells one saved workspace from another.
+fn stored_workspace_of(
+    store: &crate::relay::store::Store,
+) -> Option<(Secret, String, Option<String>)> {
+    store.cloud.as_ref().map(|cloud| {
+        (
+            cloud.key.clone(),
+            cloud.base_url.clone(),
+            cloud.account_workspace_id.clone(),
+        )
+    })
+}
+
 /// Who an identity and everything read with it belong to.
 fn account_key(account: &CloudAccount) -> String {
     format!(
@@ -306,26 +470,71 @@ impl Core {
         }
     }
 
-    /// Your relay identity for the signed-in account, from memory or Cloud.
-    /// `refresh` asks Cloud again, for a token Relaycast refused.
+    /// Your relay identity for the signed-in account, from memory or Cloud
+    /// (or relaygate, on a gate-only install). `refresh` asks again, for a
+    /// token Relaycast refused.
     pub(crate) async fn person_identity(&self, refresh: bool) -> Result<PersonIdentity, RpcError> {
+        let refused = refresh
+            .then(|| self.current_identity().map(|identity| identity.token))
+            .flatten();
+        self.person_identity_unless(refresh, refused).await
+    }
+
+    /// Your relay identity again after `refused` (the token a call used)
+    /// was rejected. With a key this asks Cloud again, as
+    /// `person_identity(true)` does. Through a gate, a token renewed
+    /// meanwhile is kept: only `refused` is never handed out again.
+    pub(crate) async fn person_identity_refused(
+        &self,
+        refused: &Secret,
+    ) -> Result<PersonIdentity, RpcError> {
+        self.person_identity_unless(true, Some(refused.clone()))
+            .await
+    }
+
+    async fn person_identity_unless(
+        &self,
+        refresh: bool,
+        refused: Option<Secret>,
+    ) -> Result<PersonIdentity, RpcError> {
         let account = self.plugins.cloud.account().ok_or_else(sign_in_required)?;
-        if let Some(identity) = self.current_identity().filter(|_| !refresh) {
+        let gate_url = self.person_gate_url();
+        if let Some(identity) = self.current_identity().filter(|identity| {
+            !refresh
+                && !self.person_gate_due()
+                && !self.person_token_refused(&identity.token)
+                && gate_url
+                    .as_ref()
+                    .is_none_or(|gate| *gate == identity.base_url)
+        }) {
             return Ok(identity);
+        }
+        if let Some(gate_url) = gate_url {
+            return self
+                .person_identity_at_gate(&account, &gate_url, refused.as_ref())
+                .await;
         }
         let path = format!(
             "/workspaces/{}/messaging/identity/credential",
             segment(&account.workspace_id)
         );
-        let body = self
+        let asked_in = self.stored_workspace();
+        let body = match self
             .plugins
             .cloud
             .request("POST", path, Some(json!({})))
             .await
-            .map_err(|error| match error {
-                CloudError::SignedOut | CloudError::Rejected => sign_in_required(),
-                error => RpcError::cloud(&error),
-            })?;
+        {
+            Ok(body) => body,
+            Err(CloudError::GateOnly { relaygate_url }) => {
+                let gate_url = self.adopt_gate_url(&account, asked_in, relaygate_url)?;
+                return self
+                    .person_identity_at_gate(&account, &gate_url, refused.as_ref())
+                    .await;
+            }
+            Err(CloudError::SignedOut | CloudError::Rejected) => return Err(sign_in_required()),
+            Err(error) => return Err(RpcError::cloud(&error)),
+        };
         let identity = &body["identity"];
         let (Some(name), Some(agent_id), Some(token), Some(base_url)) = (
             text(&identity["name"]),
@@ -356,7 +565,209 @@ impl Core {
                 *state = MessagingState::default();
             }
             state.identity = Some((account_key(&account), identity.clone()));
+            state.gate = None;
+            state.refused = None;
         }
+        if let Some(core) = self.arc() {
+            tokio::spawn(async move { core.sync_agents().await });
+        }
+        Ok(identity)
+    }
+
+    /// The relaygate your identity enrols at: the gate-only workspace's, or
+    /// one kept in the store (adopted from a `gate_only` refusal) before
+    /// the workspace was resolved again. None with a workspace key.
+    fn person_gate_url(&self) -> Option<String> {
+        self.workspace()
+            .filter(Workspace::is_gate_only)
+            .and_then(|workspace| workspace.gate_url)
+            .or_else(|| {
+                self.store.read(|store| {
+                    store
+                        .cloud
+                        .as_ref()
+                        .and_then(|cloud| cloud.gate_url.as_deref())
+                        .and_then(validated_base_url)
+                })
+            })
+    }
+
+    /// Which stored workspace a request was made in: its key, address and
+    /// Agent Relay workspace. Another workspace saved meanwhile differs.
+    fn stored_workspace(&self) -> Option<(Secret, String, Option<String>)> {
+        self.store.read(stored_workspace_of)
+    }
+
+    /// The gate a `gate_only` refusal of the identity route named, kept in
+    /// the store as a gate-only resolve keeps it, unless a gate is known
+    /// already (then that one is used). A refusal that names no valid gate
+    /// leaves nothing to message through. `account` asked while `asked_in`
+    /// was stored: a refusal that arrives after a sign-out, another account
+    /// or another workspace belongs to none of them and is neither kept nor
+    /// used.
+    fn adopt_gate_url(
+        &self,
+        account: &CloudAccount,
+        asked_in: Option<(Secret, String, Option<String>)>,
+        offered: Option<String>,
+    ) -> Result<String, RpcError> {
+        if self.plugins.cloud.account().map(|a| account_key(&a)) != Some(account_key(account)) {
+            return Err(sign_in_required());
+        }
+        // As the file holds it now: another process may have saved the
+        // workspace you switched to.
+        let unchanged = self
+            .store
+            .update_latest(|store| stored_workspace_of(store) == asked_in)
+            .unwrap_or_else(|_| self.stored_workspace() == asked_in);
+        if !unchanged {
+            return Err(workspace_changed());
+        }
+        if let Some(known) = self.person_gate_url() {
+            return Ok(known);
+        }
+        let gate = offered.ok_or_else(|| {
+            RpcError::new(
+                ErrorKind::CloudRefused,
+                "Messaging as yourself is unavailable: this workspace is gate-only, and Agent Relay named no relaygate to message through.",
+            )
+        })?;
+        // A failed save is not fatal here: you still message through the
+        // gate now, and the next refusal adopts it again.
+        // Checked again as it saves, so a workspace saved in between keeps
+        // its own credentials and the gate is not used either.
+        let saved = self.store.update_latest(|store| {
+            if stored_workspace_of(store) != asked_in {
+                return false;
+            }
+            if let Some(cloud) = store.cloud.as_mut().filter(|c| c.gate_url.is_none()) {
+                cloud.gate_url = Some(gate.clone());
+            }
+            true
+        });
+        if let Ok(false) = saved {
+            return Err(workspace_changed());
+        }
+        Ok(gate)
+    }
+
+    /// Whether relaygate rejected `token`, your identity's `rg_` token.
+    fn person_token_refused(&self, token: &Secret) -> bool {
+        self.messaging.lock().unwrap().refused.as_ref() == Some(token)
+    }
+
+    /// Whether your identity's `rg_` token (gate-only) is due for renewal.
+    pub(crate) fn person_gate_due(&self) -> bool {
+        let state = self.messaging.lock().unwrap();
+        state
+            .gate
+            .as_ref()
+            .is_some_and(|gate| gate.due(chrono::Utc::now()))
+    }
+
+    /// Whether your identity's `rg_` token (gate-only) has expired.
+    fn person_gate_expired(&self) -> bool {
+        let state = self.messaging.lock().unwrap();
+        state
+            .gate
+            .as_ref()
+            .is_some_and(|gate| gate.expired(chrono::Utc::now()))
+    }
+
+    /// The renewal key of your gate identity, `@name`, when it is held.
+    pub(crate) fn person_gate_channel(&self) -> Option<String> {
+        let state = self.messaging.lock().unwrap();
+        state.gate.as_ref()?;
+        state
+            .identity
+            .as_ref()
+            .map(|(_, identity)| person_channel(&identity.name))
+    }
+
+    /// Enrols (or enrols again, for a new token) your identity at
+    /// `gate_url` as one more agent: [`gate_person_name`], the device token,
+    /// and the recovery proof kept for that name. One enrolment runs at a
+    /// time; a caller that waited for another's uses the token it got.
+    /// `refused`: a token the gate rejected, never handed out again.
+    ///
+    /// A token that is due but has not expired keeps working: when
+    /// enrolling again fails, or the gate's wait after a failure is not
+    /// over, it is returned instead of the error. Without one, the wait is
+    /// an error that says when to try again; no request is sent before it.
+    async fn person_identity_at_gate(
+        &self,
+        account: &CloudAccount,
+        gate_url: &str,
+        refused: Option<&Secret>,
+    ) -> Result<PersonIdentity, RpcError> {
+        let user_id = account
+            .user_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .ok_or_else(sign_in_required)?;
+        let name = gate_person_name(user_id);
+        let channel = person_channel(&name);
+        let lock = self.gate_locks.get(&channel);
+        let _enrolling = lock.lock().await;
+        if let Some(refused) = refused {
+            let mut state = self.messaging.lock().unwrap();
+            if state
+                .identity
+                .as_ref()
+                .is_some_and(|(_, identity)| identity.token == *refused)
+            {
+                state.refused = Some(refused.clone());
+            }
+        }
+        let held = self.current_identity().filter(|identity| {
+            identity.base_url == gate_url
+                && identity.name == name
+                && !self.person_token_refused(&identity.token)
+        });
+        if let Some(identity) = held.clone().filter(|_| !self.person_gate_due()) {
+            return Ok(identity);
+        }
+        let usable = held.filter(|_| !self.person_gate_expired());
+        if let Some((wait, why)) = self.person_renewal_wait(&channel) {
+            return usable.ok_or_else(|| person_gate_waiting(wait, why));
+        }
+        let enrolled = self.enrol_at_gate(gate_url, &name).await;
+        // Signed out, or another account signed in, while it enrolled:
+        // neither the new token nor the one held before is this person's
+        // to keep or hand out.
+        if self.plugins.cloud.account().map(|a| account_key(&a)) != Some(account_key(account)) {
+            return Err(sign_in_required());
+        }
+        let (issued, enrolment) = match enrolled {
+            Ok(enrolled) => enrolled,
+            Err(error) => {
+                // Signed out, nothing was sent: nothing to wait for.
+                if error.data.kind != ErrorKind::NotSignedIn || self.device_token().await.is_ok() {
+                    self.person_renewal_failed(&channel, &error);
+                }
+                return usable.ok_or_else(|| gate_identity_error(error));
+            }
+        };
+        let identity = PersonIdentity {
+            name,
+            agent_id: issued.agent_id,
+            token: issued.token,
+            base_url: gate_url.to_owned(),
+        };
+        {
+            let mut state = self.messaging.lock().unwrap();
+            if state
+                .identity
+                .as_ref()
+                .is_some_and(|(owner, _)| *owner != account_key(account))
+            {
+                *state = MessagingState::default();
+            }
+            state.identity = Some((account_key(account), identity.clone()));
+            state.gate = Some(enrolment);
+            state.refused = None;
+        }
+        self.forget_gate_renewal(&channel);
         if let Some(core) = self.arc() {
             tokio::spawn(async move { core.sync_agents().await });
         }
@@ -365,10 +776,10 @@ impl Core {
 
     /// The push channel for your identity, once it is known.
     pub(crate) fn person_push_target(&self) -> Option<PushTarget> {
-        let identity = self.current_identity()?;
-        let team = self.workspace();
-        let account_key = self.account_workspace_key();
-        let workspace = person_workspace_scope(&identity, team.as_ref(), account_key.as_ref());
+        let identity = self
+            .current_identity()
+            .filter(|identity| !self.person_token_refused(&identity.token))?;
+        let workspace = self.person_scope(&identity);
         Some(PushTarget {
             agent: person_channel(&identity.name),
             base_url: identity.base_url,
@@ -386,7 +797,7 @@ impl Core {
     /// A reply arrived for you, or your socket came up: any open
     /// conversation re-reads, and exact-address lookups may now find proof.
     pub(crate) fn person_woke(&self) {
-        self.messaging.lock().unwrap().misses.clear();
+        self.messaging.lock().unwrap().forget_misses(None);
         self.hub.invalidated(Listing::Messages);
     }
 
@@ -414,7 +825,7 @@ impl Core {
         let identity = self.person_identity(false).await?;
         let (identity, sent) = match send(identity.clone()).await {
             Err(error) if error.is_auth_rejection() => {
-                let fresh = self.person_identity(true).await?;
+                let fresh = self.person_identity_refused(&identity.token).await?;
                 (fresh.clone(), send(fresh).await)
             }
             other => (identity, other),
@@ -436,10 +847,68 @@ impl Core {
                 conversation.clone(),
             );
         }
-        state
-            .misses
-            .remove(&(workspace, identity.name.clone(), endpoint.key()));
+        state.forget_misses(Some(&(workspace, identity.name.clone(), endpoint.key())));
         Ok(sent)
+    }
+
+    /// The Relaycast workspace that paces calls as you.
+    fn person_scope(&self, identity: &PersonIdentity) -> WorkspaceScope {
+        let team = self.workspace();
+        let account_key = self.account_workspace_key();
+        person_workspace_scope(identity, team.as_ref(), account_key.as_ref())
+    }
+
+    /// Refuses a read as you while the workspace's Relaycast pause lasts,
+    /// with the time left as the error's `Retry-After`. A read it admits
+    /// after a pause is the workspace's one recheck.
+    fn person_read_allowed(&self, scope: &WorkspaceScope) -> Result<(), RpcError> {
+        match self.relaycast_backoff.remaining(scope) {
+            Some(wait) => Err(paused(wait)),
+            None => Ok(()),
+        }
+    }
+
+    /// `error`, a read as you that failed, as the caller sees it: while the
+    /// workspace's pause lasts (this read or another started it), refused
+    /// with the time left.
+    fn person_error(&self, scope: &WorkspaceScope, error: &relaycast::RelayError) -> RpcError {
+        match self.relaycast_backoff.pause_left(scope) {
+            Some(wait) => paused(wait),
+            None => RpcError::from_relaycast(error),
+        }
+    }
+
+    /// Runs one Relaycast read as you and tells the workspace pause how it
+    /// went. A refused token is your own, renewed by the caller: it says
+    /// nothing about the workspace key, so the workspace is not checked again.
+    /// Once a pause starts, by an earlier read of the same pass or anyone
+    /// else's, the read is refused without reaching Relaycast: the recheck
+    /// a pass was admitted with ends with the first pacing answer.
+    #[allow(clippy::result_large_err)] // the SDK's own error type
+    async fn person_read<T>(
+        &self,
+        scope: &WorkspaceScope,
+        read: impl Future<Output = relaycast::Result<T>>,
+    ) -> relaycast::Result<T> {
+        if let Some(wait) = self.relaycast_backoff.pause_left(scope) {
+            return Err(relaycast::RelayError::Api {
+                code: PAUSED.into(),
+                message: "the workspace's Relaycast pause has not ended".into(),
+                status: 429,
+                request_id: None,
+                attempts: 0,
+                retry_after_ms: Some(u64::try_from(wait.as_millis()).unwrap_or(u64::MAX)),
+                details: None,
+            });
+        }
+        let result = read.await;
+        match &result {
+            Err(error) if crate::relay::node_credential::rejects_credential(error) => {
+                self.relaycast_backoff.record_error(scope, error);
+            }
+            result => self.observe_relaycast_result(scope, result),
+        }
+        result
     }
 
     /// The signed-in account's Relaycast workspace key: the workspace your
@@ -481,8 +950,13 @@ impl Core {
 
     /// Acknowledges the replies Relaycast queued for you. History is
     /// durable; this only stops redrive. Returns how many.
-    async fn acknowledge_person_deliveries(&self, identity: &PersonIdentity) -> usize {
-        let Ok(pending) = client::deliveries(&identity.base_url, &identity.token).await else {
+    async fn acknowledge_person_deliveries(
+        &self,
+        identity: &PersonIdentity,
+        scope: &WorkspaceScope,
+    ) -> usize {
+        let pending = client::deliveries(&identity.base_url, &identity.token);
+        let Ok(pending) = self.person_read(scope, pending).await else {
             return 0;
         };
         let mut acknowledged = 0;
@@ -506,16 +980,18 @@ impl Core {
         before: Option<&str>,
     ) -> Result<History, RpcError> {
         let identity = self.person_identity(false).await?;
+        let scope = self.person_scope(&identity);
+        self.person_read_allowed(&scope)?;
         let result = match self.history_as(&identity, endpoint, before).await {
             Err(error) if error.is_auth_rejection() => {
-                let fresh = self.person_identity(true).await?;
+                let fresh = self.person_identity_refused(&identity.token).await?;
                 self.history_as(&fresh, endpoint, before)
                     .await
                     .map(|m| (fresh, m))
             }
             other => other.map(|m| (identity, m)),
         };
-        let (identity, messages) = result.map_err(|e| RpcError::from_relaycast(&e))?;
+        let (identity, messages) = result.map_err(|e| self.person_error(&scope, &e))?;
         Ok(History {
             identity: identity.name,
             messages,
@@ -529,9 +1005,10 @@ impl Core {
         before: Option<&str>,
     ) -> relaycast::Result<Vec<DirectMessage>> {
         let http = sdk_gaps::http(&identity.base_url, &identity.token)?;
-        if self.acknowledge_person_deliveries(identity).await > 0 {
+        let scope = self.person_scope(identity);
+        if self.acknowledge_person_deliveries(identity, &scope).await > 0 {
             // Any incoming DM can be the proof an earlier lookup lacked.
-            self.messaging.lock().unwrap().misses.clear();
+            self.messaging.lock().unwrap().forget_misses(None);
         }
         let workspace = self
             .plugins
@@ -555,7 +1032,9 @@ impl Core {
                 .get(&(identity.name.clone(), peer.key()))
                 .cloned()
         };
-        let listing = sdk_gaps::dm_conversations(&http).await?;
+        let listing = self
+            .person_read(&scope, sdk_gaps::dm_conversations(&http))
+            .await?;
         let mut conversations = direct_conversations(&listing, &identity.name);
         if let Some(preferred) = &preferred {
             conversations.sort_by_key(|c| c["id"].as_str() != Some(preferred.as_str()));
@@ -563,11 +1042,45 @@ impl Core {
         let mut selected: Option<String> = None;
         match peer {
             Endpoint::Address(address) => {
+                {
+                    // Conversations no longer listed are not remembered.
+                    let listed: HashSet<String> = conversations
+                        .iter()
+                        .filter_map(|c| text(&c["id"]))
+                        .collect();
+                    let mut state = self.messaging.lock().unwrap();
+                    if state.checked.len() >= DETAILS_KEPT {
+                        state.checked.clear();
+                    }
+                    if let Some(checked) = state.checked.get_mut(&miss_key) {
+                        checked.retain(|id, _| listed.contains(id));
+                    }
+                }
                 for candidate in &conversations {
                     let Some(id) = text(&candidate["id"]) else {
                         continue;
                     };
-                    let mut page = sdk_gaps::dm_messages(&http, &id, HISTORY_LIMIT, None).await?;
+                    // A conversation read without proof is read again only
+                    // once the listing shows it changed. What was read before
+                    // an error stays read, so a retry goes on from there.
+                    let listed = Checked::of(candidate);
+                    let unchanged = self
+                        .messaging
+                        .lock()
+                        .unwrap()
+                        .checked
+                        .get(&miss_key)
+                        .and_then(|checked| checked.get(&id))
+                        .is_some_and(|checked| checked.covers(&listed));
+                    if unchanged {
+                        continue;
+                    }
+                    let mut page = self
+                        .person_read(
+                            &scope,
+                            sdk_gaps::dm_messages(&http, &id, HISTORY_LIMIT, None),
+                        )
+                        .await?;
                     let mut proof = endpoint_binding(candidate, &page, address, &identity.name);
                     let mut seen = HashSet::new();
                     // The address-bearing message may be older than the
@@ -580,14 +1093,25 @@ impl Core {
                         if !seen.insert(cursor.clone()) {
                             break;
                         }
-                        page =
-                            sdk_gaps::dm_messages(&http, &id, HISTORY_LIMIT, Some(&cursor)).await?;
+                        page = self
+                            .person_read(
+                                &scope,
+                                sdk_gaps::dm_messages(&http, &id, HISTORY_LIMIT, Some(&cursor)),
+                            )
+                            .await?;
                         proof = endpoint_binding(candidate, &page, address, &identity.name);
                     }
                     if proof.is_some() {
                         selected = Some(id);
                         break;
                     }
+                    self.messaging
+                        .lock()
+                        .unwrap()
+                        .checked
+                        .entry(miss_key.clone())
+                        .or_default()
+                        .insert(id, listed);
                 }
             }
             Endpoint::Name(name) => {
@@ -611,8 +1135,13 @@ impl Core {
                 .conversations
                 .insert((identity.name.clone(), peer.key()), selected.clone());
         }
-        let page = sdk_gaps::dm_messages(&http, &selected, HISTORY_LIMIT, before).await?;
-        let hydrated = self.hydrate(&http, identity, page).await?;
+        let page = self
+            .person_read(
+                &scope,
+                sdk_gaps::dm_messages(&http, &selected, HISTORY_LIMIT, before),
+            )
+            .await?;
+        let hydrated = self.hydrate(&http, identity, &scope, page).await?;
         Ok(threaded(&hydrated, &identity.name))
     }
 
@@ -623,6 +1152,7 @@ impl Core {
         &self,
         http: &crate::relay::diagnostic_http::HttpClient,
         identity: &PersonIdentity,
+        scope: &WorkspaceScope,
         items: Vec<Value>,
     ) -> relaycast::Result<Vec<Value>> {
         let complete = |item: &Value| {
@@ -640,7 +1170,7 @@ impl Core {
                     return Ok(item);
                 }
                 let id = text(&item["id"]).unwrap_or_default();
-                let metadata = self.message_detail(http, identity, &id).await?;
+                let metadata = self.message_detail(http, identity, scope, &id).await?;
                 let mut merged = metadata.clone();
                 if let (Some(merged), Some(item)) = (merged.as_object_mut(), item.as_object()) {
                     for (key, value) in item {
@@ -662,7 +1192,7 @@ impl Core {
             .collect();
         for parent in parents {
             if ids.insert(parent.clone()) {
-                hydrated.push(self.message_detail(http, identity, &parent).await?);
+                hydrated.push(self.message_detail(http, identity, scope, &parent).await?);
             }
         }
         Ok(hydrated)
@@ -672,6 +1202,7 @@ impl Core {
         &self,
         http: &crate::relay::diagnostic_http::HttpClient,
         identity: &PersonIdentity,
+        scope: &WorkspaceScope,
         id: &str,
     ) -> relaycast::Result<Value> {
         let key = (
@@ -682,7 +1213,9 @@ impl Core {
         if let Some(cached) = self.messaging.lock().unwrap().details.get(&key) {
             return Ok(cached.clone());
         }
-        let value = sdk_gaps::message(http, id).await?;
+        // Each detail read is observed on its own: an overload answer
+        // pauses the workspace, and the reads not yet sent are refused.
+        let value = self.person_read(scope, sdk_gaps::message(http, id)).await?;
         if value["id"] != id {
             return Err(relaycast::RelayError::InvalidResponse(
                 "incorrect message thread metadata".into(),
@@ -699,18 +1232,22 @@ impl Core {
     /// Your 1:1 conversations, as Relaycast lists them.
     pub async fn conversations(&self) -> Result<Conversations, RpcError> {
         let identity = self.person_identity(false).await?;
+        let scope = self.person_scope(&identity);
+        self.person_read_allowed(&scope)?;
         let list = |identity: PersonIdentity| async move {
             let http = sdk_gaps::http(&identity.base_url, &identity.token)?;
-            sdk_gaps::dm_conversations(&http).await
+            let scope = self.person_scope(&identity);
+            self.person_read(&scope, sdk_gaps::dm_conversations(&http))
+                .await
         };
         let (identity, listing) = match list(identity.clone()).await {
             Err(error) if error.is_auth_rejection() => {
-                let fresh = self.person_identity(true).await?;
+                let fresh = self.person_identity_refused(&identity.token).await?;
                 (fresh.clone(), list(fresh).await)
             }
             other => (identity, other),
         };
-        let listing = listing.map_err(|e| RpcError::from_relaycast(&e))?;
+        let listing = listing.map_err(|e| self.person_error(&scope, &e))?;
         let conversations = direct_conversations(&listing, &identity.name)
             .iter()
             .map(|c| {
@@ -772,6 +1309,7 @@ mod tests {
             workspace_id: Some("rw_team".into()),
             source: Default::default(),
             control_url: None,
+            gate_url: None,
         };
         let person = PersonIdentity {
             name: "person".into(),
@@ -806,6 +1344,7 @@ mod tests {
             workspace_id: Some("rw_account".into()),
             source: Default::default(),
             control_url: None,
+            gate_url: None,
         };
         let person = PersonIdentity {
             name: "person".into(),
@@ -842,6 +1381,46 @@ mod tests {
             person_workspace_scope(&person, Some(&cli), account_key),
             WorkspaceScope::credential(&person.base_url, &person.token, "your messaging workspace"),
         );
+    }
+
+    #[test]
+    fn a_gate_only_workspace_is_yours_when_you_enrolled_at_its_gate() {
+        let gate = Workspace {
+            key: Secret::default(),
+            base_url: "https://gate.example".into(),
+            workspace_id: Some("rw_account".into()),
+            source: Default::default(),
+            control_url: None,
+            gate_url: Some("https://gate.example".into()),
+        };
+        let person = PersonIdentity {
+            name: gate_person_name("user-1"),
+            agent_id: "agent_person".into(),
+            token: Secret::new("rg_person"),
+            base_url: gate.base_url.clone(),
+        };
+        // The store's key is empty beside a gate, and never what decides.
+        for account_key in [
+            None,
+            Some(&Secret::default()),
+            Some(&Secret::new("rk_live_x")),
+        ] {
+            assert!(is_identity_workspace(&person, &gate, account_key));
+        }
+        let elsewhere = Workspace {
+            base_url: "https://other-gate.example".into(),
+            gate_url: Some("https://other-gate.example".into()),
+            ..gate.clone()
+        };
+        assert!(!is_identity_workspace(&person, &elsewhere, None));
+    }
+
+    #[test]
+    fn the_gate_name_of_a_person_is_stable_and_derived_from_the_user_id() {
+        assert_eq!(gate_person_name("user-1"), "person-c6c289e49e9c05b2");
+        assert_eq!(gate_person_name("user-1"), gate_person_name("user-1"));
+        assert_ne!(gate_person_name("user-1"), gate_person_name("user-2"));
+        assert!(!gate_person_name("ctl:x").starts_with("ctl:"));
     }
 
     #[test]

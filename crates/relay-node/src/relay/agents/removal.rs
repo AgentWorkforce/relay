@@ -83,32 +83,27 @@ impl Core {
         if !self.prepare_removal(&registration, name, mode).await? {
             return Ok(());
         }
-        let key = self.key_for(&registration).ok_or_else(|| key_gone(name))?;
-        let mut removed = self.remove_remotely(&registration, name, &key).await;
-        if let Err(error) = &removed {
-            match self.prove_rejected_key(&registration, &key, error).await {
-                KeyProof::Current(current) => {
-                    removed = self.remove_remotely(&registration, name, &current).await;
-                }
-                KeyProof::Unreachable => {
-                    self.leave_unreachable(&registration, name).await;
-                    removed = Ok(());
-                }
-                KeyProof::Unknown => {}
-            }
+        if mode.removes_integrations() {
+            self.remove_integrations(&registration, name).await?;
         }
-        removed.map_err(|error| {
-            let mut mapped = RpcError::from_relaycast(&error);
-            let status = match &error {
-                relaycast::RelayError::Api { status, .. } => format!(" (HTTP {status})"),
-                _ => String::new(),
-            };
-            mapped.message = format!(
-                "Could not remove @{name} from Agent Relay{status}. {} The registration was kept; retry when the connection is working.",
-                mapped.message,
-            );
-            mapped
-        })?;
+        // Held until the registration is dropped: a renewal can neither
+        // run between the gate's delete and that, nor register it again.
+        let _renewals = match &registration.gate {
+            Some(_) => Some(self.gate_locks.get(name).lock_owned().await),
+            None => None,
+        };
+        let launched_at_gate = registration
+            .spawn
+            .as_ref()
+            .is_some_and(|spawn| spawn.gate_launch);
+        if registration.gate.is_some() {
+            self.remove_at_gate(&registration, name).await?;
+        } else if !launched_at_gate {
+            self.remove_with_key(&registration, name).await?;
+        }
+        // A launched agent of a gate-only install has no workspace key: its
+        // relaygate registration is ended with its own token once the
+        // registration is dropped (`release_launch_gate`, below).
         self.store
             .update(|store| store.remove(name))
             .map_err(|error| {
@@ -119,6 +114,18 @@ impl Core {
             })?;
         self.stop_spawned(&registration);
         self.forget_agent_and_alias(&registration);
+        self.forget_gate_renewal(name);
+        if let (None, Some(spawn)) = (&registration.gate, &registration.spawn) {
+            // A launched agent's relaygate registration ends with it.
+            self.release_launch_gate(name, &spawn.invocation_id).await;
+        }
+        if registration.gate.is_some() {
+            // Its aliases are gate agents of their own: each is deleted with
+            // its own token, now that nothing here holds it.
+            for alias in registration.alias.iter().chain(registration.retired()) {
+                self.delete_gate_alias(&registration.base_url, alias).await;
+            }
+        }
         self.sync_agents().await;
         self.hub.invalidated(Listing::Agents);
         let left = match registration.alias_name() {
@@ -127,6 +134,41 @@ impl Core {
         };
         self.hub.activity(Level::Info, left);
         Ok(())
+    }
+
+    /// Removes a Relaycast-key agent from Relaycast with the workspace
+    /// key, settling a rejected key first.
+    async fn remove_with_key(
+        &self,
+        registration: &Registration,
+        name: &str,
+    ) -> Result<(), RpcError> {
+        let key = self.key_for(registration).ok_or_else(|| key_gone(name))?;
+        let mut removed = self.remove_remotely(registration, name, &key).await;
+        if let Err(error) = &removed {
+            match self.prove_rejected_key(registration, &key, error).await {
+                KeyProof::Current(current) => {
+                    removed = self.remove_remotely(registration, name, &current).await;
+                }
+                KeyProof::Unreachable => {
+                    self.leave_unreachable(registration, name).await;
+                    removed = Ok(());
+                }
+                KeyProof::Unknown => {}
+            }
+        }
+        removed.map_err(|error| {
+                let mut mapped = RpcError::from_relaycast(&error);
+                let status = match &error {
+                    relaycast::RelayError::Api { status, .. } => format!(" (HTTP {status})"),
+                    _ => String::new(),
+                };
+                mapped.message = format!(
+                    "Could not remove @{name} from Agent Relay{status}. {} The registration was kept; retry when the connection is working.",
+                    mapped.message,
+                );
+                mapped
+            })
     }
 
     /// Takes an agent whose saved key's workspace is out of reach off this
@@ -222,6 +264,103 @@ impl Core {
         removed
     }
 
+    /// Unsubscribes every integration `registration` holds before its
+    /// registration (the only record of them) is dropped. Without this an
+    /// archived or ended agent left its relayfile webhook subscription and
+    /// reply subscription behind for good, and the workspace's webhook
+    /// subscription cap filled up.
+    ///
+    /// Only an explicit refusal (another workspace, signed out, a key that
+    /// is missing, a resource already gone) lets removal go ahead, naming
+    /// what may be left. A rejected saved key is first settled like every
+    /// other removal write: a rotation found retries the cleanup with the
+    /// current key, and a workspace proved out of reach is left as is.
+    /// Anything else (a store that could not be saved, an outage, a key
+    /// nothing proves either way) keeps the agent and its record, so the
+    /// next pass retries.
+    async fn remove_integrations(
+        &self,
+        registration: &Registration,
+        name: &str,
+    ) -> Result<(), RpcError> {
+        if !registration.has_integrations() {
+            return Ok(());
+        }
+        let _integrating = self.integration_lock.lock().await;
+        let entries: Vec<(String, String)> = registration
+            .integrations
+            .iter()
+            .flatten()
+            .map(|entry| (entry.provider.clone(), entry.resource.clone()))
+            .collect();
+        // Settled once per removal: a rotation found moves every saved copy,
+        // and a workspace proved out of reach stays out of reach for every
+        // later integration of this removal.
+        let mut key_settled = false;
+        let mut workspace_unreachable = false;
+        for (provider, resource) in entries {
+            loop {
+                // Boxed, so removal (reached from the outbound router and
+                // the archive sweep) does not carry the cleanup's state.
+                let Err(error) =
+                    Box::pin(self.unsubscribe_integration_held(name, &provider, &resource, true))
+                        .await
+                else {
+                    break;
+                };
+                if error.data.kind == ErrorKind::Unauthorized {
+                    if !key_settled {
+                        key_settled = true;
+                        match self.settle_rejected_key(name).await {
+                            // The saved copies now hold the current key.
+                            KeyProof::Current(_) => continue,
+                            KeyProof::Unreachable => workspace_unreachable = true,
+                            KeyProof::Unknown => {}
+                        }
+                    }
+                    if workspace_unreachable {
+                        self.integration_left_behind(name, &provider, &resource, &error);
+                        break;
+                    }
+                }
+                if !integration_cleanup_refused(error.data.kind) {
+                    return Err(cleanup_kept(error, name, &provider));
+                }
+                self.integration_left_behind(name, &provider, &resource, &error);
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Settles the saved key of `name` that Relaycast rejected during
+    /// integration cleanup, from the registration as saved now.
+    async fn settle_rejected_key(&self, name: &str) -> KeyProof {
+        let Ok(current) = self.registration_named(name) else {
+            return KeyProof::Unknown;
+        };
+        let Some(key) = self.key_for(&current) else {
+            return KeyProof::Unknown;
+        };
+        self.prove_rejected_saved_key(&current, &key).await
+    }
+
+    fn integration_left_behind(
+        &self,
+        name: &str,
+        provider: &str,
+        resource: &str,
+        error: &RpcError,
+    ) {
+        self.hub.activity(
+            Level::Warning,
+            format!(
+                "@{name}'s {provider} subscription to {resource} could not be removed ({}); it may still be live in relayfile.",
+                error.message
+            ),
+        );
+    }
+
     /// Validates the selected removal under its delivery locks. Archive
     /// cleanup can be deferred without error while a refusal still settles.
     async fn prepare_removal(
@@ -266,4 +405,27 @@ impl Core {
         }
         Ok(true)
     }
+}
+
+/// Whether integration cleanup was refused outright, so repeating it cannot
+/// help and removal may go ahead without it.
+fn integration_cleanup_refused(kind: ErrorKind) -> bool {
+    matches!(
+        kind,
+        ErrorKind::Refused
+            | ErrorKind::NotSignedIn
+            | ErrorKind::CloudRefused
+            | ErrorKind::RelaycastRefused
+            | ErrorKind::NotFound
+    )
+}
+
+/// The error that keeps `name` because its `provider` cleanup failed: the
+/// original one, so its kind and any `Retry-After` reach the caller.
+pub(super) fn cleanup_kept(mut error: RpcError, name: &str, provider: &str) -> RpcError {
+    error.message = format!(
+        "Could not remove @{name}'s {provider} subscription: {} The agent was kept; its cleanup is retried.",
+        error.message
+    );
+    error
 }

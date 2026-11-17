@@ -27,6 +27,9 @@ impl Core {
                 "No Agent Relay workspace key was found.",
             )
         })?;
+        if workspace.is_gate_only() {
+            return self.verify_gate_workspace(&workspace).await;
+        }
         let scope = self.relaycast_scope(&workspace.base_url, &workspace.key);
         if !self.relaycast_poll_allowed(&scope) {
             return Err(RpcError::new(
@@ -85,6 +88,54 @@ impl Core {
                 });
                 self.hub.activity(Level::Warning, mapped.message.clone());
                 Err(mapped)
+            }
+        }
+    }
+
+    /// A gate-only workspace has no key to check: relaygate serves no
+    /// workspace read, and its agents enrol with the desktop's device token
+    /// instead. Control named the gate and the workspace when it resolved
+    /// the account, so the workspace is verified while that device token is
+    /// at hand, and not signed in without it. Nothing is sent, and no
+    /// account key is recovered.
+    async fn verify_gate_workspace(
+        &self,
+        workspace: &crate::relay::workspace::Workspace,
+    ) -> Result<WorkspaceStatus, RpcError> {
+        let signed_in = self.device_token().await;
+        if self.workspace.lock().unwrap().as_ref() != Some(workspace) {
+            return Ok(self.status().workspace);
+        }
+        let checked_at_ms = Some(now_ms());
+        // Decided in the same update as it is written: a rediscovery (a
+        // sign-out) published since is never overwritten with this answer.
+        let still_shown = |status: &crate::relay::state::Status| {
+            status.workspace.base_url.as_deref() == Some(workspace.base_url.as_str())
+        };
+        match signed_in {
+            Ok(_) => {
+                let status = self.hub.update(|status| {
+                    if !still_shown(status) {
+                        return;
+                    }
+                    status.workspace.verification = Verification::Verified;
+                    if let Some(id) = &workspace.workspace_id {
+                        status.workspace.workspace_id = Some(id.clone());
+                    }
+                    status.workspace.checked_at_ms = checked_at_ms;
+                });
+                Ok(status.workspace)
+            }
+            Err(error) => {
+                self.hub.update(|status| {
+                    if !still_shown(status) {
+                        return;
+                    }
+                    status.workspace.verification = Verification::Pending;
+                    status.workspace.checked_at_ms = checked_at_ms;
+                });
+                self.hub.activity(Level::Warning, error.message.clone());
+                Err(error)
             }
         }
     }

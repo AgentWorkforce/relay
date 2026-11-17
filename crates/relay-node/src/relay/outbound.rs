@@ -237,6 +237,8 @@ pub struct OutboundError {
     pub status: u16,
     pub code: String,
     pub message: String,
+    /// Sent as `Retry-After` (seconds) when the failure says when to retry.
+    pub retry_after_secs: Option<u64>,
 }
 
 impl OutboundError {
@@ -245,6 +247,7 @@ impl OutboundError {
             status,
             code: code.into(),
             message: message.into(),
+            retry_after_secs: None,
         }
     }
 
@@ -310,13 +313,16 @@ impl OutboundError {
             ErrorKind::Busy => (409, "busy"),
             ErrorKind::Refused => (409, "refused"),
             ErrorKind::RateLimited => (429, "rate_limited"),
+            ErrorKind::PlanLimitExceeded => (429, "plan_limit_exceeded"),
             ErrorKind::StoreFailed => (500, "save_failed"),
             ErrorKind::ShuttingDown => (503, "shutting_down"),
             ErrorKind::MethodNotFound => (503, "setup_unavailable"),
             ErrorKind::FleetUnavailable => (503, "fleet_unavailable"),
             _ => (502, fallback_code),
         };
-        OutboundError::new(status, code, error.message.clone())
+        let mut outbound = OutboundError::new(status, code, error.message.clone());
+        outbound.retry_after_secs = error.retry_after_secs;
+        outbound
     }
 }
 
@@ -457,6 +463,13 @@ impl Outbound {
                 "The temporary relay is stopping; retry the command.",
             )
         })?;
+        // Boxed: every route's state lives on the heap, so a caller (a
+        // connection task, a test driving many requests) holds only a
+        // pointer instead of the largest route's whole state machine.
+        Box::pin(self.route(pid, uid, request)).await
+    }
+
+    async fn route(&self, pid: i32, uid: u32, request: &Request) -> Result<Value, OutboundError> {
         match (request.method.as_str(), request.path.as_str()) {
             ("POST", "/connect/join") => {
                 let fields = payload(request, Purpose::Json)?;
@@ -1179,6 +1192,38 @@ impl Outbound {
             ));
         }
         self.admit(&session.target.key())?;
+        // A gate agent's token is read again under its renewal lock, held
+        // through the uploads and the send: a renewal revokes the token it
+        // replaces, and a send refused with that one would leave a claimed
+        // automatic answer unsent. A workspace-key agent takes no lock.
+        let _renewals = match &registration.gate {
+            Some(_) => Some(
+                self.core
+                    .gate_locks
+                    .get(&registration.name)
+                    .lock_owned()
+                    .await,
+            ),
+            None => None,
+        };
+        // The sender may be an alias, with a token of its own. Read after
+        // the lock wait: only while the name is still this session's agent,
+        // never another session that took the name up meanwhile.
+        let gate_token = || {
+            self.core
+                .store
+                .read(|s| s.credential_named(&registration.name))
+                .filter(|(current, _)| {
+                    current.agent_id == registration.agent_id
+                        && current.target == registration.target
+                })
+                .map(|(_, token)| token)
+                .ok_or_else(OutboundError::not_registered)
+        };
+        let mut token = match &registration.gate {
+            Some(_) => gate_token()?,
+            None => token,
+        };
         // Every file is uploaded before anything is claimed or sent: a file
         // that cannot be sent leaves no half-sent message and no lost
         // automatic answer behind.
@@ -1191,13 +1236,15 @@ impl Outbound {
                 .map_err(|error| OutboundError::from_rpc(&error, "save_failed"))?;
         }
         let base = &registration.base_url;
-        let send = |key| async {
-            if let Some(channel) = &channel {
-                self.post(&registration, &token, channel, text, &attachments, key)
+        let (channel, endpoint, reply_to, attachments, registration) =
+            (&channel, &endpoint, &reply_to, &attachments, &registration);
+        let send = |key, token: Secret| async move {
+            if let Some(channel) = channel {
+                self.post(registration, &token, channel, text, attachments, key)
                     .await
             } else {
                 let endpoint = endpoint.as_ref().expect("a direct-message endpoint");
-                match (&reply_to, attachments.is_empty()) {
+                match (reply_to, attachments.is_empty()) {
                     (Some(parent), _) => client::reply(base, &token, parent, text, key).await,
                     (None, true) => client::send_dm(base, &token, endpoint, text, key).await,
                     (None, false) => {
@@ -1206,7 +1253,7 @@ impl Outbound {
                             &token,
                             endpoint,
                             text,
-                            &attachments,
+                            attachments,
                             key,
                         )
                         .await
@@ -1214,7 +1261,24 @@ impl Outbound {
                 }
             }
         };
-        let sent = match send(idempotency_key.clone()).await {
+        let mut first = send(idempotency_key.clone(), token.clone()).await;
+        // relaygate refused the gate agent's token (it expired): nothing was
+        // sent, so it registers again, once, under the lock held above, and
+        // the send is repeated with the new token. A second refusal stands.
+        if registration.gate.is_some()
+            && first
+                .as_ref()
+                .is_err_and(crate::relay::sdk_gaps::is_gate_unauthenticated)
+            && self
+                .core
+                .renew_gate_locked(&registration.name, Some(&token))
+                .await
+                == crate::relay::agents::Renewal::Renewed
+        {
+            token = gate_token()?;
+            first = send(idempotency_key.clone(), token.clone()).await;
+        }
+        let sent = match first {
             // An unkeyed first attempt stays on Relaycast's fast path. A
             // refused TCP connection cannot have reached the server, so only
             // that unambiguous transport failure is retried with a generated
@@ -1222,15 +1286,18 @@ impl Outbound {
             // are returned to the caller instead of risking a second message.
             Err(error) if idempotency_key.is_none() && retry_unkeyed_after(&error) => {
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                send(Some(format!(
-                    "probe-send-v1-{}",
-                    crate::relay::store::random_uuid()
-                )))
+                send(
+                    Some(format!(
+                        "probe-send-v1-{}",
+                        crate::relay::store::random_uuid()
+                    )),
+                    token.clone(),
+                )
                 .await
             }
             result => result,
         };
-        let sent = self.settle(sent, &registration, &endpoint).await?;
+        let sent = self.settle(sent, registration, endpoint).await?;
         let mut answer = match (&channel, &endpoint) {
             (Some(channel), _) => json!({
                 "from": registration.name,
@@ -1407,7 +1474,15 @@ impl Outbound {
         };
         let (session, registration, _) = self.authorize(pid, uid).await?;
         self.admit(&session.target.key())?;
-        let key = self.core.key_for(&registration).ok_or_else(|| {
+        // A gate agent has no workspace key: relaygate answers the roster
+        // to its own token, filtered to the agents it may reach.
+        let gate = registration.gate.is_some();
+        let key = if gate {
+            self.core.store.read(|s| s.token(&registration.name))
+        } else {
+            self.core.key_for(&registration)
+        }
+        .ok_or_else(|| {
             OutboundError::new(
                 401,
                 "not_signed_in",
@@ -1428,7 +1503,12 @@ impl Outbound {
             fetched_at_ms,
             items,
             stale,
-        } = self.roster(&base, &key, include_idle).await?;
+        } = if gate {
+            self.gate_roster(&base, &registration.name, &key, include_idle)
+                .await?
+        } else {
+            self.roster(&base, &key, include_idle).await?
+        };
 
         // This computer's agents are the registrations whose sessions the
         // delivery pass last found running (`missing_since` unset), and the
@@ -1442,7 +1522,11 @@ impl Outbound {
                 .filter(|r| {
                     (r.missing_since.is_none() || r.name == registration.name)
                         && r.base_url == base
-                        && self.core.key_for(r).as_ref() == Some(&key)
+                        && if gate {
+                            r.gate.is_some()
+                        } else {
+                            self.core.key_for(r).as_ref() == Some(&key)
+                        }
                 })
                 .flat_map(|r| r.names().into_iter().map(|name| (name, true)))
                 .collect()
@@ -1512,6 +1596,32 @@ impl Outbound {
         include_idle: bool,
     ) -> Result<RosterAnswer, OutboundError> {
         let cache_key = format!("{base}\n{}\n{include_idle}", key.expose());
+        self.roster_cached_as(base, key, cache_key, include_idle)
+            .await
+    }
+
+    /// [`Outbound::roster`] read with a gate agent's `rg_` token, cached
+    /// under the agent's name instead: the token changes at every renewal,
+    /// and one copy per agent is kept, not one per token it ever held.
+    async fn gate_roster(
+        &self,
+        base: &str,
+        name: &str,
+        token: &Secret,
+        include_idle: bool,
+    ) -> Result<RosterAnswer, OutboundError> {
+        let cache_key = format!("{base}\ngate:{name}\n{include_idle}");
+        self.roster_cached_as(base, token, cache_key, include_idle)
+            .await
+    }
+
+    async fn roster_cached_as(
+        &self,
+        base: &str,
+        key: &Secret,
+        cache_key: String,
+        include_idle: bool,
+    ) -> Result<RosterAnswer, OutboundError> {
         let (last, read) = {
             let mut rosters = self.rosters.lock().unwrap();
             let last = rosters.cached.get(&cache_key).cloned();
@@ -1746,14 +1856,32 @@ fn closed() -> OutboundError {
 }
 
 async fn write_response(stream: &mut CoreStream, status: u16, payload: &Value) {
-    let body = format!("{payload}\n");
-    let response = format!(
-        "HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        http::reason(status),
-        body.len()
-    );
+    write_response_after(stream, status, payload, None).await;
+}
+
+async fn write_response_after(
+    stream: &mut CoreStream,
+    status: u16,
+    payload: &Value,
+    retry_after_secs: Option<u64>,
+) {
+    let response = http_response(status, payload, retry_after_secs);
     let _ = stream.write_all(response.as_bytes()).await;
     let _ = stream.shutdown().await;
+}
+
+/// One complete HTTP/1.1 response; `Retry-After` only when the failure
+/// named one, so a caller backs off as long as the upstream asked.
+fn http_response(status: u16, payload: &Value, retry_after_secs: Option<u64>) -> String {
+    let body = format!("{payload}\n");
+    let retry_after = retry_after_secs
+        .map(|secs| format!("Retry-After: {secs}\r\n"))
+        .unwrap_or_default();
+    format!(
+        "HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\n{retry_after}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        http::reason(status),
+        body.len()
+    )
 }
 
 /// A credential-free description of a failed Relaycast call, for the log.
@@ -1779,7 +1907,7 @@ fn relaycast_failure_cause(error: &relaycast::RelayError) -> String {
 
 async fn write_error(stream: &mut CoreStream, error: &OutboundError) {
     let payload = json!({"ok": false, "error": {"code": error.code, "message": error.message}});
-    write_response(stream, error.status, &payload).await;
+    write_response_after(stream, error.status, &payload, error.retry_after_secs).await;
 }
 
 /// One file's identity, so cleanup removes only what this core created.
@@ -2098,6 +2226,29 @@ async fn accept_loop(
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_core_failure_keeps_its_retry_after_and_plan_limit() {
+        let mut limited = RpcError::new(ErrorKind::RateLimited, "slow down");
+        limited.retry_after_secs = Some(30);
+        let outbound = OutboundError::from_rpc(&limited, "integration_failed");
+        assert_eq!(
+            (outbound.status, outbound.code.as_str()),
+            (429, "rate_limited")
+        );
+        assert_eq!(outbound.retry_after_secs, Some(30));
+        let response = http_response(429, &json!({"ok": false}), Some(30));
+        assert!(response.contains("\r\nRetry-After: 30\r\n"), "{response}");
+        assert!(!http_response(502, &json!({"ok": false}), None).contains("Retry-After"));
+
+        let full = RpcError::new(ErrorKind::PlanLimitExceeded, "full");
+        let outbound = OutboundError::from_rpc(&full, "integration_failed");
+        assert_eq!(
+            (outbound.status, outbound.code.as_str()),
+            (429, "plan_limit_exceeded")
+        );
+        assert_eq!(outbound.retry_after_secs, None);
+    }
+
     /// The `(method, path)` arms of the router function `name` in `source`:
     /// each `("M", "/p")` or `("M" | "N", "/p")` pattern, until the
     /// function's catch-all arm.
@@ -2139,7 +2290,7 @@ mod tests {
     // itself: a route added to it without being listed fails here.
     #[test]
     fn session_routes_list_every_route_the_router_serves() {
-        let mut served = routed(include_str!("outbound.rs"), "handle");
+        let mut served = routed(include_str!("outbound.rs"), "route");
         served.extend(routed(
             include_str!("outbound/mobile_handoff.rs"),
             "mobile_handoff_route",

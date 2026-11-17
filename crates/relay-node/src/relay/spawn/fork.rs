@@ -318,6 +318,7 @@ mod tests {
             workspace_id: None,
             source: Default::default(),
             control_url: None,
+            gate_url: None,
         });
         core
     }
@@ -369,6 +370,7 @@ mod tests {
             task: "go on".into(),
             directory: directory.map(Path::to_path_buf),
             fork_from: Some("planner".into()),
+            launch_credential: None,
         }
     }
 

@@ -33,6 +33,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 mod activation_journal;
+mod gate_enrolment;
+pub(crate) use gate_enrolment::{GateCleanup, GateRenewals, Renewal};
 mod naming;
 mod registration_routes;
 mod removal;
@@ -320,10 +322,15 @@ impl Core {
     /// The key a registration acts with in its own workspace: the one it
     /// was registered with, or (for stores from the first build) the
     /// current key when the origin matches.
+    /// An agent enrolled through relaygate has none, and an empty key (a
+    /// gate-only workspace's) is never one.
     pub(crate) fn key_for(&self, registration: &Registration) -> Option<Secret> {
+        if registration.gate.is_some() {
+            return None;
+        }
         registration.workspace_key.clone().or_else(|| {
             self.workspace()
-                .filter(|w| w.base_url == registration.base_url)
+                .filter(|w| !w.is_gate_only() && w.base_url == registration.base_url)
                 .map(|w| w.key)
         })
     }
@@ -764,29 +771,48 @@ impl Core {
         route_binding: Option<String>,
     ) -> Result<Registration, RpcError> {
         let owner = self.agent_owner();
-        let workspace_scope = self.relaycast_scope(&workspace.base_url, &workspace.key);
-        let result = client::register_agent(
-            &workspace.base_url,
-            &workspace.key,
-            name,
-            self.joining(),
-            self.metadata(&session.target, &session.title, description, owner.as_ref()),
-        )
-        .await;
-        self.observe_relaycast_write_result(&workspace_scope, &result);
-        let agent = result.map_err(|error| {
-            if is_name_taken(&error) {
-                RpcError::new(
-                    ErrorKind::Conflict,
-                    format!("@{name} is already taken in this workspace. Choose another name."),
-                )
-            } else {
-                relaycast_error(
-                    &error,
-                    format!("Could not register @{name} on Agent Relay."),
-                )
+        let (agent, gate) = match workspace.gate_url.as_deref() {
+            // A gate-only install enrols at relaygate with the device token;
+            // there is no workspace key to register with.
+            Some(gate_url) => {
+                let (issued, enrolment) = self.enrol_at_gate(gate_url, name).await?;
+                let agent = crate::relay::sdk_gaps::RegisteredAgent {
+                    // relaygate's answer names no agent: it is the name asked for.
+                    name: name.to_string(),
+                    id: issued.agent_id,
+                    token: issued.token,
+                };
+                (agent, Some(enrolment))
             }
-        })?;
+            None => {
+                let workspace_scope = self.relaycast_scope(&workspace.base_url, &workspace.key);
+                let result = client::register_agent(
+                    &workspace.base_url,
+                    &workspace.key,
+                    name,
+                    self.joining(),
+                    self.metadata(&session.target, &session.title, description, owner.as_ref()),
+                )
+                .await;
+                self.observe_relaycast_write_result(&workspace_scope, &result);
+                let agent = result.map_err(|error| {
+                    if is_name_taken(&error) {
+                        RpcError::new(
+                            ErrorKind::Conflict,
+                            format!(
+                                "@{name} is already taken in this workspace. Choose another name."
+                            ),
+                        )
+                    } else {
+                        relaycast_error(
+                            &error,
+                            format!("Could not register @{name} on Agent Relay."),
+                        )
+                    }
+                })?;
+                (agent, None)
+            }
+        };
         let registration = Registration {
             name: agent.name.clone(),
             agent_id: agent.id.clone(),
@@ -794,7 +820,7 @@ impl Core {
             title: session.title.clone(),
             base_url: workspace.base_url.clone(),
             registered_at: iso8601_now(),
-            workspace_key: Some(workspace.key.clone()),
+            workspace_key: gate.is_none().then(|| workspace.key.clone()),
             machine_prefix: Some(self.machine_prefix.clone()),
             added_by_session: Some(added_by_session),
             auto_activated: auto_activated.then_some(true),
@@ -811,6 +837,7 @@ impl Core {
             alias: None,
             retired_aliases: None,
             cleared: None,
+            gate,
             control_url: workspace.control_url.clone(),
         };
         let mut spawned = false;
@@ -834,16 +861,31 @@ impl Core {
             }
             added
         });
-        match saved {
-            Ok(true) => Ok(registration),
-            Ok(false) if spawned => {
+        let undo = || async {
+            if registration.gate.is_some() {
+                self.undo_gate_enrolment(&workspace.base_url, &agent.token, &agent.name, &agent.id)
+                    .await;
+            } else {
                 self.delete_or_retry(&workspace.base_url, &workspace.key, &agent.name)
                     .await;
+            }
+        };
+        match saved {
+            Ok(true) => {
+                if registration.gate.is_some() {
+                    self.forget_gate_renewal(&registration.name);
+                    // relaygate's register takes no metadata: it follows.
+                    self.publish_gate_registration(&registration, description)
+                        .await;
+                }
+                Ok(registration)
+            }
+            Ok(false) if spawned => {
+                undo().await;
                 Err(spawned_session())
             }
             Ok(false) => {
-                self.delete_or_retry(&workspace.base_url, &workspace.key, &agent.name)
-                    .await;
+                undo().await;
                 Err(RpcError::new(
                     ErrorKind::Conflict,
                     format!("@{} is already used by another session here. Turn that one off first, or choose another name.", agent.name),
@@ -852,8 +894,7 @@ impl Core {
             Err(error) => {
                 // Without its token on disk the agent would outlive this
                 // computer unreachable: take it back down, or keep retrying.
-                self.delete_or_retry(&workspace.base_url, &workspace.key, &agent.name)
-                    .await;
+                undo().await;
                 Err(RpcError::new(
                     ErrorKind::StoreFailed,
                     format!(
@@ -1361,7 +1402,9 @@ impl Core {
                     .collect(),
                 push: agent_push(&status.push, r),
                 // Under any name still delivering, retired ones included.
-                delivery_error: r.names().iter().find_map(|n| errors.get(n)).cloned(),
+                delivery_error: self
+                    .gate_error(&r.name)
+                    .or_else(|| r.names().iter().find_map(|n| errors.get(n)).cloned()),
                 spawn: self.spawned_agent_state(r),
                 inbox_stall: stalls.get(&r.name).cloned(),
             })
@@ -2029,6 +2072,7 @@ mod tests {
             alias: None,
             retired_aliases: None,
             cleared: None,
+            gate: None,
             control_url: None,
         }
     }
@@ -2481,6 +2525,7 @@ mod tests {
             workspace_id: None,
             source: crate::relay::workspace::WorkspaceSource::Cloud,
             control_url: None,
+            gate_url: None,
         }
     }
 

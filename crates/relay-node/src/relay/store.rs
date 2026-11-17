@@ -25,6 +25,7 @@
 //!   "cloud": {"key", "baseURL", "workspaceID", "accountWorkspaceID", "name", "relayfileWorkspaceID"},
 //!   "cloudSession": {"accessToken", "accessTokenExpiresAt", "refreshToken", "refreshTokenExpiresAt", "siteURL"},
 //!   "allowSelfRegistration": true, "autoActivate": false, "agentLedDefaultsApplied": true,
+//!   "spawnRecentFolders": ["/Users/person/code/relay"],
 //!   "pendingCleanups": [{"kind": "agent", "name", "baseURL", "workspaceKey"}],
 //!   "testSenders": {"<key ref>": {"name", "token"}},
 //!   "replies": [{"agentID", "messageID", "destination": {"thread": {"_0": "m_1"}}, "claimed", …}],
@@ -297,6 +298,87 @@ pub struct Registration {
     /// and is not delivered into this one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cleared: Option<i64>,
+    /// For an agent enrolled through relaygate (a gate-only install): what
+    /// it re-registers with. Absent for every agent registered with a
+    /// workspace key, so their records are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<GateEnrolment>,
+}
+
+/// How an agent enrolled through relaygate stays enrolled. Its `rg_` token
+/// is kept with the other agent tokens, `base_url` is the gate, and there
+/// is no workspace key.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateEnrolment {
+    /// The recovery proof made for this agent when it first enrolled; every
+    /// re-registration sends the same one, so relaygate keeps its agent id.
+    /// Never logged. None for a launched agent's registration
+    /// ([`LaunchGate`]), which is refreshed with its own token instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<Secret>,
+    /// When the current token stops working (RFC 3339).
+    #[serde(rename = "expiresAt")]
+    pub expires_at: String,
+    /// When it is registered again for a new token: 80% of the way from
+    /// issue to `expires_at` (RFC 3339).
+    #[serde(rename = "renewAt")]
+    pub renew_at: String,
+}
+
+/// A recovery proof this computer made for an agent name at one relaygate
+/// ([`Store::gate_recoveries`]). Never logged.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateRecovery {
+    /// The gate's origin (the registration's base URL).
+    #[serde(rename = "gateURL")]
+    pub gate_url: String,
+    pub name: String,
+    pub recovery: Secret,
+}
+
+impl GateEnrolment {
+    /// The enrolment for a token issued `now` that expires at `expires_at`.
+    pub fn issued(
+        recovery: Secret,
+        now: chrono::DateTime<chrono::Utc>,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> GateEnrolment {
+        GateEnrolment {
+            recovery: Some(recovery),
+            ..GateEnrolment::launched(now, expires_at)
+        }
+    }
+
+    /// The enrolment of a launched agent's registration ([`LaunchGate`]):
+    /// renewed at 80% of its lifetime, by a refresh with its own token.
+    pub fn launched(
+        now: chrono::DateTime<chrono::Utc>,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> GateEnrolment {
+        let lifetime = (expires_at - now).max(chrono::TimeDelta::zero());
+        let renew_at = now + lifetime * 4 / 5;
+        GateEnrolment {
+            recovery: None,
+            expires_at: expires_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            renew_at: renew_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        }
+    }
+
+    /// Whether the token is due for renewal at `now`. An unreadable time is
+    /// due, so a damaged record renews instead of expiring silently.
+    pub fn due(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
+        chrono::DateTime::parse_from_rfc3339(&self.renew_at)
+            .map(|at| at <= now)
+            .unwrap_or(true)
+    }
+
+    /// Whether the token has stopped working at `now`. An unreadable time
+    /// has, so a damaged record is never trusted past its end.
+    pub fn expired(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
+        chrono::DateTime::parse_from_rfc3339(&self.expires_at)
+            .map(|at| at <= now)
+            .unwrap_or(true)
+    }
 }
 
 impl Registration {
@@ -365,6 +447,15 @@ pub struct CloudWorkspace {
         skip_serializing_if = "Option::is_none"
     )]
     pub relayfile_workspace_id: Option<String>,
+    /// The relaygate origin of a gate-only install: agents enrol there with
+    /// the desktop's device token instead of the workspace key. Absent (and
+    /// never written) for every other workspace.
+    #[serde(
+        rename = "relaygateURL",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub gate_url: Option<String>,
 }
 
 /// The Agent Relay sign-in session kept for acting later without a browser.
@@ -772,6 +863,15 @@ pub struct Store {
         skip_serializing_if = "Option::is_none"
     )]
     pub spawn_repositories: Option<Vec<String>>,
+    /// Successfully resolved spawn working folders, newest first. Kept
+    /// locally after release; capability publication is separately gated by
+    /// `spawnAllowTeammates` and filters folders that no longer exist.
+    #[serde(
+        rename = "spawnRecentFolders",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub spawn_recent_folders: Vec<String>,
     /// The spawn settings of harnesses other than Codex and Claude, by id
     /// (`spawn`).
     #[serde(rename = "spawnHarnesses")]
@@ -845,6 +945,17 @@ pub struct Store {
         skip_serializing_if = "Option::is_none"
     )]
     pub pending_cleanups: Option<Vec<PendingCleanup>>,
+    /// The recovery proof made for each name this computer enrolled at a
+    /// relaygate, kept after the agent is removed: relaygate reserves a
+    /// deleted name for its owner with the same proof, and a register whose
+    /// answer was lost has already bound it. Written before the register is
+    /// sent. Absent for every workspace-key install.
+    #[serde(
+        rename = "gateRecoveries",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub gate_recoveries: Option<Vec<GateRecovery>>,
     /// Rotations whose saved-copy rewrite is still owed, each recorded
     /// before the replacement key's verification so a failed check does not
     /// drop it. A list, not a slot: A→B followed by B→C owes A's copies the
@@ -919,7 +1030,43 @@ pub struct Store {
         skip_serializing_if = "Option::is_none"
     )]
     pub pending_refusal_settlements: Option<Vec<PendingRefusal>>,
+    /// The relaygate registrations of launched agents, by agent name: made
+    /// with each launch's one-time credential, kept in memory alone and
+    /// never saved.
+    #[serde(skip)]
+    pub launch_gates: LaunchGates,
 }
+
+/// A launched agent's relaygate registration ([`Store::launch_gates`]):
+/// the `rg_` token its deliveries and sends use, renewed with itself. It
+/// lives as long as the launch and never reaches disk.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaunchGate {
+    /// The launch it was made for (its spawn's invocation): only the
+    /// registration of that launch acts with it.
+    pub invocation_id: String,
+    /// The gate it is registered at.
+    pub gate_url: String,
+    /// The agent relaygate registered.
+    pub agent_id: String,
+    /// The `rg_` token. Never logged or saved.
+    pub token: Secret,
+    /// When it expires and is refreshed; no recovery proof.
+    pub gate: GateEnrolment,
+}
+
+/// The in-memory [`LaunchGate`]s. Never saved, so never part of what tells
+/// one store from another: a change to them alone saves nothing.
+#[derive(Clone, Debug, Default)]
+pub struct LaunchGates(pub BTreeMap<String, LaunchGate>);
+
+impl PartialEq for LaunchGates {
+    fn eq(&self, _: &LaunchGates) -> bool {
+        true
+    }
+}
+
+impl Eq for LaunchGates {}
 
 pub use activation_failures::{ActivationFailure, PublishedJournal, AUTO_ACTIVATION_FAILURES_KEPT};
 mod activation_failures;
@@ -1034,6 +1181,13 @@ impl Store {
         self.registrations
             .retain(|r| r.target != registration.target);
         self.forget_activation_blocker(&registration.target.key());
+        if let Some(folder) = registration
+            .spawn
+            .as_ref()
+            .and_then(|spawn| spawn.worker_cwd.as_deref())
+        {
+            self.remember_spawn_folder(folder);
+        }
         self.tokens.insert(registration.name.clone(), token);
         self.registrations.push(registration);
         true
@@ -1060,6 +1214,17 @@ impl Store {
         for id in retired {
             self.agent_owners.remove(&id);
             self.retire_refusals(&id);
+        }
+        // A gate agent's name stays reserved at relaygate for its recovery
+        // proof, which outlives the registration.
+        let kept: Vec<(String, Secret)> = self
+            .registrations
+            .iter()
+            .filter(|r| r.name == name)
+            .filter_map(|r| Some((r.base_url.clone(), r.gate.as_ref()?.recovery.clone()?)))
+            .collect();
+        for (gate_url, recovery) in kept {
+            self.keep_gate_recovery(&gate_url, name, recovery);
         }
         self.registrations.retain(|r| r.name != name);
         self.tokens.remove(name);
@@ -1287,6 +1452,32 @@ impl Store {
             .get_or_insert_with(Vec::new)
             .retain(|pending| pending.delivery_id != delivery_id);
         self.trim_injected_history();
+    }
+
+    /// The recovery proof kept for `name` at the gate `gate_url`.
+    pub fn gate_recovery(&self, gate_url: &str, name: &str) -> Option<Secret> {
+        self.gate_recoveries
+            .iter()
+            .flatten()
+            .find(|kept| kept.gate_url == gate_url && kept.name == name)
+            .map(|kept| kept.recovery.clone())
+    }
+
+    /// Keeps `recovery` for `name` at `gate_url` unless one is kept already,
+    /// and returns the one kept: a proof relaygate may hold is never
+    /// replaced.
+    pub fn keep_gate_recovery(&mut self, gate_url: &str, name: &str, recovery: Secret) -> Secret {
+        if let Some(kept) = self.gate_recovery(gate_url, name) {
+            return kept;
+        }
+        self.gate_recoveries
+            .get_or_insert_with(Vec::new)
+            .push(GateRecovery {
+                gate_url: gate_url.to_owned(),
+                name: name.to_owned(),
+                recovery: recovery.clone(),
+            });
+        recovery
     }
 
     /// Records a cleanup to retry, once.
@@ -2157,7 +2348,10 @@ impl HandleState {
     fn saved(&mut self, saved: Store) {
         // A save adopts what other processes wrote, this setting included.
         crate::relay::codex::compact::set_enabled(saved.hides_relay_messages());
+        // The launch registrations are never saved: they stay as they are.
+        let launch_gates = std::mem::take(&mut self.store.launch_gates);
         self.store = saved;
+        self.store.launch_gates = launch_gates;
         self.save_error = None;
         // A migration that could not be written back is written now.
         if matches!(self.load_error, Some(StoreError::Write { .. })) {
@@ -2269,6 +2463,12 @@ impl StoreHandle {
         drop(state);
         self.report(error_before, error_after);
         outcome
+    }
+
+    /// Changes the launched agents' relaygate registrations, which live in
+    /// memory alone: nothing is saved.
+    pub fn launch_gates<T>(&self, change: impl FnOnce(&mut LaunchGates) -> T) -> T {
+        change(&mut self.inner.lock().unwrap().store.launch_gates)
     }
 
     /// Why the store could not be saved last time, or could not be read.

@@ -32,7 +32,8 @@ pub(crate) use control_retry::Results;
 pub(crate) use control_retry::KEEP as RESULT_KEEP;
 #[cfg(test)]
 use enroll::ALTERNATES;
-use enroll::{enroll_named, rotate, saved, Refused};
+pub(crate) use enroll::GATE_ONLY_UNAVAILABLE;
+use enroll::{enroll, enroll_named, rotate, saved, Refused};
 #[cfg(test)]
 use enrollment::{alternate, fingerprint, pending, read, save, save_pending, Pending};
 pub(crate) use enrollment::{enrolled_name, node_token};
@@ -92,6 +93,12 @@ pub struct NodeConfig {
     /// `node.register`: a change reconnects the node. Everything else the
     /// node advertises is read again for each heartbeat.
     pub repositories: Vec<String>,
+    /// Whether `workspace_key` is a gate-only desktop's relay-node
+    /// credential (`CloudAccess::relay_node_credential`), which the desktop
+    /// mints again when told. Control refusing it (`401`, `token_invalid`)
+    /// at enrolment, the saved node's lookup or the bridge stops the node
+    /// with `credential_refused` set, never retried with the same one.
+    pub desktop_credential: bool,
 }
 
 /// The node as Relaycast enrolled it.
@@ -113,6 +120,9 @@ pub trait NodeHost: Send + Sync + 'static {
     /// What to advertise in the next frame: the configured facts and the
     /// live ones measured now.
     fn advertisement(&self, harnesses: &[HarnessId], repositories: &[String]) -> Advertisement;
+    /// Prepares any blocking inputs for the next advertisement off the async
+    /// runtime. The default is sufficient for hosts with no such inputs.
+    fn prepare_advertisement(&self) {}
     /// A heartbeat was written: evidence the node reaches Agent Relay.
     fn heartbeat_sent(&self);
     /// Notified when places change, for an inventory and a heartbeat at
@@ -241,6 +251,10 @@ enum Ended {
     Closed(String),
     /// Trying again cannot help: the node stops and says why.
     GaveUp(String),
+    /// Control refused the install's relay-node credential (`401` on its
+    /// bridge): the node stops, says why ([`BRIDGE_CREDENTIAL_REFUSED`])
+    /// and marks it, so the desktop can mint another.
+    CredentialRefused,
     /// Relaycast refused the node's token as proof of it on a rotation
     /// (`node_token_proof_required` with the token sent; never a 401, which
     /// is the workspace key refused and waited out): the enrollment is
@@ -275,6 +289,7 @@ async fn run(
         harness_descriptors: None,
         claim: None,
         plan_limit,
+        credential_refused: None,
     };
     let mut attempt = 0u32;
     let mut token_refusals = 0u32;
@@ -312,6 +327,18 @@ async fn run(
                 let _ = stopped.changed().await;
                 break;
             }
+            Ended::CredentialRefused => {
+                host.state(SpawnStatus {
+                    credential_refused: Some(true),
+                    ..status(
+                        SpawnState::Off,
+                        Some(BRIDGE_CREDENTIAL_REFUSED.into()),
+                        None,
+                    )
+                });
+                let _ = stopped.changed().await;
+                break;
+            }
         };
         if *stopped.borrow() {
             break;
@@ -344,13 +371,31 @@ fn dead_token(config: &NodeConfig) -> String {
     }
 }
 
+/// Where the node's socket is opened, and with what credential: Relaycast's
+/// `/v1/node/ws` with the node token, or, for a node bridged through
+/// Control on a gate-only install, Control's `/relay-node/v1/ws` with the
+/// node's relay-node credential. Either goes in the `Authorization`
+/// header, never in the URL.
+fn socket_target<'a>(config: &'a NodeConfig, enrollment: &'a Enrollment) -> (String, &'a Secret) {
+    match config.control_url.as_deref() {
+        Some(control_url) if enrollment.bridged => (
+            sdk_gaps::control_node_socket_url(control_url, &config.version),
+            &config.workspace_key,
+        ),
+        _ => (
+            sdk_gaps::broker_node_socket_url(&config.base_url, &config.version),
+            &enrollment.token,
+        ),
+    }
+}
+
 async fn open(
     config: &NodeConfig,
     enrollment: &Enrollment,
 ) -> Result<sdk_gaps::NodeSocket, tungstenite::Error> {
-    let url = sdk_gaps::broker_node_socket_url(&config.base_url, &config.version);
+    let (url, credential) = socket_target(config, enrollment);
     let mut request = url.into_client_request()?;
-    let bearer = format!("Bearer {}", enrollment.token.expose())
+    let bearer = format!("Bearer {}", credential.expose())
         .parse()
         .map_err(|_| tungstenite::Error::Url(tungstenite::error::UrlError::NoHostName))?;
     request.headers_mut().insert("Authorization", bearer);
@@ -365,9 +410,63 @@ async fn open(
 }
 
 fn rejected(error: &tungstenite::Error) -> bool {
-    matches!(error, tungstenite::Error::Http(response)
-        if matches!(response.status().as_u16(), 401 | 403))
+    matches!(refusal(error), Some(401 | 403))
 }
+
+/// The status of an upgrade Agent Relay refused with a plain HTTP answer.
+fn refusal(error: &tungstenite::Error) -> Option<u16> {
+    match error {
+        tungstenite::Error::Http(response) => Some(response.status().as_u16()),
+        _ => None,
+    }
+}
+
+/// Control refused to bridge a node's socket (`status`, no body). Never a
+/// rotation: the bridged node holds no token.
+///
+/// - `401`: Control refused the install's relay-node credential
+///   (`token_invalid`). Enrolling again cannot change that, so the node
+///   stops and says why ([`BRIDGE_CREDENTIAL_REFUSED`]); the saved node is
+///   kept.
+/// - `403`: Control has no usable node token for it (never enrolled
+///   through it, or unreadable under its keyring), so the node is enrolled
+///   again under its own id and name.
+/// - `404`: the install is no longer gate-only (or this is not Control's
+///   bridge), so the saved node is forgotten and the next attempt enrols as
+///   the install now asks.
+/// - `429` and `503`: Control is at a limit or shutting down. The same
+///   enrolment is tried again after the backoff, neither enrolled again
+///   nor forgotten.
+/// - Anything else is backed off and tried again likewise.
+async fn bridge_refused(config: &NodeConfig, enrollment: &Enrollment, status: u16) -> Ended {
+    let refused = "Agent Relay's Control bridge refused this computer's spawn node.";
+    match status {
+        401 => Ended::CredentialRefused,
+        403 => match enroll(config, &enrollment.node_id, &enrollment.node_name, None).await {
+            Ok(_) => Ended::Closed(refused.into()),
+            Err(Refused::PlanLimit(limit)) => Ended::Refused(limit),
+            Err(Refused::CredentialRejected) => Ended::CredentialRefused,
+            Err(Refused::IdTaken) => {
+                let _ = forget(&node_file(config));
+                Ended::Closed(refused.into())
+            }
+            Err(reason) => Ended::Closed(format!("{refused} {}", reason.reason())),
+        },
+        404 => {
+            let _ = forget(&node_file(config));
+            Ended::Closed(refused.into())
+        }
+        429 | 503 => Ended::Closed(
+            "Agent Relay's Control bridge is busy or restarting; the spawn node will try again."
+                .into(),
+        ),
+        _ => Ended::Closed(refused.into()),
+    }
+}
+
+/// Why a bridged node stopped: Control answered its socket with `401`, the
+/// install's relay-node credential refused.
+const BRIDGE_CREDENTIAL_REFUSED: &str = "Spawning is unavailable on this computer: Agent Relay's Control refused this install's relay-node credential.";
 
 async fn connect_once(
     config: &NodeConfig,
@@ -386,6 +485,7 @@ async fn connect_once(
                 host.refused(reason.clone());
                 return Ended::GaveUp(reason);
             }
+            Err(Refused::CredentialRejected) => return Ended::CredentialRefused,
             Err(refused) => return Ended::Closed(refused.reason()),
         },
         // The saved node's credential is bound to another name: stopped,
@@ -394,10 +494,15 @@ async fn connect_once(
             host.refused(reason.clone());
             return Ended::GaveUp(reason);
         }
+        Err(Refused::CredentialRejected) => return Ended::CredentialRefused,
         Err(refused) => return Ended::Closed(refused.reason()),
     };
     let mut socket = match open(config, &enrollment).await {
         Ok(socket) => socket,
+        Err(error) if enrollment.bridged && refusal(&error).is_some() => {
+            let status = refusal(&error).unwrap_or_default();
+            return bridge_refused(config, &enrollment, status).await;
+        }
         Err(error) if rejected(&error) => {
             let refused = "Agent Relay refused this computer's spawn node.";
             return match rotate(config, &enrollment).await {
@@ -411,6 +516,7 @@ async fn connect_once(
                 Err(Refused::ProofRefused(reason)) => {
                     Ended::TokenRefused(format!("{refused} {reason}"))
                 }
+                Err(Refused::CredentialRejected) => Ended::CredentialRefused,
                 Err(reason) => Ended::Closed(format!("{refused} {}", reason.reason())),
             };
         }
@@ -430,6 +536,7 @@ async fn connect_once(
         version: config.version.clone(),
     };
     let advertise = || host.advertisement(&config.harnesses, &config.repositories);
+    host.prepare_advertisement();
     let register_id = format!("node_register_{}", random_uuid());
     if sdk_gaps::send_frame(&mut socket, &identity.register(&register_id, &advertise()))
         .await
@@ -473,6 +580,7 @@ async fn connect_once(
         harness_descriptors: None,
         claim: None,
         plan_limit: None,
+        credential_refused: None,
     });
     let (outgoing, mut queued) = mpsc::unbounded_channel();
     let link = NodeLink {
@@ -529,6 +637,7 @@ async fn connect_once(
                 return Ended::Stopped;
             }
             _ = beats.tick() => {
+                host.prepare_advertisement();
                 let heartbeat = identity.heartbeat(&advertise());
                 if sdk_gaps::send_frame(&mut socket, &heartbeat).await.is_err()
                     || socket.send(Message::Ping(Vec::new())).await.is_err()
@@ -547,6 +656,7 @@ async fn connect_once(
                 }
             }
             _ = changed.notified() => {
+                host.prepare_advertisement();
                 // Places changed: Relaycast learns at once, not at the next
                 // tick (once recovery has sent the first inventory).
                 if (recovered
@@ -655,6 +765,7 @@ mod tests {
             app_data_dir: directory.to_path_buf(),
             harnesses: vec![codex::ID],
             repositories: Vec::new(),
+            desktop_credential: false,
         }
     }
 
@@ -669,6 +780,7 @@ mod tests {
             base_url: config.base_url.clone(),
             workspace: fingerprint(&config.workspace_key),
             rotation_key: None,
+            bridged: false,
         };
         save(&node_file(&config), &enrollment).unwrap();
         assert_eq!(load(&config), Some(enrollment));
@@ -709,6 +821,7 @@ mod tests {
             base_url: config.base_url.clone(),
             workspace: fingerprint(&config.workspace_key),
             rotation_key: None,
+            bridged: false,
         };
         save(&node_file(&config), &enrollment).unwrap();
         let token = node_token(folder.path(), &config.base_url, &config.workspace_key).unwrap();
@@ -811,6 +924,7 @@ mod tests {
             base_url: old.base_url.clone(),
             workspace: fingerprint(&old.workspace_key),
             rotation_key: None,
+            bridged: false,
         };
         save(&node_file(&old), &enrollment).unwrap();
         let current = NodeConfig {
@@ -936,6 +1050,7 @@ mod tests {
             base_url: config.base_url.clone(),
             workspace: fingerprint(&config.workspace_key),
             rotation_key: None,
+            bridged: false,
         };
         save(&node_file(&config), &enrollment).unwrap();
         assert!(rotate(&config, &enrollment).await.is_err());

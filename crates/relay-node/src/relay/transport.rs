@@ -198,6 +198,13 @@ pub struct BlockingCoreStream {
 }
 
 impl BlockingCoreStream {
+    /// Connection setup shares the request's absolute deadline.
+    pub(crate) fn connect_until(path: &Path, deadline: std::time::Instant) -> io::Result<Self> {
+        Ok(Self {
+            inner: imp::BlockingStream::connect_until(path, deadline)?,
+        })
+    }
+
     /// Connects to an external application's Windows pipe without hashing
     /// its name. Callers must check the server's credentials before use.
     #[cfg(windows)]

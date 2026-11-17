@@ -20,16 +20,18 @@
 //!
 //! Each `spawn:<harness>` capability carries `metadata.configured` (what the
 //! person or an agent set: billing, full access, maximum agents,
-//! repositories, whether teammates may spawn here; and what the node is:
-//! `node_kind` `desktop` on `machine`) and `metadata.live` (measured for this frame: places and
-//! resources, stamped `observed_at`). `release` carries the agents it can
-//! release with their lifecycle, and the places reclaimed from agents that
-//! ended unreleased. Relaycast's heartbeat and inventory frames are strict,
-//! so capability metadata is the one place for these.
+//! repositories, whether teammates may spawn here; privacy-gated recent
+//! folders; and what the node is: `node_kind` `desktop` on `machine`) and
+//! `metadata.live` (measured for this frame: places and resources, stamped
+//! `observed_at`). `release` carries the agents it can release with their
+//! lifecycle, and the places reclaimed from agents that ended unreleased.
+//! Relaycast's heartbeat and inventory frames are strict, so capability
+//! metadata is the one place for these.
 
 use super::lifecycle::WorkCounts;
 use super::resources::Resources;
 use crate::relay::state::{ProcessEvidence, SpawnSlots, UnfinishedWork, WorkEvidence};
+use crate::relay::workspace::Secret;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -44,6 +46,10 @@ pub const FORK_CAPABILITY: &str = "relay:spawn-fork:v1";
 /// What kind of node this is, in each `spawn:<harness>` capability's
 /// `metadata.configured.node_kind`: a person's desktop.
 pub const NODE_KIND: &str = "desktop";
+
+/// The most working folders a node publishes after the person opts into
+/// teammate spawning. A bounded list keeps capability heartbeats small.
+pub const MAX_RECENT_FOLDERS: usize = 10;
 
 /// Relaycast's frame version.
 pub const WIRE_VERSION: u64 = 1;
@@ -104,7 +110,8 @@ pub struct HarnessConfigured {
     pub full_access: bool,
 }
 
-/// What the person or an agent set: stable between edits.
+/// What this node offers in every spawn capability. Most fields are stable
+/// between edits; recent folder suggestions change as spawns are saved.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Configured {
     pub max_agents: u32,
@@ -115,6 +122,10 @@ pub struct Configured {
     pub teammates: bool,
     /// Owner/name keys of the repositories this computer offers to work in.
     pub repositories: Vec<String>,
+    /// Newest-first absolute working folders used by saved spawns. `None`
+    /// means the person has not opted into publishing paths to teammates;
+    /// `Some(empty)` means they opted in but no saved spawn has a folder.
+    pub recent_folders: Option<Vec<String>>,
     /// The harnesses offered, in order.
     pub harnesses: Vec<HarnessConfigured>,
 }
@@ -164,7 +175,7 @@ fn evidence(state: &impl serde::Serialize, at: &Option<String>) -> Value {
 
 impl Advertisement {
     fn configured_for(&self, harness: &HarnessConfigured) -> Value {
-        json!({
+        let mut configured = json!({
             "harness": harness.harness.name(),
             "billing": harness.billing.name(),
             "full_access": harness.full_access,
@@ -173,7 +184,11 @@ impl Advertisement {
             "node_kind": NODE_KIND,
             "machine": self.configured.machine,
             "teammates": self.configured.teammates,
-        })
+        });
+        if let Some(folders) = &self.configured.recent_folders {
+            configured["recent_folders"] = json!(folders);
+        }
+        configured
     }
 
     fn live_node(&self) -> Value {
@@ -524,7 +539,21 @@ pub struct SpawnRequest {
     /// The agent on this computer whose session the new agent starts as a
     /// copy of (`fork_from`), continuing its conversation.
     pub fork_from: Option<String>,
+    /// The one-time `sh_lt_` credential Control added for this launch on a
+    /// gate-only install (`input.launch_credential`), for the agent's
+    /// relaygate registration. Read once from the frame, taken out of the
+    /// request when the spawn is answered, and presented by the node to
+    /// relaygate once, inside the launch and before the harness starts
+    /// (`Core::register_launch_at_gate`); dropped as soon as that returns.
+    /// Never handed to the agent's process and never kept anywhere else:
+    /// not in the intent, the ledger or any file, and never logged (its
+    /// `Debug` shows only the prefix). `None` when Control sent none: a
+    /// spawn exactly as before.
+    pub launch_credential: Option<Secret>,
 }
+
+/// What a launch credential starts with.
+pub const LAUNCH_CREDENTIAL_PREFIX: &str = "sh_lt_";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReleaseRequest {
@@ -600,6 +629,19 @@ pub fn invoke(frame: &Value) -> Option<Result<Invoke, (String, String)>> {
         },
         _ => return fail("spawn_invalid_input: fork_from must name another agent"),
     };
+    // Absent is a spawn as before. A value that is not a launch credential
+    // is refused rather than handed to the agent or dropped: the agent
+    // could not register at the gate with it.
+    let launch_credential = match &input["launch_credential"] {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(credential)
+            if credential.len() > LAUNCH_CREDENTIAL_PREFIX.len()
+                && credential.starts_with(LAUNCH_CREDENTIAL_PREFIX) =>
+        {
+            Some(Secret::new(credential.clone()))
+        }
+        _ => return fail("spawn_invalid_input: launch_credential is not a launch credential"),
+    };
     Some(Ok(Invoke::Spawn(SpawnRequest {
         invocation_id,
         harness,
@@ -607,6 +649,7 @@ pub fn invoke(frame: &Value) -> Option<Result<Invoke, (String, String)>> {
         task,
         directory,
         fork_from,
+        launch_credential,
     })))
 }
 
@@ -649,8 +692,9 @@ mod tests {
             configured: Configured {
                 max_agents: 8,
                 machine: "Test-Mac-Mini".into(),
-                teammates: false,
+                teammates: true,
                 repositories: vec!["AgentWorkforce/relay-desktop".into()],
+                recent_folders: Some(vec!["/Users/me/src/relay-desktop".into()]),
                 harnesses: harnesses
                     .iter()
                     .map(|harness| HarnessConfigured {
@@ -748,7 +792,8 @@ mod tests {
             codex["configured"],
             json!({"harness": "codex", "billing": "subscription", "full_access": true,
                 "max_agents": 8, "repositories": ["AgentWorkforce/relay-desktop"],
-                "node_kind": "desktop", "machine": "Test-Mac-Mini", "teammates": false})
+                "recent_folders": ["/Users/me/src/relay-desktop"],
+                "node_kind": "desktop", "machine": "Test-Mac-Mini", "teammates": true})
         );
         assert_eq!(codex["live"]["observed_at"], "2026-10-14T10:00:00Z");
         assert_eq!(
@@ -777,6 +822,16 @@ mod tests {
                 "turn_in_progress": true, "pending_deliveries": 2})
         );
         assert!(frame.get("repo_keys").is_none() && frame.get("tags").is_none());
+    }
+
+    #[test]
+    fn configured_omits_private_folders_when_publication_is_not_enabled() {
+        let mut advertisement = advertisement(&[codex::ID], 0);
+        advertisement.configured.teammates = false;
+        advertisement.configured.recent_folders = None;
+        let configured =
+            &identity().heartbeat(&advertisement)["capabilities"][0]["metadata"]["configured"];
+        assert!(configured.get("recent_folders").is_none());
     }
 
     #[test]
@@ -954,6 +1009,47 @@ mod tests {
         assert_eq!(request.task, "fix CI");
         assert_eq!(request.directory, Some(PathBuf::from(repo)));
         assert_eq!(request.fork_from, None);
+        // No launch credential sent: none read, a spawn as before.
+        assert_eq!(request.launch_credential, None);
+    }
+
+    /// Control's launch credential is read from the spawn's input, and a
+    /// value that is not one is refused, never presented to relaygate.
+    #[test]
+    fn a_launch_credential_is_read_once_from_the_spawn_input() {
+        let spawn = |input: Value| {
+            invoke(&json!({"type": "action.invoke", "invocation_id": "inv_1",
+                "action": "spawn:claude", "input": input}))
+        };
+        let Some(Ok(Invoke::Spawn(request))) =
+            spawn(json!({"name": "w1", "task": "go", "launch_credential": "sh_lt_fixture0123"}))
+        else {
+            panic!("not a spawn")
+        };
+        assert_eq!(
+            request.launch_credential,
+            Some(Secret::new("sh_lt_fixture0123"))
+        );
+        // Its `Debug` (anything that prints the request) never shows it.
+        assert!(!format!("{request:?}").contains("fixture0123"));
+        let Some(Ok(Invoke::Spawn(request))) =
+            spawn(json!({"name": "w1", "launch_credential": null}))
+        else {
+            panic!("not a spawn")
+        };
+        assert_eq!(request.launch_credential, None);
+        for credential in [
+            json!(""),
+            json!("sh_lt_"),
+            json!("rk_live_fixture"),
+            json!(7),
+            json!({"token": "sh_lt_fixture"}),
+        ] {
+            assert!(matches!(
+                spawn(json!({"name": "w1", "launch_credential": credential})),
+                Some(Err((_, error))) if error.starts_with("spawn_invalid_input")
+            ));
+        }
     }
 
     #[test]

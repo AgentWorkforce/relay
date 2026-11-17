@@ -68,6 +68,21 @@ pub struct Behaviour {
     /// Status for the node socket's upgrade: 101 accepts it, anything else
     /// refuses it with that status (401: the node token is not current).
     pub socket_status: u16,
+    /// The `Retry-After` a refused upgrade carries.
+    pub socket_retry_after: Option<String>,
+    /// Closes every socket right after replying to `node.register`, with
+    /// this close code: a gateway shedding sockets.
+    pub close_after_register: Option<u16>,
+    /// The reason that close carries.
+    pub close_reason: String,
+    /// How long the socket is held, unread, before that close: a refused
+    /// register is held about 30 s.
+    pub close_delay: Duration,
+    /// Refuses `node.register` with an `ok: false` reply carrying this
+    /// error code (`provider_instance_conflict` is a 409).
+    pub refuse_register: Option<String>,
+    /// The `retry_after_ms` that refusal carries.
+    pub refuse_retry_after_ms: Option<u64>,
 }
 
 impl Default for Behaviour {
@@ -80,6 +95,12 @@ impl Default for Behaviour {
             node_name: "desk".into(),
             stall_after_register: false,
             socket_status: 101,
+            socket_retry_after: None,
+            close_after_register: None,
+            close_reason: String::new(),
+            close_delay: Duration::ZERO,
+            refuse_register: None,
+            refuse_retry_after_ms: None,
         }
     }
 }
@@ -181,6 +202,24 @@ struct World {
     /// `METHOD /path` requests that answer 503; a trailing `*` matches any
     /// rest of the path.
     failing: Vec<String>,
+    /// relaygate's side of the agents enrolled through `POST /v1/register`.
+    gate: Gate,
+}
+
+/// What the fake relaygate keeps: each enrolled name's recovery proof and
+/// gid, and when each `rg_` token it issued expires. A token not current
+/// for its agent (renewed, expired, or the agent deleted) is answered 401
+/// `relaygate_unauthenticated` on every path.
+#[derive(Default)]
+struct Gate {
+    recoveries: BTreeMap<String, (String, u64)>,
+    expiries: BTreeMap<String, chrono::DateTime<chrono::Utc>>,
+    /// How long an issued token lives; one hour when unset.
+    ttl: Option<chrono::TimeDelta>,
+    next_gid: u64,
+    /// Registers are carried out, then answered 503 as if the answer was
+    /// lost on the way back.
+    lose_register_replies: bool,
 }
 
 #[derive(Default)]
@@ -191,6 +230,10 @@ struct Shared {
     frames: Vec<Value>,
     sockets: Vec<mpsc::UnboundedSender<SocketCommand>>,
     socket_queries: Vec<String>,
+    /// Upgrades refused with `socket_status`.
+    refused_upgrades: u32,
+    /// Sockets the client closed before the server did.
+    client_closes: u32,
     minted: u32,
     world: World,
     /// `METHOD /path` requests that wait for `true` before they are
@@ -200,11 +243,14 @@ struct Shared {
     held: BTreeMap<String, u32>,
     /// Explicit API errors for pacing tests; healthy routes are unchanged.
     api_errors: BTreeMap<String, (u16, String)>,
+    /// The `Retry-After` every error from `api_errors` carries, if any.
+    api_retry_after: Option<String>,
 }
 
 enum SocketCommand {
     Send(Value),
-    Close,
+    /// Close, with this close code if any.
+    Close(Option<u16>),
 }
 
 pub struct FakeRelaycast {
@@ -252,6 +298,29 @@ impl FakeRelaycast {
         self.shared.lock().unwrap().behaviour.socket_status = status;
     }
 
+    pub fn set_socket_retry_after(&self, retry_after: Option<&str>) {
+        self.shared.lock().unwrap().behaviour.socket_retry_after = retry_after.map(str::to_string);
+    }
+
+    pub fn set_refuse_register(&self, refuse: Option<&str>) {
+        let refuse = refuse.map(str::to_string);
+        self.shared.lock().unwrap().behaviour.refuse_register = refuse;
+    }
+
+    pub fn set_close_after_register(&self, code: Option<u16>) {
+        self.shared.lock().unwrap().behaviour.close_after_register = code;
+    }
+
+    /// Sockets the client closed before the server did.
+    pub fn client_closes(&self) -> u32 {
+        self.shared.lock().unwrap().client_closes
+    }
+
+    /// Upgrades refused so far.
+    pub fn refused_upgrades(&self) -> u32 {
+        self.shared.lock().unwrap().refused_upgrades
+    }
+
     pub fn requests(&self) -> Vec<Recorded> {
         self.shared.lock().unwrap().requests.clone()
     }
@@ -292,7 +361,14 @@ impl FakeRelaycast {
     /// Closes the newest open socket from the server side.
     pub fn close_socket(&self) {
         if let Some(socket) = self.shared.lock().unwrap().sockets.last() {
-            let _ = socket.send(SocketCommand::Close);
+            let _ = socket.send(SocketCommand::Close(None));
+        }
+    }
+
+    /// Closes the newest open socket from the server side with `code`.
+    pub fn close_socket_with(&self, code: u16) {
+        if let Some(socket) = self.shared.lock().unwrap().sockets.last() {
+            let _ = socket.send(SocketCommand::Close(Some(code)));
         }
     }
 
@@ -661,6 +737,62 @@ impl FakeRelaycast {
         }
     }
 
+    /// The `Retry-After` header each error set with `set_api_error` carries.
+    pub fn set_api_retry_after(&self, retry_after: Option<&str>) {
+        self.shared.lock().unwrap().api_retry_after = retry_after.map(str::to_string);
+    }
+
+    /// How long the `rg_` tokens the fake relaygate issues from now on live.
+    pub fn set_gate_ttl(&self, ttl: Duration) {
+        self.shared.lock().unwrap().world.gate.ttl =
+            Some(chrono::TimeDelta::from_std(ttl).unwrap());
+    }
+
+    /// Carries out each `POST /v1/register` but answers it 503, as if the
+    /// answer was lost on the way back.
+    pub fn lose_gate_register_replies(&self, lose: bool) {
+        self.shared.lock().unwrap().world.gate.lose_register_replies = lose;
+    }
+
+    /// Expires `name`'s current `rg_` token now, as if its lifetime ran out.
+    pub fn expire_gate_token(&self, name: &str) {
+        let mut shared = self.shared.lock().unwrap();
+        let world = &mut shared.world;
+        if let Some(agent) = world.agents.get(name) {
+            world.gate.expiries.insert(
+                agent.token.clone(),
+                chrono::Utc::now() - chrono::TimeDelta::seconds(1),
+            );
+        }
+    }
+
+    /// Enrols `name` with `recovery` as a device would have before this
+    /// test began; returns its agent id and `rg_` token.
+    pub fn seed_gate_agent(&self, name: &str, recovery: &str) -> (String, String) {
+        let mut shared = self.shared.lock().unwrap();
+        let (status, answer) = gate_register(
+            &mut shared.world,
+            "sh_at_seeded",
+            &json!({"name": name, "recovery": recovery}),
+        );
+        assert_eq!(status, 200, "{answer}");
+        (
+            answer["agent_id"].as_str().unwrap().into(),
+            answer["token"].as_str().unwrap().into(),
+        )
+    }
+
+    /// The recovery proof relaygate holds for `name`, if it enrolled.
+    pub fn gate_recovery(&self, name: &str) -> Option<String> {
+        let shared = self.shared.lock().unwrap();
+        shared
+            .world
+            .gate
+            .recoveries
+            .get(name)
+            .map(|(recovery, _)| recovery.clone())
+    }
+
     /// Makes acks and fails of these deliveries fail with 503.
     pub fn set_unsettleable(&self, ids: &[&str]) {
         self.shared.lock().unwrap().world.unsettleable =
@@ -685,6 +817,77 @@ fn create_agent(world: &mut World, name: &str, prefix: &str, metadata: Value, ki
     };
     world.agents.insert(name.into(), agent.clone());
     agent
+}
+
+/// Whether `token` is an `rg_` token relaygate issued that is still its
+/// agent's current one and has not expired.
+fn gate_token_current(world: &World, token: &str) -> bool {
+    world.agents.values().any(|a| a.token == token)
+        && world
+            .gate
+            .expiries
+            .get(token)
+            .is_some_and(|expires| *expires > chrono::Utc::now())
+}
+
+/// `POST /v1/register` as relaygate answers it: a device token (`sh_at_`)
+/// enrols `name`; the same name with the same recovery proof gets the same
+/// agent id and a new token, and the previous token stops working.
+fn gate_register(world: &mut World, bearer: &str, body: &Value) -> (u16, Value) {
+    if !bearer.starts_with("sh_at_") {
+        return error(401, "relaygate_unauthenticated");
+    }
+    let name = body["name"].as_str().unwrap_or_default().to_string();
+    let recovery = body["recovery"].as_str().unwrap_or_default().to_string();
+    if name.starts_with("ctl:") {
+        return error(403, "relaygate_name_scope");
+    }
+    let gid = match world.gate.recoveries.get(&name) {
+        Some((held, _)) if *held != recovery => return error(409, "relaygate_name_taken"),
+        Some((_, gid)) => *gid,
+        None if world.agents.contains_key(&name) => return error(409, "relaygate_name_taken"),
+        None => {
+            world.gate.next_gid += 1;
+            let gid = 4200 + world.gate.next_gid;
+            world.gate.recoveries.insert(name.clone(), (recovery, gid));
+            gid
+        }
+    };
+    world.next += 1;
+    let token = format!("rg_{name}_{}", world.next);
+    let agent = match world.agents.get_mut(&name) {
+        Some(agent) => {
+            world.gate.expiries.remove(&agent.token);
+            agent.token = token.clone();
+            agent.clone()
+        }
+        None => {
+            // A deleted agent registered again keeps its agent id.
+            let id = world
+                .gate
+                .recoveries
+                .get(&name)
+                .map(|(_, gid)| format!("agent_gate_{gid}"))
+                .unwrap_or_default();
+            let mut agent = create_agent(world, &name, "gate", json!({}), "agent");
+            agent.id = id;
+            agent.token = token.clone();
+            world.agents.insert(name.clone(), agent.clone());
+            agent
+        }
+    };
+    let expires = chrono::Utc::now() + world.gate.ttl.unwrap_or(chrono::TimeDelta::hours(1));
+    world.gate.expiries.insert(token.clone(), expires);
+    (
+        200,
+        json!({
+            "agent_id": agent.id,
+            "gid": gid,
+            "token": token,
+            "expires_at": expires.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            "user_id": "user_fake",
+        }),
+    )
 }
 
 fn conversation_id(a: &str, b: &str) -> String {
@@ -869,11 +1072,18 @@ async fn serve(stream: TcpStream, shared: Arc<Mutex<Shared>>) {
     let target = parts.next().unwrap_or_default().to_string();
     let lower = head.to_ascii_lowercase();
     if target.starts_with("/v1/node/ws") && lower.contains("upgrade: websocket") {
-        let status = shared.lock().unwrap().behaviour.socket_status;
+        let (status, retry_after) = {
+            let mut shared = shared.lock().unwrap();
+            let status = shared.behaviour.socket_status;
+            if status != 101 {
+                shared.refused_upgrades += 1;
+            }
+            (status, shared.behaviour.socket_retry_after.clone())
+        };
         if status == 101 {
             socket(stream, target, shared).await;
         } else {
-            refuse_socket(stream, status).await;
+            refuse_socket(stream, status, retry_after).await;
         }
     } else if target.starts_with("/blob/") {
         let path = target.split('?').next().unwrap_or_default().to_string();
@@ -963,8 +1173,13 @@ async fn http(
     if let Some(mut hold) = hold {
         let _ = hold.wait_for(|released| *released).await;
     }
-    let (status, payload) = {
+    let (status, payload, retry_after) = {
         let mut shared = shared.lock().unwrap();
+        let retry_after = shared
+            .api_errors
+            .contains_key(&request)
+            .then(|| shared.api_retry_after.clone())
+            .flatten();
         shared.requests.push(Recorded {
             received_at: std::time::Instant::now(),
             method: method.clone(),
@@ -978,8 +1193,12 @@ async fn http(
             ),
             body: body.clone(),
         });
-        route(&mut shared, &method, &path, &query, &bearer, &body)
+        let (status, payload) = route(&mut shared, &method, &path, &query, &bearer, &body);
+        (status, payload, retry_after)
     };
+    let retry_after = retry_after
+        .map(|value| format!("Retry-After: {value}\r\n"))
+        .unwrap_or_default();
     let body = if status == 204 {
         String::new()
     } else {
@@ -991,7 +1210,7 @@ async fn http(
         _ => "Error",
     };
     let response = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status} {reason}\r\n{retry_after}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     let _ = stream.write_all(response.as_bytes()).await;
@@ -1051,6 +1270,9 @@ fn route(
         return error(503, "unavailable");
     }
     let world = &mut shared.world;
+    if bearer.starts_with("rg_") && !gate_token_current(world, bearer) {
+        return error(401, "relaygate_unauthenticated");
+    }
     let caller = world.agents.values().find(|a| a.token == bearer).cloned();
     match (method, segments.as_slice()) {
         ("GET", ["v1", "workspace"]) if !bearer.starts_with("rk_") => error(401, "unauthorized"),
@@ -1067,7 +1289,41 @@ fn route(
                     "message": "key rk_live_secret0000 is revoked"}}),
             ),
         },
-        ("POST", ["v1", "agent", "node-token"]) if !bearer.starts_with("at_") => {
+        ("POST", ["v1", "register"]) => {
+            let answer = gate_register(world, bearer, body);
+            if world.gate.lose_register_replies && answer.0 == 200 {
+                return error(503, "relaygate_unavailable");
+            }
+            answer
+        }
+        ("PATCH", ["v1", "agent"]) if bearer.starts_with("rg_") => {
+            let Some(agent) = caller.and_then(|c| world.agents.get_mut(&c.name)) else {
+                return error(401, "relaygate_unauthenticated");
+            };
+            if let (Value::Object(metadata), Value::Object(update)) =
+                (&mut agent.metadata, &body["metadata"])
+            {
+                metadata.extend(update.clone());
+            }
+            ok(json!({"id": agent.id, "name": agent.name, "type": agent.kind,
+                "status": "online", "persona": null, "metadata": agent.metadata}))
+        }
+        ("DELETE", ["v1", "agent"]) if bearer.starts_with("rg_") => {
+            let Some(agent) = caller else {
+                return error(401, "relaygate_unauthenticated");
+            };
+            if world.undeletable.contains(&agent.name) {
+                return error(503, "relaygate_unavailable");
+            }
+            // The gate keeps the name's recovery: the same person can
+            // register it again and gets the same agent id.
+            world.agents.remove(&agent.name);
+            world.gate.expiries.remove(&agent.token);
+            no_content()
+        }
+        ("POST", ["v1", "agent", "node-token"])
+            if !bearer.starts_with("at_") && !bearer.starts_with("rg_") =>
+        {
             error(401, "unauthorized")
         }
         ("POST", ["v1", "agent", "node-token"]) => match shared.behaviour.node_token_status {
@@ -1077,10 +1333,12 @@ fn route(
                     .as_ref()
                     .map(|a| a.id.clone())
                     .unwrap_or_else(|| "agent-1".into());
+                // relaygate mints its own rgn_ node token for an rg_ agent.
+                let prefix = if bearer.starts_with("rg_") { "rgn" } else { "nt_live" };
                 ok(json!({
                     "node_id": format!("node_direct_{id}"),
                     "node_name": shared.behaviour.node_name,
-                    "token": format!("nt_live_{}", shared.minted)
+                    "token": format!("{prefix}_{}", shared.minted)
                 }))
             }
             status => error(status, "unauthorized"),
@@ -1160,6 +1418,21 @@ fn route(
             let Some(agent) = caller else {
                 return error(401, "unauthorized");
             };
+            // relaygate never hands out a group DM: it marks it failed
+            // upstream so it does not come back.
+            if bearer.starts_with("rg_") {
+                for denied in world
+                    .deliveries
+                    .get_mut(&agent.name)
+                    .into_iter()
+                    .flatten()
+                    .filter(|d| d.state == "queued" && d.item["reason"] == "group_dm")
+                {
+                    denied.state = "failed".into();
+                    denied.retryable = Some(false);
+                    denied.error = Some("relaygate_denied".into());
+                }
+            }
             let items: Vec<Value> = world
                 .deliveries
                 .get(&agent.name)
@@ -1169,6 +1442,10 @@ fn route(
                 .map(|d| d.item.clone())
                 .collect();
             ok(json!(items))
+        }
+        // Served as relaygate serves it; recorded, never acted on.
+        ("POST", ["v1", "deliveries", _, "defer"]) if caller.is_some() => {
+            ok(json!({"status": "deferred"}))
         }
         ("POST", ["v1", "deliveries", id, action]) if *action == "ack" || *action == "fail" => {
             if caller.is_none() {
@@ -1545,9 +1822,13 @@ fn route(
     }
 }
 
-async fn refuse_socket(mut stream: TcpStream, status: u16) {
-    let response =
-        format!("HTTP/1.1 {status} Refused\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+async fn refuse_socket(mut stream: TcpStream, status: u16, retry_after: Option<String>) {
+    let retry_after = retry_after
+        .map(|value| format!("Retry-After: {value}\r\n"))
+        .unwrap_or_default();
+    let response = format!(
+        "HTTP/1.1 {status} Refused\r\n{retry_after}Content-Length: 0\r\nConnection: close\r\n\r\n"
+    );
     let _ = stream.write_all(response.as_bytes()).await;
     let _ = stream.shutdown().await;
 }
@@ -1556,6 +1837,9 @@ async fn socket(stream: TcpStream, target: String, shared: Arc<Mutex<Shared>>) {
     let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
         return;
     };
+    // relaygate's socket forces the node id and capabilities [] in what it
+    // accepts, and says so in its reply.
+    let gate = target.contains("token=rgn_");
     let (commands, mut command_rx) = mpsc::unbounded_channel();
     {
         let mut shared = shared.lock().unwrap();
@@ -1570,7 +1854,11 @@ async fn socket(stream: TcpStream, target: String, shared: Arc<Mutex<Shared>>) {
                         return;
                     }
                 }
-                Some(SocketCommand::Close) | None => {
+                Some(SocketCommand::Close(code)) => {
+                    let _ = socket.close(code.map(close_frame)).await;
+                    return;
+                }
+                None => {
                     let _ = socket.close(None).await;
                     return;
                 }
@@ -1578,18 +1866,35 @@ async fn socket(stream: TcpStream, target: String, shared: Arc<Mutex<Shared>>) {
             message = socket.next() => match message {
                 Some(Ok(Message::Text(text))) => {
                     let frame: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-                    let (reply, stall) = {
+                    let (reply, stall, close) = {
                         let mut shared = shared.lock().unwrap();
                         shared.frames.push(frame.clone());
                         let register = frame["type"] == "node.register";
                         (
-                            if register && shared.behaviour.reply_to_register {
+                            if let Some(code) = shared.behaviour.refuse_register.as_ref().filter(|_| register) {
+                                let status = if code == "provider_instance_conflict" { 409 } else { 400 };
+                                let mut reply = json!({"v": 1, "id": frame["id"], "type": "reply", "ok": false,
+                                    "error": {"code": code, "status": status,
+                                        "message": "node registration rejected"}});
+                                if let Some(ms) = shared.behaviour.refuse_retry_after_ms {
+                                    reply["error"]["retry_after_ms"] = ms.into();
+                                }
+                                Some(reply)
+                            } else if register && shared.behaviour.reply_to_register && gate {
+                                Some(json!({"v": 1, "id": frame["id"], "type": "reply", "ok": true,
+                                    "data": {"node_id": "node_gate_forced", "capabilities": []}}))
+                            } else if register && shared.behaviour.reply_to_register {
                                 Some(json!({"v": 1, "id": frame["id"], "type": "reply", "ok": true}))
                             } else if frame["type"] == "node.heartbeat" && shared.behaviour.acknowledge_presence {
                                 Some(json!({"v": 1, "id": frame["id"], "type": "reply", "ok": true,
                                     "data": {"agent_presence": true, "agent_id": frame["node_id"].as_str().unwrap().trim_start_matches("node_direct_")}}))
                             } else { None },
                             register && shared.behaviour.stall_after_register,
+                            shared
+                                .behaviour
+                                .close_after_register
+                                .filter(|_| register)
+                                .map(|code| (code, shared.behaviour.close_reason.clone(), shared.behaviour.close_delay)),
                         )
                     };
                     if let Some(reply) = reply {
@@ -1597,14 +1902,46 @@ async fn socket(stream: TcpStream, target: String, shared: Arc<Mutex<Shared>>) {
                             return;
                         }
                     }
+                    if let Some((code, reason, delay)) = close {
+                        // Held unread; a client that closes first is counted.
+                        let held = tokio::time::sleep(delay);
+                        tokio::pin!(held);
+                        loop {
+                            tokio::select! {
+                                _ = &mut held => break,
+                                message = socket.next() => match message {
+                                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => {
+                                        shared.lock().unwrap().client_closes += 1;
+                                        return;
+                                    }
+                                    Some(Ok(_)) => {}
+                                },
+                            }
+                        }
+                        let mut frame = close_frame(code);
+                        frame.reason = reason.into();
+                        let _ = socket.close(Some(frame)).await;
+                        return;
+                    }
                     if stall {
                         // Holds the socket open without ever reading it.
                         std::future::pending::<()>().await;
                     }
                 }
-                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
+                Some(Ok(Message::Close(_))) => {
+                    shared.lock().unwrap().client_closes += 1;
+                    return;
+                }
+                None | Some(Err(_)) => return,
                 Some(Ok(_)) => {}
             },
         }
+    }
+}
+
+fn close_frame(code: u16) -> tokio_tungstenite::tungstenite::protocol::CloseFrame<'static> {
+    tokio_tungstenite::tungstenite::protocol::CloseFrame {
+        code: code.into(),
+        reason: "".into(),
     }
 }

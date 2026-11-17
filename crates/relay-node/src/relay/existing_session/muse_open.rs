@@ -1027,6 +1027,20 @@ impl SystemCourier {
         }
     }
 
+    /// The courier for an open Muse session: Muse runs on the target's own
+    /// data home. Muse registers a session (which delivery waits for) only on
+    /// its real data home; on an isolated one it never registers and every
+    /// delivery times out. The courier's `AGENT_RELAY_MUSE_COURIER` marker
+    /// keeps its session out of Relay's session listing.
+    pub fn for_open_session(config: MuseConfig) -> Self {
+        // The courier runs in the target's workspace while readiness is polled
+        // from here, so a relative data home must resolve the same for both.
+        let config = MuseConfig {
+            data_dir: std::path::absolute(&config.data_dir).unwrap_or(config.data_dir),
+        };
+        Self::new(config, None)
+    }
+
     /// Keep the courier's required session log in Relay-owned app data while
     /// linking only Muse's live registry to the target's store. Peer messaging
     /// requires session logging, but Desktop history must not ingest this
@@ -2095,5 +2109,29 @@ mod tests {
         assert_eq!(courier_reference(TARGET), format!("muse-open:{TARGET}"));
         assert!(is_courier_reference(&courier_reference(TARGET)));
         assert!(!is_courier_reference("existing:grok:x"));
+    }
+    #[test]
+    fn the_open_session_courier_resolves_a_relative_data_home() {
+        let courier = SystemCourier::for_open_session(MuseConfig {
+            data_dir: PathBuf::from("relative-target/muse"),
+        });
+        assert!(courier.config.data_dir.is_absolute());
+        assert!(courier.config.data_dir.ends_with("relative-target/muse"));
+        assert!(courier.private_base.is_none());
+    }
+
+    #[test]
+    fn the_open_session_courier_runs_muse_on_the_target_data_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("share").join("muse");
+        let courier = SystemCourier::for_open_session(MuseConfig {
+            data_dir: data_dir.clone(),
+        });
+        assert!(courier.private_base.is_none());
+        assert!(courier.prepare_private_store(TARGET).is_none());
+        assert_eq!(
+            courier.config.data_home(),
+            Some(tmp.path().join("share").as_path())
+        );
     }
 }

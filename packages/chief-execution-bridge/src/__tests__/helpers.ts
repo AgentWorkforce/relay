@@ -13,8 +13,10 @@ import {
   type SendReport,
   type SpawnReceipt,
   type SpawnRequest,
+  type WorkerLiveness,
 } from '../ports.js';
 import { hash, type Assignment, type WorkerReport } from '../protocol.js';
+import { GitError, type GitRunner } from '../repository.js';
 import { BridgeStore } from '../store.js';
 
 export const T0 = 1_800_000_000_000;
@@ -240,6 +242,56 @@ export class FakeNode implements NodePort {
     if (this.endOutcome === 'ended') this.ended.push(name);
     return this.endOutcome;
   }
+
+  /** What `listAgents` answers; `undefined` is a core that cannot be reached. */
+  agents: Map<string, WorkerLiveness> | undefined = new Map();
+  listCalls = 0;
+
+  async listAgents(): Promise<Map<string, WorkerLiveness> | undefined> {
+    this.listCalls += 1;
+    return this.agents && new Map(this.agents);
+  }
+}
+
+export const REVISION = 'c0ffee'.padEnd(40, '0');
+
+/**
+ * Scripted git. Answers every step of a refresh with success unless `fail` names that
+ * subcommand. `hold` makes the next fetch wait until `release` is called.
+ */
+export class FakeGit {
+  readonly calls: Array<{ cwd: string; args: string[] }> = [];
+  fail = new Set<string>();
+  remoteHeadSet = true;
+  revision = REVISION;
+  private held: Array<() => void> = [];
+  holdNextFetch = false;
+
+  readonly run: GitRunner = async (args, { cwd }) => {
+    this.calls.push({ cwd, args });
+    const [command] = args;
+    if (command === 'fetch' && this.holdNextFetch) {
+      this.holdNextFetch = false;
+      await new Promise<void>((resolve) => this.held.push(resolve));
+    }
+    if (this.fail.has(command ?? '')) throw new GitError('git_exit');
+    if (command === 'rev-parse' && args.includes('--show-toplevel')) return `${cwd}\n`;
+    if (command === 'rev-parse') return `${this.revision}\n`;
+    if (command === 'symbolic-ref') {
+      if (!this.remoteHeadSet) throw new GitError('git_exit');
+      return 'refs/remotes/origin/main\n';
+    }
+    if (command === 'remote') this.remoteHeadSet = true;
+    return '';
+  };
+
+  release(): void {
+    for (const resolve of this.held.splice(0)) resolve();
+  }
+
+  commands(): string[] {
+    return this.calls.map((c) => c.args.join(' '));
+  }
 }
 
 export function makeConfig(overrides: Record<string, unknown> = {}): BridgeConfig {
@@ -280,10 +332,15 @@ export interface Harness {
   clock: { now: number };
   path: string;
   reopen(): Promise<void>;
+  git: FakeGit;
   logs: Array<{ event: string; fields?: Record<string, string | number> }>;
 }
 
-export async function makeHarness(configOverrides: Record<string, unknown> = {}): Promise<Harness> {
+export async function makeHarness(
+  configOverrides: Record<string, unknown> = {},
+  options: { git?: FakeGit } = {}
+): Promise<Harness> {
+  const git = options.git ?? new FakeGit();
   const path = join(mkdtempSync(join(tmpdir(), 'chief-bridge-')), 'ledger.db');
   const relay = new FakeRelay();
   const node = new FakeNode();
@@ -299,6 +356,7 @@ export async function makeHarness(configOverrides: Record<string, unknown> = {})
       node,
       now: () => clock.now,
       log: (event, fields) => logs.push({ event, fields }),
+      git: git.run,
     });
   const store = new BridgeStore(path);
   const harness: Harness = {
@@ -308,6 +366,7 @@ export async function makeHarness(configOverrides: Record<string, unknown> = {})
     bridge: build(store),
     clock,
     path,
+    git,
     logs,
     async reopen() {
       harness.store.close();

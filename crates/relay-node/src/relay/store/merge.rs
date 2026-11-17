@@ -24,6 +24,7 @@ impl Store {
         if ours == base && preserves_journals(theirs) {
             let mut result = theirs.clone();
             result.archived_session_keys = Store::merged_archive_keys(ours, theirs);
+            result.spawn_recent_folders = spawn::merge_recent_folders(base, ours, theirs);
             preserve_spawn_origins(&mut result, &[ours, base]);
             super::integration::preserve_filters(&mut result, &[ours, base]);
             result.retire_unregistered_refusals(&[base, ours, theirs]);
@@ -32,6 +33,7 @@ impl Store {
         if theirs == base && preserves_journals(ours) {
             let mut result = ours.clone();
             result.archived_session_keys = Store::merged_archive_keys(ours, theirs);
+            result.spawn_recent_folders = spawn::merge_recent_folders(base, ours, theirs);
             preserve_spawn_origins(&mut result, &[theirs, base]);
             super::integration::preserve_filters(&mut result, &[theirs, base]);
             result.retire_unregistered_refusals(&[base, ours, theirs]);
@@ -107,6 +109,7 @@ impl Store {
                 &ours.spawn_repositories,
                 &theirs.spawn_repositories,
             ),
+            spawn_recent_folders: spawn::merge_recent_folders(base, ours, theirs),
             spawn_harnesses: merge_maps(
                 &base.spawn_harnesses,
                 &ours.spawn_harnesses,
@@ -167,6 +170,12 @@ impl Store {
                 ours.pending_cleanups.as_deref().unwrap_or_default(),
                 theirs.pending_cleanups.as_deref().unwrap_or_default(),
                 |c| c.clone(),
+            )),
+            gate_recoveries: non_empty(merge_keyed(
+                base.gate_recoveries.as_deref().unwrap_or_default(),
+                ours.gate_recoveries.as_deref().unwrap_or_default(),
+                theirs.gate_recoveries.as_deref().unwrap_or_default(),
+                |kept| (kept.gate_url.clone(), kept.name.clone()),
             )),
             pending_key_migrations: non_empty(merge_keyed(
                 base.pending_key_migrations.as_deref().unwrap_or_default(),
@@ -262,6 +271,8 @@ impl Store {
                 &theirs.in_doubt_delivery_ids,
                 |id| id.clone(),
             ),
+            // Never saved: the holder keeps its own (`HandleState::saved`).
+            launch_gates: Default::default(),
         };
         for list in [
             &mut result.in_doubt_delivery_ids,

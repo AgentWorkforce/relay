@@ -191,6 +191,7 @@ mod tests {
                 account_workspace_id: Some("workspace".into()),
                 name: None,
                 relayfile_workspace_id: None,
+                gate_url: None,
             }),
             ..Store::default()
         }
@@ -283,6 +284,36 @@ mod tests {
         );
         let reopened = StoreHandle::open(path, "desk");
         assert_eq!(reopened.read(|s| s.cloud_session.clone()), Some(kept));
+    }
+
+    // A gate recovery proof another process kept meanwhile is the one
+    // returned, never replaced by a stale copy's new proof: relaygate may
+    // already hold it.
+    #[test]
+    fn a_gate_recovery_kept_by_another_process_is_reused() {
+        const GATE: &str = "https://gate.corp.test";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("injectable-agents.json");
+        let stale = StoreHandle::open(path.clone(), "desk");
+        stale.update(|_| ()).unwrap();
+        let other = StoreHandle::open(path.clone(), "desk");
+        other
+            .update_latest(|s| {
+                s.keep_gate_recovery(GATE, "codex-x", Secret::new("theirs-0123456789abcdef"))
+            })
+            .unwrap();
+        assert_eq!(stale.read(|s| s.gate_recovery(GATE, "codex-x")), None);
+        let kept = stale
+            .update_latest(|s| {
+                s.keep_gate_recovery(GATE, "codex-x", Secret::new("ours-0123456789abcdef"))
+            })
+            .unwrap();
+        assert_eq!(kept.expose(), "theirs-0123456789abcdef");
+        let reopened = StoreHandle::open(path, "desk");
+        assert_eq!(
+            reopened.read(|s| s.gate_recovery(GATE, "codex-x")),
+            Some(Secret::new("theirs-0123456789abcdef"))
+        );
     }
 
     #[test]

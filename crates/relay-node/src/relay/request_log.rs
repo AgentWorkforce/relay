@@ -103,10 +103,16 @@ fn scrub_text(value: &str, secret: &str) -> String {
         .split_inclusive(char::is_whitespace)
         .scan(false, |bearer, word| {
             let lower = word.to_ascii_lowercase();
+            // Where a credential starts in the word, also after punctuation
+            // (`credential=sh_lt_…`, `(rg_…)`), never inside an identifier.
             let hide = *bearer
-                || ["rk_", "at_", "ar_", "sk_", "sh_wk_", "eyj"]
-                    .iter()
-                    .any(|prefix| lower.trim_start_matches(['\"', '\'']).starts_with(prefix));
+                || crate::relay::harness::diagnostics::credential_in_word(
+                    &lower,
+                    &[
+                        "rk_", "at_", "ar_", "sk_", "sh_wk_", "sh_at_", "sh_lt_", "rg_", "rgn_",
+                        "eyj",
+                    ],
+                );
             *bearer = lower.trim() == "bearer";
             Some(if hide {
                 "[redacted] ".to_owned()
@@ -343,6 +349,74 @@ mod tests {
         let text = scrub_text("refused ar_ws_secret for ar_ag_secret", "");
         assert!(!text.contains("ar_ws_secret"), "{text}");
         assert!(!text.contains("ar_ag_secret"), "{text}");
+    }
+
+    #[test]
+    fn a_service_echo_of_a_relaygate_credential_is_redacted() {
+        let text = scrub_text("refused rg_agent1 rgn_node1 sh_at_device1 here", "");
+        for credential in ["rg_agent1", "rgn_node1", "sh_at_device1"] {
+            assert!(!text.contains(credential), "{text}");
+        }
+        assert!(text.contains("refused"), "{text}");
+    }
+    #[test]
+    fn a_launch_credential_is_redacted_in_text_and_in_an_invoke_frame() {
+        let text = scrub_text("refused sh_lt_fixture_launch here", "");
+        assert!(!text.contains("sh_lt_fixture_launch"), "{text}");
+        assert!(text.contains("refused"), "{text}");
+        // Echoed inside a word: an assignment, punctuation, a quote.
+        let text = scrub_text(
+            "refused launch_credential=sh_lt_fixture_one (sh_lt_fixture_two) \"rg_fixture_three\" created_at_ms=1 org_id=2",
+            "",
+        );
+        for secret in ["sh_lt_fixture_one", "sh_lt_fixture_two", "rg_fixture_three"] {
+            assert!(!text.contains(secret), "{text}");
+        }
+        assert!(text.contains("created_at_ms=1"), "{text}");
+        assert!(text.contains("org_id=2"), "{text}");
+        // Coloured by a terminal.
+        let coloured = scrub_text("refused \x1b[31msh_lt_fixture_coloured\x1b[0m", "");
+        assert!(!coloured.contains("sh_lt_fixture_coloured"), "{coloured}");
+        let logged = body(
+            &json!({"error": "refused launch_credential=sh_lt_fixture_launch"}),
+            "",
+        );
+        assert!(!logged.contains("sh_lt_fixture_launch"), "{logged}");
+        let frame = body(
+            &json!({"type": "action.invoke", "action": "spawn:claude",
+                "input": {"name": "a1", "launch_credential": "sh_lt_fixture_launch"}}),
+            "",
+        );
+        assert!(!frame.contains("sh_lt_fixture_launch"), "{frame}");
+        assert!(frame.contains("spawn:claude"), "{frame}");
+    }
+    /// A gate-only desktop's relay-node credential is scrubbed wherever a
+    /// service echoes it, as relaygate's `rg_` tokens are.
+    #[test]
+    fn a_relay_node_credential_is_redacted_like_a_gate_token() {
+        let text = scrub_text(
+            "refused token=sh_wk_fixture_one (sh_wk_fixture_two) \"sh_wk_fixture_three\" Bearer sh_wk_fixture_four rg_fixture_five node_name=desk",
+            "",
+        );
+        for secret in [
+            "sh_wk_fixture_one",
+            "sh_wk_fixture_two",
+            "sh_wk_fixture_three",
+            "sh_wk_fixture_four",
+            "rg_fixture_five",
+        ] {
+            assert!(!text.contains(secret), "{text}");
+        }
+        assert!(text.contains("node_name=desk"), "{text}");
+        let coloured = scrub_text("refused \x1b[31msh_wk_fixture_coloured\x1b[0m", "");
+        assert!(!coloured.contains("sh_wk_fixture_coloured"), "{coloured}");
+        let logged = body(
+            &json!({"error": "relay-node credential sh_wk_fixture_echoed refused",
+                "token": "sh_wk_fixture_field", "nodeName": "desk"}),
+            "",
+        );
+        assert!(!logged.contains("sh_wk_fixture"), "{logged}");
+        assert!(logged.contains("desk"), "{logged}");
     }
     static TEST_LOCK: Mutex<()> = Mutex::new(());
     #[test]

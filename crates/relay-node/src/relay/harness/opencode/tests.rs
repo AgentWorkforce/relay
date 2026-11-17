@@ -689,6 +689,7 @@ fn a_session_the_registry_cannot_prove_ends_its_server() {
 fn intent(target: Option<Target>, process: Option<SpawnedProcess>) -> Intent {
     Intent {
         invocation_id: "inv_o1".into(),
+        gate_launch: false,
         name: "o1".into(),
         harness: ID,
         node_id: "node_desktop_1".into(),

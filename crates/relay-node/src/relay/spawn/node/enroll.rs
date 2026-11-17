@@ -48,7 +48,16 @@ pub(super) enum Refused {
     /// The node credential is bound to another node name (the broker's
     /// `403 node_mismatch`): the node does not start.
     NodeMismatch(String),
+    /// Control refused a gate-only desktop's relay-node credential
+    /// (`NodeConfig::desktop_credential`, `401`): the node stops and marks
+    /// it, so the desktop mints another.
+    CredentialRejected,
 }
+
+/// Why spawning is unavailable on a gate-only install that has no
+/// relay-node credential or no Control URL to reach Control's node bridge
+/// with.
+pub(crate) const GATE_ONLY_UNAVAILABLE: &str = "Spawning is unavailable on this computer: this Agent Relay install is gate-only and its Control bridge is not available.";
 
 impl Refused {
     pub(super) fn reason(self) -> String {
@@ -63,6 +72,7 @@ impl Refused {
             | Refused::NoName(reason)
             | Refused::NodeMismatch(reason) => reason,
             Refused::PlanLimit(limit) => limit.message(),
+            Refused::CredentialRejected => super::BRIDGE_CREDENTIAL_REFUSED.into(),
         }
     }
 }
@@ -89,10 +99,28 @@ fn node_mismatch(config: &NodeConfig, name: &str) -> Refused {
     ))
 }
 
+/// Whether Control refused `config`'s workspace credential, a gate-only
+/// desktop's relay-node credential: the broker's `401` (`token_invalid`,
+/// revoked or expired; it never passes Relaycast's own 401 through). Only
+/// for the desktop's credential, which the desktop can mint again; any
+/// other credential's 401 is waited out as before.
+fn desktop_credential_refused(config: &NodeConfig, error: &relaycast::RelayError) -> bool {
+    config.desktop_credential
+        && node_scoped(config)
+        && node_credential::rejects(crate::relay::workspace::KeyKind::NodeScoped, error)
+}
+
 /// Whether `config`'s workspace credential is node-scoped (`sh_wk_…`): it
 /// is bound to the configured node name, so no alternate name is tried.
 fn node_scoped(config: &NodeConfig) -> bool {
     is_node_key(config.workspace_key.expose())
+}
+
+/// Whether `enrollment` can be used under `config`: a bridged one (no token
+/// of its own) only where Control's bridge is, a node-scoped credential with
+/// a Control origin.
+fn bridge_fits(config: &NodeConfig, enrollment: &Enrollment) -> bool {
+    !enrollment.bridged || (node_scoped(config) && config.control_url.is_some())
 }
 
 /// Why `name` was not enrolled: another node holds it. A node credential is
@@ -160,6 +188,9 @@ pub(super) async fn enroll(
             if node_credential::is_node_mismatch(&error) {
                 return node_mismatch(config, name);
             }
+            if desktop_credential_refused(config, &error) {
+                return Refused::CredentialRejected;
+            }
             let failed =
                 || Refused::Failed(format!("Agent Relay did not enroll this computer: {error}"));
             match error.code() {
@@ -179,19 +210,25 @@ pub(super) async fn enroll(
                 _ => failed(),
             }
         })?;
-    let token = data["token"]
-        .as_str()
-        .filter(|token| !token.is_empty())
-        .ok_or_else(|| {
-            Refused::Failed("Agent Relay enrolled this computer without a node token.".into())
-        })?;
+    let token = data["token"].as_str().filter(|token| !token.is_empty());
+    // On a gate-only install Control's broker keeps the node token and
+    // answers `{id, name}` alone: the node is bridged through Control.
+    // Only a node-scoped credential talks to that broker; a workspace key's
+    // answer without a token is refused as before.
+    let bridged = token.is_none() && node_scoped(config) && config.control_url.is_some();
+    if token.is_none() && !bridged {
+        return Err(Refused::Failed(
+            "Agent Relay enrolled this computer without a node token.".into(),
+        ));
+    }
     let enrollment = Enrollment {
         node_id: data["id"].as_str().unwrap_or(node_id).to_string(),
         node_name: name.to_string(),
-        token: Secret::new(token.to_string()),
+        token: Secret::new(token.unwrap_or_default().to_string()),
         base_url: config.base_url.clone(),
         workspace: fingerprint(&config.workspace_key),
         rotation_key: None,
+        bridged,
     };
     save(&node_file(config), &enrollment).map_err(save_failed)?;
     Ok(enrollment)
@@ -287,6 +324,11 @@ async fn enroll_new(config: &NodeConfig) -> Result<Enrollment, Refused> {
 /// kept until a rotation succeeds, so one whose answer was lost is replayed
 /// rather than refused; one Relaycast refuses as a key is replaced once.
 async fn rotate_named(config: &NodeConfig, current: &Enrollment) -> Result<Enrollment, Refused> {
+    // A bridged node holds no token to prove itself with: Control sends the
+    // one it keeps, so it is enrolled again under its own id and name.
+    if current.bridged {
+        return enroll(config, &current.node_id, &current.node_name, None).await;
+    }
     let path = node_file(config);
     let mut pending = current.clone();
     let mut key = match pending.rotation_key.clone() {
@@ -341,12 +383,19 @@ async fn rotate_named(config: &NodeConfig, current: &Enrollment) -> Result<Enrol
 /// `node_mismatch` is `Refused::NodeMismatch`; any other failure is
 /// `Refused::Failed`.
 pub(super) async fn saved(config: &NodeConfig) -> Result<Option<Enrollment>, Refused> {
-    if let Some(enrollment) = load(config) {
+    if let Some(enrollment) = load(config).filter(|e| bridge_fits(config, e)) {
         return Ok(Some(enrollment));
     }
     let Some(kept) = read(config) else {
         return Ok(None);
     };
+    // A bridged node holds no token: only Control's bridge opens its socket.
+    // Without that bridge (a workspace key now, or no Control origin) it is
+    // not this computer's node, and a new one is enrolled; its empty token
+    // is never sent anywhere.
+    if !bridge_fits(config, &kept) {
+        return Ok(None);
+    }
     // A node credential is bound to the configured name, and Control's
     // broker refuses any other as `node_mismatch`. A node saved under an
     // alternate (taken under a workspace key) is therefore not adopted: a
@@ -363,6 +412,9 @@ pub(super) async fn saved(config: &NodeConfig) -> Result<Option<Enrollment>, Ref
             // another name. Kept as such, so the node stops (`connect_once`).
             if node_credential::is_node_mismatch(&error) {
                 return node_mismatch(config, &kept.node_name);
+            }
+            if desktop_credential_refused(config, &error) {
+                return Refused::CredentialRejected;
             }
             Refused::Failed(format!(
                 "Agent Relay did not say which node is this computer's: {error}"

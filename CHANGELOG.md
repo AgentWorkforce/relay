@@ -5,12 +5,55 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Minor]
+
+### Added
+
+- `agent-relay-node`: the probe's session commands (`whoami`, `agents`, `send`, `read`, `fetch-attachment`, `connect-send`, `subscribe-channel`, `subscribe`, `socket-request`) no longer need `--socket`. Without it they ask `$AGENT_RELAY_SOCKET`, else the session socket of the desktop build that installed the probe (named by an `agent-relay-probe.install.json` sidecar beside it, the app bundle it lives in, or its profile alias name), else Agent Relay's; they also take `--dev` and `--profile <id>`. When no socket is found the error names the paths it looked at.
+- `agent-relay-node`: macOS GitHub Copilot desktop sessions can register and receive Relay messages through their native hooks, with GitHub signature, desktop host and held-session verification.
+- `agent-relay-node`: a Cursor chat whose hosted MCP calls are attested (the account reports `cursor_calls_attested`, once Agent Relay Desktop signs each Cursor call and the hosted MCP verifies it) and whose registration declares the hosted MCP, or that the hosted MCP reports linked, is told to reply with the hosted MCP tools, which now send as that chat. Without attestation, Cursor chats still reply through the session socket.
 
 ### Fixed
 
-- `agent-relay-node`: a build made for a self-hosted site can join a public Relay Connect invitation on agentrelay.com as a guest. It used to refuse every such link with `invalid_link`. Links from any other site are still refused.
 - `agent-relay-node`: Codex chats hosted by OpenIDEA are discovered as live while their trusted app-server holds the thread's writer lock, and queue delivery uses that server's verified executable even when no separate Codex CLI is configured.
+- `agent-relay-node`: a spawn whose harness is installed but did not start now fails as `spawn_failed: <reason>` instead of `spawn_harness_unavailable` (which Cloud showed as the node not providing the harness); a new spawn with a fresh idempotency key may then succeed. Claude Code's readiness timeout now says whether Claude was still running and how much output it wrote.
+- `agent-relay-node`: session-socket requests share one deadline across connection setup and partial reads and writes, so slow replies cannot extend a native hook beyond its wait budget.
+
+## [18.9.0] - 2026-11-16
+
+### Added
+
+- `agent-relay-node`: self-hosted installs whose Control API returns `urls.relaygateUrl` (relaygate gate-only mode) register each agent at relaygate with the person's device token instead of the shared workspace key. Agents renew their relaygate token before it expires, publish their session details and presence, read the roster and are removed through the gate. A removed name registers again as the same agent. Installs without a relaygate URL, including default and hosted ones, are unchanged.
+- `agent-relay-node`: messaging as yourself works on gate-only installs. Your own identity enrols at relaygate as one more agent (named from your user id) with the device token, sends and reads through the gate, and renews its token like an agent does. A due token keeps working while its renewal fails, and relaygate's `Retry-After` is honoured before enrolling again. This also happens when the Control API refuses the messaging identity with `gate_only` and names the gate. Signed out, messaging says it is unavailable until you sign in again.
+- `agent-relay-node`: on gate-only self-hosted installs, spawning works through Control's node bridge: the node enrols and connects with its relay-node credential, holds no Relaycast node token, and registers each launched agent at relaygate itself with the launch's one-time credential before the agent starts. The agent never sees the credential, which is presented once and never saved or logged. The agent's relaygate token is kept in memory only, refreshed before it expires and released when the launch ends. A launch relaygate refuses fails with relaygate's reason, and an agent whose token can no longer be refreshed, or whose token was lost when Agent Relay restarted, must be launched again. A gate-only install without a relay-node credential or Control URL reports spawning as unavailable instead of retrying, and so does one whose relay-node credential Control refuses ("Agent Relay's Control refused this install's relay-node credential").
+- `agent-relay-node`: on relaygate gate-only installs, renaming an agent works. The new name registers at relaygate with its own token, which is renewed before it expires and used to remove the old name when it is released or the agent is removed. A send or session update refused because the agent's relaygate token expired registers the agent again once and is retried, and all agents on an install share one relaycast slow-down.
+- `agent-relay-node`: a gate-only desktop can hand the spawn node the relay-node credential it minted for this computer (`CloudAccess::relay_node_credential`). The node enrols and bridges through Control with it, under the node name Control bound it to; it is held in memory only, never saved, and sent only to Control. Without one, spawning reports the desktop's own reason. A rediscovery picks up a new or forgotten credential, and Control refusing it (`401`, at enrolment, the saved node's lookup or the bridge) stops the node with `spawn.credential_refused` set so the desktop can mint another. Native `spawn.invoke` targets the node under its credential-bound name.
+
+### Fixed
+
+- `@agent-relay/events-shim`: webhook posts no longer go to the wrong session. `setup --claude` installs its wake hooks for every Claude Code session on the machine, and they all share one inbox. Each hook listener took (and marked read) whichever post it saw first, so posts went to unrelated sessions, including posts for a session woken through a relay wake link. Now `listen --hook` listens only in a session whose transcript shows it used the `webhooks` MCP. Any hook listener (Claude Code and turn-end hooks) stands down while the inbox has a working relay wake link, and `wait_for_webhook` takes no posts while one is linked.
+- `agent-relay-node`: Copilot idle chats keep waiting through delayed journal writes and large model-log batches; incoming-message hooks also recognize bundled helper hard links and validate current session descriptors.
+- `agent-relay-node`: macOS development builds recognize their computed code-signing requirement, so native helper verification works while still requiring the running helper to satisfy the core's own requirement.
+- `agent-relay-node`: spawned agents and the shared Codex app server no longer receive `CLOUD_API_ACCESS_TOKEN` or `CLOUD_API_REFRESH_TOKEN` from the node's environment, in any letter case.
+- `@agent-relay/events-shim`: a webhook post can no longer reach agents other than the one its inbox wakes. Posts forwarded to Agent Relay used to carry any `@name` from the post body, so the relay delivered them to that agent too, including Capy threads, Replicas and Amp threads in the workspace. Every `@` that a name follows in forwarded text, nudges included, now has an invisible word joiner after it: the agent reads the same text, and e-mail addresses still read normally.
+
+## [18.8.0] - 2026-11-16
+
+### Added
+
+- `@agent-relay/events-shim setup --droid`, `setup --cursor` and `setup --amp` wake an idle Factory Droid, Cursor CLI or Amp session with each webhook post, without Agent Relay. The session must have finished one turn first; see the package README for the limits. Before, Cursor read posts only when asked.
+- `@agent-relay/events-shim setup --copilot` and `setup --gemini` now wake an idle GitHub Copilot CLI or Gemini CLI session with each webhook post, without Agent Relay. The session must have finished one turn first; see the package README for the limits.
+- `agent-relay-node`: spawn capabilities publish recent saved absolute working folders after the person enables teammate spawning, so remote spawn dialogs can offer valid folders on the target machine without exposing paths by default.
+
+### Fixed
+
+- `agent-relay-node`: `messages.history` no longer rereads every direct conversation on each poll, and while Relaycast asks the workspace to slow down, `messages.history` and `messages.conversations` stop at once with a retryable `rate_limited` error instead of adding load.
+- `agent-relay-node`: messages to open Muse sessions are delivered. The courier that carries them now runs Muse on its own data directory, the only place Muse registers the session that delivery waits for; every message used to time out.
+- `agent-relay-node`: `POST /integrations/subscribe` now says why relayfile refused. A workspace at relayfile's webhook subscription limit returns 429 `plan_limit_exceeded` (not retryable, with the limit, plan and correlation id) instead of 502 `integration_failed` "relayfile returned HTTP 429."; a relayfile rate limit returns 429 `rate_limited` and repeats relayfile's `Retry-After` (in seconds, also when relayfile sends a date).
+- `agent-relay-node`: an agent removed because its session was archived, ended or excluded from upload now unsubscribes its integrations first. Before, its relayfile webhook and reply subscriptions stayed live for good, which filled the workspace's webhook subscription cap. If the cleanup cannot finish (the agent store cannot be saved, the service is unreachable), the agent is kept and the cleanup retried.
+- `agent-relay-node`: a build made for a self-hosted site can join a public Relay Connect invitation on agentrelay.com as a guest. It used to refuse every such link with `invalid_link`. Links from any other site are still refused.
+- `agent-relay-node`: direct-node sockets back off when the Relaycast gateway is overloaded instead of reconnecting every few seconds. Reconnects wait up to about 4 minutes; a 429 or 503 upgrade, or a 1013 or 1008 close, pauses the workspace's new sockets for the server's `Retry-After`; another install holding the node (`provider_instance_conflict`) means a 30-60 s wait, or the one asked for. `node.register` now names this install's provider instance, and a node token it refuses is replaced.
+
 
 ## [18.7.3] - 2026-11-15
 

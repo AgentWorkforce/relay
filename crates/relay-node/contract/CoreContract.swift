@@ -5337,6 +5337,12 @@ public struct SpawnStatus: Codable, Equatable, Hashable, Sendable {
     /// Whether Agent Relay records the node as the signed-in person's.
     /// Absent in older cores and while spawning is off.
     public let claim: SpawnClaim?
+    /// `true` when Agent Relay's Control refused this gate-only install's
+    /// relay-node credential (`401` on its node bridge); `error` says so in
+    /// words. The node stopped and does not try that credential again: the
+    /// desktop forgets it, mints another and rediscovers the workspace.
+    /// Absent otherwise.
+    public let credentialRefused: Bool?
     /// Why it is not live.
     public let error: String?
     /// Every harness this core knows, in order: what Settings shows for
@@ -5355,8 +5361,9 @@ public struct SpawnStatus: Codable, Equatable, Hashable, Sendable {
     public let slots: SpawnSlots?
     public let state: SpawnState
 
-    public init(claim: SpawnClaim? = nil, error: String? = nil, harnessDescriptors: [HarnessDescriptor]? = nil, harnesses: [String], nodeName: String? = nil, planLimit: PlanLimitExceeded? = nil, slots: SpawnSlots? = nil, state: SpawnState) {
+    public init(claim: SpawnClaim? = nil, credentialRefused: Bool? = nil, error: String? = nil, harnessDescriptors: [HarnessDescriptor]? = nil, harnesses: [String], nodeName: String? = nil, planLimit: PlanLimitExceeded? = nil, slots: SpawnSlots? = nil, state: SpawnState) {
         self.claim = claim
+        self.credentialRefused = credentialRefused
         self.error = error
         self.harnessDescriptors = harnessDescriptors
         self.harnesses = harnesses
@@ -5368,6 +5375,7 @@ public struct SpawnStatus: Codable, Equatable, Hashable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case claim
+        case credentialRefused = "credential_refused"
         case error
         case harnessDescriptors = "harness_descriptors"
         case harnesses
@@ -5380,6 +5388,7 @@ public struct SpawnStatus: Codable, Equatable, Hashable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.claim = try c.decodeIfPresent(SpawnClaim.self, forKey: .claim)
+        self.credentialRefused = try c.decodeIfPresent(Bool.self, forKey: .credentialRefused)
         self.error = try c.decodeIfPresent(String.self, forKey: .error)
         self.harnessDescriptors = try c.decodeIfPresent([HarnessDescriptor].self, forKey: .harnessDescriptors)
         self.harnesses = try c.decode([String].self, forKey: .harnesses)
@@ -5392,6 +5401,7 @@ public struct SpawnStatus: Codable, Equatable, Hashable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encodeIfPresent(self.claim, forKey: .claim)
+        try c.encodeIfPresent(self.credentialRefused, forKey: .credentialRefused)
         try c.encode(self.error, forKey: .error)
         try c.encodeIfPresent(self.harnessDescriptors, forKey: .harnessDescriptors)
         try c.encode(self.harnesses, forKey: .harnesses)

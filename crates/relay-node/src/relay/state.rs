@@ -81,6 +81,13 @@ pub struct SpawnStatus {
     /// device cap is reached; `error` says so in words. Absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_limit: Option<PlanLimitExceeded>,
+    /// `true` when Agent Relay's Control refused this gate-only install's
+    /// relay-node credential (`401` on its node bridge); `error` says so in
+    /// words. The node stopped and does not try that credential again: the
+    /// desktop forgets it, mints another and rediscovers the workspace.
+    /// Absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_refused: Option<bool>,
 }
 
 /// The node's owner in Agent Relay, recorded from its token and the
@@ -740,6 +747,7 @@ mod tests {
             workspace_id: Some("rw_1".into()),
             source: Default::default(),
             control_url: None,
+            gate_url: None,
         };
         let hub = hub();
         hub.update(|status| status.workspace = WorkspaceStatus::discovered(Some(&workspace)));

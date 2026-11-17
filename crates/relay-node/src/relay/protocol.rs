@@ -111,6 +111,13 @@ pub struct RpcError {
     pub code: i64,
     pub message: String,
     pub data: ErrorData,
+    /// How long the upstream service asked callers to wait (its
+    /// `Retry-After`, in seconds). Local only: never sent over JSON-RPC, so
+    /// the core contract is unchanged; the outbound HTTP API repeats it as
+    /// its own `Retry-After`.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub retry_after_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, JsonSchema)]
@@ -241,6 +248,7 @@ impl RpcError {
                 plan_limit: None,
                 reason: None,
             },
+            retry_after_secs: None,
         }
     }
 
@@ -280,6 +288,7 @@ impl RpcError {
         use crate::relay::cloud_session::CloudError;
         let kind = match error {
             CloudError::SignedOut | CloudError::Rejected => ErrorKind::NotSignedIn,
+            CloudError::GateOnly { .. } => ErrorKind::CloudRefused,
             CloudError::Status { status, .. } if (400..500).contains(status) && *status != 429 => {
                 ErrorKind::CloudRefused
             }
