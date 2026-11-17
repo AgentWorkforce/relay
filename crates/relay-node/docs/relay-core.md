@@ -902,8 +902,11 @@ work tree's main repository), in any form git takes: the host and a trailing
 remote names no repository. The config is read as git reads it (comments,
 quotes, the old `[remote.origin]` spelling), `url.<base>.insteadOf` rewrites
 from the repository's, `~/.gitconfig` and `$XDG_CONFIG_HOME/git/config` are
-applied first, and a directory reached through a link is looked up where it
-really is. A one-letter host (`g:acme/web`) is an SSH alias except on
+applied first, `include` files and `includeIf "gitdir:…"` files are followed
+(other `includeIf` conditions are not), a linked work tree's own
+`config.worktree` applies when the repository enables
+`extensions.worktreeConfig`, the last `url` set wins, and a directory reached
+through a link is looked up where it really is. A one-letter host (`g:acme/web`) is an SSH alias except on
 Windows, where it is a drive.
 
 - **Locked by the organization's policy:** a live session in a matching

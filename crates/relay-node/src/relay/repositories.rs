@@ -103,29 +103,167 @@ pub fn normalize_remote(url: &str) -> Option<String> {
     (valid_part(&owner) && valid_part(&name)).then(|| format!("{owner}/{name}"))
 }
 
-/// The git directory holding the shared config of the work tree that
-/// contains `directory`: its `.git` directory, or for a linked work tree the
-/// main repository's (through `gitdir:` and `commondir`).
-fn git_dir(directory: &Path) -> Option<PathBuf> {
+/// The git directories of the work tree that contains `directory`: its own
+/// (`.git`, or a linked work tree's `.git/worktrees/<name>`) and the one
+/// holding the shared config (the main repository's, through `commondir`).
+fn git_dirs(directory: &Path) -> Option<(PathBuf, PathBuf)> {
     let mut current = Some(directory);
     for _ in 0..MAX_DEPTH {
         let here = current?;
         let dot_git = here.join(".git");
         if dot_git.is_dir() {
-            return Some(dot_git);
+            return Some((dot_git.clone(), dot_git));
         }
         if dot_git.is_file() {
             let text = read_small(&dot_git)?;
             let pointed = text.lines().find_map(|l| l.strip_prefix("gitdir:"))?.trim();
-            let pointed = here.join(pointed);
-            let common = read_small(&pointed.join("commondir"))
-                .map(|c| pointed.join(c.trim()))
-                .unwrap_or(pointed);
-            return Some(common);
+            let own = here.join(pointed);
+            let common = read_small(&own.join("commondir"))
+                .map(|c| own.join(c.trim()))
+                .unwrap_or_else(|| own.clone());
+            return Some((own, common));
         }
         current = here.parent();
     }
     None
+}
+
+/// How deep `include` and `includeIf` files are followed, as git limits it.
+const MAX_INCLUDE_DEPTH: usize = 10;
+
+/// The person's home directory.
+fn home() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
+/// Whether `text` matches the wildcard `pattern`: `**` crosses `/`, `*` and
+/// `?` do not.
+fn glob(pattern: &[u8], text: &[u8]) -> bool {
+    match pattern {
+        [] => text.is_empty(),
+        [b'*', b'*', rest @ ..] => {
+            let rest = rest.strip_prefix(b"/").unwrap_or(rest);
+            (0..=text.len()).any(|at| glob(rest, &text[at..]))
+                || (0..=text.len())
+                    .any(|at| at > 0 && text[at - 1] == b'/' && glob(rest, &text[at..]))
+        }
+        [b'*', rest @ ..] => (0..=text.len())
+            .take_while(|&at| at == 0 || text[at - 1] != b'/')
+            .any(|at| glob(rest, &text[at..])),
+        [b'?', rest @ ..] => text.first().is_some_and(|c| *c != b'/') && glob(rest, &text[1..]),
+        [c, rest @ ..] => text.first() == Some(c) && glob(rest, &text[1..]),
+    }
+}
+
+/// Whether an `includeIf` condition holds for the repository at `git_dir`:
+/// `gitdir:` and `gitdir/i:` as git reads them; any other condition
+/// (`onbranch:`, `hasconfig:`) is taken as not holding.
+fn include_applies(condition: &str, git_dir: Option<&Path>, including: &Path) -> bool {
+    let (pattern, fold) = if let Some(p) = condition.strip_prefix("gitdir/i:") {
+        (p, true)
+    } else if let Some(p) = condition.strip_prefix("gitdir:") {
+        (p, false)
+    } else {
+        return false;
+    };
+    let Some(git_dir) = git_dir else {
+        return false;
+    };
+    let mut pattern = if let Some(rest) = pattern.strip_prefix("~/") {
+        match home() {
+            Some(home) => format!("{}/{rest}", home.display()),
+            None => return false,
+        }
+    } else if let Some(rest) = pattern.strip_prefix("./") {
+        format!(
+            "{}/{rest}",
+            including.parent().unwrap_or(Path::new("")).display()
+        )
+    } else if pattern.starts_with('/') {
+        pattern.to_string()
+    } else {
+        format!("**/{pattern}")
+    };
+    if pattern.ends_with('/') {
+        pattern.push_str("**");
+    }
+    let mut text = git_dir.display().to_string();
+    if !text.ends_with('/') {
+        text.push('/');
+    }
+    let (pattern, text) = if fold {
+        (pattern.to_lowercase(), text.to_lowercase())
+    } else {
+        (pattern, text)
+    };
+    glob(pattern.as_bytes(), text.as_bytes())
+        || glob(pattern.as_bytes(), text.trim_end_matches('/').as_bytes())
+}
+
+/// The config at `path` with its `include` and applicable `includeIf` files
+/// put in where git reads them, as one text.
+fn expanded(path: &Path, git_dir: Option<&Path>, depth: usize) -> Option<String> {
+    let text = read_small(path)?;
+    if depth >= MAX_INCLUDE_DEPTH {
+        return Some(text);
+    }
+    let mut out = String::new();
+    let mut header = String::new();
+    let mut include: Option<Option<String>> = None;
+    for line in text.lines() {
+        out.push_str(line);
+        out.push('\n');
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            header = trimmed.to_string();
+            include = None;
+            if let Some((section, sub, _, _)) = config_entries(&format!("{trimmed}\nx=y\n"))
+                .into_iter()
+                .next()
+            {
+                if section == "include" && sub.is_none() {
+                    include = Some(None);
+                } else if section == "includeif" {
+                    include = Some(sub);
+                }
+            }
+            continue;
+        }
+        let Some(condition) = include.as_ref() else {
+            continue;
+        };
+        let Some((_, _, key, value)) = config_entries(&format!("[x]\n{trimmed}\n"))
+            .into_iter()
+            .next()
+        else {
+            continue;
+        };
+        if key != "path" {
+            continue;
+        }
+        if let Some(condition) = condition {
+            if !include_applies(condition, git_dir, path) {
+                continue;
+            }
+        }
+        let target = match value.strip_prefix("~/") {
+            Some(rest) => match home() {
+                Some(home) => home.join(rest),
+                None => continue,
+            },
+            None => path.parent().unwrap_or(Path::new("")).join(&value),
+        };
+        if let Some(included) = expanded(&target, git_dir, depth + 1) {
+            out.push_str(&included);
+            out.push('\n');
+            // What follows the include line is still in this section.
+            out.push_str(&header);
+            out.push('\n');
+        }
+    }
+    Some(out)
 }
 
 fn read_small(path: &Path) -> Option<String> {
@@ -207,10 +345,12 @@ fn config_entries(config: &str) -> Vec<(String, Option<String>, String, String)>
     entries
 }
 
-/// The `url` of `[remote "origin"]` in a git config's text.
+/// The `url` of `[remote "origin"]` in git configs' texts, read in order:
+/// the last one set wins, as in git.
 fn origin_url(config: &str) -> Option<String> {
     config_entries(config)
         .into_iter()
+        .rev()
         .find(|(section, sub, key, _)| {
             section == "remote" && sub.as_deref() == Some("origin") && key == "url"
         })
@@ -242,10 +382,8 @@ fn rewritten(url: &str, configs: &[String]) -> String {
 /// The person's own git configs, which hold `insteadOf` rewrites as often as
 /// a repository's does: `$XDG_CONFIG_HOME/git/config` (or
 /// `~/.config/git/config`) and `~/.gitconfig`.
-fn global_configs() -> Vec<String> {
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from);
+fn global_configs(git_dir: Option<&Path>) -> Vec<String> {
+    let home = home();
     let xdg = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| home.as_ref().map(|home| home.join(".config")));
@@ -255,7 +393,7 @@ fn global_configs() -> Vec<String> {
     ]
     .into_iter()
     .flatten()
-    .filter_map(|path| read_small(&path))
+    .filter_map(|path| expanded(&path, git_dir, 0))
     .collect()
 }
 
@@ -264,10 +402,30 @@ fn global_configs() -> Vec<String> {
 pub fn repository_of(directory: &Path) -> Option<String> {
     // A directory reached through a link is looked up where it really is.
     let directory = std::fs::canonicalize(directory).unwrap_or_else(|_| directory.to_path_buf());
-    let config = read_small(&git_dir(&directory)?.join("config"))?;
-    let origin = origin_url(&config)?;
-    let mut configs = vec![config];
-    configs.extend(global_configs());
+    let (own, common) = git_dirs(&directory)?;
+    // In git's order, each later file overriding the earlier ones: the
+    // person's, the repository's, and the work tree's own when the
+    // repository enables per-work-tree config.
+    let mut configs = global_configs(Some(&common));
+    let shared = expanded(&common.join("config"), Some(&common), 0)?;
+    let per_tree = config_entries(&shared)
+        .into_iter()
+        .any(|(section, sub, key, value)| {
+            section == "extensions"
+                && sub.is_none()
+                && key == "worktreeconfig"
+                && matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "true" | "yes" | "on" | "1"
+                )
+        });
+    configs.push(shared);
+    if per_tree {
+        if let Some(tree) = expanded(&own.join("config.worktree"), Some(&common), 0) {
+            configs.push(tree);
+        }
+    }
+    let origin = origin_url(&configs.concat())?;
     normalize_remote(&rewritten(&origin, &configs))
 }
 
@@ -351,6 +509,32 @@ mod tests {
         // On Windows a drive with a forward slash is a local path too.
         #[cfg(windows)]
         assert_eq!(normalize_remote("C:/src/acme/web"), None);
+    }
+
+    #[test]
+    fn include_if_matches_the_git_directory() {
+        let including = Path::new("/home/me/.gitconfig");
+        let git = Path::new("/home/me/work/acme/web/.git");
+        assert!(include_applies(
+            "gitdir:/home/me/work/",
+            Some(git),
+            including
+        ));
+        assert!(include_applies("gitdir:work/acme/", Some(git), including));
+        assert!(include_applies(
+            "gitdir/i:/HOME/ME/WORK/",
+            Some(git),
+            including
+        ));
+        assert!(!include_applies(
+            "gitdir:/home/me/play/",
+            Some(git),
+            including
+        ));
+        assert!(!include_applies("onbranch:main", Some(git), including));
+        assert!(glob(b"/a/**/c/", b"/a/b/x/c/"));
+        assert!(glob(b"/a/*/c", b"/a/b/c"));
+        assert!(!glob(b"/a/*/c", b"/a/b/x/c"));
     }
 
     /// Git's own reading of a config: comments, quotes, the old subsection
@@ -461,6 +645,34 @@ mod tests {
             std::os::unix::fs::symlink(&nested, &link).unwrap();
             assert_eq!(repository_of(&link).as_deref(), Some("acme/web"));
         }
+        // A work tree with its own config, when the repository enables it,
+        // names its own origin.
+        std::fs::write(
+            main_git.join("config"),
+            "[extensions]\n\tworktreeConfig = true\n[remote \"origin\"]\n\turl = git@github.com:Acme/Web.git\n",
+        )
+        .unwrap();
+        std::fs::write(
+            admin.join("config.worktree"),
+            "[remote \"origin\"]\n\turl = git@github.com:me/web-fork.git\n",
+        )
+        .unwrap();
+        assert_eq!(repository_of(&linked).as_deref(), Some("me/web-fork"));
+        assert_eq!(repository_of(&nested).as_deref(), Some("acme/web"));
+        // An included file can name the origin.
+        let included = temp.path().join("inc");
+        repo(&included, "unused");
+        std::fs::write(
+            included.join(".git/remote.inc"),
+            "[remote \"origin\"]\n\turl = https://github.com/acme/api\n",
+        )
+        .unwrap();
+        std::fs::write(
+            included.join(".git/config"),
+            "[include]\n\tpath = remote.inc\n",
+        )
+        .unwrap();
+        assert_eq!(repository_of(&included).as_deref(), Some("acme/api"));
         // A local-path origin names no repository.
         let local = temp.path().join("local");
         repo(&local, "/srv/git/web.git");
