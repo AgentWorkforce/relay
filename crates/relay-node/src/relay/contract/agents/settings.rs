@@ -428,7 +428,8 @@ pub struct SettingsChange {
     /// Turns question escalation `on` or `off`: questions a Claude Code
     /// session or a spawned Codex session asks go over Agent Relay to
     /// `question_escalation_inbox` instead of a dialog, and expire after 30
-    /// minutes. The person, fleet policy and agents may change it.
+    /// minutes. Only the person (or fleet policy) turns it on; an agent may
+    /// turn it off.
     #[serde(
         default,
         deserialize_with = "given",
@@ -438,7 +439,8 @@ pub struct SettingsChange {
     pub question_escalation: Option<String>,
     /// The agent name escalated questions go to: 1 to 128 characters with
     /// no control characters, trimmed. An empty string sends them to the
-    /// owner's person identity again.
+    /// owner's person identity again. Only the person (or fleet policy)
+    /// sets it; an agent may clear it.
     #[serde(
         default,
         deserialize_with = "given",

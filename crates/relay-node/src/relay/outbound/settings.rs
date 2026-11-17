@@ -12,8 +12,10 @@
 //! widens who can reach or act as the person, which is the person's to make
 //! in Settings (`settings_registry::person_only`): turning on one of
 //! `PERSON_TURNS_ON` (or a part of `PERSON_TURNS_ON_PART`), or adding to one
-//! of `PERSON_ADDS`, such as the senders trusted like the person. Narrowing
-//! one (turning it off, removing entries) is an agent's too. Each change is
+//! of `PERSON_ADDS`, such as the senders trusted like the person, or setting
+//! one of `PERSON_SETS`, such as the inbox whose replies answer the person's
+//! questions. Narrowing one (turning it off, removing entries, clearing it)
+//! is an agent's too. Each change is
 //! recorded: the agent's name, the time, the setting and its value before
 //! and after. Settings lists the latest (`agent_changes`), the activity log
 //! has a line for each, and the apps re-read their settings at once
@@ -30,7 +32,7 @@ use crate::relay::daemon::Core;
 use crate::relay::protocol::{ErrorKind, RpcError};
 use crate::relay::sessions::DiscoveredSession;
 use crate::relay::settings_registry::{
-    describe, person_only, writing, PERSON_ADDS, PERSON_TURNS_ON, RECORDS,
+    describe, person_only, writing, PERSON_ADDS, PERSON_SETS, PERSON_TURNS_ON, RECORDS,
 };
 use crate::relay::state::{Level, Listing};
 use serde_json::{json, Map, Value};
@@ -231,10 +233,25 @@ fn widens(
     key: &str,
     asked: &Value,
 ) -> bool {
-    let on = |value: Option<&Value>| value == Some(&Value::Bool(true));
+    // `true`, or `"on"` for a setting read and written as `"on"`/`"off"`.
+    let on = |value: Option<&Value>| {
+        matches!(value, Some(Value::Bool(true)))
+            || value.and_then(Value::as_str) == Some("on")
+    };
     let now = observed(values, key, asked);
     if PERSON_TURNS_ON.contains(&key) {
         return on(Some(asked)) && !on(now.as_ref());
+    }
+    if PERSON_SETS.contains(&key) {
+        // A value other than the one set now; clearing it widens nothing.
+        let text = |value: Option<&Value>| {
+            value
+                .and_then(Value::as_str)
+                .map(|text| text.trim().to_lowercase())
+                .unwrap_or_default()
+        };
+        let wanted = text(Some(asked));
+        return !wanted.is_empty() && wanted != text(now.as_ref());
     }
     if PERSON_ADDS.contains(&key) {
         return added(values, saved_folder, key, asked);
@@ -508,18 +525,20 @@ mod tests {
     #[test]
     fn an_agent_may_turn_off_but_not_on_what_widens_trust() {
         for key in PERSON_TURNS_ON {
+            // `question_escalation` is read and written as `"on"`/`"off"`.
+            let (yes, no) = if key == "question_escalation" {
+                (json!("on"), json!("off"))
+            } else {
+                (json!(true), json!(false))
+            };
             let (status, code, message) =
-                refusal(json!({key: false}), json!({key: true})).expect(key);
+                refusal(json!({key: no.clone()}), json!({key: yes.clone()})).expect(key);
             assert_eq!((status, code.as_str()), (403, "person_only_setting"));
             assert_eq!(
                 message,
                 format!("Only the person can turn {key} on, in Agent Relay's Settings. An agent may turn it off.")
             );
-            assert_eq!(
-                refusal(json!({key: true}), json!({key: false})),
-                None,
-                "{key}"
-            );
+            assert_eq!(refusal(json!({key: yes}), json!({key: no})), None, "{key}");
         }
         // Already on: nothing widens. The first-run default reads as direct
         // delivery itself.
@@ -690,6 +709,61 @@ mod tests {
         assert!(outcome.is_ok());
         assert_eq!(changed[0].key, "direct_delivery");
         assert_eq!(core.settings()["direct_delivery"], false);
+    }
+
+    /// Question escalation lets an inbox answer as the person: an agent may
+    /// neither turn it on nor set the inbox, only turn it off and clear the
+    /// inbox; the person may do both.
+    #[tokio::test]
+    async fn only_the_person_turns_on_question_escalation_or_sets_its_inbox() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = core(temp.path());
+        for (key, value, message) in [
+            (
+                "question_escalation",
+                "on",
+                "Only the person can turn question_escalation on, in Agent Relay's Settings. An agent may turn it off.",
+            ),
+            (
+                "question_escalation_inbox",
+                "mallory",
+                "Only the person can set question_escalation_inbox, in Agent Relay's Settings. An agent may clear it.",
+            ),
+        ] {
+            let error = apply(&core, &map(json!({key: value})), "api").unwrap_err();
+            assert_eq!(
+                (error.status, error.code.as_str(), error.message.as_str()),
+                (403, "person_only_setting", message),
+                "{key}"
+            );
+        }
+        let values = core.settings();
+        assert_eq!(values["question_escalation"], "off");
+        assert_eq!(values["question_escalation_inbox"], "");
+        assert_eq!(values["agent_changes"], json!([]));
+        // The person may.
+        core.set_settings(&map(json!({
+            "question_escalation": "on",
+            "question_escalation_inbox": "triage",
+        })))
+        .unwrap();
+        let values = core.settings();
+        assert_eq!(values["question_escalation"], "on");
+        assert_eq!(values["question_escalation_inbox"], "triage");
+        // The same inbox again widens nothing; another one does.
+        let same = map(json!({"question_escalation_inbox": " Triage "}));
+        assert!(apply(&core, &same, "api").unwrap().1.is_ok());
+        let other = map(json!({"question_escalation_inbox": "mallory"}));
+        assert_eq!(apply(&core, &other, "api").unwrap_err().status, 403);
+        // An agent may clear the inbox and turn escalation off.
+        let narrower = map(json!({
+            "question_escalation": "off",
+            "question_escalation_inbox": "",
+        }));
+        assert!(apply(&core, &narrower, "api").unwrap().1.is_ok());
+        let values = core.settings();
+        assert_eq!(values["question_escalation"], "off");
+        assert_eq!(values["question_escalation_inbox"], "");
     }
 
     #[test]
