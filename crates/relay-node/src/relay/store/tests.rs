@@ -1319,9 +1319,19 @@ fn a_merge_keeps_one_registration_per_session_and_queues_the_other() {
     let base = Store::default();
     let mut ours = base.clone();
     ours.add(registration("ours", session.clone()), token("at_live_ours"));
+    ours.agent_repositories
+        .insert("id-ours".into(), "acme/web".into());
     let mut theirs = base.clone();
     theirs.add(registration("theirs", session), token("at_live_theirs"));
+    theirs
+        .agent_repositories
+        .insert("id-theirs".into(), "acme/web".into());
     let merged = Store::merged(&base, &ours, &theirs);
+    // Only the kept agent's repository label stays.
+    assert_eq!(
+        merged.agent_repositories.keys().collect::<Vec<_>>(),
+        ["id-ours"]
+    );
     assert_eq!(
         merged
             .registrations

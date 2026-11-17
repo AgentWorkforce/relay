@@ -307,6 +307,9 @@ impl Store {
         result
             .agent_owners
             .retain(|id, _| live_ids.contains(id.as_str()));
+        result
+            .agent_repositories
+            .retain(|id, _| live_ids.contains(id.as_str()));
         result.retire_unregistered_refusals(&[base, ours, theirs]);
         result.drop_cleanups_of_kept_agents();
         // A session registered on either side is not blocked; merge bounds

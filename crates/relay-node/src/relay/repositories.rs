@@ -80,8 +80,12 @@ pub fn normalize_remote(url: &str) -> Option<String> {
         if url[..colon].contains('/') || colon == 0 {
             return None;
         }
-        // A Windows drive (`C:\…` or `C:/…`) is a local path.
-        if colon == 1 && url[..1].chars().all(|c| c.is_ascii_alphabetic()) {
+        // A Windows drive (`C:\…`, or `C:/…` on Windows) is a local path;
+        // elsewhere a one-letter host is an SSH alias (`g:acme/web`).
+        let drive = colon == 1
+            && url[..1].chars().all(|c| c.is_ascii_alphabetic())
+            && (cfg!(windows) || url[2..].starts_with('\\'));
+        if drive {
             return None;
         }
         &url[colon + 1..]
@@ -132,33 +136,139 @@ fn read_small(path: &Path) -> Option<String> {
     Some(text)
 }
 
-/// The `url` of `[remote "origin"]` in a git config's text.
-fn origin_url(config: &str) -> Option<String> {
-    let mut in_origin = false;
+/// A git config value as git reads it: quotes removed, a `#` or `;`
+/// outside quotes starts a comment, and `\"` / `\\` are escapes.
+fn config_value(raw: &str) -> String {
+    let mut value = String::new();
+    let mut quoted = false;
+    let mut chars = raw.trim().chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => quoted = !quoted,
+            '\\' => {
+                if let Some(next) = chars.next() {
+                    value.push(match next {
+                        'n' => '\n',
+                        't' => '\t',
+                        other => other,
+                    });
+                }
+            }
+            '#' | ';' if !quoted => break,
+            other => value.push(other),
+        }
+    }
+    value.trim_end().to_string()
+}
+
+/// Each `key = value` of a git config's text, with its section and
+/// subsection (`[remote "origin"]` is `("remote", Some("origin"))`); keys and
+/// section names lower-cased, as git compares them.
+fn config_entries(config: &str) -> Vec<(String, Option<String>, String, String)> {
+    let mut entries = Vec::new();
+    let (mut section, mut subsection) = (String::new(), None::<String>);
     for line in config.lines() {
         let line = line.trim();
-        if line.starts_with('[') {
-            let header: String = line.chars().filter(|c| !c.is_whitespace()).collect();
-            in_origin = header.eq_ignore_ascii_case("[remote\"origin\"]");
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
             continue;
         }
-        if !in_origin {
+        if let Some(header) = line.strip_prefix('[') {
+            let header = header.split(']').next().unwrap_or_default().trim();
+            match header.split_once(char::is_whitespace) {
+                Some((name, sub)) => {
+                    section = name.to_ascii_lowercase();
+                    subsection = Some(sub.trim().trim_matches('"').to_string());
+                }
+                None => {
+                    // `[remote.origin]` is the old spelling of a subsection.
+                    match header.split_once('.') {
+                        Some((name, sub)) => {
+                            section = name.to_ascii_lowercase();
+                            subsection = Some(sub.to_string());
+                        }
+                        None => {
+                            section = header.to_ascii_lowercase();
+                            subsection = None;
+                        }
+                    }
+                }
+            }
             continue;
         }
         if let Some((key, value)) = line.split_once('=') {
-            if key.trim().eq_ignore_ascii_case("url") {
-                return Some(value.trim().trim_matches('"').to_string());
+            entries.push((
+                section.clone(),
+                subsection.clone(),
+                key.trim().to_ascii_lowercase(),
+                config_value(value),
+            ));
+        }
+    }
+    entries
+}
+
+/// The `url` of `[remote "origin"]` in a git config's text.
+fn origin_url(config: &str) -> Option<String> {
+    config_entries(config)
+        .into_iter()
+        .find(|(section, sub, key, _)| {
+            section == "remote" && sub.as_deref() == Some("origin") && key == "url"
+        })
+        .map(|(_, _, _, value)| value)
+}
+
+/// `url` after git's `url.<base>.insteadOf` rewrites in `configs`: the
+/// longest matching prefix is replaced by its base, as git does.
+fn rewritten(url: &str, configs: &[String]) -> String {
+    let mut best: Option<(String, String)> = None;
+    for config in configs {
+        for (section, base, key, prefix) in config_entries(config) {
+            let Some(base) = base else { continue };
+            if section != "url" || key != "insteadof" || prefix.is_empty() {
+                continue;
+            }
+            if url.starts_with(&prefix) && best.as_ref().is_none_or(|(p, _)| prefix.len() > p.len())
+            {
+                best = Some((prefix, base));
             }
         }
     }
-    None
+    match best {
+        Some((prefix, base)) => format!("{base}{}", &url[prefix.len()..]),
+        None => url.to_string(),
+    }
+}
+
+/// The person's own git configs, which hold `insteadOf` rewrites as often as
+/// a repository's does: `$XDG_CONFIG_HOME/git/config` (or
+/// `~/.config/git/config`) and `~/.gitconfig`.
+fn global_configs() -> Vec<String> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
+    let xdg = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| home.as_ref().map(|home| home.join(".config")));
+    [
+        xdg.map(|x| x.join("git/config")),
+        home.map(|h| h.join(".gitconfig")),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|path| read_small(&path))
+    .collect()
 }
 
 /// The `owner/name` of the repository `directory` is in, from its `origin`
 /// remote; `None` outside a repository or without a hosted origin.
 pub fn repository_of(directory: &Path) -> Option<String> {
-    let config = read_small(&git_dir(directory)?.join("config"))?;
-    normalize_remote(&origin_url(&config)?)
+    // A directory reached through a link is looked up where it really is.
+    let directory = std::fs::canonicalize(directory).unwrap_or_else(|_| directory.to_path_buf());
+    let config = read_small(&git_dir(&directory)?.join("config"))?;
+    let origin = origin_url(&config)?;
+    let mut configs = vec![config];
+    configs.extend(global_configs());
+    normalize_remote(&rewritten(&origin, &configs))
 }
 
 /// The entry of `entries` that names `repository`, if one does.
@@ -233,12 +343,48 @@ mod tests {
             "../web",
             "file:///srv/git/acme/web.git",
             "C:\\src\\acme\\web",
-            "C:/src/acme/web",
             "https://github.com/web",
             "",
         ] {
             assert_eq!(normalize_remote(url), None, "{url}");
         }
+        // On Windows a drive with a forward slash is a local path too.
+        #[cfg(windows)]
+        assert_eq!(normalize_remote("C:/src/acme/web"), None);
+    }
+
+    /// Git's own reading of a config: comments, quotes, the old subsection
+    /// spelling, and `insteadOf` rewrites.
+    #[test]
+    fn the_origin_is_read_as_git_reads_it() {
+        assert_eq!(
+            origin_url(
+                "[remote \"origin\"]\n\turl = https://github.com/acme/web.git # company repo\n"
+            )
+            .as_deref(),
+            Some("https://github.com/acme/web.git")
+        );
+        assert_eq!(
+            origin_url("[remote \"origin\"]\n\turl = \"git@github.com:acme/web#1.git\" ; note\n")
+                .as_deref(),
+            Some("git@github.com:acme/web#1.git")
+        );
+        assert_eq!(
+            origin_url("[remote.origin]\nurl=gh:acme/web\n").as_deref(),
+            Some("gh:acme/web")
+        );
+        let global = "[url \"https://github.com/\"]\n\tinsteadOf = gh:\n[url \"https://git.example.com/\"]\n\tinsteadOf = g\n".to_string();
+        assert_eq!(
+            rewritten("gh:Acme/Web", std::slice::from_ref(&global)),
+            "https://github.com/Acme/Web"
+        );
+        assert_eq!(rewritten("other:acme/web", &[global]), "other:acme/web");
+        // A one-letter SSH alias is a host, not a drive, outside Windows.
+        #[cfg(not(windows))]
+        assert_eq!(
+            normalize_remote("g:acme/web.git").as_deref(),
+            Some("acme/web")
+        );
     }
 
     #[test]
@@ -308,6 +454,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(repository_of(&linked).as_deref(), Some("acme/web"));
+        // A directory reached through a link is read where it really is.
+        #[cfg(unix)]
+        {
+            let link = temp.path().join("link-to-app");
+            std::os::unix::fs::symlink(&nested, &link).unwrap();
+            assert_eq!(repository_of(&link).as_deref(), Some("acme/web"));
+        }
         // A local-path origin names no repository.
         let local = temp.path().join("local");
         repo(&local, "/srv/git/web.git");

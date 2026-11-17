@@ -899,7 +899,12 @@ from its directory's git `origin` remote (the work tree's `.git`, or a linked
 work tree's main repository), in any form git takes: the host and a trailing
 `.git` are dropped, so `git@host:Acme/Web.git` and
 `https://host/acme/web` are both `acme/web`. A local-path or `file://`
-remote names no repository.
+remote names no repository. The config is read as git reads it (comments,
+quotes, the old `[remote.origin]` spelling), `url.<base>.insteadOf` rewrites
+from the repository's, `~/.gitconfig` and `$XDG_CONFIG_HOME/git/config` are
+applied first, and a directory reached through a link is looked up where it
+really is. A one-letter host (`g:acme/web`) is an SSH alias except on
+Windows, where it is a drive.
 
 - **Locked by the organization's policy:** a live session in a matching
   repository is activated (registered with its ready record) as if automatic
