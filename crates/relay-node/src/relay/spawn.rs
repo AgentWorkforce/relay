@@ -285,6 +285,9 @@ mod tests {
         /// The first `available` call waits for this receiver when set.
         pause_first_available: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
         refuse: bool,
+        /// Its refusals say the harness is not here, rather than that it
+        /// did not start.
+        unavailable: bool,
         unconfirmed: bool,
         /// Every session it is asked about has ended.
         dead: bool,
@@ -356,6 +359,13 @@ mod tests {
             launch: &Launch,
             started_session: super::launch::Started,
         ) -> Result<Launched, LaunchError> {
+            let refused = |reason: &str| {
+                if self.unavailable {
+                    LaunchError::Unavailable(reason.into())
+                } else {
+                    LaunchError::Failed(reason.into())
+                }
+            };
             let mut launched = self.launched.lock().unwrap();
             launched.push(launch.clone());
             drop(launched);
@@ -371,7 +381,7 @@ mod tests {
             }
             if self.fails_started {
                 started_session(&Target::new(SessionKind::Codex, THREAD), None);
-                return Err(LaunchError::Failed("Codex refused the first turn".into()));
+                return Err(refused("Codex refused the first turn"));
             }
             let started_thread = self.starts_before_pause;
             if let Some((started, proceed)) = self.pause.lock().unwrap().take() {
@@ -383,7 +393,7 @@ mod tests {
             }
             let launched = self.launched.lock().unwrap();
             if self.refuse {
-                return Err(LaunchError::Failed("Codex refused the first turn".into()));
+                return Err(refused("Codex refused the first turn"));
             }
             // A thread of its own for each launch.
             let thread = if started_thread {
@@ -1229,9 +1239,11 @@ mod tests {
         let frames = relaycast(link.clone(), sent);
         let failed = core.clone().answer_spawn(link, request("w2")).await;
         CoreHost(Arc::downgrade(&core)).sent(&failed);
+        // A harness that is here but did not start may start when asked
+        // again: not reported as one this node does not provide.
         assert_eq!(
             failed["error"],
-            "spawn_harness_unavailable: Codex refused the first turn"
+            "spawn_failed: Codex refused the first turn"
         );
         let frames = frames.await.unwrap();
         assert_eq!(frames[1]["type"], "agent.deregister");
@@ -1255,6 +1267,33 @@ mod tests {
         let (link, _sent) = NodeLink::detached(node());
         let off = core.clone().answer_spawn(link, request("w4")).await;
         assert!(off["error"].as_str().unwrap().starts_with("spawn_disabled"));
+    }
+
+    #[tokio::test]
+    async fn only_a_harness_that_is_not_here_is_reported_unavailable() {
+        for (unavailable, error) in [
+            (false, "spawn_failed: Codex refused the first turn"),
+            (
+                true,
+                "spawn_harness_unavailable: Codex refused the first turn",
+            ),
+        ] {
+            let home = tempfile::tempdir().unwrap();
+            let spawner = Arc::new(FakeSpawner {
+                refuse: true,
+                unavailable,
+                ..FakeSpawner::default()
+            });
+            let core = core(home.path(), spawner.clone());
+            let (link, sent) = NodeLink::detached(node());
+            let frames = relaycast(link.clone(), sent);
+            let failed = core.clone().answer_spawn(link, request("w1")).await;
+            CoreHost(Arc::downgrade(&core)).sent(&failed);
+            assert_eq!(failed["error"], error);
+            // Either way the agent is taken back off the node.
+            assert_eq!(frames.await.unwrap()[1]["type"], "agent.deregister");
+            assert!(core.store.read(|store| store.registrations.is_empty()));
+        }
     }
 
     // Windows has no mode bits to make a folder unreadable with.

@@ -500,9 +500,11 @@ impl Core {
         };
         let launched = match self.launch_registered(launch, &mut in_flight).await {
             Ok(launched) => launched,
-            Err(LaunchFailure::Launch(
-                LaunchError::Unavailable(reason) | LaunchError::Failed(reason),
-            )) => {
+            // Only a harness this computer cannot run is refused for good;
+            // one that is here but did not start (a session-ready timeout
+            // under load, say) is `spawn_failed`, which may succeed when
+            // asked again, with its reason.
+            Err(LaunchFailure::Launch(LaunchError::Unavailable(reason))) => {
                 released(&request.name).await;
                 deregister(&in_flight.intent);
                 return Err(self.harness_unavailable(
@@ -510,6 +512,11 @@ impl Core {
                     request.harness,
                     crate::relay::harness::diagnostics::redact(&reason),
                 ));
+            }
+            Err(LaunchFailure::Launch(error @ LaunchError::Failed(_))) => {
+                released(&request.name).await;
+                deregister(&in_flight.intent);
+                return Err(SpawnError::from(error.code()).redacted());
             }
             // What it started may still run: it stays registered, its intent
             // left for recovery to stop it and take it off the node.

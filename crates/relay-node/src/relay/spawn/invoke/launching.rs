@@ -131,20 +131,22 @@ impl Core {
         let error = if !ended {
             super::SpawnError::from(failure.code()).redacted()
         } else {
+            // As the launch's own answer: only a harness that is not here
+            // is refused for good; one that did not start is `spawn_failed`.
             match &failure {
-                LaunchFailure::Launch(
-                    LaunchError::Unavailable(reason) | LaunchError::Failed(reason),
-                ) => super::SpawnError::Failure(Box::new(super::SpawnFailure {
-                    code: super::wire::HARNESS_UNAVAILABLE,
-                    message: crate::relay::harness::diagnostics::redact(reason),
-                    node: in_flight.intent.node_name.clone(),
-                    harness: Some(in_flight.intent.harness),
-                    active: None,
-                    reserved: None,
-                    max: None,
-                    observed_at: super::lifecycle::iso(chrono::Utc::now()),
-                    retryable: false,
-                })),
+                LaunchFailure::Launch(LaunchError::Unavailable(reason)) => {
+                    super::SpawnError::Failure(Box::new(super::SpawnFailure {
+                        code: super::wire::HARNESS_UNAVAILABLE,
+                        message: crate::relay::harness::diagnostics::redact(reason),
+                        node: in_flight.intent.node_name.clone(),
+                        harness: Some(in_flight.intent.harness),
+                        active: None,
+                        reserved: None,
+                        max: None,
+                        observed_at: super::lifecycle::iso(chrono::Utc::now()),
+                        retryable: false,
+                    }))
+                }
                 _ => super::SpawnError::from(failure.code()).redacted(),
             }
         };

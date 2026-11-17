@@ -175,10 +175,13 @@ async fn a_launch_that_fails_after_starting_ends_its_session_before_its_intent()
     let frames = relaycast(link.clone(), sent);
     let result = core.clone().answer_spawn(link, request("w1")).await;
     CoreHost(Arc::downgrade(&core)).sent(&result);
+    // The harness is here and may start when asked again: not reported as
+    // one this node does not provide.
     assert_eq!(
         result["error"],
-        "spawn_harness_unavailable: Codex refused the first turn"
+        "spawn_failed: Codex refused the first turn"
     );
+    assert!(result["error_details"].is_null(), "{result}");
     let thread = Target::new(SessionKind::Codex, THREAD);
     assert_eq!(*spawner.stopped.lock().unwrap(), [thread.clone()]);
     let left = intents::load(&core.config.app_data_dir);
@@ -187,6 +190,11 @@ async fn a_launch_that_fails_after_starting_ends_its_session_before_its_intent()
     assert_eq!(left[0].target, Some(thread));
     let frames = frames.await.unwrap();
     assert!(frames.iter().any(|f| f["type"] == "agent.deregister"));
+    // A replay after a restart gives the same answer without launching again.
+    let restarted = super::core(home.path(), spawner.clone());
+    let (link, _sent) = NodeLink::detached(node());
+    assert_eq!(restarted.answer_spawn(link, request("w1")).await, result);
+    assert_eq!(spawner.launched.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]

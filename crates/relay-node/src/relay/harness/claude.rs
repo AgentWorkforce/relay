@@ -63,8 +63,29 @@ fn adapter(cx: &HarnessContext) -> Arc<dyn HarnessAdapter> {
 }
 
 /// How long a new Claude process gets to publish its session and show
-/// that it took its first message.
-const READY_TIMEOUT: Duration = Duration::from_secs(20);
+/// that it took its first message. A loaded computer can take well over
+/// 20 s just to register the session, so this matches Muse's minute.
+const READY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Why a Claude process did not register its session: it ended (or its
+/// pid went to another process) first, or it was still running at the
+/// deadline; with how much it had written to `log` by then.
+fn not_ready(ended: bool, log: &Path) -> String {
+    let what = if ended {
+        "ended before it registered its session".to_owned()
+    } else {
+        format!(
+            "was still running but did not register its session within {} s",
+            READY_TIMEOUT.as_secs()
+        )
+    };
+    let written = std::fs::metadata(log).map_or_else(
+        |_| "no output".to_owned(),
+        |log| format!("{} bytes of output", log.len()),
+    );
+    format!("Claude Code {what} ({written}); see {}", log.display())
+}
+
 /// How much of a log's end is read.
 const LOG_TAIL: u64 = 64 * 1024;
 /// How much of a log's start is read for the first message's receipt: its
@@ -119,14 +140,12 @@ impl ClaudeAdapter {
             }
             let replaced =
                 launched.is_some_and(|launched| !launched.is(self.table.process(launched.pid)));
-            if replaced || self.table.process_gone(pid) || Instant::now() >= deadline {
+            let gone = self.table.process_gone(pid);
+            if replaced || gone || Instant::now() >= deadline {
                 if let Some(launched) = launched {
                     stop_process(self.table.as_ref(), launched.pid, Some(launched.start));
                 }
-                return Err(format!(
-                    "Claude Code did not start its session; see {}",
-                    log.display()
-                ));
+                return Err(not_ready(replaced || gone, log));
             }
             std::thread::sleep(Duration::from_millis(250));
         }
