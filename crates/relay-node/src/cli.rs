@@ -345,6 +345,11 @@ mod sandbox_rule_reach_tests {
             return None;
         }
         let request = session.request().ok()?;
+        // Every rule names the socket, so nothing after it falls back to a
+        // default one.
+        let socket = socket
+            .given()
+            .unwrap_or_else(|| panic!("{argv:?} lost the socket its rule names"));
         Some((socket.to_path_buf(), request.method, request.path))
     }
 

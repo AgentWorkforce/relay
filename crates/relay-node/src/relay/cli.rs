@@ -90,12 +90,8 @@ pub fn call(
 /// pointer, then its note (`message_pointer::read_note`). Like the other
 /// session commands (`session_cli`), the session is told from this process,
 /// so it reads only its own messages.
-pub fn read_message(socket: Option<&Path>, build: &Build, message_ref: &str) -> Result<()> {
-    let socket = match socket {
-        Some(socket) => socket.to_path_buf(),
-        None => pointed_socket(&paths::home()?, build)?,
-    };
-    let text = read_text(&socket, message_ref)?;
+pub fn read_message(socket: &Path, message_ref: &str) -> Result<()> {
+    let text = read_text(socket, message_ref)?;
     let note = crate::relay::message_pointer::read_note(&text);
     std::io::stdout().write_all(format!("{text}\n\n{note}\n").as_bytes())?;
     Ok(())
@@ -213,6 +209,24 @@ pub fn pointed_socket(home: &Path, build: &Build) -> Result<std::path::PathBuf> 
 }
 
 fn missing_pointer(directory: &Path, build: &Build) -> String {
+    let mut message = format!(
+        "{} is not running: its session socket pointer {} is missing.",
+        build.describe(),
+        build.pointer_name()
+    );
+    match other_builds_hint(directory, build) {
+        Some(others) => {
+            message.push(' ');
+            message.push_str(&others);
+        }
+        None => message.push_str(" Start the app or service."),
+    }
+    message
+}
+
+/// The other builds with a pointer in `directory`, and the flag that names
+/// each; `None` when `build` is the only one, or none has one.
+pub(crate) fn other_builds_hint(directory: &Path, build: &Build) -> Option<String> {
     let mut others: Vec<Build> = std::fs::read_dir(directory)
         .into_iter()
         .flatten()
@@ -220,25 +234,18 @@ fn missing_pointer(directory: &Path, build: &Build) -> String {
         .filter_map(|entry| Build::of_pointer(entry.file_name().to_str()?))
         .filter(|other| other != build)
         .collect();
-    others.sort_by_key(|other| other.pointer_name());
-    let mut message = format!(
-        "{} is not running: its session socket pointer {} is missing.",
-        build.describe(),
-        build.pointer_name()
-    );
     if others.is_empty() {
-        message.push_str(" Start the app or service.");
-    } else {
-        let running = others
-            .iter()
-            .map(|other| format!("{} ({})", other.describe(), other.flag()))
-            .collect::<Vec<_>>()
-            .join(", ");
-        message.push_str(&format!(
-            " Another build has a pointer: {running}. Pass that build's flag to go through it."
-        ));
+        return None;
     }
-    message
+    others.sort_by_key(|other| other.pointer_name());
+    let running = others
+        .iter()
+        .map(|other| format!("{} ({})", other.describe(), other.flag()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "Another build has a pointer: {running}. Pass that build's flag to go through it."
+    ))
 }
 
 /// `agent-relay-node subscribe <pull>`: subscribes (or, with
@@ -558,15 +565,11 @@ fn session_status(
     }
 }
 
-pub fn subscribe(socket: Option<&Path>, build: &Build, pull: &str, remove: bool) -> Result<()> {
+pub fn subscribe(socket: &Path, pull: &str, remove: bool) -> Result<()> {
     let body = pull_subscription(pull)?;
-    let socket = match socket {
-        Some(socket) => socket.to_path_buf(),
-        None => pointed_socket(&paths::home()?, build)?,
-    };
     let method = if remove { "DELETE" } else { "POST" };
     socket_exchange(
-        &socket,
+        socket,
         method,
         "/integrations/subscribe",
         &body,
@@ -1058,8 +1061,7 @@ mod tests {
         ] {
             let error = pull_subscription(bad).unwrap_err().to_string();
             assert!(error.contains("owner/repo#123"), "{bad}: {error}");
-            let error =
-                subscribe(Path::new("/unused").into(), &Build::Production, bad, false).unwrap_err();
+            let error = subscribe(Path::new("/unused"), bad, false).unwrap_err();
             assert!(error.to_string().contains("owner/repo#123"), "{bad}");
         }
     }

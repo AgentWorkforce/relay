@@ -137,6 +137,7 @@ pub mod sdk_gaps;
 pub mod sdk_http;
 pub mod server;
 pub mod session_cli;
+pub mod session_socket;
 pub mod session_sources;
 pub mod session_titles;
 pub mod sessions;

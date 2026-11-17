@@ -376,6 +376,20 @@ the bridge socket is for UIs, the relay-send socket for sessions
   `agent-relay-probe-<id>` for its probe alias. Readers take `--dev` or
   `--profile <id>` and never fall back to another build's pointer; a missing
   pointer is an error naming the build.
+- **A bare session command.** The hints, pointers and hooks a build hands
+  its sessions always name `--socket`. Without it (and without `--dev` or
+  `--profile`), `whoami`, `agents`, `send`, `read`, `fetch-attachment`,
+  `connect-send`, `subscribe-channel`, `subscribe` and `socket-request` ask
+  (`relay::session_socket`): `$AGENT_RELAY_SOCKET` (absolute); else the
+  build that installed this probe, told by a sidecar beside it
+  (`<name>.install.json`, `{"app_data_dir": "<that build's data
+  directory>"}`), else by the app bundle it resolves into (its
+  `Info.plist` `CFBundleIdentifier`), else by an alias name
+  (`agent-relay-probe-dev`, `agent-relay-probe-<id>`) — that build's pointer,
+  else its default socket when it exists, never another build's; else
+  Agent Relay's pointer, else its default socket when it exists. When none
+  answers, the error names every path looked at and any build with a
+  pointer. `register` and `webhook` still require `--socket`.
 - **Hook ownership.** Agent Relay's Claude `SessionStart` and Codex hooks are
   unmarked, Dev's carry ` --dev`, a profile build's carry
   ` --socket <its socket>`. A build installs, refreshes and removes only hooks

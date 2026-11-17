@@ -4,7 +4,7 @@ use crate::relay;
 use anyhow::Result;
 use clap::Subcommand;
 use relay::session_cli::{Recipient, SessionCommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Subcommand)]
 pub enum RelayCommands {
@@ -118,9 +118,10 @@ pub enum RelayCommands {
         /// Ask Agent Relay Dev instead of Agent Relay.
         #[arg(long, conflicts_with = "socket")]
         dev: bool,
-        /// The session socket to ask; default is the one the running app
-        /// points to. The pointer a session is handed names it, which is
-        /// what Codex's sandbox rules allow.
+        /// The session socket to ask. The pointer a session is handed names
+        /// it, which is what Codex's sandbox rules allow. Without it (or
+        /// --dev or --profile): $AGENT_RELAY_SOCKET, else the socket of the
+        /// build that installed this probe, else Agent Relay's.
         #[arg(long)]
         socket: Option<PathBuf>,
         /// Ask the profile build with this id (the part of its bundle id
@@ -138,9 +139,8 @@ pub enum RelayCommands {
             .args(["to", "address", "channel"])
     ))]
     Send {
-        /// The session socket, as the hint names it.
-        #[arg(long)]
-        socket: PathBuf,
+        #[command(flatten)]
+        target: SessionSocket,
         /// An agent's name.
         #[arg(long)]
         to: Option<String>,
@@ -163,16 +163,14 @@ pub enum RelayCommands {
     },
     /// List the agents the calling session can message (`GET /agents`).
     Agents {
-        /// The session socket, as the hint names it.
-        #[arg(long)]
-        socket: PathBuf,
+        #[command(flatten)]
+        target: SessionSocket,
     },
     /// Print the calling session's own name and address on the relay
     /// (`GET /whoami`).
     Whoami {
-        /// The session socket, as the hint names it.
-        #[arg(long)]
-        socket: PathBuf,
+        #[command(flatten)]
+        target: SessionSocket,
     },
     /// Put only the calling native session on the relay (`POST /register`).
     /// The core identifies it from this process; its self-registration
@@ -196,16 +194,14 @@ pub enum RelayCommands {
     FetchAttachment {
         #[arg(value_name = "FILE_ID")]
         file_id: String,
-        /// The session socket, as the hint names it.
-        #[arg(long)]
-        socket: PathBuf,
+        #[command(flatten)]
+        target: SessionSocket,
     },
     /// Send to the Relay Connect room the calling session joined
     /// (`POST /connect/send`): to one participant (`--to`), or everyone.
     ConnectSend {
-        /// The session socket, as the hint names it.
-        #[arg(long)]
-        socket: PathBuf,
+        #[command(flatten)]
+        target: SessionSocket,
         /// One participant's name; everyone when omitted.
         #[arg(long)]
         to: Option<String>,
@@ -230,9 +226,8 @@ pub enum RelayCommands {
         /// hyphen (`- weekly goals`).
         #[arg(long, requires = "create", allow_hyphen_values = true)]
         topic: Option<String>,
-        /// The session socket, as the hint names it.
-        #[arg(long)]
-        socket: PathBuf,
+        #[command(flatten)]
+        target: SessionSocket,
     },
     /// Create the calling session's own inbound webhook (`POST /webhooks`),
     /// or delete it with `--revoke` (`DELETE /webhooks`). Anything posted to
@@ -251,8 +246,8 @@ pub enum RelayCommands {
     /// socket, for people and debugging. No sandbox or permission rule
     /// allows it; sessions are handed the commands above.
     SocketRequest {
-        #[arg(long)]
-        socket: PathBuf,
+        #[command(flatten)]
+        target: SessionSocket,
         #[arg(long)]
         method: String,
         #[arg(long)]
@@ -354,7 +349,9 @@ pub enum RelayCommands {
         /// Subscribe through Agent Relay Dev instead of Agent Relay.
         #[arg(long, conflicts_with = "socket")]
         dev: bool,
-        /// The session socket; default is the one the running app points to.
+        /// The session socket. Without it (or --dev or --profile):
+        /// $AGENT_RELAY_SOCKET, else the socket of the build that installed
+        /// this probe, else Agent Relay's.
         #[arg(long)]
         socket: Option<PathBuf>,
         /// Ask the profile build with this id (the part of its bundle id
@@ -364,6 +361,67 @@ pub enum RelayCommands {
     },
 }
 
+/// Which session socket a session command asks: `--socket`, else the build
+/// `--dev` or `--profile` names, else the default `session_socket`
+/// resolves ($AGENT_RELAY_SOCKET, the build that installed this probe,
+/// Agent Relay's).
+#[derive(clap::Args, Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionSocket {
+    /// The session socket, as the hint names it. Without it:
+    /// $AGENT_RELAY_SOCKET, else the socket of the desktop build that
+    /// installed this probe, else Agent Relay's.
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
+    /// Ask Agent Relay Dev instead.
+    #[arg(long, conflicts_with = "socket")]
+    pub dev: bool,
+    /// Ask the profile build with this id (the part of its bundle id after
+    /// com.agentrelay.desktop.) instead.
+    #[arg(long, conflicts_with_all = ["socket", "dev"])]
+    pub profile: Option<String>,
+}
+
+impl SessionSocket {
+    /// The socket this names, or why none was found.
+    pub fn resolve(&self) -> Result<PathBuf> {
+        resolve_socket(self.socket.as_deref(), self.dev, self.profile.clone())
+    }
+}
+
+/// `--socket`, else `--dev`'s or `--profile`'s pointer, else the default.
+fn resolve_socket(socket: Option<&Path>, dev: bool, profile: Option<String>) -> Result<PathBuf> {
+    let named = (dev || profile.is_some())
+        .then(|| build(dev, profile))
+        .transpose()?;
+    relay::session_socket::resolve(socket, named.as_ref())
+}
+
+/// The socket a session command asks: the one its rule names, or one to
+/// find.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SocketTarget<'a> {
+    Given(&'a Path),
+    Default(&'a SessionSocket),
+}
+
+impl SocketTarget<'_> {
+    /// The socket named on the command line, if any.
+    #[cfg(test)]
+    pub fn given(&self) -> Option<&Path> {
+        match self {
+            SocketTarget::Given(socket) => Some(socket),
+            SocketTarget::Default(target) => target.socket.as_deref(),
+        }
+    }
+
+    pub fn resolve(&self) -> Result<PathBuf> {
+        match self {
+            SocketTarget::Given(socket) => Ok(socket.to_path_buf()),
+            SocketTarget::Default(target) => target.resolve(),
+        }
+    }
+}
+
 /// The self-limiting session command `command` is, with the socket it
 /// names and its `--body`: what `run` sends for `send`, `agents`,
 /// `whoami`, `register`, `read --socket`, `fetch-attachment`, `connect-send` and
@@ -371,10 +429,10 @@ pub enum RelayCommands {
 /// other command.
 pub fn session_command(
     command: &RelayCommands,
-) -> Option<(&std::path::Path, SessionCommand, Option<&str>)> {
+) -> Option<(SocketTarget<'_>, SessionCommand, Option<&str>)> {
     Some(match command {
         RelayCommands::Send {
-            socket,
+            target,
             to,
             address,
             channel,
@@ -389,7 +447,7 @@ pub fn session_command(
                 _ => return None,
             };
             (
-                socket.as_path(),
+                SocketTarget::Default(target),
                 SessionCommand::Send {
                     recipient,
                     reply_to: reply_to.clone(),
@@ -398,10 +456,14 @@ pub fn session_command(
                 body.as_deref(),
             )
         }
-        RelayCommands::Agents { socket } => (socket.as_path(), SessionCommand::Agents, None),
-        RelayCommands::Whoami { socket } => (socket.as_path(), SessionCommand::Whoami, None),
+        RelayCommands::Agents { target } => {
+            (SocketTarget::Default(target), SessionCommand::Agents, None)
+        }
+        RelayCommands::Whoami { target } => {
+            (SocketTarget::Default(target), SessionCommand::Whoami, None)
+        }
         RelayCommands::Webhook { socket, revoke } => (
-            socket.as_path(),
+            SocketTarget::Given(socket),
             SessionCommand::Webhook { revoke: *revoke },
             None,
         ),
@@ -411,7 +473,7 @@ pub fn session_command(
             description,
             mcp,
         } => (
-            socket.as_path(),
+            SocketTarget::Given(socket),
             SessionCommand::Register {
                 name: name.clone(),
                 description: description.clone(),
@@ -420,13 +482,13 @@ pub fn session_command(
             None,
         ),
         RelayCommands::SubscribeChannel {
-            socket,
+            target,
             channel,
             remove,
             create,
             topic,
         } => (
-            socket.as_path(),
+            SocketTarget::Default(target),
             if *create {
                 SessionCommand::CreateChannel {
                     channel: channel.clone(),
@@ -440,15 +502,15 @@ pub fn session_command(
             },
             None,
         ),
-        RelayCommands::FetchAttachment { socket, file_id } => (
-            socket.as_path(),
+        RelayCommands::FetchAttachment { target, file_id } => (
+            SocketTarget::Default(target),
             SessionCommand::FetchAttachment {
                 file_id: file_id.clone(),
             },
             None,
         ),
-        RelayCommands::ConnectSend { socket, to, body } => (
-            socket.as_path(),
+        RelayCommands::ConnectSend { target, to, body } => (
+            SocketTarget::Default(target),
             SessionCommand::ConnectSend { to: to.clone() },
             body.as_deref(),
         ),
@@ -457,7 +519,7 @@ pub fn session_command(
             message_ref,
             ..
         } => (
-            socket.as_path(),
+            SocketTarget::Given(socket),
             SessionCommand::Read {
                 message_ref: message_ref.clone(),
             },
@@ -470,8 +532,8 @@ pub fn session_command(
 pub fn run(command: RelayCommands) -> Result<()> {
     // `read` prints the message and its note itself.
     if !matches!(command, RelayCommands::Read { .. }) {
-        if let Some((socket, session, body)) = session_command(&command) {
-            return relay::session_cli::run(socket, &session, body);
+        if let Some((target, session, body)) = session_command(&command) {
+            return relay::session_cli::run(&target.resolve()?, &session, body);
         }
     }
     match command {
@@ -562,17 +624,20 @@ pub fn run(command: RelayCommands) -> Result<()> {
             relay::harness::relay_mcp::run(&build(dev, profile)?)
         }
         RelayCommands::SocketRequest {
-            socket,
+            target,
             method,
             path,
             body,
-        } => relay::cli::socket_request(&socket, &method, &path, body.as_deref()),
+        } => relay::cli::socket_request(&target.resolve()?, &method, &path, body.as_deref()),
         RelayCommands::Read {
             message_ref,
             dev,
             socket,
             profile,
-        } => relay::cli::read_message(socket.as_deref(), &build(dev, profile)?, &message_ref),
+        } => relay::cli::read_message(
+            &resolve_socket(socket.as_deref(), dev, profile)?,
+            &message_ref,
+        ),
         RelayCommands::CodexStopHook {
             dev,
             socket,
@@ -598,7 +663,11 @@ pub fn run(command: RelayCommands) -> Result<()> {
             dev,
             socket,
             profile,
-        } => relay::cli::subscribe(socket.as_deref(), &build(dev, profile)?, &pull, remove),
+        } => relay::cli::subscribe(
+            &resolve_socket(socket.as_deref(), dev, profile)?,
+            &pull,
+            remove,
+        ),
         RelayCommands::MuseSpawnHost {
             executable,
             log,
@@ -621,6 +690,89 @@ mod tests {
     struct Cli {
         #[command(subcommand)]
         command: RelayCommands,
+    }
+
+    fn parse(args: &[&str]) -> Result<RelayCommands, clap::Error> {
+        Cli::try_parse_from(std::iter::once("relay").chain(args.iter().copied()))
+            .map(|cli| cli.command)
+    }
+
+    /// Each command this change covers, with the arguments it needs
+    /// besides a socket.
+    const DEFAULTED: &[&[&str]] = &[
+        &["whoami"],
+        &["agents"],
+        &["send", "--to", "ada", "--body", "hi"],
+        &["read", "0123456789ab"],
+        &["fetch-attachment", "f1"],
+        &["connect-send", "--body", "hi"],
+        &["subscribe-channel", "planning"],
+        &["subscribe", "owner/repo#1"],
+        &["socket-request", "--method", "GET", "--path", "/whoami"],
+    ];
+
+    #[test]
+    fn session_commands_run_without_a_socket() {
+        for args in DEFAULTED {
+            let command = parse(args).unwrap_or_else(|error| panic!("{args:?}: {error}"));
+            if let Some((target, _, _)) = super::session_command(&command) {
+                assert_eq!(target.given(), None, "{args:?}");
+                assert_eq!(
+                    target,
+                    super::SocketTarget::Default(&super::SessionSocket::default()),
+                    "{args:?}"
+                );
+            }
+        }
+        // The commands a rule or a person must point keep requiring it.
+        assert!(parse(&["register"]).is_err());
+        assert!(parse(&["webhook"]).is_err());
+    }
+
+    #[test]
+    fn a_named_socket_or_build_is_kept_and_they_conflict() {
+        for args in DEFAULTED {
+            let with = |extra: &[&str]| parse(&[*args, extra].concat());
+            let given = with(&["--socket", "/s/relay.sock"]).unwrap();
+            if let Some((target, _, _)) = super::session_command(&given) {
+                assert_eq!(
+                    target.given(),
+                    Some(std::path::Path::new("/s/relay.sock")),
+                    "{args:?}"
+                );
+            }
+            assert!(with(&["--dev"]).is_ok(), "{args:?}");
+            assert!(with(&["--profile=-acme"]).is_ok(), "{args:?}");
+            assert!(
+                with(&["--socket", "/s/relay.sock", "--dev"]).is_err(),
+                "{args:?}"
+            );
+            assert!(
+                with(&["--socket", "/s/relay.sock", "--profile=acme"]).is_err(),
+                "{args:?}"
+            );
+            assert!(with(&["--dev", "--profile=acme"]).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn a_named_build_resolves_through_its_own_pointer_only() {
+        let target = super::SessionSocket {
+            socket: Some("/s/relay.sock".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            target.resolve().unwrap(),
+            std::path::Path::new("/s/relay.sock")
+        );
+        let refused = super::SessionSocket {
+            profile: Some("Not An Id".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            refused.resolve().unwrap_err().to_string(),
+            "--profile takes a profile build's id, the part of its bundle id after com.agentrelay.desktop."
+        );
     }
 
     #[test]
