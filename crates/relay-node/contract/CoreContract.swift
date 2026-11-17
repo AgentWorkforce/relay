@@ -4532,8 +4532,10 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// an answer-only session. Absent where neither is set up.
     public let trustedRelaySenders: [String]?
     /// The workspace's leaders as Relaycast last listed them
-    /// (`GET /v1/workspace/leaders`): a leader's direct message to any
-    /// session here is native input, though never an approval. Read only;
+    /// (`GET /v1/workspace/leaders`): a leader's direct message to a
+    /// spawned agent (with `spawn_native_input` on) or to a Claude Code
+    /// session with `teammate_native_input` on is native input, though never
+    /// an approval. Read only;
     /// absent until the list has been read for the current workspace, and
     /// in older cores.
     public let workspaceLeaders: WorkspaceLeaders?
