@@ -79,10 +79,13 @@ impl Core {
         )
         .await;
         let owner = self.verified_owner(&registration).await;
-        if requester.is_none()
-            || owner.is_none()
-            || requester.as_ref().map(|r| &r.agent_id) != owner.as_ref().map(|(_, id)| id)
-        {
+        // The verified owner may have asked as the requester or as the
+        // launcher that invoked the spawn for it.
+        let asked_by_owner = match (&requester, &owner) {
+            (Some(asked), Some((_, owner_id))) => asked.includes(owner_id),
+            _ => false,
+        };
+        if !asked_by_owner {
             return Err(
                 "spawn_fork_refused: only this computer's verified owner can fork its sessions"
                     .into(),

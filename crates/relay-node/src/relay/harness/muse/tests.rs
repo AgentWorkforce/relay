@@ -71,6 +71,7 @@ fn intent() -> Intent {
         agent_id: None,
         token: None,
         requester: None,
+        launcher: None,
         target: None,
         process: None,
         control_url: None,

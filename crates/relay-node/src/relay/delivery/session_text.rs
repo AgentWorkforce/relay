@@ -380,6 +380,59 @@ mod tests {
         registration.spawn = None;
         assert!(!requester_native_input(true, &registration, &message));
     }
+
+    #[test]
+    fn a_dm_from_the_requester_or_its_launcher_is_the_requesters_by_id_alone() {
+        // Cloud invoked the spawn through a launcher for a person's chat.
+        let mut registration: Registration = serde_json::from_value(json!({
+            "name":"child", "agentID":"child-id", "target":{"kind":"codex","id":"thread"},
+            "title":"child", "baseURL":"http://127.0.0.1", "registeredAt":"now",
+            "spawn":{"nodeID":"node", "nodeName":"desktop", "invocationID":"inv", "harness":"codex",
+                "requester":{"name":"person-chat","agentID":"chat-id"},
+                "launcher":{"name":"launcher","agentID":"launcher-id"}}
+        }))
+        .unwrap();
+        let dm = |name: &str, id: &str| Delivery {
+            reason: Some("dm".into()),
+            sender: Some(name.into()),
+            sender_id: Some(id.into()),
+            ..Delivery::default()
+        };
+        for message in [dm("person-chat", "chat-id"), dm("launcher", "launcher-id")] {
+            assert!(requester_native_input(true, &registration, &message));
+            assert!(crate::relay::spawn::from_requester(&registration, &message));
+        }
+        // Names are never matched, either way round.
+        for message in [
+            dm("person-chat", "launcher-name-id"),
+            dm("launcher", "impostor-id"),
+            dm("chat-id", "person-chat"),
+            dm("launcher-id", "launcher"),
+        ] {
+            assert!(!requester_native_input(true, &registration, &message));
+        }
+        // A launcher with an empty id matches nothing, not an absent sender id.
+        let spawn = registration.spawn.as_mut().unwrap();
+        spawn.launcher.as_mut().unwrap().agent_id.clear();
+        spawn.requester = None;
+        assert!(!requester_native_input(
+            true,
+            &registration,
+            &dm("launcher", "")
+        ));
+        let mut no_sender = dm("launcher", "");
+        no_sender.sender_id = None;
+        assert!(!requester_native_input(true, &registration, &no_sender));
+        // Taken over, neither is.
+        let spawn = registration.spawn.as_mut().unwrap();
+        spawn.launcher.as_mut().unwrap().agent_id = "launcher-id".into();
+        spawn.taken_over_at = Some("now".into());
+        assert!(!requester_native_input(
+            true,
+            &registration,
+            &dm("launcher", "launcher-id")
+        ));
+    }
 }
 
 #[cfg(all(test, unix))]

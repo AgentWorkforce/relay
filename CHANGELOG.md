@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay-node`: a spawn whose harness is installed but did not start now fails as `spawn_failed: <reason>` instead of `spawn_harness_unavailable` (which Cloud showed as the node not providing the harness); a new spawn with a fresh idempotency key may then succeed. Claude Code's readiness timeout now says whether Claude was still running and how much output it wrote.
 - `agent-relay-node`: session-socket requests share one deadline across connection setup and partial reads and writes, so slow replies cannot extend a native hook beyond its wait budget.
+- `agent-relay-node`: a spawn Agent Relay Cloud invokes through a person's launcher now records the desktop identity that asked for it (the invocation's `requester_agent_id` and `requester_name`) as its requester, and keeps the invoking caller as `spawn.launcher`. Direct messages from either id count as the requester's, so the person's chat gets native input and the final answer instead of being treated as a peer. Spawns without the new fields are unchanged.
 
 ## [18.9.0] - 2026-11-16
 

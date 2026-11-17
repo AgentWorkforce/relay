@@ -715,8 +715,9 @@ fn release_target(store: &Store, workspace: &Workspace, params: &SpawnReleasePar
     release_targets(store, workspace, params).next().is_some()
 }
 
-/// [`release_target`], narrowed to a worker whose recorded requester (as
-/// Relaycast reported it, never the caller's word) is `requester_id`. Only
+/// [`release_target`], narrowed to a worker whose recorded requester or
+/// launcher (as Relaycast reported it, never the caller's word) is
+/// `requester_id`. Only
 /// external callers that may release just their own agents are held to it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ReleaseOwnership {
@@ -736,7 +737,7 @@ fn release_target_ownership(
         .spawn
         .as_ref()?;
     Some(match spawn.requester.as_ref() {
-        Some(requester) if requester.agent_id == requester_id => ReleaseOwnership::Owned,
+        Some(_) if spawn.asked_by(requester_id) => ReleaseOwnership::Owned,
         Some(_) => ReleaseOwnership::Other,
         None => ReleaseOwnership::Unknown(spawn.invocation_id.clone()),
     })
@@ -812,7 +813,7 @@ async fn release_as(
                 &invocation_id,
             )
             .await
-            .is_some_and(|requester| requester.agent_id == caller.agent_id())
+            .is_some_and(|asked| asked.includes(caller.agent_id()))
         }
         None => false,
     };

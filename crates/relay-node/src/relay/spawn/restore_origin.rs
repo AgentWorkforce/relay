@@ -89,6 +89,7 @@ pub(super) fn restorable(
         invocation_id: invocation.to_owned(),
         harness: codex::ID.name().into(),
         requester: None,
+        launcher: None,
         process: None,
         worker_cwd: receipt.worker_cwd(),
         owner: None,
