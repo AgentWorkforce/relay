@@ -789,10 +789,12 @@ async fn an_owns_only_caller_cannot_release_an_agent_another_requester_started()
     assert!(served.join().unwrap()[0].contains("test-agent-secret"));
 }
 
-// A workspace leader's direct messages are native input, but it is never
-// an agent's owner: it cannot release one another requester started.
+// A workspace leader is never an agent's owner: it cannot release one
+// another requester started. `spawn.release` never consults the leaders
+// list, so this holds by construction; the list is set only to pin it down.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_workspace_leader_cannot_release_an_agent_another_requester_started() {
+async fn a_workspace_leader_cannot_release_another_requesters_agent_as_release_never_reads_the_leaders(
+) {
     use crate::relay::contract::agents::{WorkspaceLeader, WorkspaceLeaders};
     let relaycast = Relaycast::new();
     let stub = Stub::new(service(true));

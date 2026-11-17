@@ -444,10 +444,11 @@ mod tests {
         );
     }
 
-    // A workspace leader's direct messages are native input, but it is
-    // never the owner: its fork is refused like anyone else's.
+    // A workspace leader is never the owner: its fork is refused like
+    // anyone else's. `fork_source` never consults the leaders list, so this
+    // holds by construction; the list is set only to pin that down.
     #[tokio::test]
-    async fn a_workspace_leader_cannot_fork() {
+    async fn a_workspace_leader_cannot_fork_as_fork_never_reads_the_leaders() {
         use crate::relay::contract::agents::{WorkspaceLeader, WorkspaceLeaders};
         let folders = Arc::new(Folders {
             path: Mutex::new(Some(folder())),

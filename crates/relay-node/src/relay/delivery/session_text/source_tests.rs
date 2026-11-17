@@ -491,9 +491,9 @@ fn leads(text: &str) -> bool {
 }
 
 // A leader's direct message to a spawned agent is native input on the
-// spawn route, whatever `spawn_native_input` says, with the leader line
-// naming it as the leaders list does (not as the message does). It answers
-// no approval.
+// spawn route while `spawn_native_input` is on, with the leader line naming
+// it as the leaders list does (not as the message does). It answers no
+// approval. With the setting off it is a peer's message, framed as one.
 #[tokio::test]
 async fn a_leaders_dm_to_a_spawned_agent_is_native_input_naming_the_leader() {
     for kind in [
@@ -502,10 +502,6 @@ async fn a_leaders_dm_to_a_spawned_agent_is_native_input_naming_the_leader() {
         SessionKind::ClaudeTerminal,
     ] {
         let f = fixture(kind, false).await;
-        f.core
-            .store
-            .update(|store| store.extras.spawn_native_input = Some(false))
-            .unwrap();
         let lead = leader(&f);
         let (source, text) = deliver(&f, &lead).await;
         assert_eq!(source, InputSource::Leader, "{kind:?}: {text}");
@@ -518,6 +514,7 @@ async fn a_leaders_dm_to_a_spawned_agent_is_native_input_naming_the_leader() {
             text.contains("\n[leader: @gtmgrok leads this work; "),
             "{text}"
         );
+        assert!(crate::relay::delivery::policy::leader_framed(&text));
         assert!(!crate::relay::delivery::policy::owner_framed(&text));
         assert!(text.contains("\n\nShip the fix\n"), "{text}");
         assert_eq!(f.routes.requester.lock().unwrap().len(), 1, "{kind:?}");
@@ -542,25 +539,103 @@ async fn a_leaders_dm_to_a_spawned_agent_is_native_input_naming_the_leader() {
     }
 }
 
-// A session the person started, or a spawn the person took over, takes a
-// leader's direct message as native input too, on its usual route.
+// `spawn_native_input` off turns a leader's native input off too: its
+// direct message to a spawned agent is a peer's, framed as one.
 #[tokio::test]
-async fn a_session_the_person_started_takes_a_leaders_dm_as_native_input() {
+async fn a_leaders_dm_is_a_peers_while_spawn_native_input_is_off() {
+    let f = fixture(SessionKind::Codex, false).await;
+    f.core
+        .store
+        .update(|store| store.extras.spawn_native_input = Some(false))
+        .unwrap();
+    let (source, text) = deliver(&f, &leader(&f)).await;
+    assert_eq!(source, InputSource::Peer, "{text}");
+    assert!(text.starts_with("[via Agent Relay — from @lead"), "{text}");
+    assert!(!text.contains("leads this work"), "{text}");
+    assert_eq!(f.routes.peer.lock().unwrap().as_slice(), [text]);
+    assert!(f.routes.requester.lock().unwrap().is_empty());
+}
+
+// The spawn's requester keeps its requester framing and route when the
+// list also names it a leader: with requester native input off it is the
+// owner-framed peer message the person chose, never a leader's native one.
+#[tokio::test]
+async fn a_requester_that_is_also_a_leader_keeps_its_requester_framing() {
+    use crate::relay::delivery::policy::{leader_framed, owner_framed};
+    let f = fixture(SessionKind::Codex, false).await;
+    f._server.set_leaders(Some(json!({
+        "leaders":[{"name":"requester","agent_id":f.requester.sender_id.clone()}],
+        "patterns":[]
+    })));
+    f.core
+        .store
+        .update(|store| store.extras.spawn_native_input = Some(false))
+        .unwrap();
+    let (source, text) = deliver(&f, &f.requester).await;
+    assert_eq!(source, InputSource::Peer, "{text}");
+    assert!(owner_framed(&text), "{text}");
+    assert!(!leader_framed(&text), "{text}");
+    assert_eq!(f.routes.peer.lock().unwrap().as_slice(), [text]);
+    assert!(f.routes.requester.lock().unwrap().is_empty());
+    // With it on, it is the requester's native input, without the leader line.
+    f.core
+        .store
+        .update(|store| store.extras.spawn_native_input = Some(true))
+        .unwrap();
+    let (source, text) = deliver(&f, &again(&f.requester, "requester-on")).await;
+    assert_eq!(source, InputSource::Requester, "{text}");
+    assert!(!leader_framed(&text), "{text}");
+}
+
+// A session the person started, or a spawn the person took over, takes a
+// leader's direct message as a peer's unless its Claude plugin starts it as
+// a user turn (`mobile_handoff::tests`).
+#[tokio::test]
+async fn a_session_the_person_started_takes_a_leaders_dm_as_a_peers() {
     for kind in [SessionKind::Codex, SessionKind::ClaudeTerminal] {
         let mut f = fixture(kind, false).await;
         person_started(&mut f);
         let lead = leader(&f);
         let (source, text) = deliver(&f, &lead).await;
-        assert_eq!(source, InputSource::Leader, "{kind:?}: {text}");
-        assert!(leads(&text), "{text}");
+        assert_eq!(source, InputSource::Peer, "{kind:?}: {text}");
+        assert!(text.starts_with("[via Agent Relay — from @lead"), "{text}");
+        assert!(!text.contains("leads this work"), "{text}");
         assert_eq!(f.routes.peer.lock().unwrap().as_slice(), [text]);
         assert!(f.routes.requester.lock().unwrap().is_empty());
     }
     let mut f = fixture(SessionKind::Grok, false).await;
     f.registration.spawn.as_mut().unwrap().taken_over_at = Some("2026-11-12T00:00:00Z".into());
     let (source, text) = deliver(&f, &leader(&f)).await;
-    assert_eq!(source, InputSource::Leader);
-    assert!(leads(&text), "{text}");
+    assert_eq!(source, InputSource::Peer);
+    assert!(!text.contains("leads this work"), "{text}");
+}
+
+// A leader's Claude turn whose plugin went away before delivery goes the
+// peer way, framed as a peer's: the route and the text agree.
+#[tokio::test]
+async fn a_leaders_turn_that_falls_back_to_the_peer_route_is_framed_as_a_peers() {
+    use crate::relay::delivery::policy::{with_leader_line, NATIVE_HEADER, PEER_HEADER};
+    let mut f = fixture(SessionKind::ClaudeTerminal, false).await;
+    person_started(&mut f);
+    let lead = leader(&f);
+    let (peer, _, _) = f
+        .core
+        .session_text(&f.registration, (&lead, None), false, false)
+        .await;
+    assert!(peer.starts_with(PEER_HEADER), "{peer}");
+    let turn = with_leader_line(&peer.replacen(PEER_HEADER, NATIVE_HEADER, 1), "gtmgrok");
+    assert_eq!(
+        f.core
+            .deliver_session_text(
+                &f.registration,
+                &again(&lead, "fallback"),
+                turn,
+                InputSource::Teammate
+            )
+            .await,
+        InjectOutcome::Delivered
+    );
+    assert_eq!(f.routes.peer.lock().unwrap().as_slice(), [peer]);
 }
 
 // Leaders are matched by agent id alone: another agent with a leader's
@@ -568,8 +643,7 @@ async fn a_session_the_person_started_takes_a_leaders_dm_as_native_input() {
 // mention stays a peer message.
 #[tokio::test]
 async fn only_a_leaders_own_direct_message_is_a_leaders() {
-    let mut f = fixture(SessionKind::Codex, false).await;
-    person_started(&mut f);
+    let f = fixture(SessionKind::Codex, false).await;
     let lead = leader(&f);
     for name in ["gtmgrok", "lead"] {
         let mut impostor = again(&lead, &format!("impostor-{name}"));
@@ -598,11 +672,10 @@ async fn only_a_leaders_own_direct_message_is_a_leaders() {
 
 // The list is read once and used while fresh; a stale one is read again on
 // the next lookup, and a read that fails keeps the last list. `settings`
-// shows it, read only.
+// shows it, read only: `settings.set` refuses it.
 #[tokio::test]
 async fn the_leaders_list_is_cached_refreshed_and_kept_through_a_failed_read() {
-    let mut f = fixture(SessionKind::Codex, false).await;
-    person_started(&mut f);
+    let f = fixture(SessionKind::Codex, false).await;
     let reads = |f: &Fixture| f._server.calls("GET", "/v1/workspace/leaders").len();
     let lead = leader(&f);
     assert_eq!(deliver(&f, &lead).await.0, InputSource::Leader);
@@ -615,6 +688,13 @@ async fn the_leaders_list_is_cached_refreshed_and_kept_through_a_failed_read() {
     assert_eq!(shown["leaders"][0]["name"], "gtmgrok");
     assert_eq!(shown["patterns"], json!(["*grok", "admin"]));
     assert_eq!(reads(&f), 1);
+    let mut change = serde_json::Map::new();
+    change.insert(
+        "workspace_leaders".into(),
+        json!({"leaders":[{"name":"mallory","agent_id":"agent_mallory"}],"patterns":[]}),
+    );
+    assert!(f.core.set_settings(&change).is_err());
+    assert_eq!(f.core.settings()["workspace_leaders"], shown);
 
     f.core.leaders.age(crate::relay::leaders::REFRESH_AFTER);
     f._server.set_failing(&["GET /v1/workspace/leaders"]);
@@ -641,4 +721,53 @@ async fn the_leaders_list_is_cached_refreshed_and_kept_through_a_failed_read() {
         f.core.settings()["workspace_leaders"],
         json!({"leaders":[],"patterns":[]})
     );
+}
+
+// While reads fail, the last list is used only for `KEEP_FOR` after the
+// last read that succeeded; a refusal (401, 403, 404) drops it at once.
+#[tokio::test]
+async fn the_leaders_list_expires_while_reads_fail_and_a_refusal_drops_it() {
+    use crate::relay::leaders::{KEEP_FOR, REFRESH_AFTER};
+    let f = fixture(SessionKind::Codex, false).await;
+    let lead = leader(&f);
+    assert_eq!(deliver(&f, &lead).await.0, InputSource::Leader);
+    f._server.set_failing(&["GET /v1/workspace/leaders"]);
+    f.core.leaders.age(KEEP_FOR - Duration::from_secs(1));
+    assert_eq!(
+        deliver(&f, &again(&lead, "kept")).await.0,
+        InputSource::Leader
+    );
+    f.core.leaders.age(REFRESH_AFTER);
+    let (source, text) = deliver(&f, &again(&lead, "expired")).await;
+    assert_eq!(source, InputSource::Peer, "{text}");
+    assert!(!text.contains("leads this work"), "{text}");
+    assert!(f.core.settings().get("workspace_leaders").is_none());
+    f._server.set_failing(&[]);
+
+    for (index, status) in [Some(401), Some(403), None].into_iter().enumerate() {
+        // A good read first, then the refusal.
+        f._server.set_api_error("GET /v1/workspace/leaders", None);
+        f._server.set_leaders(Some(json!({
+            "leaders":[{"name":"gtmgrok","agent_id":lead.sender_id.clone()}],
+            "patterns":[]
+        })));
+        f.core.leaders.age(REFRESH_AFTER);
+        assert_eq!(
+            deliver(&f, &again(&lead, &format!("good-{index}"))).await.0,
+            InputSource::Leader
+        );
+        match status {
+            Some(status) => f._server
+                .set_api_error("GET /v1/workspace/leaders", Some((status, "refused"))),
+            // 404: an engine without leaders.
+            None => f._server.set_leaders(None),
+        }
+        f.core.leaders.age(REFRESH_AFTER);
+        let (source, text) = deliver(&f, &again(&lead, &format!("refused-{index}"))).await;
+        assert_eq!(source, InputSource::Peer, "{status:?}: {text}");
+        assert!(
+            f.core.settings().get("workspace_leaders").is_none(),
+            "{status:?}"
+        );
+    }
 }

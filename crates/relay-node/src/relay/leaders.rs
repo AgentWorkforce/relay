@@ -1,15 +1,19 @@
-//! The workspace's leaders: agents whose direct messages any session on
-//! this computer takes as native input (`delivery::session_text`), as Agent
-//! Relay Cloud lists them at `GET /v1/workspace/leaders`.
+//! The workspace's leaders: agents whose direct messages spawned agents and
+//! teammate-input Claude Code sessions on this computer take as native
+//! input (`delivery::session_text`), as Agent Relay Cloud lists them at
+//! `GET /v1/workspace/leaders`.
 //!
 //! The list is read on first need and kept per workspace; a lookup after
 //! [`REFRESH_AFTER`] reads it again, waiting at most
 //! [`report_back::REQUESTER_WAIT`]. A read that fails keeps the last list
-//! (none, before the first). Senders are matched by immutable agent id
-//! alone, never by name. No event reaches the node when the list changes
-//! (`workspace.leaders.updated` is server telemetry), so it is also read
-//! again as each spawned agent starts; otherwise a change shows within
-//! [`REFRESH_AFTER`]. Leaders are never approvers.
+//! (none, before the first) for at most [`KEEP_FOR`] after the last read
+//! that succeeded; after that no one is a leader until a read succeeds. A
+//! refusal (401, 403 or 404) drops the list at once. Senders are matched by
+//! immutable agent id alone, never by name. No event reaches the node when
+//! the list changes (`workspace.leaders.updated` is server telemetry), so it
+//! is also read again as each spawned agent starts (at most once per
+//! [`REREAD_AFTER`]); otherwise a change shows within [`REFRESH_AFTER`].
+//! Leaders are never approvers.
 
 use crate::relay::contract::agents::{WorkspaceLeader, WorkspaceLeaders};
 use crate::relay::daemon::Core;
@@ -24,6 +28,13 @@ use std::time::{Duration, Instant};
 
 /// How long a list is used before the next lookup reads it again.
 pub const REFRESH_AFTER: Duration = Duration::from_secs(60);
+
+/// How long the last list stays in use after the last read that succeeded,
+/// while later reads fail.
+pub const KEEP_FOR: Duration = Duration::from_secs(10 * 60);
+
+/// A read for a starting agent this soon after the last read is skipped.
+pub const REREAD_AFTER: Duration = Duration::from_secs(5);
 
 const PATH: &str = "/v1/workspace/leaders";
 
@@ -60,36 +71,60 @@ pub fn parse(answer: &Value) -> Option<WorkspaceLeaders> {
     Some(WorkspaceLeaders { leaders, patterns })
 }
 
+/// What a read of the list came to.
+#[derive(Debug)]
+enum Read {
+    List(WorkspaceLeaders),
+    /// Relaycast refused the read (401, 403) or has no list (404): no one
+    /// is a leader.
+    Refused,
+    /// The read could not be made or answered: the last list is kept.
+    Failed,
+}
+
+/// Whether an HTTP `status` refuses the read, rather than failing it.
+fn refusal(status: Option<u16>) -> bool {
+    matches!(status, Some(401 | 403 | 404))
+}
+
 /// Reads the list for `workspace`, waiting at most
 /// [`report_back::REQUESTER_WAIT`], with this computer's node token (saved
 /// in `app_data_dir` when the spawn node enrolled) or, without one, the
 /// workspace key; a node-scoped workspace, whose key never goes to
-/// Relaycast, reads nothing without a node token. Any failure, a refusal
-/// included, is no list, and is not logged: lookups repeat it each minute.
-async fn fetch(workspace: &Workspace, app_data_dir: &Path) -> Option<WorkspaceLeaders> {
+/// Relaycast, reads nothing without a node token. A failure is not
+/// logged: lookups repeat it each minute.
+async fn fetch(workspace: &Workspace, app_data_dir: &Path) -> Read {
     if workspace.key.expose().is_empty() {
-        return None;
+        return Read::Failed;
     }
     let node =
         crate::relay::spawn::node::node_token(app_data_dir, &workspace.base_url, &workspace.key);
     let credential = match node {
         Some(token) => token,
-        None if workspace.node_scoped() => return None,
+        None if workspace.node_scoped() => return Read::Failed,
         None => workspace.key.clone(),
     };
-    let http = sdk_gaps::http(&workspace.base_url, &credential).ok()?;
+    let Ok(http) = sdk_gaps::http(&workspace.base_url, &credential) else {
+        return Read::Failed;
+    };
     let read = tokio::time::timeout(
         report_back::REQUESTER_WAIT,
         http.get::<Value>(PATH, None, None),
     );
-    parse(&read.await.ok()?.ok()?)
+    match read.await {
+        Ok(Ok(answer)) => parse(&answer).map_or(Read::Failed, Read::List),
+        Ok(Err(error)) if refusal(error.status()) => Read::Refused,
+        _ => Read::Failed,
+    }
 }
 
 struct Entry {
     base_url: String,
     key: Secret,
-    /// The last list read, `None` before one was.
+    /// The last list read, `None` before one was or after a refusal.
     list: Option<WorkspaceLeaders>,
+    /// When a read last succeeded.
+    read_at: Option<Instant>,
     /// When the list was last read, successfully or not.
     checked_at: Instant,
 }
@@ -98,13 +133,22 @@ impl Entry {
     fn of(&self, workspace: &Workspace) -> bool {
         self.base_url == workspace.base_url && self.key == workspace.key
     }
+
+    /// The list, while it is within [`KEEP_FOR`] of the last read that
+    /// succeeded.
+    fn in_use(&self) -> Option<&WorkspaceLeaders> {
+        self.list
+            .as_ref()
+            .filter(|_| self.read_at.is_some_and(|at| at.elapsed() < KEEP_FOR))
+    }
 }
 
 /// The leaders of the workspace this computer is in.
 #[derive(Default)]
 pub struct Cache {
     entry: Mutex<Option<Entry>>,
-    /// One read at a time; lookups behind it use its result.
+    /// One read at a time; lookups behind it use its result, and a read
+    /// for a starting agent never queues behind it.
     reading: tokio::sync::Mutex<()>,
 }
 
@@ -118,15 +162,23 @@ impl Cache {
         self.entry()
             .as_ref()
             .filter(|entry| entry.of(workspace) && entry.checked_at.elapsed() < REFRESH_AFTER)
-            .map(|entry| entry.list.clone().unwrap_or_default())
+            .map(|entry| entry.in_use().cloned().unwrap_or_default())
     }
 
-    /// The last list read for `workspace`, fresh or not.
+    /// Whether the list for `workspace` was read, successfully or not,
+    /// less than `within` ago.
+    fn checked_within(&self, workspace: &Workspace, within: Duration) -> bool {
+        self.entry()
+            .as_ref()
+            .is_some_and(|entry| entry.of(workspace) && entry.checked_at.elapsed() < within)
+    }
+
+    /// The list in use for `workspace`, fresh or not.
     pub fn snapshot(&self, workspace: &Workspace) -> Option<WorkspaceLeaders> {
         self.entry()
             .as_ref()
             .filter(|entry| entry.of(workspace))
-            .and_then(|entry| entry.list.clone())
+            .and_then(|entry| entry.in_use().cloned())
     }
 
     /// Whether the list for `workspace` is due to be read.
@@ -134,22 +186,30 @@ impl Cache {
         self.fresh(workspace).is_none()
     }
 
-    /// Records a read for `workspace`: `read` replaces the list, a failed
-    /// one keeps it. Returns the list now in use.
-    fn record(&self, workspace: &Workspace, read: Option<WorkspaceLeaders>) -> WorkspaceLeaders {
+    /// Records a read for `workspace`: a list replaces the list, a refusal
+    /// drops it, a failed read keeps it (and when it last succeeded).
+    /// Returns the list now in use.
+    fn record(&self, workspace: &Workspace, read: Read) -> WorkspaceLeaders {
         let mut entry = self.entry();
-        let kept = entry
-            .take()
-            .filter(|entry| entry.of(workspace))
-            .and_then(|entry| entry.list);
-        let list = read.or(kept);
-        *entry = Some(Entry {
+        let now = Instant::now();
+        let (list, read_at) = match read {
+            Read::List(list) => (Some(list), Some(now)),
+            Read::Refused => (None, None),
+            Read::Failed => entry
+                .take()
+                .filter(|entry| entry.of(workspace))
+                .map_or((None, None), |entry| (entry.list, entry.read_at)),
+        };
+        let recorded = Entry {
             base_url: workspace.base_url.clone(),
             key: workspace.key.clone(),
-            list: list.clone(),
-            checked_at: Instant::now(),
-        });
-        list.unwrap_or_default()
+            list,
+            read_at,
+            checked_at: now,
+        };
+        let in_use = recorded.in_use().cloned().unwrap_or_default();
+        *entry = Some(recorded);
+        in_use
     }
 
     /// The list for `workspace`, read again first when it is due.
@@ -165,24 +225,36 @@ impl Cache {
         self.record(workspace, read)
     }
 
-    /// Reads the list for `workspace` again now, fresh or not.
-    pub async fn reread(&self, workspace: &Workspace, app_data_dir: &Path) -> WorkspaceLeaders {
-        let _reading = self.reading.lock().await;
+    /// Reads the list for `workspace` again now, fresh or not, unless it
+    /// was read less than [`REREAD_AFTER`] ago or a read is in flight,
+    /// whose result serves: a burst of starting agents makes one read, and
+    /// a lookup never waits behind more than one.
+    pub async fn reread(&self, workspace: &Workspace, app_data_dir: &Path) {
+        if self.checked_within(workspace, REREAD_AFTER) {
+            return;
+        }
+        let Ok(_reading) = self.reading.try_lock() else {
+            return;
+        };
+        if self.checked_within(workspace, REREAD_AFTER) {
+            return;
+        }
         let read = fetch(workspace, app_data_dir).await;
-        self.record(workspace, read)
+        self.record(workspace, read);
     }
 
     /// Takes `list` as just read for `workspace`.
     #[cfg(test)]
     pub(crate) fn set(&self, workspace: &Workspace, list: WorkspaceLeaders) {
-        self.record(workspace, Some(list));
+        self.record(workspace, Read::List(list));
     }
 
-    /// Makes the list for `workspace` `by` older.
+    /// Makes the list for `workspace`, and its last good read, `by` older.
     #[cfg(test)]
     pub(crate) fn age(&self, by: Duration) {
         if let Some(entry) = self.entry().as_mut() {
             entry.checked_at = entry.checked_at.checked_sub(by).unwrap_or(entry.checked_at);
+            entry.read_at = entry.read_at.map(|at| at.checked_sub(by).unwrap_or(at));
         }
     }
 }
@@ -323,27 +395,109 @@ mod tests {
         assert!(cache.due(&ws));
         assert_eq!(cache.snapshot(&ws), None);
         // A first read that fails leaves no list, and none is shown.
-        assert_eq!(cache.record(&ws, None), WorkspaceLeaders::default());
+        assert_eq!(cache.record(&ws, Read::Failed), WorkspaceLeaders::default());
         assert!(!cache.due(&ws));
         assert_eq!(cache.snapshot(&ws), None);
         cache.age(REFRESH_AFTER);
         assert!(cache.due(&ws));
         let leaders = list(&[("lead", "agt_lead")]);
-        assert_eq!(cache.record(&ws, Some(leaders.clone())), leaders);
+        assert_eq!(cache.record(&ws, Read::List(leaders.clone())), leaders);
         assert_eq!(cache.fresh(&ws), Some(leaders.clone()));
         cache.age(REFRESH_AFTER - Duration::from_secs(1));
         assert_eq!(cache.fresh(&ws), Some(leaders.clone()));
         cache.age(Duration::from_secs(1));
         assert_eq!(cache.fresh(&ws), None);
         // A failed read keeps the last list, fresh again.
-        assert_eq!(cache.record(&ws, None), leaders);
+        assert_eq!(cache.record(&ws, Read::Failed), leaders);
         assert_eq!(cache.fresh(&ws), Some(leaders.clone()));
         // Another workspace never sees it.
         let other = workspace("rk_live_b");
         assert!(cache.due(&other));
         assert_eq!(cache.snapshot(&other), None);
-        assert_eq!(cache.record(&other, None), WorkspaceLeaders::default());
+        assert_eq!(
+            cache.record(&other, Read::Failed),
+            WorkspaceLeaders::default()
+        );
         assert_eq!(cache.snapshot(&ws), None);
+    }
+
+    // Failed reads keep the list only for `KEEP_FOR` after the last read
+    // that succeeded: they do not make it younger. After that no one is a
+    // leader, until a read succeeds again.
+    #[test]
+    fn failed_reads_keep_the_list_only_for_a_while_after_the_last_good_read() {
+        let cache = Cache::default();
+        let ws = workspace("rk_live_a");
+        let leaders = list(&[("lead", "agt_lead")]);
+        cache.record(&ws, Read::List(leaders.clone()));
+        for _ in 0..9 {
+            cache.age(REFRESH_AFTER);
+            assert_eq!(cache.record(&ws, Read::Failed), leaders);
+        }
+        // Nine minutes on, a failed read does not reset the clock.
+        let half = (KEEP_FOR - REFRESH_AFTER * 9) / 2;
+        cache.age(half);
+        assert_eq!(cache.snapshot(&ws), Some(leaders.clone()));
+        assert_eq!(cache.record(&ws, Read::Failed), leaders);
+        assert_eq!(cache.fresh(&ws), Some(leaders.clone()));
+        cache.age(half);
+        // Expired while still fresh: the lookup sees no leaders.
+        assert_eq!(cache.fresh(&ws), Some(WorkspaceLeaders::default()));
+        assert_eq!(cache.snapshot(&ws), None);
+        assert_eq!(cache.record(&ws, Read::Failed), WorkspaceLeaders::default());
+        assert_eq!(cache.snapshot(&ws), None);
+        assert_eq!(cache.record(&ws, Read::List(leaders.clone())), leaders);
+        assert_eq!(cache.snapshot(&ws), Some(leaders));
+    }
+
+    // 401, 403 and 404 drop the list at once; anything else keeps it.
+    #[test]
+    fn a_refusal_drops_the_list_at_once() {
+        for status in [401, 403, 404] {
+            assert!(refusal(Some(status)), "{status}");
+        }
+        for status in [None, Some(400), Some(429), Some(500), Some(503)] {
+            assert!(!refusal(status), "{status:?}");
+        }
+        let cache = Cache::default();
+        let ws = workspace("rk_live_a");
+        let leaders = list(&[("lead", "agt_lead")]);
+        cache.record(&ws, Read::List(leaders.clone()));
+        assert_eq!(
+            cache.record(&ws, Read::Refused),
+            WorkspaceLeaders::default()
+        );
+        assert_eq!(cache.snapshot(&ws), None);
+        assert!(!cache.due(&ws));
+        // A failed read after a refusal brings nothing back.
+        cache.age(REFRESH_AFTER);
+        assert_eq!(cache.record(&ws, Read::Failed), WorkspaceLeaders::default());
+    }
+
+    // A read for a starting agent is skipped within `REREAD_AFTER` of the
+    // last read, and never waits behind one in flight.
+    #[tokio::test]
+    async fn a_reread_is_coalesced_and_never_queues() {
+        let cache = Cache::default();
+        let ws = workspace("rk_live_a");
+        let dir = tempfile::tempdir().unwrap();
+        let leaders = list(&[("lead", "agt_lead")]);
+        cache.record(&ws, Read::List(leaders.clone()));
+        cache.age(REREAD_AFTER - Duration::from_secs(1));
+        cache.reread(&ws, dir.path()).await;
+        assert!(!cache.checked_within(&ws, REREAD_AFTER - Duration::from_secs(1)));
+        // A read in flight: the reread returns at once, reading nothing.
+        cache.age(Duration::from_secs(1));
+        let reading = cache.reading.lock().await;
+        tokio::time::timeout(Duration::from_millis(500), cache.reread(&ws, dir.path()))
+            .await
+            .expect("a reread never waits for a read in flight");
+        assert!(!cache.checked_within(&ws, REREAD_AFTER));
+        drop(reading);
+        // Due and free, it reads (here it fails, keeping the list).
+        cache.reread(&ws, dir.path()).await;
+        assert!(cache.checked_within(&ws, REREAD_AFTER));
+        assert_eq!(cache.snapshot(&ws), Some(leaders));
     }
 
     #[tokio::test]

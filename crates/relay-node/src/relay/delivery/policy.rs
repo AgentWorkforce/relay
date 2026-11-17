@@ -600,6 +600,38 @@ pub fn with_leader_line(text: &str, name: &str) -> String {
     }
 }
 
+/// Whether `text` is framed as a workspace leader's: a native attribution
+/// with [`leader_line`] right under it. The line anywhere else, in the body
+/// included, is not.
+pub fn leader_framed(text: &str) -> bool {
+    let mut lines = text.split('\n');
+    lines
+        .next()
+        .is_some_and(|first| first.starts_with(NATIVE_HEADER))
+        && lines.next().is_some_and(|second| {
+            second
+                .strip_prefix("[leader: @")
+                .and_then(|rest| rest.split_once(" leads this work; "))
+                .is_some_and(|(name, _)| second == leader_line(name))
+        })
+}
+
+/// `text` framed as a peer's when it was framed as a leader's
+/// ([`leader_framed`]): the peer attribution, without the leader line. Any
+/// other text as it is.
+pub fn without_leader_line(text: &str) -> String {
+    if !leader_framed(text) {
+        return text.to_string();
+    }
+    let (attribution, rest) = text.split_once('\n').unwrap_or((text, ""));
+    let rest = rest.split_once('\n').map_or("", |(_, rest)| rest);
+    let attribution = attribution.replacen(NATIVE_HEADER, PEER_HEADER, 1);
+    match rest.is_empty() && !text.ends_with('\n') {
+        true => attribution,
+        false => format!("{attribution}\n{rest}"),
+    }
+}
+
 /// Whether `text` is framed as its owner's: a relay attribution with
 /// [`OWNER_LINE`] right under it. The line anywhere else, in the body
 /// included, is not.
