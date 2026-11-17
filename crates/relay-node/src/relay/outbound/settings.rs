@@ -235,8 +235,7 @@ fn widens(
 ) -> bool {
     // `true`, or `"on"` for a setting read and written as `"on"`/`"off"`.
     let on = |value: Option<&Value>| {
-        matches!(value, Some(Value::Bool(true)))
-            || value.and_then(Value::as_str) == Some("on")
+        matches!(value, Some(Value::Bool(true))) || value.and_then(Value::as_str) == Some("on")
     };
     let now = observed(values, key, asked);
     if PERSON_TURNS_ON.contains(&key) {

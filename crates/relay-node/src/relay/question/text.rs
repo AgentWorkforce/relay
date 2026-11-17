@@ -167,8 +167,64 @@ pub fn is_reference(word: &str) -> bool {
         && word[1..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// The longest answer typed into a session, in characters.
+pub const MAX_ANSWER: usize = 4096;
+
+/// `text` made safe to type into a session: escape sequences (CSI, OSC and
+/// the rest) dropped, then on one line (`policy::one_line`: control, format
+/// and line-separator characters become spaces, brackets parentheses,
+/// whitespace runs collapse), and at most `MAX_ANSWER` characters.
+pub fn clean(text: &str) -> String {
+    let mut plain = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => match chars.next() {
+                // CSI: parameters and intermediates up to a final byte.
+                Some('[') => {
+                    for c in chars.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                // OSC, DCS, SOS, PM, APC: up to BEL or ST (ESC \).
+                Some(']' | 'P' | 'X' | '^' | '_') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\u{7}' || c == '\u{9c}' {
+                            break;
+                        }
+                        if c == '\u{1b}' {
+                            chars.next_if_eq(&'\\');
+                            break;
+                        }
+                    }
+                }
+                // Any other escape is two characters long.
+                _ => {}
+            },
+            // C1 CSI.
+            '\u{9b}' => {
+                for c in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            c => plain.push(c),
+        }
+    }
+    let line = crate::relay::delivery::policy::one_line(&plain);
+    if line.chars().count() <= MAX_ANSWER {
+        return line;
+    }
+    let mut cut: String = line.chars().take(MAX_ANSWER - 1).collect();
+    cut.push('…');
+    cut
+}
+
 /// `answer <ref> <rest>` or `answer <ref>: <rest>` (the verb in any case):
-/// the reference, lower case, and the rest, trimmed (empty when none).
+/// the reference, lower case, and the rest, `clean`ed (empty when none).
 pub fn parse_answer(text: &str) -> Option<(String, String)> {
     let text = text.trim_start();
     let (verb, rest) = text.split_once(char::is_whitespace)?;
@@ -185,7 +241,7 @@ pub fn parse_answer(text: &str) -> Option<(String, String)> {
     }
     let rest = rest.trim_start();
     let rest = rest.strip_prefix(':').unwrap_or(rest).trim();
-    Some((reference.to_ascii_lowercase(), rest.to_string()))
+    Some((reference.to_ascii_lowercase(), clean(rest)))
 }
 
 /// What a reply chose for one question: the labels (or the sender's own
@@ -235,9 +291,10 @@ fn resolve_one(question: &Question, part: &str) -> Result<Answer, String> {
                 question.options.len()
             ));
         }
+        let words = clean(part);
         return Ok(Answer {
-            values: vec![part.to_string()],
-            shown: part.to_string(),
+            values: vec![words.clone()],
+            shown: words,
         });
     };
     if numbers.len() > 1 && !question.multi {
@@ -287,7 +344,7 @@ pub fn answer_line(reference: &str, questions: &[Question], answers: &[Answer]) 
             .collect::<Vec<_>>()
             .join("; ")
     };
-    format!("[Answer to question {reference}] {shown}")
+    format!("[Answer to question {reference}] {}", clean(&shown))
 }
 
 /// The line a session that is still running is given when its question

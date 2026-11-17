@@ -4,9 +4,17 @@
 //! (`crate::relay::question`) and the hook refuses the tool call with the
 //! reason this returns, so the session keeps working; otherwise the hook
 //! lets the dialog through. An error also lets it through.
+//!
+//! The hook waits for this route at most its own timeout, which Agent Relay
+//! installs as 30 s (`claude::session_hook::QUESTION_HOOK_TIMEOUT`); a
+//! Claude Code that gave up on the hook would show the dialog while the
+//! question was also sent. So the route answers within `question::ROUTE_LIMIT`
+//! (20 s): past it, it answers `{"escalated":false,"reason":…}`, the dialog
+//! is shown, and a message that may have gone out is kept unsent, so a late
+//! answer to it is refused.
 
 use super::{payload, Outbound, OutboundError, Purpose};
-use crate::relay::question::{text, Asked, Via};
+use crate::relay::question::{self, text, Asked, Via};
 use crate::relay::store::SessionKind;
 use serde_json::{Map, Value};
 
@@ -46,7 +54,7 @@ impl Outbound {
         };
         Ok(self
             .core
-            .escalate_question(&registration, asked)
+            .escalate_question_within(&registration, asked, question::ROUTE_LIMIT)
             .await
             .response())
     }

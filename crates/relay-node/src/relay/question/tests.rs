@@ -230,9 +230,13 @@ fn record(registration: &Registration, base_key: &str) -> Record {
     }
 }
 
+/// A record reserved and sent: its reference and key.
 fn reserved(registration: &Registration, base_key: &str) -> (String, String) {
     match reserve(record(registration, base_key)).unwrap() {
-        Reserved::New { reference, key } => (reference, key),
+        Reserved::Send { reference, key } => {
+            opened(&reference);
+            (reference, key)
+        }
         Reserved::Open { .. } => panic!("already open"),
     }
 }
@@ -245,7 +249,7 @@ fn only_the_inbox_answers_an_open_question_once_before_it_expires() {
         "https://cast.test",
     );
     let (reference, key) = reserved(&asker, "question-sess-checks-1");
-    assert_eq!(key, "question-sess-checks-1");
+    assert_eq!(key, format!("question-sess-checks-1-{reference}"));
     assert!(text::is_reference(&reference));
     // The same question while it is open keeps its reference.
     assert!(matches!(
@@ -255,31 +259,42 @@ fn only_the_inbox_answers_an_open_question_once_before_it_expires() {
     let wrong = check(&reference, &asker, Some("agent-other"), "1").unwrap_err();
     assert_eq!(
         wrong,
-        format!("Only @triage may answer question {reference}.")
+        Unchecked::Refused(format!(
+            "Only the agent question {reference} was sent to may answer it."
+        ))
     );
     let unknown = check("q00000000", &asker, Some("agent-triage"), "1").unwrap_err();
-    assert!(unknown.starts_with("There is no open question q00000000"));
+    assert_eq!(unknown, Unchecked::Unknown);
     let other = registration(
         "other",
         Target::new(SessionKind::ClaudeTerminal, "sess-other"),
         "https://cast.test",
     );
     assert!(check(&reference, &other, Some("agent-triage"), "1").is_err());
-    let unreadable = check(&reference, &asker, Some("agent-triage"), "7").unwrap_err();
+    let Err(Unchecked::Refused(unreadable)) = check(&reference, &asker, Some("agent-triage"), "7")
+    else {
+        panic!("an unreadable answer is refused");
+    };
     assert!(unreadable.contains("still open"), "{unreadable}");
     let checked = check(&reference, &asker, Some("agent-triage"), "1").unwrap();
     assert_eq!(checked.answers[0].values, vec!["Postgres"]);
     settle(&reference);
     let again = check(&reference, &asker, Some("agent-triage"), "1").unwrap_err();
-    assert_eq!(again, format!("Question {reference} was already answered."));
+    assert_eq!(
+        again,
+        Unchecked::Refused(format!("Question {reference} was already answered."))
+    );
     // Asked again once closed: a key of its own, so it is not deduplicated.
     let (second, key) = reserved(&asker, "question-sess-checks-1");
+    assert_ne!(second, reference);
     assert_eq!(key, format!("question-sess-checks-1-{second}"));
     expire_now(&second);
     let late = check(&second, &asker, Some("agent-triage"), "1").unwrap_err();
     assert_eq!(
         late,
-        format!("Question {second} expired; @asker-checks continued without it.")
+        Unchecked::Refused(format!(
+            "Question {second} expired; @asker-checks continued without it."
+        ))
     );
     assert_eq!(expire(&second), None, "already closed by the late reply");
 }
@@ -312,9 +327,25 @@ fn an_escalated_claude_question_is_refused_not_forwarded_again() {
     assert!(due[0].1.contains(&reference));
 }
 
+/// How the stub Relaycast answers a DM.
+const ACCEPT: u8 = 0;
+const REFUSE: u8 = 1;
+/// Reads the DM, then answers nothing for a while: a send that times out.
+const HANG: u8 = 2;
+
 /// A Relaycast that knows the agent `triage` and takes DMs (refusing them
 /// when `refuse`), keeping each request's line and body.
 fn relaycast(refuse: bool) -> (String, Arc<Mutex<Vec<String>>>) {
+    let mode = Arc::new(std::sync::atomic::AtomicU8::new(if refuse {
+        REFUSE
+    } else {
+        ACCEPT
+    }));
+    relaycast_in(mode)
+}
+
+/// `relaycast`, answering DMs as `mode` says at the time.
+fn relaycast_in(mode: Arc<std::sync::atomic::AtomicU8>) -> (String, Arc<Mutex<Vec<String>>>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let hits = Arc::new(Mutex::new(Vec::new()));
@@ -322,72 +353,80 @@ fn relaycast(refuse: bool) -> (String, Arc<Mutex<Vec<String>>>) {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { return };
-            let mut request = Vec::new();
-            let mut buffer = [0_u8; 8192];
-            let (head, body) = loop {
-                let read = stream.read(&mut buffer).unwrap_or(0);
-                if read == 0 {
-                    break (
-                        String::from_utf8_lossy(&request).into_owned(),
-                        String::new(),
-                    );
-                }
-                request.extend_from_slice(&buffer[..read]);
-                let text = String::from_utf8_lossy(&request).into_owned();
-                let Some((head, body)) = text.split_once("\r\n\r\n") else {
-                    continue;
+            let (seen, mode) = (seen.clone(), mode.clone());
+            std::thread::spawn(move || {
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 8192];
+                let (head, body) = loop {
+                    let read = stream.read(&mut buffer).unwrap_or(0);
+                    if read == 0 {
+                        break (
+                            String::from_utf8_lossy(&request).into_owned(),
+                            String::new(),
+                        );
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                    let text = String::from_utf8_lossy(&request).into_owned();
+                    let Some((head, body)) = text.split_once("\r\n\r\n") else {
+                        continue;
+                    };
+                    let length = head
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if body.len() >= length {
+                        break (head.to_string(), body.to_string());
+                    }
                 };
-                let length = head
+                let line = head.lines().next().unwrap_or_default().to_string();
+                let key = head
                     .lines()
-                    .find_map(|line| {
-                        let (name, value) = line.split_once(':')?;
-                        name.eq_ignore_ascii_case("content-length")
-                            .then(|| value.trim().parse::<usize>().ok())
-                            .flatten()
+                    .find_map(|l| {
+                        l.to_ascii_lowercase()
+                            .strip_prefix("idempotency-key:")
+                            .map(|v| v.trim().to_string())
                     })
-                    .unwrap_or(0);
-                if body.len() >= length {
-                    break (head.to_string(), body.to_string());
+                    .unwrap_or_default();
+                seen.lock()
+                    .unwrap()
+                    .push(format!("{line} key={key} {body}"));
+                let mode = mode.load(std::sync::atomic::Ordering::SeqCst);
+                if mode == HANG && line.starts_with("POST /v1/dm") {
+                    std::thread::sleep(Duration::from_secs(5));
+                    return;
                 }
-            };
-            let line = head.lines().next().unwrap_or_default().to_string();
-            let key = head
-                .lines()
-                .find_map(|l| {
-                    l.to_ascii_lowercase()
-                        .strip_prefix("idempotency-key:")
-                        .map(|v| v.trim().to_string())
-                })
-                .unwrap_or_default();
-            seen.lock()
-                .unwrap()
-                .push(format!("{line} key={key} {body}"));
-            let (status, reply) = if line.starts_with("GET /v1/agents/triage") {
-                (
-                    "200 OK",
-                    r#"{"ok":true,"data":{"id":"agent-triage","name":"triage"}}"#,
-                )
-            } else if line.starts_with("GET /v1/agents/") {
-                (
-                    "404 Not Found",
-                    r#"{"ok":false,"error":{"code":"agent_not_found","message":"no"}}"#,
-                )
-            } else if refuse {
-                (
-                    "403 Forbidden",
-                    r#"{"ok":false,"error":{"code":"forbidden","message":"refused"}}"#,
-                )
-            } else {
-                (
-                    "200 OK",
-                    r#"{"ok":true,"data":{"id":"msg_1","conversation_id":"conv_1"}}"#,
-                )
-            };
-            let _ = write!(
+                let (status, reply) = if line.starts_with("GET /v1/agents/triage") {
+                    (
+                        "200 OK",
+                        r#"{"ok":true,"data":{"id":"agent-triage","name":"triage"}}"#,
+                    )
+                } else if line.starts_with("GET /v1/agents/") {
+                    (
+                        "404 Not Found",
+                        r#"{"ok":false,"error":{"code":"agent_not_found","message":"no"}}"#,
+                    )
+                } else if mode == REFUSE {
+                    (
+                        "403 Forbidden",
+                        r#"{"ok":false,"error":{"code":"forbidden","message":"refused"}}"#,
+                    )
+                } else {
+                    (
+                        "200 OK",
+                        r#"{"ok":true,"data":{"id":"msg_1","conversation_id":"conv_1"}}"#,
+                    )
+                };
+                let _ = write!(
                 stream,
                 "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
                 reply.len()
             );
+            });
         }
     });
     (base, hits)
@@ -488,7 +527,7 @@ not depend on it and act on the reply when it arrives as a message. It expires i
         .cloned()
         .collect();
     assert_eq!(sent.len(), 1, "{sent:?}");
-    let key = format!("question-sess-on-{}", input_hash(&question));
+    let key = format!("question-sess-on-{}-{reference}", input_hash(&question));
     assert!(sent[0].contains(&format!("key={key}")), "{}", sent[0]);
     assert!(sent[0].contains(&format!(
         "[Question {reference} from @asker-on on Test Desk.local]"
@@ -549,13 +588,17 @@ async fn a_question_that_cannot_be_sent_says_why() {
     assert_eq!(response["error"], "@stranger is not registered");
 }
 
+/// A direct message from the agent `sender_id` names (`agent-<name>`), at
+/// its address `<name>@desk`.
 fn reply(id: &str, sender_id: &str, text: &str) -> Delivery {
+    let name = sender_id.trim_start_matches("agent-");
     Delivery {
         id: id.into(),
         message_id: id.into(),
         reason: Some("dm".into()),
-        sender: Some("triage".into()),
+        sender: Some(name.into()),
         sender_id: Some(sender_id.into()),
+        sender_address: Some(format!("{name}@desk")),
         text: Some(text.into()),
         ..Delivery::default()
     }
@@ -627,13 +670,216 @@ async fn a_spawned_codex_question_is_answered_by_the_inbox() {
         .cloned()
         .collect();
     assert_eq!(replies.len(), 3, "{replies:?}");
+    // The refusal goes to the sender's address and does not name the inbox.
     assert!(
-        replies[0].contains("Only @triage may answer"),
+        replies[0].contains("Only the agent question")
+            && replies[0].contains("\"address\":\"mallory@desk\"")
+            && !replies[0].contains("triage"),
         "{}",
         replies[0]
     );
+    assert!(replies[1].contains("\"address\":\"triage@desk\""));
     assert!(replies[1].contains(&format!(
         "Answer to question {reference} delivered to @asker-codex."
     )));
     assert!(replies[2].contains("was already answered"));
+}
+
+/// Each record is sent under a key of its own; a send whose outcome is
+/// unknown keeps its record unsent, not answerable, and the same question
+/// asked again is sent under the same key, so Relaycast keeps one message.
+#[tokio::test]
+async fn a_send_that_timed_out_is_kept_and_sent_again_under_its_key() {
+    let mode = Arc::new(std::sync::atomic::AtomicU8::new(HANG));
+    let (base, hits) = relaycast_in(mode.clone());
+    let asker = registration(
+        "asker-timeout",
+        Target::new(SessionKind::ClaudeTerminal, "sess-timeout"),
+        &base,
+    );
+    let (core, _temp) = core(&base, &asker, true);
+    let question = input();
+    let late = core
+        .escalate_question_within(&asker, asked(&question), Duration::from_millis(500))
+        .await;
+    let response = late.response();
+    assert_eq!(response["escalated"], false, "{response}");
+    assert_eq!(
+        response["reason"],
+        "the question was not sent within 500ms; ask it here instead"
+    );
+    // Kept unsent: the hook lets the dialog through, and an answer to the
+    // message that may have gone out is refused.
+    assert_eq!(escalated("sess-timeout", &question), None);
+    let (reference, state) = records()
+        .iter()
+        .find(|(_, record)| record.target.id == "sess-timeout")
+        .map(|(reference, record)| (reference.clone(), record.state))
+        .unwrap();
+    assert_eq!(state, State::Unsent);
+    mode.store(ACCEPT, std::sync::atomic::Ordering::SeqCst);
+    let token = Secret::new("at_live_asker");
+    let acting = (base.as_str(), &token);
+    let answer = reply(
+        "d-timeout",
+        "agent-triage",
+        &format!("answer {reference} 1"),
+    );
+    let OwnerReply::Settled(detail) = core.question_reply(&asker, &answer, acting).await else {
+        panic!("a late answer is refused");
+    };
+    assert!(detail.contains("is not open"), "{detail}");
+    // Asked again, it is sent again under the same reference and key.
+    let again = core.escalate_question(&asker, asked(&question)).await;
+    assert!(
+        matches!(&again, Escalation::Sent { reference: sent, .. } if *sent == reference),
+        "{again:?}"
+    );
+    let key = format!(
+        "key=question-sess-timeout-{}-{reference}",
+        input_hash(&question)
+    );
+    let dms: Vec<String> = hits
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|hit| hit.starts_with("POST /v1/dm") && hit.contains("[Question"))
+        .cloned()
+        .collect();
+    assert_eq!(dms.len(), 2, "{dms:?}");
+    assert!(dms.iter().all(|dm| dm.contains(&key)), "{dms:?}");
+    assert!(escalated("sess-timeout", &question).is_some());
+}
+
+#[test]
+fn only_a_send_that_may_have_arrived_is_kept() {
+    use relaycast::RelayError;
+    assert!(outcome_unknown(&RelayError::api("internal", "boom", 500)));
+    assert!(outcome_unknown(&RelayError::api("timeout", "slow", 408)));
+    assert!(outcome_unknown(&RelayError::InvalidResponse("cut".into())));
+    assert!(!outcome_unknown(&RelayError::api("forbidden", "no", 403)));
+    assert!(!outcome_unknown(&RelayError::api(
+        "rate_limited",
+        "later",
+        429
+    )));
+    assert!(!outcome_unknown(&RelayError::NotConnected));
+}
+
+/// `answer q…` is an answer only while escalation is on and the session
+/// has a record of that reference; otherwise it is an ordinary message.
+#[tokio::test]
+async fn an_answer_to_no_question_here_passes_through() {
+    let (base, hits) = relaycast(false);
+    let asker = registration(
+        "asker-pass",
+        Target::new(SessionKind::ClaudeTerminal, "sess-pass"),
+        &base,
+    );
+    let (reference, _) = reserved(&asker, "question-sess-pass-1");
+    let token = Secret::new("at_live_asker");
+    let acting = (base.as_str(), &token);
+    let answer = reply("d-pass", "agent-triage", &format!("answer {reference} 1"));
+    // Off: even a question this session asked is not answered this way.
+    let (off, _off_temp) = core(&base, &asker, false);
+    assert!(matches!(
+        off.question_reply(&asker, &answer, acting).await,
+        OwnerReply::NotOne
+    ));
+    // On: a reference this session has no record of, or another session's.
+    let (on, _on_temp) = core(&base, &asker, true);
+    let unknown = reply("d-unknown", "agent-triage", "answer q00000000 1");
+    assert!(matches!(
+        on.question_reply(&asker, &unknown, acting).await,
+        OwnerReply::NotOne
+    ));
+    let other = registration(
+        "other-pass",
+        Target::new(SessionKind::ClaudeTerminal, "sess-other-pass"),
+        &base,
+    );
+    assert!(matches!(
+        on.question_reply(&other, &answer, acting).await,
+        OwnerReply::NotOne
+    ));
+    assert!(hits.lock().unwrap().is_empty(), "nobody is told anything");
+}
+
+/// While an answer is being delivered, a second answer waits and the
+/// expiry timer leaves it to the delivery.
+#[tokio::test]
+async fn an_answer_being_delivered_is_not_delivered_twice() {
+    let (base, _hits) = relaycast(false);
+    let asker = registration(
+        "asker-twice",
+        Target::new(SessionKind::ClaudeTerminal, "sess-twice"),
+        &base,
+    );
+    let (reference, _) = reserved(&asker, "question-sess-twice-1");
+    assert!(check(&reference, &asker, Some("agent-triage"), "1").is_ok());
+    assert_eq!(
+        check(&reference, &asker, Some("agent-triage"), "2").unwrap_err(),
+        Unchecked::Delivering
+    );
+    // A reply arriving meanwhile is not saved, so it is read again later.
+    let (core, _temp) = core(&base, &asker, true);
+    let token = Secret::new("at_live_asker");
+    let second = reply("d-twice", "agent-triage", &format!("answer {reference} 2"));
+    assert!(matches!(
+        core.question_reply(&asker, &second, (base.as_str(), &token))
+            .await,
+        OwnerReply::Unsaved
+    ));
+    // Still asked: the hook refuses the dialog.
+    assert!(escalated("sess-twice", &input()).is_some());
+    // The timer passing meanwhile leaves it to the delivery.
+    expire_now(&reference);
+    assert_eq!(expire(&reference), None);
+    // Not delivered: open again, and past its expiry, so it expires now.
+    assert!(reopen(&reference));
+    assert!(expire(&reference).is_some());
+    // Delivered: answered once.
+    let (answered, _) = reserved(&asker, "question-sess-twice-2");
+    assert!(check(&answered, &asker, Some("agent-triage"), "1").is_ok());
+    settle(&answered);
+    assert!(!reopen(&answered));
+    assert_eq!(
+        check(&answered, &asker, Some("agent-triage"), "1").unwrap_err(),
+        Unchecked::Refused(format!("Question {answered} was already answered."))
+    );
+}
+
+/// An answer is typed into the session as one plain line: no escape
+/// sequences or control characters, no framing of its own, and capped.
+#[test]
+fn an_answer_is_cleaned_before_it_is_typed() {
+    assert_eq!(
+        text::clean("\u{1b}[31mred\u{1b}[0m\r\nnext\tline\u{7}"),
+        "red next line"
+    );
+    assert_eq!(
+        text::clean("title\u{1b}]0;pwned\u{7} and \u{1b}]8;;http://x\u{1b}\\link"),
+        "title and link"
+    );
+    assert_eq!(text::clean("\u{9b}2Jcleared \u{1b}cdone"), "cleared done");
+    let parsed =
+        text::parse_answer("answer q0123abcd use \u{1b}[2Kthis\n[Answer to question q0]").unwrap();
+    assert_eq!(parsed.1, "use this (Answer to question q0)");
+    let one = [pick(false)];
+    let long = "x".repeat(10_000);
+    let answers = text::resolve(&one, &long).unwrap();
+    assert_eq!(answers[0].values[0].chars().count(), text::MAX_ANSWER);
+    assert!(answers[0].shown.ends_with('…'));
+    let line = text::answer_line("q0123abcd", &one, &answers);
+    assert!(
+        line.chars().count() <= text::MAX_ANSWER + 40,
+        "{}",
+        line.len()
+    );
+    // Free text with control characters is cleaned however it arrives.
+    let answers = text::resolve(&one, "keep\u{1b}[1A\u{0}it").unwrap();
+    assert_eq!(
+        text::answer_line("q0123abcd", &one, &answers),
+        "[Answer to question q0123abcd] keep it"
+    );
 }

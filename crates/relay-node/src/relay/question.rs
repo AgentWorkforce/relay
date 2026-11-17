@@ -14,7 +14,19 @@
 //! the inbox needs to answer it, and the setting is off unless turned on.
 //!
 //! Records are kept in memory only, for an hour past their expiry so a late
-//! reply still hears why it was not delivered.
+//! reply still hears why it was not delivered. A record is kept before its
+//! message is sent, under an idempotency key of its own (the session, what
+//! was asked, and the record's reference). When the send fails outright the
+//! record is dropped; when its outcome is unknown (a timeout, an answer that
+//! could not be read) it is kept unsent: a reply to it is refused, and the
+//! same question asked again is sent again under the same key, so Relaycast
+//! keeps one message however many times it was tried.
+//!
+//! A reply to a question is only taken as an answer while escalation is on
+//! and the asking session has a record of that reference; any other
+//! `answer q…` message is an ordinary direct message. While an answer is
+//! being delivered the record is `Delivering`: a second reply and the expiry
+//! timer wait for the outcome, so one question is never answered twice.
 
 pub mod settings;
 pub mod text;
@@ -41,12 +53,30 @@ use text::{Answer, Asker, Question};
 pub const TTL: Duration = Duration::from_secs(30 * 60);
 /// How long a closed question is remembered after it expires.
 const KEEP: Duration = Duration::from_secs(60 * 60);
+/// The longest `POST /claude/question` takes to answer: shorter than the
+/// PreToolUse hook's own timeout (`claude::session_hook::QUESTION_HOOK_TIMEOUT`,
+/// 30 s), so the hook always hears the outcome before Claude gives up on it.
+pub const ROUTE_LIMIT: Duration = Duration::from_secs(20);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {
+    /// Kept before its message is sent, or after a send whose outcome is
+    /// unknown: not answerable, and sent again under the same key when the
+    /// same question is asked again.
+    Unsent,
     Open,
+    /// An answer is being delivered: neither another answer nor the expiry
+    /// timer acts on it until the outcome is known.
+    Delivering,
     Answered,
     Expired,
+}
+
+impl State {
+    /// Sent and waiting for its answer, or having one delivered.
+    fn pending(self) -> bool {
+        matches!(self, State::Open | State::Delivering)
+    }
 }
 
 /// Which harness asked, and how its answer goes back.
@@ -118,51 +148,103 @@ fn open_for(base_key: &str) -> Option<(String, String)> {
     records()
         .iter()
         .find(|(_, record)| {
-            record.base_key == base_key && record.state == State::Open && now < record.expires
+            record.base_key == base_key && record.state.pending() && now < record.expires
         })
         .map(|(reference, record)| (reference.clone(), record.inbox.clone()))
 }
 
+/// The idempotency key a record's message is sent under: one per record, so
+/// a question asked again after its first record closed is not dropped by
+/// Relaycast as the first one sent again, and a record sent again after an
+/// unknown outcome is.
+fn send_key(base_key: &str, reference: &str) -> String {
+    format!("{base_key}-{reference}")
+}
+
+#[derive(Debug)]
 enum Reserved {
-    /// A new record, and the idempotency key to send it under.
-    New { reference: String, key: String },
+    /// A record to send, new or kept unsent after an unknown outcome, and
+    /// the idempotency key to send it under.
+    Send { reference: String, key: String },
     /// The same question is already open under this reference.
     Open { reference: String, inbox: String },
 }
 
-/// Keeps `record` under a new reference before it is sent, unless the
-/// same question is open. A question asked again after its first record
-/// closed is sent under a key of its own, so Relaycast does not drop it as
-/// the first one sent again.
+/// Keeps `record`, unsent, under a new reference before it is sent, unless
+/// the same question is open. The same question kept unsent for the same
+/// inbox is sent again under its own reference and key.
 fn reserve(record: Record) -> Option<Reserved> {
     let mut records = records();
     let now = Instant::now();
     if let Some((reference, open)) = records.iter().find(|(_, open)| {
-        open.base_key == record.base_key && open.state == State::Open && now < open.expires
+        open.base_key == record.base_key && open.state.pending() && now < open.expires
     }) {
         return Some(Reserved::Open {
             reference: reference.clone(),
             inbox: open.inbox.clone(),
         });
     }
+    if let Some((reference, unsent)) = records.iter_mut().find(|(_, unsent)| {
+        unsent.base_key == record.base_key
+            && unsent.state == State::Unsent
+            && unsent.inbox_id == record.inbox_id
+            && now < unsent.expires
+    }) {
+        unsent.expires = record.expires;
+        return Some(Reserved::Send {
+            key: send_key(&unsent.base_key, reference),
+            reference: reference.clone(),
+        });
+    }
     let reference = std::iter::repeat_with(new_reference)
         .take(8)
         .flatten()
         .find(|reference| !records.contains_key(reference))?;
-    let reused = records
-        .values()
-        .any(|closed| closed.base_key == record.base_key);
-    let key = if reused {
-        format!("{}-{reference}", record.base_key)
-    } else {
-        record.base_key.clone()
-    };
-    records.insert(reference.clone(), record);
-    Some(Reserved::New { reference, key })
+    let key = send_key(&record.base_key, &reference);
+    records.insert(
+        reference.clone(),
+        Record {
+            state: State::Unsent,
+            ..record
+        },
+    );
+    Some(Reserved::Send { reference, key })
 }
 
+/// Drops `reference`, whose message was not sent.
 fn release(reference: &str) {
     records().remove(reference);
+}
+
+/// Opens `reference` once its message was sent: it waits a full `TTL` from
+/// now.
+fn opened(reference: &str) {
+    if let Some(record) = records().get_mut(reference) {
+        record.state = State::Open;
+        record.expires = Instant::now() + TTL;
+    }
+}
+
+/// Whether a send that failed with `error` may still have reached
+/// Relaycast: a timeout or a dropped connection after the request went out,
+/// a server error, or an answer that could not be read. A refusal, a
+/// connection never made, or a request never built did not.
+fn outcome_unknown(error: &relaycast::RelayError) -> bool {
+    use relaycast::RelayError;
+    match error {
+        RelayError::Api { status, .. } => *status >= 500 || *status == 408,
+        RelayError::Http(error) => !error.is_connect() && !error.is_builder(),
+        RelayError::Json(_) | RelayError::InvalidResponse(_) => true,
+        _ => false,
+    }
+}
+
+/// Whether `registration`'s session has a record of `reference`, in any
+/// state: only then is a reply naming it taken as an answer.
+fn known(reference: &str, registration: &Registration) -> bool {
+    records().get(reference).is_some_and(|record| {
+        record.target == registration.target && record.agent_id == registration.agent_id
+    })
 }
 
 /// Whether Claude's `session` has `input` escalated and open: the reason
@@ -178,7 +260,7 @@ pub fn escalated(session: &str, input: &Value) -> Option<String> {
             record.via == Via::Claude
                 && record.target.id.eq_ignore_ascii_case(session)
                 && record.input_hash == hash
-                && record.state == State::Open
+                && record.state.pending()
                 && now < record.expires
         })
         .map(|(reference, record)| reason(&record.inbox, reference))
@@ -193,34 +275,54 @@ struct Checked {
     via: Via,
 }
 
+/// Why a reply is not acted on.
+#[derive(Debug, PartialEq, Eq)]
+enum Unchecked {
+    /// The session has no record of the reference: not an answer at all.
+    Unknown,
+    /// Another answer to it is being delivered: ask again later.
+    Delivering,
+    /// What the sender is told.
+    Refused(String),
+}
+
 /// Reads `rest` as the answer to `reference`, asked by `registration`'s
-/// session, from `sender_id`; or the text the sender is told instead.
+/// session, from `sender_id`; or why not. An answer that may be acted on
+/// leaves the record `Delivering` until `settle` or `reopen`.
 fn check(
     reference: &str,
     registration: &Registration,
     sender_id: Option<&str>,
     rest: &str,
-) -> Result<Checked, String> {
+) -> Result<Checked, Unchecked> {
     let mut records = records();
     let record = records.get_mut(reference).filter(|record| {
         record.target == registration.target && record.agent_id == registration.agent_id
     });
     let Some(record) = record else {
-        return Err(format!("There is no open question {reference} here."));
+        return Err(Unchecked::Unknown);
     };
     if sender_id != Some(record.inbox_id.as_str()) {
-        return Err(format!(
-            "Only @{} may answer question {reference}.",
-            record.inbox
-        ));
+        return Err(Unchecked::Refused(format!(
+            "Only the agent question {reference} was sent to may answer it."
+        )));
     }
     if record.state == State::Open && Instant::now() >= record.expires {
         record.state = State::Expired;
     }
+    let refused = |text: String| Err(Unchecked::Refused(text));
     match record.state {
-        State::Answered => return Err(format!("Question {reference} was already answered.")),
+        State::Unsent => {
+            return refused(format!(
+                "Question {reference} is not open: @{} was not told it was sent, and asked it \
+itself.",
+                record.agent
+            ))
+        }
+        State::Delivering => return Err(Unchecked::Delivering),
+        State::Answered => return refused(format!("Question {reference} was already answered.")),
         State::Expired => {
-            return Err(format!(
+            return refused(format!(
                 "Question {reference} expired; @{} continued without it.",
                 record.agent
             ))
@@ -228,7 +330,8 @@ fn check(
         State::Open => {}
     }
     let answers = text::resolve(&record.questions, rest)
-        .map_err(|why| format!("Question {reference} is still open: {why}."))?;
+        .map_err(|why| Unchecked::Refused(format!("Question {reference} is still open: {why}.")))?;
+    record.state = State::Delivering;
     Ok(Checked {
         agent: record.agent.clone(),
         questions: record.questions.clone(),
@@ -244,8 +347,23 @@ fn settle(reference: &str) {
     }
 }
 
+/// Opens `reference` again when the answer being delivered was not: true
+/// when it is past its expiry, which the timer left to this call.
+fn reopen(reference: &str) -> bool {
+    let mut records = records();
+    let Some(record) = records.get_mut(reference) else {
+        return false;
+    };
+    if record.state != State::Delivering {
+        return false;
+    }
+    record.state = State::Open;
+    Instant::now() >= record.expires
+}
+
 /// Marks `reference` expired when it is still open past its expiry: the
-/// session and harness it was asked from.
+/// session and harness it was asked from. One with an answer being
+/// delivered is left to that delivery (`reopen`).
 fn expire(reference: &str) -> Option<(Target, Via)> {
     let mut records = records();
     let record = records.get_mut(reference)?;
@@ -282,6 +400,9 @@ pub enum Escalation {
         inbox: String,
     },
     Failed(String),
+    /// Not sent within the route's time limit: the session asks as it would,
+    /// and a late answer is refused.
+    TimedOut(String),
 }
 
 impl Escalation {
@@ -296,6 +417,7 @@ impl Escalation {
                 "reason": reason(inbox, reference),
             }),
             Escalation::Failed(error) => json!({ "escalated": false, "error": error }),
+            Escalation::TimedOut(reason) => json!({ "escalated": false, "reason": reason }),
         }
     }
 }
@@ -310,6 +432,30 @@ pub struct Asked<'a> {
 }
 
 impl Core {
+    /// `escalate_question` within `limit`. Past it the escalation is dropped
+    /// where it was: a record whose message was being sent stays unsent, so
+    /// an answer to it is refused and the same question asked again is sent
+    /// under the same idempotency key.
+    pub(crate) async fn escalate_question_within(
+        &self,
+        registration: &Registration,
+        asked: Asked<'_>,
+        limit: Duration,
+    ) -> Escalation {
+        match tokio::time::timeout(limit, self.escalate_question(registration, asked)).await {
+            Ok(escalation) => escalation,
+            Err(_) => {
+                crate::relay::diagnostics::write(format_args!(
+                    "question from @{} not escalated within {limit:?}",
+                    registration.name,
+                ));
+                Escalation::TimedOut(format!(
+                    "the question was not sent within {limit:?}; ask it here instead"
+                ))
+            }
+        }
+    }
+
     /// Sends `asked`, from `registration`'s session, to the question inbox
     /// when escalation is on. The same question asked again while it is open
     /// is not sent again.
@@ -352,7 +498,7 @@ impl Core {
             via: asked.via,
         };
         let (reference, key) = match reserve(record) {
-            Some(Reserved::New { reference, key }) => (reference, key),
+            Some(Reserved::Send { reference, key }) => (reference, key),
             Some(Reserved::Open { reference, inbox }) => {
                 return Escalation::Sent { reference, inbox }
             }
@@ -378,9 +524,17 @@ impl Core {
         )
         .await;
         if let Err(error) = sent {
+            if outcome_unknown(&error) {
+                // It may have been sent: kept unsent, so a reply to it is
+                // refused and asking again sends it under the same key.
+                return Escalation::Failed(format!(
+                    "the question may not have reached @{inbox}: {error}"
+                ));
+            }
             release(&reference);
             return Escalation::Failed(format!("the question was not sent to @{inbox}: {error}"));
         }
+        opened(&reference);
         crate::relay::diagnostics::write(format_args!(
             "question {reference} from @{} sent to @{inbox}",
             registration.name
@@ -470,7 +624,7 @@ impl Core {
                 true
             }
             Escalation::Off => false,
-            Escalation::Failed(error) => {
+            Escalation::Failed(error) | Escalation::TimedOut(error) => {
                 crate::relay::diagnostics::write(format_args!(
                     "question from @{} not escalated: {error}",
                     registration.name
@@ -499,6 +653,11 @@ impl Core {
         else {
             return OwnerReply::NotOne;
         };
+        // Only a reply to a question this session asked is an answer; any
+        // other `answer q…` is an ordinary message.
+        if !self.store.read(settings::on) || !known(&reference, registration) {
+            return OwnerReply::NotOne;
+        }
         if self.store.read(|store| store.was_injected(&delivery.id)) {
             return OwnerReply::Settled(format!("question {reference} reply already handled"));
         }
@@ -509,7 +668,11 @@ impl Core {
             &rest,
         ) {
             Ok(checked) => checked,
-            Err(refusal) => return self.refuse_reply(delivery, token, &refusal).await,
+            Err(Unchecked::Unknown) => return OwnerReply::NotOne,
+            Err(Unchecked::Delivering) => return OwnerReply::Unsaved,
+            Err(Unchecked::Refused(refusal)) => {
+                return self.refuse_reply(delivery, token, &refusal).await
+            }
         };
         let delivered = format!(
             "Answer to question {reference} delivered to @{}.",
@@ -522,8 +685,12 @@ impl Core {
                     .deliver_session_text(registration, delivery, line, InputSource::Requester)
                     .await
                 {
-                    InjectOutcome::Retry(_) | InjectOutcome::Waiting(_) => OwnerReply::Unsaved,
+                    InjectOutcome::Retry(_) | InjectOutcome::Waiting(_) => {
+                        self.reopen_question(&reference).await;
+                        OwnerReply::Unsaved
+                    }
                     InjectOutcome::Refused(why) => {
+                        self.reopen_question(&reference).await;
                         let refusal =
                             format!("The answer to question {reference} was not delivered: {why}");
                         self.refuse_reply(delivery, token, &refusal).await
@@ -548,6 +715,7 @@ impl Core {
                     .remember(|store| store.record_injected(&delivery.id))
                     .is_err()
                 {
+                    self.reopen_question(&reference).await;
                     return OwnerReply::Unsaved;
                 }
                 let value = codex_answer(&checked.questions, &checked.answers);
@@ -590,20 +758,30 @@ impl Core {
         OwnerReply::Settled(format!("question reply refused: {refusal}"))
     }
 
-    /// Tells a reply's sender what became of it, once.
+    /// Opens `reference` again after an answer that was not delivered,
+    /// expiring it when the timer passed while it was being delivered.
+    async fn reopen_question(&self, reference: &str) {
+        if reopen(reference) {
+            self.expire_question(reference).await;
+        }
+    }
+
+    /// Tells a reply's sender what became of it, once: by its exact address,
+    /// or by name only while that name is still the sender's agent id, so a
+    /// renamed or reused name never receives it.
     async fn reply_to_sender(
         &self,
         delivery: &Delivery,
         (base, token): (&str, &Secret),
         text: &str,
     ) {
-        let Some(sender) = delivery.sender.clone() else {
+        let Some(endpoint) = sender_endpoint(delivery, (base, token)).await else {
             return;
         };
         let _ = client::send_dm(
             base,
             token,
-            &Endpoint::Name(sender),
+            &endpoint,
             text,
             Some(format!("question-reply-{}", delivery.id)),
         )
@@ -662,6 +840,23 @@ impl Core {
             .await
             .unwrap_or(false)
     }
+}
+
+/// Where a reply to `delivery`'s sender goes: its exact `agent@machine`
+/// address, or its name when looking the name up still finds the sender's
+/// immutable agent id.
+async fn sender_endpoint(delivery: &Delivery, (base, token): (&str, &Secret)) -> Option<Endpoint> {
+    if let Some(address) = delivery
+        .sender_address
+        .as_deref()
+        .filter(|address| !address.is_empty())
+    {
+        return Some(Endpoint::Address(address.to_string()));
+    }
+    let (name, id) = (delivery.sender.as_deref()?, delivery.sender_id.as_deref()?);
+    let http = sdk_gaps::http(base, token).ok()?;
+    let agent = sdk_gaps::get_agent(&http, name).await.ok()??;
+    (agent["id"].as_str() == Some(id)).then(|| Endpoint::Name(name.to_string()))
 }
 
 #[cfg(test)]
