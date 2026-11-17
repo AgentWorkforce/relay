@@ -46,9 +46,14 @@ interface RelayCall {
 }
 
 function createHarness(
-  options: { relayStatus?: number; recoveryDelaysMs?: number[]; signal?: AbortSignal } = {}
+  options: {
+    relayStatus?: number;
+    recoveryDelaysMs?: number[];
+    signal?: AbortSignal;
+    store?: MemoryEventsShimStore;
+  } = {}
 ) {
-  const store = new MemoryEventsShimStore();
+  const store = options.store ?? new MemoryEventsShimStore();
   const deferred: Promise<unknown>[] = [];
   /** Waits for background wake work, including work it starts. */
   async function settle() {
@@ -536,24 +541,32 @@ describe('events shim', () => {
     expect(empty.structuredContent?.events).toHaveLength(0);
   });
 
-  it('wait_for_webhook does not take posts while a relay wake link delivers them', async () => {
-    const h = createHarness();
-    const shim = await h.create();
-    const agent = await h.connect(shim.mcp_url);
-    await agent.call('link_relay_wake', RELAY_HOOK);
-    await h.post(shim.webhook_url, { for: 'the linked session' });
-    const waited = await agent.call('wait_for_webhook', { timeout_seconds: 1 });
-    expect(waited.structuredContent).toMatchObject({ events: [], wake: 'linked' });
-    // The relay got the post, and nobody else marked it read.
-    await vi.waitFor(async () => {
-      const [event] = (await h.feed(shim.manage_token)).body.events as { delivery: string }[];
-      expect(event?.delivery).toBe('woken');
+  for (const leased of [false, true]) {
+    it(`wait_for_webhook${leased ? ' (auto_ack: false)' : ''} does not take posts while a relay wake link delivers them`, async () => {
+      const h = createHarness();
+      const shim = await h.create();
+      const agent = await h.connect(shim.mcp_url);
+      await agent.call('link_relay_wake', RELAY_HOOK);
+      await h.post(shim.webhook_url, { for: 'the linked session' });
+      const waited = await agent.call('wait_for_webhook', {
+        timeout_seconds: 1,
+        ...(leased ? { auto_ack: false } : {}),
+      });
+      expect(waited.structuredContent).toMatchObject({ events: [], wake: 'linked' });
+      // The relay got the post, and nobody else marked it read.
+      await vi.waitFor(async () => {
+        const [event] = (await h.feed(shim.manage_token)).body.events as { delivery: string }[];
+        expect(event?.delivery).toBe('woken');
+      });
+      expect((await agent.call('unlink_relay_wake', {})).isError).not.toBe(true);
+      await h.post(shim.webhook_url, { after: 'unlink' });
+      const unlinked = await agent.call('wait_for_webhook', {
+        timeout_seconds: 5,
+        ...(leased ? { auto_ack: false } : {}),
+      });
+      expect(unlinked.structuredContent?.events).toHaveLength(1);
     });
-    expect((await agent.call('unlink_relay_wake', {})).isError).not.toBe(true);
-    await h.post(shim.webhook_url, { after: 'unlink' });
-    const unlinked = await agent.call('wait_for_webhook', { timeout_seconds: 5 });
-    expect(unlinked.structuredContent?.events).toHaveLength(1);
-  });
+  }
 
   it('wait_for_webhook with auto_ack: false keeps posts pending under lease until acknowledged', async () => {
     const h = createHarness();
@@ -677,14 +690,18 @@ describe('events shim', () => {
     const badRelease = await agent.call('release_webhook_events', { ids: [eventId] });
     expect(badRelease.isError).toBe(true);
 
-    // Direct store call without claimToken also refuses to release a token-bearing claim
+    // A direct store call with an empty or another claim's token also refuses to release it
     const record = (await h.store.findByHookTokenHash(await sha256Hex(shim.webhook_url.split('/h/')[1]!)))!;
-    await h.store.releasePending(record.id, [eventId]);
+    expect(await h.store.releasePending(record.id, [eventId], '')).toEqual([]);
+    expect(await h.store.releasePending(record.id, [eventId], 'clm_other')).toEqual([]);
     const nextWait = await agent.call('wait_for_webhook', { timeout_seconds: 1, auto_ack: false });
     expect(nextWait.structuredContent?.events).toHaveLength(0);
 
     // Releasing with valid claim_token works
-    const goodRelease = await agent.call('release_webhook_events', { ids: [eventId], claim_token: claimToken });
+    const goodRelease = await agent.call('release_webhook_events', {
+      ids: [eventId],
+      claim_token: claimToken,
+    });
     expect(goodRelease.isError).toBeFalsy();
     const retaken = await agent.call('wait_for_webhook', { timeout_seconds: 2, auto_ack: true });
     expect(retaken.structuredContent?.events).toHaveLength(1);
@@ -801,6 +818,114 @@ describe('events shim', () => {
 
     const [finalState] = (await h.feed(shim.manage_token)).body.events as { id: string; delivery: string }[];
     expect(finalState?.delivery).toBe('read');
+  });
+
+  it('returns claim_token only to the claimant, never on feed or history reads', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const agent = await h.connect(shim.mcp_url);
+    const posted = await h.post(shim.webhook_url, { secret_claim: true });
+    const wait = await agent.call('wait_for_webhook', { timeout_seconds: 2, auto_ack: false });
+    const token = wait.structuredContent?.claim_token as string;
+    expect(token).toMatch(/^clm_/);
+    const feed = await h.app(`${BASE}/shims/current`, {
+      headers: { authorization: `Bearer ${shim.manage_token}` },
+    });
+    const history = await agent.call('get_webhook_events', { event_id: posted.body.event_id as string });
+    expect(history.structuredContent!.events).toHaveLength(1);
+    expect(await feed.text()).not.toContain(token);
+    expect(JSON.stringify(history.structuredContent)).not.toContain(token);
+    expect(JSON.stringify(wait.structuredContent!.events)).not.toContain(token);
+  });
+
+  it('acknowledges only posts claimed by the caller: never unclaimed posts or relay wake forwards in flight', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const agent = await h.connect(shim.mcp_url);
+    const first = await h.post(shim.webhook_url, { unclaimed: true });
+    const second = await h.post(shim.webhook_url, { forwarding: true });
+    const id = (await h.store.findByManageTokenHash(await sha256Hex(shim.manage_token)))!.id;
+    const unclaimedId = first.body.event_id as string;
+    const sendingId = second.body.event_id as string;
+    // A relay wake forward claims the second post (as deliverPending does).
+    const at = '2026-11-11T12:00:00.000Z';
+    await h.store.claimPending(id, { limit: 1, ids: [sendingId], staleBefore: at }, 'sending', at);
+
+    // No token at all: refused, on both ack paths.
+    expect((await agent.call('ack_webhook_events', { ids: [unclaimedId, sendingId] })).isError).toBe(true);
+    expect(
+      (await agent.call('wait_for_webhook', { timeout_seconds: 1, ack_ids: [unclaimedId, sendingId] }))
+        .isError
+    ).toBe(true);
+    // The forward's claim time is not a wait_for_webhook claim.
+    expect(
+      (await agent.call('ack_webhook_events', { ids: [unclaimedId, sendingId], claimed_at: at })).isError
+    ).toBe(true);
+    expect(await h.store.ackPending(id, [unclaimedId, sendingId], at, at)).toEqual([]);
+    expect(await h.store.releasePending(id, [unclaimedId, sendingId], at)).toEqual([]);
+
+    const delivery = async () =>
+      Object.fromEntries(
+        ((await h.feed(shim.manage_token)).body.events as { id: string; delivery: string }[]).map((event) => [
+          event.id,
+          event.delivery,
+        ])
+      );
+    expect(await delivery()).toEqual({ [unclaimedId]: 'pending', [sendingId]: 'sending' });
+    // The forward still settles its own claim.
+    await h.store.confirmWake(id, sendingId, at, at);
+    expect(await delivery()).toEqual({ [unclaimedId]: 'pending', [sendingId]: 'woken' });
+  });
+
+  it('releases a claim at once when the waiting client left while the posts were claimed', async () => {
+    const controller = new AbortController();
+    const h = createHarness({ signal: controller.signal });
+    const shim = await h.create();
+    const agent = await h.connect(shim.mcp_url);
+    await h.post(shim.webhook_url, { abandoned: true });
+    const claim = h.store.claimPending.bind(h.store);
+    h.store.claimPending = async (...args) => {
+      const claimed = await claim(...args);
+      controller.abort(); // the client leaves while the claim is being taken
+      return claimed;
+    };
+    await agent.call('wait_for_webhook', { timeout_seconds: 2, auto_ack: false }).catch(() => undefined);
+    h.store.claimPending = claim;
+    // Claimable again right away, not only once the lease ends.
+    const id = (await h.store.findByManageTokenHash(await sha256Hex(shim.manage_token)))!.id;
+    expect(await h.store.countPending(id, '2026-11-11T12:00:00.000Z')).toBe(1);
+    const [event] = await h.store.listRecent(id, 1);
+    expect(event).toMatchObject({ delivery: 'pending' });
+    expect(event?.deliveredAt).toBeUndefined();
+  });
+
+  it('an inbox whose store has no leases marks wait_for_webhook posts read and offers no ack or release tools', async () => {
+    const store = new MemoryEventsShimStore();
+    Object.assign(store, { ackPending: undefined, releasePending: undefined });
+    const states: string[] = [];
+    const claim = store.claimPending.bind(store);
+    store.claimPending = async (shimId, options, state, at, claimToken) => {
+      states.push(state);
+      return claim(shimId, options, state, at, claimToken);
+    };
+    const h = createHarness({ store });
+    const shim = await h.create();
+    const agent = await h.connect(shim.mcp_url);
+    const tools = (await agent.client.listTools()).tools.map((tool) => tool.name);
+    expect(tools).toContain('wait_for_webhook');
+    expect(tools).not.toContain('ack_webhook_events');
+    expect(tools).not.toContain('release_webhook_events');
+
+    await h.post(shim.webhook_url, { legacy: true });
+    const wait = await agent.call('wait_for_webhook', { timeout_seconds: 2, auto_ack: false });
+    expect(wait.structuredContent?.events).toHaveLength(1);
+    expect(wait.structuredContent?.claim_token).toBeUndefined();
+    expect(states).toEqual(['read']);
+    const [event] = (await h.feed(shim.manage_token)).body.events as { delivery: string }[];
+    expect(event?.delivery).toBe('read');
+    // ack_ids from a client that expects leases is harmless: the posts are already read.
+    const next = await agent.call('wait_for_webhook', { timeout_seconds: 1, ack_ids: ['evt_x'] });
+    expect(next.isError).toBeFalsy();
   });
 
   it('a wait already running sees a relay wake link made, then removed, meanwhile', async () => {

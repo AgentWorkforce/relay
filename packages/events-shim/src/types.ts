@@ -159,7 +159,11 @@ export interface EventsShimStore {
     activeSince: string;
     limit: number;
   }): Promise<ShimRecord[]>;
-  /** How many posts the agent has not received: `pending`, plus `sending` claims that expired before `staleBefore`. */
+  /**
+   * How many posts the agent has not received: `pending` ones (minus those
+   * under a `wait_for_webhook` lease newer than `staleBefore`, on a store with
+   * leases), plus `sending` claims that expired before `staleBefore`.
+   */
   countPending(shimId: string, staleBefore: string): Promise<number>;
   /**
    * Atomically claims posts and returns exactly the posts this call claimed:
@@ -175,6 +179,12 @@ export interface EventsShimStore {
    * Postgres: pick the ids once in a `MATERIALIZED` CTE (`… FOR UPDATE SKIP
    * LOCKED`), then `UPDATE … FROM picked … RETURNING`; a plain
    * `WHERE id IN (SELECT … LIMIT n …)` can return more than `n` rows.
+   *
+   * `state: 'pending'` and `claimToken` are used only on a store that
+   * implements `ackPending` and `releasePending` (see there): the claimed
+   * posts stay `pending` with `deliveredAt = at` and `claimToken` stored (a
+   * lease), and a `pending` post with `deliveredAt` newer than `staleBefore`
+   * is not claimable. Any other claim clears `claimToken`.
    */
   claimPending(
     shimId: string,
@@ -196,19 +206,28 @@ export interface EventsShimStore {
    */
   releaseWake(shimId: string, eventId: string, claimedAt: string, wakeError: string): Promise<void>;
   /**
-   * Acknowledges claimed posts: marks them `read`. Applies to posts that are
-   * `pending` with an active lease, or `sending`. If `claimToken` is provided,
-   * only marks read if the post's active claim matches `claimToken`.
-   * Returns the IDs of posts that were acknowledged.
+   * Optional, with `releasePending`: a store that implements both holds
+   * `wait_for_webhook` claims on a lease (see `claimPending`) until the
+   * claimant acknowledges or releases them, and the inbox offers the
+   * `ack_webhook_events` and `release_webhook_events` tools. A store without
+   * them keeps the older behaviour: `wait_for_webhook` marks what it claims
+   * `read` at once.
+   *
+   * Marks read the posts in `ids` that are still leased to `claimToken`:
+   * `pending` with `deliveredAt` set and a stored `claimToken` equal to it
+   * (or, for a lease stored without a token, `deliveredAt === claimToken`).
+   * Never touches `sending` posts (a relay wake forward in flight) or
+   * unclaimed ones. A lease that expired but was not claimed again can still
+   * be acknowledged. Returns the ids it marked read.
    */
-  ackPending(shimId: string, ids: string[], at: string, claimToken?: string): Promise<string[]>;
+  ackPending?(shimId: string, ids: string[], at: string, claimToken: string): Promise<string[]>;
   /**
-   * Releases claimed posts whose claim has not been acknowledged, clearing
-   * their lease so other listeners can claim them immediately. If `claimToken`
-   * is provided, only releases if the active claim matches `claimToken`.
-   * Returns the IDs of posts that were released.
+   * Optional, with `ackPending`. Ends the lease on the posts in `ids` still
+   * leased to `claimToken` (matched as in `ackPending`): they stay `pending`
+   * with `deliveredAt` and `claimToken` cleared, so the next caller can claim
+   * them at once. Returns the ids it released.
    */
-  releasePending(shimId: string, ids: string[], claimToken?: string): Promise<string[]>;
+  releasePending?(shimId: string, ids: string[], claimToken: string): Promise<string[]>;
   /**
    * Deletes shims idle since before `idleBefore`, feed rows on shims idle
    * since before `feedBefore`, and idempotency keys older than `feedBefore`.
