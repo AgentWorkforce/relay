@@ -19,6 +19,9 @@ pub struct TestAccount {
     /// Whether Cursor chats' hosted MCP calls are attested
     /// ([`AccountPlugin::cursor_calls_attested`]).
     pub cursor_calls_attested: bool,
+    /// The hosted MCP link time reported for every agent
+    /// ([`AccountPlugin::mcp_linked_at`]).
+    pub mcp_linked_at: Option<String>,
 }
 
 impl TestAccount {
@@ -27,6 +30,7 @@ impl TestAccount {
             usage: Default::default(),
             auto_activate_by_default: false,
             cursor_calls_attested: false,
+            mcp_linked_at: None,
         }
     }
 
@@ -65,7 +69,7 @@ impl AccountPlugin for TestAccount {
     fn agents_changed(&self, _core: &Arc<Core>) {}
 
     fn mcp_linked_at(&self, _agent_id: &str) -> Option<String> {
-        None
+        self.mcp_linked_at.clone()
     }
 
     fn cursor_calls_attested(&self) -> bool {

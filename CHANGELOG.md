@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `agent-relay-node`: macOS GitHub Copilot desktop sessions can register and receive Relay messages through their native hooks, with GitHub signature, desktop host and held-session verification.
+- `agent-relay-node`: a Cursor chat whose hosted MCP calls are attested (the account reports `cursor_calls_attested`, once Agent Relay Desktop signs each Cursor call and the hosted MCP verifies it) and whose registration declares the hosted MCP, or that the hosted MCP reports linked, is told to reply with the hosted MCP tools, which now send as that chat. Without attestation, Cursor chats still reply through the session socket.
 
 ### Fixed
 

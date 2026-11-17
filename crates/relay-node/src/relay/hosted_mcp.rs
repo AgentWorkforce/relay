@@ -528,6 +528,16 @@ mod tests {
         mcp: Option<&str>,
         account: Option<bool>,
     ) -> (std::sync::Arc<Core>, tempfile::TempDir) {
+        core_linked(target, mcp, account, None)
+    }
+
+    /// [`core_with`], with Cloud reporting a hosted MCP link at `linked_at`.
+    fn core_linked(
+        target: &Target,
+        mcp: Option<&str>,
+        account: Option<bool>,
+        linked_at: Option<&str>,
+    ) -> (std::sync::Arc<Core>, tempfile::TempDir) {
         let temp = tempfile::tempdir().unwrap();
         let config = crate::relay::daemon::Config {
             paths: crate::relay::paths::CorePaths::for_socket(temp.path().join("core.sock"))
@@ -545,6 +555,7 @@ mod tests {
             account: account.map(|attested| {
                 let mut account = crate::relay::test_account::TestAccount::new();
                 account.cursor_calls_attested = attested;
+                account.mcp_linked_at = linked_at.map(str::to_string);
                 account.into_plugin()
             }),
             ..crate::relay::daemon::Plugins::default()
@@ -593,6 +604,40 @@ mod tests {
         ] {
             let (core, _temp) = core_with(&cursor, mcp, Some(true));
             assert_eq!(core.relay_mcp_access(&cursor), expected, "{mcp:?}");
+        }
+    }
+
+    #[test]
+    fn cloud_linking_an_attested_cursor_chat_gives_it_the_tools() {
+        let cursor = Target::new(
+            SessionKind::CursorCli,
+            "c41cbfce-e202-4f59-822e-9d8dc86a1a9a",
+        );
+        // Registered at 12:00:00; a link since then outranks a missing or
+        // `none` declaration, but only once the chat's calls are attested.
+        for mcp in [None, Some(NO_SERVER)] {
+            let (core, _temp) =
+                core_linked(&cursor, mcp, Some(true), Some("2026-11-16T12:05:00.000Z"));
+            assert_eq!(
+                core.relay_mcp_access(&cursor),
+                McpAccess::Declared,
+                "{mcp:?}"
+            );
+            let (core, _temp) =
+                core_linked(&cursor, mcp, Some(false), Some("2026-11-16T12:05:00.000Z"));
+            assert_eq!(
+                core.relay_mcp_access(&cursor),
+                McpAccess::SocketOnly,
+                "{mcp:?}"
+            );
+            // A link from well before this registration proves nothing.
+            let (core, _temp) =
+                core_linked(&cursor, mcp, Some(true), Some("2026-11-16T11:00:00.000Z"));
+            assert_eq!(
+                core.relay_mcp_access(&cursor),
+                McpAccess::SocketOnly,
+                "{mcp:?}"
+            );
         }
     }
 
