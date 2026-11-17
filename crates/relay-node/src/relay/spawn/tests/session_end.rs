@@ -43,6 +43,10 @@ fn accepting_relaycast() -> (String, Arc<Mutex<Vec<String>>>) {
             } else {
                 let body = if method == "PATCH" {
                     r#"{"ok":true,"data":{"id":"a","name":"a","type":"agent","status":"online"}}"#
+                } else if path.contains("deliveries") {
+                    // An empty queue. `data: null` is an unreadable list, and
+                    // a failed read keeps an idle Grok leader.
+                    r#"{"ok":true,"data":[]}"#
                 } else {
                     r#"{"ok":true,"data":null}"#
                 };
@@ -132,6 +136,110 @@ async fn an_unloaded_but_unarchived_codex_thread_stays_on_the_relay() {
     assert!(registered(&core, "idle"));
     assert!(named(&core, "idle").missing_since.is_none());
     assert!(deleted.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn an_idle_grok_leader_is_ended_after_a_day_and_a_codex_agent_is_not() {
+    // The core will not open HTTP while file-selected roots are set. This
+    // process can inherit them; the queue read has to be allowed to run.
+    std::env::remove_var("SSL_CERT_FILE");
+    std::env::remove_var("SSL_CERT_DIR");
+    let home = tempfile::tempdir().unwrap();
+    let (base, deleted) = accepting_relaycast();
+    let spawner = Arc::new(FakeSpawner::default());
+    let core = core_at(home.path(), spawner.clone(), &base);
+    let observer = observed(&core);
+    spawn(&core, "leader").await;
+    spawn(&core, "codex-idle").await;
+    core.store
+        .update(|store| {
+            let leader = store
+                .registrations
+                .iter_mut()
+                .find(|r| r.name == "leader")
+                .unwrap();
+            leader.target.kind = crate::relay::store::SessionKind::Grok;
+            leader.spawn.as_mut().unwrap().harness = crate::relay::harness::grok::ID.name().into();
+        })
+        .unwrap();
+    observer.set("leader", ProcessLiveness::Running, WorkState::Idle, false);
+    observer.set(
+        "codex-idle",
+        ProcessLiveness::Running,
+        WorkState::Idle,
+        false,
+    );
+
+    // First sight of idle starts the clock. A day has not passed.
+    core.observe_spawned().await;
+    assert!(registered(&core, "leader"));
+    assert!(spawner.stopped.lock().unwrap().is_empty());
+
+    let stale = chrono::Utc::now() - chrono::Duration::hours(25);
+    {
+        let ledger = core.ledger();
+        let mut state = ledger.lock();
+        assert!(state.agents["leader"].idle_since.is_some());
+        state.agents.get_mut("leader").unwrap().idle_since = Some(stale);
+        assert!(state.agents["codex-idle"].idle_since.is_none());
+    }
+    // Spawn saved a Codex receipt. Replaying it as Grok is refused, so the
+    // leader would be kept. A real Grok launch writes its own receipt.
+    let receipts = home.path().join("app-data/spawn-completions");
+    for entry in std::fs::read_dir(&receipts).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|ext| ext == "json") {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+    core.observe_spawned().await;
+    assert!(
+        !registered(&core, "leader"),
+        "deleted={:?} stopped={}",
+        deleted.lock().unwrap(),
+        spawner.stopped.lock().unwrap().len(),
+    );
+    assert!(registered(&core, "codex-idle"));
+    assert_eq!(deleted.lock().unwrap().as_slice(), ["/v1/agents/leader"]);
+    assert!(spawner
+        .stopped
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|target| target.kind == crate::relay::store::SessionKind::Grok));
+
+    // A turn clears the clock, so a later idle hour does not end it.
+    spawn(&core, "busy").await;
+    core.store
+        .update(|store| {
+            let busy = store
+                .registrations
+                .iter_mut()
+                .find(|r| r.name == "busy")
+                .unwrap();
+            busy.target.kind = crate::relay::store::SessionKind::Grok;
+            busy.spawn.as_mut().unwrap().harness = crate::relay::harness::grok::ID.name().into();
+        })
+        .unwrap();
+    observer.set("busy", ProcessLiveness::Running, WorkState::Idle, false);
+    core.observe_spawned().await;
+    {
+        let ledger = core.ledger();
+        ledger.lock().agents.get_mut("busy").unwrap().idle_since = Some(stale);
+    }
+    observer.set("busy", ProcessLiveness::Running, WorkState::Working, true);
+    core.observe_spawned().await;
+    {
+        let ledger = core.ledger();
+        assert!(ledger.lock().agents["busy"].idle_since.is_none());
+    }
+    observer.set("busy", ProcessLiveness::Running, WorkState::Idle, false);
+    core.observe_spawned().await;
+    assert!(registered(&core, "busy"));
+    {
+        let ledger = core.ledger();
+        assert!(ledger.lock().agents["busy"].idle_since.is_some());
+    }
 }
 
 #[tokio::test]

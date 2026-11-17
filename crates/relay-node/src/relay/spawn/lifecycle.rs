@@ -8,7 +8,8 @@
 //!
 //! A place (slot) is held from the spawn until the agent is released or its
 //! process is positively seen to have ended. Idle and unknown agents keep
-//! theirs. See `docs/node-lifecycle.md`.
+//! theirs, except a spawned Grok leader that has been idle for
+//! [`GROK_LEADER_IDLE`]: that leader is ended. See `docs/node-lifecycle.md`.
 
 use crate::relay::state::{
     NodeEvidence, NodeReach, ProcessEvidence, ProcessLiveness, SpawnSlots, UnfinishedWork,
@@ -23,6 +24,17 @@ pub const NODE_TTL: Duration = Duration::seconds(45);
 pub const EVIDENCE_TTL: Duration = Duration::seconds(60);
 /// How often spawned agents are observed.
 pub const OBSERVE_EVERY: std::time::Duration = std::time::Duration::from_secs(15);
+/// How long a spawned Grok leader may sit idle before it is ended. Idle
+/// means its process is running, its last turn has ended, and no turn is
+/// in progress. Unknown work does not count, and Claude and Codex keep
+/// their places while idle: a Grok leader is a process of its own
+/// (`--no-exit-on-disconnect`) that otherwise stays up after the task.
+pub const GROK_LEADER_IDLE: Duration = Duration::hours(24);
+
+/// Whether a Grok leader idle since `since` is due to be ended at `now`.
+pub fn grok_leader_idle_due(since: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+    now.signed_duration_since(since) >= GROK_LEADER_IDLE
+}
 
 /// The most spawned agents a computer may be set to run.
 pub const MAX_AGENTS_LIMIT: u32 = 32;
@@ -93,6 +105,10 @@ pub struct AgentRecord {
     pub process: Option<Seen<ProcessLiveness>>,
     pub work: Option<Seen<WorkState>>,
     pub unfinished: Option<UnfinishedWork>,
+    /// When a spawned Grok leader was first seen quietly idle. Cleared when
+    /// it works, waits, or its process is no longer known to be running.
+    /// Not evidence of work: only the clock for [`GROK_LEADER_IDLE`].
+    pub idle_since: Option<DateTime<Utc>>,
 }
 
 /// How an observation changed an agent's place.
@@ -496,5 +512,14 @@ mod tests {
             counts.add(state);
         }
         assert_eq!((counts.working, counts.idle, counts.unknown), (1, 2, 0));
+    }
+
+    #[test]
+    fn a_grok_leader_is_due_only_after_a_full_day_idle() {
+        let now = Utc::now();
+        assert!(!grok_leader_idle_due(now, now));
+        assert!(!grok_leader_idle_due(now - Duration::hours(23), now));
+        assert!(grok_leader_idle_due(now - GROK_LEADER_IDLE, now));
+        assert!(grok_leader_idle_due(now - Duration::hours(25), now));
     }
 }

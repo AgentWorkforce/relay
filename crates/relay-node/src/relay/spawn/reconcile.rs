@@ -6,7 +6,7 @@ use super::lifecycle::{self, Transition};
 use super::observe::Watched;
 use super::wire::Reclaimed;
 use crate::relay::daemon::Core;
-use crate::relay::state::{Level, Listing, ProcessLiveness};
+use crate::relay::state::{Level, Listing, ProcessLiveness, WorkState};
 use crate::relay::store::Target;
 use chrono::Utc;
 use std::collections::HashSet;
@@ -135,28 +135,59 @@ impl Core {
         self.adopt(&adopted);
         let now = Utc::now();
         let ledger = self.ledger();
-        let (mut ended, mut places, mut shown) = (Vec::new(), false, false);
+        let (mut ended, mut idle_leaders, mut places, mut shown) =
+            (Vec::new(), Vec::new(), false, false);
         {
             let mut state = ledger.lock();
             state.observing = false;
             state.observed = Some(Instant::now());
             if observed.len() == registrations.len() {
                 for (registration, observation) in registrations.iter().zip(observed) {
-                    let record = state.agents.entry(registration.name.clone()).or_default();
-                    let before = (
-                        record.process.map(|p| p.state),
-                        record.work.map(|w| w.state),
-                    );
-                    let transition = record.apply(observation, now);
-                    shown |= before != (Some(observation.process), Some(observation.work));
+                    // The record borrow ends with this block. The match
+                    // below borrows `state` again to record a reclaimed place.
+                    let (transition, unfinished) = {
+                        let record = state.agents.entry(registration.name.clone()).or_default();
+                        let before = (
+                            record.process.map(|p| p.state),
+                            record.work.map(|w| w.state),
+                        );
+                        let transition = record.apply(observation, now);
+                        shown |= before != (Some(observation.process), Some(observation.work));
+                        // A spawned Grok leader is its own process and does not
+                        // exit when its client does. One quietly idle for
+                        // GROK_LEADER_IDLE is ended below. Any other state,
+                        // including unknown work, starts the clock over.
+                        let grok_leader = registration.spawn.as_ref().is_some_and(|spawn| {
+                            spawn.harness == crate::relay::harness::grok::ID.name()
+                                && spawn.taken_over_at.is_none()
+                                && registration.target.kind
+                                    == crate::relay::store::SessionKind::Grok
+                        });
+                        let quietly_idle = observation.process == ProcessLiveness::Running
+                            && observation.work == WorkState::Idle
+                            && !observation.turn_in_progress;
+                        if grok_leader && quietly_idle {
+                            if record.idle_since.is_none() {
+                                record.idle_since = Some(now);
+                            }
+                            if record
+                                .idle_since
+                                .is_some_and(|since| lifecycle::grok_leader_idle_due(since, now))
+                            {
+                                idle_leaders.push(registration.clone());
+                            }
+                        } else {
+                            record.idle_since = None;
+                        }
+                        (transition, record.unfinished.clone())
+                    };
                     match transition {
                         Transition::Ended { turn_in_progress } => {
-                            let unfinished = record.unfinished.clone().unwrap_or_default();
                             state.reclaimed.retain(|r| r.name != registration.name);
                             state.reclaimed.push_front(Reclaimed {
                                 name: registration.name.clone(),
                                 agent_id: registration.agent_id.clone(),
-                                unfinished,
+                                unfinished: unfinished.unwrap_or_default(),
                             });
                             state.reclaimed.truncate(RECLAIMED_KEPT);
                             ended.push((registration.clone(), turn_in_progress));
@@ -226,6 +257,39 @@ impl Core {
             );
             self.hub.invalidated(Listing::Agents);
             ledger.changed.notify_one();
+        }
+        for registration in idle_leaders {
+            // A message still queued, or a final answer still owed, keeps
+            // the leader. A queue that cannot be read keeps it too: ending
+            // it then could drop work. The clock stays, so the next pass
+            // ends it once the queue is empty.
+            let owes = self.store.read(|store| {
+                store.replies.iter().flatten().any(|reply| {
+                    reply.agent_id == registration.agent_id && reply.claimed != Some(true)
+                })
+            });
+            if owes {
+                continue;
+            }
+            if self
+                .waiting_deliveries(&registration)
+                .await
+                .ok()
+                .filter(|pending| *pending == 0)
+                .is_none()
+            {
+                continue;
+            }
+            let name = registration.name.clone();
+            if let Err(error) = self.end_spawned_agent(&name).await {
+                self.hub.activity(
+                    Level::Warning,
+                    format!(
+                        "Spawned Grok leader @{name} has been idle for 24 hours, but Agent Relay could not end it: {}. It will try again.",
+                        error.message
+                    ),
+                );
+            }
         }
     }
 }
