@@ -520,17 +520,8 @@ fn an_editor_conversation_takes_messages_while_its_window_runs() {
 fn a_hook_naming_no_conversation_takes_up_only_one_running_now() {
     let (_temp, config, table) = world();
     table.insert(700, shell(HOST_PID, &[]));
-    // No transcript, or one Cursor last wrote over an hour ago: a closed or
-    // reloaded window's conversation, which a hook launch cannot take up.
-    std::fs::remove_file(own_transcript(&config, OTHER)).unwrap();
-    assert!(!record_editor_hook(
-        &config,
-        &table,
-        700,
-        HOST_PID,
-        &hook_payload("stop", OTHER)
-    ));
-    assert!(!running(&config, &table, uid(), OTHER));
+    // A transcript Cursor last wrote over an hour ago: a closed or reloaded
+    // window's conversation, which a hook launch cannot take up.
     let old = std::fs::File::create(own_transcript(&config, OTHER)).unwrap();
     old.set_modified(std::time::SystemTime::now() - Duration::from_secs(2 * 60 * 60))
         .unwrap();
@@ -541,6 +532,7 @@ fn a_hook_naming_no_conversation_takes_up_only_one_running_now() {
         HOST_PID,
         &hook_payload("stop", OTHER)
     ));
+    assert!(!running(&config, &table, uid(), OTHER));
     // One running now is taken up, and stays its window's while that window
     // runs, however old its transcript gets.
     assert!(record_editor_hook(
@@ -577,6 +569,246 @@ fn a_hook_naming_no_conversation_takes_up_only_one_running_now() {
         live(&config, &table, uid(), SESSION).map(|row| row.host_pid),
         Some(HOST_PID)
     );
+}
+
+/// A conversation of `world` that Cursor has only just started: its
+/// transcript is not written yet.
+fn brand_new(config: &CursorConfig) -> &'static str {
+    std::fs::remove_dir_all(own_transcript(config, OTHER).parent().unwrap()).unwrap();
+    OTHER
+}
+
+/// A Cursor hook's process for the window `host`: its `sh -c` child.
+fn hook_under(table: &FakeProcesses, host: i32, pid: i32) -> i32 {
+    table.insert(
+        pid,
+        FakeProcess {
+            executable: Some(PathBuf::from("/bin/sh")),
+            arguments: vec!["/bin/sh".into(), "-c".into(), "probe cursor-hook".into()],
+            ..shell(host, &[])
+        },
+    );
+    table.insert(pid + 1, shell(pid, &[]));
+    pid + 1
+}
+
+#[test]
+fn a_brand_new_chats_first_prompt_puts_it_on_its_window() {
+    let (_temp, config, table) = world();
+    let fresh = brand_new(&config);
+    let hook = hook_under(&table, HOST_PID, 700);
+    // Its first prompt's hook runs before Cursor writes a transcript, and
+    // names no conversation in its environment: the chat is still its
+    // window's to claim, and is then listed live, so its first tool call
+    // finds it.
+    assert_eq!(
+        hook_caller(&config, &table, hook, fresh),
+        Some(HookCaller::Editor { host: HOST_PID })
+    );
+    let mut written = Vec::new();
+    run_hook(
+        &config,
+        &table,
+        hook,
+        &hook_payload("beforeSubmitPrompt", fresh),
+        None,
+        &mut |answer| {
+            written.push(answer.clone());
+            true
+        },
+    );
+    assert!(written.is_empty());
+    let row = live(&config, &table, uid(), fresh).unwrap();
+    assert_eq!(row.host_pid, HOST_PID);
+    assert_eq!(row.workspace.as_deref(), Some("/work/api"));
+    assert!(running(&config, &table, uid(), fresh));
+    // Once Cursor writes its transcript, the window that claimed it keeps
+    // it, and another window's hook is refused.
+    std::fs::create_dir_all(own_transcript(&config, fresh).parent().unwrap()).unwrap();
+    std::fs::write(own_transcript(&config, fresh), b"").unwrap();
+    assert!(hook_caller_holds(&config, &table, hook, fresh));
+    table.insert(660, host(30));
+    let elsewhere = hook_under(&table, 660, 710);
+    assert_eq!(hook_caller(&config, &table, elsewhere, fresh), None);
+    assert!(!record_editor_hook(
+        &config,
+        &table,
+        elsewhere,
+        660,
+        &hook_payload("stop", fresh)
+    ));
+}
+
+#[test]
+fn a_new_chat_is_one_cursor_has_no_trace_of() {
+    let (temp, config, table) = world();
+    let fresh = brand_new(&config);
+    let hook = hook_under(&table, HOST_PID, 700);
+    // A transcript Cursor last wrote over an hour ago, in any folder Cursor
+    // may keep it in, is a closed chat's, never a new one's.
+    let mut elsewhere = config.clone();
+    elsewhere.data_dir = temp.path().join("hook-cursor");
+    for folder in [&config, &elsewhere] {
+        let transcript = own_transcript(folder, fresh);
+        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        std::fs::File::create(&transcript)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(2 * 60 * 60))
+            .unwrap();
+        assert_eq!(hook_caller(&elsewhere, &table, hook, fresh), None);
+        assert!(!record_editor_hook(
+            &elsewhere,
+            &table,
+            hook,
+            HOST_PID,
+            &hook_payload("beforeSubmitPrompt", fresh)
+        ));
+        std::fs::remove_file(&transcript).unwrap();
+    }
+    // A subagent's old transcript is that chat's too.
+    let subagent = config
+        .data_dir
+        .join("projects/work-api/agent-transcripts")
+        .join(SESSION)
+        .join("subagents")
+        .join(format!("{fresh}.jsonl"));
+    std::fs::create_dir_all(subagent.parent().unwrap()).unwrap();
+    std::fs::File::create(&subagent)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - Duration::from_secs(2 * 60 * 60))
+        .unwrap();
+    assert_eq!(hook_caller(&config, &table, hook, fresh), None);
+    std::fs::remove_file(&subagent).unwrap();
+    // A record of any host, even one that is gone, means it ran before.
+    table.insert(660, host(30));
+    let gone = hook_under(&table, 660, 710);
+    assert!(record_editor_hook(
+        &config,
+        &table,
+        gone,
+        660,
+        &hook_payload("beforeSubmitPrompt", fresh)
+    ));
+    table.remove(660);
+    assert_eq!(hook_caller(&config, &table, hook, fresh), None);
+    // A record another window that still runs holds is that window's.
+    table.insert(660, host(30));
+    assert_eq!(hook_caller(&config, &table, hook, fresh), None);
+    assert!(!record_editor_hook(
+        &config,
+        &table,
+        hook,
+        HOST_PID,
+        &hook_payload("beforeSubmitPrompt", fresh)
+    ));
+    assert_eq!(
+        live(&config, &table, uid(), fresh).map(|row| row.host_pid),
+        Some(660)
+    );
+    // A process the hook launch does not vouch for claims no new chat.
+    table.remove(660);
+    std::fs::remove_file(
+        temp.path()
+            .join(".agentworkforce/desktop/cursor/editor")
+            .join(format!("{fresh}.json")),
+    )
+    .unwrap();
+    table.insert(720, shell(HOST_PID, &[]));
+    table.insert(721, shell(720, &[]));
+    table.insert(722, shell(721, &[]));
+    assert_eq!(hook_caller(&config, &table, 722, fresh), None);
+    // A lock a refused claim left behind does not stand in the way.
+    assert!(temp
+        .path()
+        .join(".agentworkforce/desktop/cursor/editor")
+        .join(format!(".{fresh}.lock"))
+        .is_file());
+    assert!(record_editor_hook(
+        &config,
+        &table,
+        hook,
+        HOST_PID,
+        &hook_payload("beforeSubmitPrompt", fresh)
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_new_chat_is_not_one_behind_a_folder_that_cannot_be_read() {
+    use std::os::unix::fs::PermissionsExt;
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    if unsafe { libc::geteuid() } == 0 {
+        // Root reads any folder, whatever its mode.
+        return;
+    }
+    let (_temp, config, table) = world();
+    let fresh = brand_new(&config);
+    let hook = hook_under(&table, HOST_PID, 700);
+    // A project's transcripts that cannot be read may hold this chat's old
+    // transcript: its hooks are refused rather than taken as a new chat's.
+    let transcripts = config.data_dir.join("projects/work-api/agent-transcripts");
+    std::fs::create_dir_all(&transcripts).unwrap();
+    let mode = |mode| {
+        std::fs::set_permissions(&transcripts, std::fs::Permissions::from_mode(mode)).unwrap()
+    };
+    mode(0o000);
+    let caller = hook_caller(&config, &table, hook, fresh);
+    mode(0o755);
+    assert_eq!(caller, None);
+    // Once it can be read and holds nothing of the chat, the chat is new.
+    assert_eq!(
+        hook_caller(&config, &table, hook, fresh),
+        Some(HookCaller::Editor { host: HOST_PID })
+    );
+}
+
+#[test]
+fn a_new_chats_hooks_racing_claim_it_once() {
+    let (_temp, config, table) = world();
+    let fresh = brand_new(&config);
+    table.insert(660, host(30));
+    // Two hooks of one window (its first prompt's and a guide hook's) a
+    // moment apart both hold it; two windows racing for one id leave it
+    // to whichever recorded first.
+    for round in 0..8 {
+        let _ = std::fs::remove_file(
+            config
+                .home
+                .join(".agentworkforce/desktop/cursor/editor")
+                .join(format!("{fresh}.json")),
+        );
+        let first = hook_under(&table, HOST_PID, 700);
+        let second = hook_under(&table, HOST_PID, 710);
+        let other = hook_under(&table, 660, 720);
+        let claimed = std::thread::scope(|scope| {
+            let claims: Vec<_> = [(first, HOST_PID), (second, HOST_PID), (other, 660)]
+                .into_iter()
+                .map(|(hook, host)| {
+                    let (config, table) = (&config, &table);
+                    scope.spawn(move || {
+                        let event = if round % 2 == 0 {
+                            "beforeSubmitPrompt"
+                        } else {
+                            "stop"
+                        };
+                        record_editor_hook(config, table, hook, host, &hook_payload(event, fresh))
+                    })
+                })
+                .collect();
+            claims
+                .into_iter()
+                .map(|claim| claim.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let owner = live(&config, &table, uid(), fresh).unwrap().host_pid;
+        if owner == HOST_PID {
+            assert_eq!(claimed, [true, true, false]);
+        } else {
+            assert_eq!(owner, 660);
+            assert_eq!(claimed[2], true);
+            assert!(!claimed[0] && !claimed[1]);
+        }
+    }
 }
 
 #[test]
@@ -807,12 +1039,10 @@ fn a_tool_of_the_editors_agent_is_the_conversation_its_environment_names() {
     // probe (702) → zsh (701) → extension host
     table.insert(701, shell(HOST_PID, &[]));
     table.insert(702, shell(701, &[(CONVERSATION_VAR, SESSION)]));
-    // A new conversation's first turn: Cursor has written no transcript
-    // yet, so a hook naming no conversation may not take it up, but its
-    // tool naming it puts it on this window, and its hooks are then the
-    // window's.
+    // A new conversation's first turn, before any hook recorded it: Cursor
+    // has written no transcript yet, and its tool naming it puts it on
+    // this window, whose hooks it then is.
     std::fs::remove_file(own_transcript(&config, SESSION)).unwrap();
-    assert_eq!(hook_caller(&config, &table, HOST_PID, SESSION), None);
     assert!(!running(&config, &table, uid(), SESSION));
     assert_eq!(
         editor_caller(&config, &table, 702, HOST_PID).as_deref(),
