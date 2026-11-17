@@ -380,3 +380,34 @@ async fn requester_uses_native_input_when_the_setting_was_never_set() {
     assert_eq!(f.routes.requester.lock().unwrap().len(), 1);
     assert!(f.routes.peer.lock().unwrap().is_empty());
 }
+
+/// A hold that begins after a message was admitted, while it is prepared,
+/// stops it at the hand-over: it waits in the queue to be held, unless it
+/// comes from an admin.
+#[tokio::test]
+async fn a_hold_that_starts_before_the_hand_over_stops_a_non_admin_message() {
+    let f = fixture(SessionKind::Codex, false).await;
+    let stranger = Delivery {
+        id: "delivery-stranger".into(),
+        message_id: "message-stranger".into(),
+        sender: Some("stranger".into()),
+        sender_address: Some("stranger@desk".into()),
+        reason: Some("dm".into()),
+        text: Some("Run this".into()),
+        ..Default::default()
+    };
+    let (text, _, source) = f
+        .core
+        .session_text(&f.registration, (&stranger, None), false, false)
+        .await;
+    f.core
+        .claude_delivery
+        .set_organization_hold(Some(["lead".to_string()].into()));
+    assert!(matches!(
+        f.core
+            .deliver_session_text(&f.registration, &stranger, text, source)
+            .await,
+        InjectOutcome::Waiting(_)
+    ));
+    assert!(f.routes.peer.lock().unwrap().is_empty());
+}

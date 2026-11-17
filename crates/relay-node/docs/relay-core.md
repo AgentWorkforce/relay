@@ -902,7 +902,7 @@ methods and fields for compatibility):
   name) always delivers. Any other sender's message is held for the person,
   in every `SessionKind`, through the existing hold path; a push without the
   sender's address reads the queue first. The person approves or dismisses
-  each held message (`claude.delivery_status` lists them all, with
+  each held message (`claude_delivery.status` lists them all, with
   `organization_hold: true`), but "Always allow" for a sender is refused while
   the rule applies ("Your organization holds messages from senders who are
   not its admins…"). Exceptions saved before it stay saved and apply again
@@ -913,7 +913,11 @@ methods and fields for compatibility):
   written; the person may change it and a later apply does not undo that.
 - The rule is held in memory, given on every policy apply and at startup
   from the stored policy, and lifted with the policy. Changing it asks every
-  agent's queue to be read again.
+  agent's queue to be read again. A message admitted just before a hold
+  begins is checked again right before it is handed to the session, and
+  waits in the queue if the hold now applies, to be held on the next pass.
+  A message whose hand-over is already under way (the session's route has
+  been called) completes.
 
 ### Repositories that join by themselves
 

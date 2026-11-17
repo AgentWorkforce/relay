@@ -1298,6 +1298,12 @@ impl Core {
         if manual {
             self.authorize_dm_reply(registration, delivery);
         }
+        // Whether this injection's outcome is journalled is decided before it
+        // starts, so a hold lifted meanwhile cannot drop the marker of a
+        // message injected under it.
+        let journal = self
+            .claude_delivery
+            .records_outcome(registration, &delivery.id);
         let outcome = self
             .deliver_session_text(registration, delivery, text, source)
             .await;
@@ -1305,10 +1311,7 @@ impl Core {
         match outcome {
             InjectOutcome::Delivered => {
                 self.settled(&delivery.id);
-                if self
-                    .claude_delivery
-                    .records_outcome(registration, &delivery.id)
-                {
+                if journal {
                     let _ = self.claude_delivery.consume(
                         &delivery.id,
                         &registration.name,
@@ -1341,10 +1344,7 @@ impl Core {
                 // session: keep the reply paths as for a confirmed injection.
                 // Reported only once the in-doubt record is on disk; until
                 // then the next pass saves it and reports it.
-                if self
-                    .claude_delivery
-                    .records_outcome(registration, &delivery.id)
-                {
+                if journal {
                     let _ = self.claude_delivery.consume(
                         &delivery.id,
                         &registration.name,
@@ -1417,10 +1417,7 @@ impl Core {
                 // A terminal event is not disposable even when its text cannot
                 // enter the session. Save the retirement marker before making
                 // Relaycast's non-retryable settlement durable.
-                if self
-                    .claude_delivery
-                    .records_outcome(registration, &delivery.id)
-                {
+                if journal {
                     let _ = self.claude_delivery.consume(
                         &delivery.id,
                         &registration.name,
