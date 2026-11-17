@@ -20,7 +20,7 @@ agent "watch for webhooks". Each post wakes it:
   next post and exits 2 with it, which wakes the idle session with the post; each turn's Stop hook re-arms it. One
   listener per session, and none for a closed session. The hooks run in every Claude Code session, but only a
   session that used the `webhooks` MCP (its transcript shows a `watch_webhooks`, `link_relay_wake`,
-  `wait_for_webhook` or `get_webhook_events` call) listens. While the inbox has a working relay wake link
+  `wait_for_webhook`, `get_webhook_events`, `ack_webhook_events` or `release_webhook_events` call) listens. While the inbox has a working relay wake link
   (`link_relay_wake`), no hook listener takes posts: the link delivers each one to the session that made it.
   `npx @agent-relay/events-shim uninstall --claude` removes the hooks.
 - **Codex, with or without Agent Relay Desktop: nothing to do.** `setup --codex` installs a SessionStart hook in
@@ -91,13 +91,38 @@ event arrives as a post naming the changed file (deduplicated per path and revis
 
 ## Tools
 
-| Tool                 | What it does                                                       |
-| -------------------- | ------------------------------------------------------------------ |
-| `watch_webhooks`     | Start here: webhook URLs, wake state, waiting posts and next steps |
-| `link_relay_wake`    | Link the session's relay webhook (checked with a test post first)  |
-| `unlink_relay_wake`  | Stop forwarding                                                    |
-| `get_webhook_events` | Unread posts (marks them read), or one post by id                  |
-| `wait_for_webhook`   | Block until a post arrives (≤ 50 s), then return it                |
+| Tool                     | What it does                                                                        |
+| ------------------------ | ----------------------------------------------------------------------------------- |
+| `watch_webhooks`         | Start here: webhook URLs, wake state, waiting posts and next steps                  |
+| `link_relay_wake`        | Link the session's relay webhook (checked with a test post first)                   |
+| `unlink_relay_wake`      | Stop forwarding                                                                     |
+| `get_webhook_events`     | Unread posts (marks them read), or one post by id                                   |
+| `wait_for_webhook`       | Block until a post arrives (≤ 50 s), then return it (marks it read, or leases it)   |
+| `ack_webhook_events`     | Mark posts a leased `wait_for_webhook` returned read (`ids` + `claim_token`)        |
+| `release_webhook_events` | Give posts a leased `wait_for_webhook` returned back unread (`ids` + `claim_token`) |
+
+### Leased waits
+
+`wait_for_webhook` marks the posts it returns read, unless it is called with `auto_ack: false` (the default when
+`ack_ids` is passed). Then the posts stay unread under a lease: the result carries a `claim_token` (and
+`claimed_at`), and for 2 minutes (`sendLeaseMs`) no other wait takes them. The caller then either
+
+- acknowledges them once handled: `ack_webhook_events` with their `ids` and `claim_token`, or the next
+  `wait_for_webhook` call's `ack_ids` and `ack_claim_token`;
+- or releases them: `release_webhook_events` with `ids` and `claim_token`, so the next wait takes them at once.
+
+Posts neither acknowledged nor released are offered again once the lease ends, so a listener that dies between
+claiming and handing a post over no longer loses it (delivery is at least once: a post whose acknowledgement was
+lost arrives again). Only the claimant can settle a lease: both tools need the `claim_token` of the current claim,
+a stale token (the lease ended and another wait took the posts) changes nothing, and they never touch unclaimed
+posts or posts a relay wake link is forwarding. The `claim_token` appears only in that `wait_for_webhook` result,
+never in the feed or `get_webhook_events`. A wait whose client leaves while it claims gives the posts back at once.
+While a relay wake link works, a leased wait takes nothing either.
+
+The CLI's listeners (`listen`, `--hook`, `--stop-hook`) wait with `auto_ack: false`: they acknowledge a batch once
+it is handed to the session (or printed), and release it when the session let go first. Against an inbox without
+leases (no `claim_token` in the result, see Hosting) they keep the older behaviour: the posts are already read,
+and a stop hook that let go keeps the post on disk for the next turn's hook.
 
 ## Webhook URLs
 
@@ -156,6 +181,13 @@ Create an inbox with `POST <mount>/shims`. It answers once with `mcp_url`, `webh
 - `PUT /shims/current/secrets/<github|stripe|linear|bearer>` with `{"secret": "…"}` sets the secret an
   authenticated URL checks (for `bearer`, send `{}` to have one generated and returned once; `null` removes it);
 - `POST /shims/current/rotate` replaces the webhook URL.
+
+Leases are optional for a host. `ackPending` and `releasePending` on `EventsShimStore` are optional methods; a
+store that implements both also stores `claimToken` when `claimPending` is called with `state: 'pending'`, and
+treats a `pending` post with a `deliveredAt` newer than `staleBefore` as leased (not claimable, not counted by
+`countPending`). Only then does the inbox lease `wait_for_webhook` claims and offer `ack_webhook_events` and
+`release_webhook_events`. A store without them never sees a `'pending'` claim: `wait_for_webhook` marks posts read
+as before, `auto_ack` and `ack_ids` are ignored, and the CLI listeners fall back as described above.
 
 Pass `deps.defer` (e.g. `ctx.waitUntil`) where background work must be kept alive after the response. A post is
 acknowledged before it is forwarded; if the relay fails temporarily, the post is retried in the background and

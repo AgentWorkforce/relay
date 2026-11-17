@@ -188,8 +188,9 @@ export class MemoryEventsShimStore implements EventsShimStore {
   async claimPending(
     shimId: string,
     options: { limit: number; ids?: string[]; staleBefore: string; linkedAt?: string },
-    state: 'sending' | 'read',
-    at: string
+    state: 'sending' | 'read' | 'pending',
+    at: string,
+    claimToken?: string
   ) {
     // Synchronous from read to write, so two callers can never claim the same post.
     const row = this.row(shimId);
@@ -204,10 +205,35 @@ export class MemoryEventsShimStore implements EventsShimStore {
       if (options.ids && !options.ids.includes(event.id)) continue;
       event.delivery = state;
       event.deliveredAt = at;
+      if (claimToken) event.claimToken = claimToken;
+      else delete event.claimToken;
       delete event.wakeError;
       claimed.push(structuredClone(event));
     }
     return claimed;
+  }
+
+  async ackPending(shimId: string, ids: string[], at: string, claimToken: string): Promise<string[]> {
+    const acked: string[] = [];
+    for (const event of this.row(shimId).events) {
+      if (!ids.includes(event.id) || !leasedTo(event, claimToken)) continue;
+      event.delivery = 'read';
+      event.deliveredAt = at;
+      delete event.claimToken;
+      acked.push(event.id);
+    }
+    return acked;
+  }
+
+  async releasePending(shimId: string, ids: string[], claimToken: string): Promise<string[]> {
+    const released: string[] = [];
+    for (const event of this.row(shimId).events) {
+      if (!ids.includes(event.id) || !leasedTo(event, claimToken)) continue;
+      delete event.deliveredAt;
+      delete event.claimToken;
+      released.push(event.id);
+    }
+    return released;
   }
 
   async confirmWake(shimId: string, eventId: string, claimedAt: string, at: string) {
@@ -238,9 +264,18 @@ export class MemoryEventsShimStore implements EventsShimStore {
   }
 }
 
-/** `pending`, or `sending` with a claim that expired before `staleBefore`. */
+/** `pending` (unleased or lease expired), or `sending` with a claim that expired before `staleBefore`. */
 function claimable(event: ShimEvent, staleBefore: string): boolean {
-  return (
-    event.delivery === 'pending' || (event.delivery === 'sending' && (event.deliveredAt ?? '') < staleBefore)
-  );
+  if (event.delivery === 'read' || event.delivery === 'woken') return false;
+  return !event.deliveredAt || event.deliveredAt < staleBefore;
+}
+
+/**
+ * Whether `event` is a `wait_for_webhook` lease held by `claimToken`: `pending`
+ * with a claim, whose stored token matches (or, stored without one, whose claim
+ * time does). Unclaimed and `sending` posts never match.
+ */
+function leasedTo(event: ShimEvent, claimToken: string): boolean {
+  if (!claimToken || event.delivery !== 'pending' || event.deliveredAt === undefined) return false;
+  return (event.claimToken ?? event.deliveredAt) === claimToken;
 }

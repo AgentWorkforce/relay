@@ -1651,6 +1651,42 @@ function unlock(io: CliIo, lock: string): void {
   if (io.readText(lock)?.trim() === String(io.pid)) rmSync(lock, { force: true });
 }
 
+/** A \`wait_for_webhook\` batch the inbox holds on a lease for this listener. */
+interface Claim {
+  ids: string[];
+  token: string;
+}
+
+/**
+ * The lease on a \`wait_for_webhook\` batch, or null when the inbox has no
+ * leases (it returned no claim token and already marked the posts read).
+ */
+function claimOf(batch: Record<string, unknown>, events: PublicEvent[]): Claim | null {
+  const token =
+    typeof batch.claim_token === 'string'
+      ? batch.claim_token
+      : typeof batch.claimed_at === 'string'
+        ? batch.claimed_at
+        : '';
+  const ids = events.flatMap((event) => (typeof event.id === 'string' ? [event.id] : []));
+  return token && ids.length > 0 ? { ids, token } : null;
+}
+
+/**
+ * Acknowledges a handed-over batch, or releases one the listener let go. Best
+ * effort: if the inbox cannot be reached the lease ends by itself and the
+ * posts are offered again (so an unacknowledged batch may arrive twice).
+ */
+async function settleClaim(io: CliIo, mcpUrl: string, how: 'ack' | 'release', claim: Claim): Promise<void> {
+  await callTool(
+    io,
+    mcpUrl,
+    how === 'ack' ? 'ack_webhook_events' : 'release_webhook_events',
+    { ids: claim.ids, claim_token: claim.token },
+    AbortSignal.timeout(5_000)
+  ).catch(() => undefined);
+}
+
 /**
  * Waits for posts as this inbox's single listener and hands each batch to
  * \`deliver\`. At most one process per session (a session lock) and one
@@ -1663,14 +1699,20 @@ function unlock(io: CliIo, lock: string): void {
  * open (Copilot, Gemini CLI) only runs again once that session took another
  * turn, so the older one waits for a turn nobody reads.
  *
- * @returns The exit code: \`deliver\`'s when it ends the listener, else 0.
+ * \`deliver\` gets each batch and whether the inbox holds it on a lease
+ * (\`wait_for_webhook\` returned a claim token). It returns the exit code
+ * once it handed the batch over, or \`null\` to let a leased batch go (its
+ * session is gone): the listener then acknowledges or releases the claim.
+ * A batch without a lease is already read and must be kept.
+ *
+ * @returns The exit code: \`deliver\`'s, or 0.
  */
 async function listenAsSessionOwner(
   io: CliIo,
   mcpUrl: string,
   sessionKey: string,
   alive: () => boolean,
-  deliver: (text: string) => Promise<number | null>,
+  deliver: (text: string, leased: boolean) => Promise<number | null>,
   takeOver = false,
   takeHeld?: () => string | null,
   drain: () => boolean = () => false
@@ -1707,19 +1749,15 @@ async function listenAsSessionOwner(
         while (alive() && io.readText(inboxLock)?.trim() === String(io.pid)) {
           // A post an earlier owner claimed but could not hand over goes first.
           const kept = takeHeld?.();
-          if (kept) {
-            const exit = await deliver(kept);
-            if (exit !== null) return exit;
-            continue;
-          }
+          if (kept) return (await deliver(kept, false)) ?? 0;
           // A relay wake link delivers every post to the session that linked it. Claiming one here
-          // (wait_for_webhook marks it read) would take it from that session, so stand down.
+          // would take it from that session, so stand down.
           if (await relayWakeLinked(io, mcpUrl)) return 0;
           // The session may have closed while that was asked: start no wait for it.
           if (!alive()) return 0;
           const controller = new AbortController();
           // While \`drain()\`, a wait in flight is not cut off: the inbox may already have handed it
-          // posts, which \`deliver\` then keeps for the next owner.
+          // posts, which \`deliver\` then lets go (leased) or keeps for the next owner.
           const watch = setInterval(() => {
             if (!alive() && !drain()) controller.abort();
           }, 2_000);
@@ -1729,12 +1767,13 @@ async function listenAsSessionOwner(
               io,
               mcpUrl,
               'wait_for_webhook',
-              { timeout_seconds: 50 },
+              { timeout_seconds: 50, auto_ack: false },
               signal
             ).finally(() => clearInterval(watch));
             backoff = 1_000;
             const events = Array.isArray(batch.events) ? (batch.events as PublicEvent[]) : [];
             if (events.length > 0) {
+              const claim = claimOf(batch, events);
               const exit = await deliver(
                 [
                   `Webhook inbox (agent-relay-webhooks): ${events.length === 1 ? 'a post arrived' : `${events.length} posts arrived`}.`,
@@ -1742,9 +1781,11 @@ async function listenAsSessionOwner(
                   events.map(describePost).join('\n\n---\n\n'),
                   '',
                   'Act on it as the person asked when they set up this webhook. You will be woken again by the next post.',
-                ].join('\n')
+                ].join('\n'),
+                claim !== null
               );
-              if (exit !== null) return exit;
+              if (claim) await settleClaim(io, mcpUrl, exit === null ? 'release' : 'ack', claim);
+              return exit ?? 0;
             }
           } catch (error) {
             if (error instanceof CliError) return 0;
@@ -1794,7 +1835,7 @@ async function hookInput(io: CliIo): Promise<{ session: string; transcript: stri
 
 /** The webhooks MCP tools whose call opts a Claude Code session in (\`mcp__webhooks__watch_webhooks\`). */
 const WEBHOOKS_TOOL = new RegExp(
-  `^mcp__${MCP_SERVER_NAME}__(watch_webhooks|link_relay_wake|wait_for_webhook|get_webhook_events)$`
+  `^mcp__${MCP_SERVER_NAME}__(watch_webhooks|link_relay_wake|wait_for_webhook|get_webhook_events|ack_webhook_events|release_webhook_events)$`
 );
 
 /** The longest transcript line read for an opt-in; a tool call record is far shorter. */
@@ -2213,10 +2254,15 @@ async function listenStopHook(io: CliIo, flags: Record<string, string>): Promise
         mcpUrl,
         sessionKey,
         alive,
-        async (text) => {
-          // Let go meanwhile: the CLI would drop the answer, so the next turn's hook takes it.
-          if (!alive()) writePrivate(held, text);
-          else answer(text);
+        async (text, leased) => {
+          if (alive()) {
+            answer(text);
+            return 0;
+          }
+          // Let go meanwhile: the CLI would drop the answer. A leased batch goes back to the inbox;
+          // one the inbox already marked read is kept, so the next turn's hook takes it.
+          if (leased) return null;
+          writePrivate(held, text);
           return 0;
         },
         true,
@@ -2582,7 +2628,13 @@ async function listen(io: CliIo, flags: Record<string, string>): Promise<number>
     // Each request is bounded too: a stalled connection is dropped and retried.
     const signal = AbortSignal.timeout(Math.min(wait * 1000 + 15_000, remaining + 15_000));
     try {
-      const batch = await callTool(io, mcpUrl, 'wait_for_webhook', { timeout_seconds: wait }, signal);
+      const batch = await callTool(
+        io,
+        mcpUrl,
+        'wait_for_webhook',
+        { timeout_seconds: wait, auto_ack: false },
+        signal
+      );
       backoff = 1_000;
       const events = Array.isArray(batch.events) ? (batch.events as PublicEvent[]) : [];
       if (events.length > 0) {
@@ -2591,6 +2643,8 @@ async function listen(io: CliIo, flags: Record<string, string>): Promise<number>
         io.stdout(
           '(Act on it, then start the listener again in the background: npx -y @agent-relay/events-shim@latest listen)'
         );
+        const claim = claimOf(batch, events);
+        if (claim) await settleClaim(io, mcpUrl, 'ack', claim);
         return 0;
       }
     } catch (error) {

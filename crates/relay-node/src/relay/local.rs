@@ -5938,15 +5938,8 @@ printf '{{"jsonrpc":"2.0","id":"%s","result":{{"stopReason":"end_turn","outputTo
         config.uid = uid;
         let sessions = LocalSessions::new(config.clone(), world.table.clone());
         let target = Target::new(SessionKind::CursorCli, conversation);
-        // Before Cursor wrote the conversation's transcript, a hook naming
-        // no conversation may not take it up; its tool naming it does.
-        assert!(!cursor_cli::record_editor_hook(
-            &config.cursor,
-            world.table.as_ref(),
-            700,
-            700,
-            &serde_json::json!({"hook_event_name": "beforeSubmitPrompt", "conversation_id": conversation}),
-        ));
+        // Before Cursor wrote the conversation's transcript and before any
+        // hook recorded it, its tool naming it puts it on this window.
         assert_eq!(sessions.caller_target(710).ok(), Some(target.clone()));
         // Without the conversation's own id, an inherited Codex thread or
         // the Claude Code session above names nobody.
