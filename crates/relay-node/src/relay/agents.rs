@@ -1746,12 +1746,25 @@ impl Core {
                     format!("Could not read @{}'s messages.", registration.name),
                 )
             })?;
-        Ok(self.store.read(|store| {
+        let pending = self.store.read(|store| {
             queue
                 .iter()
                 .filter(|d| d.is_pending() && !store.was_handled(&d.id))
                 .count()
-        }))
+        });
+        // One read is the oldest slice, not the whole queue. Handled
+        // entries can fill that slice and hide a later message, so an
+        // empty count on a full page is not an empty queue.
+        if pending == 0 && queue.len() >= client::QUEUE_PAGE as usize {
+            return Err(RpcError::new(
+                ErrorKind::Refused,
+                format!(
+                    "Could not read @{}'s messages. The queue page was full, so a later message may still be waiting.",
+                    registration.name
+                ),
+            ));
+        }
+        Ok(pending)
     }
 }
 

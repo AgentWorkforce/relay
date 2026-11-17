@@ -10,6 +10,11 @@ use std::net::TcpListener;
 /// A Relaycast REST stand-in that accepts every write, recording each
 /// `DELETE` path.
 fn accepting_relaycast() -> (String, Arc<Mutex<Vec<String>>>) {
+    relaycast(r#"{"ok":true,"data":[]}"#.to_string())
+}
+
+/// Like [`accepting_relaycast`], with `queue` as the deliveries body.
+fn relaycast(queue: String) -> (String, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let deleted = Arc::new(Mutex::new(Vec::new()));
@@ -44,9 +49,10 @@ fn accepting_relaycast() -> (String, Arc<Mutex<Vec<String>>>) {
                 let body = if method == "PATCH" {
                     r#"{"ok":true,"data":{"id":"a","name":"a","type":"agent","status":"online"}}"#
                 } else if path.contains("deliveries") {
-                    // An empty queue. `data: null` is an unreadable list, and
-                    // a failed read keeps an idle Grok leader.
-                    r#"{"ok":true,"data":[]}"#
+                    // An empty queue is `{"ok":true,"data":[]}`. `data: null`
+                    // is an unreadable list, and a failed read keeps an idle
+                    // Grok leader.
+                    queue.as_str()
                 } else {
                     r#"{"ok":true,"data":null}"#
                 };
@@ -487,6 +493,48 @@ async fn a_grok_leader_with_no_credential_is_not_ended() {
             // A gate launch's token lives in memory. After a restart the
             // queue cannot be read, which is not an empty queue.
             spawn.gate_launch = true;
+        })
+        .unwrap();
+    observer.set("leader", ProcessLiveness::Running, WorkState::Idle, false);
+    core.observe_spawned().await;
+    {
+        let ledger = core.ledger();
+        ledger.lock().agents.get_mut("leader").unwrap().idle_since =
+            Some(chrono::Utc::now() - chrono::Duration::hours(25));
+    }
+    drop_spawn_receipts(home.path());
+    core.observe_spawned().await;
+    assert!(registered(&core, "leader"));
+    assert!(spawner.stopped.lock().unwrap().is_empty());
+    assert!(deleted.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_grok_leader_with_a_full_queue_page_is_not_ended() {
+    std::env::remove_var("SSL_CERT_FILE");
+    std::env::remove_var("SSL_CERT_DIR");
+    let home = tempfile::tempdir().unwrap();
+    // The oldest page, already settled. A later unread message would sit
+    // past it, so this is not an empty queue.
+    let items: Vec<String> = (0..crate::relay::client::QUEUE_PAGE)
+        .map(|index| {
+            format!(r#"{{"id":"del_{index}","message_id":"msg_{index}","status":"acked"}}"#)
+        })
+        .collect();
+    let (base, deleted) = relaycast(format!(r#"{{"ok":true,"data":[{}]}}"#, items.join(",")));
+    let spawner = Arc::new(FakeSpawner::default());
+    let core = core_at(home.path(), spawner.clone(), &base);
+    let observer = observed(&core);
+    spawn(&core, "leader").await;
+    core.store
+        .update(|store| {
+            let leader = store
+                .registrations
+                .iter_mut()
+                .find(|registration| registration.name == "leader")
+                .unwrap();
+            leader.target.kind = crate::relay::store::SessionKind::Grok;
+            leader.spawn.as_mut().unwrap().harness = crate::relay::harness::grok::ID.name().into();
         })
         .unwrap();
     observer.set("leader", ProcessLiveness::Running, WorkState::Idle, false);
