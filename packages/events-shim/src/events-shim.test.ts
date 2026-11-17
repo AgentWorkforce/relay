@@ -35,6 +35,8 @@ interface ToolJson {
   events: EventJson[];
   forwarded_waiting: number;
   more: boolean;
+  claim_token?: string;
+  claimed_at?: string;
 }
 
 interface RelayCall {
