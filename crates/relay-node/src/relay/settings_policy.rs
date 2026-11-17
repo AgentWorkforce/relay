@@ -268,6 +268,43 @@ fn plan(
     (locks, defaults)
 }
 
+/// The organization's locked values put back into the store fields that
+/// hold them, after a merge of two processes' saves: a save made before
+/// the lock arrived must not leave a locked setting at another value next to
+/// the lock. Only the store-held settings the workspace policy names are
+/// rewritten (spawning, joining #general), under the same consent rule as
+/// any apply; the next apply corrects the rest.
+pub(crate) fn relock(store: &mut crate::relay::store::Store) {
+    let Some(policy) = store
+        .organization_policy
+        .as_ref()
+        .and_then(|stored| stored.policy.clone())
+    else {
+        return;
+    };
+    let mut current = crate::relay::spawn::settings::values(store, false);
+    current.insert(GENERAL.into(), Value::Bool(store.auto_joins_general()));
+    let mut changes = Map::new();
+    for (key, value) in &policy.locked {
+        let held = crate::relay::spawn::settings::KEYS.contains(&key.as_str()) || key == GENERAL;
+        if held && current.get(key) != Some(value) && policy.may_apply(key, value, current.get(key))
+        {
+            changes.insert(key.clone(), value.clone());
+        }
+    }
+    if let Some(Value::Bool(general)) = changes.remove(GENERAL) {
+        store.extras.auto_join_general = Some(general);
+    }
+    if !changes.is_empty() {
+        if let Ok(change) = crate::relay::spawn::settings::Change::read(&changes) {
+            change.apply(store);
+        }
+    }
+}
+
+/// The store-held `auto_join_general` setting.
+const GENERAL: &str = "auto_join_general";
+
 impl Core {
     /// The organization's policy over settings, when one applies.
     pub fn settings_policy(&self) -> Option<SettingsPolicy> {
@@ -579,6 +616,36 @@ mod tests {
         let state = p.state(&values);
         assert_eq!(state.mismatched, vec!["spawn_full_access_codex"]);
         assert_eq!(state.locked, vec!["spawn_billing_codex"]);
+    }
+
+    /// Two processes save at once, one before a lock arrived: the merged
+    /// store keeps the lock and the locked value together.
+    #[test]
+    fn a_merge_keeps_a_locked_value_with_its_lock() {
+        use crate::relay::store::Store;
+        let base = Store {
+            spawn_max_agents: Some(8),
+            ..Store::default()
+        };
+        // A process that has not seen the lock changes the cap.
+        let mut ours = base.clone();
+        ours.spawn_max_agents = Some(6);
+        ours.extras.auto_join_general = Some(true);
+        // Another installs a lock of 4 and saves it.
+        let mut theirs = base.clone();
+        theirs.organization_policy = Some(Stored {
+            policy: Some(policy(json!({
+                "locked": {"spawn_max_agents": 4, "auto_join_general": false, "accept_spawns": true},
+            }))),
+            applied_defaults: BTreeMap::new(),
+        });
+        theirs.spawn_max_agents = Some(4);
+        let merged = Store::merged(&base, &ours, &theirs);
+        assert!(merged.organization_policy.is_some());
+        assert_eq!(merged.spawn_max_agents, Some(4));
+        assert_eq!(merged.extras.auto_join_general, Some(false));
+        // A widening person-only lock is not forced on an unmanaged computer.
+        assert_ne!(merged.accept_spawns, Some(true));
     }
 
     /// A harness's part of `spawn_harnesses` is the same setting as its flat

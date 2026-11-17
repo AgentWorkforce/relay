@@ -304,6 +304,9 @@ impl Store {
         result.tidy_activation_failures();
         preserve_spawn_origins(&mut result, &[ours, theirs, base]);
         super::integration::preserve_filters(&mut result, &[ours, theirs, base]);
+        // A save made before the organization's lock arrived must not leave
+        // a locked setting at another value beside the lock.
+        crate::relay::settings_policy::relock(&mut result);
         result
     }
 
