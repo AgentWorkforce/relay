@@ -75,6 +75,7 @@ pub(crate) fn attach_plugins(core: &Arc<Core>) {
                 .map(|core| core.forced_repositories())
                 .unwrap_or_default()
         }));
+    core.sync_organization_hold();
     core.refresh_mobile_claude_plugin();
     if let Some(account) = &core.plugins.account {
         account.attach(core);

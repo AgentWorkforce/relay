@@ -60,6 +60,23 @@ pub const PERSON_ONLY: [&str; 7] = [
 /// Turned on by an operator only on a managed computer; turned off on any.
 const ANALYTICS: &str = "analytics_enabled";
 
+/// The delivery section's rule for messages from non-admin senders.
+const INBOUND: &str = "inbound_default";
+
+/// The organization's admins, by relay name and address, as Control serves
+/// them: their messages always deliver.
+const ADMIN_SENDERS: &str = "admin_senders";
+
+/// Whether an `inbound_default` value holds (`hold`) or delivers
+/// (`deliver`); `None` for any other value.
+fn inbound_holds(value: &Value) -> Option<bool> {
+    match value.as_str()? {
+        "hold" => Some(true),
+        "deliver" => Some(false),
+        _ => None,
+    }
+}
+
 /// The settings part of an organization's workspace policy, as the account
 /// hands it over: every section's tiers merged by key.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -347,7 +364,11 @@ impl Core {
                     .and_then(|stored| stored.policy.take())
                     .is_some()
             });
-            if cleared.map_err(|e| RpcError::store(&e))? {
+            // The hold is lifted only once the policy's removal is saved: a
+            // failed save keeps both, as the caller is told.
+            let cleared = cleared.map_err(|e| RpcError::store(&e))?;
+            self.sync_organization_hold_with(None);
+            if cleared {
                 self.hub()
                     .invalidated(crate::relay::state::Listing::Settings);
             }
@@ -381,6 +402,7 @@ impl Core {
         // A default is recorded only once it is in the setting, as the
         // setting then reads, so a failed write is tried again next time.
         let mut record = applied;
+        self.apply_inbound_policy(&policy, &mut record);
         for (key, value, write) in defaults {
             if write && !self.write_policy_value(&key, value.clone()) {
                 continue;
@@ -430,6 +452,107 @@ impl Core {
     pub(crate) fn locked_by_organization(&self, key: &str) -> bool {
         self.settings_policy()
             .is_some_and(|policy| policy.locked.contains_key(key))
+    }
+
+    /// The delivery section: a locked `inbound_default: "hold"` holds every
+    /// message from a sender not in `admin_senders`, in every harness
+    /// (`claude_delivery_policy`); defaulted, it seeds the person's own
+    /// known-senders-only restriction once, as any default is written.
+    fn apply_inbound_policy(
+        &self,
+        policy: &SettingsPolicy,
+        record: &mut BTreeMap<String, AppliedDefault>,
+    ) {
+        // The person's restriction is put in place before the organization's
+        // hold changes, so a delivery decided in between is held by one or
+        // the other, never by neither.
+        if !policy.locked.contains_key(INBOUND) {
+            self.seed_inbound_default(policy, record);
+        }
+        self.sync_organization_hold_with(Some(policy));
+    }
+
+    /// A defaulted `inbound_default`, written once into the person's own
+    /// restriction like any default.
+    fn seed_inbound_default(
+        &self,
+        policy: &SettingsPolicy,
+        record: &mut BTreeMap<String, AppliedDefault>,
+    ) {
+        let Some(hold) = policy.defaults.get(INBOUND).and_then(inbound_holds) else {
+            return;
+        };
+        let given = policy.defaults[INBOUND].clone();
+        let current = Value::Bool(self.claude_delivery.restricted());
+        let previous = record.get(INBOUND);
+        let untouched = previous.is_none_or(|previous| previous.applied == current);
+        let already = previous.is_some_and(|previous| previous.given == given);
+        if !untouched || already {
+            return;
+        }
+        if current != Value::Bool(hold) {
+            if let Err(error) = self.set_claude_delivery_restricted(hold) {
+                crate::relay::diagnostics::write(format_args!(
+                    "relay: the organization's value for {INBOUND} was not applied: {}",
+                    error.message
+                ));
+                return;
+            }
+        }
+        record.insert(
+            INBOUND.into(),
+            AppliedDefault {
+                given,
+                applied: Value::Bool(self.claude_delivery.restricted()),
+            },
+        );
+    }
+
+    /// Gives the delivery policy the organization's hold from the stored
+    /// policy: at startup, before the account reads the policy again.
+    pub(crate) fn sync_organization_hold(&self) {
+        let policy = self.settings_policy();
+        self.sync_organization_hold_with(policy.as_ref());
+    }
+
+    fn sync_organization_hold_with(&self, policy: Option<&SettingsPolicy>) {
+        let admins = policy.and_then(|policy| {
+            let holds = policy.locked.get(INBOUND).and_then(inbound_holds) == Some(true);
+            holds.then(|| {
+                policy
+                    .locked
+                    .get(ADMIN_SENDERS)
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect::<BTreeSet<String>>()
+            })
+        });
+        if self.set_organization_hold(admins) {
+            // Held or released messages are read again under the new rule.
+            let names = self.store.read(|store| {
+                store
+                    .registrations
+                    .iter()
+                    .map(|registration| registration.name.clone())
+                    .collect::<Vec<_>>()
+            });
+            for name in names {
+                self.request_drain(&name);
+            }
+        }
+    }
+
+    /// Sets the organization's hold under the delivery lock, which a channel
+    /// batch's final hold check and pin save also hold: a hold either
+    /// arrives before that check, which sees it, or after the pin is saved,
+    /// when the batch is already handed over. Lock order: delivery, then the
+    /// hold. Answers whether the hold changed.
+    pub(crate) fn set_organization_hold(&self, admins: Option<BTreeSet<String>>) -> bool {
+        let _pins = self.delivery_state();
+        self.claude_delivery.set_organization_hold(admins)
     }
 
     /// `settings.get`'s `organization_policy`, for `values`.

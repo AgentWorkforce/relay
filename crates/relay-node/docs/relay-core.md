@@ -890,6 +890,42 @@ without an account has no policy and is unchanged.
   `{locked, defaults, mismatched, managed}`, key names only, for Settings to
   label each row; absent when no policy applies.
 
+### Messages the organization holds
+
+The policy's delivery section decides inbound messages in every harness
+(`src/relay/claude_delivery_policy.rs`, which keeps its Claude-named file,
+methods and fields for compatibility):
+
+- **Locked `inbound_default: "hold"`:** a message from a sender in
+  `admin_senders` (Control's resolved relay names and addresses of the
+  organization's owners and admins, matched by authenticated address or by
+  name) always delivers. Any other sender's message is held for the person,
+  in every `SessionKind`, through the existing hold path; a push without the
+  sender's address reads the queue first. The person approves or dismisses
+  each held message (`claude_delivery.status` lists them all, with
+  `organization_hold: true`), but "Always allow" for a sender is refused while
+  the rule applies ("Your organization holds messages from senders who are
+  not its admins…"). Exceptions saved before it stay saved and apply again
+  once it is lifted. The held record says "Held by your organization: the
+  sender is not one of its admins."
+- **Defaulted `inbound_default`:** `hold` turns the person's own
+  known-senders-only restriction on, `deliver` off, once, as any default is
+  written; the person may change it and a later apply does not undo that.
+- The rule is held in memory, given on every policy apply and at startup
+  from the stored policy, and lifted with the policy. Changing it asks every
+  agent's queue to be read again. A message admitted just before a hold
+  begins meets the hand-over gate (`hand_over_held`) at each point it is
+  handed to the session, with no await in between: inside the ordinary
+  route's and native continuation's blocking calls, right before the route,
+  and right before the mobile journal takes the turn. If the hold now
+  applies, it waits in the queue, to be held on the next pass. A channel
+  batch is gated as its pin is saved (the pin is its hand-over): the check and
+  the save are one step under the delivery lock, which every hold change also
+  takes (`Core::set_organization_hold`), so a hold arrives either before the
+  check or after the save. If the hold covers any of its posts, nothing is
+  pinned and the posts go one by one, held or delivered on their own. A message whose route call has
+  already begun, or a batch already pinned, completes.
+
 ### Repositories that join by themselves
 
 `auto_join_repositories` (`src/relay/repositories.rs`) is a list of
@@ -910,7 +946,8 @@ included or per-work-tree) or unreadable, a config that includes itself or
 exceeds the budget, and an `includeIf` pattern over 1 KiB, a git directory
 path over 4 KiB or a match over a fixed work budget all name no repository, a linked work tree's own
 `config.worktree` applies when the repository enables
-`extensions.worktreeConfig`, the last `url` set wins, and a directory reached
+`extensions.worktreeConfig`, the first `url` set is used (the one `git fetch`
+uses), and a directory reached
 through a link is looked up where it really is. A one-letter host (`g:acme/web`) is an SSH alias except on
 Windows, where it is a drive.
 
@@ -918,8 +955,9 @@ Windows, where it is a drive.
   repository is activated (registered with its ready record) as if automatic
   activation were on for its harness: with `auto_activate` off, without Pi's
   or OpenCode's own opt-in, and in an excluded directory. The session
-  directory is told the list on every reconcile pass
-  (`SessionDirectory::forced_repositories`), and `/setup/status`'s
+  directory reads the core's current list on every check, through the
+  source `attach_plugins` gives it once
+  (`SessionDirectory::forced_repositories_from`), and `/setup/status`'s
   `auto_activates` says the same.
 - **The person's own list** (set, or seeded by a policy default): it adds no
   activation; matching sessions follow automatic activation like any other.

@@ -907,12 +907,18 @@ public struct ClaudeDeliverySession: Codable, Equatable, Hashable, Sendable {
 public struct ClaudeDeliveryStatus: Codable, Equatable, Hashable, Sendable {
     public let allowedSenders: [ClaudeSender]
     public let held: [ClaudeHeldDelivery]
+    /// The organization holds every message from a sender who is not one of
+    /// its admins, in every harness (`claude_delivery_policy`): while true,
+    /// held messages may be approved one by one, but no sender can be
+    /// allowed for good. Absent when no such rule applies.
+    public let organizationHold: Bool?
     public let restricted: Bool
     public let sessions: [ClaudeDeliverySession]
 
-    public init(allowedSenders: [ClaudeSender], held: [ClaudeHeldDelivery], restricted: Bool, sessions: [ClaudeDeliverySession]) {
+    public init(allowedSenders: [ClaudeSender], held: [ClaudeHeldDelivery], organizationHold: Bool? = nil, restricted: Bool, sessions: [ClaudeDeliverySession]) {
         self.allowedSenders = allowedSenders
         self.held = held
+        self.organizationHold = organizationHold
         self.restricted = restricted
         self.sessions = sessions
     }
@@ -920,6 +926,7 @@ public struct ClaudeDeliveryStatus: Codable, Equatable, Hashable, Sendable {
     enum CodingKeys: String, CodingKey {
         case allowedSenders = "allowed_senders"
         case held
+        case organizationHold = "organization_hold"
         case restricted
         case sessions
     }
@@ -928,6 +935,7 @@ public struct ClaudeDeliveryStatus: Codable, Equatable, Hashable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.allowedSenders = try c.decode([ClaudeSender].self, forKey: .allowedSenders)
         self.held = try c.decode([ClaudeHeldDelivery].self, forKey: .held)
+        self.organizationHold = try c.decodeIfPresent(Bool.self, forKey: .organizationHold)
         self.restricted = try c.decode(Bool.self, forKey: .restricted)
         self.sessions = try c.decode([ClaudeDeliverySession].self, forKey: .sessions)
     }
@@ -936,6 +944,7 @@ public struct ClaudeDeliveryStatus: Codable, Equatable, Hashable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(self.allowedSenders, forKey: .allowedSenders)
         try c.encode(self.held, forKey: .held)
+        try c.encodeIfPresent(self.organizationHold, forKey: .organizationHold)
         try c.encode(self.restricted, forKey: .restricted)
         try c.encode(self.sessions, forKey: .sessions)
     }

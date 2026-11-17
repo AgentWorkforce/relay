@@ -847,6 +847,88 @@ mod tests {
         assert!(core.forced_repositories().is_empty());
     }
 
+    /// A locked hold reaches the delivery policy and is lifted with the
+    /// policy; a defaulted one seeds the person's restriction once.
+    #[tokio::test]
+    async fn the_delivery_section_holds_or_seeds_the_restriction() {
+        use crate::relay::settings_policy::SettingsPolicy;
+        let temp = tempfile::tempdir().unwrap();
+        let core = core(temp.path());
+        let locked: SettingsPolicy = serde_json::from_value(json!({
+            "locked": {"inbound_default": "hold", "admin_senders": ["lead"]},
+        }))
+        .unwrap();
+        core.apply_settings_policy(Some(locked)).unwrap();
+        assert!(core.claude_delivery_status().organization_hold);
+        assert!(core
+            .set_claude_sender_delivery("sam@desk", "Sam", true)
+            .is_err());
+        core.apply_settings_policy(None).unwrap();
+        assert!(!core.claude_delivery_status().organization_hold);
+
+        let defaulted: SettingsPolicy =
+            serde_json::from_value(json!({"defaults": {"inbound_default": "hold"}})).unwrap();
+        core.apply_settings_policy(Some(defaulted.clone())).unwrap();
+        assert!(!core.claude_delivery_status().organization_hold);
+        assert!(core.claude_delivery_status().restricted);
+        // The person turns it off: the default is not written again.
+        core.set_claude_delivery_restricted(false).unwrap();
+        core.apply_settings_policy(Some(defaulted)).unwrap();
+        assert!(!core.claude_delivery_status().restricted);
+    }
+
+    /// Moving between a locked hold and a defaulted one never leaves a
+    /// moment when neither the organization nor the person holds unknown
+    /// senders.
+    #[tokio::test]
+    async fn a_hold_handed_between_organization_and_person_never_opens() {
+        use crate::relay::settings_policy::SettingsPolicy;
+        let temp = tempfile::tempdir().unwrap();
+        let core = core(temp.path());
+        let locked: SettingsPolicy = serde_json::from_value(json!({
+            "locked": {"inbound_default": "hold", "admin_senders": ["lead"]},
+        }))
+        .unwrap();
+        let defaulted: SettingsPolicy =
+            serde_json::from_value(json!({"defaults": {"inbound_default": "hold"}})).unwrap();
+        core.apply_settings_policy(Some(locked.clone())).unwrap();
+        core.claude_delivery.states.lock().unwrap().clear();
+        core.apply_settings_policy(Some(defaulted)).unwrap();
+        let states = core.claude_delivery.states.lock().unwrap().clone();
+        assert!(!states.contains(&(false, false)), "{states:?}");
+        assert_eq!(states.last(), Some(&(false, true)));
+        // And back: the organization's hold is in place before anything else.
+        core.claude_delivery.states.lock().unwrap().clear();
+        core.apply_settings_policy(Some(locked)).unwrap();
+        let states = core.claude_delivery.states.lock().unwrap().clone();
+        assert!(!states.contains(&(false, false)), "{states:?}");
+        assert_eq!(states.last(), Some(&(true, true)));
+    }
+
+    /// Lifting the policy keeps the organization's hold when the removal
+    /// cannot be saved: the stored policy and the hold never disagree.
+    #[tokio::test]
+    async fn a_failed_lift_keeps_the_hold() {
+        use crate::relay::settings_policy::SettingsPolicy;
+        let temp = tempfile::tempdir().unwrap();
+        let core = core(temp.path());
+        let locked: SettingsPolicy = serde_json::from_value(json!({
+            "locked": {"inbound_default": "hold", "admin_senders": ["lead"]},
+        }))
+        .unwrap();
+        core.apply_settings_policy(Some(locked)).unwrap();
+        assert!(core.claude_delivery.organization_holds());
+        // The store file changed into something this core cannot read, so
+        // the next save fails.
+        std::fs::write(
+            temp.path().join("app-data/injectable-agents.json"),
+            "not json",
+        )
+        .unwrap();
+        assert!(core.apply_settings_policy(None).is_err());
+        assert!(core.claude_delivery.organization_holds());
+    }
+
     #[test]
     fn a_change_records_the_value_before_and_after() {
         let before = map(json!({"auto_join_general": false, "auto_activate": true}));
