@@ -732,6 +732,36 @@ fn a_new_chat_is_one_cursor_has_no_trace_of() {
     ));
 }
 
+#[cfg(unix)]
+#[test]
+fn a_new_chat_is_not_one_behind_a_folder_that_cannot_be_read() {
+    use std::os::unix::fs::PermissionsExt;
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    if unsafe { libc::geteuid() } == 0 {
+        // Root reads any folder, whatever its mode.
+        return;
+    }
+    let (_temp, config, table) = world();
+    let fresh = brand_new(&config);
+    let hook = hook_under(&table, HOST_PID, 700);
+    // A project's transcripts that cannot be read may hold this chat's old
+    // transcript: its hooks are refused rather than taken as a new chat's.
+    let transcripts = config.data_dir.join("projects/work-api/agent-transcripts");
+    std::fs::create_dir_all(&transcripts).unwrap();
+    let mode = |mode| {
+        std::fs::set_permissions(&transcripts, std::fs::Permissions::from_mode(mode)).unwrap()
+    };
+    mode(0o000);
+    let caller = hook_caller(&config, &table, hook, fresh);
+    mode(0o755);
+    assert_eq!(caller, None);
+    // Once it can be read and holds nothing of the chat, the chat is new.
+    assert_eq!(
+        hook_caller(&config, &table, hook, fresh),
+        Some(HookCaller::Editor { host: HOST_PID })
+    );
+}
+
 #[test]
 fn a_new_chats_hooks_racing_claim_it_once() {
     let (_temp, config, table) = world();

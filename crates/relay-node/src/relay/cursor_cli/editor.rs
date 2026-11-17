@@ -237,17 +237,66 @@ fn never_seen(
     }
     let mut folders = vec![config.data_dir.clone(), config.home.join(".cursor")];
     folders.extend(window_data_dir(table, host));
-    folders.into_iter().all(|data_dir| {
-        // A projects folder that is there but cannot be read hides what it
-        // holds: that is no proof of a new chat.
-        let projects = data_dir.join("projects");
-        let readable = absent(&projects) || std::fs::read_dir(&projects).is_ok();
-        let folder = CursorConfig {
-            data_dir,
-            ..config.clone()
-        };
-        readable && super::inbox::transcripts(&folder, session_id).is_empty()
-    })
+    folders
+        .iter()
+        .all(|data_dir| transcripts_absent(data_dir, session_id))
+}
+
+/// Whether no project in `data_dir` holds a transcript of `session_id`, its
+/// own or a subagent's, looking where `inbox::transcripts` looks. That
+/// lookup skips what it cannot read; here any error other than NotFound on
+/// the way counts against absence, since a folder that cannot be read
+/// hides what it holds and is no proof of a new chat. Something that is
+/// there but is not a folder holds no transcript.
+fn transcripts_absent(data_dir: &Path, session_id: &str) -> bool {
+    use super::inbox::{agent_transcripts, own_transcript, projects_dir, subagent_transcript};
+    let search = || -> std::io::Result<bool> {
+        for project in subfolders(&projects_dir(data_dir))? {
+            let transcripts = agent_transcripts(&project);
+            let parents = subfolders(&transcripts)?;
+            if is_file(&own_transcript(&transcripts, session_id))? {
+                return Ok(false);
+            }
+            for parent in parents {
+                if is_file(&subagent_transcript(&parent, session_id))? {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    };
+    search().unwrap_or(false)
+}
+
+/// What is at `path`, following links as a transcript lookup does: `None`
+/// when nothing is, and an error for anything else that cannot be told.
+fn found(path: &Path) -> std::io::Result<Option<std::fs::Metadata>> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Whether a file is at `path`, or an error if that cannot be told.
+fn is_file(path: &Path) -> std::io::Result<bool> {
+    Ok(found(path)?.is_some_and(|metadata| metadata.is_file()))
+}
+
+/// The folders in the folder `path`: none when nothing or no folder is
+/// there, and an error if it or any of its entries cannot be read.
+fn subfolders(path: &Path) -> std::io::Result<Vec<PathBuf>> {
+    if !found(path)?.is_some_and(|metadata| metadata.is_dir()) {
+        return Ok(Vec::new());
+    }
+    let mut folders = Vec::new();
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?.path();
+        if found(&entry)?.is_some_and(|metadata| metadata.is_dir()) {
+            folders.push(entry);
+        }
+    }
+    Ok(folders)
 }
 
 /// The `CURSOR_DATA_DIR` the Cursor of `host`'s window runs with: from the
