@@ -914,10 +914,12 @@ methods and fields for compatibility):
 - The rule is held in memory, given on every policy apply and at startup
   from the stored policy, and lifted with the policy. Changing it asks every
   agent's queue to be read again. A message admitted just before a hold
-  begins is checked again right before it is handed to the session, and
-  waits in the queue if the hold now applies, to be held on the next pass.
-  A message whose hand-over is already under way (the session's route has
-  been called) completes.
+  begins meets the hand-over gate (`hand_over_held`) at each point it is
+  handed to the session, with no await in between: inside the ordinary
+  route's and native continuation's blocking calls, right before the route,
+  and right before the mobile journal takes the turn. If the hold now
+  applies, it waits in the queue, to be held on the next pass. A message
+  whose route call has already begun completes.
 
 ### Repositories that join by themselves
 
@@ -939,7 +941,8 @@ included or per-work-tree) or unreadable, a config that includes itself or
 exceeds the budget, and an `includeIf` pattern over 1 KiB, a git directory
 path over 4 KiB or a match over a fixed work budget all name no repository, a linked work tree's own
 `config.worktree` applies when the repository enables
-`extensions.worktreeConfig`, the last `url` set wins, and a directory reached
+`extensions.worktreeConfig`, the first `url` set is used (the one `git fetch`
+uses), and a directory reached
 through a link is looked up where it really is. A one-letter host (`g:acme/web`) is an SSH alias except on
 Windows, where it is a drive.
 
@@ -947,8 +950,9 @@ Windows, where it is a drive.
   repository is activated (registered with its ready record) as if automatic
   activation were on for its harness: with `auto_activate` off, without Pi's
   or OpenCode's own opt-in, and in an excluded directory. The session
-  directory is told the list on every reconcile pass
-  (`SessionDirectory::forced_repositories`), and `/setup/status`'s
+  directory reads the core's current list on every check, through the
+  source `attach_plugins` gives it once
+  (`SessionDirectory::forced_repositories_from`), and `/setup/status`'s
   `auto_activates` says the same.
 - **The person's own list** (set, or seeded by a policy default): it adds no
   activation; matching sessions follow automatic activation like any other.

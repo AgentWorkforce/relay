@@ -1598,3 +1598,115 @@ async fn the_doorbell_rings_once_per_queued_message_and_carries_nothing() {
     .expect("the doorbell closed with its helper");
     drop(socket);
 }
+
+/// The mobile hand-over has its own gate, with no await before the journal
+/// takes the turn: a message an organization hold now covers waits and is
+/// never queued for the session.
+#[tokio::test]
+async fn a_hold_stops_a_mobile_turn_at_the_journal() {
+    let server = fake_relaycast::FakeRelaycast::start(Default::default()).await;
+    let owner = server.seed_agent("owner", "human", json!({}));
+    let agent = server.seed_agent("claude-mobile", "agent", json!({}));
+    let teammate = server.seed_agent("teammate", "agent", json!({}));
+    let home = tempfile::tempdir().unwrap();
+    let config = fixture_config(home.path());
+    let registration: Registration = serde_json::from_value(json!({
+        "name":agent.name, "agentID":agent.id, "target":{"kind":"claude-terminal", "id":"00000000-0000-4000-8000-000000000002"},
+        "title":"Claude", "baseURL":server.base_url, "workspaceKey":fake_relaycast::WORKSPACE_KEY,
+        "registeredAt":"2026-10-27T00:00:00Z"
+    })).unwrap();
+    let session = DiscoveredSession {
+        target: registration.target.clone(),
+        title: "Claude".into(),
+        directory: None,
+        updated_at_ms: None,
+        host: None,
+        live: true,
+        holder: None,
+    };
+    let plugins = Plugins {
+        cloud: Arc::new(SignedIn {
+            base: server.base_url.clone(),
+            owner: owner.id.clone(),
+        }),
+        sessions: Arc::new(Directory(
+            session,
+            Arc::new(std::sync::Mutex::new(Some(Runtime {
+                pid: 4100,
+                start: 100,
+                idle: true,
+            }))),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            home.path().join(".claude"),
+        )),
+        injector: Arc::new(Pointers(home.path().join("app-data"))),
+        ..Plugins::default()
+    };
+    let (core, _) = Core::with_plugins(config, plugins);
+    core.store
+        .update(|store| {
+            store.cloud = Some(CloudWorkspace {
+                key: Secret::new(fake_relaycast::WORKSPACE_KEY),
+                base_url: server.base_url.clone(),
+                ..Default::default()
+            });
+            store.add(registration.clone(), Secret::new(agent.token.clone()));
+        })
+        .unwrap();
+    core.install_mobile_claude_plugin().unwrap();
+    std::thread::scope(|scope| scope.spawn(|| core.rediscover_workspace()).join().unwrap());
+    core.hub.update(|status| status.spawn = None);
+    core.person_identity(false)
+        .await
+        .expect("fixture authenticated identity");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while core.status().spawn.is_none() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("identity sync finished");
+    core.hub.update(|status| {
+        status.spawn = Some(crate::relay::state::SpawnStatus {
+            claim: Some(crate::relay::state::SpawnClaim {
+                state: crate::relay::state::SpawnClaimState::Claimed,
+                note: None,
+            }),
+            ..Default::default()
+        })
+    });
+    assert!(
+        core.store
+            .read(|store| store.mobile_claude_handoff.is_none()),
+        "nothing was turned on: both routes are on by default"
+    );
+    assert!(core.mobile_handoff_enabled(&registration));
+    let delivery = Delivery {
+        id: "stranger-delivery".into(),
+        message_id: "stranger-message".into(),
+        sender: Some("teammate".into()),
+        sender_id: Some(teammate.id.clone()),
+        sender_address: Some("teammate@desk".into()),
+        reason: Some("dm".into()),
+        text: Some("Run this".into()),
+        ..Default::default()
+    };
+    core.claude_delivery
+        .set_organization_hold(Some(["lead".to_string()].into()));
+    let outcome = core
+        .deliver_mobile_turn(&registration, &delivery, "Run this", false)
+        .await;
+    assert_eq!(
+        outcome,
+        InjectOutcome::Waiting(crate::relay::delivery::session_text::HELD_SINCE.into())
+    );
+    let bridge = Outbound::new(core.clone(), Arc::new(NoDirect));
+    let uid = crate::relay::peer::current_uid();
+    assert_eq!(
+        bridge
+            .handle(4100, uid, &request("poll", json!({"version":"2.1.310"})))
+            .await
+            .unwrap(),
+        json!({"action": null})
+    );
+}

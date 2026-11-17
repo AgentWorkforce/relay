@@ -411,3 +411,24 @@ async fn a_hold_that_starts_before_the_hand_over_stops_a_non_admin_message() {
     ));
     assert!(f.routes.peer.lock().unwrap().is_empty());
 }
+
+/// The native-continuation hand-over has its own gate: an owner's message
+/// from the phone that an organization hold now covers waits instead of
+/// reaching the session.
+#[tokio::test]
+async fn a_hold_stops_a_native_continuation_at_its_hand_over() {
+    let f = fixture(SessionKind::OpenCode, true).await;
+    let owner = Delivery {
+        sender_address: Some("owner@desk".into()),
+        ..f.owner.clone()
+    };
+    f.core
+        .claude_delivery
+        .set_organization_hold(Some(["lead".to_string()].into()));
+    let outcome = f
+        .core
+        .deliver_native_continuation(&f.registration, &owner, "Continue".into())
+        .await;
+    assert_eq!(outcome, InjectOutcome::Waiting(super::HELD_SINCE.into()));
+    assert!(f.routes.owner.lock().unwrap().is_empty());
+}
