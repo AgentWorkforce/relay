@@ -691,6 +691,244 @@ mod tests {
         assert_eq!(core.settings()["direct_delivery"], false);
     }
 
+    /// The organization's locks are written once and refused to the app
+    /// and to agents alike; its defaults stay the person's to change.
+    #[tokio::test]
+    async fn an_organization_lock_is_applied_and_refused_to_everyone() {
+        use crate::relay::settings_policy::{SettingsPolicy, LOCKED};
+        let temp = tempfile::tempdir().unwrap();
+        let core = core(temp.path());
+        let policy: SettingsPolicy = serde_json::from_value(json!({
+            "locked": {"spawn_max_agents": 2, "accept_spawns": true},
+            "defaults": {"auto_join_general": true},
+        }))
+        .unwrap();
+        core.apply_settings_policy(Some(policy)).unwrap();
+        let values = core.settings();
+        assert_eq!(values["spawn_max_agents"], 2);
+        assert_eq!(values["auto_join_general"], true);
+        assert_eq!(
+            values["organization_policy"],
+            json!({
+                "locked": ["spawn_max_agents"],
+                "defaults": ["auto_join_general"],
+                "mismatched": ["accept_spawns"],
+                "managed": false,
+            })
+        );
+        let refused = core
+            .set_settings(&map(json!({"spawn_max_agents": 6})))
+            .unwrap_err();
+        assert_eq!(refused.message, LOCKED);
+        let (_, outcome, _) = apply(&core, &map(json!({"spawn_max_agents": 6})), "api").unwrap();
+        assert_eq!(outcome.unwrap_err().message, LOCKED);
+        assert_eq!(core.settings()["spawn_max_agents"], 2);
+        // A default is the person's to change, and stays changed.
+        core.set_settings(&map(json!({"auto_join_general": false})))
+            .unwrap();
+        core.apply_settings_policy(core.settings_policy()).unwrap();
+        assert_eq!(core.settings()["auto_join_general"], false);
+        // Agents see the lock in GET /settings.
+        let listed = crate::relay::settings_registry::describe(&core.settings());
+        let max = listed
+            .iter()
+            .find(|entry| entry["key"] == "spawn_max_agents")
+            .unwrap();
+        assert_eq!(
+            (max["writable"].clone(), max["organization"].clone()),
+            (json!(false), json!(LOCKED))
+        );
+        // No policy any more: the values stay, and are the person's again.
+        core.apply_settings_policy(None).unwrap();
+        assert!(core.settings().get("organization_policy").is_none());
+        core.set_settings(&map(json!({"spawn_max_agents": 6})))
+            .unwrap();
+    }
+
+    /// A lock that becomes a default, or another lock, takes its new value:
+    /// the saves made while applying re-apply the new policy's locks, not
+    /// the old one's, and the new default is recorded as written.
+    #[tokio::test]
+    async fn a_policy_change_writes_its_own_values() {
+        use crate::relay::settings_policy::SettingsPolicy;
+        let temp = tempfile::tempdir().unwrap();
+        let core = core(temp.path());
+        let given =
+            |value: serde_json::Value| -> SettingsPolicy { serde_json::from_value(value).unwrap() };
+        core.apply_settings_policy(Some(given(json!({"locked": {"spawn_max_agents": 4}}))))
+            .unwrap();
+        assert_eq!(core.settings()["spawn_max_agents"], 4);
+        core.apply_settings_policy(Some(given(json!({"locked": {"spawn_max_agents": 2}}))))
+            .unwrap();
+        assert_eq!(core.settings()["spawn_max_agents"], 2);
+        core.apply_settings_policy(Some(given(json!({"defaults": {"spawn_max_agents": 3}}))))
+            .unwrap();
+        assert_eq!(core.settings()["spawn_max_agents"], 3);
+        let recorded = core.store.read(|store| {
+            store.organization_policy.as_ref().unwrap().applied_defaults["spawn_max_agents"].clone()
+        });
+        assert_eq!((recorded.given, recorded.applied), (json!(3), json!(3)));
+        // The repositories list follows a lock that becomes a default too.
+        core.apply_settings_policy(Some(given(
+            json!({"locked": {"auto_join_repositories": ["acme/*"]}}),
+        )))
+        .unwrap();
+        assert_eq!(core.settings()["auto_join_repositories"], json!(["acme/*"]));
+        core.apply_settings_policy(Some(given(
+            json!({"defaults": {"auto_join_repositories": ["Tools/Web"]}}),
+        )))
+        .unwrap();
+        assert_eq!(
+            core.settings()["auto_join_repositories"],
+            json!(["tools/web"])
+        );
+        assert!(core.forced_repositories().is_empty());
+    }
+
+    /// The repositories list is saved normalized; only the organization's
+    /// lock makes its sessions join whatever automatic activation says, and
+    /// a matching directory is labelled with its owner/name.
+    #[tokio::test]
+    async fn auto_join_repositories_is_saved_and_forced_only_when_locked() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = core(temp.path());
+        assert_eq!(core.settings()["auto_join_repositories"], json!([]));
+        core.set_settings(&map(
+            json!({"auto_join_repositories": ["Acme/Web", "acme/web", "tools/*"]}),
+        ))
+        .unwrap();
+        assert_eq!(
+            core.settings()["auto_join_repositories"],
+            json!(["acme/web", "tools/*"])
+        );
+        let bad = core
+            .set_settings(&map(json!({"auto_join_repositories": ["/home/me/web"]})))
+            .unwrap_err();
+        assert!(bad.message.contains("owner/name"), "{}", bad.message);
+        assert_eq!(core.auto_join_repositories(), vec!["acme/web", "tools/*"]);
+        // The person's own list forces nothing.
+        assert!(core.forced_repositories().is_empty());
+
+        let repo = temp.path().join("web");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(
+            repo.join(".git/config"),
+            "[remote \"origin\"]\n\turl = https://github.com/acme/web.git\n",
+        )
+        .unwrap();
+        assert_eq!(
+            core.repository_label(repo.to_str()).as_deref(),
+            Some("acme/web")
+        );
+
+        let policy: crate::relay::settings_policy::SettingsPolicy =
+            serde_json::from_value(json!({"locked": {"auto_join_repositories": ["acme/*"]}}))
+                .unwrap();
+        core.apply_settings_policy(Some(policy)).unwrap();
+        assert_eq!(core.forced_repositories(), vec!["acme/*"]);
+        assert_eq!(
+            core.settings()["organization_policy"]["locked"],
+            json!(["auto_join_repositories"])
+        );
+        assert!(core
+            .set_settings(&map(json!({"auto_join_repositories": []})))
+            .is_err());
+        // The lock forces its own list, whatever the saved one says.
+        core.write_settings(&map(json!({"auto_join_repositories": ["me/fork"]})))
+            .unwrap();
+        assert_eq!(core.forced_repositories(), vec!["acme/*"]);
+        // A lock that is not a valid list forces nothing.
+        let malformed: crate::relay::settings_policy::SettingsPolicy =
+            serde_json::from_value(json!({"locked": {"auto_join_repositories": ["/home/me/web"]}}))
+                .unwrap();
+        core.apply_settings_policy(Some(malformed)).unwrap();
+        assert!(core.forced_repositories().is_empty());
+        core.apply_settings_policy(None).unwrap();
+        assert!(core.forced_repositories().is_empty());
+    }
+
+    /// A locked hold reaches the delivery policy and is lifted with the
+    /// policy; a defaulted one seeds the person's restriction once.
+    #[tokio::test]
+    async fn the_delivery_section_holds_or_seeds_the_restriction() {
+        use crate::relay::settings_policy::SettingsPolicy;
+        let temp = tempfile::tempdir().unwrap();
+        let core = core(temp.path());
+        let locked: SettingsPolicy = serde_json::from_value(json!({
+            "locked": {"inbound_default": "hold", "admin_senders": ["lead"]},
+        }))
+        .unwrap();
+        core.apply_settings_policy(Some(locked)).unwrap();
+        assert!(core.claude_delivery_status().organization_hold);
+        assert!(core
+            .set_claude_sender_delivery("sam@desk", "Sam", true)
+            .is_err());
+        core.apply_settings_policy(None).unwrap();
+        assert!(!core.claude_delivery_status().organization_hold);
+
+        let defaulted: SettingsPolicy =
+            serde_json::from_value(json!({"defaults": {"inbound_default": "hold"}})).unwrap();
+        core.apply_settings_policy(Some(defaulted.clone())).unwrap();
+        assert!(!core.claude_delivery_status().organization_hold);
+        assert!(core.claude_delivery_status().restricted);
+        // The person turns it off: the default is not written again.
+        core.set_claude_delivery_restricted(false).unwrap();
+        core.apply_settings_policy(Some(defaulted)).unwrap();
+        assert!(!core.claude_delivery_status().restricted);
+    }
+
+    /// Moving between a locked hold and a defaulted one never leaves a
+    /// moment when neither the organization nor the person holds unknown
+    /// senders.
+    #[tokio::test]
+    async fn a_hold_handed_between_organization_and_person_never_opens() {
+        use crate::relay::settings_policy::SettingsPolicy;
+        let temp = tempfile::tempdir().unwrap();
+        let core = core(temp.path());
+        let locked: SettingsPolicy = serde_json::from_value(json!({
+            "locked": {"inbound_default": "hold", "admin_senders": ["lead"]},
+        }))
+        .unwrap();
+        let defaulted: SettingsPolicy =
+            serde_json::from_value(json!({"defaults": {"inbound_default": "hold"}})).unwrap();
+        core.apply_settings_policy(Some(locked.clone())).unwrap();
+        core.claude_delivery.states.lock().unwrap().clear();
+        core.apply_settings_policy(Some(defaulted)).unwrap();
+        let states = core.claude_delivery.states.lock().unwrap().clone();
+        assert!(!states.contains(&(false, false)), "{states:?}");
+        assert_eq!(states.last(), Some(&(false, true)));
+        // And back: the organization's hold is in place before anything else.
+        core.claude_delivery.states.lock().unwrap().clear();
+        core.apply_settings_policy(Some(locked)).unwrap();
+        let states = core.claude_delivery.states.lock().unwrap().clone();
+        assert!(!states.contains(&(false, false)), "{states:?}");
+        assert_eq!(states.last(), Some(&(true, true)));
+    }
+
+    /// Lifting the policy keeps the organization's hold when the removal
+    /// cannot be saved: the stored policy and the hold never disagree.
+    #[tokio::test]
+    async fn a_failed_lift_keeps_the_hold() {
+        use crate::relay::settings_policy::SettingsPolicy;
+        let temp = tempfile::tempdir().unwrap();
+        let core = core(temp.path());
+        let locked: SettingsPolicy = serde_json::from_value(json!({
+            "locked": {"inbound_default": "hold", "admin_senders": ["lead"]},
+        }))
+        .unwrap();
+        core.apply_settings_policy(Some(locked)).unwrap();
+        assert!(core.claude_delivery.organization_holds());
+        // The store file changed into something this core cannot read, so
+        // the next save fails.
+        std::fs::write(
+            temp.path().join("app-data/injectable-agents.json"),
+            "not json",
+        )
+        .unwrap();
+        assert!(core.apply_settings_policy(None).is_err());
+        assert!(core.claude_delivery.organization_holds());
+    }
+
     #[test]
     fn a_change_records_the_value_before_and_after() {
         let before = map(json!({"auto_join_general": false, "auto_activate": true}));

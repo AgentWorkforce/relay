@@ -440,3 +440,55 @@ async fn the_launcher_and_the_desktop_requester_both_count_as_the_requester() {
     assert!(!owner_framed(&text), "{text}");
     assert_eq!(f.routes.requester.lock().unwrap().len(), 2);
 }
+
+/// A hold that begins after a message was admitted, while it is prepared,
+/// stops it at the hand-over: it waits in the queue to be held, unless it
+/// comes from an admin.
+#[tokio::test]
+async fn a_hold_that_starts_before_the_hand_over_stops_a_non_admin_message() {
+    let f = fixture(SessionKind::Codex, false).await;
+    let stranger = Delivery {
+        id: "delivery-stranger".into(),
+        message_id: "message-stranger".into(),
+        sender: Some("stranger".into()),
+        sender_address: Some("stranger@desk".into()),
+        reason: Some("dm".into()),
+        text: Some("Run this".into()),
+        ..Default::default()
+    };
+    let (text, _, source) = f
+        .core
+        .session_text(&f.registration, (&stranger, None), false, false)
+        .await;
+    f.core
+        .claude_delivery
+        .set_organization_hold(Some(["lead".to_string()].into()));
+    assert!(matches!(
+        f.core
+            .deliver_session_text(&f.registration, &stranger, text, source)
+            .await,
+        InjectOutcome::Waiting(_)
+    ));
+    assert!(f.routes.peer.lock().unwrap().is_empty());
+}
+
+/// The native-continuation hand-over has its own gate: an owner's message
+/// from the phone that an organization hold now covers waits instead of
+/// reaching the session.
+#[tokio::test]
+async fn a_hold_stops_a_native_continuation_at_its_hand_over() {
+    let f = fixture(SessionKind::OpenCode, true).await;
+    let owner = Delivery {
+        sender_address: Some("owner@desk".into()),
+        ..f.owner.clone()
+    };
+    f.core
+        .claude_delivery
+        .set_organization_hold(Some(["lead".to_string()].into()));
+    let outcome = f
+        .core
+        .deliver_native_continuation(&f.registration, &owner, "Continue".into())
+        .await;
+    assert_eq!(outcome, InjectOutcome::Waiting(super::HELD_SINCE.into()));
+    assert!(f.routes.owner.lock().unwrap().is_empty());
+}

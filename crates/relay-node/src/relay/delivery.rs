@@ -257,6 +257,14 @@ pub struct DeliveryState {
     channel_pins: Option<channel::pins::ChannelPins>,
     /// Channel names by id, as the agents' channel lists gave them.
     channel_names: HashMap<String, String>,
+    /// Run once, in a test, after a channel batch is prepared and before
+    /// its pin is saved: where an organization hold can begin.
+    #[cfg(test)]
+    before_pin: Option<Box<dyn FnOnce() + Send>>,
+    /// Run once, in a test, between a channel batch's final hold check and
+    /// its pin save, while both hold the delivery lock.
+    #[cfg(test)]
+    between_check_and_pin: Option<Box<dyn FnOnce() + Send>>,
     /// Terminal Claude Code sessions holding relay messages not yet seen
     /// read, by agent name (`inbox_watch`).
     inbox: inbox_watch::Inboxes,
@@ -373,6 +381,11 @@ impl Core {
         allowed: bool,
     ) -> Result<(), RpcError> {
         self.scope_claude_delivery().map_err(claude_policy_error)?;
+        if allowed && self.claude_delivery.organization_holds() {
+            return Err(RpcError::setting_refused(
+                crate::relay::claude_delivery_policy::ORGANIZATION_HOLD_REFUSAL.to_string(),
+            ));
+        }
         if sender.trim().is_empty() || sender.len() > 512 || name.len() > 256 {
             return Err(RpcError::invalid_params("Choose a valid workspace member."));
         }
@@ -397,12 +410,17 @@ impl Core {
     }
 
     fn hold_claude_delivery(&self, registration: &Registration, delivery: &Delivery) {
+        let reason = if self.claude_delivery.organization_holds() {
+            crate::relay::claude_delivery_policy::ORGANIZATION_HOLD_REASON
+        } else {
+            "Waiting for your approval in Agent Relay."
+        };
         match self.claude_delivery.hold(registration, delivery) {
             Ok(true) => self.record(
                 registration,
                 delivery,
                 DeliveryOutcome::Waiting,
-                Some("Waiting for your approval in Agent Relay.".into()),
+                Some(reason.into()),
             ),
             Ok(false) => {}
             Err(error) => self.record(
@@ -1288,6 +1306,12 @@ impl Core {
         if manual {
             self.authorize_dm_reply(registration, delivery);
         }
+        // Whether this injection's outcome is journalled is decided before it
+        // starts, so a hold lifted meanwhile cannot drop the marker of a
+        // message injected under it.
+        let journal = self
+            .claude_delivery
+            .records_outcome(registration, &delivery.id);
         let outcome = self
             .deliver_session_text(registration, delivery, text, source)
             .await;
@@ -1295,7 +1319,7 @@ impl Core {
         match outcome {
             InjectOutcome::Delivered => {
                 self.settled(&delivery.id);
-                if registration.target.kind == SessionKind::ClaudeTerminal {
+                if journal {
                     let _ = self.claude_delivery.consume(
                         &delivery.id,
                         &registration.name,
@@ -1328,7 +1352,7 @@ impl Core {
                 // session: keep the reply paths as for a confirmed injection.
                 // Reported only once the in-doubt record is on disk; until
                 // then the next pass saves it and reports it.
-                if registration.target.kind == SessionKind::ClaudeTerminal {
+                if journal {
                     let _ = self.claude_delivery.consume(
                         &delivery.id,
                         &registration.name,
@@ -1401,7 +1425,7 @@ impl Core {
                 // A terminal event is not disposable even when its text cannot
                 // enter the session. Save the retirement marker before making
                 // Relaycast's non-retryable settlement durable.
-                if registration.target.kind == SessionKind::ClaudeTerminal {
+                if journal {
                     let _ = self.claude_delivery.consume(
                         &delivery.id,
                         &registration.name,

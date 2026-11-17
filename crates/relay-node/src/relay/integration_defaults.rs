@@ -55,7 +55,7 @@ impl Core {
     /// Each integration key a default pass would turn on now: its tool is
     /// installed, it is not on, and this computer has not turned it on
     /// before nor has the person set it.
-    fn pending_integration_defaults(&self) -> Vec<&'static str> {
+    pub(crate) fn pending_integration_defaults(&self) -> Vec<&'static str> {
         let applied = self
             .store
             .read(|s| s.integration_defaults_applied.clone().unwrap_or_default());
@@ -65,6 +65,9 @@ impl Core {
                 if applied.iter().any(|done| done == key)
                     || pending.contains(&key)
                     || extension.get().get(key) == Some(&Value::Bool(true))
+                    // A setting the organization locks is not the default
+                    // pass's to connect, so sign-in does not offer it.
+                    || self.locked_by_organization(key)
                 {
                     continue;
                 }
@@ -91,6 +94,10 @@ impl Core {
     /// recorded a key publishes a Settings update, so the apps show those
     /// tools on and drop them from `detected_tools`.
     pub fn apply_integration_defaults(&self) {
+        // The settings writers' lock first, in the order every writer takes
+        // them, so an organization's policy applying now sees this pass's
+        // writes or none of them.
+        let _writing = crate::relay::settings_registry::writing();
         let _changing = self.integration_settings.lock().unwrap();
         if self.workspace().is_none() || !self.store.read(Store::connects_detected_tools) {
             return;
@@ -102,6 +109,10 @@ impl Core {
         for extension in &self.plugins.settings {
             for key in extension.default_on() {
                 if applied.iter().any(|done| done == key) || newly.contains(&key) {
+                    continue;
+                }
+                // The organization's lock decides this setting, not a default.
+                if self.locked_by_organization(key) {
                     continue;
                 }
                 if extension.get().get(key) == Some(&Value::Bool(true)) {

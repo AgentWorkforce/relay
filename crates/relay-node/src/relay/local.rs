@@ -163,6 +163,10 @@ pub struct LocalSessions {
     /// The fleet's sessions as last read, kept out of the listing while
     /// a broker cannot be read.
     fleet_owned: std::sync::Mutex<HashSet<Target>>,
+    /// The repositories the organization makes join the relay by
+    /// themselves, read on every check
+    /// (`SessionDirectory::forced_repositories_from`).
+    forced_repositories: std::sync::Mutex<Option<crate::relay::sessions::ForcedRepositories>>,
     /// Codex's threads as last read, kept while Codex holds its database.
     codex_threads: std::sync::Mutex<session_directory::CodexDiscoveryCache>,
     /// The app-server's loaded threads as last read.
@@ -3440,6 +3444,41 @@ mod tests {
             .has_terminal = true;
         world.sessions.config.auto_activate_excluded_dirs = vec![PathBuf::from("/Users/me")];
         assert!(world.sessions.auto_activation_sessions().is_empty());
+    }
+
+    /// A session in a repository the organization makes join is eligible
+    /// even in an excluded directory; another repository is not.
+    #[test]
+    fn a_forced_repository_overrides_the_excluded_directories() {
+        let mut world = world();
+        {
+            let mut processes = world.table.processes.lock().unwrap();
+            let claude = processes.get_mut(&300).unwrap();
+            claude.arguments = vec!["claude".into()];
+            claude.has_terminal = true;
+        }
+        let repo = world._temp.path().join("work/web");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(
+            repo.join(".git/config"),
+            "[remote \"origin\"]\n\turl = git@github.com:Acme/Web.git\n",
+        )
+        .unwrap();
+        let registry = world._temp.path().join(".claude/sessions/300.json");
+        let mut record: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&registry).unwrap()).unwrap();
+        record["cwd"] = repo.to_str().unwrap().into();
+        std::fs::write(&registry, record.to_string()).unwrap();
+        world.sessions.config.auto_activate_excluded_dirs = vec![world._temp.path().join("work")];
+        assert!(world.sessions.auto_activation_sessions().is_empty());
+        world
+            .sessions
+            .forced_repositories_from(std::sync::Arc::new(|| vec!["acme/api".into()]));
+        assert!(world.sessions.auto_activation_sessions().is_empty());
+        world
+            .sessions
+            .forced_repositories_from(std::sync::Arc::new(|| vec!["acme/*".into()]));
+        assert_eq!(world.sessions.auto_activation_sessions().len(), 1);
     }
 
     // An open Muse session goes on the relay by itself, like a Codex one:

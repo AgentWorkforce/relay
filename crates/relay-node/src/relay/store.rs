@@ -1030,6 +1030,33 @@ pub struct Store {
         skip_serializing_if = "Option::is_none"
     )]
     pub pending_refusal_settlements: Option<Vec<PendingRefusal>>,
+    /// The organization's workspace policy for this computer's settings,
+    /// as the account last gave it, and the defaults it already applied
+    /// (`relay::settings_policy`). Kept so a locked setting stays locked
+    /// across a restart before the account reads the policy again.
+    #[serde(
+        rename = "organizationPolicy",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub organization_policy: Option<crate::relay::settings_policy::Stored>,
+    /// `auto_join_repositories`: the repositories whose sessions join the
+    /// relay by themselves (`relay::repositories`).
+    #[serde(
+        rename = "autoJoinRepositories",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub auto_join_repositories: Option<Vec<String>>,
+    /// The repository (`owner/name`) each agent's registration names, by
+    /// Relaycast agent id: its session's, when `auto_join_repositories`
+    /// named it at registration.
+    #[serde(
+        rename = "agentRepositories",
+        default,
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub agent_repositories: BTreeMap<String, String>,
     /// The relaygate registrations of launched agents, by agent name: made
     /// with each launch's one-time credential, kept in memory alone and
     /// never saved.
@@ -1172,6 +1199,7 @@ impl Store {
             .collect();
         for id in retired {
             self.agent_owners.remove(&id);
+            self.agent_repositories.remove(&id);
             self.retire_refusals(&id);
         }
         for name in &replaced {
@@ -1213,6 +1241,7 @@ impl Store {
             .collect();
         for id in retired {
             self.agent_owners.remove(&id);
+            self.agent_repositories.remove(&id);
             self.retire_refusals(&id);
         }
         // A gate agent's name stays reserved at relaygate for its recovery
