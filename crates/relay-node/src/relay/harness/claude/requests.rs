@@ -212,6 +212,13 @@ pub fn register(session: &str, event: &Value) -> Option<String> {
     {
         return None;
     }
+    // An `AskUserQuestion` the PreToolUse hook already escalated
+    // (`crate::relay::question`) is refused at once with the same reason the
+    // hook gave, never forwarded a second time.
+    let escalated = (classified.kind == Kind::Question)
+        .then(|| crate::relay::question::escalated(session, &request["input"]))
+        .flatten()
+        .map(|reason| json!({"behavior": "deny", "message": reason}));
     entries.insert(
         reference.clone(),
         Pending {
@@ -226,8 +233,8 @@ pub fn register(session: &str, event: &Value) -> Option<String> {
             kind: classified.kind,
             input: request["input"].clone(),
             deadline: Instant::now() + REQUEST_TTL,
-            forwarded: false,
-            answer: None,
+            forwarded: escalated.is_some(),
+            answer: escalated,
         },
     );
     None

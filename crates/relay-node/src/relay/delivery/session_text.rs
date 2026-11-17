@@ -165,7 +165,8 @@ impl Core {
             .unwrap_or(text)
     }
 
-    /// Whether `delivery` was the owner's reply to a pending Codex or Claude
+    /// Whether `delivery` was an answer to an escalated question, the
+    /// owner's reply to a pending Codex or Claude
     /// request, or a message to a spawned Claude that has ended, settled
     /// (acknowledged and recorded) or left for the next pass when its record
     /// could not be saved.
@@ -175,12 +176,19 @@ impl Core {
         delivery: &Delivery,
         (workspace, base, token): (&WorkspaceScope, &str, &Secret),
     ) -> bool {
-        let detail = match self.owner_reply(registration, delivery).await {
-            OwnerReply::NotOne => match self.ended_claude(registration, delivery).await {
-                OwnerReply::NotOne => return false,
-                OwnerReply::Unsaved => return true,
-                OwnerReply::Settled(detail) => detail,
-            },
+        // An answer to an escalated question first: its sender may also be
+        // the owner, whose `answer` is not an approval reply.
+        let mut reply = self
+            .question_reply(registration, delivery, (base, token))
+            .await;
+        if matches!(reply, OwnerReply::NotOne) {
+            reply = self.owner_reply(registration, delivery).await;
+        }
+        if matches!(reply, OwnerReply::NotOne) {
+            reply = self.ended_claude(registration, delivery).await;
+        }
+        let detail = match reply {
+            OwnerReply::NotOne => return false,
             OwnerReply::Unsaved => return true,
             OwnerReply::Settled(detail) => detail,
         };

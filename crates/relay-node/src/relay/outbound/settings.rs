@@ -188,11 +188,12 @@ fn keep_choices(core: &Core, chosen: Option<Vec<String>>, changed: &[AgentSettin
     }
 }
 
-/// Whether the store keeps `key` (spawning's among them); the rest are
-/// tools' settings.
+/// Whether the store keeps `key` (spawning's and question escalation's
+/// among them); the rest are tools' settings.
 fn store_key(key: &str) -> bool {
     crate::relay::store_settings::STORE_SETTINGS.contains(&key)
         || crate::relay::spawn::settings::KEYS.contains(&key)
+        || crate::relay::question::settings::KEYS.contains(&key)
 }
 
 /// Whether a Claude Code folder is added in Settings already, as saved:

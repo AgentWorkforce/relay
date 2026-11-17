@@ -67,6 +67,23 @@ pub struct SettingsExtras {
         skip_serializing_if = "Option::is_none"
     )]
     pub opencode_auto_activate: Option<bool>,
+    /// Missing means false: a Claude Code session's `AskUserQuestion` is
+    /// shown in its dialog. On, it goes to `question_escalation_inbox` over
+    /// Agent Relay instead (`relay::question`).
+    #[serde(
+        rename = "questionEscalation",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub question_escalation: Option<bool>,
+    /// The agent that escalated questions go to. Missing means the owner's
+    /// person identity.
+    #[serde(
+        rename = "questionEscalationInbox",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub question_escalation_inbox: Option<String>,
     /// Newest first, at most `AGENT_CHANGES_KEPT`.
     #[serde(
         rename = "agentSettingsChanges",
@@ -89,11 +106,15 @@ impl SettingsExtras {
     /// Each side's new records kept, newest first by time; each flag takes
     /// the side that changed it.
     pub fn merged(base: &Self, ours: &Self, theirs: &Self) -> Self {
-        fn changed(base: Option<bool>, ours: Option<bool>, theirs: Option<bool>) -> Option<bool> {
+        fn changed<T: Clone + PartialEq>(
+            base: &Option<T>,
+            ours: &Option<T>,
+            theirs: &Option<T>,
+        ) -> Option<T> {
             if ours != base {
-                ours
+                ours.clone()
             } else {
-                theirs
+                theirs.clone()
             }
         }
         let mut changes = ours.agent_changes.clone();
@@ -106,39 +127,49 @@ impl SettingsExtras {
         changes.truncate(AGENT_CHANGES_KEPT);
         SettingsExtras {
             auto_join_general: changed(
-                base.auto_join_general,
-                ours.auto_join_general,
-                theirs.auto_join_general,
+                &base.auto_join_general,
+                &ours.auto_join_general,
+                &theirs.auto_join_general,
             ),
             connect_detected_tools: changed(
-                base.connect_detected_tools,
-                ours.connect_detected_tools,
-                theirs.connect_detected_tools,
+                &base.connect_detected_tools,
+                &ours.connect_detected_tools,
+                &theirs.connect_detected_tools,
             ),
             spawn_native_input: changed(
-                base.spawn_native_input,
-                ours.spawn_native_input,
-                theirs.spawn_native_input,
+                &base.spawn_native_input,
+                &ours.spawn_native_input,
+                &theirs.spawn_native_input,
             ),
             spawn_requester_approvals: changed(
-                base.spawn_requester_approvals,
-                ours.spawn_requester_approvals,
-                theirs.spawn_requester_approvals,
+                &base.spawn_requester_approvals,
+                &ours.spawn_requester_approvals,
+                &theirs.spawn_requester_approvals,
             ),
             teammate_native_input: changed(
-                base.teammate_native_input,
-                ours.teammate_native_input,
-                theirs.teammate_native_input,
+                &base.teammate_native_input,
+                &ours.teammate_native_input,
+                &theirs.teammate_native_input,
             ),
             pi_auto_activate: changed(
-                base.pi_auto_activate,
-                ours.pi_auto_activate,
-                theirs.pi_auto_activate,
+                &base.pi_auto_activate,
+                &ours.pi_auto_activate,
+                &theirs.pi_auto_activate,
             ),
             opencode_auto_activate: changed(
-                base.opencode_auto_activate,
-                ours.opencode_auto_activate,
-                theirs.opencode_auto_activate,
+                &base.opencode_auto_activate,
+                &ours.opencode_auto_activate,
+                &theirs.opencode_auto_activate,
+            ),
+            question_escalation: changed(
+                &base.question_escalation,
+                &ours.question_escalation,
+                &theirs.question_escalation,
+            ),
+            question_escalation_inbox: changed(
+                &base.question_escalation_inbox,
+                &ours.question_escalation_inbox,
+                &theirs.question_escalation_inbox,
             ),
             agent_changes: changes,
         }
@@ -189,6 +220,8 @@ mod tests {
             teammate_native_input: None,
             connect_detected_tools: Some(false),
             opencode_auto_activate: Some(true),
+            question_escalation: Some(true),
+            question_escalation_inbox: Some("lead".into()),
             agent_changes: vec![change("2026-10-16T00:00:03Z", "auto_activate")],
             ..SettingsExtras::default()
         };
@@ -200,6 +233,8 @@ mod tests {
         assert_eq!(merged.teammate_native_input, Some(false));
         assert_eq!(merged.pi_auto_activate, Some(true));
         assert_eq!(merged.opencode_auto_activate, Some(true));
+        assert_eq!(merged.question_escalation, Some(true));
+        assert_eq!(merged.question_escalation_inbox.as_deref(), Some("lead"));
         let keys: Vec<_> = merged
             .agent_changes
             .iter()
@@ -223,6 +258,8 @@ mod tests {
         store.extras.spawn_native_input = Some(true);
         store.extras.pi_auto_activate = Some(true);
         store.extras.opencode_auto_activate = Some(false);
+        store.extras.question_escalation = Some(true);
+        store.extras.question_escalation_inbox = Some("lead".into());
         store
             .extras
             .record(vec![change("2026-10-16T00:00:00Z", "auto_activate")]);
@@ -231,6 +268,8 @@ mod tests {
         assert_eq!(value["spawnNativeInput"], true);
         assert_eq!(value["piAutoActivate"], true);
         assert_eq!(value["opencodeAutoActivate"], false);
+        assert_eq!(value["questionEscalation"], true);
+        assert_eq!(value["questionEscalationInbox"], "lead");
         assert_eq!(value["agentSettingsChanges"][0]["by"], "api");
         let back: Store = serde_json::from_value(value).unwrap();
         assert_eq!(back.extras, store.extras);

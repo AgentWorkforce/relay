@@ -270,6 +270,7 @@ fn allowed(key: &str) -> Option<Value> {
         "history_retention_days" => Some(json!(
             crate::relay::contract::agents::history_retention::CHOICES
         )),
+        crate::relay::question::settings::ESCALATION => Some(json!(["off", "on"])),
         _ => None,
     }
 }
@@ -325,6 +326,8 @@ mod tests {
             "auto_join_general",
             "claude_session_hook",
             "history_retention_days",
+            "question_escalation",
+            "question_escalation_inbox",
             "show_relay_messages",
             "spawn_billing_claude",
             "spawn_billing_codex",
