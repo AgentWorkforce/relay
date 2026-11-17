@@ -1964,12 +1964,12 @@ async function listenAsSessionOwner(
           // A relay wake link delivers every post to the session that linked it. Claiming one here
           // would take it from that session, so stand down.
           if (await relayWakeLinked(io, mcpUrl)) return 0;
-          // The session may have closed (or been taken over) while that was asked: start no wait for it.
-          if (!alive() || !owns()) return 0;
           if (!leasesKnown) {
             leased = await inboxLeases(io, mcpUrl);
             leasesKnown = true;
           }
+          // The session may have closed (or been taken over) while those were asked: start no wait for it.
+          if (!alive() || !owns()) return 0;
           const controller = new AbortController();
           // While \`drain()\`, a wait in flight is not cut off: the inbox may already have handed it
           // posts, which \`deliver\` then lets go (leased) or keeps for the next owner.

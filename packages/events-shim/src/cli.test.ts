@@ -1464,6 +1464,24 @@ describe('events-shim CLI', () => {
     expect((await inboxTool(w, 'watch_webhooks')).waiting).toBe(1);
   });
 
+  it('listen --hook takes nothing when its session closes while it asks whether the inbox leases', async () => {
+    const w = await fileWorld({ stdin: claudeHook('closing-2') });
+    await runCli(['setup', w.created.mcp_url], w.io);
+    await w.post({ for: 'a live session' });
+    const fetchImpl = w.io.fetchImpl;
+    w.io.fetchImpl = async (input, init) => {
+      const response = await fetchImpl(input, init);
+      if (typeof init?.body === 'string' && init.body.includes('"tools/list"')) {
+        w.io.pidAlive = (pid) => pid === 4242; // Claude (777) exits meanwhile
+      }
+      return response;
+    };
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
+    expect(w.err).toEqual([]);
+    w.io.fetchImpl = fetchImpl;
+    expect((await inboxTool(w, 'watch_webhooks')).waiting).toBe(1);
+  });
+
   it('listen --hook stands down while the inbox forwards posts through a relay wake link', async () => {
     const w = await fileWorld({ stdin: claudeHook('abc-123') });
     await runCli(['setup', w.created.mcp_url], w.io);
