@@ -118,6 +118,9 @@ fn git_dirs(directory: &Path) -> Option<(PathBuf, PathBuf)> {
             let text = read_small(&dot_git)?;
             let pointed = text.lines().find_map(|l| l.strip_prefix("gitdir:"))?.trim();
             let own = here.join(pointed);
+            // `includeIf "gitdir:"` is matched against the directory itself,
+            // so `..` in a relative `gitdir:` is resolved first.
+            let own = std::fs::canonicalize(&own).unwrap_or(own);
             let common = read_small(&own.join("commondir"))
                 .map(|c| own.join(c.trim()))
                 .unwrap_or_else(|| own.clone());
@@ -138,25 +141,39 @@ fn home() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Whether `text` matches the wildcard `pattern`: `**` crosses `/`, `*` and
-/// `?` do not.
+/// Whether `text` matches the wildcard `pattern`: `**/` is zero or more
+/// whole directories, a trailing `**` anything, `*` and `?` stay within one
+/// name. Each (pattern, text) position is decided once, so the work is
+/// bounded by their lengths' product whatever the pattern.
 fn glob(pattern: &[u8], text: &[u8]) -> bool {
-    match pattern {
-        [] => text.is_empty(),
-        // `**/` is zero or more whole directories: what follows starts at
-        // the beginning or right after a `/`, never inside a name.
-        [b'*', b'*', b'/', rest @ ..] => {
-            glob(rest, text)
-                || (0..text.len()).any(|at| text[at] == b'/' && glob(rest, &text[at + 1..]))
-        }
-        // A `**` that ends the pattern (or a `/**`) is anything.
-        [b'*', b'*', rest @ ..] => (0..=text.len()).any(|at| glob(rest, &text[at..])),
-        [b'*', rest @ ..] => (0..=text.len())
-            .take_while(|&at| at == 0 || text[at - 1] != b'/')
-            .any(|at| glob(rest, &text[at..])),
-        [b'?', rest @ ..] => text.first().is_some_and(|c| *c != b'/') && glob(rest, &text[1..]),
-        [c, rest @ ..] => text.first() == Some(c) && glob(rest, &text[1..]),
+    let mut memo = vec![None; (pattern.len() + 1) * (text.len() + 1)];
+    glob_at(pattern, text, 0, 0, &mut memo)
+}
+
+fn glob_at(pattern: &[u8], text: &[u8], p: usize, t: usize, memo: &mut [Option<bool>]) -> bool {
+    let slot = p * (text.len() + 1) + t;
+    if let Some(known) = memo[slot] {
+        return known;
     }
+    let rest = &text[t..];
+    let answer = match &pattern[p..] {
+        [] => rest.is_empty(),
+        [b'*', b'*', b'/', ..] => {
+            glob_at(pattern, text, p + 3, t, memo)
+                || (t..text.len())
+                    .any(|at| text[at] == b'/' && glob_at(pattern, text, p + 3, at + 1, memo))
+        }
+        [b'*', b'*', ..] => (t..=text.len()).any(|at| glob_at(pattern, text, p + 2, at, memo)),
+        [b'*', ..] => (t..=text.len())
+            .take_while(|&at| at == t || text[at - 1] != b'/')
+            .any(|at| glob_at(pattern, text, p + 1, at, memo)),
+        [b'?', ..] => {
+            rest.first().is_some_and(|c| *c != b'/') && glob_at(pattern, text, p + 1, t + 1, memo)
+        }
+        [c, ..] => rest.first() == Some(c) && glob_at(pattern, text, p + 1, t + 1, memo),
+    };
+    memo[slot] = Some(answer);
+    answer
 }
 
 /// Whether an `includeIf` condition holds for the repository at `git_dir`:
@@ -268,8 +285,8 @@ fn expanded_in(
     let mut out = String::new();
     let mut header = String::new();
     let mut include: Option<Option<String>> = None;
-    for line in text.lines() {
-        out.push_str(line);
+    for line in logical_lines(&text) {
+        out.push_str(&line);
         out.push('\n');
         let trimmed = line.trim();
         if trimmed.starts_with('[') {
@@ -328,12 +345,36 @@ fn expanded_in(
     Some(out)
 }
 
+/// The text of `path`, or `None` when it cannot be read or is larger than
+/// a config can be: a config is read whole or not at all, never its prefix.
 fn read_small(path: &Path) -> Option<String> {
     use std::io::Read;
     let file = std::fs::File::open(path).ok()?;
     let mut text = String::new();
-    file.take(MAX_CONFIG_BYTES).read_to_string(&mut text).ok()?;
-    Some(text)
+    file.take(MAX_CONFIG_BYTES + 1)
+        .read_to_string(&mut text)
+        .ok()?;
+    (text.len() as u64 <= MAX_CONFIG_BYTES).then_some(text)
+}
+
+/// A config's lines as git reads them: a line ending in an unescaped `\`
+/// continues on the next.
+fn logical_lines(config: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for line in config.lines() {
+        let trailing = line.len() - line.trim_end_matches('\\').len();
+        if trailing % 2 == 1 {
+            current.push_str(&line[..line.len() - 1]);
+            continue;
+        }
+        current.push_str(line);
+        lines.push(std::mem::take(&mut current));
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
 }
 
 /// A git config value as git reads it: quotes removed, a `#` or `;`
@@ -367,7 +408,7 @@ fn config_value(raw: &str) -> String {
 fn config_entries(config: &str) -> Vec<(String, Option<String>, String, String)> {
     let mut entries = Vec::new();
     let (mut section, mut subsection) = (String::new(), None::<String>);
-    for line in config.lines() {
+    for line in logical_lines(config) {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
             continue;
@@ -395,24 +436,30 @@ fn config_entries(config: &str) -> Vec<(String, Option<String>, String, String)>
             }
             continue;
         }
-        if let Some((key, value)) = line.split_once('=') {
-            entries.push((
-                section.clone(),
-                subsection.clone(),
-                key.trim().to_ascii_lowercase(),
-                config_value(value),
-            ));
-        }
+        // A key without `=` is a boolean that is true, as git reads it.
+        let (key, value) = match line.split_once('=') {
+            Some((key, value)) => (key, config_value(value)),
+            None => (
+                line.split(['#', ';']).next().unwrap_or_default(),
+                "true".to_string(),
+            ),
+        };
+        entries.push((
+            section.clone(),
+            subsection.clone(),
+            key.trim().to_ascii_lowercase(),
+            value,
+        ));
     }
     entries
 }
 
 /// The `url` of `[remote "origin"]` in git configs' texts, read in order:
-/// the last one set wins, as in git.
+/// the first one set, which is the one `git fetch` uses (more add push
+/// targets).
 fn origin_url(config: &str) -> Option<String> {
     config_entries(config)
         .into_iter()
-        .rev()
         .find(|(section, sub, key, _)| {
             section == "remote" && sub.as_deref() == Some("origin") && key == "url"
         })
@@ -621,6 +668,38 @@ mod tests {
         assert!(!glob(b"/a/*/c", b"/a/b/x/c"));
     }
 
+    /// The first origin is the one git fetches; a value continued with `\`
+    /// is read whole; a config too large to read whole names nothing.
+    #[test]
+    fn origins_are_read_whole_and_first_wins() {
+        assert_eq!(
+            origin_url(
+                "[remote \"origin\"]\n\turl = https://host/me/web\n\turl = https://host/acme/web\n"
+            )
+            .as_deref(),
+            Some("https://host/me/web")
+        );
+        assert_eq!(
+            origin_url("[remote \"origin\"]\n\turl = https://github.com/\\\nacme/web.git\n")
+                .as_deref(),
+            Some("https://github.com/acme/web.git")
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let big = temp.path().join("big");
+        std::fs::write(&big, "#".repeat(MAX_CONFIG_BYTES as usize + 1)).unwrap();
+        assert_eq!(read_small(&big), None);
+    }
+
+    /// A pattern built to backtrack is decided in bounded time.
+    #[test]
+    fn glob_work_is_bounded() {
+        let pattern = "*a".repeat(40) + "b";
+        let text = "a".repeat(60);
+        let started = std::time::Instant::now();
+        assert!(!glob(pattern.as_bytes(), text.as_bytes()));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
     /// Git's own reading of a config: comments, quotes, the old subsection
     /// spelling, and `insteadOf` rewrites.
     #[test]
@@ -729,11 +808,13 @@ mod tests {
             std::os::unix::fs::symlink(&nested, &link).unwrap();
             assert_eq!(repository_of(&link).as_deref(), Some("acme/web"));
         }
-        // A work tree with its own config, when the repository enables it,
-        // names its own origin.
+        // A work tree with its own config, when the repository enables it
+        // (a bare key is true), names its own origin; with an origin in the
+        // shared config too, the first one set is the one git fetches.
+        std::fs::write(main_git.join("config"), "[extensions]\n\tworktreeConfig\n").unwrap();
         std::fs::write(
-            main_git.join("config"),
-            "[extensions]\n\tworktreeConfig = true\n[remote \"origin\"]\n\turl = git@github.com:Acme/Web.git\n",
+            main_git.join("config.worktree"),
+            "[remote \"origin\"]\n\turl = git@github.com:Acme/Web.git\n",
         )
         .unwrap();
         std::fs::write(
@@ -743,6 +824,14 @@ mod tests {
         .unwrap();
         assert_eq!(repository_of(&linked).as_deref(), Some("me/web-fork"));
         assert_eq!(repository_of(&nested).as_deref(), Some("acme/web"));
+        std::fs::write(
+            main_git.join("config"),
+            "[extensions]\n\tworktreeConfig = true\n[remote \"origin\"]\n\turl = git@github.com:Acme/Web.git\n",
+        )
+        .unwrap();
+        assert_eq!(repository_of(&linked).as_deref(), Some("acme/web"));
+        std::fs::remove_file(main_git.join("config.worktree")).unwrap();
+        std::fs::remove_file(admin.join("config.worktree")).unwrap();
         // An included file can name the origin.
         let included = temp.path().join("inc");
         repo(&included, "unused");
@@ -759,11 +848,13 @@ mod tests {
         assert_eq!(repository_of(&included).as_deref(), Some("acme/api"));
         // An includeIf scoped to a linked work tree's own git directory
         // applies to that work tree only.
+        let canonical = |path: &Path| std::fs::canonicalize(path).unwrap();
         std::fs::write(
             main_git.join("config"),
             format!(
-                "[remote \"origin\"]\n\turl = git@github.com:Acme/Web.git\n[includeIf \"gitdir:{}/\"]\n\tpath = fork.inc\n",
-                admin.display()
+                "[includeIf \"gitdir:{}/\"]\n\tpath = fork.inc\n[includeIf \"gitdir:{}/\"]\n\tpath = main.inc\n",
+                canonical(&admin).display(),
+                canonical(&main_git).display(),
             ),
         )
         .unwrap();
@@ -772,8 +863,20 @@ mod tests {
             "[remote \"origin\"]\n\turl = git@github.com:me/fork.git\n",
         )
         .unwrap();
+        std::fs::write(
+            main_git.join("main.inc"),
+            "[remote \"origin\"]\n\turl = git@github.com:Acme/Web.git\n",
+        )
+        .unwrap();
         assert_eq!(repository_of(&linked).as_deref(), Some("me/fork"));
         assert_eq!(repository_of(&nested).as_deref(), Some("acme/web"));
+        // A relative `gitdir:` with `..` is resolved before it is matched.
+        std::fs::write(
+            linked.join(".git"),
+            "gitdir: ../web/.git/worktrees/web-feature\n",
+        )
+        .unwrap();
+        assert_eq!(repository_of(&linked).as_deref(), Some("me/fork"));
         // A config that includes itself, or fans out past the budget, names
         // no repository rather than stalling the lookup.
         let looping = temp.path().join("loop");

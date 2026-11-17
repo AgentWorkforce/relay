@@ -240,7 +240,10 @@ impl SessionDirectory for LocalSessions {
     }
 
     fn auto_activates(&self, session: &DiscoveredSession) -> bool {
+        // As candidate discovery does: a fleet's session is never activated
+        // here, so it is never promised.
         (self.activation_check())(session)
+            && !self.without_fleet_owned(vec![session.clone()]).is_empty()
     }
 
     fn activity(
