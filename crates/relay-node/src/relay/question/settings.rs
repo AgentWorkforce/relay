@@ -22,8 +22,9 @@ pub const STATUS: &str = "question_escalation_status";
 pub const MAX_INBOX: usize = 128;
 
 /// What `question_escalation_status` says.
-pub const STATUS_TEXT: &str = "Available for Claude Code sessions (interactive and spawned) and \
-spawned Codex sessions. Unavailable for interactive Codex, Cursor, Copilot, Grok and OpenCode \
+pub const STATUS_TEXT: &str = "Available for Claude Code sessions (interactive and spawned), \
+through Agent Relay's Claude Code hook (claude_session_hook), and spawned Codex sessions. \
+Unavailable for interactive Codex, Cursor, Copilot, Grok and OpenCode \
 sessions: they have no hook before a question is shown.";
 
 /// Whether questions are escalated.
