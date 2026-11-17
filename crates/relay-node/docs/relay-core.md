@@ -890,6 +890,31 @@ without an account has no policy and is unchanged.
   `{locked, defaults, mismatched, managed}`, key names only, for Settings to
   label each row; absent when no policy applies.
 
+### Messages the organization holds
+
+The policy's delivery section decides inbound messages in every harness
+(`src/relay/claude_delivery_policy.rs`, which keeps its Claude-named file,
+methods and fields for compatibility):
+
+- **Locked `inbound_default: "hold"`:** a message from a sender in
+  `admin_senders` (Control's resolved relay names and addresses of the
+  organization's owners and admins, matched by authenticated address or by
+  name) always delivers. Any other sender's message is held for the person,
+  in every `SessionKind`, through the existing hold path; a push without the
+  sender's address reads the queue first. The person approves or dismisses
+  each held message (`claude.delivery_status` lists them all, with
+  `organization_hold: true`), but "Always allow" for a sender is refused while
+  the rule applies ("Your organization holds messages from senders who are
+  not its admins…"). Exceptions saved before it stay saved and apply again
+  once it is lifted. The held record says "Held by your organization: the
+  sender is not one of its admins."
+- **Defaulted `inbound_default`:** `hold` turns the person's own
+  known-senders-only restriction on, `deliver` off, once, as any default is
+  written; the person may change it and a later apply does not undo that.
+- The rule is held in memory, given on every policy apply and at startup
+  from the stored policy, and lifted with the policy. Changing it asks every
+  agent's queue to be read again.
+
 ### Repositories that join by themselves
 
 `auto_join_repositories` (`src/relay/repositories.rs`) is a list of

@@ -373,6 +373,11 @@ impl Core {
         allowed: bool,
     ) -> Result<(), RpcError> {
         self.scope_claude_delivery().map_err(claude_policy_error)?;
+        if allowed && self.claude_delivery.organization_holds() {
+            return Err(RpcError::setting_refused(
+                crate::relay::claude_delivery_policy::ORGANIZATION_HOLD_REFUSAL.to_string(),
+            ));
+        }
         if sender.trim().is_empty() || sender.len() > 512 || name.len() > 256 {
             return Err(RpcError::invalid_params("Choose a valid workspace member."));
         }
@@ -397,12 +402,17 @@ impl Core {
     }
 
     fn hold_claude_delivery(&self, registration: &Registration, delivery: &Delivery) {
+        let reason = if self.claude_delivery.organization_holds() {
+            crate::relay::claude_delivery_policy::ORGANIZATION_HOLD_REASON
+        } else {
+            "Waiting for your approval in Agent Relay."
+        };
         match self.claude_delivery.hold(registration, delivery) {
             Ok(true) => self.record(
                 registration,
                 delivery,
                 DeliveryOutcome::Waiting,
-                Some("Waiting for your approval in Agent Relay.".into()),
+                Some(reason.into()),
             ),
             Ok(false) => {}
             Err(error) => self.record(

@@ -847,6 +847,36 @@ mod tests {
         assert!(core.forced_repositories().is_empty());
     }
 
+    /// A locked hold reaches the delivery policy and is lifted with the
+    /// policy; a defaulted one seeds the person's restriction once.
+    #[tokio::test]
+    async fn the_delivery_section_holds_or_seeds_the_restriction() {
+        use crate::relay::settings_policy::SettingsPolicy;
+        let temp = tempfile::tempdir().unwrap();
+        let core = core(temp.path());
+        let locked: SettingsPolicy = serde_json::from_value(json!({
+            "locked": {"inbound_default": "hold", "admin_senders": ["lead"]},
+        }))
+        .unwrap();
+        core.apply_settings_policy(Some(locked)).unwrap();
+        assert!(core.claude_delivery_status().organization_hold);
+        assert!(core
+            .set_claude_sender_delivery("sam@desk", "Sam", true)
+            .is_err());
+        core.apply_settings_policy(None).unwrap();
+        assert!(!core.claude_delivery_status().organization_hold);
+
+        let defaulted: SettingsPolicy =
+            serde_json::from_value(json!({"defaults": {"inbound_default": "hold"}})).unwrap();
+        core.apply_settings_policy(Some(defaulted.clone())).unwrap();
+        assert!(!core.claude_delivery_status().organization_hold);
+        assert!(core.claude_delivery_status().restricted);
+        // The person turns it off: the default is not written again.
+        core.set_claude_delivery_restricted(false).unwrap();
+        core.apply_settings_policy(Some(defaulted)).unwrap();
+        assert!(!core.claude_delivery_status().restricted);
+    }
+
     #[test]
     fn a_change_records_the_value_before_and_after() {
         let before = map(json!({"auto_join_general": false, "auto_activate": true}));
