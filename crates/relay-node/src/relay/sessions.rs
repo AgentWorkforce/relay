@@ -277,6 +277,12 @@ pub trait SessionDirectory: Send + Sync + 'static {
     /// by themselves, so the Pi extension's banner can say so. May block.
     fn pi_auto_join(&self, _auto_join: bool) {}
 
+    /// Told on every reconcile pass which repositories the organization
+    /// makes join the relay by themselves (`relay::repositories`): a live
+    /// session in one of them is eligible even in a directory automatic
+    /// activation leaves out. May block.
+    fn forced_repositories(&self, _entries: Vec<String>) {}
+
     fn archived(&self, _targets: &[Target]) -> HashSet<Target> {
         HashSet::new()
     }

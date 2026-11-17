@@ -213,6 +213,15 @@ pub struct SettingsValues {
     /// keep the channels they are in. Absent in older cores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_join_general: Option<bool>,
+    /// Repositories whose sessions join the relay by themselves, each
+    /// `owner/name` or `owner/*`, matched against the session directory's
+    /// git `origin` remote. Set by the organization, a matching session is
+    /// put on the relay even with automatic activation off; otherwise it
+    /// follows automatic activation as any session does. A matching agent's
+    /// registration names its `repository`. Empty unless set. Absent in
+    /// older cores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_join_repositories: Option<Vec<String>>,
     /// Days this computer keeps local session history: 7, 30 or 90, or 0
     /// to keep it forever. 30 unless changed. relayhistory removes older
     /// sessions from this computer; uploaded copies are not affected.
@@ -612,6 +621,15 @@ pub struct SettingsChange {
     )]
     #[schemars(with = "bool")]
     pub auto_join_general: Option<bool>,
+    /// Replaces the repositories whose sessions join the relay by
+    /// themselves: each `owner/name` or `owner/*`, at most 200.
+    #[serde(
+        default,
+        deserialize_with = "given",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "Vec<String>")]
+    pub auto_join_repositories: Option<Vec<String>>,
     /// How long this computer keeps local session history: 7, 30 or 90
     /// days, or 0 to keep it forever.
     #[serde(

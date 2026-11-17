@@ -232,6 +232,13 @@ impl SessionDirectory for LocalSessions {
         self.config.pi.sync_auto_join(auto_join);
     }
 
+    fn forced_repositories(&self, entries: Vec<String>) {
+        *self
+            .forced_repositories
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = entries;
+    }
+
     fn auto_activates(&self, session: &DiscoveredSession) -> bool {
         (self.activation_check())(session)
     }
@@ -518,11 +525,21 @@ impl LocalSessions {
 
     /// Apply directory and fleet policy before automatic registration.
     fn runtime_admitted(&self, session: &DiscoveredSession) -> bool {
-        session
-            .directory
-            .as_deref()
-            .is_some_and(|dir| !is_under(Path::new(dir), &self.config.auto_activate_excluded_dirs))
-            && !self.without_fleet_owned(vec![session.clone()]).is_empty()
+        session.directory.as_deref().is_some_and(|dir| {
+            !is_under(Path::new(dir), &self.config.auto_activate_excluded_dirs)
+                || self.in_forced_repository(dir)
+        }) && !self.without_fleet_owned(vec![session.clone()]).is_empty()
+    }
+
+    /// Whether `directory` is in a repository the organization makes join
+    /// the relay by itself, which no excluded directory keeps off.
+    fn in_forced_repository(&self, directory: &str) -> bool {
+        let entries = self
+            .forced_repositories
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        crate::relay::repositories::matched(&entries, Some(directory)).is_some()
     }
 
     /// Whether automatic activation puts `session` on the relay: one
@@ -555,7 +572,11 @@ impl LocalSessions {
             let Some(directory) = session.directory.as_deref().map(Path::new) else {
                 return false;
             };
-            if is_under(directory, &self.config.auto_activate_excluded_dirs) {
+            if is_under(directory, &self.config.auto_activate_excluded_dirs)
+                && !directory
+                    .to_str()
+                    .is_some_and(|dir| self.in_forced_repository(dir))
+            {
                 return false;
             }
             match session.target.kind {

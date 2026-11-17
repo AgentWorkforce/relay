@@ -770,6 +770,58 @@ mod tests {
         assert_eq!((recorded.given, recorded.applied), (json!(3), json!(3)));
     }
 
+    /// The repositories list is saved normalized; only the organization's
+    /// lock makes its sessions join whatever automatic activation says, and
+    /// a matching directory is labelled with its owner/name.
+    #[tokio::test]
+    async fn auto_join_repositories_is_saved_and_forced_only_when_locked() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = core(temp.path());
+        assert_eq!(core.settings()["auto_join_repositories"], json!([]));
+        core.set_settings(&map(
+            json!({"auto_join_repositories": ["Acme/Web", "acme/web", "tools/*"]}),
+        ))
+        .unwrap();
+        assert_eq!(
+            core.settings()["auto_join_repositories"],
+            json!(["acme/web", "tools/*"])
+        );
+        let bad = core
+            .set_settings(&map(json!({"auto_join_repositories": ["/home/me/web"]})))
+            .unwrap_err();
+        assert!(bad.message.contains("owner/name"), "{}", bad.message);
+        assert_eq!(core.auto_join_repositories(), vec!["acme/web", "tools/*"]);
+        // The person's own list forces nothing.
+        assert!(core.forced_repositories().is_empty());
+
+        let repo = temp.path().join("web");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(
+            repo.join(".git/config"),
+            "[remote \"origin\"]\n\turl = https://github.com/acme/web.git\n",
+        )
+        .unwrap();
+        assert_eq!(
+            core.repository_label(repo.to_str()).as_deref(),
+            Some("acme/web")
+        );
+
+        let policy: crate::relay::settings_policy::SettingsPolicy =
+            serde_json::from_value(json!({"locked": {"auto_join_repositories": ["acme/*"]}}))
+                .unwrap();
+        core.apply_settings_policy(Some(policy)).unwrap();
+        assert_eq!(core.forced_repositories(), vec!["acme/*"]);
+        assert_eq!(
+            core.settings()["organization_policy"]["locked"],
+            json!(["auto_join_repositories"])
+        );
+        assert!(core
+            .set_settings(&map(json!({"auto_join_repositories": []})))
+            .is_err());
+        core.apply_settings_policy(None).unwrap();
+        assert!(core.forced_repositories().is_empty());
+    }
+
     #[test]
     fn a_change_records_the_value_before_and_after() {
         let before = map(json!({"auto_join_general": false, "auto_activate": true}));

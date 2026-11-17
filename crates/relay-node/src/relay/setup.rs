@@ -283,12 +283,14 @@ impl Setup {
             .core
             .store
             .read(crate::relay::agents::auto_activation::ActivationSettings::of);
+        let forced = self.core.forced_repositories();
         found.iter().any(|session| {
             session.live
-                && crate::relay::agents::auto_activation::activation_applies(
+                && (crate::relay::agents::auto_activation::activation_applies(
                     &settings,
                     session.target.kind,
-                )
+                ) || crate::relay::repositories::matched(&forced, session.directory.as_deref())
+                    .is_some())
                 && self
                     .core
                     .store
@@ -615,11 +617,13 @@ impl Setup {
             .core
             .store
             .read(crate::relay::agents::auto_activation::ActivationSettings::of);
+        let forced = self.core.forced_repositories();
         self.core.workspace().is_some()
-            && crate::relay::agents::auto_activation::activation_applies(
+            && (crate::relay::agents::auto_activation::activation_applies(
                 &settings,
                 session.target.kind,
-            )
+            ) || crate::relay::repositories::matched(&forced, session.directory.as_deref())
+                .is_some())
             && {
                 let directory = self.core.plugins.sessions.clone();
                 let session = session.clone();
