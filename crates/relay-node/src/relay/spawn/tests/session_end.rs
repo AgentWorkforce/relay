@@ -6,6 +6,7 @@
 use super::*;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A Relaycast REST stand-in that accepts every write, recording each
 /// `DELETE` path.
@@ -549,6 +550,97 @@ async fn a_grok_leader_with_a_full_queue_page_is_not_ended() {
     assert!(registered(&core, "leader"));
     assert!(spawner.stopped.lock().unwrap().is_empty());
     assert!(deleted.lock().unwrap().is_empty());
+}
+
+/// The first queue read is empty. The read at the stop finds a message
+/// that arrived after that, and the leader stays.
+fn queue_that_fills_before_the_stop() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let reads = AtomicUsize::new(0);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let mut parts = line.split_whitespace();
+            let method = parts.next().unwrap_or_default().to_string();
+            let path = parts.next().unwrap_or_default().to_string();
+            let mut length = 0usize;
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).unwrap();
+                let header = header.trim_end().to_ascii_lowercase();
+                if header.is_empty() {
+                    break;
+                }
+                if let Some(value) = header.strip_prefix("content-length: ") {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut request = vec![0; length];
+            reader.read_exact(&mut request).unwrap();
+            let reply = if method == "DELETE" {
+                "HTTP/1.1 204 No Content\r\nconnection: close\r\n\r\n".to_string()
+            } else {
+                let body = if method == "PATCH" {
+                    r#"{"ok":true,"data":{"id":"a","name":"a","type":"agent","status":"online"}}"#
+                        .to_string()
+                } else if path.contains("deliveries") {
+                    let read = reads.fetch_add(1, Ordering::SeqCst);
+                    if read == 0 {
+                        r#"{"ok":true,"data":[]}"#.to_string()
+                    } else {
+                        r#"{"ok":true,"data":[{"id":"del_late","message_id":"msg_late","status":"queued"}]}"#
+                            .to_string()
+                    }
+                } else {
+                    r#"{"ok":true,"data":null}"#.to_string()
+                };
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+            };
+            let _ = stream.write_all(reply.as_bytes());
+        }
+    });
+    base
+}
+
+#[tokio::test]
+async fn a_grok_leader_stays_when_a_message_arrives_before_the_stop() {
+    std::env::remove_var("SSL_CERT_FILE");
+    std::env::remove_var("SSL_CERT_DIR");
+    let home = tempfile::tempdir().unwrap();
+    let base = queue_that_fills_before_the_stop();
+    let spawner = Arc::new(FakeSpawner::default());
+    let core = core_at(home.path(), spawner.clone(), &base);
+    let observer = observed(&core);
+    spawn(&core, "leader").await;
+    core.store
+        .update(|store| {
+            let leader = store
+                .registrations
+                .iter_mut()
+                .find(|registration| registration.name == "leader")
+                .unwrap();
+            leader.target.kind = crate::relay::store::SessionKind::Grok;
+            leader.spawn.as_mut().unwrap().harness = crate::relay::harness::grok::ID.name().into();
+        })
+        .unwrap();
+    observer.set("leader", ProcessLiveness::Running, WorkState::Idle, false);
+    core.observe_spawned().await;
+    {
+        let ledger = core.ledger();
+        ledger.lock().agents.get_mut("leader").unwrap().idle_since =
+            Some(chrono::Utc::now() - chrono::Duration::hours(25));
+    }
+    drop_spawn_receipts(home.path());
+    core.observe_spawned().await;
+    assert!(registered(&core, "leader"));
+    assert!(spawner.stopped.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

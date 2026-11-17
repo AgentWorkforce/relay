@@ -302,9 +302,9 @@ impl Core {
                 continue;
             }
             let name = registration.name.clone();
-            // The queue read can take long enough for a turn to start, and
-            // a handled delivery is no longer in that count. Ending checks
-            // the same turn again once it holds the delivery lock.
+            // The queue read can take long enough for a turn to start, or
+            // for Relaycast to accept another message. Ending checks the
+            // turn and the queue again once it holds the delivery lock.
             if let Err(error) = self
                 .end_idle_grok_leader(&name, &registration.agent_id, mark)
                 .await

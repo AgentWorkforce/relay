@@ -422,6 +422,18 @@ impl Core {
             if !self.idle_grok_unchanged(registration, mark) {
                 return Ok(false);
             }
+            // The count in reconcile is already stale: this waited for the
+            // delivery locks. A message Relaycast accepted in that gap is
+            // not a turn yet, and those locks do not stop it arriving.
+            if self
+                .waiting_deliveries(registration)
+                .await
+                .ok()
+                .filter(|pending| *pending == 0)
+                .is_none()
+            {
+                return Ok(false);
+            }
         }
         self.keep_spawn_receipt(registration)?;
         if mode.ends_owned_spawn() {
