@@ -918,8 +918,11 @@ methods and fields for compatibility):
   handed to the session, with no await in between: inside the ordinary
   route's and native continuation's blocking calls, right before the route,
   and right before the mobile journal takes the turn. If the hold now
-  applies, it waits in the queue, to be held on the next pass. A message
-  whose route call has already begun completes.
+  applies, it waits in the queue, to be held on the next pass. A channel
+  batch is gated right before its pin is saved (the pin is its hand-over):
+  if the hold now covers any of its posts, nothing is pinned and the posts go
+  one by one, held or delivered on their own. A message whose route call has
+  already begun, or a batch already pinned, completes.
 
 ### Repositories that join by themselves
 

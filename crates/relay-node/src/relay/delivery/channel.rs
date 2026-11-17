@@ -154,7 +154,7 @@ impl Core {
                 .await;
             return Vec::new();
         }
-        let (ready, others): (Vec<_>, Vec<_>) = posts
+        let (ready, mut others): (Vec<_>, Vec<_>) = posts
             .into_iter()
             .partition(|post| self.post_ready(post, &registration));
         let take = fitting(&ready, MAX_COALESCED, PROMPT_BUDGET);
@@ -163,7 +163,9 @@ impl Core {
         }
         if take > 0 {
             let batch = ready.into_iter().take(take).collect();
-            self.inject_posts(&registration, &token, batch).await;
+            // A batch the organization's hold now covers is not pinned: its
+            // posts go one by one, held or delivered on their own.
+            others.extend(self.inject_posts(&registration, &token, batch).await);
         }
         others
     }
@@ -215,7 +217,11 @@ impl Core {
         registration: &Registration,
         token: &Secret,
         batch: Vec<Delivery>,
-    ) {
+    ) -> Vec<Delivery> {
+        if self.batch_held(registration, &batch) {
+            return batch;
+        }
+        let original = batch.clone();
         let channel_id = batch
             .first()
             .and_then(|p| p.channel_id.clone())
@@ -226,7 +232,7 @@ impl Core {
             // commands for a channel that may not exist.
             let settle = Settle::new(registration, token, &workspace, &batch);
             self.posts_failed(&settle, "The channel's name could not be read.".into());
-            return;
+            return Vec::new();
         };
         let posts = self.with_files(batch, registration, token).await;
         let lines = self
@@ -243,16 +249,36 @@ impl Core {
             reply_post: settle::automatic_answer_post(registration, &posts, true)
                 .map(pins::ReplyPost::from),
         };
+        // The pin is the hand-over: once saved, every retry hands this batch
+        // over as it is. A hold that began while the batch was prepared is
+        // checked here, with no await before the pin is saved; the batch then
+        // goes back to be handled post by post.
+        if self.batch_held(registration, &original) {
+            return original;
+        }
         if let Err(error) = self.with_pins(|pins| pins.insert(pin.clone())) {
             let settle = Settle::new(registration, token, &workspace, &posts);
             self.posts_failed(&settle, format!("Could not save the injection. {error}"));
-            return;
+            return Vec::new();
         }
         // Every new thread may be answered once the prompt is visible.
         for route in &pin.routes {
             self.authorize_reply_parent(registration, route);
         }
         self.hand_over(registration, token, &pin, &posts).await;
+        Vec::new()
+    }
+
+    /// Whether the organization's hold now covers a post of `batch`, which
+    /// is then not pinned (`inject_posts`).
+    fn batch_held(&self, registration: &Registration, batch: &[Delivery]) -> bool {
+        self.claude_delivery.organization_holds()
+            && batch.iter().any(|post| {
+                matches!(
+                    self.claude_delivery.decide(registration, post),
+                    ClaudeConsent::Hold | ClaudeConsent::ReadQueue
+                )
+            })
     }
 
     /// Hands a recorded injection over again, exactly as it was, settling
@@ -367,6 +393,56 @@ mod tests {
                 ("ch_a".to_string(), vec!["2".to_string()]),
             ]
         );
+    }
+
+    /// A channel batch admitted before the organization's hold began is
+    /// not pinned once the hold covers a post: the batch goes back to be
+    /// handled post by post, and nothing is handed over.
+    #[tokio::test]
+    async fn a_hold_that_starts_before_pinning_returns_the_batch() {
+        let home = tempfile::tempdir().unwrap();
+        let config = crate::relay::daemon::Config {
+            paths: crate::relay::paths::CorePaths::for_socket(home.path().join("core.sock"))
+                .unwrap(),
+            home: home.path().into(),
+            app_data_dir: home.path().join("app-data"),
+            env: Default::default(),
+            version: "test".into(),
+            host_name: "channel-test".into(),
+            rediscover_every: std::time::Duration::from_secs(3600),
+            push_timing: Default::default(),
+            delivery_timing: Default::default(),
+        };
+        let (core, _) = Core::with_plugins(config, crate::relay::daemon::Plugins::default());
+        let registration: Registration = serde_json::from_value(serde_json::json!({
+            "name": "codex-api", "agentID": "agent-1",
+            "target": {"kind": "codex", "id": "thread-1"},
+            "title": "API", "baseURL": "http://127.0.0.1:1",
+            "registeredAt": "2026-11-17T00:00:00Z"
+        }))
+        .unwrap();
+        let post = |id: &str, sender: &str| Delivery {
+            id: id.into(),
+            message_id: format!("m-{id}"),
+            channel_id: Some("ch_swarm".into()),
+            sender: Some(sender.into()),
+            sender_address: Some(format!("{sender}@desk")),
+            text: Some("hello".into()),
+            ..Delivery::default()
+        };
+        let batch = vec![post("1", "lead"), post("2", "stranger")];
+        // Admitted before the hold: the hold begins as the batch is prepared.
+        core.claude_delivery
+            .set_organization_hold(Some(["lead".to_string()].into()));
+        let back = core
+            .inject_posts(&registration, &Secret::new("token"), batch.clone())
+            .await;
+        assert_eq!(back, batch);
+        assert!(core
+            .with_pins(|pins| pins.keys_for(&registration.agent_id))
+            .is_empty());
+        // Without the hold, a batch of admins' posts alone is not held.
+        assert!(!core.batch_held(&registration, &batch[..1]));
     }
 
     #[test]
