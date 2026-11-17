@@ -134,7 +134,10 @@ pub fn is_editor_worker(table: &dyn ProcessTable, pid: i32) -> bool {
 /// `CURSOR_DATA_DIR` cannot hide one), no record gives it to another
 /// window's host that still runs (however long it has been idle), and the processes between `pid` and `host` vouch for it
 /// (`path_vouches`). The first hook or tool of a conversation's window to
-/// claim it establishes its record.
+/// claim it establishes its record. A hook launch that names no
+/// conversation also needs the conversation to run now
+/// (`recently_active`) or to be one Cursor has only just started
+/// (`never_seen`), unless this host's record already holds it.
 pub(super) fn may_claim(
     config: &CursorConfig,
     table: &dyn ProcessTable,
@@ -153,7 +156,9 @@ pub(super) fn may_claim(
     match path_vouches(table, pid, host, session_id) {
         Some(Vouch::Named) => true,
         Some(Vouch::Launched) => {
-            owner == Some(host) || recently_active(config, table, host, session_id)
+            owner == Some(host)
+                || recently_active(config, table, host, session_id)
+                || never_seen(config, table, host, session_id)
         }
         None => false,
     }
@@ -195,6 +200,54 @@ fn recently_active(
         .iter()
         .filter_map(|path| std::fs::metadata(path).ok()?.modified().ok())
         .any(|written| written.elapsed().map_or(true, |age| age < ACTIVE))
+}
+
+/// Whether `session_id` is a conversation Cursor has only just started:
+/// there is no record of it at all, for any host, and no transcript of it
+/// (its own or a subagent's) in the data folder of `host`'s window, in
+/// Cursor's default one or in the one the caller's own environment names.
+/// A brand-new chat's first hooks (`beforeSubmitPrompt`, and a first tool
+/// call) run before Cursor writes its transcript, so without this its
+/// first call of an MCP tool finds it unknown.
+///
+/// Taking such an id up does not widen what `recently_active` guards
+/// against. The claimant can only hold an id no window has run and Cursor
+/// has not written: Cursor makes up a new chat's id, and nothing outside
+/// Cursor's own processes (which, as there, are out of scope) learns it
+/// before the chat's first hook runs. Once Cursor writes the transcript,
+/// the record names the launching extension host, the one that runs the
+/// chat, and every later hook of it passes as that host's own; a hook from
+/// another window is refused while that host runs. A closed or reloaded
+/// window's chat has a transcript, and stays refused once that is older
+/// than `ACTIVE`; so does any id with a record, even of a host that is
+/// gone, since it ran before. The lock file is no evidence either way:
+/// `claim` creates it before it asks this.
+fn never_seen(
+    config: &CursorConfig,
+    table: &dyn ProcessTable,
+    host: i32,
+    session_id: &str,
+) -> bool {
+    let absent = |path: &Path| {
+        std::fs::symlink_metadata(path)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    };
+    if !absent(&records(config).join(format!("{session_id}.json"))) {
+        return false;
+    }
+    let mut folders = vec![config.data_dir.clone(), config.home.join(".cursor")];
+    folders.extend(window_data_dir(table, host));
+    folders.into_iter().all(|data_dir| {
+        // A projects folder that is there but cannot be read hides what it
+        // holds: that is no proof of a new chat.
+        let projects = data_dir.join("projects");
+        let readable = absent(&projects) || std::fs::read_dir(&projects).is_ok();
+        let folder = CursorConfig {
+            data_dir,
+            ..config.clone()
+        };
+        readable && super::inbox::transcripts(&folder, session_id).is_empty()
+    })
 }
 
 /// The `CURSOR_DATA_DIR` the Cursor of `host`'s window runs with: from the

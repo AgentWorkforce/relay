@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay-node`: a brand-new Cursor editor chat is put on its window at its first prompt, before Cursor writes its transcript, so a first prompt that calls one of Agent Relay's MCP tools no longer finds the chat unknown. A hook may take up only a chat Cursor has no transcript of and Agent Relay has no record of; a closed chat with an old transcript is still refused.
 - `agent-relay-node`: a spawn whose harness is installed but did not start now fails as `spawn_failed: <reason>` instead of `spawn_harness_unavailable` (which Cloud showed as the node not providing the harness); a new spawn with a fresh idempotency key may then succeed. Claude Code's readiness timeout now says whether Claude was still running and how much output it wrote.
 - `agent-relay-node`: session-socket requests share one deadline across connection setup and partial reads and writes, so slow replies cannot extend a native hook beyond its wait budget.
 
