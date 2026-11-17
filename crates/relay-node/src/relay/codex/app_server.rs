@@ -1193,6 +1193,74 @@ pub(crate) mod tests {
         assert_eq!(turn["params"]["clientUserMessageId"], "compact-1");
     }
 
+    // Native input is the spawned agent's own turn: a leader's (native
+    // attribution with the leader line) and a requester's (native
+    // attribution alone) start the turn whole, with nothing injected, even
+    // with relay messages hidden. The same body under the peer attribution
+    // is still hidden, so the gate, not the fake, keeps them visible.
+    #[test]
+    fn native_input_to_a_spawned_codex_stays_the_turns_visible_input_when_hiding() {
+        use crate::relay::delivery::policy::{
+            leader_framed, owner_framed, with_leader_line, NATIVE_HEADER, PEER_HEADER,
+        };
+        let native = RELAYED.replacen(PEER_HEADER, NATIVE_HEADER, 1);
+        let leader = with_leader_line(&native, "gtmgrok");
+        assert!(leader_framed(&leader), "{leader}");
+        assert!(
+            !leader_framed(&native) && !owner_framed(&native),
+            "{native}"
+        );
+        let send = |thread: &'static str, text: &str, message_id: &str| {
+            let server = FakeAppServer::new(move |request| match request["method"].as_str() {
+                Some("thread/loaded/list") => Some(server_frame(
+                    &json!({"id": 2, "result": {"data": [thread], "nextCursor": null}}),
+                )),
+                Some("thread/inject_items") => Some(server_frame(&json!({"id": 4, "result": {}}))),
+                Some("turn/start") => Some(server_frame(
+                    &json!({"id": 3, "result": {"turn": {"id": "t"}}}),
+                )),
+                _ => None,
+            });
+            let seen = server.seen.clone();
+            assert_eq!(
+                send_spawned(
+                    Box::new(server),
+                    (drive::claim(thread).unwrap(), drive::never()),
+                    (text, message_id),
+                    Hide::IfAble,
+                    SEND_TIMEOUT
+                ),
+                Ok(true)
+            );
+            seen
+        };
+        for (thread, text, message_id) in [
+            (
+                "01a1235e-70e1-7cb1-8619-e2c8bf3bdb8a",
+                leader.as_str(),
+                "native-leader-1",
+            ),
+            (
+                "01a1235e-70e1-7cb1-8619-e2c8bf3bdb8b",
+                native.as_str(),
+                "native-requester-1",
+            ),
+        ] {
+            let seen = send(thread, text, message_id);
+            let (methods, _) = methods_and_turn_text(&seen);
+            assert_eq!(methods, ["turn/start"], "nothing injected: {text}");
+            assert_eq!(turn_input(&seen), json!([{"type": "text", "text": text}]));
+        }
+        let seen = send(
+            "01a1235e-70e1-7cb1-8619-e2c8bf3bdb8c",
+            RELAYED,
+            "native-peer-1",
+        );
+        let (methods, _) = methods_and_turn_text(&seen);
+        assert_eq!(methods, ["thread/inject_items", "turn/start"]);
+        assert_eq!(turn_input(&seen), json!([]));
+    }
+
     // Codex refusing the injection (an older Codex) answered on a whole
     // frame, so the whole message starts the turn on the same connection.
     #[test]

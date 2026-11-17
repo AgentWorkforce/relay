@@ -1196,8 +1196,10 @@ does:
 ```
 
 A turn whose plugin went away before delivery goes the peer way, framed as
-a peer's. `read` and Codex's hidden notes end a leader-framed message with a
-leader note restating the line's limits. Ids are compared, never names:
+a peer's. `read` ends a leader-framed message with a leader note restating
+the line's limits. To a spawned Codex agent a leader's native input is the
+turn's visible input, sent whole as a requester's is, also while relay
+messages are hidden. Ids are compared, never names:
 another agent with a leader's name is a peer. Channel posts, group messages
 and mentions from a leader stay peer messages. The spawn's own requester
 keeps its requester framing and route even when the list names it. Leaders
