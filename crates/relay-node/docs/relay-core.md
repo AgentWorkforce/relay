@@ -1123,6 +1123,33 @@ agent-relay-node call spawn.targets --json
 agent-relay-node call spawn.status --params '{"caller_name":"my-local-agent","action":"spawn","invocation_id":"invocation_id_from_receipt"}' --json
 ```
 
+### Who asked for a spawn
+
+At a spawn the core reads the invocation back from Relaycast
+(`GET /v1/actions/spawn/invocations/<id>`, `spawn::report_back::requester_of`)
+and keeps who asked for it on the registration's `spawn` record:
+
+- `requester` (`{"name","agentID"}`): the identity the work is for. When the
+  invocation carries both `requester_agent_id` and `requester_name`, the
+  desktop identity (a person's chat) that Agent Relay Cloud verified asked
+  for the spawn, that pair is the requester. Otherwise it is the invoking
+  agent, `caller_id` and `caller_name`.
+- `launcher` (`{"name","agentID"}`, optional): the invoking `caller_id` and
+  `caller_name` when they are not the requester. Agent Relay Cloud invokes a
+  spawn through a per-user launcher participant, so its caller is the
+  launcher and not the person's chat.
+
+Each pair is both or none: a plain agent name and a non-empty id. A partial,
+empty or malformed requester pair is ignored and the caller stays the
+requester. Records saved before `launcher` existed load unchanged.
+
+The requester gets the first turn's final answer and is the name in the
+spawned agent's header. A 1:1 direct message whose Relaycast sender id is the
+requester's or the launcher's (`spawn::from_requester`) is the requester's:
+it is native input when that is on and otherwise carries the owner line. Ids
+are compared, never names. Release ownership and fork authorization accept
+either id too.
+
 ## Exact provider event subscriptions
 
 The session socket accepts an optional `event_types` list on

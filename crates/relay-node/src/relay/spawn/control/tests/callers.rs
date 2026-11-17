@@ -837,6 +837,24 @@ fn an_owns_only_caller_releases_its_crashed_worker() {
         release_target_ownership(&store, &workspace, &exact, "agent_other"),
         Some(ReleaseOwnership::Other)
     );
+    // Invoked through a launcher for a desktop requester: either owns it.
+    let mut launched = store.clone();
+    let spawn = launched.registrations[0].spawn.as_mut().unwrap();
+    spawn.launcher = spawn.requester.take();
+    spawn.requester = Some(crate::relay::store::SpawnRequester {
+        name: "person-chat".into(),
+        agent_id: "agent_chat".into(),
+    });
+    for owner in ["agent_service", "agent_chat"] {
+        assert_eq!(
+            release_target_ownership(&launched, &workspace, &exact, owner),
+            Some(ReleaseOwnership::Owned)
+        );
+    }
+    assert_eq!(
+        release_target_ownership(&launched, &workspace, &exact, "agent_other"),
+        Some(ReleaseOwnership::Other)
+    );
     for wrong in [
         params("test-worker", "agent_other", "node_local"),
         params("test-other", "agent_worker", "node_local"),

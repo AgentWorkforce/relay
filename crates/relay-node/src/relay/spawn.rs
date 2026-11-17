@@ -232,11 +232,12 @@ pub fn owner_of(registration: &Registration) -> Ownership {
 }
 
 /// Whether `delivery` is a direct message from the agent that asked for
-/// `registration`'s spawn, matched by the immutable Relaycast sender id the
-/// spawn recorded (`spawn.requester`), never by name: a name can be taken
-/// again, and a body can claim anything. Such a message is framed as the
-/// owner's (`policy::OWNER_LINE`). An agent not spawned here, or one the
-/// person took over, has no requester.
+/// `registration`'s spawn, matched by an immutable Relaycast sender id the
+/// spawn recorded (`spawn.requester`, or `spawn.launcher` that invoked it
+/// for the requester), never by name: a name can be taken again, and a
+/// body can claim anything. Such a message is framed as the owner's
+/// (`policy::OWNER_LINE`). An agent not spawned here, or one the person
+/// took over, has no requester.
 pub fn from_requester(
     registration: &Registration,
     delivery: &crate::relay::delivery::policy::Delivery,
@@ -245,9 +246,11 @@ pub fn from_requester(
         .spawn
         .as_ref()
         .filter(|spawn| spawn.taken_over_at.is_none())
-        .and_then(|spawn| spawn.requester.as_ref())
-        .map(|requester| requester.agent_id.as_str())
-        .is_some_and(|id| !id.is_empty() && drive::direct_from(delivery, Some(id)))
+        .is_some_and(|spawn| {
+            spawn
+                .asker_ids()
+                .any(|id| drive::direct_from(delivery, Some(id)))
+        })
 }
 
 #[cfg(test)]
@@ -1833,6 +1836,7 @@ mod tests {
             token: registered
                 .then(|| crate::relay::workspace::Secret::new(format!("at_live_{name}"))),
             requester: None,
+            launcher: None,
             target,
             process: None,
             control_url: None,

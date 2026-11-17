@@ -113,6 +113,10 @@ pub struct Intent {
     /// registration saved after a restart is still owed its final answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<SpawnRequester>,
+    /// The participant that invoked the spawn for `requester`, when another
+    /// (`SpawnOrigin::launcher`). Absent on intents from before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launcher: Option<SpawnRequester>,
     /// Set once the launch started the agent's session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<Target>,
@@ -165,6 +169,7 @@ impl Intent {
                 invocation_id: self.invocation_id.clone(),
                 harness: self.harness.name().to_string(),
                 requester: self.requester.clone(),
+                launcher: self.launcher.clone(),
                 process,
                 worker_cwd: self.worker_cwd.clone(),
                 // Relaycast's spawn invoke carries no owner it vouches for
@@ -503,6 +508,7 @@ pub(super) mod tests {
             agent_id: None,
             token: None,
             requester: None,
+            launcher: None,
             target: None,
             process: None,
             control_url: None,
