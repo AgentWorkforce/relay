@@ -292,11 +292,17 @@ pub(crate) fn relock(store: &mut crate::relay::store::Store) {
             changes.insert(key.clone(), value.clone());
         }
     }
-    if let Some(Value::Bool(general)) = changes.remove(GENERAL) {
-        store.extras.auto_join_general = Some(general);
-    }
-    if !changes.is_empty() {
-        if let Ok(change) = crate::relay::spawn::settings::Change::read(&changes) {
+    // Each lock on its own, as an apply writes them: one value the store
+    // cannot take does not keep the others from holding.
+    for (key, value) in changes {
+        if key == GENERAL {
+            if let Value::Bool(general) = value {
+                store.extras.auto_join_general = Some(general);
+            }
+            continue;
+        }
+        let change = Map::from_iter([(key, value)]);
+        if let Ok(change) = crate::relay::spawn::settings::Change::read(&change) {
             change.apply(store);
         }
     }
@@ -646,6 +652,37 @@ mod tests {
         assert_eq!(merged.extras.auto_join_general, Some(false));
         // A widening person-only lock is not forced on an unmanaged computer.
         assert_ne!(merged.accept_spawns, Some(true));
+        // The other writer order keeps them together too.
+        let reversed = Store::merged(&base, &theirs, &ours);
+        assert_eq!(reversed.spawn_max_agents, Some(4));
+        assert_eq!(reversed.extras.auto_join_general, Some(false));
+        // Once the lock is lifted, the merge keeps each side's own value.
+        let mut lifted = theirs.clone();
+        if let Some(stored) = lifted.organization_policy.as_mut() {
+            stored.policy = None;
+        }
+        let merged = Store::merged(&base, &ours, &lifted);
+        assert_eq!(merged.spawn_max_agents, Some(6));
+    }
+
+    /// One locked value the store cannot take does not keep the other locks
+    /// from holding after a merge.
+    #[test]
+    fn a_malformed_lock_does_not_undo_the_others() {
+        use crate::relay::store::Store;
+        let base = Store::default();
+        let mut stale = base.clone();
+        stale.accept_spawns = Some(true);
+        let mut locking = base.clone();
+        locking.organization_policy = Some(Stored {
+            policy: Some(policy(json!({
+                "locked": {"accept_spawns": false, "spawn_max_agents": "invalid"},
+            }))),
+            applied_defaults: BTreeMap::new(),
+        });
+        locking.accept_spawns = Some(false);
+        let merged = Store::merged(&base, &stale, &locking);
+        assert_eq!(merged.accept_spawns, Some(false));
     }
 
     /// A harness's part of `spawn_harnesses` is the same setting as its flat
