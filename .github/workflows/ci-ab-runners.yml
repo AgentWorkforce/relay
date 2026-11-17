@@ -1,0 +1,128 @@
+name: CI runner A/B
+
+# Runner comparison (Graphide vs Blacksmith vs GitHub-hosted, Linux x64).
+# Same steps as relay-node-ci.yml's "Linux x64 build + test" and test.yml's
+# Linux "test" job, with NO caching so every leg is a cold, comparable run.
+#
+# Pushes to ci-ab/** only (workflow_dispatch needs the workflow on main).
+# The `graphide` leg runs only when the head commit message contains
+# `[graphide]`, so nothing reaches Graphide until it is opted into.
+# Report: scripts/ci-ab-report.sh <run-id>...
+
+on:
+  push:
+    branches: ['ci-ab/**']
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: '1'
+  AGENT_RELAY_TELEMETRY_DISABLED: 1
+  GRAPHIDE_SIGNALS: 'off'
+
+jobs:
+  relay-node:
+    name: relay-node build+test (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    # One run per runner label at a time, so legs never contend with
+    # themselves. Push the next commit after the previous run finishes:
+    # GitHub keeps only one pending run per group.
+    concurrency:
+      group: ci-ab-relay-node-${{ matrix.runner }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ${{ fromJSON(contains(github.event.head_commit.message, '[graphide]') && '["graphide","blacksmith-8vcpu-ubuntu-2404","blacksmith-4vcpu-ubuntu-2404","ubuntu-latest"]' || '["blacksmith-8vcpu-ubuntu-2404","blacksmith-4vcpu-ubuntu-2404","ubuntu-latest"]') }}
+    defaults:
+      run:
+        working-directory: crates/relay-node
+    steps:
+      - name: Mark start
+        working-directory: .
+        run: |
+          echo "AB_T0=$(date +%s)" >> "$GITHUB_ENV"
+          echo "AB_CPU=$(nproc) vCPU, $(awk '/MemTotal/{printf "%.1f GiB", $2/1048576}' /proc/meminfo), $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - name: Build
+        run: |
+          t=$(date +%s)
+          cargo build --locked
+          echo "AB_BUILD=$(( $(date +%s) - t ))" >> "$GITHUB_ENV"
+      - name: Test
+        run: |
+          t=$(date +%s)
+          export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+          export HOME="$RUNNER_TEMP/relay-node-home"
+          mkdir -p "$HOME"
+          trust_override=false
+          for name in SSL_CERT_FILE SSL_CERT_DIR; do
+            if [ -n "${!name:-}" ]; then echo "$name=present"; trust_override=true; else echo "$name=absent"; fi
+          done
+          if [ "$trust_override" = true ]; then
+            echo "::error::The isolated test process inherited a file trust override. Its value has not been printed or changed."
+            exit 1
+          fi
+          export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER='env -u SSL_CERT_FILE -u SSL_CERT_DIR'
+          cargo test --locked --lib relay::cloud_http::tests::tls_diagnostic_ -- --nocapture
+          cargo test --locked -- --test-threads=4
+          echo "AB_TEST=$(( $(date +%s) - t ))" >> "$GITHUB_ENV"
+      - name: Timing summary
+        if: always()
+        working-directory: .
+        run: |
+          {
+            echo "### relay-node on \`${{ matrix.runner }}\` (${{ job.status }})"
+            echo "| machine | cargo build | cargo test | job (steps) |"
+            echo "|---|---|---|---|"
+            echo "| $AB_CPU | ${AB_BUILD:-n/a}s | ${AB_TEST:-n/a}s | $(( $(date +%s) - AB_T0 ))s |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  node:
+    name: node npm test (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    concurrency:
+      group: ci-ab-node-${{ matrix.runner }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ${{ fromJSON(contains(github.event.head_commit.message, '[graphide]') && '["graphide","blacksmith-8vcpu-ubuntu-2404","blacksmith-4vcpu-ubuntu-2404","ubuntu-latest"]' || '["blacksmith-8vcpu-ubuntu-2404","blacksmith-4vcpu-ubuntu-2404","ubuntu-latest"]') }}
+    steps:
+      - name: Mark start
+        run: |
+          echo "AB_T0=$(date +%s)" >> "$GITHUB_ENV"
+          echo "AB_CPU=$(nproc) vCPU, $(awk '/MemTotal/{printf "%.1f GiB", $2/1048576}' /proc/meminfo), $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.14.0'
+      - name: Install dependencies
+        run: |
+          t=$(date +%s)
+          npm ci
+          npm install --no-save rollup || true
+          echo "AB_INSTALL=$(( $(date +%s) - t ))" >> "$GITHUB_ENV"
+      - name: Run tests
+        run: |
+          t=$(date +%s)
+          npm test
+          echo "AB_TEST=$(( $(date +%s) - t ))" >> "$GITHUB_ENV"
+      - name: Timing summary
+        if: always()
+        run: |
+          {
+            echo "### node on \`${{ matrix.runner }}\` (${{ job.status }})"
+            echo "| machine | npm ci | npm test | job (steps) |"
+            echo "|---|---|---|---|"
+            echo "| $AB_CPU | ${AB_INSTALL:-n/a}s | ${AB_TEST:-n/a}s | $(( $(date +%s) - AB_T0 ))s |"
+          } >> "$GITHUB_STEP_SUMMARY"
