@@ -905,6 +905,30 @@ mod tests {
         assert_eq!(states.last(), Some(&(true, true)));
     }
 
+    /// Lifting the policy keeps the organization's hold when the removal
+    /// cannot be saved: the stored policy and the hold never disagree.
+    #[tokio::test]
+    async fn a_failed_lift_keeps_the_hold() {
+        use crate::relay::settings_policy::SettingsPolicy;
+        let temp = tempfile::tempdir().unwrap();
+        let core = core(temp.path());
+        let locked: SettingsPolicy = serde_json::from_value(json!({
+            "locked": {"inbound_default": "hold", "admin_senders": ["lead"]},
+        }))
+        .unwrap();
+        core.apply_settings_policy(Some(locked)).unwrap();
+        assert!(core.claude_delivery.organization_holds());
+        // The store file changed into something this core cannot read, so
+        // the next save fails.
+        std::fs::write(
+            temp.path().join("app-data/injectable-agents.json"),
+            "not json",
+        )
+        .unwrap();
+        assert!(core.apply_settings_policy(None).is_err());
+        assert!(core.claude_delivery.organization_holds());
+    }
+
     #[test]
     fn a_change_records_the_value_before_and_after() {
         let before = map(json!({"auto_join_general": false, "auto_activate": true}));

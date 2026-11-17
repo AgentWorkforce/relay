@@ -355,7 +355,6 @@ impl Core {
         let _writing = crate::relay::settings_registry::writing();
         let policy = policy.map(SettingsPolicy::flattened);
         let Some(policy) = policy else {
-            self.sync_organization_hold_with(None);
             // The defaults' history stays, so a policy given later still
             // sees the choices the person made under this one.
             let cleared = self.store.update(|store| {
@@ -365,7 +364,11 @@ impl Core {
                     .and_then(|stored| stored.policy.take())
                     .is_some()
             });
-            if cleared.map_err(|e| RpcError::store(&e))? {
+            // The hold is lifted only once the policy's removal is saved: a
+            // failed save keeps both, as the caller is told.
+            let cleared = cleared.map_err(|e| RpcError::store(&e))?;
+            self.sync_organization_hold_with(None);
+            if cleared {
                 self.hub()
                     .invalidated(crate::relay::state::Listing::Settings);
             }
