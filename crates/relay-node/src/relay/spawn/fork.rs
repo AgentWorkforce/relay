@@ -444,6 +444,40 @@ mod tests {
         );
     }
 
+    // A workspace leader's direct messages are native input, but it is
+    // never the owner: its fork is refused like anyone else's.
+    #[tokio::test]
+    async fn a_workspace_leader_cannot_fork() {
+        use crate::relay::contract::agents::{WorkspaceLeader, WorkspaceLeaders};
+        let folders = Arc::new(Folders {
+            path: Mutex::new(Some(folder())),
+            slow: AtomicBool::new(false),
+        });
+        let base = relaycast("agent_leader");
+        let home = tempfile::tempdir().unwrap();
+        let core = opened(home.path(), &base, folders);
+        register(&core, "planner", false, KEY);
+        claim(&core).await;
+        core.leaders.set(
+            &core.workspace().unwrap(),
+            WorkspaceLeaders {
+                leaders: vec![WorkspaceLeader {
+                    name: "owner".into(),
+                    agent_id: "agent_leader".into(),
+                }],
+                patterns: vec!["owner".into()],
+            },
+        );
+        let refused = core
+            .fork_source(&request(None), "planner")
+            .await
+            .unwrap_err();
+        assert!(
+            refused.text().starts_with("spawn_fork_refused"),
+            "{refused:?}"
+        );
+    }
+
     #[tokio::test]
     async fn only_the_verified_owner_can_fork_and_only_in_the_sources_folder() {
         let source = folder();

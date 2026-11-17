@@ -789,6 +789,32 @@ async fn an_owns_only_caller_cannot_release_an_agent_another_requester_started()
     assert!(served.join().unwrap()[0].contains("test-agent-secret"));
 }
 
+// A workspace leader's direct messages are native input, but it is never
+// an agent's owner: it cannot release one another requester started.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_workspace_leader_cannot_release_an_agent_another_requester_started() {
+    use crate::relay::contract::agents::{WorkspaceLeader, WorkspaceLeaders};
+    let relaycast = Relaycast::new();
+    let stub = Stub::new(service(true));
+    let (_home, core) = core_with(Some(stub.clone()), &relaycast.base);
+    seed(&core, &relaycast.base, Some("agent_other"));
+    core.leaders.set(
+        &core.workspace().unwrap(),
+        WorkspaceLeaders {
+            leaders: vec![WorkspaceLeader {
+                name: "flows-test".into(),
+                agent_id: "agent_service".into(),
+            }],
+            patterns: vec![],
+        },
+    );
+    let error = bound(&core, "spawn.release", release_params(true))
+        .await
+        .unwrap_err();
+    assert_eq!(reason(&error), Some(RefusalReason::NotOwner));
+    assert!(relaycast.untouched());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_owns_only_caller_revalidates_a_missing_requester_before_release() {
     let relaycast = Relaycast::new();

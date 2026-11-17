@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay-node`: macOS GitHub Copilot desktop sessions can register and receive Relay messages through their native hooks, with GitHub signature, desktop host and held-session verification.
 - `agent-relay-node`: a Cursor chat whose hosted MCP calls are attested (the account reports `cursor_calls_attested`, once Agent Relay Desktop signs each Cursor call and the hosted MCP verifies it) and whose registration declares the hosted MCP, or that the hosted MCP reports linked, is told to reply with the hosted MCP tools, which now send as that chat. Without attestation, Cursor chats still reply through the session socket.
 
+- `agent-relay-node`: workspace leaders. The node reads the workspace's leaders from Relaycast (`GET /v1/workspace/leaders`), caches them for a minute and reads them again as each agent starts here. A leader's 1:1 direct message to any session on the computer, spawned or started by the person, is native input with a `[leader: @<name> leads this work; …]` line naming the leader as the list does. Leaders are matched by agent id only, their channel and group messages stay peer messages, and they cannot answer approvals, fork or release. `settings.get` shows the list as `workspace_leaders`, read only.
+
 ### Fixed
 
 - `agent-relay-node`: a spawn whose harness is installed but did not start now fails as `spawn_failed: <reason>` instead of `spawn_harness_unavailable` (which Cloud showed as the node not providing the harness); a new spawn with a fresh idempotency key may then succeed. Claude Code's readiness timeout now says whether Claude was still running and how much output it wrote.

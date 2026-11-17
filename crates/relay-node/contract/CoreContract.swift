@@ -4531,12 +4531,18 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// their messages reach the person's own OpenClaw and Hermes instead of
     /// an answer-only session. Absent where neither is set up.
     public let trustedRelaySenders: [String]?
+    /// The workspace's leaders as Relaycast last listed them
+    /// (`GET /v1/workspace/leaders`): a leader's direct message to any
+    /// session here is native input, though never an approval. Read only;
+    /// absent until the list has been read for the current workspace, and
+    /// in older cores.
+    public let workspaceLeaders: WorkspaceLeaders?
     /// The people in the workspace trusted while `trust_workspace_members`
     /// is on, as Agent Relay Cloud lists them; read-only. Empty while it is
     /// off, signed out, or Cloud's list has not been read lately.
     public let workspaceMembers: [TrustedWorkspaceMember]?
 
-    public init(acceptSpawns: Bool? = nil, agentChanges: [AgentSettingsChange]? = nil, allowSelfRegistration: Bool, analyticsEnabled: Bool? = nil, autoActivate: Bool, autoJoinGeneral: Bool? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDirs: [ClaudeConfigDir]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, connectDetectedTools: Bool? = nil, contractorAccess: Bool? = nil, cursorDirectDelivery: Bool? = nil, detectedTools: [String]? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryManaged: String? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileClaudeHandoffSupported: Bool? = nil, mobileNativeContinuation: Bool? = nil, mobileNativeContinuationSupported: Bool? = nil, openclawGateway: Bool? = nil, openclawUnlimitedVersion: String? = nil, opencodeAutoActivate: Bool? = nil, opencodePlugin: Bool? = nil, piAutoActivate: Bool? = nil, piExtension: Bool? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnMaxAgents: Int? = nil, spawnNativeInput: Bool? = nil, spawnRepositories: [String]? = nil, spawnRequesterApprovals: Bool? = nil, teammateNativeInput: Bool? = nil, trustWorkspaceMembers: Bool? = nil, trustedRelaySenders: [String]? = nil, workspaceMembers: [TrustedWorkspaceMember]? = nil) {
+    public init(acceptSpawns: Bool? = nil, agentChanges: [AgentSettingsChange]? = nil, allowSelfRegistration: Bool, analyticsEnabled: Bool? = nil, autoActivate: Bool, autoJoinGeneral: Bool? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDirs: [ClaudeConfigDir]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, connectDetectedTools: Bool? = nil, contractorAccess: Bool? = nil, cursorDirectDelivery: Bool? = nil, detectedTools: [String]? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryManaged: String? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileClaudeHandoffSupported: Bool? = nil, mobileNativeContinuation: Bool? = nil, mobileNativeContinuationSupported: Bool? = nil, openclawGateway: Bool? = nil, openclawUnlimitedVersion: String? = nil, opencodeAutoActivate: Bool? = nil, opencodePlugin: Bool? = nil, piAutoActivate: Bool? = nil, piExtension: Bool? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnMaxAgents: Int? = nil, spawnNativeInput: Bool? = nil, spawnRepositories: [String]? = nil, spawnRequesterApprovals: Bool? = nil, teammateNativeInput: Bool? = nil, trustWorkspaceMembers: Bool? = nil, trustedRelaySenders: [String]? = nil, workspaceLeaders: WorkspaceLeaders? = nil, workspaceMembers: [TrustedWorkspaceMember]? = nil) {
         self.acceptSpawns = acceptSpawns
         self.agentChanges = agentChanges
         self.allowSelfRegistration = allowSelfRegistration
@@ -4581,6 +4587,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         self.teammateNativeInput = teammateNativeInput
         self.trustWorkspaceMembers = trustWorkspaceMembers
         self.trustedRelaySenders = trustedRelaySenders
+        self.workspaceLeaders = workspaceLeaders
         self.workspaceMembers = workspaceMembers
     }
 
@@ -4629,6 +4636,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         case teammateNativeInput = "teammate_native_input"
         case trustWorkspaceMembers = "trust_workspace_members"
         case trustedRelaySenders = "trusted_relay_senders"
+        case workspaceLeaders = "workspace_leaders"
         case workspaceMembers = "workspace_members"
     }
 
@@ -4678,6 +4686,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         self.teammateNativeInput = try c.decodeIfPresent(Bool.self, forKey: .teammateNativeInput)
         self.trustWorkspaceMembers = try c.decodeIfPresent(Bool.self, forKey: .trustWorkspaceMembers)
         self.trustedRelaySenders = try c.decodeIfPresent([String].self, forKey: .trustedRelaySenders)
+        self.workspaceLeaders = try c.decodeIfPresent(WorkspaceLeaders.self, forKey: .workspaceLeaders)
         self.workspaceMembers = try c.decodeIfPresent([TrustedWorkspaceMember].self, forKey: .workspaceMembers)
     }
 
@@ -4727,6 +4736,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         try c.encodeIfPresent(self.teammateNativeInput, forKey: .teammateNativeInput)
         try c.encodeIfPresent(self.trustWorkspaceMembers, forKey: .trustWorkspaceMembers)
         try c.encodeIfPresent(self.trustedRelaySenders, forKey: .trustedRelaySenders)
+        try c.encodeIfPresent(self.workspaceLeaders, forKey: .workspaceLeaders)
         try c.encodeIfPresent(self.workspaceMembers, forKey: .workspaceMembers)
     }
 }
@@ -6118,6 +6128,68 @@ public struct WorkspaceChoice: Codable, Equatable, Hashable, Sendable {
         try c.encode(self.id, forKey: .id)
         try c.encode(self.name, forKey: .name)
         try c.encode(self.organizationName, forKey: .organizationName)
+    }
+}
+
+/// One workspace leader.
+public struct WorkspaceLeader: Codable, Equatable, Hashable, Sendable {
+    /// The leader's immutable agent id, which its messages must come from.
+    public let agentId: String
+    /// The leader's name, as shown in the line its messages carry.
+    public let name: String
+
+    public init(agentId: String, name: String) {
+        self.agentId = agentId
+        self.name = name
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case agentId = "agent_id"
+        case name
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.agentId = try c.decode(String.self, forKey: .agentId)
+        self.name = try c.decode(String.self, forKey: .name)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.agentId, forKey: .agentId)
+        try c.encode(self.name, forKey: .name)
+    }
+}
+
+/// The workspace's leaders: agents whose direct messages a session takes
+/// as native input (`relay::leaders`).
+public struct WorkspaceLeaders: Codable, Equatable, Hashable, Sendable {
+    /// The leader agents, matched by `agent_id` alone.
+    public let leaders: [WorkspaceLeader]
+    /// The name patterns the workspace set (`*grok`, `admin`); Relaycast
+    /// resolves them into `leaders`, and the node never matches on them.
+    public let patterns: [String]
+
+    public init(leaders: [WorkspaceLeader], patterns: [String]) {
+        self.leaders = leaders
+        self.patterns = patterns
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case leaders
+        case patterns
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.leaders = try c.decode([WorkspaceLeader].self, forKey: .leaders)
+        self.patterns = try c.decode([String].self, forKey: .patterns)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.leaders, forKey: .leaders)
+        try c.encode(self.patterns, forKey: .patterns)
     }
 }
 

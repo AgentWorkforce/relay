@@ -1277,6 +1277,10 @@ impl Core {
             settings.extend(extension.get());
         }
         settings.insert("detected_tools".into(), json!(self.detected_tools()));
+        // Read only, once the list has been read (`relay::leaders`).
+        if let Some(leaders) = self.workspace_leaders_status() {
+            settings.insert("workspace_leaders".into(), json!(leaders));
+        }
         settings
     }
 

@@ -440,3 +440,205 @@ async fn the_launcher_and_the_desktop_requester_both_count_as_the_requester() {
     assert!(!owner_framed(&text), "{text}");
     assert_eq!(f.routes.requester.lock().unwrap().len(), 2);
 }
+
+/// Seeds a leader agent `@lead` that the workspace lists as `gtmgrok`, and
+/// a direct message from it.
+fn leader(f: &Fixture) -> Delivery {
+    let lead = f._server.seed_agent("lead", "agent", json!({}));
+    f._server.set_leaders(Some(json!({
+        "leaders":[{"name":"gtmgrok","agent_id":lead.id}],
+        "patterns":["*grok","admin"]
+    })));
+    Delivery {
+        id: "delivery-lead".into(),
+        message_id: "message-lead".into(),
+        sender: Some("lead".into()),
+        sender_id: Some(lead.id),
+        reason: Some("dm".into()),
+        text: Some("Ship the fix".into()),
+        ..Default::default()
+    }
+}
+
+fn again(delivery: &Delivery, id: &str) -> Delivery {
+    Delivery {
+        id: format!("delivery-{id}"),
+        message_id: format!("message-{id}"),
+        ..delivery.clone()
+    }
+}
+
+/// `f`'s session as the person started it: no spawn record.
+fn person_started(f: &mut Fixture) {
+    f.registration.spawn = None;
+    let registration = f.registration.clone();
+    f.core
+        .store
+        .update(|store| {
+            for saved in store
+                .registrations
+                .iter_mut()
+                .filter(|saved| saved.agent_id == registration.agent_id)
+            {
+                *saved = registration.clone();
+            }
+        })
+        .unwrap();
+}
+
+fn leads(text: &str) -> bool {
+    text.split('\n').nth(1) == Some(super::super::policy::leader_line("gtmgrok").as_str())
+}
+
+// A leader's direct message to a spawned agent is native input on the
+// spawn route, whatever `spawn_native_input` says, with the leader line
+// naming it as the leaders list does (not as the message does). It answers
+// no approval.
+#[tokio::test]
+async fn a_leaders_dm_to_a_spawned_agent_is_native_input_naming_the_leader() {
+    for kind in [
+        SessionKind::OpenCode,
+        SessionKind::Codex,
+        SessionKind::ClaudeTerminal,
+    ] {
+        let f = fixture(kind, false).await;
+        f.core
+            .store
+            .update(|store| store.extras.spawn_native_input = Some(false))
+            .unwrap();
+        let lead = leader(&f);
+        let (source, text) = deliver(&f, &lead).await;
+        assert_eq!(source, InputSource::Leader, "{kind:?}: {text}");
+        assert!(
+            text.starts_with("[Agent Relay native input — from @lead"),
+            "{text}"
+        );
+        assert!(leads(&text), "{text}");
+        assert!(
+            text.contains("\n[leader: @gtmgrok leads this work; "),
+            "{text}"
+        );
+        assert!(!crate::relay::delivery::policy::owner_framed(&text));
+        assert!(text.contains("\n\nShip the fix\n"), "{text}");
+        assert_eq!(f.routes.requester.lock().unwrap().len(), 1, "{kind:?}");
+        assert!(f.routes.peer.lock().unwrap().is_empty());
+        assert!(f.routes.owner.lock().unwrap().is_empty());
+        for reply in [
+            "approve 0123456789abcdef",
+            "deny 0123456789abcdef",
+            "approve cxm-0123456789abcdef",
+            "choose 2 0123456789abcdef",
+        ] {
+            let mut approval = again(&lead, "lead-approval");
+            approval.text = Some(reply.into());
+            assert!(
+                matches!(
+                    f.core.owner_reply(&f.registration, &approval).await,
+                    OwnerReply::NotOne
+                ),
+                "a leader never answers an approval: {reply}"
+            );
+        }
+    }
+}
+
+// A session the person started, or a spawn the person took over, takes a
+// leader's direct message as native input too, on its usual route.
+#[tokio::test]
+async fn a_session_the_person_started_takes_a_leaders_dm_as_native_input() {
+    for kind in [SessionKind::Codex, SessionKind::ClaudeTerminal] {
+        let mut f = fixture(kind, false).await;
+        person_started(&mut f);
+        let lead = leader(&f);
+        let (source, text) = deliver(&f, &lead).await;
+        assert_eq!(source, InputSource::Leader, "{kind:?}: {text}");
+        assert!(leads(&text), "{text}");
+        assert_eq!(f.routes.peer.lock().unwrap().as_slice(), [text]);
+        assert!(f.routes.requester.lock().unwrap().is_empty());
+    }
+    let mut f = fixture(SessionKind::Grok, false).await;
+    f.registration.spawn.as_mut().unwrap().taken_over_at = Some("2026-11-12T00:00:00Z".into());
+    let (source, text) = deliver(&f, &leader(&f)).await;
+    assert_eq!(source, InputSource::Leader);
+    assert!(leads(&text), "{text}");
+}
+
+// Leaders are matched by agent id alone: another agent with a leader's
+// name, or with its name in the list, is a peer. A leader's channel post or
+// mention stays a peer message.
+#[tokio::test]
+async fn only_a_leaders_own_direct_message_is_a_leaders() {
+    let mut f = fixture(SessionKind::Codex, false).await;
+    person_started(&mut f);
+    let lead = leader(&f);
+    for name in ["gtmgrok", "lead"] {
+        let mut impostor = again(&lead, &format!("impostor-{name}"));
+        impostor.sender = Some(name.into());
+        impostor.sender_id = Some("agent_impostor".into());
+        let (source, text) = deliver(&f, &impostor).await;
+        assert_eq!(source, InputSource::Peer, "{text}");
+        assert!(text.starts_with("[via Agent Relay"), "{text}");
+        assert!(!text.contains("leads this work"), "{text}");
+    }
+    for (reason, channel) in [("mention", "chan_general"), ("dm", "group_three")] {
+        let mut post = again(&lead, &format!("post-{reason}"));
+        post.reason = Some(reason.into());
+        post.channel_id = Some(channel.into());
+        let (source, text) = deliver(&f, &post).await;
+        assert_eq!(source, InputSource::Peer, "{text}");
+        assert!(!text.contains("leads this work"), "{text}");
+    }
+    // A reply in the thread of the direct message is the leader's.
+    let mut threaded = again(&lead, "lead-thread");
+    threaded.reason = Some("thread-reply".into());
+    threaded.channel_id = Some("dmch_pair".into());
+    threaded.thread_id = Some("message-child".into());
+    assert_eq!(deliver(&f, &threaded).await.0, InputSource::Leader);
+}
+
+// The list is read once and used while fresh; a stale one is read again on
+// the next lookup, and a read that fails keeps the last list. `settings`
+// shows it, read only.
+#[tokio::test]
+async fn the_leaders_list_is_cached_refreshed_and_kept_through_a_failed_read() {
+    let mut f = fixture(SessionKind::Codex, false).await;
+    person_started(&mut f);
+    let reads = |f: &Fixture| f._server.calls("GET", "/v1/workspace/leaders").len();
+    let lead = leader(&f);
+    assert_eq!(deliver(&f, &lead).await.0, InputSource::Leader);
+    assert_eq!(
+        deliver(&f, &again(&lead, "two")).await.0,
+        InputSource::Leader
+    );
+    assert_eq!(reads(&f), 1, "a fresh list is not read again");
+    let shown = f.core.settings()["workspace_leaders"].clone();
+    assert_eq!(shown["leaders"][0]["name"], "gtmgrok");
+    assert_eq!(shown["patterns"], json!(["*grok", "admin"]));
+    assert_eq!(reads(&f), 1);
+
+    f.core.leaders.age(crate::relay::leaders::REFRESH_AFTER);
+    f._server.set_failing(&["GET /v1/workspace/leaders"]);
+    assert_eq!(
+        deliver(&f, &again(&lead, "three")).await.0,
+        InputSource::Leader
+    );
+    // The SDK retries a 503, so a failed read can be several requests.
+    let failed = reads(&f);
+    assert!(failed > 1, "a stale list is read again");
+    assert_eq!(f.core.settings()["workspace_leaders"], shown);
+    assert_eq!(reads(&f), failed, "a failed read counts as a read");
+
+    f._server.set_failing(&[]);
+    f._server
+        .set_leaders(Some(json!({"leaders":[],"patterns":[]})));
+    f.core.leaders.age(crate::relay::leaders::REFRESH_AFTER);
+    assert_eq!(
+        deliver(&f, &again(&lead, "four")).await.0,
+        InputSource::Peer
+    );
+    assert_eq!(reads(&f), failed + 1);
+    assert_eq!(
+        f.core.settings()["workspace_leaders"],
+        json!({"leaders":[],"patterns":[]})
+    );
+}
