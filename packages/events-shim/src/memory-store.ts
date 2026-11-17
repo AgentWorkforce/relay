@@ -188,7 +188,7 @@ export class MemoryEventsShimStore implements EventsShimStore {
   async claimPending(
     shimId: string,
     options: { limit: number; ids?: string[]; staleBefore: string; linkedAt?: string },
-    state: 'sending' | 'read',
+    state: 'sending' | 'read' | 'pending',
     at: string
   ) {
     // Synchronous from read to write, so two callers can never claim the same post.
@@ -208,6 +208,25 @@ export class MemoryEventsShimStore implements EventsShimStore {
       claimed.push(structuredClone(event));
     }
     return claimed;
+  }
+
+  async ackPending(shimId: string, ids: string[], at: string) {
+    const row = this.row(shimId);
+    for (const event of row.events) {
+      if (ids.includes(event.id) && (event.delivery === 'pending' || event.delivery === 'sending')) {
+        event.delivery = 'read';
+        event.deliveredAt = at;
+      }
+    }
+  }
+
+  async releasePending(shimId: string, ids: string[]) {
+    const row = this.row(shimId);
+    for (const event of row.events) {
+      if (ids.includes(event.id) && event.delivery === 'pending') {
+        delete event.deliveredAt;
+      }
+    }
   }
 
   async confirmWake(shimId: string, eventId: string, claimedAt: string, at: string) {
@@ -238,9 +257,8 @@ export class MemoryEventsShimStore implements EventsShimStore {
   }
 }
 
-/** `pending`, or `sending` with a claim that expired before `staleBefore`. */
+/** `pending` (unleased or lease expired), or `sending` with a claim that expired before `staleBefore`. */
 function claimable(event: ShimEvent, staleBefore: string): boolean {
-  return (
-    event.delivery === 'pending' || (event.delivery === 'sending' && (event.deliveredAt ?? '') < staleBefore)
-  );
+  if (event.delivery === 'read' || event.delivery === 'woken') return false;
+  return !event.deliveredAt || event.deliveredAt < staleBefore;
 }

@@ -553,6 +553,112 @@ describe('events shim', () => {
     expect(unlinked.structuredContent?.events).toHaveLength(1);
   });
 
+  it('wait_for_webhook with auto_ack: false keeps posts pending under lease until acknowledged', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const agent = await h.connect(shim.mcp_url);
+
+    await h.post(shim.webhook_url, { post: 1 });
+    const wait = await agent.call('wait_for_webhook', { timeout_seconds: 2, auto_ack: false });
+    const events = wait.structuredContent?.events as { id: string }[];
+    expect(events).toHaveLength(1);
+    const eventId = events[0]!.id;
+
+    // In the feed, the post is still 'pending' because it was not auto-acked
+    const [beforeAck] = (await h.feed(shim.manage_token)).body.events as { id: string; delivery: string }[];
+    expect(beforeAck?.id).toBe(eventId);
+    expect(beforeAck?.delivery).toBe('pending');
+
+    // While leased, a concurrent/subsequent wait does not take it again
+    const emptyWait = await agent.call('wait_for_webhook', { timeout_seconds: 1, auto_ack: false });
+    expect(emptyWait.structuredContent?.events).toHaveLength(0);
+
+    // Now acknowledge the event
+    const ackResult = await agent.call('ack_webhook_events', { ids: [eventId] });
+    expect(ackResult.structuredContent).toMatchObject({ acked: [eventId] });
+
+    // In the feed, the post has transitioned to 'read'
+    const [afterAck] = (await h.feed(shim.manage_token)).body.events as { id: string; delivery: string }[];
+    expect(afterAck?.id).toBe(eventId);
+    expect(afterAck?.delivery).toBe('read');
+  });
+
+  it('wait_for_webhook re-offers unacknowledged posts once the claim lease expires', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const agent = await h.connect(shim.mcp_url);
+
+    await h.post(shim.webhook_url, { post: 'recoverable' });
+
+    // Client claims with auto_ack: false at t0
+    const first = await agent.call('wait_for_webhook', { timeout_seconds: 2, auto_ack: false });
+    expect(first.structuredContent?.events).toHaveLength(1);
+    const eventId = (first.structuredContent?.events as { id: string }[])[0]!.id;
+
+    // Immediately after, lease is active: not claimable
+    const immediate = await agent.call('wait_for_webhook', { timeout_seconds: 1, auto_ack: false });
+    expect(immediate.structuredContent?.events).toHaveLength(0);
+
+    // Client aborted or died. Time advances past sendLeaseMs (2 minutes)
+    h.advance(EVENTS_SHIM_LIMITS.sendLeaseMs + 1000);
+
+    // Next listener calls wait_for_webhook: the unacked post is re-offered!
+    const reoffered = await agent.call('wait_for_webhook', { timeout_seconds: 2, auto_ack: false });
+    expect(reoffered.structuredContent?.events).toHaveLength(1);
+    expect((reoffered.structuredContent?.events as { id: string }[])[0]!.id).toBe(eventId);
+
+    // Acknowledging marks it read permanently
+    await agent.call('ack_webhook_events', { ids: [eventId] });
+    const [finalState] = (await h.feed(shim.manage_token)).body.events as { id: string; delivery: string }[];
+    expect(finalState?.delivery).toBe('read');
+  });
+
+  it('wait_for_webhook with ack_ids acknowledges previous batch and claims the next pending posts', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const agent = await h.connect(shim.mcp_url);
+
+    await h.post(shim.webhook_url, { first: 1 });
+    const firstWait = await agent.call('wait_for_webhook', { timeout_seconds: 2, auto_ack: false });
+    const firstId = (firstWait.structuredContent?.events as { id: string }[])[0]!.id;
+
+    // Second post arrives
+    await h.post(shim.webhook_url, { second: 2 });
+
+    // Call wait_for_webhook passing ack_ids for the first event
+    const secondWait = await agent.call('wait_for_webhook', { timeout_seconds: 2, ack_ids: [firstId] });
+    expect(secondWait.structuredContent?.events).toHaveLength(1);
+    const secondId = (secondWait.structuredContent?.events as { id: string }[])[0]!.id;
+    expect(secondId).not.toBe(firstId);
+
+    // First event is confirmed read
+    const feed = (await h.feed(shim.manage_token)).body.events as { id: string; delivery: string }[];
+    const firstEvent = feed.find((e) => e.id === firstId);
+    expect(firstEvent?.delivery).toBe('read');
+  });
+
+  it('release_webhook_events immediately clears lease and makes posts claimable without waiting for lease expiry', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const agent = await h.connect(shim.mcp_url);
+
+    await h.post(shim.webhook_url, { release_me: true });
+    const first = await agent.call('wait_for_webhook', { timeout_seconds: 2, auto_ack: false });
+    const eventId = (first.structuredContent?.events as { id: string }[])[0]!.id;
+
+    // Client lets go and releases the post
+    const released = await agent.call('release_webhook_events', { ids: [eventId] });
+    expect(released.structuredContent).toMatchObject({ released: [eventId] });
+
+    // Immediately claimable again without waiting for lease expiry
+    const retaken = await agent.call('wait_for_webhook', { timeout_seconds: 2, auto_ack: true });
+    expect(retaken.structuredContent?.events).toHaveLength(1);
+    expect((retaken.structuredContent?.events as { id: string }[])[0]!.id).toBe(eventId);
+
+    const [finalState] = (await h.feed(shim.manage_token)).body.events as { id: string; delivery: string }[];
+    expect(finalState?.delivery).toBe('read');
+  });
+
   it('a wait already running sees a relay wake link made, then removed, meanwhile', async () => {
     const h = createHarness();
     const shim = await h.create();

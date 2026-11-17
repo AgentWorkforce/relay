@@ -1729,12 +1729,15 @@ async function listenAsSessionOwner(
               io,
               mcpUrl,
               'wait_for_webhook',
-              { timeout_seconds: 50 },
+              { timeout_seconds: 50, auto_ack: false },
               signal
             ).finally(() => clearInterval(watch));
             backoff = 1_000;
             const events = Array.isArray(batch.events) ? (batch.events as PublicEvent[]) : [];
             if (events.length > 0) {
+              const eventIds = events
+                .map((event) => (typeof event.id === 'string' ? event.id : ''))
+                .filter(Boolean);
               const exit = await deliver(
                 [
                   `Webhook inbox (agent-relay-webhooks): ${events.length === 1 ? 'a post arrived' : `${events.length} posts arrived`}.`,
@@ -1744,7 +1747,15 @@ async function listenAsSessionOwner(
                   'Act on it as the person asked when they set up this webhook. You will be woken again by the next post.',
                 ].join('\n')
               );
-              if (exit !== null) return exit;
+              if (exit !== null) {
+                if (eventIds.length > 0) {
+                  await callTool(io, mcpUrl, 'ack_webhook_events', { ids: eventIds }).catch(() => undefined);
+                }
+                return exit;
+              }
+              if (eventIds.length > 0) {
+                await callTool(io, mcpUrl, 'release_webhook_events', { ids: eventIds }).catch(() => undefined);
+              }
             }
           } catch (error) {
             if (error instanceof CliError) return 0;
@@ -1794,7 +1805,7 @@ async function hookInput(io: CliIo): Promise<{ session: string; transcript: stri
 
 /** The webhooks MCP tools whose call opts a Claude Code session in (\`mcp__webhooks__watch_webhooks\`). */
 const WEBHOOKS_TOOL = new RegExp(
-  `^mcp__${MCP_SERVER_NAME}__(watch_webhooks|link_relay_wake|wait_for_webhook|get_webhook_events)$`
+  `^mcp__${MCP_SERVER_NAME}__(watch_webhooks|link_relay_wake|wait_for_webhook|get_webhook_events|ack_webhook_events|release_webhook_events)$`
 );
 
 /** The longest transcript line read for an opt-in; a tool call record is far shorter. */
@@ -2215,8 +2226,11 @@ async function listenStopHook(io: CliIo, flags: Record<string, string>): Promise
         alive,
         async (text) => {
           // Let go meanwhile: the CLI would drop the answer, so the next turn's hook takes it.
-          if (!alive()) writePrivate(held, text);
-          else answer(text);
+          if (!alive()) {
+            writePrivate(held, text);
+            return null;
+          }
+          answer(text);
           return 0;
         },
         true,
@@ -2582,15 +2596,27 @@ async function listen(io: CliIo, flags: Record<string, string>): Promise<number>
     // Each request is bounded too: a stalled connection is dropped and retried.
     const signal = AbortSignal.timeout(Math.min(wait * 1000 + 15_000, remaining + 15_000));
     try {
-      const batch = await callTool(io, mcpUrl, 'wait_for_webhook', { timeout_seconds: wait }, signal);
+      const batch = await callTool(
+        io,
+        mcpUrl,
+        'wait_for_webhook',
+        { timeout_seconds: wait, auto_ack: false },
+        signal
+      );
       backoff = 1_000;
       const events = Array.isArray(batch.events) ? (batch.events as PublicEvent[]) : [];
       if (events.length > 0) {
+        const eventIds = events
+          .map((event) => (typeof event.id === 'string' ? event.id : ''))
+          .filter(Boolean);
         io.stdout(events.map(describePost).join('\n\n---\n\n'));
         io.stdout('');
         io.stdout(
           '(Act on it, then start the listener again in the background: npx -y @agent-relay/events-shim@latest listen)'
         );
+        if (eventIds.length > 0) {
+          await callTool(io, mcpUrl, 'ack_webhook_events', { ids: eventIds }).catch(() => undefined);
+        }
         return 0;
       }
     } catch (error) {

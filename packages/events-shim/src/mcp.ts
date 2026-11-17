@@ -82,16 +82,17 @@ function wakeState(shim: ShimRecord): 'linked' | 'broken' | 'none' {
   return shim.wake.brokenAt ? 'broken' : 'linked';
 }
 
-/** Claims up to a batch of pending posts for the agent (marks them read) and reports whether more wait. */
+/** Claims up to a batch of pending posts for the agent and reports whether more wait. */
 async function handOver(
-  ctx: EventsShimMcpContext
+  ctx: EventsShimMcpContext,
+  state: 'read' | 'pending' = 'read'
 ): Promise<{ events: Record<string, unknown>[]; more: boolean }> {
   const at = now(ctx);
   const staleBefore = new Date(at.getTime() - EVENTS_SHIM_LIMITS.sendLeaseMs).toISOString();
   const claimed = await ctx.deps.store.claimPending(
     ctx.shim.id,
     { limit: EVENTS_SHIM_LIMITS.batchSize, staleBefore },
-    'read',
+    state,
     at.toISOString()
   );
   const more = claimed.length > 0 && (await ctx.deps.store.countPending(ctx.shim.id, staleBefore)) > 0;
@@ -324,7 +325,7 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
     'wait_for_webhook',
     {
       title: 'Wait for a webhook post',
-      description: `Blocks until a post arrives (or timeout_seconds pass, at most ${EVENTS_SHIM_LIMITS.maxWaitMs / 1000}), then returns the posts and marks them read. Run it in the background and call it again after each return. While a relay wake link works (link_relay_wake), it takes no posts and returns none when the timeout passes: the link delivers them.`,
+      description: `Blocks until a post arrives (or timeout_seconds pass, at most ${EVENTS_SHIM_LIMITS.maxWaitMs / 1000}), then returns the posts. Run it in the background and call it again after each return. While a relay wake link works (link_relay_wake), it takes no posts and returns none when the timeout passes: the link delivers them.`,
       inputSchema: {
         timeout_seconds: z
           .number()
@@ -332,6 +333,17 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
           .min(1)
           .max(EVENTS_SHIM_LIMITS.maxWaitMs / 1000)
           .optional(),
+        ack_ids: z
+          .array(z.string().trim().min(1).max(100))
+          .max(EVENTS_SHIM_LIMITS.batchSize)
+          .optional()
+          .describe('Event ids to acknowledge as read from a previous batch.'),
+        auto_ack: z
+          .boolean()
+          .optional()
+          .describe(
+            'Whether to mark returned posts read immediately without waiting for an acknowledgement. Defaults to true when ack_ids is omitted for backwards compatibility.'
+          ),
       },
       annotations: {
         readOnlyHint: false,
@@ -342,6 +354,11 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
     },
     async (input, extra) => {
       await seen(ctx);
+      if (input.ack_ids && input.ack_ids.length > 0) {
+        await ctx.deps.store.ackPending(ctx.shim.id, input.ack_ids, now(ctx).toISOString());
+      }
+      const autoAck = input.auto_ack ?? (input.ack_ids === undefined);
+      const deliveryState: 'read' | 'pending' = autoAck ? 'read' : 'pending';
       const timeoutMs = (input.timeout_seconds ?? EVENTS_SHIM_LIMITS.defaultWaitMs / 1000) * 1000;
       // Real time, not the injectable clock: this bounds how long the request stays open.
       const deadline = Date.now() + timeoutMs;
@@ -356,8 +373,7 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
           if (fresh) ctx.shim = fresh;
         }
         polled = true;
-        // Never claim for a client that is gone (checked after the re-read, which takes time):
-        // claimed posts are marked read.
+        // Never claim for a client that is gone (checked after the re-read, which takes time).
         if (signals.some((signal) => signal.aborted)) {
           return result({ events: [], more: false, next_steps: ['Cancelled. Call wait_for_webhook again.'] });
         }
@@ -366,11 +382,15 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
         // first and take it from that session. Wait out the timeout without claiming, so a
         // listener that calls again at once does not spin.
         const linked = wakeState(ctx.shim) === 'linked';
-        const batch = linked ? { events: [], more: false } : await handOver(ctx);
+        const batch = linked ? { events: [], more: false } : await handOver(ctx, deliveryState);
         if (batch.events.length > 0) {
           return result({
             ...batch,
-            next_steps: ['Act on the posts, then call wait_for_webhook again.'],
+            next_steps: [
+              autoAck
+                ? 'Act on the posts, then call wait_for_webhook again.'
+                : 'Act on the posts, then call wait_for_webhook again with ack_ids containing these event ids (or call ack_webhook_events).',
+            ],
           });
         }
         if (Date.now() >= deadline) {
@@ -387,6 +407,58 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
         }
         await sleep(interval, signals);
       }
+    }
+  );
+
+  server.registerTool(
+    'ack_webhook_events',
+    {
+      title: 'Acknowledge webhook posts',
+      description: 'Marks claimed posts as read once your session has handled them.',
+      inputSchema: {
+        ids: z
+          .array(z.string().trim().min(1).max(100))
+          .min(1)
+          .max(EVENTS_SHIM_LIMITS.batchSize)
+          .describe('Event ids to mark read.'),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (input) => {
+      await seen(ctx);
+      await ctx.deps.store.ackPending(ctx.shim.id, input.ids, now(ctx).toISOString());
+      return result({ acked: input.ids });
+    }
+  );
+
+  server.registerTool(
+    'release_webhook_events',
+    {
+      title: 'Release webhook posts',
+      description: 'Releases claimed posts back to pending so another listener can take them immediately.',
+      inputSchema: {
+        ids: z
+          .array(z.string().trim().min(1).max(100))
+          .min(1)
+          .max(EVENTS_SHIM_LIMITS.batchSize)
+          .describe('Event ids to release back to pending.'),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (input) => {
+      await seen(ctx);
+      await ctx.deps.store.releasePending(ctx.shim.id, input.ids);
+      return result({ released: input.ids });
     }
   );
 }
