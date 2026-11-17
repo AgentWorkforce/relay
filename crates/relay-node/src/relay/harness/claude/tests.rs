@@ -348,6 +348,36 @@ fn readiness_that_times_out_says_claude_was_still_running_and_what_it_wrote() {
     );
 }
 
+#[test]
+fn readiness_gives_up_on_an_unreaped_claude_at_once_and_says_it_ended() {
+    let home = tempfile::tempdir().unwrap();
+    let table = Arc::new(FakeProcesses::default());
+    // Beyond any real pid; and with no start time read, it is not signalled.
+    const EXITED: i32 = 2_000_000_125;
+    table.insert(
+        EXITED,
+        FakeProcess {
+            zombie: true,
+            ..FakeProcess::default()
+        },
+    );
+    let adapter = adapter(home.path(), table);
+    let began = Instant::now();
+    let ready = adapter.wait_ready(
+        SESSION,
+        EXITED,
+        None,
+        Path::new("c.jsonl"),
+        Instant::now() + READY_TIMEOUT,
+    );
+    assert_eq!(
+        ready,
+        Err("Claude Code ended before it registered its session (no output); see c.jsonl".into())
+    );
+    // Not left to the readiness timeout: a zombie has already ended.
+    assert!(began.elapsed() < Duration::from_secs(5));
+}
+
 fn event(kind: &str, subtype: Option<&str>, session: &str) -> String {
     let mut event = serde_json::json!({"type": kind, "session_id": session});
     if let Some(subtype) = subtype {

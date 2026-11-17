@@ -140,7 +140,9 @@ impl ClaudeAdapter {
             }
             let replaced =
                 launched.is_some_and(|launched| !launched.is(self.table.process(launched.pid)));
-            let gone = self.table.process_gone(pid);
+            // Exited but unreaped (a container whose init never reaps)
+            // keeps its pid and start time: ended, not slow.
+            let gone = self.table.process_gone(pid) || self.table.zombie(pid);
             if replaced || gone || Instant::now() >= deadline {
                 if let Some(launched) = launched {
                     stop_process(self.table.as_ref(), launched.pid, Some(launched.start));
