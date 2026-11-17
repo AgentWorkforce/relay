@@ -101,7 +101,13 @@ export interface CliIo {
 }
 
 interface Config {
+  /** The inbox setup was last run with: \`listen\`, \`forward\` and any CLI without its own entry use it. */
   mcpUrl: string;
+  /**
+   * The inbox each agent CLI was set up with, by CLI id (\`claude\`, \`codex\`, …). One inbox wakes
+   * one session, so each agent can have its own: its hooks and links use its entry.
+   */
+  inboxes?: Record<string, string>;
   /** The Agent Relay workspace key the standalone core runs with, when no signed-in core is running. */
   workspaceKey?: string;
   /** When a temporary workspace expires (ISO), if it is one. */
@@ -115,9 +121,11 @@ interface Config {
 }
 
 const USAGE = `Usage:
-  npx @agent-relay/events-shim setup <mcp-url> [--claude] [--codex] [--copilot] [--cursor] [--droid] [--amp] [--opencode] [--muse] [--gemini] [--grok] [--devin]
+  npx @agent-relay/events-shim setup <mcp-url> [--claude] [--codex] [--copilot] [--cursor] [--droid] [--amp] [--opencode] [--muse] [--gemini] [--grok] [--devin] [--share-inbox]
                                                  Add the inbox's MCP server to those agent CLIs (default: every one
-                                                 installed here) and install the webhooks skill
+                                                 installed here) and install the webhooks skill. One inbox wakes one
+                                                 session: give each agent its own inbox (--share-inbox adds a CLI to
+                                                 an inbox another one already uses)
   npx @agent-relay/events-shim uninstall [--claude] [--codex] …
                                                  Remove the MCP server, wake hooks and skill again
   npx @agent-relay/events-shim listen            Wait for the next webhook post, print it and exit
@@ -157,9 +165,25 @@ function writePrivate(path: string, contents: string): void {
   renameSync(temporary, path);
 }
 
-/** The inbox's MCP URL from `--mcp-url`, `AGENT_RELAY_WEBHOOKS_MCP_URL`, or the saved config. */
-function mcpUrlFor(io: CliIo, flags: Record<string, string>): string | null {
-  return flags['mcp-url'] || io.env.AGENT_RELAY_WEBHOOKS_MCP_URL || readConfig(io)?.mcpUrl || null;
+/** The inbox an agent CLI was set up with: its own entry, else the last one setup saved. */
+function inboxOf(config: Config, cli?: string): string {
+  return (cli && config.inboxes?.[cli]) || config.mcpUrl;
+}
+
+/** The agent CLI whose sessions the core lists as \`kind\` (\`codex\`, \`grok-open\`, …). */
+function cliOfKind(kind: string): string {
+  return AGENT_CLIS.find((cli) => cli.coreKind === kind)?.id ?? kind;
+}
+
+/**
+ * The inbox's MCP URL from \`--mcp-url\`, \`AGENT_RELAY_WEBHOOKS_MCP_URL\`, or the saved config (the
+ * inbox \`cli\` was set up with, when given).
+ */
+function mcpUrlFor(io: CliIo, flags: Record<string, string>, cli?: string): string | null {
+  if (flags['mcp-url'] || io.env.AGENT_RELAY_WEBHOOKS_MCP_URL)
+    return flags['mcp-url'] || io.env.AGENT_RELAY_WEBHOOKS_MCP_URL || null;
+  const config = readConfig(io);
+  return config ? inboxOf(config, cli) : null;
 }
 
 function checkMcpUrl(raw: string): string | null {
@@ -266,9 +290,18 @@ its posts or sends a bearer token, the matching \`verified_urls\` entry once its
 
 ## 2. Get woken
 
+One inbox wakes one session. \`watch_webhooks\` says \`wake: "linked"\` to every session that has this MCP server, so
+it also names the Agent Relay agent the link wakes (\`linked_agent\`): compare it with your own agent name before
+telling the person anything. If it is not you, posts go to that agent, not to this session: say so, and offer a
+separate inbox for this session (or, if the person wants, \`link_relay_wake\` from this session, which moves the
+link here). When you call \`link_relay_wake\`, pass \`agent\`: your own Agent Relay name.
+
 **Claude Code after \`setup --claude\`: nothing to do.** Setup installed SessionStart and Stop hooks (\`async\`,
-\`asyncRewake\`) that wait for the next post and wake this session with it, with or without Agent Relay. Do not poll,
-and do not start a listener yourself; tell the person you are watching and end your turn.
+\`asyncRewake\`) that wait for the next post and wake the session with it, with or without Agent Relay. They wake one
+Claude Code session: the most recently started one, or the one that last called a \`${MCP_SERVER_NAME}\` tool (calling
+\`watch_webhooks\` here makes it this one, from the end of this turn). While the inbox has a working relay wake link
+(\`linked_agent\` set), no Claude Code session gets posts from the hooks. Do not poll, and do not start a listener
+yourself; tell the person you are watching and end your turn.
 
 **Codex, Devin, Grok, opencode or Muse after \`setup\`: nothing to do.** Setup links the inbox to the newest
 open session of those tools through Agent Relay (Desktop's, or its own headless core when Desktop is not running),
@@ -1332,6 +1365,69 @@ async function workspaceFor(
   return { key, expiresAt };
 }
 
+/** The page that makes inboxes, for "make another one". */
+const INBOX_PAGE = 'https://agentrelay.com/mcp-events-shim';
+
+/** Whether a CLI's sessions can be woken by an inbox's posts (a wake hook, or a link through the core). */
+function wakes(cli: AgentCli): boolean {
+  return Boolean(cli.hooks || cli.coreKind);
+}
+
+/** Whether Claude Code's settings already run events-shim's wake hook (a setup before per-CLI inboxes). */
+function claudeHooked(io: CliIo): boolean {
+  return /@agent-relay\/events-shim@[^"]*listen --hook/.test(io.readText(claudeSettingsPath(io)) ?? '');
+}
+
+/**
+ * The inbox each agent CLI used before this setup. A config saved before per-CLI inboxes has one
+ * inbox for all: the CLIs it is known to have set up (those linked through the core, and Claude
+ * Code when its wake hook is installed) keep it.
+ */
+function previousInboxes(io: CliIo, previous: Config | null): Record<string, string> {
+  if (!previous) return {};
+  if (previous.inboxes) return { ...previous.inboxes };
+  const known = [...(previous.wakeKinds ?? []).map(cliOfKind), ...(claudeHooked(io) ? ['claude'] : [])];
+  return Object.fromEntries(known.map((id) => [id, previous.mcpUrl]));
+}
+
+/**
+ * How the inbox picks the one session it wakes when several agent CLIs share it, for setup to say.
+ */
+function oneSessionLines(sharing: AgentCli[], linkedAgent: string | null): string[] {
+  const linking = sharing.filter((cli) => cli.coreKind);
+  const listening = sharing.filter((cli) => !cli.coreKind);
+  const lines = [
+    sharing.length > 1
+      ? `One inbox wakes one session, not one per agent. ${sharing.map((cli) => cli.label).join(', ')} share this inbox, so:`
+      : 'One inbox wakes one session, not one per agent:',
+  ];
+  if (linking.length > 0) {
+    lines.push(
+      `  - Once a ${linking.map((cli) => cli.label).join(' or ')} session is open, the inbox is linked to the newest one (through Agent Relay) and it gets every post; a newer one takes the link over.${listening.length > 0 ? ` While that link works, ${listening.map((cli) => cli.label).join(', ')} sessions get none.` : ''}`
+    );
+  }
+  if (linkedAgent && linking.length === 0) {
+    lines.push(
+      `  - The inbox is linked to the Agent Relay agent "${linkedAgent}" now: it gets every post, and ${listening.map((cli) => cli.label).join(', ')} sessions get none until that link is removed (unlink_relay_wake).`
+    );
+  }
+  if (listening.some((cli) => cli.id === 'claude')) {
+    lines.push(
+      `  - ${linking.length > 0 || linkedAgent ? 'Otherwise, the' : 'The'} most recently started Claude Code session gets the posts; telling an older one "watch for webhooks" moves them to it.`
+    );
+  }
+  const stopHooks = listening.filter((cli) => cli.id !== 'claude');
+  if (stopHooks.length > 0) {
+    lines.push(
+      `  - ${stopHooks.map((cli) => cli.label).join(', ')}: each post goes to whichever waiting session takes it first.`
+    );
+  }
+  lines.push(
+    `To wake each agent on its own, give each its own inbox: make another at ${INBOX_PAGE} and run setup with its MCP URL for just that agent (e.g. --${sharing[sharing.length - 1]!.id}).`
+  );
+  return lines;
+}
+
 async function setup(io: CliIo, positional: string[], flags: Record<string, string>): Promise<number> {
   const raw = positional[0] ?? flags['mcp-url'];
   if (!raw) {
@@ -1356,19 +1452,44 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
   }
   // Learn the webhook URLs now so `forward` works without the agent.
   const watched = await callTool(io, mcpUrl, 'watch_webhooks');
-  // Codex is woken through an Agent Relay core: Desktop's, or a standalone one on its own workspace.
-  // Setting up another CLI keeps the workspace an earlier \`setup --codex\` made.
   const previous = readConfig(io);
+  const before = previousInboxes(io, previous);
+  // One inbox wakes one session. Adding a waking CLI to an inbox another agent already uses (set up
+  // here, or linked to a session elsewhere) would leave one of them never woken: refuse unless asked.
+  const linkedAgent =
+    watched.wake === 'linked' ? (typeof watched.linked_agent === 'string' ? watched.linked_agent : '') : null;
+  const ownAgents = new Set(Object.keys(previous?.ownWebhooks ?? {}));
+  const linkedElsewhere = linkedAgent !== null && !ownAgents.has(linkedAgent);
+  const adding = clis.filter((cli) => wakes(cli) && before[cli.id] !== mcpUrl);
+  const already = AGENT_CLIS.filter((cli) => wakes(cli) && !clis.includes(cli) && before[cli.id] === mcpUrl);
+  if (adding.length > 0 && (already.length > 0 || linkedElsewhere) && flags['share-inbox'] !== 'true') {
+    const holder =
+      already.length > 0
+        ? already.map((cli) => cli.label).join(', ')
+        : linkedAgent
+          ? `the Agent Relay agent "${linkedAgent}"`
+          : 'another Agent Relay session';
+    io.stderr(
+      [
+        `This inbox already wakes ${holder}${linkedAgent && already.length > 0 ? ` (linked to the Agent Relay agent "${linkedAgent}")` : ''}. One inbox wakes one session, not one per agent: set up here too, ${adding.map((cli) => cli.label).join(', ')} would share its posts${linkedAgent !== null ? ' and get none while that link works' : ''}.`,
+        `Give ${adding.map((cli) => cli.label).join(', ')} its own inbox: make another at ${INBOX_PAGE} and run setup with its MCP URL${adding.length === 1 ? ` --${adding[0]!.id}` : ''}.`,
+        `To share this inbox anyway (one session at a time gets the posts), run setup again with --share-inbox.`,
+      ].join('\n')
+    );
+    return 2;
+  }
+  // Codex is woken through an Agent Relay core: Desktop's, or a standalone one on its own workspace.
+  // Setting up another CLI (or another inbox) keeps the workspace an earlier \`setup --codex\` made.
   const throughCore = clis.filter((cli) => cli.coreKind);
+  const kept = previous?.workspaceKey
+    ? {
+        key: previous.workspaceKey,
+        ...(previous.workspaceExpiresAt ? { expiresAt: previous.workspaceExpiresAt } : {}),
+      }
+    : null;
   const workspace =
-    throughCore.length > 0
-      ? await workspaceFor(io, mcpUrl, previous)
-      : previous?.mcpUrl === mcpUrl && previous.workspaceKey
-        ? {
-            key: previous.workspaceKey,
-            ...(previous.workspaceExpiresAt ? { expiresAt: previous.workspaceExpiresAt } : {}),
-          }
-        : null;
+    (throughCore.length > 0 ? await workspaceFor(io, mcpUrl, previous) : null) ??
+    (kept && (!kept.expiresAt || Date.parse(kept.expiresAt) > Date.now()) ? kept : null);
   const config: Config = {
     mcpUrl,
     ...(workspace ? { workspaceKey: workspace.key } : {}),
@@ -1378,11 +1499,11 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
       const owned = readConfig(io)?.ownWebhooks;
       return owned ? { ownWebhooks: owned } : {};
     })(),
+    // Each CLI keeps the inbox it was set up with; the ones set up now take this one.
+    inboxes: { ...before, ...Object.fromEntries(clis.map((cli) => [cli.id, mcpUrl])) },
     ...(() => {
-      const kinds = new Set([
-        ...(previous?.mcpUrl === mcpUrl ? (previous.wakeKinds ?? []) : []),
-        ...throughCore.map((cli) => cli.coreKind!),
-      ]);
+      // Kinds set up with another inbox stay linked to theirs (serve links each inbox apart).
+      const kinds = new Set([...(previous?.wakeKinds ?? []), ...throughCore.map((cli) => cli.coreKind!)]);
       return kinds.size > 0 ? { wakeKinds: [...kinds].sort() } : {};
     })(),
     ...(typeof watched.webhook_url === 'string' ? { webhookUrl: watched.webhook_url } : {}),
@@ -1427,8 +1548,16 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
   const socket = desktopSocket(io);
   if (config.webhookUrl) io.stdout(`  Post to: ${config.webhookUrl}`);
   io.stdout('');
+  // Every waking CLI on this inbox after this setup: one session of one of them gets each post.
+  const sharing = AGENT_CLIS.filter((cli) => wakes(cli) && config.inboxes?.[cli.id] === mcpUrl);
   if (hooked.includes('claude')) {
-    io.stdout('Start a new Claude Code session. Each post wakes it by itself; there is nothing to tell it.');
+    io.stdout(
+      'Start a new Claude Code session: each post wakes the most recently started Claude Code session by itself, with nothing to tell it. One session at a time: a newer session takes the posts over, and telling an older one "watch for webhooks" moves them back to it.'
+    );
+  }
+  if (sharing.length > 1 || (linkedElsewhere && sharing.length > 0)) {
+    for (const line of oneSessionLines(sharing, linkedElsewhere ? linkedAgent || 'another session' : null))
+      io.stdout(line);
   }
   const holding = clis.filter(
     (cli) => hooked.includes(cli.id) && cli.hooks?.listener.startsWith('--stop-hook') && !cli.heldBack?.(io)
@@ -1527,22 +1656,38 @@ async function uninstall(io: CliIo, flags: Record<string, string>): Promise<numb
   // CLIs woken through the core: stop linking them, and when none is left stop the watcher and our core.
   const removedKinds = new Set(clis.flatMap((cli) => (cli.coreKind ? [cli.coreKind] : [])));
   const config = readConfig(io);
+  if (config?.inboxes) {
+    // The removed CLIs' own inboxes are forgotten.
+    const inboxes = Object.fromEntries(
+      Object.entries(config.inboxes).filter(([id]) => !clis.some((cli) => cli.id === id))
+    );
+    const { inboxes: _all, ...rest } = config;
+    writePrivate(
+      configPath(io),
+      `${JSON.stringify(Object.keys(inboxes).length > 0 ? { ...rest, inboxes } : rest, null, 2)}\n`
+    );
+  }
   if (removedKinds.size > 0 && config) {
     const left = (config.wakeKinds ?? []).filter((kind) => !removedKinds.has(kind));
-    const { wakeKinds: _dropped, ...rest } = config;
+    const { wakeKinds: _dropped, ...rest } = readConfig(io) ?? config;
     writePrivate(
       configPath(io),
       `${JSON.stringify(left.length > 0 ? { ...rest, wakeKinds: left } : rest, null, 2)}\n`
     );
-    if (left.length === 0) {
-      // The inbox stops forwarding to the session it was linked to (Desktop's core keeps running).
+    // Each inbox only the removed CLIs were linked through stops forwarding to the session it
+    // was linked to (Desktop's core keeps running).
+    const stillLinked = new Set(left.map((kind) => inboxOf(config, cliOfKind(kind))));
+    for (const inbox of new Set([...removedKinds].map((kind) => inboxOf(config, cliOfKind(kind))))) {
+      if (stillLinked.has(inbox)) continue;
       try {
-        await callTool(io, config.mcpUrl, 'unlink_relay_wake');
+        await callTool(io, inbox, 'unlink_relay_wake');
       } catch {
         io.stdout(
           '  Could not unlink the inbox from its relay session; run unlink_relay_wake from an agent.'
         );
       }
+    }
+    if (left.length === 0) {
       if (!io.userService.remove()) failed += 1;
       const lock = join(dirname(configPath(io)), 'serve.pid');
       const pid = Number(io.readText(lock)?.trim());
@@ -1705,6 +1850,10 @@ async function settleClaim(io: CliIo, mcpUrl: string, how: 'ack' | 'release', cl
  * session is gone): the listener then acknowledges or releases the claim.
  * A batch without a lease is already read and must be kept.
  *
+ * \`owns\` turning false (another session took the inbox over, see
+ * \`claudeOwner\`) ends the listener like a closed session: a wait in flight
+ * is cut off (the inbox gives a leased batch back at once) and it exits.
+ *
  * @returns The exit code: \`deliver\`'s, or 0.
  */
 async function listenAsSessionOwner(
@@ -1715,7 +1864,8 @@ async function listenAsSessionOwner(
   deliver: (text: string, leased: boolean) => Promise<number | null>,
   takeOver = false,
   takeHeld?: () => string | null,
-  drain: () => boolean = () => false
+  drain: () => boolean = () => false,
+  owns: () => boolean = () => true
 ): Promise<number> {
   const dir = dirname(configPath(io));
   const digest = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 16);
@@ -1742,24 +1892,24 @@ async function listenAsSessionOwner(
     for (;;) {
       // While another session's listener owns the inbox, keep waiting to take over.
       while (!tryLock(io, inboxLock)) {
-        if (!alive()) return 0;
+        if (!alive() || !owns()) return 0;
         await io.sleep(3_000);
       }
       try {
-        while (alive() && io.readText(inboxLock)?.trim() === String(io.pid)) {
+        while (alive() && owns() && io.readText(inboxLock)?.trim() === String(io.pid)) {
           // A post an earlier owner claimed but could not hand over goes first.
           const kept = takeHeld?.();
           if (kept) return (await deliver(kept, false)) ?? 0;
           // A relay wake link delivers every post to the session that linked it. Claiming one here
           // would take it from that session, so stand down.
           if (await relayWakeLinked(io, mcpUrl)) return 0;
-          // The session may have closed while that was asked: start no wait for it.
-          if (!alive()) return 0;
+          // The session may have closed (or been taken over) while that was asked: start no wait for it.
+          if (!alive() || !owns()) return 0;
           const controller = new AbortController();
           // While \`drain()\`, a wait in flight is not cut off: the inbox may already have handed it
           // posts, which \`deliver\` then lets go (leased) or keeps for the next owner.
           const watch = setInterval(() => {
-            if (!alive() && !drain()) controller.abort();
+            if ((!alive() && !drain()) || !owns()) controller.abort();
           }, 2_000);
           const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(65_000)]);
           try {
@@ -1793,7 +1943,7 @@ async function listenAsSessionOwner(
             backoff = Math.min(backoff * 2, 30_000);
           }
         }
-        if (!alive()) return 0;
+        if (!alive() || !owns()) return 0;
       } finally {
         unlock(io, inboxLock);
       }
@@ -1811,25 +1961,39 @@ async function listenAsSessionOwner(
 async function relayWakeLinked(io: CliIo, mcpUrl: string): Promise<boolean> {
   try {
     const state = await callTool(io, mcpUrl, 'watch_webhooks', {}, AbortSignal.timeout(15_000));
-    return state.wake === 'linked';
+    if (state.wake !== 'linked') return false;
+    const agent = typeof state.linked_agent === 'string' ? `"${state.linked_agent}"` : 'another session';
+    io.appendLog(
+      `${new Date().toISOString()} listen: standing down; the inbox's relay wake link delivers every post to ${agent}`
+    );
+    return true;
   } catch {
     return false;
   }
 }
 
 /** The hook's JSON input on stdin (Claude Code and Codex both send \`session_id\`). */
-async function hookInput(io: CliIo): Promise<{ session: string; transcript: string }> {
+interface HookInput {
+  session: string;
+  transcript: string;
+  /** \`hook_event_name\`: \`SessionStart\`, \`Stop\`, … */
+  event: string;
+  /** SessionStart's \`source\`: \`startup\`, \`resume\`, \`clear\` or \`compact\`. */
+  source: string;
+}
+
+async function hookInput(io: CliIo): Promise<HookInput> {
+  const text = (value: unknown) => (typeof value === 'string' ? value : '');
   try {
-    const input = JSON.parse((await io.readStdin()) || '{}') as {
-      session_id?: unknown;
-      transcript_path?: unknown;
-    };
+    const input = JSON.parse((await io.readStdin()) || '{}') as Record<string, unknown>;
     return {
-      session: typeof input.session_id === 'string' ? input.session_id : '',
-      transcript: typeof input.transcript_path === 'string' ? input.transcript_path : '',
+      session: text(input.session_id),
+      transcript: text(input.transcript_path),
+      event: text(input.hook_event_name),
+      source: text(input.source),
     };
   } catch {
-    return { session: '', transcript: '' };
+    return { session: '', transcript: '', event: '', source: '' };
   }
 }
 
@@ -1860,26 +2024,24 @@ function callsWebhooksTool(line: string): boolean {
 }
 
 /**
- * Whether this Claude Code session asked for webhook posts: its transcript shows an assistant
- * \`tool_use\` of one of the webhooks MCP tools (the skill starts with \`watch_webhooks\`).
- * \`setup --claude\` installs the wake hooks for every session on the machine, but all of them
- * share one inbox, so a session that never opted in would otherwise take posts meant for another.
- * The transcript is read in chunks, whole lines only, from where the last check stopped (kept in a
- * per-session file), so a long transcript is read once in all, not once per turn; the answer is
- * remembered once seen.
+ * Whether this Claude Code session called one of the webhooks MCP tools since the last check: its
+ * transcript shows an assistant \`tool_use\` of one (the skill starts with \`watch_webhooks\`). Such
+ * a call takes the inbox over for the session, the explicit way to move the posts to it (a newer
+ * session takes them by starting). The transcript is read in chunks, whole lines only, from where
+ * the last check stopped (kept in a per-session file), so a long transcript is read once in all,
+ * not once per turn.
  */
-function sessionOptedIn(io: CliIo, mcpUrl: string, session: string, transcript: string): boolean {
+function newWebhooksCall(io: CliIo, mcpUrl: string, session: string, transcript: string): boolean {
   if (!session || !transcript) return false;
   const digest = createHash('sha256').update(`${mcpUrl}\n${session}`).digest('hex').slice(0, 16);
-  const marker = join(dirname(configPath(io)), `optin-${digest}`);
-  if (io.exists(marker)) return true;
-  const progress = `${marker}.scanned`;
+  const progress = join(dirname(configPath(io)), `scanned-${digest}`);
   const saved = Number(io.readText(progress)?.trim());
   // \`offset\`: where the first line not yet checked starts; \`carry\`: that line so far, when it is
   // longer than one read.
   let offset = Number.isSafeInteger(saved) && saved > 0 ? saved : 0;
   let position = offset;
   let carry = '';
+  let called = false;
   for (;;) {
     const chunk = io.readFrom(transcript, position);
     if (!chunk || chunk.end <= position) break;
@@ -1897,18 +2059,62 @@ function sessionOptedIn(io: CliIo, mcpUrl: string, session: string, transcript: 
     // Everything up to the chunk's last newline is whole lines; only the bytes after it can end
     // inside a character, so this offset is exact.
     const head = chunk.text.slice(0, cut + 1);
-    if ((carry + head).split('\n').some(callsWebhooksTool)) {
-      writePrivate(marker, `${session}\n`);
-      rmSync(progress, { force: true });
-      return true;
-    }
+    if ((carry + head).split('\n').some(callsWebhooksTool)) called = true;
     offset = position + Buffer.byteLength(head, 'utf8');
     position = offset;
     carry = '';
   }
   // A line still being written is read again next time, from its start.
   if (offset > 0) writePrivate(progress, `${offset}\n`);
-  return false;
+  return called;
+}
+
+/** The Claude Code session whose wake hook takes this inbox's posts. */
+interface ClaudeOwner {
+  session: string;
+  /** Its \`claude\` process, to tell when the session closed. */
+  pid: number | null;
+}
+
+/**
+ * The per-inbox record of which Claude Code session takes its posts. \`setup --claude\` installs the
+ * wake hooks for every Claude Code session on the machine; all of them share one inbox, which wakes
+ * one session. The most recently started session takes the inbox over (its SessionStart hook
+ * writes itself here), and so does a session that calls a webhooks MCP tool; every other session's
+ * listener yields. A record whose session closed is vacant: the next hook to run takes it.
+ */
+function claudeOwnerPath(io: CliIo, mcpUrl: string): string {
+  const digest = createHash('sha256').update(mcpUrl).digest('hex').slice(0, 16);
+  return join(dirname(configPath(io)), `claude-owner-${digest}.json`);
+}
+
+function readClaudeOwner(io: CliIo, mcpUrl: string): ClaudeOwner | null {
+  try {
+    const parsed = JSON.parse(
+      io.readText(claudeOwnerPath(io, mcpUrl)) ?? 'null'
+    ) as Partial<ClaudeOwner> | null;
+    if (!parsed || typeof parsed.session !== 'string' || !parsed.session) return null;
+    return { session: parsed.session, pid: typeof parsed.pid === 'number' ? parsed.pid : null };
+  } catch {
+    return null;
+  }
+}
+
+/** Makes \`session\` the inbox's Claude Code owner (an atomic replace: the last writer wins). */
+function writeClaudeOwner(io: CliIo, mcpUrl: string, owner: ClaudeOwner): void {
+  const path = claudeOwnerPath(io, mcpUrl);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const temporary = `${path}.${io.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify({ ...owner, at: new Date().toISOString() })}\n`, {
+    mode: 0o600,
+  });
+  renameSync(temporary, path);
+}
+
+/** Whether a Claude Code process runs non-interactively (\`claude -p\`), so starting it takes nothing over. */
+function printMode(io: CliIo, pid: number | null): boolean {
+  if (pid === null) return false;
+  return /(^|\s)(-p|--print)(\s|=|$)/.test(io.processArgs(pid) ?? '');
 }
 
 /**
@@ -1916,25 +2122,43 @@ function sessionOptedIn(io: CliIo, mcpUrl: string, session: string, transcript: 
  * \`async\` and \`asyncRewake\`. It waits for the next post and exits 2 with
  * it on stderr, which Claude Code shows the agent, waking an idle session.
  * Each turn's Stop hook starts it again.
+ *
+ * Only the inbox's owner session listens (see \`claudeOwnerPath\`): a session
+ * takes the inbox over when it starts (not a \`claude -p\` run, and not a
+ * compaction), when it calls a webhooks MCP tool, or when the owner's session
+ * has closed. An older session's listener stops as soon as a newer one takes
+ * over, so posts never go to more than one session.
  */
 async function listenHook(io: CliIo, flags: Record<string, string>): Promise<number> {
-  const mcpUrl = mcpUrlFor(io, flags);
+  const mcpUrl = mcpUrlFor(io, flags, 'claude');
   if (!mcpUrl) return 0;
-  const { session, transcript } = await hookInput(io);
-  // Only a session that asked to watch the inbox listens on it.
-  if (!sessionOptedIn(io, mcpUrl, session, transcript)) return 0;
+  const { session, transcript, event, source } = await hookInput(io);
+  if (!session) return 0;
   const claude = io.ancestor('claude');
+  const started = event === 'SessionStart' && source !== 'compact' && !printMode(io, claude);
+  // Scanned on every run, so a call is noticed once, in the turn that made it.
+  const called = newWebhooksCall(io, mcpUrl, session, transcript);
+  const owner = readClaudeOwner(io, mcpUrl);
+  const vacant = !owner || (owner.pid !== null && !io.pidAlive(owner.pid));
+  if (started || called || vacant) {
+    writeClaudeOwner(io, mcpUrl, { session, pid: claude });
+  } else if (owner?.session !== session) {
+    return 0; // another, newer session takes this inbox's posts
+  }
+  const owns = () => readClaudeOwner(io, mcpUrl)?.session === session;
   return listenAsSessionOwner(
     io,
     mcpUrl,
-    session || String(claude ?? 'machine'),
+    session,
     () => claude === null || io.pidAlive(claude),
     async (text) => {
       io.stderr(text);
       return 2;
     },
     false,
-    () => takeHeldPost(io, mcpUrl)
+    () => takeHeldPost(io, mcpUrl),
+    () => false,
+    owns
   );
 }
 
@@ -2192,7 +2416,7 @@ function transcriptWatch(io: CliIo, path: string, released: RegExp, since: numbe
 async function listenStopHook(io: CliIo, flags: Record<string, string>): Promise<number> {
   const id = flags['stop-hook'] as StopHookId;
   const cli = STOP_HOOK_CLIS[id];
-  const mcpUrl = mcpUrlFor(io, flags);
+  const mcpUrl = mcpUrlFor(io, flags, id);
   let input: Record<string, unknown> = {};
   try {
     const parsed = JSON.parse((await io.readStdin()) || '{}') as unknown;
@@ -2448,7 +2672,7 @@ async function linkSession(io: CliIo, flags: Record<string, string>): Promise<nu
     log('the session never appeared on the relay');
     return 1;
   }
-  return (await linkAgent(io, config, name, log)) ? 0 : 1;
+  return (await linkAgent(io, inboxOf(config, cliOfKind(kind)), name, log)) ? 0 : 1;
 }
 
 /**
@@ -2460,7 +2684,7 @@ async function linkSession(io: CliIo, flags: Record<string, string>): Promise<nu
  */
 async function linkAgent(
   io: CliIo,
-  config: Config,
+  mcpUrl: string,
   name: string,
   log: (line: string) => void
 ): Promise<boolean> {
@@ -2489,7 +2713,8 @@ async function linkAgent(
     );
   }
   try {
-    await callTool(io, config.mcpUrl, 'link_relay_wake', { url: hook.url, secret: hook.secret });
+    // Named, so every session reading the inbox's wake state learns which one it wakes.
+    await callTool(io, mcpUrl, 'link_relay_wake', { url: hook.url, secret: hook.secret, agent: name });
   } catch (error) {
     log(`link_relay_wake failed: ${error instanceof Error ? error.message : 'error'}`);
     return false;
@@ -2526,8 +2751,8 @@ async function serve(io: CliIo, flags: Record<string, string>): Promise<number> 
   // The order sessions were first seen open in: the newest open one gets the posts.
   const opened = new Map<string, number>();
   let counter = 0;
-  let linked: string | null = null;
-  let inbox: string | null = null;
+  // The session each inbox is linked to (CLIs set up with different inboxes are linked apart).
+  const linked = new Map<string, string>();
   // A link that failed is tried again, but not on every pass.
   const retryAt = new Map<string, number>();
   try {
@@ -2535,12 +2760,13 @@ async function serve(io: CliIo, flags: Record<string, string>): Promise<number> 
       const config = readConfig(io);
       const kinds = new Set(config?.wakeKinds ?? []);
       if (!config || kinds.size === 0) return 0;
-      // Another inbox: link it afresh.
-      if (config.mcpUrl !== inbox) {
-        inbox = config.mcpUrl;
-        linked = null;
-        retryAt.clear();
+      const byInbox = new Map<string, Set<string>>();
+      for (const kind of kinds) {
+        const inbox = inboxOf(config, cliOfKind(kind));
+        byInbox.set(inbox, new Set([...(byInbox.get(inbox) ?? []), kind]));
       }
+      // An inbox no CLI uses any more is forgotten; a new one is linked afresh.
+      for (const inbox of [...linked.keys()]) if (!byInbox.has(inbox)) linked.delete(inbox);
       const log = (line: string) => io.appendLog(`${new Date().toISOString()} serve: ${line}`);
       const problem = await ensureCore(io, config);
       if (problem) {
@@ -2558,19 +2784,24 @@ async function serve(io: CliIo, flags: Record<string, string>): Promise<number> 
         for (const session of [...live].sort((a, b) => (a.updated_at_ms ?? 0) - (b.updated_at_ms ?? 0))) {
           if (!opened.has(session.target!.id!)) opened.set(session.target!.id!, (counter += 1));
         }
-        const pick = live.reduce<CoreSession | null>(
-          (best, session) =>
-            !best || opened.get(session.target!.id!)! > opened.get(best.target!.id!)! ? session : best,
-          null
-        );
-        const id = pick?.target?.id ?? null;
-        if (!id) linked = null;
-        else if (id !== linked && (retryAt.get(id) ?? 0) <= Date.now()) {
-          if (await linkAgent(io, config, pick!.registration!.name!, log)) {
-            linked = id;
-            retryAt.delete(id);
-          } else {
-            retryAt.set(id, Date.now() + 60_000);
+        for (const [inbox, inboxKinds] of byInbox) {
+          const pick = live
+            .filter((session) => inboxKinds.has(session.target!.kind!))
+            .reduce<CoreSession | null>(
+              (best, session) =>
+                !best || opened.get(session.target!.id!)! > opened.get(best.target!.id!)! ? session : best,
+              null
+            );
+          const id = pick?.target?.id ?? null;
+          const retryKey = `${inbox}\n${id}`;
+          if (!id) linked.delete(inbox);
+          else if (id !== linked.get(inbox) && (retryAt.get(retryKey) ?? 0) <= Date.now()) {
+            if (await linkAgent(io, inbox, pick!.registration!.name!, log)) {
+              linked.set(inbox, id);
+              retryAt.delete(retryKey);
+            } else {
+              retryAt.set(retryKey, Date.now() + 60_000);
+            }
           }
         }
       }

@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 import { EVENTS_SHIM_LIMITS } from './limits.js';
 import { drainStalledWakes, publicEvent, type EventsShimDeps } from './service.js';
-import type { EventsShimStore, ShimEvent, ShimRecord, ShimUrls } from './types.js';
+import type { EventsShimStore, ShimEvent, ShimRecord, ShimUrls, WakeTarget } from './types.js';
 import { deliverInBackground, deliverPending } from './delivery.js';
 import { checkWakeTarget, DEFAULT_RELAY_ORIGINS, forwardWake } from './wake.js';
 
@@ -83,6 +83,25 @@ function wakeState(shim: ShimRecord): 'linked' | 'broken' | 'none' {
 }
 
 /**
+ * Which session a working relay wake link delivers to, for the agent reading it. One inbox wakes
+ * one session, and every session that has this MCP server sees the same `wake: linked`, so the
+ * text names the link's agent and tells the reader to compare it with its own name instead of
+ * taking the link for its own.
+ */
+function linkedTo(wake: WakeTarget): string[] {
+  const who = wake.agent;
+  return who
+    ? [
+        `This inbox is linked to the Agent Relay agent "${who}" (since ${wake.linkedAt}): each post is injected into that agent's session and wakes it. One inbox wakes one session, and while this link works no other session (Claude Code's wake hooks, listen, wait_for_webhook) receives its posts.`,
+        `Compare "${who}" with your own Agent Relay agent name. If it is not yours, the posts do not come to this session: tell the person the inbox wakes "${who}", not this session. To get them here instead, either use a separate inbox for this session, or call link_relay_wake from this session, which moves the link away from "${who}".`,
+      ]
+    : [
+        `This inbox is linked to an Agent Relay session (since ${wake.linkedAt}) whose agent name was not recorded: each post is injected into that session and wakes it. One inbox wakes one session, and while this link works no other session (Claude Code's wake hooks, listen, wait_for_webhook) receives its posts.`,
+        'Unless you called link_relay_wake yourself in this conversation, assume the link wakes another session, not this one, and tell the person so. To get the posts here instead, either use a separate inbox for this session, or call link_relay_wake from this session (with agent: your Agent Relay name), which moves the link here.',
+      ];
+}
+
+/**
  * Whether the store holds `wait_for_webhook` claims on a lease (it implements
  * the optional `ackPending` and `releasePending`). Without, a claim marks posts
  * read at once, as before leases.
@@ -142,7 +161,7 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
     {
       title: 'Watch for webhooks',
       description:
-        "Start here. Returns this inbox's webhook URL, whether posts will wake this session, posts waiting for you, and the exact next steps to get woken when a post arrives.",
+        "Start here. Returns this inbox's webhook URL, whether a relay wake link delivers its posts and to which Agent Relay agent (linked_agent: compare it with your own name, since one inbox wakes one session), posts waiting for you, and the exact next steps to get woken when a post arrives.",
       inputSchema: {},
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
@@ -157,9 +176,9 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
       const nextSteps =
         state === 'linked'
           ? [
-              'You are set: each post is injected into this session by Agent Relay and wakes it when idle.',
+              ...linkedTo(ctx.shim.wake!),
               'Give the person (or whoever sends the webhooks) webhook_url: anyone holding it can post. For a sender that signs its posts (GitHub, Stripe, Linear) or sends a bearer token, use the matching verified_urls entry instead, once its secret is set on the page that created this inbox (until then that URL refuses posts with 409).',
-              'Tell the person you are watching, then end your turn. Do not poll.',
+              'If the link is yours, tell the person you are watching, then end your turn. Do not poll.',
             ]
           : [
               ...(state === 'broken'
@@ -170,7 +189,7 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
               'Give the person (or whoever sends the webhooks) webhook_url: anyone holding it can post. For a sender that signs its posts (GitHub, Stripe, Linear) or sends a bearer token, use the matching verified_urls entry instead, once its secret is set on the page that created this inbox.',
               `If this session runs under Agent Relay (it has a relay socket, e.g. a SessionStart hook named agent-relay-probe or messages with a [reply: …] hint), make your session's relay webhook: run \`${RELAY_WEBHOOK_COMMAND}\` with the socket path you were given. It prints a url and a secret.`,
               "If the probe answers that it has no webhook command (an older Agent Relay), run `agent-relay-probe socket-request --socket <your relay socket> --method POST --path /webhooks --body '{}'` instead; the url and secret are under data.",
-              'Then call link_relay_wake with that url and secret. If the probe printed created:false and no secret, the session already has a webhook whose secret was shown earlier: delete it (add --revoke, or the older probe: --method DELETE --path /webhooks), make it again, and use the new secret.',
+              'Then call link_relay_wake with that url, that secret and agent: your own Agent Relay agent name (so the inbox can say which session it wakes). If the probe printed created:false and no secret, the session already has a webhook whose secret was shown earlier: delete it (add --revoke, or the older probe: --method DELETE --path /webhooks), make it again, and use the new secret.',
               'Without Agent Relay, in Claude Code: start `npx -y @agent-relay/events-shim@latest listen` as a background command (Bash with run_in_background). It exits with the next post, which wakes you; act on it, then start it again. It needs this inbox saved first: the person runs `npx @agent-relay/events-shim@latest setup <this MCP URL>` once (it also installs a skill with these steps), or pass `--mcp-url <this MCP URL>` to listen.',
               'Other clients without Agent Relay: call wait_for_webhook in a background task if you can, and call it again each time it returns; otherwise call get_webhook_events when the person asks. Codex wakes only under Agent Relay.',
               'Then tell the person you are watching.',
@@ -184,6 +203,10 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
           bearer: ctx.urls.hookUrl(ctx.shim.hookToken, 'bearer'),
         },
         wake: state,
+        // Which session the link wakes: only that agent's session gets the posts.
+        ...(ctx.shim.wake
+          ? { linked_agent: ctx.shim.wake.agent ?? null, linked_at: ctx.shim.wake.linkedAt }
+          : {}),
         waiting,
         next_steps: nextSteps,
         limits: {
@@ -199,7 +222,7 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
     'link_relay_wake',
     {
       title: 'Wake this session through Agent Relay',
-      description: `Links this inbox to the webhook your local Agent Relay made for this session (run \`${RELAY_WEBHOOK_COMMAND}\` first; an older probe without that command: \`agent-relay-probe socket-request --socket <your relay socket> --method POST --path /webhooks --body '{}'\`). Every later post is forwarded there, and Agent Relay injects it into this session, waking it even when idle. Posts already waiting are forwarded too.`,
+      description: `Links this inbox to the webhook your local Agent Relay made for this session (run \`${RELAY_WEBHOOK_COMMAND}\` first; an older probe without that command: \`agent-relay-probe socket-request --socket <your relay socket> --method POST --path /webhooks --body '{}'\`). Every later post is forwarded there, and Agent Relay injects it into this session, waking it even when idle. Posts already waiting are forwarded too. One inbox wakes one session: this replaces any link the inbox had to another session. Pass agent (your own Agent Relay name) so watch_webhooks can tell every session which one the inbox wakes.`,
       inputSchema: {
         url: z
           .string()
@@ -213,6 +236,15 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
           .min(1)
           .max(200)
           .describe('The wh_live_… secret your relay printed (shown once).'),
+        agent: z
+          .string()
+          .trim()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe(
+            "Your own Agent Relay agent name (this session's name on the relay). Recorded so watch_webhooks can say which session the inbox wakes."
+          ),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
@@ -220,7 +252,14 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
       const checked = checkWakeTarget(input.url, input.secret, relayOrigins);
       if (!checked.ok) return failure(checked.message);
       const at = now(ctx).toISOString();
-      const target = { url: checked.url, secret: input.secret, linkedAt: at };
+      // The session the inbox woke until now, if another: said in the answer, so the move is visible.
+      const before = ctx.shim.wake && !ctx.shim.wake.brokenAt ? ctx.shim.wake : undefined;
+      const target: WakeTarget = {
+        url: checked.url,
+        secret: input.secret,
+        linkedAt: at,
+        ...(input.agent ? { agent: input.agent } : {}),
+      };
       // Prove the link before storing it: a test post the session will see.
       const probe = await forwardWake({
         url: target.url,
@@ -259,19 +298,33 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
         // Keep retrying in the background; the agent can also read them now.
         void deliverInBackground(ctx.deps, ctx.shim.id, target, undefined, Promise.resolve(pass));
       }
+      const moved =
+        before && before.url !== target.url
+          ? [
+              `The inbox no longer wakes ${before.agent ? `"${before.agent}"` : 'the session it was linked to before'}: one inbox wakes one session, and that session gets no more posts from it.`,
+            ]
+          : [];
+      const named = {
+        linked_agent: target.agent ?? null,
+        ...(before && before.url !== target.url ? { replaced_agent: before.agent ?? null } : {}),
+      };
       if (pass.stalled) {
         return result({
           wake: pass.stalled.permanent ? 'broken' : 'linked',
+          ...named,
           forwarded_waiting: forwarded,
           next_steps: [
             `Linked, but some waiting posts could not be forwarded yet (${pass.stalled.reason}). Call get_webhook_events to read them now.`,
+            ...moved,
           ],
         });
       }
       return result({
         wake: 'linked',
+        ...named,
         forwarded_waiting: forwarded,
         next_steps: [
+          ...moved,
           'Tell the person you are watching, then end your turn. Each post arrives in this session as a message from webhook.',
         ],
       });

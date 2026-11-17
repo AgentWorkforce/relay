@@ -271,6 +271,8 @@ export async function feedFor(
       last_seen_at: shim.agentSeenAt ?? null,
       wake: shim.wake ? (shim.wake.brokenAt ? 'broken' : 'linked') : 'none',
       wake_error: shim.wake?.brokenReason ?? null,
+      /** The Agent Relay agent the wake link delivers to, when the link named one. */
+      wake_agent: shim.wake?.agent ?? null,
     },
     expires_at: new Date(Date.parse(shim.lastUsedAt) + EVENTS_SHIM_LIMITS.idleExpiryMs).toISOString(),
     events: events.map(publicEvent),
