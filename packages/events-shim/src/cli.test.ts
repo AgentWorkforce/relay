@@ -1047,7 +1047,7 @@ describe('events-shim CLI', () => {
       // The inbox changes (setup again with another one): the same open session is linked again for it.
       () => {
         const saved = JSON.parse(readFileSync(configPath(w.io), 'utf8'));
-        const next = `${saved.mcpUrl}/`;
+        const next = saved.mcpUrl.replace(/esm_[A-Za-z0-9_-]{43}/, `esm_${'n'.repeat(43)}`);
         writeFileSync(
           configPath(w.io),
           JSON.stringify({ ...saved, mcpUrl: next, inboxes: { opencode: next, devin: next } })
@@ -1651,6 +1651,16 @@ describe('events-shim CLI', () => {
     await w.post({ for: 'claude' });
     expect(await runCli(['listen', '--hook'], w.io)).toBe(2);
     expect(w.err.join('\n')).toContain('{"for":"claude"}');
+  });
+
+  it('the same inbox written with or without a trailing slash is one inbox to setup', async () => {
+    const w = await fileWorld({ core: true });
+    expect(await runCli(['setup', w.created.mcp_url, '--claude'], w.io)).toBe(0);
+    // The slash form reaches the same inbox: adding Codex there is still refused without --share-inbox.
+    expect(await runCli(['setup', `${w.created.mcp_url}/`, '--codex'], w.io)).toBe(2);
+    expect(w.err.join('\n')).toContain('This inbox already wakes Claude Code');
+    expect(await runCli(['setup', `${w.created.mcp_url}/`, '--claude'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).inboxes).toEqual({ claude: w.created.mcp_url });
   });
 
   it('a config saved before per-CLI inboxes keeps the CLIs it set up on their inbox when another inbox is set up', async () => {

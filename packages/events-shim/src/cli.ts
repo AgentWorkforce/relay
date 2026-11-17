@@ -147,10 +147,25 @@ export function configPath(io: CliIo): string {
   return join(base, 'agent-relay', 'webhooks.json');
 }
 
+/**
+ * One inbox's MCP URL in one form: \`…/mcp/\` and \`…/mcp\` reach the same inbox, so they must compare
+ * (and hash, for its locks and owner record) the same.
+ */
+function canonicalInbox(url: string): string {
+  return url.replace(/\/mcp\/$/, '/mcp');
+}
+
 function readConfig(io: CliIo): Config | null {
   try {
     const parsed = JSON.parse(readFileSync(configPath(io), 'utf8')) as Config;
-    return typeof parsed.mcpUrl === 'string' && parsed.mcpUrl ? parsed : null;
+    if (typeof parsed.mcpUrl !== 'string' || !parsed.mcpUrl) return null;
+    parsed.mcpUrl = canonicalInbox(parsed.mcpUrl);
+    if (parsed.inboxes && typeof parsed.inboxes === 'object') {
+      parsed.inboxes = Object.fromEntries(
+        Object.entries(parsed.inboxes).map(([id, url]) => [id, canonicalInbox(String(url))])
+      );
+    }
+    return parsed;
   } catch {
     return null;
   }
@@ -180,8 +195,8 @@ function cliOfKind(kind: string): string {
  * inbox \`cli\` was set up with, when given).
  */
 function mcpUrlFor(io: CliIo, flags: Record<string, string>, cli?: string): string | null {
-  if (flags['mcp-url'] || io.env.AGENT_RELAY_WEBHOOKS_MCP_URL)
-    return flags['mcp-url'] || io.env.AGENT_RELAY_WEBHOOKS_MCP_URL || null;
+  const given = flags['mcp-url'] || io.env.AGENT_RELAY_WEBHOOKS_MCP_URL;
+  if (given) return canonicalInbox(given);
   const config = readConfig(io);
   return config ? inboxOf(config, cli) : null;
 }
@@ -191,7 +206,7 @@ function checkMcpUrl(raw: string): string | null {
     const url = new URL(raw);
     if (url.protocol !== 'https:' && url.hostname !== 'localhost' && url.hostname !== '127.0.0.1')
       return null;
-    return /\/t\/esm_[A-Za-z0-9_-]{43}\/mcp\/?$/.test(url.pathname) ? url.toString() : null;
+    return /\/t\/esm_[A-Za-z0-9_-]{43}\/mcp\/?$/.test(url.pathname) ? canonicalInbox(url.toString()) : null;
   } catch {
     return null;
   }
