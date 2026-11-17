@@ -54,6 +54,7 @@ use crate::relay::spawn::observe::{read_tail, Watched};
 use crate::relay::state::{ProcessLiveness, WorkState};
 use crate::relay::store::{random_hex, SessionKind, Target};
 use std::collections::BTreeMap;
+use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -101,13 +102,55 @@ pub(crate) struct IdleTurn {
     pub mark: Option<u64>,
 }
 
-pub(crate) fn idle_turn(folder: &Path, session: &str) -> Option<IdleTurn> {
-    let saved = record::read(folder, session)?;
-    let path = saved.events();
-    let length = std::fs::metadata(&path).ok()?.len();
-    let tail = read_tail(&path, EVENTS_TAIL)?;
+/// One look at that log. A missing record is not a failed read: an idle
+/// observation then has no turn to compare. A record or log that cannot be
+/// read is not evidence the leader is idle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IdleSample {
+    Absent,
+    Unreadable,
+    Seen(IdleTurn),
+}
+
+pub(crate) fn idle_sample(folder: &Path, session: &str) -> IdleSample {
+    let Some(record_path) =
+        crate::relay::store::is_uuid(session).then(|| folder.join(format!("{session}.json")))
+    else {
+        return IdleSample::Absent;
+    };
+    match std::fs::metadata(&record_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return IdleSample::Absent,
+        Err(_) => return IdleSample::Unreadable,
+        Ok(_) => {}
+    }
+    let Some(saved) = record::read(folder, session) else {
+        return IdleSample::Unreadable;
+    };
+    let mut file = match std::fs::File::open(saved.events()) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return IdleSample::Seen(IdleTurn {
+                work: WorkState::Unknown,
+                mark: None,
+            });
+        }
+        Err(_) => return IdleSample::Unreadable,
+    };
+    // Length and bytes come from this handle. A second open can start
+    // later, and a mark measured from the earlier length then collides
+    // with a turn that was appended in between.
+    let Ok(length) = file.metadata().map(|meta| meta.len()) else {
+        return IdleSample::Unreadable;
+    };
     let start = length.saturating_sub(EVENTS_TAIL);
-    Some(IdleTurn {
+    if file.seek(std::io::SeekFrom::Start(start)).is_err() {
+        return IdleSample::Unreadable;
+    }
+    let mut tail = Vec::new();
+    if file.take(length - start).read_to_end(&mut tail).is_err() {
+        return IdleSample::Unreadable;
+    }
+    IdleSample::Seen(IdleTurn {
         work: record::work_state(&tail).unwrap_or(WorkState::Unknown),
         mark: record::last_turn_mark(&tail, start),
     })

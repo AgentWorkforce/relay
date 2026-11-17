@@ -437,16 +437,19 @@ impl Core {
 
     /// Whether `registration` is still the quiet Grok stretch `mark` named.
     /// No session record means the idle sample had no turn to compare, so it
-    /// stands. A record that cannot be read, when the sample had a turn,
-    /// keeps the leader.
+    /// stands. A record or log that cannot be read keeps the leader.
     fn idle_grok_unchanged(&self, registration: &Registration, mark: Option<u64>) -> bool {
-        let Some(turn) = crate::relay::harness::grok::idle_turn(
+        use crate::relay::harness::grok::IdleSample;
+        match crate::relay::harness::grok::idle_sample(
             &self.config.app_data_dir.join("spawned-agents/grok"),
             &registration.target.id,
-        ) else {
-            return mark.is_none();
-        };
-        crate::relay::spawn::lifecycle::grok_idle_still(mark, turn.work, turn.mark)
+        ) {
+            IdleSample::Absent => mark.is_none(),
+            IdleSample::Unreadable => false,
+            IdleSample::Seen(turn) => {
+                crate::relay::spawn::lifecycle::grok_idle_still(mark, turn.work, turn.mark)
+            }
+        }
     }
 }
 

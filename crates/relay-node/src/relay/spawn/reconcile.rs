@@ -136,9 +136,9 @@ impl Core {
         let now = Utc::now();
         // Read before the ledger lock: a turn mark is a file, and the lock
         // is only the clock. The stop below reads the file again.
-        let idle_marks: Vec<Option<u64>> = registrations
+        let idle_samples: Vec<crate::relay::harness::grok::IdleSample> = registrations
             .iter()
-            .map(|registration| self.grok_idle_mark(registration))
+            .map(|registration| self.grok_idle_sample(registration))
             .collect();
         let ledger = self.ledger();
         let (mut ended, mut idle_leaders, mut places, mut shown) =
@@ -148,8 +148,8 @@ impl Core {
             state.observing = false;
             state.observed = Some(Instant::now());
             if observed.len() == registrations.len() {
-                for ((registration, observation), seen_mark) in
-                    registrations.iter().zip(observed).zip(idle_marks)
+                for ((registration, observation), sample) in
+                    registrations.iter().zip(observed).zip(idle_samples)
                 {
                     // The record borrow ends with this block. The match
                     // below borrows `state` again to record a reclaimed place.
@@ -170,18 +170,31 @@ impl Core {
                             && observation.work == WorkState::Idle
                             && !observation.turn_in_progress;
                         if is_grok_leader(registration) && quietly_idle {
-                            let (since, mark) = lifecycle::note_grok_idle(
-                                record.idle_since,
-                                record.idle_mark,
-                                seen_mark,
-                                now,
-                            );
-                            record.idle_since = since;
-                            record.idle_mark = mark;
-                            if since
-                                .is_some_and(|since| lifecycle::grok_leader_idle_due(since, now))
-                            {
-                                idle_leaders.push((registration.clone(), mark));
+                            if sample == crate::relay::harness::grok::IdleSample::Unreadable {
+                                // A failed read is not a quiet stretch. Ending
+                                // on it could stop a leader whose turn is running.
+                                record.idle_since = None;
+                                record.idle_mark = None;
+                            } else {
+                                let seen_mark = match sample {
+                                    crate::relay::harness::grok::IdleSample::Seen(turn) => {
+                                        turn.mark
+                                    }
+                                    _ => None,
+                                };
+                                let (since, mark) = lifecycle::note_grok_idle(
+                                    record.idle_since,
+                                    record.idle_mark,
+                                    seen_mark,
+                                    now,
+                                );
+                                record.idle_since = since;
+                                record.idle_mark = mark;
+                                if since.is_some_and(|since| {
+                                    lifecycle::grok_leader_idle_due(since, now)
+                                }) {
+                                    idle_leaders.push((registration.clone(), mark));
+                                }
                             }
                         } else {
                             record.idle_since = None;
@@ -307,14 +320,19 @@ impl Core {
         }
     }
 
-    /// The last turn event of a spawned Grok leader, when its session log
-    /// has one. Other agents have none: their idle stretch is not this clock.
-    fn grok_idle_mark(&self, registration: &crate::relay::store::Registration) -> Option<u64> {
+    /// The session log of a spawned Grok leader. Other agents are absent:
+    /// their idle stretch is not this clock.
+    fn grok_idle_sample(
+        &self,
+        registration: &crate::relay::store::Registration,
+    ) -> crate::relay::harness::grok::IdleSample {
         if !is_grok_leader(registration) {
-            return None;
+            return crate::relay::harness::grok::IdleSample::Absent;
         }
-        crate::relay::harness::grok::idle_turn(&self.grok_record_folder(), &registration.target.id)
-            .and_then(|turn| turn.mark)
+        crate::relay::harness::grok::idle_sample(
+            &self.grok_record_folder(),
+            &registration.target.id,
+        )
     }
 
     fn grok_record_folder(&self) -> std::path::PathBuf {

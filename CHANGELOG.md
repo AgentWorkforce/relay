@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay-node`: a spawned Grok leader that has been idle for 24 hours, with its process still running, no turn in progress, an empty queue and no final answer still owed, is ended and taken off the relay. A turn that finishes between observations restarts that clock. The stop reads the session again under the delivery lock and leaves a leader whose turn has started, or whose name now belongs to another agent. Unknown work does not start the clock, and a leader the person has taken over is left alone. Claude and Codex sessions that are idle keep their places.
+- `agent-relay-node`: a spawned Grok leader that has been idle for 24 hours, with its process still running, no turn in progress, an empty queue and no final answer still owed, is ended and taken off the relay. A turn that finishes between observations restarts that clock. The stop reads the session again under the delivery lock and leaves a leader whose turn has started, whose log cannot be read, or whose name now belongs to another agent. A queue that cannot be read, including a leader with no credential after a restart, keeps it. Unknown work does not start the clock, and a leader the person has taken over is left alone. Claude and Codex sessions that are idle keep their places.
 - `agent-relay-node`: session-socket requests share one deadline across connection setup and partial reads and writes, so slow replies cannot extend a native hook beyond its wait budget.
 
 ## [18.9.0] - 2026-11-16

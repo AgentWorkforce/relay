@@ -1728,7 +1728,15 @@ impl Core {
         registration: &Registration,
     ) -> Result<usize, RpcError> {
         let Some((registration, token)) = self.agent_credential(&registration.name) else {
-            return Ok(0);
+            // No credential is not an empty queue. A gate launch keeps its
+            // token in memory, so a restart cannot read what is still queued.
+            return Err(RpcError::new(
+                ErrorKind::Refused,
+                format!(
+                    "Could not read @{}'s messages. Agent Relay has no credential for it.",
+                    registration.name
+                ),
+            ));
         };
         let queue = client::deliveries(&registration.base_url, &token)
             .await

@@ -465,6 +465,66 @@ async fn a_grok_leader_turn_that_starts_before_the_stop_is_left_running() {
 }
 
 #[tokio::test]
+async fn a_grok_leader_with_no_credential_is_not_ended() {
+    std::env::remove_var("SSL_CERT_FILE");
+    std::env::remove_var("SSL_CERT_DIR");
+    let home = tempfile::tempdir().unwrap();
+    let (base, deleted) = accepting_relaycast();
+    let spawner = Arc::new(FakeSpawner::default());
+    let core = core_at(home.path(), spawner.clone(), &base);
+    let observer = observed(&core);
+    spawn(&core, "leader").await;
+    core.store
+        .update(|store| {
+            let leader = store
+                .registrations
+                .iter_mut()
+                .find(|registration| registration.name == "leader")
+                .unwrap();
+            leader.target.kind = crate::relay::store::SessionKind::Grok;
+            let spawn = leader.spawn.as_mut().unwrap();
+            spawn.harness = crate::relay::harness::grok::ID.name().into();
+            // A gate launch's token lives in memory. After a restart the
+            // queue cannot be read, which is not an empty queue.
+            spawn.gate_launch = true;
+        })
+        .unwrap();
+    observer.set("leader", ProcessLiveness::Running, WorkState::Idle, false);
+    core.observe_spawned().await;
+    {
+        let ledger = core.ledger();
+        ledger.lock().agents.get_mut("leader").unwrap().idle_since =
+            Some(chrono::Utc::now() - chrono::Duration::hours(25));
+    }
+    drop_spawn_receipts(home.path());
+    core.observe_spawned().await;
+    assert!(registered(&core, "leader"));
+    assert!(spawner.stopped.lock().unwrap().is_empty());
+    assert!(deleted.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_grok_leader_whose_log_cannot_be_read_is_not_ended() {
+    std::env::remove_var("SSL_CERT_FILE");
+    std::env::remove_var("SSL_CERT_DIR");
+    let home = tempfile::tempdir().unwrap();
+    let (base, _) = accepting_relaycast();
+    let spawner = Arc::new(FakeSpawner::default());
+    let core = core_at(home.path(), spawner.clone(), &base);
+    spawn(&core, "leader").await;
+    let events = write_grok_events(&core, "leader", "{\"type\":\"turn_ended\"}\n");
+    std::fs::remove_file(&events).unwrap();
+    std::fs::create_dir(&events).unwrap();
+    let agent_id = named(&core, "leader").agent_id;
+    drop_spawn_receipts(home.path());
+    core.end_idle_grok_leader("leader", &agent_id, None)
+        .await
+        .unwrap();
+    assert!(registered(&core, "leader"));
+    assert!(spawner.stopped.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn a_spawned_agent_is_not_taken_off_before_this_core_has_looked() {
     // After a restart, an agent marked absent long ago waits for the first
     // observation: it may be running again.
