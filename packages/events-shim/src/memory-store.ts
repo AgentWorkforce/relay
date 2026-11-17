@@ -189,7 +189,8 @@ export class MemoryEventsShimStore implements EventsShimStore {
     shimId: string,
     options: { limit: number; ids?: string[]; staleBefore: string; linkedAt?: string },
     state: 'sending' | 'read' | 'pending',
-    at: string
+    at: string,
+    claimToken?: string
   ) {
     // Synchronous from read to write, so two callers can never claim the same post.
     const row = this.row(shimId);
@@ -204,35 +205,39 @@ export class MemoryEventsShimStore implements EventsShimStore {
       if (options.ids && !options.ids.includes(event.id)) continue;
       event.delivery = state;
       event.deliveredAt = at;
+      if (claimToken) event.claimToken = claimToken;
+      else delete event.claimToken;
       delete event.wakeError;
       claimed.push(structuredClone(event));
     }
     return claimed;
   }
 
-  async ackPending(shimId: string, ids: string[], at: string, claimedAt?: string) {
+  async ackPending(shimId: string, ids: string[], at: string, claimToken?: string) {
     const row = this.row(shimId);
     for (const event of row.events) {
       if (
         ids.includes(event.id) &&
         (event.delivery === 'pending' || event.delivery === 'sending') &&
-        (!claimedAt || event.deliveredAt === claimedAt)
+        (!claimToken || event.claimToken === claimToken || event.deliveredAt === claimToken)
       ) {
         event.delivery = 'read';
         event.deliveredAt = at;
+        delete event.claimToken;
       }
     }
   }
 
-  async releasePending(shimId: string, ids: string[], claimedAt?: string) {
+  async releasePending(shimId: string, ids: string[], claimToken?: string) {
     const row = this.row(shimId);
     for (const event of row.events) {
       if (
         ids.includes(event.id) &&
         event.delivery === 'pending' &&
-        (!claimedAt || event.deliveredAt === claimedAt)
+        (!claimToken || event.claimToken === claimToken || event.deliveredAt === claimToken)
       ) {
         delete event.deliveredAt;
+        delete event.claimToken;
       }
     }
   }

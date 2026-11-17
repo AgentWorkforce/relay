@@ -613,7 +613,7 @@ describe('events shim', () => {
     expect(finalState?.delivery).toBe('read');
   });
 
-  it('a listener whose lease expired cannot release or ack a newer claim with a stale claimed_at', async () => {
+  it('a listener whose lease expired cannot release or ack a newer claim with a stale claimed_at or claim_token', async () => {
     const h = createHarness();
     const shim = await h.create();
     const agent = await h.connect(shim.mcp_url);
@@ -623,7 +623,9 @@ describe('events shim', () => {
     // Listener A claims at t0
     const firstWait = await agent.call('wait_for_webhook', { timeout_seconds: 2, auto_ack: false });
     const eventId = (firstWait.structuredContent?.events as { id: string }[])[0]!.id;
+    const staleClaimToken = firstWait.structuredContent?.claim_token as string;
     const staleClaimedAt = firstWait.structuredContent?.claimed_at as string;
+    expect(staleClaimToken).toMatch(/^clm_/);
     expect(staleClaimedAt).toBeTruthy();
 
     // Time passes; Listener A's lease expires
@@ -632,25 +634,26 @@ describe('events shim', () => {
     // Listener B claims the re-offered post at t1
     const secondWait = await agent.call('wait_for_webhook', { timeout_seconds: 2, auto_ack: false });
     expect(secondWait.structuredContent?.events).toHaveLength(1);
+    const newerClaimToken = secondWait.structuredContent?.claim_token as string;
     const newerClaimedAt = secondWait.structuredContent?.claimed_at as string;
-    expect(newerClaimedAt).not.toBe(staleClaimedAt);
+    expect(newerClaimToken).not.toBe(staleClaimToken);
 
-    // Stale Listener A tries to release using its old claimed_at: ignored!
-    await agent.call('release_webhook_events', { ids: [eventId], claimed_at: staleClaimedAt });
+    // Stale Listener A tries to release using its old claim_token: ignored!
+    await agent.call('release_webhook_events', { ids: [eventId], claim_token: staleClaimToken });
 
     // A third caller cannot claim it because Listener B still has an active lease!
     const thirdWait = await agent.call('wait_for_webhook', { timeout_seconds: 1, auto_ack: false });
     expect(thirdWait.structuredContent?.events).toHaveLength(0);
 
-    // Stale Listener A tries to ack with its old claimed_at: ignored!
-    await agent.call('ack_webhook_events', { ids: [eventId], claimed_at: staleClaimedAt });
+    // Stale Listener A tries to ack with its old claim_token: ignored!
+    await agent.call('ack_webhook_events', { ids: [eventId], claim_token: staleClaimToken });
 
     // Post is still pending under Listener B's lease
     const [feedBefore] = (await h.feed(shim.manage_token)).body.events as { id: string; delivery: string }[];
     expect(feedBefore?.delivery).toBe('pending');
 
-    // Listener B acks with its matching newer claimed_at: successfully marked read!
-    await agent.call('ack_webhook_events', { ids: [eventId], claimed_at: newerClaimedAt });
+    // Listener B acks with its matching newer claim_token: successfully marked read!
+    await agent.call('ack_webhook_events', { ids: [eventId], claim_token: newerClaimToken });
     const [feedAfter] = (await h.feed(shim.manage_token)).body.events as { id: string; delivery: string }[];
     expect(feedAfter?.delivery).toBe('read');
   });

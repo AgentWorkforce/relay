@@ -1734,7 +1734,12 @@ async function listenAsSessionOwner(
             ).finally(() => clearInterval(watch));
             backoff = 1_000;
             const events = Array.isArray(batch.events) ? (batch.events as PublicEvent[]) : [];
-            const claimedAt = typeof batch.claimed_at === 'string' ? batch.claimed_at : undefined;
+            const claimToken =
+              typeof batch.claim_token === 'string'
+                ? batch.claim_token
+                : typeof batch.claimed_at === 'string'
+                  ? batch.claimed_at
+                  : undefined;
             if (events.length > 0) {
               const eventIds = events
                 .map((event) => (typeof event.id === 'string' ? event.id : ''))
@@ -1754,7 +1759,7 @@ async function listenAsSessionOwner(
                     io,
                     mcpUrl,
                     'ack_webhook_events',
-                    { ids: eventIds, ...(claimedAt ? { claimed_at: claimedAt } : {}) },
+                    { ids: eventIds, ...(claimToken ? { claim_token: claimToken } : {}) },
                     AbortSignal.timeout(5_000)
                   ).catch(() => undefined);
                 }
@@ -1765,7 +1770,7 @@ async function listenAsSessionOwner(
                   io,
                   mcpUrl,
                   'release_webhook_events',
-                  { ids: eventIds, ...(claimedAt ? { claimed_at: claimedAt } : {}) },
+                  { ids: eventIds, ...(claimToken ? { claim_token: claimToken } : {}) },
                   AbortSignal.timeout(5_000)
                 ).catch(() => undefined);
               }
@@ -2208,6 +2213,7 @@ async function listenStopHook(io: CliIo, flags: Record<string, string>): Promise
         if (cli.chainLimit !== undefined) writePrivate(chainFile, `${chain + 1}\n`);
         answered = true;
       };
+      const held = heldPostPath(io, mcpUrl);
       // When the CLI ran the hook (Copilot: epoch ms; Gemini: ISO text).
       const stamp = input.timestamp;
       const parsedStamp =
@@ -2237,11 +2243,12 @@ async function listenStopHook(io: CliIo, flags: Record<string, string>): Promise
         sessionKey,
         alive,
         async (text) => {
-          // Let go meanwhile: the CLI would drop the answer, so the next turn's hook takes it from the server.
+          // Let go meanwhile: the CLI would drop the answer, so the next turn's hook takes it.
           if (!alive()) {
-            return null;
+            writePrivate(held, text);
+          } else {
+            answer(text);
           }
-          answer(text);
           return 0;
         },
         true,
@@ -2616,7 +2623,12 @@ async function listen(io: CliIo, flags: Record<string, string>): Promise<number>
       );
       backoff = 1_000;
       const events = Array.isArray(batch.events) ? (batch.events as PublicEvent[]) : [];
-      const claimedAt = typeof batch.claimed_at === 'string' ? batch.claimed_at : undefined;
+      const claimToken =
+        typeof batch.claim_token === 'string'
+          ? batch.claim_token
+          : typeof batch.claimed_at === 'string'
+            ? batch.claimed_at
+            : undefined;
       if (events.length > 0) {
         const eventIds = events
           .map((event) => (typeof event.id === 'string' ? event.id : ''))
@@ -2631,7 +2643,7 @@ async function listen(io: CliIo, flags: Record<string, string>): Promise<number>
             io,
             mcpUrl,
             'ack_webhook_events',
-            { ids: eventIds, ...(claimedAt ? { claimed_at: claimedAt } : {}) },
+            { ids: eventIds, ...(claimToken ? { claim_token: claimToken } : {}) },
             AbortSignal.timeout(5_000)
           ).catch(() => undefined);
         }

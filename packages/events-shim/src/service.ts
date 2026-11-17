@@ -296,6 +296,7 @@ export function publicEvent(event: ShimEvent): Record<string, unknown> {
     body: event.body,
     delivery: event.delivery,
     delivered_at: event.deliveredAt ?? null,
+    claim_token: event.claimToken ?? null,
     wake_error: event.wakeError ?? null,
   };
 }

@@ -86,18 +86,24 @@ function wakeState(shim: ShimRecord): 'linked' | 'broken' | 'none' {
 async function handOver(
   ctx: EventsShimMcpContext,
   state: 'read' | 'pending' = 'read'
-): Promise<{ events: Record<string, unknown>[]; more: boolean; claimed_at?: string }> {
+): Promise<{ events: Record<string, unknown>[]; more: boolean; claim_token?: string; claimed_at?: string }> {
   const at = now(ctx);
   const isoAt = at.toISOString();
   const staleBefore = new Date(at.getTime() - EVENTS_SHIM_LIMITS.sendLeaseMs).toISOString();
+  const claimToken = state === 'pending' ? `clm_${crypto.randomUUID()}` : undefined;
   const claimed = await ctx.deps.store.claimPending(
     ctx.shim.id,
     { limit: EVENTS_SHIM_LIMITS.batchSize, staleBefore },
     state,
-    isoAt
+    isoAt,
+    claimToken
   );
   const more = claimed.length > 0 && (await ctx.deps.store.countPending(ctx.shim.id, staleBefore)) > 0;
-  return { events: claimed.map(publicEvent), more, ...(state === 'pending' ? { claimed_at: isoAt } : {}) };
+  return {
+    events: claimed.map(publicEvent),
+    more,
+    ...(state === 'pending' ? { claim_token: claimToken, claimed_at: isoAt } : {}),
+  };
 }
 
 /**
@@ -339,6 +345,11 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
           .max(EVENTS_SHIM_LIMITS.batchSize)
           .optional()
           .describe('Event ids to acknowledge as read from a previous batch.'),
+        ack_claim_token: z
+          .string()
+          .trim()
+          .optional()
+          .describe('Optional claim token corresponding to ack_ids to guard against acking after lease expiration.'),
         ack_claimed_at: z
           .string()
           .trim()
@@ -365,7 +376,7 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
           ctx.shim.id,
           input.ack_ids,
           now(ctx).toISOString(),
-          input.ack_claimed_at
+          input.ack_claim_token ?? input.ack_claimed_at
         );
       }
       const autoAck = input.auto_ack ?? (input.ack_ids === undefined);
@@ -432,6 +443,11 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
           .min(1)
           .max(EVENTS_SHIM_LIMITS.batchSize)
           .describe('Event ids to mark read.'),
+        claim_token: z
+          .string()
+          .trim()
+          .optional()
+          .describe('Unique claim token of the posts. If set, only acks claims that match.'),
         claimed_at: z
           .string()
           .trim()
@@ -447,7 +463,12 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
     },
     async (input) => {
       await seen(ctx);
-      await ctx.deps.store.ackPending(ctx.shim.id, input.ids, now(ctx).toISOString(), input.claimed_at);
+      await ctx.deps.store.ackPending(
+        ctx.shim.id,
+        input.ids,
+        now(ctx).toISOString(),
+        input.claim_token ?? input.claimed_at
+      );
       return result({ acked: input.ids });
     }
   );
@@ -463,6 +484,11 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
           .min(1)
           .max(EVENTS_SHIM_LIMITS.batchSize)
           .describe('Event ids to release back to pending.'),
+        claim_token: z
+          .string()
+          .trim()
+          .optional()
+          .describe('Unique claim token of the posts. If set, only releases claims that match.'),
         claimed_at: z
           .string()
           .trim()
@@ -478,7 +504,7 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
     },
     async (input) => {
       await seen(ctx);
-      await ctx.deps.store.releasePending(ctx.shim.id, input.ids, input.claimed_at);
+      await ctx.deps.store.releasePending(ctx.shim.id, input.ids, input.claim_token ?? input.claimed_at);
       return result({ released: input.ids });
     }
   );

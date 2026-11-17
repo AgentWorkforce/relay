@@ -78,13 +78,14 @@ export interface ShimEvent {
   headers: Record<string, string>;
   delivery: DeliveryState;
   deliveredAt?: string;
+  claimToken?: string;
   /** Why the last wake forward failed, when it did. */
   wakeError?: string;
 }
 
 export type NewShimEvent = Omit<
   ShimEvent,
-  'id' | 'seq' | 'shimId' | 'delivery' | 'deliveredAt' | 'wakeError'
+  'id' | 'seq' | 'shimId' | 'delivery' | 'deliveredAt' | 'claimToken' | 'wakeError'
 >;
 
 /**
@@ -179,7 +180,8 @@ export interface EventsShimStore {
     shimId: string,
     options: { limit: number; ids?: string[]; staleBefore: string; linkedAt?: string },
     state: 'sending' | 'read' | 'pending',
-    at: string
+    at: string,
+    claimToken?: string
   ): Promise<ShimEvent[]>;
   /**
    * A sent post: `sending` → `woken`. Applies only while it is still the
@@ -195,16 +197,16 @@ export interface EventsShimStore {
   releaseWake(shimId: string, eventId: string, claimedAt: string, wakeError: string): Promise<void>;
   /**
    * Acknowledges claimed posts: marks them `read`. Applies to posts that are
-   * `pending` with an active lease, or `sending`. If `claimedAt` is provided,
-   * only marks read if the post's active lease matches `claimedAt`.
+   * `pending` with an active lease, or `sending`. If `claimToken` is provided,
+   * only marks read if the post's active claim matches `claimToken`.
    */
-  ackPending(shimId: string, ids: string[], at: string, claimedAt?: string): Promise<void>;
+  ackPending(shimId: string, ids: string[], at: string, claimToken?: string): Promise<void>;
   /**
    * Releases claimed posts whose claim has not been acknowledged, clearing
-   * their lease so other listeners can claim them immediately. If `claimedAt`
-   * is provided, only releases if the active lease matches `claimedAt`.
+   * their lease so other listeners can claim them immediately. If `claimToken`
+   * is provided, only releases if the active claim matches `claimToken`.
    */
-  releasePending(shimId: string, ids: string[], claimedAt?: string): Promise<void>;
+  releasePending(shimId: string, ids: string[], claimToken?: string): Promise<void>;
   /**
    * Deletes shims idle since before `idleBefore`, feed rows on shims idle
    * since before `feedBefore`, and idempotency keys older than `feedBefore`.
