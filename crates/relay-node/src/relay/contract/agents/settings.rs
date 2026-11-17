@@ -231,6 +231,31 @@ pub struct SettingsValues {
     /// setting. Absent in older cores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_changes: Option<Vec<AgentSettingsChange>>,
+    /// Read-only: the settings the organization's workspace policy decides
+    /// on this computer (`relay::settings_policy`). Absent when no policy
+    /// applies. A record, not a setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization_policy: Option<OrganizationPolicyState>,
+}
+
+/// What the organization's workspace policy does to this computer's
+/// settings, by key, for Settings to label each row.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct OrganizationPolicyState {
+    /// Settings the organization set: the person cannot change them. Settings
+    /// labels each "This setting is set by your organization."
+    pub locked: Vec<String>,
+    /// Settings whose value came from the organization as a starting point
+    /// the person may change. Settings labels each "Managed by your
+    /// organization."
+    pub defaults: Vec<String>,
+    /// Settings the organization would turn on or widen but that only the
+    /// person turns on: they apply only on a computer enrolled with the
+    /// organization's consent for that setting, so here the person's own
+    /// value stays and the organization sees the difference.
+    pub mismatched: Vec<String>,
+    /// Whether this computer was enrolled with the organization's consent.
+    pub managed: bool,
 }
 
 /// One setting an agent changed on the session socket, as Settings shows it.

@@ -1583,6 +1583,9 @@ mod tests {
                     }
                     Err(error) => panic!("{error}"),
                 };
+                // On macOS an accepted stream inherits the listener's
+                // non-blocking mode; read it blocking, with the timeout.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();

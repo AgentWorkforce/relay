@@ -1277,12 +1277,27 @@ impl Core {
             settings.extend(extension.get());
         }
         settings.insert("detected_tools".into(), json!(self.detected_tools()));
+        if let Some(policy) = self.settings_policy_state(&settings) {
+            settings.insert(crate::relay::settings_policy::SETTING.into(), policy);
+        }
         settings
     }
 
-    /// Applies each given setting; an unknown key or a wrong type changes
-    /// nothing.
+    /// Applies each given setting; an unknown key, a wrong type or a
+    /// setting the organization locked (`settings_policy`) changes nothing.
     pub fn set_settings(
+        &self,
+        changes: &Map<String, Value>,
+    ) -> Result<Map<String, Value>, RpcError> {
+        if let Some(refused) = self.settings_policy_refusal(&self.settings(), changes) {
+            return Err(refused);
+        }
+        self.write_settings(changes)
+    }
+
+    /// [`Self::set_settings`] without the organization's locks: how the
+    /// organization's own values are written.
+    pub(crate) fn write_settings(
         &self,
         changes: &Map<String, Value>,
     ) -> Result<Map<String, Value>, RpcError> {
@@ -2404,19 +2419,89 @@ mod tests {
         *core.workspace.lock().unwrap() = Some(signed_in());
         core.integration_defaults.store(false, Ordering::SeqCst);
 
+        // A CLI-managed core returns at once, starting no pass.
         core.connect_detected_tools_soon();
-        tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(!codex.on.load(Ordering::SeqCst));
         assert_eq!(
             core.store.read(|s| s.integration_defaults_applied.clone()),
             None
         );
 
-        // The same sign-in in a core the app hosts does connect it.
+        // The same sign-in in a core the app hosts does connect it, on a
+        // blocking thread that may wait behind other tests.
         core.integration_defaults.store(true, Ordering::SeqCst);
         core.connect_detected_tools_soon();
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(codex.on.load(Ordering::SeqCst));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !codex.on.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the default pass connects the tool");
+    }
+
+    /// An organization's lock decides a tool's setting: the default pass
+    /// never turns on what the organization locked off, even when the lock
+    /// needed no write because the setting was already off.
+    #[tokio::test]
+    async fn a_locked_integration_is_not_turned_on_by_default() {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, claude) = core_with_claude(temp.path());
+        let policy: crate::relay::settings_policy::SettingsPolicy =
+            serde_json::from_value(json!({"locked": {"direct_delivery": false}})).unwrap();
+        core.apply_settings_policy(Some(policy)).unwrap();
+        assert_eq!(claude.sets.load(Ordering::SeqCst), 0);
+        core.apply_integration_defaults();
+        assert!(!claude.on.load(Ordering::SeqCst));
+        assert!(!core
+            .pending_integration_defaults()
+            .contains(&"direct_delivery"));
+        // Without the lock, the default pass connects it as before.
+        core.apply_settings_policy(None).unwrap();
+        core.apply_integration_defaults();
+        assert!(claude.on.load(Ordering::SeqCst));
+    }
+
+    /// A default whose write fails is not recorded, so the next apply tries
+    /// it again once the tool accepts it.
+    #[tokio::test]
+    async fn a_default_that_failed_is_tried_again() {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, claude) = core_with_claude(temp.path());
+        claude.refuse.store(true, Ordering::SeqCst);
+        let policy: crate::relay::settings_policy::SettingsPolicy =
+            serde_json::from_value(json!({"defaults": {"direct_delivery": true}})).unwrap();
+        core.apply_settings_policy(Some(policy.clone())).unwrap();
+        assert!(!claude.on.load(Ordering::SeqCst));
+        claude.refuse.store(false, Ordering::SeqCst);
+        core.apply_settings_policy(Some(policy)).unwrap();
+        assert!(claude.on.load(Ordering::SeqCst));
+    }
+
+    /// A default dropped from the policy and added back later still sees
+    /// the person's choice made in between.
+    #[tokio::test]
+    async fn a_default_added_back_keeps_the_persons_choice() {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, _claude) = core_with_claude(temp.path());
+        let with = |n: u64| -> crate::relay::settings_policy::SettingsPolicy {
+            serde_json::from_value(json!({"defaults": {"spawn_max_agents": n}})).unwrap()
+        };
+        core.apply_settings_policy(Some(with(4))).unwrap();
+        assert_eq!(core.settings()["spawn_max_agents"], 4);
+        let mut chosen = Map::new();
+        chosen.insert("spawn_max_agents".into(), json!(6));
+        core.set_settings(&chosen).unwrap();
+        core.apply_settings_policy(Some(
+            crate::relay::settings_policy::SettingsPolicy::default(),
+        ))
+        .unwrap();
+        core.apply_settings_policy(Some(with(2))).unwrap();
+        assert_eq!(core.settings()["spawn_max_agents"], 6);
+        // Lifted altogether and given again: the choice still stands.
+        core.apply_settings_policy(None).unwrap();
+        core.apply_settings_policy(Some(with(3))).unwrap();
+        assert_eq!(core.settings()["spawn_max_agents"], 6);
     }
 
     #[tokio::test]

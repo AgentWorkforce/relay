@@ -26,7 +26,11 @@ pub fn writing() -> std::sync::MutexGuard<'static, ()> {
 }
 
 /// Keys of `settings.get` that are records, not settings.
-pub const RECORDS: [&str; 2] = ["agent_changes", "detected_tools"];
+pub const RECORDS: [&str; 3] = [
+    "agent_changes",
+    "detected_tools",
+    crate::relay::settings_policy::SETTING,
+];
 
 /// Settings only the person turns on, in Settings: each widens who can
 /// reach the person's agents or act as the person on this computer (a
@@ -114,7 +118,9 @@ pub fn person_only(key: &str) -> Option<String> {
 /// shape), what only the person may do to it (`person_only`) and, where a
 /// type cannot say, its allowed values. A setting a tool owns is absent
 /// until that tool has run here: it is listed with `available: false` and
-/// cannot be changed. Keys in alphabetical order.
+/// cannot be changed. A setting the organization locked is not writable and
+/// says so in `organization`, as does one it defaulted. Keys in alphabetical
+/// order.
 pub fn describe(values: &Map<String, Value>) -> Vec<Value> {
     let change = schemars::schema_for!(SettingsChange);
     let definitions = change
@@ -126,6 +132,17 @@ pub fn describe(values: &Map<String, Value>) -> Vec<Value> {
     let writable = properties(change);
     let readable = properties(schemars::schema_for!(SettingsValues));
     let keys: BTreeSet<&String> = writable.keys().chain(readable.keys()).collect();
+    let policy = values.get(crate::relay::settings_policy::SETTING);
+    let named = |tier: &str| -> BTreeSet<&str> {
+        policy
+            .and_then(|policy| policy.get(tier))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect()
+    };
+    let (locked, defaulted) = (named("locked"), named("defaults"));
     keys.into_iter()
         .filter(|key| !RECORDS.contains(&key.as_str()))
         .map(|key| {
@@ -148,6 +165,12 @@ pub fn describe(values: &Map<String, Value>) -> Vec<Value> {
             }
             if !available {
                 entry["unavailable"] = json!(unavailable(key));
+            }
+            if locked.contains(key.as_str()) {
+                entry["writable"] = json!(false);
+                entry["organization"] = json!(crate::relay::settings_policy::LOCKED);
+            } else if defaulted.contains(key.as_str()) {
+                entry["organization"] = json!(crate::relay::settings_policy::DEFAULTED);
             }
             if let Some(allowed) = allowed(key) {
                 entry["allowed"] = allowed;

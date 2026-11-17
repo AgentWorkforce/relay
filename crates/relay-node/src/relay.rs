@@ -142,6 +142,7 @@ pub mod session_sources;
 pub mod session_titles;
 pub mod sessions;
 pub mod settings_cli;
+pub mod settings_policy;
 pub mod settings_registry;
 pub mod settings_watch;
 pub mod setup;

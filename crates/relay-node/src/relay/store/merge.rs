@@ -44,6 +44,11 @@ impl Store {
             registrations,
             tokens,
             agent_owners: merge_maps(&base.agent_owners, &ours.agent_owners, &theirs.agent_owners),
+            organization_policy: pick(
+                &base.organization_policy,
+                &ours.organization_policy,
+                &theirs.organization_policy,
+            ),
             allow_self_registration: pick(
                 &base.allow_self_registration,
                 &ours.allow_self_registration,
@@ -299,6 +304,9 @@ impl Store {
         result.tidy_activation_failures();
         preserve_spawn_origins(&mut result, &[ours, theirs, base]);
         super::integration::preserve_filters(&mut result, &[ours, theirs, base]);
+        // A save made before the organization's lock arrived must not leave
+        // a locked setting at another value beside the lock.
+        crate::relay::settings_policy::relock(&mut result);
         result
     }
 
