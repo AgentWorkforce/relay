@@ -147,7 +147,7 @@ fn install_codex(home: &Path, relative: &str) -> PathBuf {
 
 /// codex-cli 0.154, installed through a version manager, exits `daemon start`
 /// when the home has `packages/app-server-daemon` and no `packages/standalone`.
-/// The proxy then closes and the spawn reports `spawn_harness_unavailable`.
+/// The proxy then closes and the spawn fails (`spawn_failed`).
 #[test]
 fn spawn_starts_the_managed_package_not_the_older_cli() {
     let root = tempfile::tempdir().unwrap();

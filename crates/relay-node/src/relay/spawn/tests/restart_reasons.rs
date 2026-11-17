@@ -41,6 +41,7 @@ async fn a_failed_launch_reports_structured_reason_and_cleans_up_on_ack() {
     let home = tempfile::tempdir().unwrap();
     let spawner = Arc::new(FakeSpawner {
         fails_started: true,
+        unavailable: true,
         ..FakeSpawner::default()
     });
     let core = core(home.path(), spawner.clone());

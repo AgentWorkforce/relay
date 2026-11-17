@@ -319,8 +319,62 @@ fn readiness_gives_up_on_a_recycled_pid_at_once_without_claiming_it() {
         Path::new("c.jsonl"),
         Instant::now() + READY_TIMEOUT,
     );
-    assert!(ready.is_err());
+    assert_eq!(
+        ready,
+        Err("Claude Code ended before a matching relay-ready session record appeared (no output); see c.jsonl".into())
+    );
     // Not left to the readiness timeout: the launched process is gone.
+    assert!(began.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn readiness_that_times_out_says_claude_was_still_running_and_what_it_wrote() {
+    let home = tempfile::tempdir().unwrap();
+    let table = Arc::new(FakeProcesses::default());
+    // Beyond any real pid; and with no start time read, it is not signalled.
+    const SLOW: i32 = 2_000_000_124;
+    table.insert(SLOW, FakeProcess::default());
+    let adapter = adapter(home.path(), table);
+    write_log(home.path(), "");
+    let log = log_path(home.path());
+    let ready = adapter.wait_ready(SESSION, SLOW, None, &log, Instant::now());
+    assert_eq!(
+        ready,
+        Err(format!(
+            "Claude Code was still running but no matching relay-ready session record appeared \
+             within 20 s (0 bytes of output); see {}",
+            log.display()
+        ))
+    );
+}
+
+#[test]
+fn readiness_gives_up_on_an_unreaped_claude_at_once_and_says_it_ended() {
+    let home = tempfile::tempdir().unwrap();
+    let table = Arc::new(FakeProcesses::default());
+    // Beyond any real pid; and with no start time read, it is not signalled.
+    const EXITED: i32 = 2_000_000_125;
+    table.insert(
+        EXITED,
+        FakeProcess {
+            zombie: true,
+            ..FakeProcess::default()
+        },
+    );
+    let adapter = adapter(home.path(), table);
+    let began = Instant::now();
+    let ready = adapter.wait_ready(
+        SESSION,
+        EXITED,
+        None,
+        Path::new("c.jsonl"),
+        Instant::now() + READY_TIMEOUT,
+    );
+    assert_eq!(
+        ready,
+        Err("Claude Code ended before a matching relay-ready session record appeared (no output); see c.jsonl".into())
+    );
+    // Not left to the readiness timeout: a zombie has already ended.
     assert!(began.elapsed() < Duration::from_secs(5));
 }
 

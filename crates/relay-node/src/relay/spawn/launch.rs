@@ -135,7 +135,7 @@ pub trait Spawner: Send + Sync {
     fn unavailable_reason(&self, _harness: HarnessId) -> Option<String> {
         None
     }
-    /// Starts one agent. Blocking, for up to about half a minute.
+    /// Starts one agent. Blocking, for up to about a minute (Muse waits 60 s).
     fn launch(&self, launch: &Launch, started: Started) -> Result<Launched, LaunchError>;
     /// The folder of `target`'s session when `harness` can start an agent
     /// as a copy of it (`Launch::fork`); `None` when it cannot. Blocking.
