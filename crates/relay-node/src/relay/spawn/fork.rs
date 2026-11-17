@@ -244,6 +244,13 @@ mod tests {
 
     /// Relaycast answering who invoked the spawn and who the owner is.
     fn relaycast(caller_id: &'static str) -> String {
+        relaycast_invoked(json!({"caller_id": caller_id, "caller_name": "owner"}))
+    }
+
+    /// Relaycast answering with `invocation` as the spawn's record, so a
+    /// desktop spawn can name a requester apart from the launcher that
+    /// invoked it.
+    fn relaycast_invoked(invocation: Value) -> String {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -261,12 +268,7 @@ mod tests {
                 let text = String::from_utf8_lossy(&request).to_string();
                 let (status, body) = if text.contains("GET /v1/actions/spawn/invocations/inv_fork")
                 {
-                    (
-                        "200 OK",
-                        json!({"ok": true, "data": {
-                            "caller_id": caller_id, "caller_name": "owner"
-                        }}),
-                    )
+                    ("200 OK", json!({"ok": true, "data": invocation.clone()}))
                 } else if text.contains("GET /v1/agents/owner") {
                     (
                         "200 OK",
@@ -541,6 +543,53 @@ mod tests {
         assert!(
             missing.text().starts_with("spawn_fork_unavailable"),
             "{missing:?}"
+        );
+    }
+
+    /// Forks `planner` on a claimed computer whose spawn invocation names
+    /// `requester` as the desktop identity that asked and `launcher` as the
+    /// participant that invoked it.
+    async fn fork_asked_by(
+        requester: &'static str,
+        launcher: &'static str,
+    ) -> Result<ForkSource, SpawnError> {
+        let folders = Arc::new(Folders {
+            path: Mutex::new(Some(folder())),
+            slow: AtomicBool::new(false),
+        });
+        let base = relaycast_invoked(json!({
+            "caller_id": launcher, "caller_name": "launcher-person",
+            "requester_agent_id": requester, "requester_name": "person-chat"
+        }));
+        let home = tempfile::tempdir().unwrap();
+        let core = opened(home.path(), &base, folders);
+        register(&core, "planner", false, KEY);
+        claim(&core).await;
+        core.fork_source(&request(None), "planner").await
+    }
+
+    #[tokio::test]
+    async fn a_fork_the_owner_asked_for_through_a_launcher_keeps_its_source() {
+        let copied = fork_asked_by(OWNER, "agent_launcher").await.unwrap();
+        assert_eq!(copied.session_id, SESSION);
+        assert_eq!(copied.directory, folder());
+    }
+
+    #[tokio::test]
+    async fn a_fork_the_owner_launched_for_another_requester_keeps_its_source() {
+        let copied = fork_asked_by("agent_person_chat", OWNER).await.unwrap();
+        assert_eq!(copied.session_id, SESSION);
+        assert_eq!(copied.directory, folder());
+    }
+
+    #[tokio::test]
+    async fn a_fork_neither_asked_for_nor_launched_by_the_owner_is_refused() {
+        let refused = fork_asked_by("agent_person_chat", "agent_launcher")
+            .await
+            .unwrap_err();
+        assert!(
+            refused.text().starts_with("spawn_fork_refused"),
+            "{refused:?}"
         );
     }
 

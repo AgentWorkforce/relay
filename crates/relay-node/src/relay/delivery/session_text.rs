@@ -13,6 +13,10 @@ use std::sync::{MutexGuard, PoisonError};
 #[cfg(test)]
 use std::time::{Duration, Instant};
 
+/// Why a delivery admitted before the organization's hold began waits.
+pub(crate) const HELD_SINCE: &str =
+    "Your organization started holding messages from senders who are not its admins; this one waits for your approval.";
+
 /// Native transport does not itself convey the human owner's authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InputSource {
@@ -82,6 +86,33 @@ impl Core {
         });
     }
 
+    /// The hand-over gate: `Waiting` when an organization hold that began
+    /// after this delivery was admitted now holds it, so it stays queued and
+    /// the next pass holds it for the person's approval like any held
+    /// message. Called at each real hand-over point, with no await between
+    /// it and the hand-over: the ordinary route's and native continuation's
+    /// blocking closures, right before the route is called, and right before
+    /// the mobile journal takes the turn.
+    pub(crate) fn hand_over_held(
+        &self,
+        registration: &Registration,
+        delivery: &Delivery,
+    ) -> Option<crate::relay::inject::InjectOutcome> {
+        self.organization_now_holds(registration, delivery)
+            .then(|| crate::relay::inject::InjectOutcome::Waiting(HELD_SINCE.into()))
+    }
+
+    /// Whether an organization hold that began after this delivery was
+    /// admitted now holds it.
+    fn organization_now_holds(&self, registration: &Registration, delivery: &Delivery) -> bool {
+        self.claude_delivery.organization_holds()
+            && matches!(
+                self.claude_delivery.decide(registration, delivery),
+                crate::relay::claude_delivery_policy::Decision::Hold
+                    | crate::relay::claude_delivery_policy::Decision::ReadQueue
+            )
+    }
+
     pub(crate) async fn deliver_session_text(
         &self,
         registration: &Registration,
@@ -92,6 +123,9 @@ impl Core {
         use crate::relay::inject::{DeliveryRoute, InjectOutcome};
         if let Some(reason) = super::policy::sent_before_clear(registration.cleared, delivery) {
             return InjectOutcome::Refused(reason);
+        }
+        if self.organization_now_holds(registration, delivery) {
+            return InjectOutcome::Waiting(HELD_SINCE.into());
         }
         if let Some(outcome) = self
             .previous_mobile_delivery(registration, delivery, source.mobile_turn())
@@ -140,7 +174,11 @@ impl Core {
                 "The Copilot registration changed before delivery.".into(),
             );
         };
+        let Some(core) = self.arc() else {
+            return InjectOutcome::Waiting("Agent Relay is stopping.".into());
+        };
         let routed = delivery.clone();
+        let held = registration.clone();
         // A leader's turn that lost its plugin goes the peer way, so its
         // text drops the leader framing that only a native turn carries.
         let text = match source {
@@ -148,6 +186,11 @@ impl Core {
             _ => text,
         };
         tokio::task::spawn_blocking(move || {
+            // The hand-over gate, on the thread that hands it over: a hold
+            // that began while this waited for a blocking thread holds it.
+            if let Some(waiting) = core.hand_over_held(&held, &routed) {
+                return waiting;
+            }
             // A teammate's turn that lost its plugin between classification
             // and delivery goes the peer way, as its text already says.
             let native = matches!(

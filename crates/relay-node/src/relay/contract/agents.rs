@@ -178,6 +178,10 @@ pub struct LocalAgent {
     pub address: String,
     pub target: Target,
     pub title: String,
+    /// The repository (`owner/name`) the agent's session is in, when
+    /// `auto_join_repositories` named it at registration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
     /// ISO-8601, seconds precision.
     pub registered_at: String,
     pub added_by_session: bool,
@@ -332,9 +336,9 @@ pub struct IntegrationChange {
 
 mod settings;
 pub use settings::{
-    history_retention, AgentSettingsChange, ClaudeConfigDir, ClaudeConfigDirChange, SettingsChange,
-    SettingsValues, SpawnHarnessSettings, TrustedWorkspaceMember, WorkspaceLeader,
-    WorkspaceLeaders,
+    history_retention, AgentSettingsChange, ClaudeConfigDir, ClaudeConfigDirChange,
+    OrganizationPolicyState, SettingsChange, SettingsValues, SpawnHarnessSettings,
+    TrustedWorkspaceMember, WorkspaceLeader, WorkspaceLeaders,
 };
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize)]

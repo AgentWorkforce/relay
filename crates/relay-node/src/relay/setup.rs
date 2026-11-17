@@ -272,7 +272,14 @@ impl Setup {
     /// Whether a live session still waits to be put on the relay
     /// automatically.
     async fn activation_outstanding(&self) -> bool {
-        if !self.core.store.read(|s| s.auto_activates()) || self.core.workspace().is_none() {
+        // A repository the organization makes join is activated even with
+        // automatic activation off, so it can still be outstanding.
+        let forced = self.core.forced_repositories();
+        if !may_be_outstanding(
+            self.core.store.read(|s| s.auto_activates()),
+            !forced.is_empty(),
+            self.core.workspace().is_some(),
+        ) {
             return false;
         }
         let directory = self.core.plugins.sessions.clone();
@@ -285,10 +292,11 @@ impl Setup {
             .read(crate::relay::agents::auto_activation::ActivationSettings::of);
         found.iter().any(|session| {
             session.live
-                && crate::relay::agents::auto_activation::activation_applies(
+                && (crate::relay::agents::auto_activation::activation_applies(
                     &settings,
                     session.target.kind,
-                )
+                ) || crate::relay::repositories::matched(&forced, session.directory.as_deref())
+                    .is_some())
                 && self
                     .core
                     .store
@@ -615,11 +623,13 @@ impl Setup {
             .core
             .store
             .read(crate::relay::agents::auto_activation::ActivationSettings::of);
+        let forced = self.core.forced_repositories();
         self.core.workspace().is_some()
-            && crate::relay::agents::auto_activation::activation_applies(
+            && (crate::relay::agents::auto_activation::activation_applies(
                 &settings,
                 session.target.kind,
-            )
+            ) || crate::relay::repositories::matched(&forced, session.directory.as_deref())
+                .is_some())
             && {
                 let directory = self.core.plugins.sessions.clone();
                 let session = session.clone();
@@ -1017,5 +1027,25 @@ mod tests {
         let mut none = holding(Some(true), None);
         none.integrations = None;
         assert_eq!(held_subscription(&none, "github", "acme/api#42"), None);
+    }
+}
+
+/// Whether any session can still wait for automatic activation: there is a
+/// workspace, and automatic activation is on or the organization forces
+/// some repositories (which join with it off).
+fn may_be_outstanding(auto_activates: bool, forced: bool, workspace: bool) -> bool {
+    workspace && (auto_activates || forced)
+}
+
+#[cfg(test)]
+mod forced_activation_gate_tests {
+    use super::may_be_outstanding;
+
+    #[test]
+    fn forced_repositories_keep_activation_outstanding_with_it_off() {
+        assert!(may_be_outstanding(false, true, true));
+        assert!(may_be_outstanding(true, false, true));
+        assert!(!may_be_outstanding(false, false, true));
+        assert!(!may_be_outstanding(true, true, false));
     }
 }
