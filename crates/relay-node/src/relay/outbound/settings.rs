@@ -745,6 +745,31 @@ mod tests {
             .unwrap();
     }
 
+    /// A lock that becomes a default, or another lock, takes its new value:
+    /// the saves made while applying re-apply the new policy's locks, not
+    /// the old one's, and the new default is recorded as written.
+    #[tokio::test]
+    async fn a_policy_change_writes_its_own_values() {
+        use crate::relay::settings_policy::SettingsPolicy;
+        let temp = tempfile::tempdir().unwrap();
+        let core = core(temp.path());
+        let given =
+            |value: serde_json::Value| -> SettingsPolicy { serde_json::from_value(value).unwrap() };
+        core.apply_settings_policy(Some(given(json!({"locked": {"spawn_max_agents": 4}}))))
+            .unwrap();
+        assert_eq!(core.settings()["spawn_max_agents"], 4);
+        core.apply_settings_policy(Some(given(json!({"locked": {"spawn_max_agents": 2}}))))
+            .unwrap();
+        assert_eq!(core.settings()["spawn_max_agents"], 2);
+        core.apply_settings_policy(Some(given(json!({"defaults": {"spawn_max_agents": 3}}))))
+            .unwrap();
+        assert_eq!(core.settings()["spawn_max_agents"], 3);
+        let recorded = core.store.read(|store| {
+            store.organization_policy.as_ref().unwrap().applied_defaults["spawn_max_agents"].clone()
+        });
+        assert_eq!((recorded.given, recorded.applied), (json!(3), json!(3)));
+    }
+
     #[test]
     fn a_change_records_the_value_before_and_after() {
         let before = map(json!({"auto_join_general": false, "auto_activate": true}));

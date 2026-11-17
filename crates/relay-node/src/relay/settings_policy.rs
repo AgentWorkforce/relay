@@ -355,6 +355,17 @@ impl Core {
                     .map(|s| s.applied_defaults.clone())
             })
             .unwrap_or_default();
+        // The incoming policy is stored before anything is written: every
+        // save merges with the file and re-applies the stored locks
+        // (`relock`), which must be this policy's, not the one it replaces.
+        self.store
+            .update(|store| {
+                store.organization_policy = Some(Stored {
+                    policy: Some(policy.clone()),
+                    applied_defaults: applied.clone(),
+                });
+            })
+            .map_err(|e| RpcError::store(&e))?;
         let values = self.settings();
         let (locks, defaults) = plan(&policy, &values, &applied);
         for (key, value) in locks {
@@ -663,6 +674,33 @@ mod tests {
         }
         let merged = Store::merged(&base, &ours, &lifted);
         assert_eq!(merged.spawn_max_agents, Some(6));
+    }
+
+    /// A save made under a newer policy keeps its values when it merges
+    /// with a store still holding the older lock.
+    #[test]
+    fn a_merge_follows_the_newer_policy() {
+        use crate::relay::store::Store;
+        let mut base = Store::default();
+        base.organization_policy = Some(Stored {
+            policy: Some(policy(json!({"locked": {"spawn_max_agents": 4}}))),
+            applied_defaults: BTreeMap::new(),
+        });
+        base.spawn_max_agents = Some(4);
+        let mut newer = base.clone();
+        newer.organization_policy = Some(Stored {
+            policy: Some(policy(json!({"defaults": {"spawn_max_agents": 2}}))),
+            applied_defaults: BTreeMap::new(),
+        });
+        newer.spawn_max_agents = Some(2);
+        assert_eq!(
+            Store::merged(&base, &newer, &base).spawn_max_agents,
+            Some(2)
+        );
+        assert_eq!(
+            Store::merged(&base, &base, &newer).spawn_max_agents,
+            Some(2)
+        );
     }
 
     /// One locked value the store cannot take does not keep the other locks
