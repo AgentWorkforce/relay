@@ -345,7 +345,9 @@ mod tests {
     // under a peer attribution, or in the body, keeps the peer's.
     #[test]
     fn hidden_items_carry_the_leader_note_only_for_leader_framed_text() {
-        use crate::relay::delivery::policy::{leader_line, with_leader_line, NATIVE_HEADER, PEER_HEADER};
+        use crate::relay::delivery::policy::{
+            leader_line, with_leader_line, NATIVE_HEADER, PEER_HEADER,
+        };
         let peer = format!(
             "[via Agent Relay — from @alice · ref {REF}]\n[reply: send_relay_message to=\"alice@host-1\"]\n\nhi"
         );

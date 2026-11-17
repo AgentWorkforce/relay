@@ -757,7 +757,8 @@ async fn the_leaders_list_expires_while_reads_fail_and_a_refusal_drops_it() {
             InputSource::Leader
         );
         match status {
-            Some(status) => f._server
+            Some(status) => f
+                ._server
                 .set_api_error("GET /v1/workspace/leaders", Some((status, "refused"))),
             // 404: an engine without leaders.
             None => f._server.set_leaders(None),

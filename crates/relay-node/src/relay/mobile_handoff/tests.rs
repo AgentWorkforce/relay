@@ -1475,7 +1475,10 @@ async fn a_leaders_dm_to_a_persons_claude_is_a_turn_only_with_teammate_input_on(
         .session_text(&registration, (&delivery("on"), None), false, false)
         .await;
     assert_eq!(source, InputSource::Teammate);
-    assert!(crate::relay::delivery::policy::leader_framed(&text), "{text}");
+    assert!(
+        crate::relay::delivery::policy::leader_framed(&text),
+        "{text}"
+    );
     assert_eq!(
         text.split('\n').nth(1),
         Some(crate::relay::delivery::policy::leader_line("gtmgrok").as_str())
