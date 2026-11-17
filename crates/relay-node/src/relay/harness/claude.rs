@@ -63,8 +63,31 @@ fn adapter(cx: &HarnessContext) -> Arc<dyn HarnessAdapter> {
 }
 
 /// How long a new Claude process gets to publish its session and show
-/// that it took its first message.
+/// that it took its first message. Kept under Relaycast's 30 s dispatch
+/// timeout, after which it may dispatch the spawn again and reject this
+/// node's late answer.
 const READY_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Why no relay-ready session record matched a Claude process (a record
+/// for its session, pid and start time, with a messaging socket): it ended
+/// (or its pid went to another process) first, or it was still running at
+/// the deadline; with how much it had written to `log` by then.
+fn not_ready(ended: bool, log: &Path) -> String {
+    let what = if ended {
+        "ended before a matching relay-ready session record appeared".to_owned()
+    } else {
+        format!(
+            "was still running but no matching relay-ready session record appeared within {} s",
+            READY_TIMEOUT.as_secs()
+        )
+    };
+    let written = std::fs::metadata(log).map_or_else(
+        |_| "no output".to_owned(),
+        |log| format!("{} bytes of output", log.len()),
+    );
+    format!("Claude Code {what} ({written}); see {}", log.display())
+}
+
 /// How much of a log's end is read.
 const LOG_TAIL: u64 = 64 * 1024;
 /// How much of a log's start is read for the first message's receipt: its
@@ -119,14 +142,14 @@ impl ClaudeAdapter {
             }
             let replaced =
                 launched.is_some_and(|launched| !launched.is(self.table.process(launched.pid)));
-            if replaced || self.table.process_gone(pid) || Instant::now() >= deadline {
+            // Exited but unreaped (a container whose init never reaps)
+            // keeps its pid and start time: ended, not slow.
+            let gone = self.table.process_gone(pid) || self.table.zombie(pid);
+            if replaced || gone || Instant::now() >= deadline {
                 if let Some(launched) = launched {
                     stop_process(self.table.as_ref(), launched.pid, Some(launched.start));
                 }
-                return Err(format!(
-                    "Claude Code did not start its session; see {}",
-                    log.display()
-                ));
+                return Err(not_ready(replaced || gone, log));
             }
             std::thread::sleep(Duration::from_millis(250));
         }
