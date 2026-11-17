@@ -64,6 +64,18 @@ pub type SettingsChanged = Arc<dyn Fn() + Send + Sync>;
 /// settings extension, given its [`SettingsChanged`].
 pub(crate) fn attach_plugins(core: &Arc<Core>) {
     watch_store_errors(core);
+    // The session directory reads the organization's forced repositories
+    // from the core on every check.
+    let reader = Arc::downgrade(core);
+    core.plugins
+        .sessions
+        .forced_repositories_from(Arc::new(move || {
+            reader
+                .upgrade()
+                .map(|core| core.forced_repositories())
+                .unwrap_or_default()
+        }));
+    core.sync_organization_hold();
     core.refresh_mobile_claude_plugin();
     if let Some(account) = &core.plugins.account {
         account.attach(core);

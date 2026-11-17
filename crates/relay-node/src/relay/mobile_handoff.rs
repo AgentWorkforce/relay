@@ -431,6 +431,11 @@ impl Core {
                 "The signed-in machine owner could not be verified.".into(),
             );
         };
+        // The organization's hand-over gate, with no await before the journal
+        // takes the turn.
+        if let Some(waiting) = self.hand_over_held(registration, delivery) {
+            return waiting;
+        }
         let result = journal::edit(&self.config.app_data_dir, |queue| {
             let key = binding.scope.clone();
             let before = (queue.status(&key), queue.notice(&key));

@@ -44,6 +44,21 @@ impl Store {
             registrations,
             tokens,
             agent_owners: merge_maps(&base.agent_owners, &ours.agent_owners, &theirs.agent_owners),
+            agent_repositories: merge_maps(
+                &base.agent_repositories,
+                &ours.agent_repositories,
+                &theirs.agent_repositories,
+            ),
+            auto_join_repositories: pick(
+                &base.auto_join_repositories,
+                &ours.auto_join_repositories,
+                &theirs.auto_join_repositories,
+            ),
+            organization_policy: pick(
+                &base.organization_policy,
+                &ours.organization_policy,
+                &theirs.organization_policy,
+            ),
             allow_self_registration: pick(
                 &base.allow_self_registration,
                 &ours.allow_self_registration,
@@ -292,6 +307,9 @@ impl Store {
         result
             .agent_owners
             .retain(|id, _| live_ids.contains(id.as_str()));
+        result
+            .agent_repositories
+            .retain(|id, _| live_ids.contains(id.as_str()));
         result.retire_unregistered_refusals(&[base, ours, theirs]);
         result.drop_cleanups_of_kept_agents();
         // A session registered on either side is not blocked; merge bounds
@@ -299,6 +317,9 @@ impl Store {
         result.tidy_activation_failures();
         preserve_spawn_origins(&mut result, &[ours, theirs, base]);
         super::integration::preserve_filters(&mut result, &[ours, theirs, base]);
+        // A save made before the organization's lock arrived must not leave
+        // a locked setting at another value beside the lock.
+        crate::relay::settings_policy::relock(&mut result);
         result
     }
 

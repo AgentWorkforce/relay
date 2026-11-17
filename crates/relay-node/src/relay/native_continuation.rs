@@ -198,6 +198,10 @@ impl Core {
                     "Native continuation authority changed before submission.".into(),
                 );
             }
+            // The organization's hand-over gate, right before submission.
+            if let Some(waiting) = core.hand_over_held(&canonical, &delivery) {
+                return waiting;
+            }
             // Adapter revalidates its pinned runtime and durable receipt. It
             // must never fall back to a different route or peer submission.
             injector.inject_native(
