@@ -230,3 +230,47 @@ fn the_released_core_has_relay_cli() {
         "ar_ws_0123456789abcdef"
     ));
 }
+
+/// Run through a profile build's alias link, with no `--socket`, a bare
+/// session command asks that build's socket (named by the link's name,
+/// which Linux's `current_exe` resolves away) and, with that build not
+/// running, never another build's: the error names its pointer.
+#[cfg(unix)]
+#[test]
+fn a_bare_session_command_run_through_a_profile_alias_asks_that_build() {
+    let temp = tempfile::tempdir().unwrap();
+    let bin = temp.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let alias = bin.join("agent-relay-probe-acme");
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_agent-relay-node"), &alias).unwrap();
+    let pointers = temp.path().join(".agentworkforce/desktop");
+    std::fs::create_dir_all(&pointers).unwrap();
+    std::fs::write(pointers.join("relay-socket"), "/stock/relay.sock\n").unwrap();
+    for program in [
+        alias.clone(),
+        std::path::PathBuf::from("agent-relay-probe-acme"),
+    ] {
+        let mut command = Command::new(&program);
+        command
+            .env_clear()
+            .env("HOME", temp.path())
+            .env("TMPDIR", temp.path())
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .arg("whoami");
+        keep_system_environment(&mut command);
+        let output = command.output().unwrap();
+        assert!(!output.status.success(), "{program:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.starts_with(
+                "the acme profile build of Agent Relay is not running: this probe belongs to it (run as agent-relay-probe-acme), and it has no session socket at "
+            ),
+            "{program:?}: {stderr}"
+        );
+        assert!(
+            stderr.contains(&pointers.join("relay-socket.acme").display().to_string()),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("/stock/relay.sock"), "{stderr}");
+    }
+}

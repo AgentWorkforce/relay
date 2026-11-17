@@ -59,10 +59,45 @@ pub fn resolve(explicit: Option<&Path>, named: Option<&Build>) -> Result<PathBuf
     Lookup {
         home: &home,
         env: &env,
-        executable: std::env::current_exe().ok(),
+        executable: run_as(),
         uid: crate::relay::peer::current_uid(),
     }
     .socket()
+}
+
+/// This probe as it was run, links not followed: `argv[0]` (against the
+/// working directory, or found on `PATH` when it is a bare name) when it
+/// resolves to the running executable, else `current_exe`. Linux's
+/// `current_exe` is `/proc/self/exe`, already resolved, which would lose an
+/// alias link's name and the sidecar beside it.
+fn run_as() -> Option<PathBuf> {
+    let current = std::env::current_exe().ok();
+    let invoked = std::env::args_os()
+        .next()
+        .and_then(|zeroth| invoked_path(Path::new(&zeroth), std::env::var_os("PATH")));
+    match (invoked, &current) {
+        (Some(invoked), Some(current))
+            if std::fs::canonicalize(&invoked).ok() == std::fs::canonicalize(current).ok() =>
+        {
+            Some(invoked)
+        }
+        _ => current,
+    }
+}
+
+/// Where `zeroth` (a program's `argv[0]`) names: a path with a separator,
+/// against the working directory, or a bare name, the first match on
+/// `path`.
+fn invoked_path(zeroth: &Path, path: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    if zeroth.as_os_str().is_empty() {
+        return None;
+    }
+    if zeroth.components().count() > 1 || zeroth.is_absolute() {
+        return Some(std::env::current_dir().ok()?.join(zeroth));
+    }
+    std::env::split_paths(&path?)
+        .map(|directory| directory.join(zeroth))
+        .find(|candidate| candidate.is_file())
 }
 
 /// Where a default is looked for. Tests give their own.
@@ -153,7 +188,13 @@ impl Lookup<'_> {
         let mut looked = vec![pointer];
         if let Some(directory) = app_data_dir {
             let socket = default_socket(self.env, directory, self.uid);
-            if socket.exists() {
+            // A Windows session socket is a named pipe, not a file.
+            let live = if cfg!(windows) {
+                crate::relay::transport::is_served(&socket)
+            } else {
+                socket.exists()
+            };
+            if live {
                 return Ok(socket);
             }
             looked.push(socket);
@@ -548,6 +589,25 @@ mod tests {
                 pointers.join("relay-socket.dev").display()
             )
         );
+    }
+
+    #[test]
+    fn argv_zero_is_found_where_it_was_run_from() {
+        let fixture = Fixture::new();
+        let bin = fixture.root.path().join("bin");
+        let probe = fixture.file(&bin.join("agent-relay-probe-acme"), "");
+        let path = std::env::join_paths([fixture.root.path().join("none"), bin.clone()]).ok();
+        assert_eq!(
+            invoked_path(Path::new("agent-relay-probe-acme"), path.clone()),
+            Some(probe.clone())
+        );
+        assert_eq!(invoked_path(Path::new("missing"), path), None);
+        assert_eq!(invoked_path(&probe, None), Some(probe));
+        assert_eq!(
+            invoked_path(Path::new("./x/probe"), None),
+            Some(std::env::current_dir().unwrap().join("./x/probe"))
+        );
+        assert_eq!(invoked_path(Path::new(""), None), None);
     }
 
     #[test]
