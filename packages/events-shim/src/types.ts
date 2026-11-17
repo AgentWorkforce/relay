@@ -199,14 +199,16 @@ export interface EventsShimStore {
    * Acknowledges claimed posts: marks them `read`. Applies to posts that are
    * `pending` with an active lease, or `sending`. If `claimToken` is provided,
    * only marks read if the post's active claim matches `claimToken`.
+   * Returns the IDs of posts that were acknowledged.
    */
-  ackPending(shimId: string, ids: string[], at: string, claimToken?: string): Promise<void>;
+  ackPending(shimId: string, ids: string[], at: string, claimToken?: string): Promise<string[]>;
   /**
    * Releases claimed posts whose claim has not been acknowledged, clearing
    * their lease so other listeners can claim them immediately. If `claimToken`
    * is provided, only releases if the active claim matches `claimToken`.
+   * Returns the IDs of posts that were released.
    */
-  releasePending(shimId: string, ids: string[], claimToken?: string): Promise<void>;
+  releasePending(shimId: string, ids: string[], claimToken?: string): Promise<string[]>;
   /**
    * Deletes shims idle since before `idleBefore`, feed rows on shims idle
    * since before `feedBefore`, and idempotency keys older than `feedBefore`.

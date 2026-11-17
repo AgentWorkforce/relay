@@ -725,6 +725,32 @@ describe('events shim', () => {
     expect(finalFeed?.delivery).toBe('read');
   });
 
+  it('ack_webhook_events returns failure if claim_token is missing or mismatched on token-bearing claims', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const agent = await h.connect(shim.mcp_url);
+
+    await h.post(shim.webhook_url, { post: 'token-bearing-ack-test' });
+    const wait = await agent.call('wait_for_webhook', { timeout_seconds: 2, auto_ack: false });
+    const eventId = (wait.structuredContent?.events as { id: string }[])[0]!.id;
+    const claimToken = wait.structuredContent?.claim_token as string;
+    expect(claimToken).toBeTruthy();
+
+    // Calling ack without claim_token fails
+    const badAck = await agent.call('ack_webhook_events', { ids: [eventId] });
+    expect(badAck.isError).toBe(true);
+
+    // Feed still has it pending
+    const [feedBefore] = (await h.feed(shim.manage_token)).body.events as { id: string; delivery: string }[];
+    expect(feedBefore?.delivery).toBe('pending');
+
+    // Calling ack with correct claim_token succeeds
+    const goodAck = await agent.call('ack_webhook_events', { ids: [eventId], claim_token: claimToken });
+    expect(goodAck.isError).toBeFalsy();
+    const [feedAfter] = (await h.feed(shim.manage_token)).body.events as { id: string; delivery: string }[];
+    expect(feedAfter?.delivery).toBe('read');
+  });
+
   it('wait_for_webhook with ack_ids acknowledges previous batch and claims the next pending posts', async () => {
     const h = createHarness();
     const shim = await h.create();

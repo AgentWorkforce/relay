@@ -213,8 +213,9 @@ export class MemoryEventsShimStore implements EventsShimStore {
     return claimed;
   }
 
-  async ackPending(shimId: string, ids: string[], at: string, claimToken?: string) {
+  async ackPending(shimId: string, ids: string[], at: string, claimToken?: string): Promise<string[]> {
     const row = this.row(shimId);
+    const acked: string[] = [];
     for (const event of row.events) {
       if (
         ids.includes(event.id) &&
@@ -228,12 +229,15 @@ export class MemoryEventsShimStore implements EventsShimStore {
         event.delivery = 'read';
         event.deliveredAt = at;
         delete event.claimToken;
+        acked.push(event.id);
       }
     }
+    return acked;
   }
 
-  async releasePending(shimId: string, ids: string[], claimToken?: string) {
+  async releasePending(shimId: string, ids: string[], claimToken?: string): Promise<string[]> {
     const row = this.row(shimId);
+    const released: string[] = [];
     for (const event of row.events) {
       if (ids.includes(event.id) && event.delivery === 'pending') {
         if (event.claimToken) {
@@ -243,8 +247,10 @@ export class MemoryEventsShimStore implements EventsShimStore {
         }
         delete event.deliveredAt;
         delete event.claimToken;
+        released.push(event.id);
       }
     }
+    return released;
   }
 
   async confirmWake(shimId: string, eventId: string, claimedAt: string, at: string) {

@@ -1673,8 +1673,7 @@ async function listenAsSessionOwner(
   deliver: (text: string) => Promise<number | null>,
   takeOver = false,
   takeHeld?: () => string | null,
-  drain: () => boolean = () => false,
-  onAckFailed?: () => void
+  drain: () => boolean = () => false
 ): Promise<number> {
   const dir = dirname(configPath(io));
   const digest = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 16);
@@ -1756,16 +1755,13 @@ async function listenAsSessionOwner(
               );
               if (exit !== null) {
                 if (eventIds.length > 0) {
-                  const acked = await callTool(
+                  await callTool(
                     io,
                     mcpUrl,
                     'ack_webhook_events',
                     { ids: eventIds, ...(claimToken ? { claim_token: claimToken } : {}) },
                     AbortSignal.timeout(5_000)
-                  )
-                    .then(() => true)
-                    .catch(() => false);
-                  if (!acked && onAckFailed) onAckFailed();
+                  ).catch(() => undefined);
                 }
                 return exit;
               }
@@ -2241,11 +2237,6 @@ async function listenStopHook(io: CliIo, flags: Record<string, string>): Promise
         !releasedByPerson() &&
         !otherHookDone() &&
         Date.now() < deadline;
-      const onAckFailed = () => {
-        try {
-          rmSync(held, { force: true });
-        } catch {}
-      };
       await listenAsSessionOwner(
         io,
         mcpUrl,
@@ -2264,8 +2255,7 @@ async function listenStopHook(io: CliIo, flags: Record<string, string>): Promise
         () => takeHeldPost(io, mcpUrl),
         // Nobody waits on a hook asked to stop, so it lets a wait in flight finish; when the person
         // cancels or types, the CLI does wait on it, so it lets go at once.
-        () => stopping,
-        onAckFailed
+        () => stopping
       ).finally(undo);
     }
   }

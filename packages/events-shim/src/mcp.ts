@@ -406,12 +406,15 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
         const linked = wakeState(ctx.shim) === 'linked';
         const batch = linked ? { events: [], more: false } : await handOver(ctx, deliveryState);
         if (batch.events.length > 0) {
+          const eventIds = batch.events.map((e) => (e as { id: string }).id);
           return result({
             ...batch,
             next_steps: [
               autoAck
                 ? 'Act on the posts, then call wait_for_webhook again.'
-                : 'Act on the posts, then call wait_for_webhook again with ack_ids containing these event ids (or call ack_webhook_events).',
+                : batch.claim_token
+                  ? `Act on the posts, then call wait_for_webhook again with ack_ids: ${JSON.stringify(eventIds)} and ack_claim_token: "${batch.claim_token}" (or call ack_webhook_events with those ids and claim_token).`
+                  : `Act on the posts, then call wait_for_webhook again with ack_ids: ${JSON.stringify(eventIds)} (or call ack_webhook_events).`,
             ],
           });
         }
@@ -463,13 +466,17 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
     },
     async (input) => {
       await seen(ctx);
-      await ctx.deps.store.ackPending(
+      const token = input.claim_token ?? input.claimed_at;
+      const acked = await ctx.deps.store.ackPending(
         ctx.shim.id,
         input.ids,
         now(ctx).toISOString(),
-        input.claim_token ?? input.claimed_at
+        token
       );
-      return result({ acked: input.ids });
+      if (acked.length === 0 && input.ids.length > 0) {
+        return failure('No matching pending claims found for the provided event ids and claim_token.');
+      }
+      return result({ acked });
     }
   );
 
@@ -509,8 +516,11 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
       if (!token) {
         return failure('claim_token is required to release claimed posts.');
       }
-      await ctx.deps.store.releasePending(ctx.shim.id, input.ids, token);
-      return result({ released: input.ids });
+      const released = await ctx.deps.store.releasePending(ctx.shim.id, input.ids, token);
+      if (released.length === 0 && input.ids.length > 0) {
+        return failure('No matching pending claims found for the provided event ids and claim_token.');
+      }
+      return result({ released });
     }
   );
 }
