@@ -224,12 +224,14 @@ impl ClaudeDeliveryPolicy {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone();
-        if registration.target.kind != SessionKind::ClaudeTerminal && organization.is_none() {
-            return Decision::Deliver;
-        }
         let saved = self.saved.lock().unwrap_or_else(|p| p.into_inner());
+        // A dismissal stands in every harness, even after the organization
+        // lifts the rule that held the message.
         if saved.dismissed.contains(&delivery.id) {
             return Decision::Dismiss;
+        }
+        if registration.target.kind != SessionKind::ClaudeTerminal && organization.is_none() {
+            return Decision::Deliver;
         }
         if let Some(outcome) = saved.consumed.get(&delivery.id) {
             return Decision::Handled(outcome.clone());
@@ -632,8 +634,13 @@ mod tests {
         );
         policy.set_sender("sam@desk", "Sam", false).unwrap();
         assert!(policy.status(&[]).organization_hold);
+        // A message dismissed under the rule stays dismissed once it is lifted.
+        let from_kim = delivery("del-6", "kim");
+        assert!(policy.hold(&codex, &from_kim).unwrap());
+        policy.dismiss("del-6").unwrap();
         // Lifted: every harness but Claude delivers as before.
         assert!(policy.set_organization_hold(None));
+        assert_eq!(policy.decide(&codex, &from_kim), Decision::Dismiss);
         assert_eq!(
             policy.decide(&codex, &delivery("del-5", "kim")),
             Decision::Deliver
