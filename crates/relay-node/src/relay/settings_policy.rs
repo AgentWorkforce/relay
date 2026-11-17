@@ -292,6 +292,13 @@ pub(crate) fn relock(store: &mut crate::relay::store::Store) {
             changes.insert(key.clone(), value.clone());
         }
     }
+    // The repositories list is held as its saved (normalized) form.
+    if let Some(list) = crate::relay::repositories::locked_list(&policy) {
+        let list = (!list.is_empty()).then_some(list);
+        if store.auto_join_repositories != list {
+            store.auto_join_repositories = list;
+        }
+    }
     // Each lock on its own, as an apply writes them: one value the store
     // cannot take does not keep the others from holding.
     for (key, value) in changes {
@@ -664,6 +671,21 @@ mod tests {
         // A widening person-only lock is not forced on an unmanaged computer.
         assert_ne!(merged.accept_spawns, Some(true));
         // The other writer order keeps them together too.
+        // A stale save of the repositories list gives way to the lock.
+        let mut stale = base.clone();
+        stale.auto_join_repositories = Some(vec!["me/fork".into()]);
+        let mut repos = base.clone();
+        repos.organization_policy = Some(Stored {
+            policy: Some(policy(
+                json!({"locked": {"auto_join_repositories": ["Acme/*"]}}),
+            )),
+            applied_defaults: BTreeMap::new(),
+        });
+        let merged = Store::merged(&base, &stale, &repos);
+        assert_eq!(
+            merged.auto_join_repositories,
+            Some(vec!["acme/*".to_string()])
+        );
         let reversed = Store::merged(&base, &theirs, &ours);
         assert_eq!(reversed.spawn_max_agents, Some(4));
         assert_eq!(reversed.extras.auto_join_general, Some(false));

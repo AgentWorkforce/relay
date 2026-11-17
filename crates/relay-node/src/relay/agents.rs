@@ -63,7 +63,9 @@ fn store_setting(key: &str) -> bool {
 /// The settings that are lists or values, not true or false: their owners
 /// check them.
 fn checked_by_owner(key: &str) -> bool {
-    is_list_setting(key) || crate::relay::spawn::CONFIGURED_KEYS.contains(&key)
+    is_list_setting(key)
+        || crate::relay::spawn::CONFIGURED_KEYS.contains(&key)
+        || key == crate::relay::repositories::SETTING
 }
 
 /// Settings whose value is a list (or, for session history, a number of
@@ -71,6 +73,17 @@ fn checked_by_owner(key: &str) -> bool {
 /// default pass could reverse.
 fn is_list_setting(key: &str) -> bool {
     claude_dirs::is_folder_setting(key) || trusted::is_list_key(key) || key == retention::SETTING
+}
+
+/// The `auto_join_repositories` list a change gives, as it is saved.
+fn repositories_change(value: &Value) -> Result<Vec<String>, RpcError> {
+    let entries: Vec<String> = serde_json::from_value(value.clone()).map_err(|_| {
+        RpcError::invalid_params(format!(
+            "{} must be a list of owner/name or owner/* entries.",
+            crate::relay::repositories::SETTING
+        ))
+    })?;
+    crate::relay::repositories::list(&entries).map_err(RpcError::invalid_params)
 }
 
 fn parse_time(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -376,6 +389,14 @@ impl Core {
             let one_line = description.split_whitespace().collect::<Vec<_>>().join(" ");
             metadata.insert("objective".into(), json!(one_line));
         }
+        let repository = self.store.read(|store| {
+            store
+                .registration_for(target)
+                .and_then(|r| store.agent_repositories.get(&r.agent_id).cloned())
+        });
+        if let Some(repository) = repository {
+            metadata.insert("repository".into(), json!(repository));
+        }
         if let Some(owner) = owner {
             metadata.extend(owner.metadata());
         }
@@ -590,10 +611,14 @@ impl Core {
         };
         if candidate.is_some()
             && (!still_admitted
-                || !auto_activation::activation_applies(
+                || !(auto_activation::activation_applies(
                     &self.store.read(auto_activation::ActivationSettings::of),
                     target.kind,
-                ))
+                ) || crate::relay::repositories::matched(
+                    &self.forced_repositories(),
+                    session.directory.as_deref(),
+                )
+                .is_some()))
         {
             return Err(RpcError::new(
                 ErrorKind::Refused,
@@ -771,6 +796,7 @@ impl Core {
         route_binding: Option<String>,
     ) -> Result<Registration, RpcError> {
         let owner = self.agent_owner();
+        let repository = self.repository_label(session.directory.as_deref());
         let (agent, gate) = match workspace.gate_url.as_deref() {
             // A gate-only install enrols at relaygate with the device token;
             // there is no workspace key to register with.
@@ -791,7 +817,18 @@ impl Core {
                     &workspace.key,
                     name,
                     self.joining(),
-                    self.metadata(&session.target, &session.title, description, owner.as_ref()),
+                    {
+                        let mut metadata = self.metadata(
+                            &session.target,
+                            &session.title,
+                            description,
+                            owner.as_ref(),
+                        );
+                        if let Some(repository) = &repository {
+                            metadata.insert("repository".into(), json!(repository));
+                        }
+                        metadata
+                    },
                 )
                 .await;
                 self.observe_relaycast_write_result(&workspace_scope, &result);
@@ -857,6 +894,11 @@ impl Core {
                     store
                         .agent_owners
                         .insert(registration.agent_id.clone(), owner.clone());
+                }
+                if let Some(repository) = &repository {
+                    store
+                        .agent_repositories
+                        .insert(registration.agent_id.clone(), repository.clone());
                 }
             }
             added
@@ -1277,6 +1319,10 @@ impl Core {
             settings.extend(extension.get());
         }
         settings.insert("detected_tools".into(), json!(self.detected_tools()));
+        settings.insert(
+            crate::relay::repositories::SETTING.into(),
+            json!(self.auto_join_repositories()),
+        );
         if let Some(policy) = self.settings_policy_state(&settings) {
             settings.insert(crate::relay::settings_policy::SETTING.into(), policy);
         }
@@ -1320,6 +1366,9 @@ impl Core {
                 return Err(RpcError::invalid_params(format!(
                     "{key} must be true or false."
                 )));
+            }
+            if key == crate::relay::repositories::SETTING {
+                repositories_change(value)?;
             }
             // A refusal known now refuses the whole batch before anything
             // is saved.
@@ -1373,6 +1422,14 @@ impl Core {
                     |e| RpcError::store(&e),
                 )?;
             }
+            if let Some(value) = changes.get(crate::relay::repositories::SETTING) {
+                let list = repositories_change(value)?;
+                self.store
+                    .update(|store| {
+                        store.auto_join_repositories = (!list.is_empty()).then_some(list);
+                    })
+                    .map_err(|e| RpcError::store(&e))?;
+            }
             Ok(())
         })();
         if let (Err(_), Some(write)) = (&applied, &write) {
@@ -1405,6 +1462,7 @@ impl Core {
                 address: r.current_address(&self.machine_prefix),
                 target: r.target.clone(),
                 title: r.title.clone(),
+                repository: store.agent_repositories.get(&r.agent_id).cloned(),
                 registered_at: r.registered_at.clone(),
                 added_by_session: r.added_by_session == Some(true),
                 reply_with_final_answer: r.reply_with_final_answer,
@@ -1691,12 +1749,22 @@ impl Core {
         // re-proved on every send — though an explicit Auto-activate off is
         // still honored. Every other provider needs the setting on, and an
         // open Pi or OpenCode session its own opt-in too.
+        // A session in a repository the organization makes join (a locked
+        // `auto_join_repositories`) joins whatever automatic activation says.
         let settings = self.store.read(auto_activation::ActivationSettings::of);
         let setting = settings.auto_activate;
-        if setting == Some(false) {
+        let forced = self.forced_repositories();
+        if setting == Some(false) && forced.is_empty() {
             return failures;
         }
-        found.retain(|target, _| auto_activation::activation_applies(&settings, target.kind));
+        found.retain(|target, candidate| {
+            auto_activation::activation_applies(&settings, target.kind)
+                || crate::relay::repositories::matched(
+                    &forced,
+                    candidate.session.directory.as_deref(),
+                )
+                .is_some()
+        });
         if setting.is_none() && found.is_empty() {
             return failures;
         }

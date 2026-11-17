@@ -44,6 +44,16 @@ impl Store {
             registrations,
             tokens,
             agent_owners: merge_maps(&base.agent_owners, &ours.agent_owners, &theirs.agent_owners),
+            agent_repositories: merge_maps(
+                &base.agent_repositories,
+                &ours.agent_repositories,
+                &theirs.agent_repositories,
+            ),
+            auto_join_repositories: pick(
+                &base.auto_join_repositories,
+                &ours.auto_join_repositories,
+                &theirs.auto_join_repositories,
+            ),
             organization_policy: pick(
                 &base.organization_policy,
                 &ours.organization_policy,
@@ -296,6 +306,9 @@ impl Store {
             .collect();
         result
             .agent_owners
+            .retain(|id, _| live_ids.contains(id.as_str()));
+        result
+            .agent_repositories
             .retain(|id, _| live_ids.contains(id.as_str()));
         result.retire_unregistered_refusals(&[base, ours, theirs]);
         result.drop_cleanups_of_kept_agents();

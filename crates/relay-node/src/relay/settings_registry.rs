@@ -346,6 +346,7 @@ mod tests {
         let agents_may = [
             "analytics_enabled",
             "auto_join_general",
+            "auto_join_repositories",
             "claude_session_hook",
             "history_retention_days",
             "show_relay_messages",

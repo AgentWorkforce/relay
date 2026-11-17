@@ -91,6 +91,7 @@ impl LocalSessions {
             scans: table.clone(),
             table,
             fleet_owned: Default::default(),
+            forced_repositories: Default::default(),
             codex_threads: Default::default(),
             codex_loaded: Default::default(),
             managed: None,

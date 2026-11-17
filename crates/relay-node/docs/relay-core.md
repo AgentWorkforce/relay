@@ -890,7 +890,48 @@ without an account has no policy and is unchanged.
   `{locked, defaults, mismatched, managed}`, key names only, for Settings to
   label each row; absent when no policy applies.
 
-`serve` builds its plugins with `local::plugins`: `LocalSessions`
+### Repositories that join by themselves
+
+`auto_join_repositories` (`src/relay/repositories.rs`) is a list of
+`owner/name` and `owner/*` entries (lower-cased, duplicates collapsed, at
+most 200; anything else is `invalid_params`). A session's repository is read
+from its directory's git `origin` remote (the work tree's `.git`, or a linked
+work tree's main repository), in any form git takes: the host and a trailing
+`.git` are dropped, so `git@host:Acme/Web.git` and
+`https://host/acme/web` are both `acme/web`. A local-path or `file://`
+remote names no repository. The config is read as git reads it (comments,
+quotes, the old `[remote.origin]` spelling), `url.<base>.insteadOf` rewrites
+from the repository's, `~/.gitconfig` and `$XDG_CONFIG_HOME/git/config` are
+applied first, `include` files and `includeIf "gitdir:…"` files are followed
+(matched against the work tree's own git directory, `.git/worktrees/<name>`
+for a linked one; other `includeIf` conditions are not), within a budget of
+64 files and 1 MiB per lookup; a config file over 256 KiB (global, shared,
+included or per-work-tree) or unreadable, a config that includes itself or
+exceeds the budget, and an `includeIf` pattern over 1 KiB, a git directory
+path over 4 KiB or a match over a fixed work budget all name no repository, a linked work tree's own
+`config.worktree` applies when the repository enables
+`extensions.worktreeConfig`, the last `url` set wins, and a directory reached
+through a link is looked up where it really is. A one-letter host (`g:acme/web`) is an SSH alias except on
+Windows, where it is a drive.
+
+- **Locked by the organization's policy:** a live session in a matching
+  repository is activated (registered with its ready record) as if automatic
+  activation were on for its harness: with `auto_activate` off, without Pi's
+  or OpenCode's own opt-in, and in an excluded directory. The session
+  directory is told the list on every reconcile pass
+  (`SessionDirectory::forced_repositories`), and `/setup/status`'s
+  `auto_activates` says the same.
+- **The person's own list** (set, or seeded by a policy default): it adds no
+  activation; matching sessions follow automatic activation like any other.
+- No match changes nothing: the list only adds activations. Channel joins
+  are unchanged (`#general` follows `auto_join_general`).
+- **Label:** an agent registered from a matching session carries
+  `repository: "owner/name"` in its Relaycast metadata (kept per agent id in
+  the store's `agentRepositories`, so later metadata updates carry it too)
+  and in `agents.list`. The URL, host and local path never leave this
+  computer.
+
+ `LocalSessions`
 (Codex and Claude discovery over a `process::ProcessTable`, fleet-owned
 sessions left out), `LocalInjector`, `ClaudeSettings` and the relay-send
 socket at its platform path; a build's `daemon::PluginBuilder` adds what it
