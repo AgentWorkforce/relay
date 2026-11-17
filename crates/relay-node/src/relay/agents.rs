@@ -2447,6 +2447,9 @@ mod tests {
         assert_eq!(claude.sets.load(Ordering::SeqCst), 0);
         core.apply_integration_defaults();
         assert!(!claude.on.load(Ordering::SeqCst));
+        assert!(!core
+            .pending_integration_defaults()
+            .contains(&"direct_delivery"));
         // Without the lock, the default pass connects it as before.
         core.apply_settings_policy(None).unwrap();
         core.apply_integration_defaults();
@@ -2488,6 +2491,10 @@ mod tests {
         ))
         .unwrap();
         core.apply_settings_policy(Some(with(2))).unwrap();
+        assert_eq!(core.settings()["spawn_max_agents"], 6);
+        // Lifted altogether and given again: the choice still stands.
+        core.apply_settings_policy(None).unwrap();
+        core.apply_settings_policy(Some(with(3))).unwrap();
         assert_eq!(core.settings()["spawn_max_agents"], 6);
     }
 

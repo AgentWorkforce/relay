@@ -55,7 +55,7 @@ impl Core {
     /// Each integration key a default pass would turn on now: its tool is
     /// installed, it is not on, and this computer has not turned it on
     /// before nor has the person set it.
-    fn pending_integration_defaults(&self) -> Vec<&'static str> {
+    pub(crate) fn pending_integration_defaults(&self) -> Vec<&'static str> {
         let applied = self
             .store
             .read(|s| s.integration_defaults_applied.clone().unwrap_or_default());
@@ -65,6 +65,9 @@ impl Core {
                 if applied.iter().any(|done| done == key)
                     || pending.contains(&key)
                     || extension.get().get(key) == Some(&Value::Bool(true))
+                    // A setting the organization locks is not the default
+                    // pass's to connect, so sign-in does not offer it.
+                    || self.locked_by_organization(key)
                 {
                     continue;
                 }

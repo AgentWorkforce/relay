@@ -82,7 +82,10 @@ pub struct SettingsPolicy {
 /// What the store keeps: the policy and the defaults it already wrote.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Stored {
-    pub policy: SettingsPolicy,
+    /// The policy in force; `None` once it was lifted, while the defaults'
+    /// history below is kept.
+    #[serde(default)]
+    pub policy: Option<SettingsPolicy>,
     /// Each setting a default was written into, kept after the default is
     /// dropped from the policy, so a default added again later still sees a
     /// choice the person made since.
@@ -137,6 +140,24 @@ fn widens(value: &Value, current: Option<&Value>) -> bool {
 }
 
 impl SettingsPolicy {
+    /// The policy with each harness's part of a `spawn_harnesses` value put
+    /// under its flat name (`spawn_full_access_<harness>`,
+    /// `spawn_billing_<harness>`), so the consent rule for person-only
+    /// settings sees it; the nested value itself is dropped.
+    pub fn flattened(mut self) -> SettingsPolicy {
+        for tier in [&mut self.locked, &mut self.defaults] {
+            if let Some(nested) = tier.remove("spawn_harnesses") {
+                let flat = effective(&Map::from_iter([("spawn_harnesses".to_string(), nested)]));
+                for (key, value) in flat {
+                    if key != "spawn_harnesses" {
+                        tier.entry(key).or_insert(value);
+                    }
+                }
+            }
+        }
+        self
+    }
+
     /// Whether the operator's `value` for `key` may apply on this computer,
     /// given the setting's `current` value.
     pub fn may_apply(&self, key: &str, value: &Value, current: Option<&Value>) -> bool {
@@ -241,8 +262,12 @@ fn plan(
 impl Core {
     /// The organization's policy over settings, when one applies.
     pub fn settings_policy(&self) -> Option<SettingsPolicy> {
-        self.store
-            .read(|store| store.organization_policy.as_ref().map(|s| s.policy.clone()))
+        self.store.read(|store| {
+            store
+                .organization_policy
+                .as_ref()
+                .and_then(|s| s.policy.clone())
+        })
     }
 
     /// Applies the organization's settings policy (`None`: none applies any
@@ -252,10 +277,17 @@ impl Core {
     /// are told to read Settings again.
     pub fn apply_settings_policy(&self, policy: Option<SettingsPolicy>) -> Result<(), RpcError> {
         let _writing = crate::relay::settings_registry::writing();
+        let policy = policy.map(SettingsPolicy::flattened);
         let Some(policy) = policy else {
-            let cleared = self
-                .store
-                .update(|store| store.organization_policy.take().is_some());
+            // The defaults' history stays, so a policy given later still
+            // sees the choices the person made under this one.
+            let cleared = self.store.update(|store| {
+                store
+                    .organization_policy
+                    .as_mut()
+                    .and_then(|stored| stored.policy.take())
+                    .is_some()
+            });
             if cleared.map_err(|e| RpcError::store(&e))? {
                 self.hub()
                     .invalidated(crate::relay::state::Listing::Settings);
@@ -296,7 +328,7 @@ impl Core {
         self.store
             .update(|store| {
                 store.organization_policy = Some(Stored {
-                    policy,
+                    policy: Some(policy),
                     applied_defaults: record,
                 });
             })
@@ -514,6 +546,24 @@ mod tests {
             plan(&consented, &values, &BTreeMap::new()).1,
             vec![("spawn_allow_teammates".into(), json!(true), true)]
         );
+    }
+
+    /// A policy's nested `spawn_harnesses` part is judged under its flat
+    /// name, so the consent rule for full access holds.
+    #[test]
+    fn a_nested_policy_value_is_judged_under_its_flat_name() {
+        let p = policy(json!({
+            "locked": {"spawn_harnesses": {"codex": {"full_access": true, "billing": "api"}}},
+        }))
+        .flattened();
+        assert!(p.locked.get("spawn_harnesses").is_none());
+        assert_eq!(p.locked["spawn_full_access_codex"], json!(true));
+        assert_eq!(p.locked["spawn_billing_codex"], json!("api"));
+        let values =
+            map(json!({"spawn_full_access_codex": false, "spawn_billing_codex": "subscription"}));
+        let state = p.state(&values);
+        assert_eq!(state.mismatched, vec!["spawn_full_access_codex"]);
+        assert_eq!(state.locked, vec!["spawn_billing_codex"]);
     }
 
     /// A harness's part of `spawn_harnesses` is the same setting as its flat
