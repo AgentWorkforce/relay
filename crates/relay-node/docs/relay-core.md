@@ -861,10 +861,17 @@ without an account has no policy and is unchanged.
   (`PATCH /settings`), with `refused` "This setting is set by your
   organization." Setting a locked key to its locked value is accepted.
   `GET /settings` lists it `writable: false` with that sentence in
-  `organization`.
+  `organization`. A lock holds under a setting's other name too: a locked
+  `spawn_full_access_<harness>` or `spawn_billing_<harness>` refuses the same
+  part of `spawn_harnesses`. A tool's own default pass
+  (`apply_integration_defaults`) leaves a locked setting alone.
 - **Defaults** are written once, as a starting value the person may change.
-  A changed default is written again only while the setting still holds the
-  previous default, so the person's own choice is never reversed.
+  A changed default is written again only while the setting still reads as
+  the policy last left it (its value just after the write, so a normalized or
+  completed value compares right), so the person's own choice is never
+  reversed. A default is recorded only once its write succeeded, so a failed
+  one is tried on the next apply, and the record outlives the default, so one
+  dropped and added back later still sees the person's choice.
   `GET /settings` says "Managed by your organization." in `organization`.
 - **Person-only settings** (`settings_policy::PERSON_ONLY`, the policy
   allowlist's person-only column, each also in `PERSON_TURNS_ON` or

@@ -104,6 +104,10 @@ impl Core {
                 if applied.iter().any(|done| done == key) || newly.contains(&key) {
                     continue;
                 }
+                // The organization's lock decides this setting, not a default.
+                if self.locked_by_organization(key) {
+                    continue;
+                }
                 if extension.get().get(key) == Some(&Value::Bool(true)) {
                     newly.push(key);
                     continue;

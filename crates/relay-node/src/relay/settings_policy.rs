@@ -33,7 +33,7 @@ use crate::relay::daemon::Core;
 use crate::relay::protocol::RpcError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The read-only `settings.get` record this module reports.
 pub const SETTING: &str = "organization_policy";
@@ -83,9 +83,42 @@ pub struct SettingsPolicy {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Stored {
     pub policy: SettingsPolicy,
-    /// Each defaulted setting with the default last written into it.
+    /// Each setting a default was written into, kept after the default is
+    /// dropped from the policy, so a default added again later still sees a
+    /// choice the person made since.
     #[serde(default, rename = "appliedDefaults")]
-    pub applied_defaults: Map<String, Value>,
+    pub applied_defaults: BTreeMap<String, AppliedDefault>,
+}
+
+/// One default the policy wrote into a setting.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppliedDefault {
+    /// The value the policy gave.
+    pub given: Value,
+    /// The value the setting read just after it was written, which can be
+    /// the given one normalized (a list lower-cased) or completed (a part of
+    /// a structured setting): the person changed it once it reads otherwise.
+    pub applied: Value,
+}
+
+/// The settings a change sets under another name: a harness's part of
+/// `spawn_harnesses` is also its flat `spawn_full_access_*` and
+/// `spawn_billing_*` setting, so a lock on either name holds for both.
+fn effective(changes: &Map<String, Value>) -> Map<String, Value> {
+    let mut effective = changes.clone();
+    if let Some(Value::Object(harnesses)) = changes.get("spawn_harnesses") {
+        for (harness, change) in harnesses {
+            for (part, flat) in [
+                ("full_access", "spawn_full_access_"),
+                ("billing", "spawn_billing_"),
+            ] {
+                if let Some(value) = change.get(part) {
+                    effective.insert(format!("{flat}{harness}"), value.clone());
+                }
+            }
+        }
+    }
+    effective
 }
 
 /// Whether `value` turns on or adds to `key` beyond `current`.
@@ -158,6 +191,7 @@ impl SettingsPolicy {
         values: &Map<String, Value>,
         changes: &Map<String, Value>,
     ) -> Option<RpcError> {
+        let changes = effective(changes);
         self.locks(values)
             .find(|(key, value)| {
                 changes
@@ -168,39 +202,40 @@ impl SettingsPolicy {
     }
 }
 
-/// The writes `policy` makes to settings now at `values`, after defaults
-/// already written (`applied`), and the defaults record to keep.
+/// A default to put in a setting: its key, the policy's value, and whether
+/// the setting needs a write (it may already hold the value).
+type DefaultWrite = (String, Value, bool);
+
+/// What `policy` writes into settings now at `values`: the locked values
+/// that differ, and the defaults to write (with whether a write is needed),
+/// given the defaults already written (`applied`). A default is written once
+/// while the setting still reads as the policy last left it, so the person's
+/// own choice is never reversed; the same default is never written twice.
 fn plan(
     policy: &SettingsPolicy,
     values: &Map<String, Value>,
-    applied: &Map<String, Value>,
-) -> (Map<String, Value>, Map<String, Value>) {
-    let mut writes = Map::new();
+    applied: &BTreeMap<String, AppliedDefault>,
+) -> (Map<String, Value>, Vec<DefaultWrite>) {
+    let mut locks = Map::new();
     for (key, value) in policy.locks(values) {
         if values.get(key) != Some(value) {
-            writes.insert(key.clone(), value.clone());
+            locks.insert(key.clone(), value.clone());
         }
     }
-    let mut record = Map::new();
+    let mut defaults = Vec::new();
     for (key, value) in &policy.defaults {
         if policy.locked.contains_key(key) || !values.contains_key(key) {
             continue;
         }
         let current = values.get(key);
         let previous = applied.get(key);
-        let untouched = previous.is_none() || current == previous;
-        if untouched && policy.may_apply(key, value, current) {
-            if current != Some(value) {
-                writes.insert(key.clone(), value.clone());
-            }
-            record.insert(key.clone(), value.clone());
-        } else if let Some(previous) = previous {
-            // The person changed it, or it waits for consent: the default
-            // written before stays the one to compare with.
-            record.insert(key.clone(), previous.clone());
+        let untouched = previous.is_none_or(|previous| current == Some(&previous.applied));
+        let already = previous.is_some_and(|previous| &previous.given == value);
+        if untouched && !already && policy.may_apply(key, value, current) {
+            defaults.push((key.clone(), value.clone(), current != Some(value)));
         }
     }
-    (writes, record)
+    (locks, defaults)
 }
 
 impl Core {
@@ -237,14 +272,25 @@ impl Core {
             })
             .unwrap_or_default();
         let values = self.settings();
-        let (writes, record) = plan(&policy, &values, &applied);
-        for (key, value) in writes {
-            let change = Map::from_iter([(key.clone(), value)]);
-            if let Err(error) = self.write_settings(&change) {
-                crate::relay::diagnostics::write(format_args!(
-                    "relay: the organization's value for {key} was not applied: {}",
-                    error.message
-                ));
+        let (locks, defaults) = plan(&policy, &values, &applied);
+        for (key, value) in locks {
+            self.write_policy_value(&key, value);
+        }
+        // A default is recorded only once it is in the setting, as the
+        // setting then reads, so a failed write is tried again next time.
+        let mut record = applied;
+        for (key, value, write) in defaults {
+            if write && !self.write_policy_value(&key, value.clone()) {
+                continue;
+            }
+            if let Some(now) = self.settings().get(&key).cloned() {
+                record.insert(
+                    key,
+                    AppliedDefault {
+                        given: value,
+                        applied: now,
+                    },
+                );
             }
         }
         self.store
@@ -258,6 +304,30 @@ impl Core {
         self.hub()
             .invalidated(crate::relay::state::Listing::Settings);
         Ok(())
+    }
+
+    /// Writes the organization's `value` into `key`, past its locks;
+    /// answers whether it was written. A failure is logged and tried again
+    /// on the next apply.
+    fn write_policy_value(&self, key: &str, value: Value) -> bool {
+        let change = Map::from_iter([(key.to_string(), value)]);
+        match self.write_settings(&change) {
+            Ok(_) => true,
+            Err(error) => {
+                crate::relay::diagnostics::write(format_args!(
+                    "relay: the organization's value for {key} was not applied: {}",
+                    error.message
+                ));
+                false
+            }
+        }
+    }
+
+    /// Whether the organization's policy locks `key`, which a default pass
+    /// of its own (`apply_integration_defaults`) then leaves alone.
+    pub(crate) fn locked_by_organization(&self, key: &str) -> bool {
+        self.settings_policy()
+            .is_some_and(|policy| policy.locked.contains_key(key))
     }
 
     /// `settings.get`'s `organization_policy`, for `values`.
@@ -325,7 +395,7 @@ mod tests {
         let p = policy(json!({"locked": {"accept_spawns": false, "spawn_repositories": ["a/b"]}}));
         let state = p.state(&values);
         assert_eq!(state.locked, vec!["accept_spawns", "spawn_repositories"]);
-        let (writes, _) = plan(&p, &values, &Map::new());
+        let (writes, _) = plan(&p, &values, &BTreeMap::new());
         assert_eq!(
             writes,
             map(json!({"accept_spawns": false, "spawn_repositories": ["a/b"]}))
@@ -333,7 +403,7 @@ mod tests {
         // A list adding an entry widens it.
         let wider = policy(json!({"locked": {"spawn_repositories": ["a/b", "e/f"]}}));
         assert_eq!(wider.state(&values).mismatched, vec!["spawn_repositories"]);
-        assert!(plan(&wider, &values, &Map::new()).0.is_empty());
+        assert!(plan(&wider, &values, &BTreeMap::new()).0.is_empty());
     }
 
     #[test]
@@ -355,7 +425,7 @@ mod tests {
             policy(json!({"locked": {"auto_join_repositories": ["a/*"], "spawn_max_agents": 4}}));
         assert_eq!(p.state(&values).locked, vec!["spawn_max_agents"]);
         assert_eq!(
-            plan(&p, &values, &Map::new()).0,
+            plan(&p, &values, &BTreeMap::new()).0,
             map(json!({"spawn_max_agents": 4}))
         );
     }
@@ -376,42 +446,89 @@ mod tests {
             .is_none());
     }
 
+    fn applied(key: &str, given: Value, now: Value) -> BTreeMap<String, AppliedDefault> {
+        BTreeMap::from([(
+            key.to_string(),
+            AppliedDefault {
+                given,
+                applied: now,
+            },
+        )])
+    }
+
     #[test]
     fn a_default_is_written_once_and_never_over_the_persons_choice() {
         let p = policy(json!({"defaults": {"auto_join_general": true}}));
         let values = map(json!({"auto_join_general": false}));
-        let (writes, record) = plan(&p, &values, &Map::new());
-        assert_eq!(writes, map(json!({"auto_join_general": true})));
-        assert_eq!(record, map(json!({"auto_join_general": true})));
-        // The person turned it off again: the default stays written once.
-        let (writes, record) = plan(&p, &values, &record);
-        assert!(writes.is_empty());
-        assert_eq!(record, map(json!({"auto_join_general": true})));
+        let (_, defaults) = plan(&p, &values, &BTreeMap::new());
+        assert_eq!(
+            defaults,
+            vec![("auto_join_general".into(), json!(true), true)]
+        );
+        // Written once: the person turned it off again, and it stays off.
+        let record = applied("auto_join_general", json!(true), json!(true));
+        assert!(plan(&p, &values, &record).1.is_empty());
         // A changed default follows only while the person has the old one.
         let changed = policy(json!({"defaults": {"spawn_max_agents": 2}}));
         let values = map(json!({"spawn_max_agents": 4}));
-        let applied = map(json!({"spawn_max_agents": 4}));
+        let record = applied("spawn_max_agents", json!(4), json!(4));
         assert_eq!(
-            plan(&changed, &values, &applied).0,
-            map(json!({"spawn_max_agents": 2}))
+            plan(&changed, &values, &record).1,
+            vec![("spawn_max_agents".into(), json!(2), true)]
         );
         let chosen = map(json!({"spawn_max_agents": 6}));
-        assert!(plan(&changed, &chosen, &applied).0.is_empty());
+        assert!(plan(&changed, &chosen, &record).1.is_empty());
         assert_eq!(changed.state(&values).defaults, vec!["spawn_max_agents"]);
+    }
+
+    /// The setting's own reading of a default (normalized, or completed) is
+    /// what the person is compared with, so an untouched setting keeps
+    /// following the policy.
+    #[test]
+    fn a_normalized_default_still_follows_the_policy() {
+        let first = policy(json!({"defaults": {"auto_join_repositories": ["Acme/Web"]}}));
+        let values = map(json!({"auto_join_repositories": ["acme/web"]}));
+        let record = applied(
+            "auto_join_repositories",
+            json!(["Acme/Web"]),
+            json!(["acme/web"]),
+        );
+        assert!(plan(&first, &values, &record).1.is_empty());
+        let next = policy(json!({"defaults": {"auto_join_repositories": ["acme/api"]}}));
+        assert_eq!(
+            plan(&next, &values, &record).1,
+            vec![("auto_join_repositories".into(), json!(["acme/api"]), true)]
+        );
     }
 
     #[test]
     fn a_widening_default_waits_for_consent() {
         let values = map(json!({"spawn_allow_teammates": false}));
         let p = policy(json!({"defaults": {"spawn_allow_teammates": true}}));
-        assert!(plan(&p, &values, &Map::new()).0.is_empty());
+        assert!(plan(&p, &values, &BTreeMap::new()).1.is_empty());
         assert_eq!(p.state(&values).mismatched, vec!["spawn_allow_teammates"]);
         let mut consented = p;
         consented.managed = true;
         consented.consent.insert("spawn_allow_teammates".into());
         assert_eq!(
-            plan(&consented, &values, &Map::new()).0,
-            map(json!({"spawn_allow_teammates": true}))
+            plan(&consented, &values, &BTreeMap::new()).1,
+            vec![("spawn_allow_teammates".into(), json!(true), true)]
         );
+    }
+
+    /// A harness's part of `spawn_harnesses` is the same setting as its flat
+    /// name, so a lock on one refuses the other.
+    #[test]
+    fn a_lock_holds_under_the_settings_other_name() {
+        let values = map(json!({"spawn_full_access_codex": false, "spawn_billing_claude": "api"}));
+        let p = policy(
+            json!({"locked": {"spawn_full_access_codex": false, "spawn_billing_claude": "api"}}),
+        );
+        let nested = map(json!({"spawn_harnesses": {"codex": {"full_access": true}}}));
+        assert_eq!(p.refusal(&values, &nested).unwrap().message, LOCKED);
+        let billing = map(json!({"spawn_harnesses": {"claude": {"billing": "subscription"}}}));
+        assert!(p.refusal(&values, &billing).is_some());
+        let same = map(json!({"spawn_harnesses": {"codex": {"full_access": false}}}));
+        assert!(p.refusal(&values, &same).is_none());
     }
 }

@@ -2434,6 +2434,63 @@ mod tests {
         assert!(codex.on.load(Ordering::SeqCst));
     }
 
+    /// An organization's lock decides a tool's setting: the default pass
+    /// never turns on what the organization locked off, even when the lock
+    /// needed no write because the setting was already off.
+    #[tokio::test]
+    async fn a_locked_integration_is_not_turned_on_by_default() {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, claude) = core_with_claude(temp.path());
+        let policy: crate::relay::settings_policy::SettingsPolicy =
+            serde_json::from_value(json!({"locked": {"direct_delivery": false}})).unwrap();
+        core.apply_settings_policy(Some(policy)).unwrap();
+        assert_eq!(claude.sets.load(Ordering::SeqCst), 0);
+        core.apply_integration_defaults();
+        assert!(!claude.on.load(Ordering::SeqCst));
+        // Without the lock, the default pass connects it as before.
+        core.apply_settings_policy(None).unwrap();
+        core.apply_integration_defaults();
+        assert!(claude.on.load(Ordering::SeqCst));
+    }
+
+    /// A default whose write fails is not recorded, so the next apply tries
+    /// it again once the tool accepts it.
+    #[tokio::test]
+    async fn a_default_that_failed_is_tried_again() {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, claude) = core_with_claude(temp.path());
+        claude.refuse.store(true, Ordering::SeqCst);
+        let policy: crate::relay::settings_policy::SettingsPolicy =
+            serde_json::from_value(json!({"defaults": {"direct_delivery": true}})).unwrap();
+        core.apply_settings_policy(Some(policy.clone())).unwrap();
+        assert!(!claude.on.load(Ordering::SeqCst));
+        claude.refuse.store(false, Ordering::SeqCst);
+        core.apply_settings_policy(Some(policy)).unwrap();
+        assert!(claude.on.load(Ordering::SeqCst));
+    }
+
+    /// A default dropped from the policy and added back later still sees
+    /// the person's choice made in between.
+    #[tokio::test]
+    async fn a_default_added_back_keeps_the_persons_choice() {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, _claude) = core_with_claude(temp.path());
+        let with = |n: u64| -> crate::relay::settings_policy::SettingsPolicy {
+            serde_json::from_value(json!({"defaults": {"spawn_max_agents": n}})).unwrap()
+        };
+        core.apply_settings_policy(Some(with(4))).unwrap();
+        assert_eq!(core.settings()["spawn_max_agents"], 4);
+        let mut chosen = Map::new();
+        chosen.insert("spawn_max_agents".into(), json!(6));
+        core.set_settings(&chosen).unwrap();
+        core.apply_settings_policy(Some(
+            crate::relay::settings_policy::SettingsPolicy::default(),
+        ))
+        .unwrap();
+        core.apply_settings_policy(Some(with(2))).unwrap();
+        assert_eq!(core.settings()["spawn_max_agents"], 6);
+    }
+
     #[tokio::test]
     async fn integrations_default_on_once_and_an_opt_out_stays_off() {
         let temp = tempfile::tempdir().unwrap();
