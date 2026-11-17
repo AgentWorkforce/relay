@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay-node`: the probe's session commands (`whoami`, `agents`, `send`, `read`, `fetch-attachment`, `connect-send`, `subscribe-channel`, `subscribe`, `socket-request`) no longer need `--socket`. Without it they ask `$AGENT_RELAY_SOCKET`, else the session socket of the desktop build that installed the probe (named by an `agent-relay-probe.install.json` sidecar beside it, the app bundle it lives in, or its profile alias name), else Agent Relay's; they also take `--dev` and `--profile <id>`. When no socket is found the error names the paths it looked at.
 - `agent-relay-node`: macOS GitHub Copilot desktop sessions can register and receive Relay messages through their native hooks, with GitHub signature, desktop host and held-session verification.
+- `agent-relay-node`: a Cursor chat whose hosted MCP calls are attested (the account reports `cursor_calls_attested`, once Agent Relay Desktop signs each Cursor call and the hosted MCP verifies it) and whose registration declares the hosted MCP, or that the hosted MCP reports linked, is told to reply with the hosted MCP tools, which now send as that chat. Without attestation, Cursor chats still reply through the session socket.
 
 ### Fixed
 
