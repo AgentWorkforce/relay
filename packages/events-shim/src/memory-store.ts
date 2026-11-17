@@ -210,20 +210,28 @@ export class MemoryEventsShimStore implements EventsShimStore {
     return claimed;
   }
 
-  async ackPending(shimId: string, ids: string[], at: string) {
+  async ackPending(shimId: string, ids: string[], at: string, claimedAt?: string) {
     const row = this.row(shimId);
     for (const event of row.events) {
-      if (ids.includes(event.id) && (event.delivery === 'pending' || event.delivery === 'sending')) {
+      if (
+        ids.includes(event.id) &&
+        (event.delivery === 'pending' || event.delivery === 'sending') &&
+        (!claimedAt || event.deliveredAt === claimedAt)
+      ) {
         event.delivery = 'read';
         event.deliveredAt = at;
       }
     }
   }
 
-  async releasePending(shimId: string, ids: string[]) {
+  async releasePending(shimId: string, ids: string[], claimedAt?: string) {
     const row = this.row(shimId);
     for (const event of row.events) {
-      if (ids.includes(event.id) && event.delivery === 'pending') {
+      if (
+        ids.includes(event.id) &&
+        event.delivery === 'pending' &&
+        (!claimedAt || event.deliveredAt === claimedAt)
+      ) {
         delete event.deliveredAt;
       }
     }

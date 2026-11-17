@@ -1734,6 +1734,7 @@ async function listenAsSessionOwner(
             ).finally(() => clearInterval(watch));
             backoff = 1_000;
             const events = Array.isArray(batch.events) ? (batch.events as PublicEvent[]) : [];
+            const claimedAt = typeof batch.claimed_at === 'string' ? batch.claimed_at : undefined;
             if (events.length > 0) {
               const eventIds = events
                 .map((event) => (typeof event.id === 'string' ? event.id : ''))
@@ -1749,12 +1750,24 @@ async function listenAsSessionOwner(
               );
               if (exit !== null) {
                 if (eventIds.length > 0) {
-                  await callTool(io, mcpUrl, 'ack_webhook_events', { ids: eventIds }).catch(() => undefined);
+                  await callTool(
+                    io,
+                    mcpUrl,
+                    'ack_webhook_events',
+                    { ids: eventIds, ...(claimedAt ? { claimed_at: claimedAt } : {}) },
+                    AbortSignal.timeout(5_000)
+                  ).catch(() => undefined);
                 }
                 return exit;
               }
               if (eventIds.length > 0) {
-                await callTool(io, mcpUrl, 'release_webhook_events', { ids: eventIds }).catch(() => undefined);
+                await callTool(
+                  io,
+                  mcpUrl,
+                  'release_webhook_events',
+                  { ids: eventIds, ...(claimedAt ? { claimed_at: claimedAt } : {}) },
+                  AbortSignal.timeout(5_000)
+                ).catch(() => undefined);
               }
             }
           } catch (error) {
@@ -2195,7 +2208,6 @@ async function listenStopHook(io: CliIo, flags: Record<string, string>): Promise
         if (cli.chainLimit !== undefined) writePrivate(chainFile, `${chain + 1}\n`);
         answered = true;
       };
-      const held = heldPostPath(io, mcpUrl);
       // When the CLI ran the hook (Copilot: epoch ms; Gemini: ISO text).
       const stamp = input.timestamp;
       const parsedStamp =
@@ -2225,9 +2237,8 @@ async function listenStopHook(io: CliIo, flags: Record<string, string>): Promise
         sessionKey,
         alive,
         async (text) => {
-          // Let go meanwhile: the CLI would drop the answer, so the next turn's hook takes it.
+          // Let go meanwhile: the CLI would drop the answer, so the next turn's hook takes it from the server.
           if (!alive()) {
-            writePrivate(held, text);
             return null;
           }
           answer(text);
@@ -2605,6 +2616,7 @@ async function listen(io: CliIo, flags: Record<string, string>): Promise<number>
       );
       backoff = 1_000;
       const events = Array.isArray(batch.events) ? (batch.events as PublicEvent[]) : [];
+      const claimedAt = typeof batch.claimed_at === 'string' ? batch.claimed_at : undefined;
       if (events.length > 0) {
         const eventIds = events
           .map((event) => (typeof event.id === 'string' ? event.id : ''))
@@ -2615,7 +2627,13 @@ async function listen(io: CliIo, flags: Record<string, string>): Promise<number>
           '(Act on it, then start the listener again in the background: npx -y @agent-relay/events-shim@latest listen)'
         );
         if (eventIds.length > 0) {
-          await callTool(io, mcpUrl, 'ack_webhook_events', { ids: eventIds }).catch(() => undefined);
+          await callTool(
+            io,
+            mcpUrl,
+            'ack_webhook_events',
+            { ids: eventIds, ...(claimedAt ? { claimed_at: claimedAt } : {}) },
+            AbortSignal.timeout(5_000)
+          ).catch(() => undefined);
         }
         return 0;
       }

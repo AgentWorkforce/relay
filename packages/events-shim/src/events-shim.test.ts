@@ -613,6 +613,48 @@ describe('events shim', () => {
     expect(finalState?.delivery).toBe('read');
   });
 
+  it('a listener whose lease expired cannot release or ack a newer claim with a stale claimed_at', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const agent = await h.connect(shim.mcp_url);
+
+    await h.post(shim.webhook_url, { post: 'concurrency-check' });
+
+    // Listener A claims at t0
+    const firstWait = await agent.call('wait_for_webhook', { timeout_seconds: 2, auto_ack: false });
+    const eventId = (firstWait.structuredContent?.events as { id: string }[])[0]!.id;
+    const staleClaimedAt = firstWait.structuredContent?.claimed_at as string;
+    expect(staleClaimedAt).toBeTruthy();
+
+    // Time passes; Listener A's lease expires
+    h.advance(EVENTS_SHIM_LIMITS.sendLeaseMs + 1000);
+
+    // Listener B claims the re-offered post at t1
+    const secondWait = await agent.call('wait_for_webhook', { timeout_seconds: 2, auto_ack: false });
+    expect(secondWait.structuredContent?.events).toHaveLength(1);
+    const newerClaimedAt = secondWait.structuredContent?.claimed_at as string;
+    expect(newerClaimedAt).not.toBe(staleClaimedAt);
+
+    // Stale Listener A tries to release using its old claimed_at: ignored!
+    await agent.call('release_webhook_events', { ids: [eventId], claimed_at: staleClaimedAt });
+
+    // A third caller cannot claim it because Listener B still has an active lease!
+    const thirdWait = await agent.call('wait_for_webhook', { timeout_seconds: 1, auto_ack: false });
+    expect(thirdWait.structuredContent?.events).toHaveLength(0);
+
+    // Stale Listener A tries to ack with its old claimed_at: ignored!
+    await agent.call('ack_webhook_events', { ids: [eventId], claimed_at: staleClaimedAt });
+
+    // Post is still pending under Listener B's lease
+    const [feedBefore] = (await h.feed(shim.manage_token)).body.events as { id: string; delivery: string }[];
+    expect(feedBefore?.delivery).toBe('pending');
+
+    // Listener B acks with its matching newer claimed_at: successfully marked read!
+    await agent.call('ack_webhook_events', { ids: [eventId], claimed_at: newerClaimedAt });
+    const [feedAfter] = (await h.feed(shim.manage_token)).body.events as { id: string; delivery: string }[];
+    expect(feedAfter?.delivery).toBe('read');
+  });
+
   it('wait_for_webhook with ack_ids acknowledges previous batch and claims the next pending posts', async () => {
     const h = createHarness();
     const shim = await h.create();

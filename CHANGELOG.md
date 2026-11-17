@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `@agent-relay/events-shim`: webhook posts claimed by an aborted `wait_for_webhook` call are no longer permanently lost. `wait_for_webhook` can now hold claimed posts on a recoverable lease (`auto_ack: false`) until acknowledged via `ack_webhook_events` or the next poll's `ack_ids`. CLI listeners acknowledge posts only after successful handover to session delivery or stdout, and immediately release unhanded posts via `release_webhook_events` with claim timestamp verification so a stale listener whose lease expired cannot release a newer active lease.
 - `agent-relay-node`: a spawn whose harness is installed but did not start now fails as `spawn_failed: <reason>` instead of `spawn_harness_unavailable` (which Cloud showed as the node not providing the harness); a new spawn with a fresh idempotency key may then succeed. Claude Code's readiness timeout now says whether Claude was still running and how much output it wrote.
 - `agent-relay-node`: session-socket requests share one deadline across connection setup and partial reads and writes, so slow replies cannot extend a native hook beyond its wait budget.
 
