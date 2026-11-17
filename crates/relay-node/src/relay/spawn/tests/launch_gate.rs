@@ -361,7 +361,7 @@ async fn a_launch_whose_process_exits_or_never_starts_releases_its_registration(
     assert!(failed["error"]
         .as_str()
         .unwrap()
-        .starts_with("spawn_harness_unavailable"));
+        .starts_with("spawn_failed"));
     let deleted = gate.seen("DELETE", "/v1/agent");
     assert_eq!(deleted.len(), 2);
     assert_eq!(
