@@ -6,7 +6,7 @@ use super::lifecycle::{self, Transition};
 use super::observe::Watched;
 use super::wire::Reclaimed;
 use crate::relay::daemon::Core;
-use crate::relay::state::{Level, Listing, ProcessLiveness};
+use crate::relay::state::{Level, Listing, ProcessLiveness, WorkState};
 use crate::relay::store::Target;
 use chrono::Utc;
 use std::collections::HashSet;
@@ -134,29 +134,81 @@ impl Core {
         .unwrap_or_default();
         self.adopt(&adopted);
         let now = Utc::now();
+        // Read before the ledger lock: a turn mark is a file, and the lock
+        // is only the clock. The stop below reads the file again.
+        let idle_samples: Vec<crate::relay::harness::grok::IdleSample> = registrations
+            .iter()
+            .map(|registration| self.grok_idle_sample(registration))
+            .collect();
         let ledger = self.ledger();
-        let (mut ended, mut places, mut shown) = (Vec::new(), false, false);
+        let (mut ended, mut idle_leaders, mut places, mut shown) =
+            (Vec::new(), Vec::new(), false, false);
         {
             let mut state = ledger.lock();
             state.observing = false;
             state.observed = Some(Instant::now());
             if observed.len() == registrations.len() {
-                for (registration, observation) in registrations.iter().zip(observed) {
-                    let record = state.agents.entry(registration.name.clone()).or_default();
-                    let before = (
-                        record.process.map(|p| p.state),
-                        record.work.map(|w| w.state),
-                    );
-                    let transition = record.apply(observation, now);
-                    shown |= before != (Some(observation.process), Some(observation.work));
+                for ((registration, observation), sample) in
+                    registrations.iter().zip(observed).zip(idle_samples)
+                {
+                    // The record borrow ends with this block. The match
+                    // below borrows `state` again to record a reclaimed place.
+                    let (transition, unfinished) = {
+                        let record = state.agents.entry(registration.name.clone()).or_default();
+                        let before = (
+                            record.process.map(|p| p.state),
+                            record.work.map(|w| w.state),
+                        );
+                        let transition = record.apply(observation, now);
+                        shown |= before != (Some(observation.process), Some(observation.work));
+                        // A spawned Grok leader is its own process and does not
+                        // exit when its client does. One quietly idle for
+                        // GROK_LEADER_IDLE is ended below. A new turn mark, or
+                        // any other state including unknown work, starts the
+                        // clock over.
+                        let quietly_idle = observation.process == ProcessLiveness::Running
+                            && observation.work == WorkState::Idle
+                            && !observation.turn_in_progress;
+                        if is_grok_leader(registration) && quietly_idle {
+                            if sample == crate::relay::harness::grok::IdleSample::Unreadable {
+                                // A failed read is not a quiet stretch. Ending
+                                // on it could stop a leader whose turn is running.
+                                record.idle_since = None;
+                                record.idle_mark = None;
+                            } else {
+                                let seen_mark = match sample {
+                                    crate::relay::harness::grok::IdleSample::Seen(turn) => {
+                                        turn.mark
+                                    }
+                                    _ => None,
+                                };
+                                let (since, mark) = lifecycle::note_grok_idle(
+                                    record.idle_since,
+                                    record.idle_mark,
+                                    seen_mark,
+                                    now,
+                                );
+                                record.idle_since = since;
+                                record.idle_mark = mark;
+                                if since.is_some_and(|since| {
+                                    lifecycle::grok_leader_idle_due(since, now)
+                                }) {
+                                    idle_leaders.push((registration.clone(), mark));
+                                }
+                            }
+                        } else {
+                            record.idle_since = None;
+                            record.idle_mark = None;
+                        }
+                        (transition, record.unfinished.clone())
+                    };
                     match transition {
                         Transition::Ended { turn_in_progress } => {
-                            let unfinished = record.unfinished.clone().unwrap_or_default();
                             state.reclaimed.retain(|r| r.name != registration.name);
                             state.reclaimed.push_front(Reclaimed {
                                 name: registration.name.clone(),
                                 agent_id: registration.agent_id.clone(),
-                                unfinished,
+                                unfinished: unfinished.unwrap_or_default(),
                             });
                             state.reclaimed.truncate(RECLAIMED_KEPT);
                             ended.push((registration.clone(), turn_in_progress));
@@ -227,5 +279,72 @@ impl Core {
             self.hub.invalidated(Listing::Agents);
             ledger.changed.notify_one();
         }
+        for (registration, mark) in idle_leaders {
+            // A message still queued, or a final answer still owed, keeps
+            // the leader. A queue that cannot be read keeps it too: ending
+            // it then could drop work. The clock stays, so the next pass
+            // ends it once the queue is empty.
+            let owes = self.store.read(|store| {
+                store.replies.iter().flatten().any(|reply| {
+                    reply.agent_id == registration.agent_id && reply.claimed != Some(true)
+                })
+            });
+            if owes {
+                continue;
+            }
+            if self
+                .waiting_deliveries(&registration)
+                .await
+                .ok()
+                .filter(|pending| *pending == 0)
+                .is_none()
+            {
+                continue;
+            }
+            let name = registration.name.clone();
+            // The queue read can take long enough for a turn to start, or
+            // for Relaycast to accept another message. Ending checks the
+            // turn and the queue again once it holds the delivery lock.
+            if let Err(error) = self
+                .end_idle_grok_leader(&name, &registration.agent_id, mark)
+                .await
+            {
+                self.hub.activity(
+                    Level::Warning,
+                    format!(
+                        "Spawned Grok leader @{name} has been idle for 24 hours, but Agent Relay could not end it: {}. It will try again.",
+                        error.message
+                    ),
+                );
+            }
+        }
     }
+
+    /// The session log of a spawned Grok leader. Other agents are absent:
+    /// their idle stretch is not this clock.
+    fn grok_idle_sample(
+        &self,
+        registration: &crate::relay::store::Registration,
+    ) -> crate::relay::harness::grok::IdleSample {
+        if !is_grok_leader(registration) {
+            return crate::relay::harness::grok::IdleSample::Absent;
+        }
+        crate::relay::harness::grok::idle_sample(
+            &self.grok_record_folder(),
+            &registration.target.id,
+        )
+    }
+
+    fn grok_record_folder(&self) -> std::path::PathBuf {
+        self.config.app_data_dir.join("spawned-agents/grok")
+    }
+}
+
+/// A spawned Grok this core still runs. A taken-over leader is the person's.
+fn is_grok_leader(registration: &crate::relay::store::Registration) -> bool {
+    registration.spawn.as_ref().is_some_and(|spawn| {
+        spawn.harness == crate::relay::harness::grok::ID.name()
+            && spawn.taken_over_at.is_none()
+            && registration.target.kind == crate::relay::store::SessionKind::Grok
+    })
 }

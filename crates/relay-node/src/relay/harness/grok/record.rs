@@ -124,6 +124,40 @@ pub fn work_state(tail: &[u8]) -> Option<WorkState> {
         .find_map(|event| turn_state(&event))
 }
 
+/// File offset just past the last turn event in `tail`. `tail` is the
+/// session log from `start`. A read that begins mid-line skips that
+/// fragment, so the same events keep the same offset. Session events after
+/// the turn do not move it.
+pub fn last_turn_mark(tail: &[u8], start: u64) -> Option<u64> {
+    let mut index = 0usize;
+    if start > 0 {
+        let Some(end) = tail.iter().position(|byte| *byte == b'\n') else {
+            return None;
+        };
+        index = end + 1;
+    }
+    let mut mark = None;
+    while index < tail.len() {
+        let rest = &tail[index..];
+        let (line, step) = match rest.iter().position(|byte| *byte == b'\n') {
+            Some(end) => (&rest[..end], end + 1),
+            None => (rest, rest.len()),
+        };
+        if step == 0 {
+            break;
+        }
+        if serde_json::from_slice::<Value>(line)
+            .ok()
+            .and_then(|event| turn_state(&event))
+            .is_some()
+        {
+            mark = Some(start + (index + line.len()) as u64);
+        }
+        index += step;
+    }
+    mark
+}
+
 fn turn_state(event: &Value) -> Option<WorkState> {
     match event["type"].as_str()? {
         "turn_ended" => Some(WorkState::Idle),
