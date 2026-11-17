@@ -21,6 +21,11 @@ enum RemovalMode {
     /// The explicit End Agent action: stop the owned spawn, then remove all
     /// relay resources that belonged to it.
     EndSpawned,
+    /// Automatic end of a Grok leader sampled idle. `mark` is the turn that
+    /// sample was measured from. A newer turn, or one still running, keeps it.
+    /// An explicit End Agent uses [`RemovalMode::EndSpawned`] and still stops
+    /// a leader that is working.
+    IdleGrok { mark: Option<u64> },
 }
 
 impl RemovalMode {
@@ -53,6 +58,25 @@ impl Core {
     pub async fn end_spawned_agent(&self, name: &str) -> Result<(), RpcError> {
         let _agent = self.lock_spawn_action(name).await;
         self.unregister_with_integrations(name, RemovalMode::EndSpawned)
+            .await
+    }
+
+    /// Ends the spawned Grok leader `name` only while it is still `agent_id`
+    /// and still the idle stretch `mark` named. The action lock covers the
+    /// identity check. The delivery locks inside removal cover the turn
+    /// check, so a message injected after the idle sample is left running.
+    pub async fn end_idle_grok_leader(
+        &self,
+        name: &str,
+        agent_id: &str,
+        mark: Option<u64>,
+    ) -> Result<(), RpcError> {
+        let _agent = self.lock_spawn_action(name).await;
+        match self.registration_named(name) {
+            Ok(current) if current.agent_id == agent_id => {}
+            _ => return Ok(()),
+        }
+        self.unregister_with_integrations(name, RemovalMode::IdleGrok { mark })
             .await
     }
 
@@ -380,7 +404,7 @@ impl Core {
                 "Unsubscribe or clean up integrations before removing this agent.",
             ));
         }
-        if mode == RemovalMode::EndSpawned {
+        if mode.ends_owned_spawn() {
             let Some(spawn) = registration.spawn.as_ref() else {
                 return Err(RpcError::new(
                     ErrorKind::Refused,
@@ -394,8 +418,13 @@ impl Core {
                 ));
             }
         }
+        if let RemovalMode::IdleGrok { mark } = mode {
+            if !self.idle_grok_unchanged(registration, mark) {
+                return Ok(false);
+            }
+        }
         self.keep_spawn_receipt(registration)?;
-        if mode == RemovalMode::EndSpawned {
+        if mode.ends_owned_spawn() {
             self.end_spawned(registration).await.map_err(|reason| {
                 RpcError::new(
                     ErrorKind::Internal,
@@ -404,6 +433,26 @@ impl Core {
             })?;
         }
         Ok(true)
+    }
+
+    /// Whether `registration` is still the quiet Grok stretch `mark` named.
+    /// No session record means the idle sample had no turn to compare, so it
+    /// stands. A record that cannot be read, when the sample had a turn,
+    /// keeps the leader.
+    fn idle_grok_unchanged(&self, registration: &Registration, mark: Option<u64>) -> bool {
+        let Some(turn) = crate::relay::harness::grok::idle_turn(
+            &self.config.app_data_dir.join("spawned-agents/grok"),
+            &registration.target.id,
+        ) else {
+            return mark.is_none();
+        };
+        crate::relay::spawn::lifecycle::grok_idle_still(mark, turn.work, turn.mark)
+    }
+}
+
+impl RemovalMode {
+    fn ends_owned_spawn(self) -> bool {
+        matches!(self, Self::EndSpawned | Self::IdleGrok { .. })
     }
 }
 

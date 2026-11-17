@@ -242,6 +242,228 @@ async fn an_idle_grok_leader_is_ended_after_a_day_and_a_codex_agent_is_not() {
     }
 }
 
+/// A session log whose last turn is `events`, on a Grok-shaped registration.
+fn write_grok_events(core: &Core, name: &str, events: &str) -> std::path::PathBuf {
+    use crate::relay::existing_session::{Binding, Provider, Transport};
+    use crate::relay::harness::grok::{grok_record_folder, write_spawned_record, SpawnedGrok};
+    const SESSION: &str = "01a0fd4c-3771-7a20-9f41-6f86d56624f9";
+    core.store
+        .update(|store| {
+            let leader = store
+                .registrations
+                .iter_mut()
+                .find(|registration| registration.name == name)
+                .unwrap();
+            leader.target.kind = crate::relay::store::SessionKind::Grok;
+            leader.target.id = SESSION.into();
+            let spawn = leader.spawn.as_mut().unwrap();
+            spawn.harness = crate::relay::harness::grok::ID.name().into();
+        })
+        .unwrap();
+    let folder = core.config.app_data_dir.join("spawned-agents/grok");
+    grok_record_folder(&folder).unwrap();
+    let cwd = core.config.home.join("work");
+    let record = SpawnedGrok {
+        binding: Binding {
+            provider: Provider::Grok,
+            transport: Transport::Acp,
+            workspace_id: "agent-relay-spawn".into(),
+            session_id: SESSION.into(),
+            endpoint_id: String::new(),
+            owner_id: "agent-relay-spawn".into(),
+            credential_reference: format!("probe:grok:{}", "0".repeat(64)),
+            owner_uid: crate::relay::peer::current_uid(),
+            auth_id: String::new(),
+            protocol_id: String::new(),
+            cwd: cwd.clone(),
+            model_id: "grok-4.7".into(),
+            agent_version: "1.0.46".into(),
+            executable: "/usr/local/bin/grok".into(),
+            leader_pid: 999_999_999,
+            leader_start: 77,
+            socket_path: "/tmp/grok-leader.sock".into(),
+            socket_device: 12,
+            socket_inode: 34,
+        },
+        grok_home: core.config.home.join(".grok"),
+    };
+    write_spawned_record(&folder, &record).unwrap();
+    let path = record.events();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, events).unwrap();
+    path
+}
+
+fn drop_spawn_receipts(home: &std::path::Path) {
+    let receipts = home.join("app-data/spawn-completions");
+    let Ok(entries) = std::fs::read_dir(&receipts) else {
+        return;
+    };
+    for entry in entries {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|ext| ext == "json") {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+}
+
+/// Relaycast that appends a running turn when the queue is read, then
+/// reports that queue empty. The path is filled in once the session log exists.
+fn queue_that_starts_a_turn(events: Arc<Mutex<Option<std::path::PathBuf>>>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let mut parts = line.split_whitespace();
+            let method = parts.next().unwrap_or_default().to_string();
+            let path = parts.next().unwrap_or_default().to_string();
+            let mut length = 0usize;
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).unwrap();
+                if header.trim_end().is_empty() {
+                    break;
+                }
+                if let Some(value) = header
+                    .trim_end()
+                    .to_ascii_lowercase()
+                    .strip_prefix("content-length: ")
+                {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            let reply = if method == "DELETE" {
+                "HTTP/1.1 204 No Content\r\nconnection: close\r\n\r\n".to_string()
+            } else {
+                if path.contains("deliveries") {
+                    use std::io::Write as _;
+                    let path = events.lock().unwrap().clone();
+                    let Some(path) = path else {
+                        panic!("the session log was not set");
+                    };
+                    let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+                    file.write_all(b"{\"type\":\"turn_started\"}\n").unwrap();
+                }
+                let body = if method == "PATCH" {
+                    r#"{"ok":true,"data":{"id":"a","name":"a","type":"agent","status":"online"}}"#
+                } else if path.contains("deliveries") {
+                    r#"{"ok":true,"data":[]}"#
+                } else {
+                    r#"{"ok":true,"data":null}"#
+                };
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+            };
+            let _ = stream.write_all(reply.as_bytes());
+        }
+    });
+    base
+}
+
+#[tokio::test]
+async fn a_grok_leader_turn_between_looks_restarts_its_idle_clock() {
+    std::env::remove_var("SSL_CERT_FILE");
+    std::env::remove_var("SSL_CERT_DIR");
+    let home = tempfile::tempdir().unwrap();
+    let (base, deleted) = accepting_relaycast();
+    let spawner = Arc::new(FakeSpawner::default());
+    let core = core_at(home.path(), spawner.clone(), &base);
+    let observer = observed(&core);
+    spawn(&core, "leader").await;
+    let events = write_grok_events(&core, "leader", "{\"type\":\"turn_ended\"}\n");
+    observer.set("leader", ProcessLiveness::Running, WorkState::Idle, false);
+    core.observe_spawned().await;
+    let stale = chrono::Utc::now() - chrono::Duration::hours(25);
+    {
+        let ledger = core.ledger();
+        let mut state = ledger.lock();
+        let record = state.agents.get_mut("leader").unwrap();
+        assert!(record.idle_mark.is_some());
+        record.idle_since = Some(stale);
+    }
+    // A short turn finished before the next look. The log is the evidence.
+    std::fs::write(
+        &events,
+        "{\"type\":\"turn_ended\"}\n{\"type\":\"turn_started\"}\n{\"type\":\"turn_ended\"}\n",
+    )
+    .unwrap();
+    drop_spawn_receipts(home.path());
+    core.observe_spawned().await;
+    assert!(registered(&core, "leader"));
+    assert!(spawner.stopped.lock().unwrap().is_empty());
+    assert!(deleted.lock().unwrap().is_empty());
+    {
+        let ledger = core.ledger();
+        let since = ledger.lock().agents["leader"].idle_since.unwrap();
+        assert!(since > stale);
+    }
+}
+
+#[tokio::test]
+async fn a_grok_leader_that_is_working_or_replaced_is_not_ended() {
+    std::env::remove_var("SSL_CERT_FILE");
+    std::env::remove_var("SSL_CERT_DIR");
+    let home = tempfile::tempdir().unwrap();
+    let (base, _) = accepting_relaycast();
+    let spawner = Arc::new(FakeSpawner::default());
+    let core = core_at(home.path(), spawner.clone(), &base);
+    spawn(&core, "leader").await;
+    let events = write_grok_events(&core, "leader", "{\"type\":\"turn_ended\"}\n");
+    // A different agent now holds the name: the idle sample must not end it.
+    core.end_idle_grok_leader("leader", "someone-else", None)
+        .await
+        .unwrap();
+    assert!(registered(&core, "leader"));
+    let agent_id = named(&core, "leader").agent_id;
+    std::fs::write(&events, "{\"type\":\"turn_started\"}\n").unwrap();
+    core.end_idle_grok_leader("leader", &agent_id, None)
+        .await
+        .unwrap();
+    assert!(registered(&core, "leader"));
+    assert!(spawner.stopped.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_grok_leader_turn_that_starts_before_the_stop_is_left_running() {
+    std::env::remove_var("SSL_CERT_FILE");
+    std::env::remove_var("SSL_CERT_DIR");
+    let home = tempfile::tempdir().unwrap();
+    let events = Arc::new(Mutex::new(None));
+    let base = queue_that_starts_a_turn(events.clone());
+    let spawner = Arc::new(FakeSpawner::default());
+    let core = core_at(home.path(), spawner.clone(), &base);
+    let observer = observed(&core);
+    spawn(&core, "leader").await;
+    *events.lock().unwrap() = Some(write_grok_events(
+        &core,
+        "leader",
+        "{\"type\":\"turn_ended\"}\n",
+    ));
+    observer.set("leader", ProcessLiveness::Running, WorkState::Idle, false);
+    core.observe_spawned().await;
+    {
+        let ledger = core.ledger();
+        ledger.lock().agents.get_mut("leader").unwrap().idle_since =
+            Some(chrono::Utc::now() - chrono::Duration::hours(25));
+    }
+    drop_spawn_receipts(home.path());
+    core.observe_spawned().await;
+    assert!(
+        registered(&core, "leader"),
+        "stopped={}",
+        spawner.stopped.lock().unwrap().len()
+    );
+    assert!(spawner.stopped.lock().unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn a_spawned_agent_is_not_taken_off_before_this_core_has_looked() {
     // After a restart, an agent marked absent long ago waits for the first

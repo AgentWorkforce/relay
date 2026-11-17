@@ -26,14 +26,38 @@ pub const EVIDENCE_TTL: Duration = Duration::seconds(60);
 pub const OBSERVE_EVERY: std::time::Duration = std::time::Duration::from_secs(15);
 /// How long a spawned Grok leader may sit idle before it is ended. Idle
 /// means its process is running, its last turn has ended, and no turn is
-/// in progress. Unknown work does not count, and Claude and Codex keep
-/// their places while idle: a Grok leader is a process of its own
-/// (`--no-exit-on-disconnect`) that otherwise stays up after the task.
+/// in progress. A later turn, including one that starts and finishes
+/// between observations, starts this again. Unknown work does not count,
+/// and Claude and Codex keep their places while idle: a Grok leader is a
+/// process of its own (`--no-exit-on-disconnect`) that otherwise stays up
+/// after the task.
 pub const GROK_LEADER_IDLE: Duration = Duration::hours(24);
 
 /// Whether a Grok leader idle since `since` is due to be ended at `now`.
 pub fn grok_leader_idle_due(since: DateTime<Utc>, now: DateTime<Utc>) -> bool {
     now.signed_duration_since(since) >= GROK_LEADER_IDLE
+}
+
+/// The idle stretch after one quiet sample. `seen` is the last turn event
+/// in the session log. A mark that differs from `mark` is a turn that
+/// finished between samples, so the stretch starts at `now`.
+pub fn note_grok_idle(
+    since: Option<DateTime<Utc>>,
+    mark: Option<u64>,
+    seen: Option<u64>,
+    now: DateTime<Utc>,
+) -> (Option<DateTime<Utc>>, Option<u64>) {
+    if since.is_none() || mark != seen {
+        (Some(now), seen)
+    } else {
+        (since, mark)
+    }
+}
+
+/// Whether this is still the quiet stretch `mark` named. Waiting, working,
+/// and unknown are not.
+pub fn grok_idle_still(mark: Option<u64>, work: WorkState, seen: Option<u64>) -> bool {
+    work == WorkState::Idle && seen == mark
 }
 
 /// The most spawned agents a computer may be set to run.
@@ -109,6 +133,9 @@ pub struct AgentRecord {
     /// it works, waits, or its process is no longer known to be running.
     /// Not evidence of work: only the clock for [`GROK_LEADER_IDLE`].
     pub idle_since: Option<DateTime<Utc>>,
+    /// The last turn event [`idle_since`] was measured from. A different
+    /// mark is a turn that finished between observations.
+    pub idle_mark: Option<u64>,
 }
 
 /// How an observation changed an agent's place.
@@ -521,5 +548,27 @@ mod tests {
         assert!(!grok_leader_idle_due(now - Duration::hours(23), now));
         assert!(grok_leader_idle_due(now - GROK_LEADER_IDLE, now));
         assert!(grok_leader_idle_due(now - Duration::hours(25), now));
+    }
+
+    #[test]
+    fn a_changed_turn_mark_restarts_a_grok_leader_clock() {
+        let now = Utc::now();
+        let stale = now - Duration::hours(25);
+        let (since, mark) = note_grok_idle(None, None, Some(10), now);
+        assert_eq!(since, Some(now));
+        assert_eq!(mark, Some(10));
+        assert!(!grok_leader_idle_due(since.unwrap(), now));
+        let (kept, kept_mark) = note_grok_idle(Some(stale), Some(10), Some(10), now);
+        assert_eq!(kept, Some(stale));
+        assert_eq!(kept_mark, Some(10));
+        assert!(grok_leader_idle_due(kept.unwrap(), now));
+        let (restarted, new_mark) = note_grok_idle(Some(stale), Some(10), Some(40), now);
+        assert_eq!(restarted, Some(now));
+        assert_eq!(new_mark, Some(40));
+        assert!(!grok_leader_idle_due(restarted.unwrap(), now));
+        assert!(grok_idle_still(Some(10), WorkState::Idle, Some(10)));
+        assert!(!grok_idle_still(Some(10), WorkState::Idle, Some(40)));
+        assert!(!grok_idle_still(Some(10), WorkState::Working, Some(10)));
+        assert!(!grok_idle_still(None, WorkState::Unknown, None));
     }
 }

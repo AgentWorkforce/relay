@@ -22,7 +22,9 @@ mod leader;
 mod record;
 
 pub use leader::{LeaderRuntime, LeaderStart, Opened, SessionOpen, SystemLeaders};
+pub(crate) use record::private_folder as grok_record_folder;
 pub(crate) use record::read as read_spawned_record;
+pub(crate) use record::write as write_spawned_record;
 pub use record::SpawnedGrok;
 
 use super::{
@@ -90,6 +92,26 @@ const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 /// How much of a session's events is read.
 const EVENTS_TAIL: u64 = 64 * 1024;
+
+/// The last turn in a spawned Grok's session log, when the core has the
+/// record and the log can be read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct IdleTurn {
+    pub work: WorkState,
+    pub mark: Option<u64>,
+}
+
+pub(crate) fn idle_turn(folder: &Path, session: &str) -> Option<IdleTurn> {
+    let saved = record::read(folder, session)?;
+    let path = saved.events();
+    let length = std::fs::metadata(&path).ok()?.len();
+    let tail = read_tail(&path, EVENTS_TAIL)?;
+    let start = length.saturating_sub(EVENTS_TAIL);
+    Some(IdleTurn {
+        work: record::work_state(&tail).unwrap_or(WorkState::Unknown),
+        mark: record::last_turn_mark(&tail, start),
+    })
+}
 /// The route fields a spawned Grok's binding names in place of a Relaycast
 /// workspace and owner: its leader is proven by its marker, and only the
 /// agent's spawn registration reaches it.
