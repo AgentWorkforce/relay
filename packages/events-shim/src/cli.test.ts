@@ -1518,6 +1518,59 @@ describe('events-shim CLI', () => {
     expect(() => readFileSync(lockFile, 'utf8')).toThrow(); // released on exit
   });
 
+  for (const leases of [true, false]) {
+    it(`listen --hook hands a post claimed just as another session took over to the new owner (${leases ? 'inbox with leases' : 'inbox without leases'})`, async () => {
+      const w = await fileWorld({
+        noLeases: !leases,
+        stdin: claudeHook('old-1', { hook_event_name: 'SessionStart', source: 'startup' }, false),
+      });
+      await runCli(['setup', w.created.mcp_url, '--claude'], w.io);
+      await w.post({ for: 'the new owner' });
+      const fetchImpl = w.io.fetchImpl;
+      w.io.fetchImpl = async (input, init) => {
+        const response = await fetchImpl(input, init);
+        // A newer session starts while the wait is returning the post.
+        if (typeof init?.body === 'string' && init.body.includes('"wait_for_webhook"'))
+          claudeOwnedBy(w.home, w.created.mcp_url, 'new-1', 777);
+        return response;
+      };
+      expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
+      expect(w.err).toEqual([]); // the old session is not woken with it
+      w.io.fetchImpl = fetchImpl;
+      w.io.readStdin = async () => claudeHook('new-1', { hook_event_name: 'Stop' }, false);
+      expect(await runCli(['listen', '--hook'], w.io)).toBe(2);
+      expect(w.err.join('\n')).toContain('{"for":"the new owner"}');
+    });
+  }
+
+  it('listen --hook: a claude -p run never takes a vacant inbox by itself', async () => {
+    const w = await fileWorld({ stdin: claudeHook('print-2', { hook_event_name: 'Stop' }, false) });
+    await runCli(['setup', w.created.mcp_url, '--claude'], w.io);
+    await w.post({ for: 'an interactive session' });
+    const processArgs = w.io.processArgs;
+    w.io.processArgs = (pid) => (pid === 777 ? 'claude --print run the report' : processArgs(pid));
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(0); // no owner yet, still not taken
+    expect(claudeOwnerOf(w.home, w.created.mcp_url)).toBeNull();
+    expect((await inboxTool(w, 'watch_webhooks')).waiting).toBe(1);
+  });
+
+  it("a config saved before per-CLI inboxes keeps a turn-end CLI's hook on its inbox too", async () => {
+    const w = await fileWorld();
+    const old = 'https://shim.test/api/v1/events-shim/t/esm_' + 'b'.repeat(43) + '/mcp';
+    mkdirSync(dirname(configPath(w.io)), { recursive: true });
+    writeFileSync(configPath(w.io), JSON.stringify({ mcpUrl: old }));
+    mkdirSync(join(w.home, '.copilot', 'hooks'), { recursive: true });
+    writeFileSync(
+      join(w.home, '.copilot', 'hooks', 'agent-relay-webhooks.json'),
+      JSON.stringify({ hooks: { agentStop: [{ type: 'command', bash: stopHookCommand('copilot') }] } })
+    );
+    expect(await runCli(['setup', w.created.mcp_url, '--claude'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).inboxes).toEqual({
+      copilot: old,
+      claude: w.created.mcp_url,
+    });
+  });
+
   it('setup refuses to add a second waking CLI to an inbox another one uses, unless asked, and then says which session wins', async () => {
     const w = await fileWorld({ core: true });
     expect(await runCli(['setup', w.created.mcp_url, '--claude'], w.io)).toBe(0);

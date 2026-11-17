@@ -1379,15 +1379,35 @@ function claudeHooked(io: CliIo): boolean {
   return /@agent-relay\/events-shim@[^"]*listen --hook/.test(io.readText(claudeSettingsPath(io)) ?? '');
 }
 
+/** The files a turn-end CLI's wake hook is kept in (Droid: either of two). */
+const STOP_HOOK_FILES: Record<StopHookId, (io: CliIo) => string[]> = {
+  copilot: (io) => [copilotHooksPath(io)],
+  gemini: (io) => [geminiSettingsPath(io)],
+  droid: (io) => [join(factoryHome(io), 'hooks.json'), join(factoryHome(io), 'settings.json')],
+  cursor: (io) => [cursorHooksPath(io)],
+  amp: (io) => [ampPluginPath(io)],
+};
+
+/** Whether a turn-end CLI's wake hook is installed (a setup before per-CLI inboxes). */
+function stopHooked(io: CliIo, id: StopHookId): boolean {
+  return STOP_HOOK_FILES[id](io).some((path) =>
+    (io.readText(path) ?? '').includes(`listen --stop-hook ${id}`)
+  );
+}
+
 /**
  * The inbox each agent CLI used before this setup. A config saved before per-CLI inboxes has one
- * inbox for all: the CLIs it is known to have set up (those linked through the core, and Claude
- * Code when its wake hook is installed) keep it.
+ * inbox for all: the CLIs it is known to have set up (those linked through the core, and those whose
+ * wake hook is installed) keep it.
  */
 function previousInboxes(io: CliIo, previous: Config | null): Record<string, string> {
   if (!previous) return {};
   if (previous.inboxes) return { ...previous.inboxes };
-  const known = [...(previous.wakeKinds ?? []).map(cliOfKind), ...(claudeHooked(io) ? ['claude'] : [])];
+  const known = [
+    ...(previous.wakeKinds ?? []).map(cliOfKind),
+    ...(claudeHooked(io) ? ['claude'] : []),
+    ...(Object.keys(STOP_HOOK_FILES) as StopHookId[]).filter((id) => stopHooked(io, id)),
+  ];
   return Object.fromEntries(known.map((id) => [id, previous.mcpUrl]));
 }
 
@@ -1925,16 +1945,21 @@ async function listenAsSessionOwner(
             const events = Array.isArray(batch.events) ? (batch.events as PublicEvent[]) : [];
             if (events.length > 0) {
               const claim = claimOf(batch, events);
-              const exit = await deliver(
-                [
-                  `Webhook inbox (agent-relay-webhooks): ${events.length === 1 ? 'a post arrived' : `${events.length} posts arrived`}.`,
-                  '',
-                  events.map(describePost).join('\n\n---\n\n'),
-                  '',
-                  'Act on it as the person asked when they set up this webhook. You will be woken again by the next post.',
-                ].join('\n'),
-                claim !== null
-              );
+              const text = [
+                `Webhook inbox (agent-relay-webhooks): ${events.length === 1 ? 'a post arrived' : `${events.length} posts arrived`}.`,
+                '',
+                events.map(describePost).join('\n\n---\n\n'),
+                '',
+                'Act on it as the person asked when they set up this webhook. You will be woken again by the next post.',
+              ].join('\n');
+              // Taken over while the wait was in flight: the posts are the new owner's. A leased batch
+              // goes back to the inbox at once; one already marked read is kept for the next owner.
+              if (!owns()) {
+                if (claim) await settleClaim(io, mcpUrl, 'release', claim);
+                else keepForNextOwner(io, mcpUrl, text);
+                return 0;
+              }
+              const exit = await deliver(text, claim !== null);
               if (claim) await settleClaim(io, mcpUrl, exit === null ? 'release' : 'ack', claim);
               return exit ?? 0;
             }
@@ -2136,11 +2161,13 @@ async function listenHook(io: CliIo, flags: Record<string, string>): Promise<num
   const { session, transcript, event, source } = await hookInput(io);
   if (!session) return 0;
   const claude = io.ancestor('claude');
-  const started = event === 'SessionStart' && source !== 'compact' && !printMode(io, claude);
+  // A non-interactive run (\`claude -p\`) never takes the inbox by itself: only by calling a tool.
+  const interactive = !printMode(io, claude);
+  const started = event === 'SessionStart' && source !== 'compact' && interactive;
   // Scanned on every run, so a call is noticed once, in the turn that made it.
   const called = newWebhooksCall(io, mcpUrl, session, transcript);
   const owner = readClaudeOwner(io, mcpUrl);
-  const vacant = !owner || (owner.pid !== null && !io.pidAlive(owner.pid));
+  const vacant = interactive && (!owner || (owner.pid !== null && !io.pidAlive(owner.pid)));
   if (started || called || vacant) {
     writeClaudeOwner(io, mcpUrl, { session, pid: claude });
   } else if (owner?.session !== session) {
@@ -2170,6 +2197,13 @@ async function listenHook(io: CliIo, flags: Record<string, string>): Promise<num
 function heldPostPath(io: CliIo, mcpUrl: string): string {
   const digest = createHash('sha256').update(mcpUrl).digest('hex').slice(0, 16);
   return join(dirname(configPath(io)), `held-${digest}.txt`);
+}
+
+/** Keeps a post already marked read for the inbox's next owner, after any kept before it. */
+function keepForNextOwner(io: CliIo, mcpUrl: string, text: string): void {
+  const held = heldPostPath(io, mcpUrl);
+  const before = io.readText(held);
+  writePrivate(held, before ? `${before}\n\n---\n\n${text}` : text);
 }
 
 /** Takes the kept post, if any: one owner gets it (an atomic rename). */
