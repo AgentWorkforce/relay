@@ -111,6 +111,9 @@ fn effective(changes: &Map<String, Value>) -> Map<String, Value> {
     let mut effective = changes.clone();
     if let Some(Value::Object(harnesses)) = changes.get("spawn_harnesses") {
         for (harness, change) in harnesses {
+            if !FLAT_HARNESSES.contains(&harness.as_str()) {
+                continue;
+            }
             for (part, flat) in [
                 ("full_access", "spawn_full_access_"),
                 ("billing", "spawn_billing_"),
@@ -123,6 +126,10 @@ fn effective(changes: &Map<String, Value>) -> Map<String, Value> {
     }
     effective
 }
+
+/// The harnesses whose `spawn_harnesses` part also has a flat setting, the
+/// only per-harness spawn settings the workspace policy names.
+const FLAT_HARNESSES: [&str; 2] = ["claude", "codex"];
 
 /// Whether `value` turns on or adds to `key` beyond `current`.
 fn widens(value: &Value, current: Option<&Value>) -> bool {
@@ -140,10 +147,12 @@ fn widens(value: &Value, current: Option<&Value>) -> bool {
 }
 
 impl SettingsPolicy {
-    /// The policy with each harness's part of a `spawn_harnesses` value put
-    /// under its flat name (`spawn_full_access_<harness>`,
+    /// The policy with Claude's and Codex's part of a `spawn_harnesses`
+    /// value put under its flat name (`spawn_full_access_<harness>`,
     /// `spawn_billing_<harness>`), so the consent rule for person-only
-    /// settings sees it; the nested value itself is dropped.
+    /// settings sees it. The nested value itself is dropped: the workspace
+    /// policy names no other harness's spawn settings, and a key the policy
+    /// does not name is ignored, as any unknown key is.
     pub fn flattened(mut self) -> SettingsPolicy {
         for tier in [&mut self.locked, &mut self.defaults] {
             if let Some(nested) = tier.remove("spawn_harnesses") {
@@ -559,6 +568,12 @@ mod tests {
         assert!(p.locked.get("spawn_harnesses").is_none());
         assert_eq!(p.locked["spawn_full_access_codex"], json!(true));
         assert_eq!(p.locked["spawn_billing_codex"], json!("api"));
+        // Other harnesses have no policy setting: their part is not one.
+        let other = policy(json!({
+            "locked": {"spawn_harnesses": {"opencode": {"full_access": false}}},
+        }))
+        .flattened();
+        assert!(other.locked.is_empty());
         let values =
             map(json!({"spawn_full_access_codex": false, "spawn_billing_codex": "subscription"}));
         let state = p.state(&values);

@@ -94,6 +94,10 @@ impl Core {
     /// recorded a key publishes a Settings update, so the apps show those
     /// tools on and drop them from `detected_tools`.
     pub fn apply_integration_defaults(&self) {
+        // The settings writers' lock first, in the order every writer takes
+        // them, so an organization's policy applying now sees this pass's
+        // writes or none of them.
+        let _writing = crate::relay::settings_registry::writing();
         let _changing = self.integration_settings.lock().unwrap();
         if self.workspace().is_none() || !self.store.read(Store::connects_detected_tools) {
             return;
