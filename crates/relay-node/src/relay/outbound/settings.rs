@@ -768,6 +768,21 @@ mod tests {
             store.organization_policy.as_ref().unwrap().applied_defaults["spawn_max_agents"].clone()
         });
         assert_eq!((recorded.given, recorded.applied), (json!(3), json!(3)));
+        // The repositories list follows a lock that becomes a default too.
+        core.apply_settings_policy(Some(given(
+            json!({"locked": {"auto_join_repositories": ["acme/*"]}}),
+        )))
+        .unwrap();
+        assert_eq!(core.settings()["auto_join_repositories"], json!(["acme/*"]));
+        core.apply_settings_policy(Some(given(
+            json!({"defaults": {"auto_join_repositories": ["Tools/Web"]}}),
+        )))
+        .unwrap();
+        assert_eq!(
+            core.settings()["auto_join_repositories"],
+            json!(["tools/web"])
+        );
+        assert!(core.forced_repositories().is_empty());
     }
 
     /// The repositories list is saved normalized; only the organization's
