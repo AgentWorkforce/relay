@@ -4,6 +4,16 @@
 //! layer earlier, before Agent Relay writes to a particular session's inbox:
 //! a person may require known senders, put one session in Ask first, and
 //! approve or dismiss individual held deliveries.
+//!
+//! An organization's workspace policy may hold messages too
+//! (`delivery.inbound_default: "hold"`, locked): then a message from a
+//! sender who is not one of the organization's admins (`admin_senders`, by
+//! name or address) is held in **every** harness, not only Claude Code's,
+//! and an admin's message always delivers. The person still approves or
+//! dismisses each held message, but cannot allow a sender for good while the
+//! rule applies; exceptions made before it stay saved and apply again once
+//! it is lifted. The rule is the account's, kept in memory and given again
+//! on every policy apply (`Core::apply_settings_policy`).
 
 use crate::platform::fs as private_fs;
 use crate::relay::contract::claude_delivery::{
@@ -70,10 +80,26 @@ pub enum Decision {
     ReadQueue,
 }
 
+/// The refusal of a persistent sender exception while the organization
+/// holds messages.
+pub const ORGANIZATION_HOLD_REFUSAL: &str =
+    "Your organization holds messages from senders who are not its admins, so a sender cannot be allowed for good. Approve each message instead.";
+
+/// Why the organization held a message, as its delivery record says.
+pub const ORGANIZATION_HOLD_REASON: &str =
+    "Held by your organization: the sender is not one of its admins. Waiting for your approval in Agent Relay.";
+
 /// The policy file is installation-local and contains no credentials.
 pub struct ClaudeDeliveryPolicy {
     path: PathBuf,
     saved: Mutex<Saved>,
+    /// The organization's admins, by name and address, while it holds every
+    /// other sender's messages; `None` when it does not.
+    organization: Mutex<Option<BTreeSet<String>>>,
+    /// Each (organization holds, person restricts) state after a change, for
+    /// tests of the order changes are made in.
+    #[cfg(test)]
+    pub(crate) states: Mutex<Vec<(bool, bool)>>,
 }
 
 impl ClaudeDeliveryPolicy {
@@ -91,7 +117,62 @@ impl ClaudeDeliveryPolicy {
         Self {
             path,
             saved: Mutex::new(saved),
+            organization: Mutex::new(None),
+            #[cfg(test)]
+            states: Mutex::new(Vec::new()),
         }
+    }
+
+    #[cfg(test)]
+    fn note_state(&self) {
+        let state = (self.organization_holds(), self.restricted());
+        self.states.lock().unwrap().push(state);
+    }
+
+    /// Sets the organization's hold: `Some(admins)` holds every message from
+    /// a sender not among `admins` (names or addresses), in every harness;
+    /// `None` lifts it. Answers whether it changed.
+    pub fn set_organization_hold(&self, admins: Option<BTreeSet<String>>) -> bool {
+        let mut current = self.organization.lock().unwrap_or_else(|p| p.into_inner());
+        if *current == admins {
+            return false;
+        }
+        *current = admins;
+        drop(current);
+        #[cfg(test)]
+        self.note_state();
+        true
+    }
+
+    /// Whether the organization holds non-admin senders' messages now.
+    pub fn organization_holds(&self) -> bool {
+        self.organization
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_some()
+    }
+
+    /// Whether an injection's outcome into `registration` is recorded here
+    /// (`consume`) until the main store has it, so a failed main-store write
+    /// never injects it twice: always for Claude Code, and for any harness
+    /// while the organization holds messages or the person approved this one.
+    pub fn records_outcome(&self, registration: &Registration, id: &str) -> bool {
+        registration.target.kind == SessionKind::ClaudeTerminal
+            || self.organization_holds()
+            || self
+                .saved
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .approved
+                .contains(id)
+    }
+
+    /// The person's own restriction (known senders only).
+    pub fn restricted(&self) -> bool {
+        self.saved
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .restricted
     }
 
     fn save(&self, saved: &Saved) -> Result<(), String> {
@@ -168,10 +249,15 @@ impl ClaudeDeliveryPolicy {
     }
 
     pub fn decide(&self, registration: &Registration, delivery: &Delivery) -> Decision {
-        if registration.target.kind != SessionKind::ClaudeTerminal {
-            return Decision::Deliver;
-        }
+        let organization = self
+            .organization
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         let saved = self.saved.lock().unwrap_or_else(|p| p.into_inner());
+        // A dismissal, and an injection already made, stand in every
+        // harness, even after the organization lifts the rule that held the
+        // message: neither is undone or repeated.
         if saved.dismissed.contains(&delivery.id) {
             return Decision::Dismiss;
         }
@@ -180,6 +266,26 @@ impl ClaudeDeliveryPolicy {
         }
         if saved.approved.contains(&delivery.id) {
             return Decision::Deliver;
+        }
+        if registration.target.kind != SessionKind::ClaudeTerminal && organization.is_none() {
+            return Decision::Deliver;
+        }
+        if let Some(admins) = organization {
+            // Only an authenticated address proves who sent it.
+            let Some(address) = delivery.sender_address.as_deref() else {
+                return Decision::ReadQueue;
+            };
+            let admin = admins.contains(address)
+                || delivery
+                    .sender
+                    .as_deref()
+                    .is_some_and(|name| admins.contains(name));
+            // The person's own exceptions wait while the organization holds.
+            return if admin {
+                Decision::Deliver
+            } else {
+                Decision::Hold
+            };
         }
         let asks_first = saved.ask_first_sessions.contains(&registration.target.id);
         let sender_restricted = saved.restricted;
@@ -369,7 +475,10 @@ impl ClaudeDeliveryPolicy {
     }
 
     pub fn set_restricted(&self, restricted: bool) -> Result<(), String> {
-        self.change(|saved| saved.restricted = restricted)
+        self.change(|saved| saved.restricted = restricted)?;
+        #[cfg(test)]
+        self.note_state();
+        Ok(())
     }
 
     pub fn set_session(&self, session_id: &str, direct: bool) -> Result<(), String> {
@@ -383,6 +492,9 @@ impl ClaudeDeliveryPolicy {
     }
 
     pub fn set_sender(&self, sender: &str, name: &str, allowed: bool) -> Result<(), String> {
+        if allowed && self.organization_holds() {
+            return Err(ORGANIZATION_HOLD_REFUSAL.to_string());
+        }
         self.change(|saved| {
             if allowed {
                 saved
@@ -431,6 +543,7 @@ impl ClaudeDeliveryPolicy {
                     held_at_ms: held.held_at_ms,
                 })
                 .collect(),
+            organization_hold: self.organization_holds(),
         }
     }
 }
@@ -507,6 +620,82 @@ mod tests {
             text: Some("Please review this.".into()),
             ..Delivery::default()
         }
+    }
+
+    /// The organization's hold covers every harness: an admin delivers, by
+    /// address or name; anyone else is held for a one-time approval, and no
+    /// sender can be allowed for good until it is lifted.
+    #[test]
+    fn the_organization_holds_non_admins_in_every_harness() {
+        let root = tempfile::tempdir().unwrap();
+        let policy = ClaudeDeliveryPolicy::open(root.path());
+        let mut codex = registration("thread-1");
+        codex.target = Target::new(SessionKind::Codex, "thread-1");
+        let from_sam = delivery("del-1", "sam");
+        // An exception made before the rule stays saved.
+        policy.set_sender("sam@desk", "Sam", true).unwrap();
+        assert_eq!(policy.decide(&codex, &from_sam), Decision::Deliver);
+
+        let admins = BTreeSet::from(["lead".to_string(), "ops@desk".to_string()]);
+        assert!(policy.set_organization_hold(Some(admins.clone())));
+        assert!(!policy.set_organization_hold(Some(admins)));
+        assert_eq!(policy.decide(&codex, &from_sam), Decision::Hold);
+        let claude = registration("11111111-1111-1111-1111-111111111111");
+        assert_eq!(policy.decide(&claude, &from_sam), Decision::Hold);
+        assert_eq!(
+            policy.decide(&codex, &delivery("del-2", "lead")),
+            Decision::Deliver
+        );
+        assert_eq!(
+            policy.decide(&codex, &delivery("del-3", "ops")),
+            Decision::Deliver
+        );
+        let unaddressed = Delivery {
+            sender_address: None,
+            ..delivery("del-4", "lead")
+        };
+        assert_eq!(policy.decide(&codex, &unaddressed), Decision::ReadQueue);
+        // One message may be approved; a sender may not be allowed for good.
+        assert!(policy.hold(&codex, &from_sam).unwrap());
+        assert_eq!(
+            policy.approve("del-1").unwrap().as_deref(),
+            Some("claude-review")
+        );
+        assert_eq!(policy.decide(&codex, &from_sam), Decision::Deliver);
+        assert_eq!(
+            policy.set_sender("kim@desk", "Kim", true).unwrap_err(),
+            ORGANIZATION_HOLD_REFUSAL
+        );
+        policy.set_sender("sam@desk", "Sam", false).unwrap();
+        assert!(policy.status(&[]).organization_hold);
+        // A message dismissed under the rule stays dismissed once it is lifted.
+        let from_kim = delivery("del-6", "kim");
+        assert!(policy.hold(&codex, &from_kim).unwrap());
+        policy.dismiss("del-6").unwrap();
+        // Lifted: every harness but Claude delivers as before.
+        assert!(policy.set_organization_hold(None));
+        assert_eq!(policy.decide(&codex, &from_kim), Decision::Dismiss);
+        // An approved message whose injection is recorded is not injected
+        // again once the rule is lifted, in any harness.
+        let from_lee = delivery("del-7", "lee");
+        assert!(policy.set_organization_hold(Some(BTreeSet::from(["lead".to_string()]))));
+        assert!(policy.hold(&codex, &from_lee).unwrap());
+        policy.approve("del-7").unwrap();
+        assert!(policy.records_outcome(&codex, "del-7"));
+        policy
+            .consume("del-7", "claude-review", PriorOutcome::Delivered)
+            .unwrap();
+        assert!(policy.set_organization_hold(None));
+        assert_eq!(
+            policy.decide(&codex, &from_lee),
+            Decision::Handled(PriorOutcome::Delivered)
+        );
+        assert!(!policy.records_outcome(&codex, "del-8"));
+        assert_eq!(
+            policy.decide(&codex, &delivery("del-5", "kim")),
+            Decision::Deliver
+        );
+        assert!(!policy.status(&[]).organization_hold);
     }
 
     #[test]

@@ -374,6 +374,7 @@ impl Core {
                 agent_id: None,
                 token: None,
                 requester: None,
+                launcher: None,
                 target: None,
                 process: None,
                 control_url: workspace.control_url.clone(),
@@ -432,16 +433,20 @@ impl Core {
             invocation_id: request.invocation_id.clone(),
         };
         let address = format!("{}@{}", request.name, link.node.node_name);
-        let requester = requester
+        let asked = requester
             .await
             .ok()
             .flatten()
-            .filter(|requester| requester.name != request.name);
+            .filter(|asked| asked.requester.name != request.name);
         // Kept with the intent, so an agent saved after a restart is still
         // owed its final answer. Without it only that answer is lost.
-        if requester.is_some() {
-            let _ = in_flight.update(|intent| intent.requester = requester.clone());
+        if let Some(asked) = &asked {
+            let _ = in_flight.update(|intent| {
+                intent.requester = Some(asked.requester.clone());
+                intent.launcher = asked.launcher.clone();
+            });
         }
+        let requester = asked.map(|asked| asked.requester);
         let report = ReportBack::new(
             request.harness,
             &in_flight.intent.message_id,

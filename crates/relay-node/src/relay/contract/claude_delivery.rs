@@ -9,6 +9,12 @@ pub struct ClaudeDeliveryStatus {
     pub sessions: Vec<ClaudeDeliverySession>,
     pub allowed_senders: Vec<ClaudeSender>,
     pub held: Vec<ClaudeHeldDelivery>,
+    /// The organization holds every message from a sender who is not one of
+    /// its admins, in every harness (`claude_delivery_policy`): while true,
+    /// held messages may be approved one by one, but no sender can be
+    /// allowed for good. Absent when no such rule applies.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub organization_hold: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, JsonSchema, Deserialize)]

@@ -126,6 +126,10 @@ impl SessionPartition {
     }
 }
 
+/// Where a session directory reads the organization's forced repositories
+/// (`SessionDirectory::forced_repositories_from`).
+pub type ForcedRepositories = std::sync::Arc<dyn Fn() -> Vec<String> + Send + Sync>;
+
 pub trait SessionDirectory: Send + Sync + 'static {
     /// Whether this native chat acknowledged the current identity context.
     fn copilot_context_accepted(&self, _sid: &str, _context: &str) -> bool {
@@ -276,6 +280,13 @@ pub trait SessionDirectory: Send + Sync + 'static {
     /// Told on every reconcile pass whether open Pi sessions join the relay
     /// by themselves, so the Pi extension's banner can say so. May block.
     fn pi_auto_join(&self, _auto_join: bool) {}
+
+    /// Given once, when the core starts, where to read the repositories the
+    /// organization makes join the relay by themselves (`relay::repositories`):
+    /// a live session in one of them is eligible even in a directory
+    /// automatic activation leaves out. It is read on every check, so no
+    /// caller can leave an older list in place.
+    fn forced_repositories_from(&self, _source: ForcedRepositories) {}
 
     fn archived(&self, _targets: &[Target]) -> HashSet<Target> {
         HashSet::new()

@@ -29,9 +29,18 @@ pub struct SpawnOrigin {
     pub harness: String,
     /// The agent that asked for the spawn, as Relaycast recorded it: its
     /// name and immutable id (`spawn::report_back`). A name alone is not
-    /// enough, as another agent can take it later.
+    /// enough, as another agent can take it later. When Cloud invokes the
+    /// spawn for a desktop identity (a person's chat) through a launcher,
+    /// this is that desktop identity, and `launcher` is the invoker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<SpawnRequester>,
+    /// The participant that invoked the spawn on the requester's behalf
+    /// (Relaycast's `caller_id`/`caller_name`), kept only when it is not the
+    /// requester: Agent Relay Cloud invokes through a per-user launcher.
+    /// Its direct messages count as the requester's. Absent on records from
+    /// before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launcher: Option<SpawnRequester>,
     /// The working folder the agent runs in, as the spawn resolved it (the
     /// request's, or the machine default): what every answer to the spawn
     /// reports as `worker_cwd`. Absent on records from before it was kept.
@@ -81,6 +90,24 @@ pub struct SpawnOrigin {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub gate_launch: bool,
+}
+
+impl SpawnOrigin {
+    /// The immutable ids of the ones who asked for this spawn: its
+    /// requester and, when another invoked it for them, the launcher. Never
+    /// an empty id; never a name.
+    pub fn asker_ids(&self) -> impl Iterator<Item = &str> {
+        self.requester
+            .iter()
+            .chain(self.launcher.iter())
+            .map(|asker| asker.agent_id.as_str())
+            .filter(|id| !id.is_empty())
+    }
+
+    /// Whether `id` is the requester's or the launcher's immutable id.
+    pub fn asked_by(&self, id: &str) -> bool {
+        self.asker_ids().any(|asker| asker == id)
+    }
 }
 
 /// The agent that asked for a spawn.
@@ -253,6 +280,36 @@ mod tests {
             store.spawn_folder_candidates(),
             [r"C:\Users\person\code\relay"]
         );
+    }
+
+    #[test]
+    fn a_spawn_keeps_its_launcher_and_records_without_one_still_load() {
+        let who = |name: &str, id: &str| SpawnRequester {
+            name: name.into(),
+            agent_id: id.into(),
+        };
+        let earlier = serde_json::json!({
+            "nodeID": "node", "nodeName": "desk", "invocationID": "inv", "harness": "codex",
+            "requester": {"name": "grokbot", "agentID": "agent_grokbot"}
+        });
+        let mut origin: SpawnOrigin = serde_json::from_value(earlier.clone()).unwrap();
+        assert_eq!(origin.launcher, None);
+        assert_eq!(origin.asker_ids().collect::<Vec<_>>(), ["agent_grokbot"]);
+        // Written back unchanged: no launcher key appears.
+        assert_eq!(serde_json::to_value(&origin).unwrap(), earlier);
+
+        origin.requester = Some(who("person-chat", "agent_chat"));
+        origin.launcher = Some(who("launcher", "agent_launch"));
+        let encoded = serde_json::to_value(&origin).unwrap();
+        assert_eq!(
+            encoded["launcher"],
+            serde_json::json!({"name": "launcher", "agentID": "agent_launch"})
+        );
+        let decoded: SpawnOrigin = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded, origin);
+        assert!(decoded.asked_by("agent_chat") && decoded.asked_by("agent_launch"));
+        assert!(!decoded.asked_by("launcher") && !decoded.asked_by("person-chat"));
+        assert!(!decoded.asked_by(""));
     }
 
     #[test]
