@@ -258,45 +258,10 @@ pub use scope::{scope_arguments, scope_unit, systemd_run};
 /// Spawns on this computer, through each harness's adapter.
 pub struct RegistrySpawner(pub Registry);
 
-/// Check actual directory access, not just its existence. In particular,
-/// macOS can allow `stat` while denying a launchd job access to a removable
-/// volume. Bun reports that denial as `Unexpected` and, at launchd's usual
-/// soft limit of 256, misleadingly suggests raising the descriptor limit.
-/// This does filesystem I/O and must run off the async runtime.
-pub(super) fn check_directory(directory: &Path) -> Result<(), String> {
-    let metadata =
-        std::fs::metadata(directory).map_err(|error| directory_error(directory, error))?;
-    if !metadata.is_dir() {
-        return Err(format!(
-            "{} is not a folder on this computer",
-            directory.display()
-        ));
-    }
-    let mut entries =
-        std::fs::read_dir(directory).map_err(|error| directory_error(directory, error))?;
-    // Some platforms defer reading the directory until the first entry.
-    if let Some(entry) = entries.next() {
-        entry.map_err(|error| directory_error(directory, error))?;
-    }
-    Ok(())
-}
-
-fn directory_error(directory: &Path, error: std::io::Error) -> String {
-    if error.kind() == std::io::ErrorKind::NotFound {
-        return format!("{} is not a folder on this computer", directory.display());
-    }
-    let reason = format!(
-        "Agent Relay could not read the working folder {}: {error}.",
-        directory.display()
-    );
-    if error.kind() == std::io::ErrorKind::PermissionDenied {
-        #[cfg(target_os = "macos")]
-        return format!("{reason} Allow Agent Relay to access this folder in System Settings → Privacy & Security → Files and Folders, then retry.");
-        #[cfg(not(target_os = "macos"))]
-        return format!("{reason} Give the account running Agent Relay permission to read and search this folder, then retry.");
-    }
-    reason
-}
+mod directory;
+#[cfg(test)]
+use directory::directory_error;
+pub(super) use directory::{check_directory, DirectoryError};
 
 impl Spawner for RegistrySpawner {
     fn available(&self) -> Vec<HarnessId> {
@@ -318,10 +283,15 @@ impl Spawner for RegistrySpawner {
 
     fn launch(&self, launch: &Launch, started: Started) -> Result<Launched, LaunchError> {
         if !launch.directory.is_dir() {
-            return Err(LaunchError::Failed(format!(
-                "{} is not a folder on this computer",
-                launch.directory.display()
-            )));
+            // A fork's folder came from its source session, so one that is
+            // gone is answered without its path.
+            return Err(match launch.fork {
+                Some(_) => LaunchError::Fork(super::fork::FOLDER_GONE.into()),
+                None => LaunchError::Failed(format!(
+                    "{} is not a folder on this computer",
+                    launch.directory.display()
+                )),
+            });
         }
         let result = match self
             .0
@@ -858,12 +828,19 @@ mod tests {
         assert_eq!(check_directory(folder.path()), Ok(()));
         let file = folder.path().join("file");
         std::fs::write(&file, "").unwrap();
-        assert!(check_directory(&file)
-            .unwrap_err()
-            .contains("is not a folder"));
-        assert!(check_directory(&folder.path().join("missing"))
-            .unwrap_err()
-            .contains("is not a folder"));
+        assert_eq!(
+            check_directory(&file).unwrap_err().to_string(),
+            format!("{} is not a folder on this computer", file.display())
+        );
+        let missing = folder.path().join("missing");
+        assert_eq!(
+            check_directory(&missing),
+            Err(DirectoryError::Missing(missing.clone()))
+        );
+        assert_eq!(
+            check_directory(&missing).unwrap_err().to_string(),
+            format!("{} is not a folder on this computer", missing.display())
+        );
 
         // Root bypasses mode bits. The error mapping is also checked below,
         // including EPERM (the macOS privacy denial) and EACCES. Windows has
@@ -880,9 +857,11 @@ mod tests {
             let denied = check_directory(folder.path());
             std::fs::set_permissions(folder.path(), std::fs::Permissions::from_mode(0o700))
                 .unwrap();
-            assert!(denied
-                .unwrap_err()
-                .contains("could not read the working folder"));
+            assert!(matches!(
+                denied,
+                Err(DirectoryError::Unreadable(reason))
+                    if reason.contains("could not read the working folder")
+            ));
         }
     }
 
@@ -893,10 +872,12 @@ mod tests {
         let error = directory_error(
             Path::new(r"C:\work\project"),
             std::io::Error::from_raw_os_error(5),
-        );
+        )
+        .to_string();
         assert!(error.contains(r"C:\work\project"));
         assert!(error.contains("permission to read and search this folder"));
-        let error = directory_error(Path::new(r"C:\work\project"), std::io::Error::other("disk"));
+        let error = directory_error(Path::new(r"C:\work\project"), std::io::Error::other("disk"))
+            .to_string();
         assert!(error.contains("could not read the working folder"));
         assert!(!error.contains("permission"));
     }
@@ -958,7 +939,8 @@ mod tests {
             let error = directory_error(
                 Path::new("/work/project"),
                 std::io::Error::from_raw_os_error(errno),
-            );
+            )
+            .to_string();
             assert!(error.contains("/work/project"));
             assert!(!error.contains("not a folder"));
             assert!(!error.contains("ulimit"));
@@ -970,7 +952,8 @@ mod tests {
         let error = directory_error(
             Path::new("/work/project"),
             std::io::Error::from_raw_os_error(libc::EIO),
-        );
+        )
+        .to_string();
         assert!(error.contains("could not read the working folder"));
         assert!(!error.contains("permission"));
     }
@@ -1223,6 +1206,15 @@ mod tests {
                 spawner.launch(&launch(codex::ID, &missing), &|_, _| {}),
                 Err(LaunchError::Failed(reason)) if reason.contains("is not a folder")
             ));
+            // A fork's folder is its source's, so its path is not repeated.
+            let fork = Launch {
+                fork: Some("0b6f2d0e-8a51-4a5c-9c3e-5d1f0a2b3c4d".into()),
+                ..launch(codex::ID, &missing)
+            };
+            assert_eq!(
+                spawner.launch(&fork, &|_, _| {}).unwrap_err(),
+                LaunchError::Fork(crate::relay::spawn::fork::FOLDER_GONE.into())
+            );
             assert!(matches!(
                 spawner.launch(&launch(claude::ID, folder.path()), &|_, _| {}),
                 Err(LaunchError::Unavailable(reason)) if reason == "this computer cannot spawn Claude yet"

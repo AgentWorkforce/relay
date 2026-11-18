@@ -14,7 +14,8 @@ use super::leader::{answer, ForkFrom, OpenError};
 use super::{record, GrokAdapter, DESCRIPTOR};
 use crate::relay::existing_session::grok::{loaded_session_id, LeaderClient};
 use crate::relay::existing_session::platform::{self, OpenOptionsExt};
-use crate::relay::grok::GrokConfig;
+use crate::relay::grok::{decode_component, GrokConfig};
+pub(super) use crate::relay::spawn::fork::FOLDER_GONE;
 use crate::relay::spawn::launch::{Launch, LaunchError};
 use crate::relay::store::{is_uuid, SessionKind, Target};
 use serde_json::{json, Value};
@@ -31,8 +32,6 @@ const INTERNAL_ERROR: i64 = -32603;
 pub(super) const TOO_OLD: &str = "spawn_fork_unavailable: Grok on this computer is too old to fork sessions. Update it with `grok update`, then try again.";
 pub(super) const NOT_FOUND: &str =
     "spawn_fork_not_found: Grok on this computer has no saved session to copy";
-pub(super) const FOLDER_GONE: &str =
-    "spawn_fork_not_found: the folder of the session to copy is no longer on this computer";
 pub(super) const FAILED: &str =
     "spawn_fork_unavailable: Grok on this computer could not copy the session";
 
@@ -132,8 +131,9 @@ pub(super) fn directory(grok: &GrokAdapter, target: &Target) -> Option<PathBuf> 
 }
 
 /// The folder Grok's own summary of session `id` names, found under the
-/// folder Grok filed it in. Folders and files that are links are passed
-/// over, so nothing outside `home` is read.
+/// folder Grok filed it in. An older summary names none (it has no `info`):
+/// the folder it is filed under, decoded, is then the session's. Folders and
+/// files that are links are passed over, so nothing outside `home` is read.
 pub(super) fn saved_directory(home: &Path, id: &str) -> Option<PathBuf> {
     if !is_uuid(id) {
         return None;
@@ -155,11 +155,18 @@ pub(super) fn saved_directory(home: &Path, id: &str) -> Option<PathBuf> {
                 return None;
             }
             let summary = read_summary(&session.join("summary.json"))?;
-            let info = summary.get("info")?;
-            let cwd = info["cwd"].as_str().filter(|_| info["id"] == id)?;
-            // A summary filed under another folder than the one it names
-            // is not where Grok would look for the session.
-            (config.session_dir(cwd, id) == session).then(|| PathBuf::from(cwd))
+            let cwd = match summary.as_object()?.get("info") {
+                Some(info) => info["cwd"]
+                    .as_str()
+                    .filter(|_| info["id"] == id)?
+                    .to_owned(),
+                None => decode_component(entry.file_name().to_str()?)?,
+            };
+            // A summary filed under another folder than the one it names,
+            // or a folder name Grok would not have written, is not where
+            // Grok would look for the session.
+            (config.session_dir(&cwd, id) == session && plain_absolute(Path::new(&cwd)))
+                .then(|| PathBuf::from(cwd))
         })
 }
 

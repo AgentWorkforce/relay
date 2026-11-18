@@ -296,6 +296,59 @@ fn a_summary_that_does_not_match_where_it_is_filed_is_passed_over() {
     assert_eq!(saved_directory(&home, SOURCE), None);
 }
 
+/// Files `summary` under the sessions folder named `folder`, as it is.
+fn summary_in(home: &Path, folder: &str, id: &str, summary: &str) {
+    let session = home.join("sessions").join(folder).join(id);
+    std::fs::create_dir_all(&session).unwrap();
+    std::fs::write(session.join("summary.json"), summary).unwrap();
+}
+
+#[test]
+fn an_older_summary_without_info_is_found_by_the_folder_it_is_filed_under() {
+    let world = World::new();
+    let home = world.path().join(".grok");
+    let cwd = "/work/caf\u{e9} project";
+    let old = json!({"generated_title": "x"}).to_string();
+    summary_at(&home, cwd, SOURCE, &old);
+    assert_eq!(saved_directory(&home, SOURCE), Some(PathBuf::from(cwd)));
+}
+
+#[test]
+fn an_older_summary_under_a_name_grok_would_not_write_is_passed_over() {
+    let world = World::new();
+    let home = world.path().join(".grok");
+    let old = json!({"generated_title": "x"}).to_string();
+    // Lowercase hex, and a character Grok always encodes.
+    summary_in(&home, "%2fwork%2fproject", SOURCE, &old);
+    summary_in(&home, "%2Fwork%2Fa b", SOURCE, &old);
+    // A relative folder, and names that do not decode.
+    summary_in(&home, "work%2Fproject", SOURCE, &old);
+    summary_in(&home, "%2Fwork%2", SOURCE, &old);
+    summary_in(&home, "%2Fwork%FF", SOURCE, &old);
+    assert_eq!(saved_directory(&home, SOURCE), None);
+}
+
+#[test]
+fn a_summary_whose_info_does_not_match_is_not_read_by_its_folder_name() {
+    let world = World::new();
+    let home = world.path().join(".grok");
+    let cwd = "/work/project";
+    // The folder name decodes to `cwd`, but the summary says otherwise.
+    summary_at(&home, cwd, SOURCE, &summary(SOURCE, "/work/elsewhere"));
+    assert_eq!(saved_directory(&home, SOURCE), None);
+    std::fs::remove_dir_all(home.join("sessions")).unwrap();
+    summary_at(&home, cwd, SOURCE, &summary(COPY, cwd));
+    assert_eq!(saved_directory(&home, SOURCE), None);
+    std::fs::remove_dir_all(home.join("sessions")).unwrap();
+    for info in [json!(null), json!("x"), json!({"id": SOURCE})] {
+        summary_at(&home, cwd, SOURCE, &json!({"info": info}).to_string());
+        assert_eq!(saved_directory(&home, SOURCE), None, "{info}");
+    }
+    // Nor is a summary that is not an object.
+    summary_at(&home, cwd, SOURCE, "[]");
+    assert_eq!(saved_directory(&home, SOURCE), None);
+}
+
 #[test]
 fn nothing_outside_the_grok_home_is_read() {
     let world = World::new();

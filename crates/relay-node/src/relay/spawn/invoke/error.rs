@@ -38,7 +38,12 @@ impl SpawnError {
     pub(in crate::relay::spawn) fn redacted(self) -> Self {
         let redact = crate::relay::harness::diagnostics::redact;
         match self {
-            Self::Plain(error) => Self::Plain(redact(&error)),
+            // A leading code is this node's own, never a secret, though one
+            // can look like a key (`spawn_fork_…` holds `rk_`).
+            Self::Plain(error) => Self::Plain(match error.split_once(": ") {
+                Some((code, message)) if is_code(code) => format!("{code}: {}", redact(message)),
+                _ => redact(&error),
+            }),
             Self::Failure(mut failure) => {
                 failure.message = redact(&failure.message);
                 Self::Failure(failure)
@@ -52,6 +57,11 @@ impl SpawnError {
             SpawnError::Failure(failure) => format!("{}: {}", failure.code, failure.message),
         }
     }
+}
+
+/// Whether `word` is a spawn error code, such as `spawn_fork_not_found`.
+fn is_code(word: &str) -> bool {
+    word.starts_with("spawn_") && word.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
 }
 
 /// A spawn refused for good with `code`: trying again here would fail too.
