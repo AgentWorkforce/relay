@@ -99,21 +99,21 @@ pub enum LaunchError {
     /// The harness is not installed here.
     Unavailable(String),
     Failed(String),
+    /// The harness did not copy the session a fork starts from: the whole
+    /// `spawn_fork_*` error, as Cloud shows it.
+    Fork(String),
 }
 
 impl LaunchError {
     pub(crate) fn diagnose(self, executable: &Path, arguments: &[String], log: &Path) -> Self {
+        let diagnosed = |reason: String| {
+            crate::relay::harness::diagnostics::launch_failure(&reason, executable, arguments, log)
+        };
         match self {
-            Self::Unavailable(reason) => {
-                Self::Unavailable(crate::relay::harness::diagnostics::launch_failure(
-                    &reason, executable, arguments, log,
-                ))
-            }
-            Self::Failed(reason) => {
-                Self::Failed(crate::relay::harness::diagnostics::launch_failure(
-                    &reason, executable, arguments, log,
-                ))
-            }
+            Self::Unavailable(reason) => Self::Unavailable(diagnosed(reason)),
+            Self::Failed(reason) => Self::Failed(diagnosed(reason)),
+            // Its code says what the person can do; a log path adds nothing.
+            Self::Fork(code) => Self::Fork(code),
         }
     }
     /// The `action.result` error Cloud shows.
@@ -121,6 +121,7 @@ impl LaunchError {
         match self {
             LaunchError::Unavailable(reason) => format!("spawn_harness_unavailable: {reason}"),
             LaunchError::Failed(reason) => format!("spawn_failed: {reason}"),
+            LaunchError::Fork(code) => code.clone(),
         }
     }
 }

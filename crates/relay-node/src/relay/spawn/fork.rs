@@ -1,21 +1,21 @@
 //! Forking: a spawn that starts as a copy of another agent's session on
 //! this computer (`fork_from`), in that session's folder, with its whole
 //! conversation, through the harness's own fork (`claude --resume
-//! --fork-session`, Codex's `thread/fork`). The original session is left as
-//! it was. Only the verified machine owner may fork, since the copy hands
-//! the source's transcript to whoever asked.
+//! --fork-session`, Codex's `thread/fork`, Grok's `_x.ai/session/fork`).
+//! The original session is left as it was. Only the verified machine owner
+//! may fork, since the copy hands the source's transcript to whoever asked.
 
 use super::invoke::SpawnError;
 use super::report_back;
 use super::wire::{HarnessId, SpawnRequest};
 use crate::relay::daemon::Core;
-use crate::relay::harness::{claude, codex};
+use crate::relay::harness::{claude, codex, grok};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Harnesses whose spawns can start as a copy of a session.
 pub fn supported(harness: HarnessId) -> bool {
-    [claude::ID, codex::ID].contains(&harness)
+    [claude::ID, codex::ID, grok::ID].contains(&harness)
 }
 
 /// The session a fork copies, by the harness's own id, and where it runs.
@@ -155,9 +155,10 @@ mod tests {
     const OWNER: &str = "agent_owner";
 
     #[test]
-    fn only_claude_and_codex_fork() {
+    fn only_claude_codex_and_grok_fork() {
         assert!(supported(claude::ID));
         assert!(supported(codex::ID));
+        assert!(supported(grok::ID));
         assert!(!supported(crate::relay::harness::opencode::ID));
     }
 

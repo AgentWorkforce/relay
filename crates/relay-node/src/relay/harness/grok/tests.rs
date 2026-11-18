@@ -43,6 +43,8 @@ struct FakeLeaders {
     environments: Mutex<Vec<BTreeMap<String, String>>>,
     listeners: Mutex<Vec<UnixListener>>,
     accepted: Mutex<Option<bool>>,
+    /// The session each open was told to copy.
+    forks: Mutex<Vec<Option<(String, PathBuf)>>>,
 }
 
 impl FakeLeaders {
@@ -53,6 +55,7 @@ impl FakeLeaders {
             environments: Mutex::default(),
             listeners: Mutex::default(),
             accepted: Mutex::default(),
+            forks: Mutex::default(),
         }
     }
 }
@@ -98,9 +101,13 @@ impl LeaderRuntime for FakeLeaders {
 
     fn open(
         &self,
-        _: &SessionOpen,
+        open: &SessionOpen,
         accept: &dyn Fn(&Opened) -> bool,
-    ) -> Result<(Opened, Outcome), String> {
+    ) -> Result<(Opened, Outcome), OpenError> {
+        self.forks.lock().unwrap().push(
+            open.fork
+                .map(|source| (source.session_id.to_owned(), source.cwd.to_path_buf())),
+        );
         let opened = Opened {
             session_id: SESSION.into(),
             model_id: "grok-4.7".into(),
@@ -477,7 +484,7 @@ impl LeaderRuntime for VanishingLeaders {
         &self,
         open: &SessionOpen,
         accept: &dyn Fn(&Opened) -> bool,
-    ) -> Result<(Opened, Outcome), String> {
+    ) -> Result<(Opened, Outcome), OpenError> {
         self.0.open(open, accept)
     }
 }
@@ -503,6 +510,154 @@ fn a_leader_gone_before_it_is_seen_fails_the_launch_and_is_never_recorded() {
     );
     assert!(recorded.lock().unwrap().is_empty());
     assert_eq!(*leaders.0.accepted.lock().unwrap(), None);
+}
+
+const FORK_SOURCE: &str = "7b2e6f0a-1c4d-4e8f-9a3b-5d6c7e8f9a0b";
+
+fn fork_launch(directory: &Path, source: &str) -> Launch {
+    Launch {
+        fork: Some(source.into()),
+        ..launch(directory, true)
+    }
+}
+
+#[test]
+fn a_fork_hands_its_source_to_the_leader_and_runs_as_the_copy() {
+    let world = World::new();
+    world.install("1.0.46");
+    let leaders = Arc::new(FakeLeaders::new(
+        world.table.clone(),
+        Outcome::Delivered {
+            receipt_id: "grok-acp:p1".into(),
+        },
+    ));
+    let grok = world.adapter(leaders.clone(), true);
+    let project = world.project();
+    let launched = grok
+        .launch(&fork_launch(&project, FORK_SOURCE), &|_, _| {})
+        .unwrap();
+    assert_eq!(launched.target, Target::new(SessionKind::Grok, SESSION));
+    assert_eq!(
+        *leaders.forks.lock().unwrap(),
+        [Some((FORK_SOURCE.to_owned(), project))]
+    );
+}
+
+#[test]
+fn a_fork_that_cannot_be_copied_starts_no_leader() {
+    let world = World::new();
+    world.install("1.0.46");
+    let leaders = Arc::new(FakeLeaders::new(
+        world.table.clone(),
+        Outcome::Retry(Failure::TimedOut),
+    ));
+    let grok = world.adapter(leaders.clone(), true);
+    let gone = world.path().join("gone");
+    let refused = grok.launch(&fork_launch(&gone, FORK_SOURCE), &|_, _| {});
+    assert!(
+        matches!(&refused, Err(LaunchError::Fork(code)) if code == fork::FOLDER_GONE),
+        "{refused:?}"
+    );
+    let refused = grok.launch(&fork_launch(&world.project(), "../../etc"), &|_, _| {});
+    assert!(
+        matches!(&refused, Err(LaunchError::Fork(code)) if code == fork::FAILED),
+        "{refused:?}"
+    );
+    assert!(leaders.environments.lock().unwrap().is_empty());
+    assert!(leaders.forks.lock().unwrap().is_empty());
+}
+
+/// Grok refuses every copy as too old to fork.
+struct OldLeaders(FakeLeaders);
+
+impl LeaderRuntime for OldLeaders {
+    fn start(&self, leader: &LeaderStart, scope: Option<(&Path, &str)>) -> Result<i32, String> {
+        self.0.start(leader, scope)
+    }
+
+    fn open(
+        &self,
+        _: &SessionOpen,
+        _: &dyn Fn(&Opened) -> bool,
+    ) -> Result<(Opened, Outcome), OpenError> {
+        Err(OpenError::Fork(fork::TOO_OLD.into()))
+    }
+}
+
+#[test]
+fn a_copy_grok_refuses_keeps_its_code_and_ends_the_leader() {
+    let world = World::new();
+    world.install("1.0.46");
+    let leaders = Arc::new(OldLeaders(FakeLeaders::new(
+        world.table.clone(),
+        Outcome::Retry(Failure::TimedOut),
+    )));
+    let grok = world.adapter(leaders.clone(), true);
+    let refused = grok.launch(&fork_launch(&world.project(), FORK_SOURCE), &|_, _| {});
+    assert!(
+        matches!(&refused, Err(LaunchError::Fork(code)) if code == fork::TOO_OLD),
+        "{refused:?}"
+    );
+    assert_eq!(
+        refused.unwrap_err().code(),
+        "spawn_fork_unavailable: Grok on this computer is too old to fork sessions. Update it with `grok update`, then try again."
+    );
+    assert!(record::read(&grok.folder, SESSION).is_none());
+}
+
+#[test]
+fn a_fork_runs_in_the_folder_its_record_or_groks_summary_names() {
+    let world = World::new();
+    let leaders = Arc::new(FakeLeaders::new(
+        world.table.clone(),
+        Outcome::Retry(Failure::TimedOut),
+    ));
+    let mut grok = world.adapter(leaders, true);
+    // The leaders' Grok home is the adapter's, whatever this test runs in.
+    grok.environment = Some(Arc::new(|_, mut environment| {
+        environment.remove("GROK_HOME");
+        environment
+    }));
+    // A spawned session, by its record.
+    let spawned = recorded(&world, &grok);
+    let target = Target::new(SessionKind::Grok, SESSION);
+    assert_eq!(
+        fork::directory(&grok, &target),
+        Some(spawned.binding.cwd.clone())
+    );
+
+    // Any other session in the same home, by Grok's summary of it.
+    let cwd = world.path().join("elsewhere");
+    let session = grok.grok.session_dir(cwd.to_str().unwrap(), FORK_SOURCE);
+    std::fs::create_dir_all(&session).unwrap();
+    std::fs::write(
+        session.join("summary.json"),
+        serde_json::json!({"info": {"id": FORK_SOURCE, "cwd": cwd}}).to_string(),
+    )
+    .unwrap();
+    for kind in [SessionKind::Grok, SessionKind::GrokOpen] {
+        assert_eq!(
+            fork::directory(&grok, &Target::new(kind, FORK_SOURCE)),
+            Some(cwd.clone())
+        );
+    }
+    // Not another harness's session, nor one recorded in another home.
+    assert_eq!(
+        fork::directory(
+            &grok,
+            &Target::new(SessionKind::ClaudeTerminal, FORK_SOURCE)
+        ),
+        None
+    );
+    record::write(
+        &grok.folder,
+        &SpawnedGrok {
+            grok_home: world.path().join("other-home"),
+            ..spawned
+        },
+    )
+    .unwrap();
+    assert_eq!(fork::directory(&grok, &target), None);
 }
 
 #[test]
@@ -1020,6 +1175,7 @@ fn a_session_is_opened_always_approving_with_the_persons_mcp_and_given_its_task(
         directory: &project,
         text: "fix the build",
         timeout: Duration::from_secs(10),
+        fork: None,
     };
     let asked = Mutex::new(None);
     let (opened, outcome) = SystemLeaders
@@ -1081,6 +1237,7 @@ fn a_session_the_core_does_not_accept_is_given_nothing() {
         directory: &project,
         text: "fix the build",
         timeout: Duration::from_secs(10),
+        fork: None,
     };
     let refused = SystemLeaders.open(&open, &|_| false);
     assert_eq!(refused, Err("its leader could not be verified".into()));
@@ -1198,6 +1355,7 @@ fn recording_the_session_does_not_use_the_first_prompt_budget() {
         directory: &project,
         text: "fix the build",
         timeout: Duration::from_secs(5),
+        fork: None,
     };
     let (_, outcome) = SystemLeaders
         .open(&open, &|_| {

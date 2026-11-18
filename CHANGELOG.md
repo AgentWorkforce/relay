@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `agent-relay-node`: desktop spawns accept `fork_from` for a Grok session too, so a new Grok agent starts with a copy of that session's conversation, in its folder, and the original carries on untouched. Grok makes the copy itself. A Grok without session forking gets `spawn_fork_unavailable` with a prompt to run `grok update`, and a session Grok no longer has gets `spawn_fork_not_found`. Spawn capabilities now list `grok` among the harnesses that can fork. Not available on Windows, where Grok cannot be spawned.
+
 ## [18.10.0] - 2026-11-17
 
 ### Added

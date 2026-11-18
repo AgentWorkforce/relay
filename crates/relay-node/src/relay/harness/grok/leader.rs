@@ -7,8 +7,9 @@
 //! of its own). The session is opened by a short-lived ACP client attached
 //! to it, `existing_session::grok::LeaderClient`, the same client delivery
 //! uses: `initialize`, `session/new`, then the first task as one
-//! `session/prompt`. The client goes once the leader has the prompt; the
-//! turn runs on in the leader.
+//! `session/prompt`. A fork opens a copy of another session instead of a new
+//! one (`fork`). The client goes once the leader has the prompt; the turn
+//! runs on in the leader.
 
 use crate::relay::existing_session::grok::{leader_identity, loaded_session_id, LeaderClient};
 use crate::relay::existing_session::Outcome;
@@ -43,6 +44,48 @@ pub struct SessionOpen<'a> {
     /// Budget for each ACP phase; a cold initialization must not consume
     /// the time available for session creation or the first task receipt.
     pub timeout: Duration,
+    /// The session to copy, when the agent starts as a fork of it.
+    pub fork: Option<ForkFrom<'a>>,
+}
+
+/// The session a fork copies: Grok's id for it and the folder it ran in,
+/// which is where Grok keeps it.
+#[derive(Clone, Copy, Debug)]
+pub struct ForkFrom<'a> {
+    pub session_id: &'a str,
+    pub cwd: &'a Path,
+}
+
+/// Why no session was opened.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OpenError {
+    /// The leader did not open one; why, for the launch's diagnostic.
+    Failed(String),
+    /// The leader did not copy the session: the whole `spawn_fork_*`
+    /// error Cloud shows, naming no path.
+    Fork(String),
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OpenError::Failed(reason) | OpenError::Fork(reason) => f.write_str(reason),
+        }
+    }
+}
+
+impl std::error::Error for OpenError {}
+
+impl From<&str> for OpenError {
+    fn from(reason: &str) -> OpenError {
+        OpenError::Failed(reason.into())
+    }
+}
+
+impl From<String> for OpenError {
+    fn from(reason: String) -> OpenError {
+        OpenError::Failed(reason)
+    }
 }
 
 /// What the leader reports of the session it opened.
@@ -65,7 +108,7 @@ pub trait LeaderRuntime: Send + Sync {
         &self,
         open: &SessionOpen,
         accept: &dyn Fn(&Opened) -> bool,
-    ) -> Result<(Opened, Outcome), String>;
+    ) -> Result<(Opened, Outcome), OpenError>;
 }
 
 /// `grok agent leader` on `socket`, kept running with no client attached,
@@ -106,22 +149,19 @@ impl LeaderRuntime for SystemLeaders {
         &self,
         open: &SessionOpen,
         accept: &dyn Fn(&Opened) -> bool,
-    ) -> Result<(Opened, Outcome), String> {
+    ) -> Result<(Opened, Outcome), OpenError> {
+        if let Some(source) = open.fork {
+            super::fork::check_source(source)?;
+        }
         let mut client = LeaderClient::start(open.executable, open.socket, open.directory)
             .ok_or("its ACP client did not start")?;
         let initialized = answer(client.initialize(Instant::now() + open.timeout))?;
         let (model_id, agent_version) =
             leader_identity(&initialized).ok_or("its leader speaks another ACP version")?;
-        // Always-approve, as nobody answers a spawned agent's prompts; with
-        // full access off the leader's sandbox confines it. No MCP servers
-        // are added: Grok loads the person's own.
-        let params = json!({
-            "cwd": open.directory, "mcpServers": [], "_meta": {"yoloMode": true},
-        });
-        let created = answer(client.request("session/new", params, Instant::now() + open.timeout))?;
-        let session_id = loaded_session_id(&created)
-            .filter(|id| is_uuid(id))
-            .ok_or("its leader named no session")?;
+        let session_id = match open.fork {
+            Some(source) => super::fork::copy(&mut client, source, open.directory, open.timeout)?,
+            None => new_session(&mut client, open)?,
+        };
         let opened = Opened {
             session_id,
             model_id,
@@ -140,7 +180,21 @@ impl LeaderRuntime for SystemLeaders {
     }
 }
 
-fn answer(
+/// A new, empty session in the agent's folder.
+fn new_session(client: &mut LeaderClient, open: &SessionOpen) -> Result<String, OpenError> {
+    // Always-approve, as nobody answers a spawned agent's prompts; with
+    // full access off the leader's sandbox confines it. No MCP servers
+    // are added: Grok loads the person's own.
+    let params = json!({
+        "cwd": open.directory, "mcpServers": [], "_meta": {"yoloMode": true},
+    });
+    let created = answer(client.request("session/new", params, Instant::now() + open.timeout))?;
+    Ok(loaded_session_id(&created)
+        .filter(|id| is_uuid(id))
+        .ok_or("its leader named no session")?)
+}
+
+pub(super) fn answer(
     response: Option<Result<serde_json::Value, ()>>,
 ) -> Result<serde_json::Value, &'static str> {
     match response {

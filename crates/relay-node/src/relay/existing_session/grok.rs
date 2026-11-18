@@ -7,8 +7,10 @@
 //! resent.
 
 mod proof;
+mod rpc;
 use proof::leader_proves;
 pub(crate) use proof::verify_title_binding;
+use rpc::{recv_event, request_id, response, write_request};
 
 #[cfg(unix)]
 use super::platform::UnixStream;
@@ -20,7 +22,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
@@ -480,14 +482,27 @@ impl LeaderClient {
         params: Value,
         deadline: Instant,
     ) -> Option<Result<Value, ()>> {
+        self.call(method, params, deadline)
+            .map(|answer| answer.map_err(|_| ()))
+    }
+
+    /// `request`, keeping the JSON-RPC error code of a refusal, where the
+    /// leader gave one: a fork tells an unknown method from a missing
+    /// session by it.
+    pub(crate) fn call(
+        &mut self,
+        method: &str,
+        params: Value,
+        deadline: Instant,
+    ) -> Option<Result<Value, Option<i64>>> {
         if Instant::now() >= deadline {
             return None;
         }
         let Some(id) = request_id() else {
-            return Some(Err(()));
+            return Some(Err(None));
         };
         if !write_request(&mut self.stdin, &id, method, params) {
-            return Some(Err(()));
+            return Some(Err(None));
         }
         response(&self.receiver, deadline, &id)
     }
@@ -511,6 +526,8 @@ enum Event {
         id: String,
         result: Option<Value>,
         error: bool,
+        /// The error's JSON-RPC code, when it has one.
+        code: Option<i64>,
     },
     Consumed {
         prompt_id: String,
@@ -591,6 +608,7 @@ fn decode_event(line: &str) -> Event {
             id: id.to_owned(),
             result: value.get("result").cloned(),
             error: value.get("error").is_some(),
+            code: value["error"]["code"].as_i64(),
         };
     }
     let update_kind = text_at(
@@ -670,44 +688,6 @@ fn decode_event(line: &str) -> Event {
         }
     }
     Event::Other
-}
-
-fn request_id() -> Option<String> {
-    let mut bytes = [0u8; 16];
-    getrandom::getrandom(&mut bytes).ok()?;
-    Some(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
-}
-
-fn write_request(stdin: &mut impl Write, id: &str, method: &str, params: Value) -> bool {
-    let request = json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
-    serde_json::to_writer(&mut *stdin, &request).is_ok()
-        && stdin.write_all(b"\n").is_ok()
-        && stdin.flush().is_ok()
-}
-
-fn recv_event(receiver: &mpsc::Receiver<Event>, deadline: Instant) -> Option<Event> {
-    loop {
-        let left = deadline.checked_duration_since(Instant::now())?;
-        match receiver.recv_timeout(left).ok()? {
-            Event::Ignored | Event::Other => continue,
-            event => return Some(event),
-        }
-    }
-}
-
-fn response(
-    receiver: &mpsc::Receiver<Event>,
-    deadline: Instant,
-    expected: &str,
-) -> Option<Result<Value, ()>> {
-    loop {
-        match recv_event(receiver, deadline)? {
-            Event::Response { id, result, error } if id == expected => {
-                return Some(if error { Err(()) } else { result.ok_or(()) });
-            }
-            _ => continue,
-        }
-    }
 }
 
 const MAX_PROMPT_EVIDENCE: usize = 64;
@@ -794,7 +774,9 @@ impl PromptEvidence {
                     .or_default()
                     .push((stop_reason, model_id));
             }
-            Event::Response { id, result, error } if id == rpc_id => {
+            Event::Response {
+                id, result, error, ..
+            } if id == rpc_id => {
                 let Some(result) = result.filter(|_| !error) else {
                     return Err(Failure::ProviderRefused);
                 };
@@ -1554,6 +1536,7 @@ printf '{{"jsonrpc":"2.0","id":"%s","result":{{"_meta":{{"sessionId":"01a0fd4c-3
                         }
                     })),
                     error: false,
+                    code: None,
                 },
                 "rpc-missing-tokens",
                 "grok-4.7",
@@ -1607,6 +1590,7 @@ printf '{{"jsonrpc":"2.0","id":"%s","result":{{"_meta":{{"sessionId":"01a0fd4c-3
                         }
                     })),
                     error: false,
+                    code: None,
                 },
                 "rpc-request-2",
                 "grok-4.7",
