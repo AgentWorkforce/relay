@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay-node`: workspace leaders. The node reads the workspace's leaders from Relaycast (`GET /v1/workspace/leaders`), caches them for a minute and reads them again as each agent starts here. While reads fail the last list is kept for at most ten minutes after the last good read, and a 401, 403 or 404 drops it at once. A leader's 1:1 direct message is native input with a `[leader: @<name> leads this work; …]` line naming the leader as the list does: to spawned agents while `spawn_native_input` is on, and as a user turn to Claude Code sessions with teammate native input on; anywhere else it is a peer message. A leader's native input to a spawned Codex agent is the turn's visible input, as the requester's is, also while relay messages are hidden. A spawn's own requester keeps its requester framing even when it is a leader. Leaders are matched by agent id only, their channel and group messages stay peer messages, and they cannot answer approvals, fork or release. `settings.get` shows the list as `workspace_leaders`, read only.
 
+### Added
+
+- `agent-relay-node`: desktop spawns accept `fork_from` for a Grok session too, so a new Grok agent starts with a copy of that session's conversation, in its folder, and the original carries on untouched. Grok makes the copy itself. A Grok without session forking gets `spawn_fork_unavailable` with a prompt to run `grok update`, and a session Grok no longer has gets `spawn_fork_not_found`. Spawn capabilities now list `grok` among the harnesses that can fork. Not available on Windows, where Grok cannot be spawned. Grok sessions saved before Grok recorded their folder in the session summary can be forked too, and a Grok fork that fails after Grok made the copy removes the copy again, where Grok supports it. For every harness, a fork whose source folder has been deleted now gets `spawn_fork_not_found` without the folder's path, instead of `spawn_invalid_input` naming it, and one whose folder can't be read gets `spawn_fork_unavailable`.
+
 ## [18.10.0] - 2026-11-17
 
 ### Added

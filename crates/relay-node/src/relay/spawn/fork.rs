@@ -1,22 +1,28 @@
 //! Forking: a spawn that starts as a copy of another agent's session on
 //! this computer (`fork_from`), in that session's folder, with its whole
 //! conversation, through the harness's own fork (`claude --resume
-//! --fork-session`, Codex's `thread/fork`). The original session is left as
-//! it was. Only the verified machine owner may fork, since the copy hands
-//! the source's transcript to whoever asked.
+//! --fork-session`, Codex's `thread/fork`, Grok's `_x.ai/session/fork`).
+//! The original session is left as it was. Only the verified machine owner
+//! may fork, since the copy hands the source's transcript to whoever asked.
 
 use super::invoke::SpawnError;
+use super::launch::DirectoryError;
 use super::report_back;
 use super::wire::{HarnessId, SpawnRequest};
 use crate::relay::daemon::Core;
-use crate::relay::harness::{claude, codex};
+use crate::relay::harness::{claude, codex, grok};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Harnesses whose spawns can start as a copy of a session.
 pub fn supported(harness: HarnessId) -> bool {
-    [claude::ID, codex::ID].contains(&harness)
+    [claude::ID, codex::ID, grok::ID].contains(&harness)
 }
+
+/// A fork whose source's folder is gone. It names no path: the folder came
+/// from the source session, not from whoever asked.
+pub(crate) const FOLDER_GONE: &str =
+    "spawn_fork_not_found: the folder of the session to copy is no longer on this computer";
 
 /// The session a fork copies, by the harness's own id, and where it runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -122,6 +128,20 @@ impl Core {
     }
 }
 
+/// Why a spawn cannot start in its folder. A fork's folder is its
+/// source's, not the requester's input: one that is gone is
+/// `FOLDER_GONE`, and one that cannot be read keeps its reason, which
+/// names what to allow.
+pub(super) fn directory_refusal(error: &DirectoryError, fork: bool) -> String {
+    match (error, fork) {
+        (DirectoryError::Missing(_), true) => FOLDER_GONE.into(),
+        (DirectoryError::Unreadable(reason), true) => {
+            format!("spawn_fork_unavailable: {reason}")
+        }
+        (error, false) => format!("spawn_invalid_input: {error}"),
+    }
+}
+
 /// The first turn of a fork: who it is now, then what the person asked.
 pub fn first_task(source: &str, task: &str) -> String {
     let lead = format!(
@@ -155,9 +175,10 @@ mod tests {
     const OWNER: &str = "agent_owner";
 
     #[test]
-    fn only_claude_and_codex_fork() {
+    fn only_claude_codex_and_grok_fork() {
         assert!(supported(claude::ID));
         assert!(supported(codex::ID));
+        assert!(supported(grok::ID));
         assert!(!supported(crate::relay::harness::opencode::ID));
     }
 
@@ -178,15 +199,23 @@ mod tests {
     }
 
     /// The folder a fork copies. `slow` does not answer within the lookup
-    /// limit, which is the same failure as no folder.
+    /// limit, which is the same failure as no folder. `spawns` offers
+    /// Codex, the harness `request` asks for, so a whole spawn reaches its
+    /// folder check; it is set once the computer is claimed, since offering
+    /// a harness starts a spawn node that reports its own claim.
     struct Folders {
         path: Mutex<Option<PathBuf>>,
         slow: AtomicBool,
+        spawns: AtomicBool,
     }
 
     impl Spawner for Folders {
         fn available(&self) -> Vec<HarnessId> {
-            vec![]
+            if self.spawns.load(Ordering::SeqCst) {
+                vec![codex::ID]
+            } else {
+                vec![]
+            }
         }
         fn launch(&self, _: &Launch, _: Started) -> Result<Launched, LaunchError> {
             Err(LaunchError::Failed("not here".into()))
@@ -392,6 +421,7 @@ mod tests {
         let folders = Arc::new(Folders {
             path: Mutex::new(Some(folder())),
             slow: AtomicBool::new(false),
+            spawns: AtomicBool::new(false),
         });
         let home = tempfile::tempdir().unwrap();
         let core = opened(home.path(), "http://127.0.0.1:9", folders);
@@ -418,6 +448,7 @@ mod tests {
         let folders = Arc::new(Folders {
             path: Mutex::new(Some(folder())),
             slow: AtomicBool::new(false),
+            spawns: AtomicBool::new(false),
         });
         let home = tempfile::tempdir().unwrap();
         let core = opened(home.path(), "http://127.0.0.1:9", folders);
@@ -455,6 +486,7 @@ mod tests {
         let folders = Arc::new(Folders {
             path: Mutex::new(Some(folder())),
             slow: AtomicBool::new(false),
+            spawns: AtomicBool::new(false),
         });
         let base = relaycast("agent_leader");
         let home = tempfile::tempdir().unwrap();
@@ -487,6 +519,7 @@ mod tests {
         let folders = Arc::new(Folders {
             path: Mutex::new(Some(source.clone())),
             slow: AtomicBool::new(false),
+            spawns: AtomicBool::new(false),
         });
         let base = relaycast(OWNER);
         let home = tempfile::tempdir().unwrap();
@@ -556,6 +589,7 @@ mod tests {
         let folders = Arc::new(Folders {
             path: Mutex::new(Some(folder())),
             slow: AtomicBool::new(false),
+            spawns: AtomicBool::new(false),
         });
         let base = relaycast_invoked(json!({
             "caller_id": launcher, "caller_name": "launcher-person",
@@ -593,11 +627,125 @@ mod tests {
         );
     }
 
+    /// The answer to a whole spawn of `request` by the owner, on a claimed
+    /// computer where `planner`'s session is in `source`.
+    async fn spawn_from(source: &Path, request: SpawnRequest) -> Result<Value, SpawnError> {
+        let folders = Arc::new(Folders {
+            path: Mutex::new(Some(source.to_path_buf())),
+            slow: AtomicBool::new(false),
+            spawns: AtomicBool::new(false),
+        });
+        let base = relaycast(OWNER);
+        let home = tempfile::tempdir().unwrap();
+        let core = opened(home.path(), &base, folders.clone());
+        register(&core, "planner", false, KEY);
+        claim(&core).await;
+        folders.spawns.store(true, Ordering::SeqCst);
+        let (link, _sent) = super::super::node::NodeLink::detached(super::super::node::NodeInfo {
+            node_id: "node_desktop_1".into(),
+            node_name: "test-desk-desktop".into(),
+        });
+        core.spawn_agent(&link, &request, &mut None).await
+    }
+
+    #[tokio::test]
+    async fn a_fork_whose_folder_is_gone_says_so_without_naming_it() {
+        let parent = tempfile::tempdir().unwrap();
+        let source = parent.path().join("project");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::remove_dir(&source).unwrap();
+        let error = spawn_from(&source, request(None)).await.unwrap_err().text();
+        assert_eq!(error, FOLDER_GONE);
+        assert!(!error.contains(&*source.to_string_lossy()), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_spawn_that_is_not_a_fork_names_the_missing_folder_it_was_given() {
+        let parent = tempfile::tempdir().unwrap();
+        let missing = parent.path().join("project");
+        let error = spawn_from(
+            &folder(),
+            SpawnRequest {
+                fork_from: None,
+                ..request(Some(&missing))
+            },
+        )
+        .await
+        .unwrap_err()
+        .text();
+        assert_eq!(
+            error,
+            format!(
+                "spawn_invalid_input: {} is not a folder on this computer",
+                missing.display()
+            )
+        );
+    }
+
+    // Root reads any folder, and Windows has no mode bits to deny it with.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_fork_whose_folder_cannot_be_read_names_it_but_is_not_bad_input() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let source = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(source.path(), std::fs::Permissions::from_mode(0o111)).unwrap();
+        let result = spawn_from(source.path(), request(None)).await;
+        std::fs::set_permissions(source.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let error = result.unwrap_err().text();
+        assert!(
+            error.starts_with(
+                "spawn_fork_unavailable: Agent Relay could not read the working folder"
+            ),
+            "{error}"
+        );
+        assert!(error.contains(&*source.path().to_string_lossy()), "{error}");
+    }
+
+    #[test]
+    fn a_fork_code_is_kept_when_its_error_is_redacted() {
+        let error = SpawnError::from(format!("{FOLDER_GONE} rk_live_secret")).redacted();
+        assert_eq!(error.text(), format!("{FOLDER_GONE} [redacted]"));
+        let text = "rk_live_secret: is not a code";
+        let error = SpawnError::from(text).redacted();
+        assert_eq!(
+            error.text(),
+            crate::relay::harness::diagnostics::redact(text)
+        );
+        assert!(!error.text().contains("rk_live_secret"));
+    }
+
+    #[test]
+    fn a_folder_refusal_says_whose_folder_it_was() {
+        let folder = folder();
+        let missing = DirectoryError::Missing(folder.clone());
+        assert_eq!(directory_refusal(&missing, true), FOLDER_GONE);
+        assert_eq!(
+            directory_refusal(&missing, false),
+            format!(
+                "spawn_invalid_input: {} is not a folder on this computer",
+                folder.display()
+            )
+        );
+        let unreadable = DirectoryError::Unreadable("cannot read it".into());
+        assert_eq!(
+            directory_refusal(&unreadable, true),
+            "spawn_fork_unavailable: cannot read it"
+        );
+        assert_eq!(
+            directory_refusal(&unreadable, false),
+            "spawn_invalid_input: cannot read it"
+        );
+    }
+
     #[tokio::test]
     async fn a_lookup_that_does_not_finish_cannot_be_forked() {
         let folders = Arc::new(Folders {
             path: Mutex::new(Some(folder())),
             slow: AtomicBool::new(true),
+            spawns: AtomicBool::new(false),
         });
         let base = relaycast(OWNER);
         let home = tempfile::tempdir().unwrap();

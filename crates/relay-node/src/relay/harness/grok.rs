@@ -18,10 +18,15 @@
 
 mod credentials;
 mod diagnostics;
+mod fork;
+mod install;
 mod leader;
 mod record;
 
-pub use leader::{LeaderRuntime, LeaderStart, Opened, SessionOpen, SystemLeaders};
+pub use install::{find_executable, too_old, version_of};
+pub use leader::{
+    ForkFrom, LeaderRuntime, LeaderStart, OpenError, Opened, SessionOpen, SystemLeaders,
+};
 pub(crate) use record::private_folder as grok_record_folder;
 pub(crate) use record::read as read_spawned_record;
 pub(crate) use record::write as write_spawned_record;
@@ -159,46 +164,6 @@ pub(crate) fn idle_sample(folder: &Path, session: &str) -> IdleSample {
 /// workspace and owner: its leader is proven by its marker, and only the
 /// agent's spawn registration reaches it.
 const SPAWN_ROUTE: &str = "agent-relay-spawn";
-
-/// Why Grok is installed but cannot be spawned here.
-pub fn too_old(version: (u32, u32, u32)) -> String {
-    let (major, minor, patch) = version;
-    let (min_major, min_minor, min_patch) = MIN_VERSION;
-    format!(
-        "Grok here is version {major}.{minor}.{patch}, older than {min_major}.{min_minor}.{min_patch}, the first that spawned Grok agents run on. Update it with `grok update`, then try again."
-    )
-}
-
-/// The version of the Grok at `executable`, from the file Grok's installer
-/// names for it (`~/.grok/bin/grok` links to
-/// `~/.grok/downloads/grok-1.0.46-macos-aarch64`); `None` for a Grok
-/// installed some other way. Files only: Grok is never run to ask.
-pub fn version_of(executable: &Path) -> Option<(u32, u32, u32)> {
-    let resolved = std::fs::canonicalize(executable).ok()?;
-    let name = resolved.file_name()?.to_str()?;
-    let version = name.strip_prefix("grok-")?.split('-').next()?;
-    let mut parts = version.split('.').map(|part| part.parse::<u32>().ok());
-    let found = (parts.next()??, parts.next()??, parts.next()??);
-    parts.next().is_none().then_some(found)
-}
-
-/// The `grok` this computer runs: `bin/grok` in Grok's home, where Grok
-/// installs itself, else the first on `PATH`.
-pub fn find_executable(path: Option<&str>, grok_home: &Path) -> Option<PathBuf> {
-    std::iter::once(grok_home.join("bin/grok"))
-        .chain(
-            path.unwrap_or_default()
-                .split(':')
-                .filter(|dir| dir.starts_with('/'))
-                .map(|dir| Path::new(dir).join("grok")),
-        )
-        .find(|candidate| {
-            std::fs::metadata(candidate).is_ok_and(|metadata| {
-                metadata.is_file()
-                    && platform::PermissionsExt::mode(&metadata.permissions()) & 0o111 != 0
-            })
-        })
-}
 
 /// Grok on this computer.
 pub struct GrokAdapter {
@@ -454,11 +419,14 @@ impl SpawnFacet for GrokAdapter {
 
     fn launch(&self, launch: &Launch, started: Started) -> Result<Launched, LaunchError> {
         let executable = self.usable()?;
+        let fork = fork::source(launch)?;
         let failed = |what: &str, error: &dyn std::fmt::Display| {
             LaunchError::Failed(format!("{what}: {error}"))
         };
-        let directory = std::fs::canonicalize(&launch.directory)
-            .map_err(|error| failed("could not read the folder", &error))?;
+        let directory = std::fs::canonicalize(&launch.directory).map_err(|error| match fork {
+            Some(_) => LaunchError::Fork(fork::FOLDER_GONE.into()),
+            None => failed("could not read the folder", &error),
+        })?;
         record::private_folder(&self.folder)
             .map_err(|error| failed("could not make the spawn folder", &error))?;
         // Under `/tmp`, which Grok's workspace sandbox still lets the leader
@@ -582,6 +550,7 @@ impl SpawnFacet for GrokAdapter {
             directory: &directory,
             text: &launch.text,
             timeout: OPEN_TIMEOUT,
+            fork,
         };
         let refused = |failure: String| {
             // Capture evidence before cleanup can replace the original exit.
@@ -592,7 +561,15 @@ impl SpawnFacet for GrokAdapter {
         let (opened, outcome) = self
             .leaders
             .open(&open, &accept)
-            .map_err(|error| refused(format!("Grok did not open a session: {error}")))?;
+            .map_err(|error| match error {
+                OpenError::Failed(error) => {
+                    refused(format!("Grok did not open a session: {error}"))
+                }
+                OpenError::Fork(code) => {
+                    stop_process(self.table.as_ref(), leader.pid, Some(leader.start));
+                    LaunchError::Fork(code)
+                }
+            })?;
         let task = match outcome {
             Outcome::Delivered { .. } => TaskHandoff::Confirmed,
             Outcome::InDoubt(_) => TaskHandoff::Unconfirmed("in_doubt"),
@@ -606,6 +583,11 @@ impl SpawnFacet for GrokAdapter {
             process: Some(leader),
             task,
         })
+    }
+
+    /// A Grok session in the Grok home spawned leaders run with.
+    fn fork_directory(&self, target: &Target) -> Option<PathBuf> {
+        fork::directory(self, target)
     }
 
     /// By the session its record names. A spawn interrupted before its

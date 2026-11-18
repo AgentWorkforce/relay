@@ -857,8 +857,15 @@ mod tests {
         };
         let all = fork(&harness::ids()).unwrap();
         assert_eq!(all["kind"], "capacity");
-        assert_eq!(all["metadata"]["harnesses"], json!(["codex", "claude"]));
+        assert_eq!(
+            all["metadata"]["harnesses"],
+            json!(["codex", "claude", "grok"])
+        );
         assert_eq!(all["metadata"]["machine"], "Test-Mac-Mini");
+        assert_eq!(
+            fork(&[crate::relay::harness::grok::ID]).unwrap()["metadata"]["harnesses"],
+            json!(["grok"])
+        );
         assert_eq!(fork(&[crate::relay::harness::opencode::ID]), None);
     }
 
