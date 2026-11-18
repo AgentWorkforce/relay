@@ -1,6 +1,6 @@
 //! The text a delivery puts into a session.
 
-use super::policy::{injected_text, with_attachments, with_owner_line, Delivery};
+use super::policy::{injected_text, with_attachments, with_leader_line, with_owner_line, Delivery};
 #[cfg(test)]
 use super::Retry;
 use super::{DeliveryOutcome, DeliveryState};
@@ -25,8 +25,13 @@ pub(crate) enum InputSource {
     Requester,
     /// A teammate's direct message, started as a user turn by the
     /// session's own Claude plugin under the owner's binding
-    /// (`teammate_native_input`).
+    /// (`teammate_native_input`), or a workspace leader's taken that way by
+    /// a session the person started.
     Teammate,
+    /// A workspace leader's direct message (`relay::leaders`) to a spawned
+    /// agent, native input through the spawn's harness while
+    /// `spawn_native_input` is on. Never an approval.
+    Leader,
 }
 
 impl InputSource {
@@ -151,7 +156,7 @@ impl Core {
                 .deliver_native_continuation(registration, delivery, text)
                 .await;
         }
-        if source == InputSource::Peer {
+        if matches!(source, InputSource::Peer | InputSource::Leader) {
             if let Some(outcome) = self
                 .native_continuation_peer_guard(registration, delivery)
                 .await
@@ -174,6 +179,12 @@ impl Core {
         };
         let routed = delivery.clone();
         let held = registration.clone();
+        // A leader's turn that lost its plugin goes the peer way, so its
+        // text drops the leader framing that only a native turn carries.
+        let text = match source {
+            InputSource::Teammate => super::policy::without_leader_line(&text),
+            _ => text,
+        };
         tokio::task::spawn_blocking(move || {
             // The hand-over gate, on the thread that hands it over: a hold
             // that began while this waited for a blocking thread holds it.
@@ -182,7 +193,10 @@ impl Core {
             }
             // A teammate's turn that lost its plugin between classification
             // and delivery goes the peer way, as its text already says.
-            let native = matches!(source, InputSource::Owner | InputSource::Requester);
+            let native = matches!(
+                source,
+                InputSource::Owner | InputSource::Requester | InputSource::Leader
+            );
             let route = DeliveryRoute::of(&routed).native(native);
             spawner.deliver_registered(&*injector, &registered, &route, &text)
         })
@@ -251,8 +265,52 @@ impl Core {
     async fn teammate_native_turn(&self, registration: &Registration, delivery: &Delivery) -> bool {
         self.store.read(|store| store.teammate_native_input_on())
             && crate::relay::spawn::drive::direct_from(delivery, delivery.sender_id.as_deref())
-            && self.mobile_claude_plugins.plugin_seen(&registration.target)
+            && self.claude_turn_route(registration).await
+    }
+
+    /// Whether the session's Claude plugin can start a relayed message as a
+    /// user turn: it has polled recently and the session has a verified
+    /// owner whose binding carries the turn (`teammate_native_turn`).
+    async fn claude_turn_route(&self, registration: &Registration) -> bool {
+        self.mobile_claude_plugins.plugin_seen(&registration.target)
             && self.mobile_handoff_binding(registration).await.is_some()
+    }
+
+    /// The workspace leader that sent `delivery`, when it is a direct
+    /// message to the session from a leader's agent id (`relay::leaders`).
+    /// A channel or group message is not one.
+    async fn leader_sent(
+        &self,
+        registration: &Registration,
+        delivery: &Delivery,
+    ) -> Option<crate::relay::contract::agents::WorkspaceLeader> {
+        let sender_id = delivery.sender_id.as_deref()?;
+        if !crate::relay::spawn::drive::direct_from(delivery, Some(sender_id)) {
+            return None;
+        }
+        self.workspace_leader(registration, sender_id).await
+    }
+
+    /// How a workspace leader's direct message reaches the session, when
+    /// it does as a leader's: a spawned agent (not taken over) takes it as
+    /// native input through its harness while `spawn_native_input` is on; a
+    /// session the person started takes it as a Claude user turn while
+    /// `teammate_native_input` is on and its plugin can start one. `None`
+    /// otherwise: it is then a peer's message, like anyone else's.
+    async fn leader_route(&self, registration: &Registration) -> Option<InputSource> {
+        let spawned = registration
+            .spawn
+            .as_ref()
+            .is_some_and(|spawn| spawn.taken_over_at.is_none());
+        if spawned {
+            let on = self
+                .store
+                .read(|store| store.extras.spawn_native_input != Some(false));
+            return (on && self.plugins.spawner.native_input(&registration.target))
+                .then_some(InputSource::Leader);
+        }
+        let on = self.store.read(|store| store.teammate_native_input_on());
+        (on && self.claude_turn_route(registration).await).then_some(InputSource::Teammate)
     }
 
     /// Requester input is on unless turned off, and never conveys human permission authority.
@@ -277,7 +335,13 @@ impl Core {
     /// message that the session's
     /// Claude plugin starts as a user turn. The requester's other direct
     /// messages (`spawn::from_requester`) also carry `policy::OWNER_LINE`
-    /// under their attribution; everyone else's is a peer's.
+    /// under their attribution. A workspace leader's direct message
+    /// (`relay::leaders`, `leader_route`) to a spawned agent with
+    /// `spawn_native_input` on, or to a person's Claude session with
+    /// `teammate_native_input` on, is native input carrying
+    /// `policy::leader_line` under its attribution; the spawn's own
+    /// requester keeps its requester framing even when it is a leader.
+    /// Everyone else's is a peer's.
     pub(crate) async fn session_text(
         &self,
         registration: &Registration,
@@ -313,21 +377,35 @@ impl Core {
             (Some(hint), Some(note)) => Some(format!("{hint}\n{note}")),
             (hint, note) => hint.map(str::to_string).or(note),
         };
-        let native = !via_webhook
-            && !via_integration
+        let relayed = !via_webhook && !via_integration;
+        let native = relayed
             && (self.spawner_native_turn(registration, delivery)
                 || self.owner_to_spawned(registration, delivery).await);
-        let teammate = !native
-            && !via_webhook
-            && !via_integration
+        // The spawn's own requester is never framed or routed as a leader,
+        // whether or not the list names it.
+        let from_requester = relayed && crate::relay::spawn::from_requester(registration, delivery);
+        let leader = match relayed && !native && !from_requester {
+            true => self.leader_sent(registration, delivery).await,
+            false => None,
+        };
+        let leader = match leader {
+            Some(leader) => self
+                .leader_route(registration)
+                .await
+                .map(|source| (leader, source)),
+            None => None,
+        };
+        let teammate = relayed
+            && !native
+            && leader.is_none()
             && self.teammate_native_turn(registration, delivery).await;
         let text = injected_text(message, &registration.name, via_webhook, lines.as_deref());
         let text = if native || teammate {
             text.replacen(super::policy::PEER_HEADER, super::policy::NATIVE_HEADER, 1)
-        } else if !via_webhook
-            && !via_integration
-            && crate::relay::spawn::from_requester(registration, delivery)
-        {
+        } else if let Some((leader, _)) = &leader {
+            let text = text.replacen(super::policy::PEER_HEADER, super::policy::NATIVE_HEADER, 1);
+            with_leader_line(&text, &leader.name)
+        } else if from_requester {
             with_owner_line(&text)
         } else {
             text
@@ -336,6 +414,8 @@ impl Core {
             InputSource::Requester
         } else if teammate {
             InputSource::Teammate
+        } else if let Some((_, source)) = leader {
+            source
         } else {
             InputSource::Peer
         };

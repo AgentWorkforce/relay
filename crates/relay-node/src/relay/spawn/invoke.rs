@@ -345,6 +345,8 @@ impl Core {
             let app_data_dir = self.config.app_data_dir.clone();
             async move { report_back::requester(&workspace, &app_data_dir, &invocation_id).await }
         });
+        // The workspace's leaders, read again for the agent about to start.
+        self.reread_workspace_leaders(&workspace);
         // On disk before anything starts, so a restart finds what it left.
         let mut in_flight = InFlight {
             app_data_dir: self.config.app_data_dir.clone(),

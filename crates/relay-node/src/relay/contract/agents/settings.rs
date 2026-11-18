@@ -70,6 +70,15 @@ pub struct SettingsValues {
     /// and off in the release build unless set. Absent in older cores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_requester_approvals: Option<bool>,
+    /// The workspace's leaders as Relaycast last listed them
+    /// (`GET /v1/workspace/leaders`): a leader's direct message to a
+    /// spawned agent (with `spawn_native_input` on) or to a Claude Code
+    /// session with `teammate_native_input` on is native input, though never
+    /// an approval. Read only;
+    /// absent until the list has been read for the current workspace, and
+    /// in older cores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_leaders: Option<WorkspaceLeaders>,
     /// A teammate's direct message to a Claude Code session with Agent
     /// Relay's plugin starts a user turn, labelled with the sender; on by
     /// default. Absent in older cores.
@@ -296,6 +305,28 @@ pub struct SpawnHarnessSettings {
     /// `subscription` or `api`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub billing: Option<String>,
+}
+
+/// The workspace's leaders: agents whose direct messages a session takes
+/// as native input (`relay::leaders`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceLeaders {
+    /// The leader agents, matched by `agent_id` alone.
+    pub leaders: Vec<WorkspaceLeader>,
+    /// The name patterns the workspace set (`*grok`, `admin`); Relaycast
+    /// resolves them into `leaders`, and the node never matches on them.
+    pub patterns: Vec<String>,
+}
+
+/// One workspace leader.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceLeader {
+    /// The leader's name, as shown in the line its messages carry.
+    pub name: String,
+    /// The leader's immutable agent id, which its messages must come from.
+    pub agent_id: String,
 }
 
 /// One watched Claude Code config folder.

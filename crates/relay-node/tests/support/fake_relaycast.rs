@@ -204,6 +204,8 @@ struct World {
     failing: Vec<String>,
     /// relaygate's side of the agents enrolled through `POST /v1/register`.
     gate: Gate,
+    /// `GET /v1/workspace/leaders`'s data, once set; 404 before.
+    leaders: Option<Value>,
 }
 
 /// What the fake relaygate keeps: each enrolled name's recovery proof and
@@ -717,6 +719,12 @@ impl FakeRelaycast {
     /// Forgets an agent as if Relaycast had already deleted it.
     pub fn forget_agent(&self, name: &str) {
         self.shared.lock().unwrap().world.agents.remove(name);
+    }
+
+    /// What `GET /v1/workspace/leaders` answers as its data, with the
+    /// workspace key; `None` answers 404, as an engine without leaders.
+    pub fn set_leaders(&self, data: Option<Value>) {
+        self.shared.lock().unwrap().world.leaders = data;
     }
 
     /// Makes these `METHOD /path` requests fail with 503; `METHOD
@@ -1275,6 +1283,11 @@ fn route(
     }
     let caller = world.agents.values().find(|a| a.token == bearer).cloned();
     match (method, segments.as_slice()) {
+        ("GET", ["v1", "workspace", "leaders"]) if !workspace_key => error(401, "unauthorized"),
+        ("GET", ["v1", "workspace", "leaders"]) => match &shared.world.leaders {
+            Some(data) => ok(data.clone()),
+            None => error(404, "not_found"),
+        },
         ("GET", ["v1", "workspace"]) if !bearer.starts_with("rk_") => error(401, "unauthorized"),
         ("GET", ["v1", "workspace"]) => match shared.behaviour.workspace_status {
             200 => ok(json!({
