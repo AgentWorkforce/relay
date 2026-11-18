@@ -252,6 +252,13 @@ async fn requester_native_source_keeps_spawn_route_for_all_supported_kinds_and_m
             let (source, text) = deliver(&f, &f.requester).await;
             assert_eq!(source, InputSource::Requester);
             assert!(text.starts_with("[Agent Relay native input — from @requester"));
+            // A native turn still says Agent Relay verified who sent it.
+            assert_eq!(
+                text.lines().nth(1),
+                Some(crate::relay::delivery::policy::OWNER_LINE),
+                "{kind:?}: {text}"
+            );
+            assert!(crate::relay::delivery::policy::owner_framed(&text));
             assert_eq!(
                 crate::relay::delivery::policy::MessageRef::in_text(&text),
                 Some(crate::relay::delivery::policy::MessageRef::of(
@@ -303,6 +310,11 @@ async fn spawned_opencode_owner_is_native_with_or_without_mobile_continuation() 
             assert_eq!(text, f.owner.text.clone().unwrap());
         } else {
             assert!(text.starts_with("[Agent Relay native input — from @owner"));
+            // The person's own message is theirs, not the spawning agent's.
+            assert!(
+                !crate::relay::delivery::policy::owner_framed(&text),
+                "{text}"
+            );
         }
     }
 }
@@ -363,7 +375,12 @@ async fn requester_opt_out_and_different_sender_preserve_peer_source() {
         .unwrap();
     let mut peer = f.requester.clone();
     peer.sender_id = Some("different-agent".into());
-    assert_eq!(deliver(&f, &peer).await.0, InputSource::Peer);
+    let (source, text) = deliver(&f, &peer).await;
+    assert_eq!(source, InputSource::Peer);
+    assert!(
+        !crate::relay::delivery::policy::owner_framed(&text),
+        "{text}"
+    );
     assert_eq!(f.routes.peer.lock().unwrap().len(), 2);
     assert!(f.routes.requester.lock().unwrap().is_empty());
     assert!(f.routes.owner.lock().unwrap().is_empty());
@@ -414,8 +431,11 @@ async fn the_launcher_and_the_desktop_requester_both_count_as_the_requester() {
     };
     let launcher = message("launcher", "launcher-person", "agent_launcher");
     let requester = f.requester.clone();
-    assert_eq!(deliver(&f, &launcher).await.0, InputSource::Requester);
-    assert_eq!(deliver(&f, &requester).await.0, InputSource::Requester);
+    for from in [&launcher, &requester] {
+        let (source, text) = deliver(&f, from).await;
+        assert_eq!(source, InputSource::Requester);
+        assert!(owner_framed(&text), "{text}");
+    }
     assert_eq!(f.routes.requester.lock().unwrap().len(), 2);
 
     // Without native input, both carry the owner line as peers.

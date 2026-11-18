@@ -198,10 +198,12 @@ async fn every_spawned_harness_gets_the_owner_framing() {
 }
 
 // With Native input from the spawning agent on, a harness that takes native
-// turns gets the requester's message as one, which needs no owner line;
-// one that does not still gets the owner framing.
+// turns gets the requester's message as one; one that does not gets it as a
+// peer's. Both carry the owner line: a native turn still names an agent as
+// its sender, and only the line says Agent Relay verified that agent started
+// the session.
 #[tokio::test]
-async fn opted_in_native_input_replaces_the_owner_line() {
+async fn opted_in_native_input_keeps_the_owner_line() {
     let native = Arc::new(FakeSpawner {
         native: true,
         ..FakeSpawner::default()
@@ -223,8 +225,13 @@ async fn opted_in_native_input_replaces_the_owner_line() {
             InputSource::Peer
         };
         assert_eq!(turn, source);
-        assert_eq!(owner_framed(&text), !native, "{text}");
-        assert_eq!(text.contains(OWNER_LINE), !native, "{text}");
+        assert_eq!(
+            text.starts_with("[Agent Relay native input — from "),
+            native,
+            "{text}"
+        );
+        assert!(owner_framed(&text), "{text}");
+        assert_eq!(text.matches(OWNER_LINE).count(), 1, "{text}");
     }
 }
 
@@ -256,6 +263,6 @@ async fn a_queued_or_threaded_requester_dm_is_still_a_native_turn() {
             .session_text(&registration, (&message, None), false, false)
             .await;
         assert_eq!(turn, InputSource::Requester, "{message:?}");
-        assert!(!text.contains(OWNER_LINE), "{text}");
+        assert!(owner_framed(&text), "{text}");
     }
 }

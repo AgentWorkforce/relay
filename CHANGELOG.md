@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay-node`: desktop spawns accept `fork_from` for a Grok session too, so a new Grok agent starts with a copy of that session's conversation, in its folder, and the original carries on untouched. Grok makes the copy itself. A Grok without session forking gets `spawn_fork_unavailable` with a prompt to run `grok update`, and a session Grok no longer has gets `spawn_fork_not_found`. Spawn capabilities now list `grok` among the harnesses that can fork. Not available on Windows, where Grok cannot be spawned. Grok sessions saved before Grok recorded their folder in the session summary can be forked too, and a Grok fork that fails after Grok made the copy removes the copy again, where Grok supports it. For every harness, a fork whose source folder has been deleted now gets `spawn_fork_not_found` without the folder's path, instead of `spawn_invalid_input` naming it, and one whose folder can't be read gets `spawn_fork_unavailable`.
 
+### Fixed
+
+- `agent-relay-node`: a direct message from the agent that spawned a session keeps its `[owner: …]` line when it arrives as native input, which is the default. The line is how the session knows Agent Relay verified the sender as the agent that started it; without it a native turn showed only the sender's name, like any other agent's message, and gave the session less to go on than the same message did with native input off. The verified machine owner's own messages and teammates' turns are unchanged, and the line still never permits changing permissions, instructions or configuration.
+
 ## [18.10.0] - 2026-11-17
 
 ### Added

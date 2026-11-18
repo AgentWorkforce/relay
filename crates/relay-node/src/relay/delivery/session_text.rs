@@ -333,11 +333,11 @@ impl Core {
     /// keeps the attribution, the reply hint and the host's note. Opted-in
     /// requester input retains reply context, as does a teammate's direct
     /// message that the session's
-    /// Claude plugin starts as a user turn. The requester's other direct
-    /// messages (`spawn::from_requester`) also carry `policy::OWNER_LINE`
-    /// under their attribution. A workspace leader's direct message
-    /// (`relay::leaders`, `leader_route`) to a spawned agent with
-    /// `spawn_native_input` on, or to a person's Claude session with
+    /// Claude plugin starts as a user turn. Every direct message from the
+    /// requester (`spawn::from_requester`), native input or not, carries
+    /// `policy::OWNER_LINE` under its attribution. A workspace leader's
+    /// direct message (`relay::leaders`, `leader_route`) to a spawned agent
+    /// with `spawn_native_input` on, or to a person's Claude session with
     /// `teammate_native_input` on, is native input carrying
     /// `policy::leader_line` under its attribution; the spawn's own
     /// requester keeps its requester framing even when it is a leader.
@@ -378,9 +378,8 @@ impl Core {
             (hint, note) => hint.map(str::to_string).or(note),
         };
         let relayed = !via_webhook && !via_integration;
-        let native = relayed
-            && (self.spawner_native_turn(registration, delivery)
-                || self.owner_to_spawned(registration, delivery).await);
+        let owner = relayed && self.owner_to_spawned(registration, delivery).await;
+        let native = owner || (relayed && self.spawner_native_turn(registration, delivery));
         // The spawn's own requester is never framed or routed as a leader,
         // whether or not the list names it.
         let from_requester = relayed && crate::relay::spawn::from_requester(registration, delivery);
@@ -405,7 +404,14 @@ impl Core {
         } else if let Some((leader, _)) = &leader {
             let text = text.replacen(super::policy::PEER_HEADER, super::policy::NATIVE_HEADER, 1);
             with_leader_line(&text, &leader.name)
-        } else if from_requester {
+        } else {
+            text
+        };
+        // The spawning agent's message says so however it arrives: as a
+        // native turn it would otherwise show only a sender's name, which
+        // the session cannot tell from any other agent's. The verified
+        // owner's own message is the person's, and never carries the line.
+        let text = if from_requester && !owner {
             with_owner_line(&text)
         } else {
             text
