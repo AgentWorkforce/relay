@@ -354,6 +354,17 @@ impl Core {
             .then_some(Approver::Requester(requester))
     }
 
+    /// Whether this computer's ownership is verified for `registration`:
+    /// its node is claimed by the signed-in person and `registration` is in
+    /// their workspace.
+    pub(crate) fn owned_here(&self, registration: &Registration) -> bool {
+        self.workspace().is_some_and(|workspace| {
+            claimed_by_signed_in(self)
+                && workspace.base_url == registration.base_url
+                && registration.workspace_key.as_ref() == Some(&workspace.key)
+        })
+    }
+
     /// The signed-in person's relay identity, when this computer's node is
     /// claimed by them, `registration` is in their workspace, and Relaycast
     /// still gives the name their immutable id: (name, agent id).
@@ -362,10 +373,7 @@ impl Core {
         registration: &Registration,
     ) -> Option<(String, String)> {
         let workspace = self.workspace()?;
-        if !claimed_by_signed_in(self)
-            || workspace.base_url != registration.base_url
-            || registration.workspace_key.as_ref() != Some(&workspace.key)
-        {
+        if !self.owned_here(registration) {
             return None;
         }
         let owner = self.person_identity(false).await.ok()?;

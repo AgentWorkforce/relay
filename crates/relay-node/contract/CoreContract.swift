@@ -4593,6 +4593,9 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// it is released.
     public let spawnMaxAgents: Int?
     /// Allow verified spawning agents to send native input; on by default.
+    /// Once this computer's ownership is verified, the agent that spawned
+    /// a session then directs it with the person's authority, changes to
+    /// permissions, instructions and configuration included.
     public let spawnNativeInput: Bool?
     /// Owner/name keys of the repositories this computer offers spawned
     /// agents for, advertised as the node's `repo_keys`.

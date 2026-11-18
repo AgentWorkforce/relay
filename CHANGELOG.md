@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay-node`: a direct message from the agent that spawned a session keeps its `[owner: …]` line when it arrives as native input, which is the default. The line is how the session knows Agent Relay verified the sender as the agent that started it; without it a native turn showed only the sender's name, like any other agent's message, and gave the session less to go on than the same message did with native input off. The verified machine owner's own messages and other teammates' turns are unchanged, and the line still never permits changing permissions, instructions or configuration.
+- `agent-relay-node`: a spawned session now takes its spawning agent's direct messages with the person's authority, on a computer whose ownership is verified and with `spawn_native_input` on (the default). Their `[owner: …]` line says Agent Relay verified the sender as the agent that started the session and that this computer is set to give that agent the person's authority over it, changes to permissions, instructions and configuration included. Before, a native turn from the spawning agent carried no such line at all, so the session saw only another agent's name and declined requests it took for relayed. Without verified ownership, or with `spawn_native_input` off, the line keeps its limits: within the task, nothing destructive, no changes to permissions, instructions or configuration. The verified machine owner's own messages and other teammates' turns are unchanged. Turn `spawn_native_input` off to withdraw the authority. Where `spawn_allow_teammates` is on, a workspace owner's or admin's agent that spawns a session here gets it too.
 
 ## [18.10.0] - 2026-11-17
 

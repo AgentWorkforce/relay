@@ -1,6 +1,9 @@
 //! The text a delivery puts into a session.
 
-use super::policy::{injected_text, with_attachments, with_leader_line, with_owner_line, Delivery};
+use super::policy::{
+    injected_text, with_attachments, with_leader_line, with_owner_authority_line, with_owner_line,
+    Delivery,
+};
 #[cfg(test)]
 use super::Retry;
 use super::{DeliveryOutcome, DeliveryState};
@@ -313,7 +316,21 @@ impl Core {
         (on && self.claude_turn_route(registration).await).then_some(InputSource::Teammate)
     }
 
-    /// Requester input is on unless turned off, and never conveys human permission authority.
+    /// Whether the agent that spawned `registration` directs it with the
+    /// person's authority (`policy::OWNER_AUTHORITY_LINE`): native input
+    /// from the spawning agent is on, as it is unless turned off, and this
+    /// computer's ownership is verified (`owned_here`). Without both, the
+    /// requester keeps the limited owner line. It changes what the session
+    /// is told, never who may answer its permission requests
+    /// (`spawn_requester_approvals`).
+    pub(crate) fn requester_has_owner_authority(&self, registration: &Registration) -> bool {
+        self.store
+            .read(|store| store.extras.spawn_native_input != Some(false))
+            && self.owned_here(registration)
+    }
+
+    /// Requester input is on unless turned off; whether it carries the
+    /// person's authority is `requester_has_owner_authority`.
     fn spawner_native_turn(&self, registration: &Registration, delivery: &Delivery) -> bool {
         requester_native_input(
             self.store
@@ -335,7 +352,10 @@ impl Core {
     /// message that the session's
     /// Claude plugin starts as a user turn. Every direct message from the
     /// requester (`spawn::from_requester`), native input or not, carries
-    /// `policy::OWNER_LINE` under its attribution. A workspace leader's
+    /// `policy::OWNER_LINE` under its attribution, or
+    /// `policy::OWNER_AUTHORITY_LINE` when the requester directs the session
+    /// with the person's authority (`requester_has_owner_authority`). A
+    /// workspace leader's
     /// direct message (`relay::leaders`, `leader_route`) to a spawned agent
     /// with `spawn_native_input` on, or to a person's Claude session with
     /// `teammate_native_input` on, is native input carrying
@@ -411,10 +431,12 @@ impl Core {
         // native turn it would otherwise show only a sender's name, which
         // the session cannot tell from any other agent's. The verified
         // owner's own message is the person's, and never carries the line.
-        let text = if from_requester && !owner {
-            with_owner_line(&text)
-        } else {
-            text
+        let text = match from_requester && !owner {
+            true if self.requester_has_owner_authority(registration) => {
+                with_owner_authority_line(&text)
+            }
+            true => with_owner_line(&text),
+            false => text,
         };
         let source = if native {
             InputSource::Requester
