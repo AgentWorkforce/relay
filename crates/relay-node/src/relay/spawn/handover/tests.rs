@@ -183,6 +183,7 @@ fn spawned(core: &Core, name: &str, kind: SessionKind, harness: HarnessId) {
         agent_id: None,
         token: None,
         requester: None,
+        launcher: None,
         target: None,
         process: None,
         control_url: None,

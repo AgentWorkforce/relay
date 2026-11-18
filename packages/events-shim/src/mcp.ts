@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 import { EVENTS_SHIM_LIMITS } from './limits.js';
 import { drainStalledWakes, publicEvent, type EventsShimDeps } from './service.js';
-import type { ShimEvent, ShimRecord, ShimUrls } from './types.js';
+import type { EventsShimStore, ShimEvent, ShimRecord, ShimUrls } from './types.js';
 import { deliverInBackground, deliverPending } from './delivery.js';
 import { checkWakeTarget, DEFAULT_RELAY_ORIGINS, forwardWake } from './wake.js';
 
@@ -82,20 +82,47 @@ function wakeState(shim: ShimRecord): 'linked' | 'broken' | 'none' {
   return shim.wake.brokenAt ? 'broken' : 'linked';
 }
 
-/** Claims up to a batch of pending posts for the agent (marks them read) and reports whether more wait. */
+/**
+ * Whether the store holds `wait_for_webhook` claims on a lease (it implements
+ * the optional `ackPending` and `releasePending`). Without, a claim marks posts
+ * read at once, as before leases.
+ */
+function leases(ctx: EventsShimMcpContext): boolean {
+  const store = ctx.deps.store;
+  return typeof store.ackPending === 'function' && typeof store.releasePending === 'function';
+}
+
+/**
+ * Claims up to a batch of pending posts for the agent and reports whether more wait. With
+ * `lease`, the posts stay `pending` under a fresh claim token until acknowledged or released
+ * (or the lease expires); without, they are marked read.
+ */
 async function handOver(
-  ctx: EventsShimMcpContext
-): Promise<{ events: Record<string, unknown>[]; more: boolean }> {
+  ctx: EventsShimMcpContext,
+  lease: boolean
+): Promise<{ events: Record<string, unknown>[]; more: boolean; claim_token?: string; claimed_at?: string }> {
   const at = now(ctx);
+  const claimedAt = at.toISOString();
   const staleBefore = new Date(at.getTime() - EVENTS_SHIM_LIMITS.sendLeaseMs).toISOString();
+  const claimToken = lease ? `clm_${crypto.randomUUID()}` : undefined;
   const claimed = await ctx.deps.store.claimPending(
     ctx.shim.id,
     { limit: EVENTS_SHIM_LIMITS.batchSize, staleBefore },
-    'read',
-    at.toISOString()
+    lease ? 'pending' : 'read',
+    claimedAt,
+    claimToken
   );
   const more = claimed.length > 0 && (await ctx.deps.store.countPending(ctx.shim.id, staleBefore)) > 0;
-  return { events: claimed.map(publicEvent), more };
+  return {
+    events: claimed.map(publicEvent),
+    more,
+    ...(claimToken && claimed.length > 0 ? { claim_token: claimToken, claimed_at: claimedAt } : {}),
+  };
+}
+
+/** The claim a caller names: its `claim_token`, or the older `claimed_at` of a lease stored without one. */
+function claimOf(token: string | undefined, claimedAt: string | undefined): string | undefined {
+  return token || claimedAt || undefined;
 }
 
 /**
@@ -316,7 +343,7 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
         if (!event) return failure('No post with that id in this inbox (the feed keeps the last 50).');
         return result({ events: [publicEvent(event)], more: false });
       }
-      return result(await handOver(ctx));
+      return result(await handOver(ctx, false));
     }
   );
 
@@ -324,7 +351,7 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
     'wait_for_webhook',
     {
       title: 'Wait for a webhook post',
-      description: `Blocks until a post arrives (or timeout_seconds pass, at most ${EVENTS_SHIM_LIMITS.maxWaitMs / 1000}), then returns the posts and marks them read. Run it in the background and call it again after each return. While a relay wake link works (link_relay_wake), it takes no posts and returns none when the timeout passes: the link delivers them.`,
+      description: `Blocks until a post arrives (or timeout_seconds pass, at most ${EVENTS_SHIM_LIMITS.maxWaitMs / 1000}), then returns the posts and marks them read.${leases(ctx) ? ` With auto_ack: false it instead holds them for you on a ${EVENTS_SHIM_LIMITS.sendLeaseMs / 60_000}-minute lease and returns a claim_token: acknowledge them (ack_webhook_events, or ack_ids with ack_claim_token on the next call) once handled, or release them (release_webhook_events); unacknowledged posts are offered again when the lease ends.` : ''} Run it in the background and call it again after each return. While a relay wake link works (link_relay_wake), it takes no posts and returns none when the timeout passes: the link delivers them.`,
       inputSchema: {
         timeout_seconds: z
           .number()
@@ -332,6 +359,29 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
           .min(1)
           .max(EVENTS_SHIM_LIMITS.maxWaitMs / 1000)
           .optional(),
+        ack_ids: z
+          .array(z.string().trim().min(1).max(100))
+          .max(EVENTS_SHIM_LIMITS.batchSize)
+          .optional()
+          .describe(
+            'Ids of posts from your previous batch (auto_ack: false) to acknowledge, with ack_claim_token.'
+          ),
+        ack_claim_token: z
+          .string()
+          .trim()
+          .optional()
+          .describe('The claim_token returned with the ack_ids posts. Required with ack_ids.'),
+        ack_claimed_at: z
+          .string()
+          .trim()
+          .optional()
+          .describe('Deprecated: the claimed_at of a claim made without a claim_token.'),
+        auto_ack: z
+          .boolean()
+          .optional()
+          .describe(
+            'false: hold the returned posts on a lease until you acknowledge or release them, instead of marking them read at once. Defaults to true, or to false when ack_ids is given. Ignored by an inbox without leases (no claim_token in the result): it marks posts read.'
+          ),
       },
       annotations: {
         readOnlyHint: false,
@@ -342,6 +392,15 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
     },
     async (input, extra) => {
       await seen(ctx);
+      const leased = leases(ctx);
+      // Without leases the inbox marked the previous batch read when it handed it over.
+      if (leased && input.ack_ids && input.ack_ids.length > 0) {
+        const claim = claimOf(input.ack_claim_token, input.ack_claimed_at);
+        if (!claim)
+          return failure('ack_ids needs the ack_claim_token wait_for_webhook returned with those posts.');
+        await ctx.deps.store.ackPending!(ctx.shim.id, input.ack_ids, now(ctx).toISOString(), claim);
+      }
+      const lease = leased && !(input.auto_ack ?? input.ack_ids === undefined);
       const timeoutMs = (input.timeout_seconds ?? EVENTS_SHIM_LIMITS.defaultWaitMs / 1000) * 1000;
       // Real time, not the injectable clock: this bounds how long the request stays open.
       const deadline = Date.now() + timeoutMs;
@@ -356,8 +415,7 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
           if (fresh) ctx.shim = fresh;
         }
         polled = true;
-        // Never claim for a client that is gone (checked after the re-read, which takes time):
-        // claimed posts are marked read.
+        // Never claim for a client that is gone (checked after the re-read, which takes time).
         if (signals.some((signal) => signal.aborted)) {
           return result({ events: [], more: false, next_steps: ['Cancelled. Call wait_for_webhook again.'] });
         }
@@ -366,11 +424,26 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
         // first and take it from that session. Wait out the timeout without claiming, so a
         // listener that calls again at once does not spin.
         const linked = wakeState(ctx.shim) === 'linked';
-        const batch = linked ? { events: [], more: false } : await handOver(ctx);
+        const batch = linked ? { events: [], more: false } : await handOver(ctx, lease);
         if (batch.events.length > 0) {
+          const ids = batch.events.map((event) => event.id as string);
+          // The client went away while the claim was taken: give the posts back at once rather
+          // than leaving them to the lease's end.
+          if (batch.claim_token && signals.some((signal) => signal.aborted)) {
+            await ctx.deps.store.releasePending!(ctx.shim.id, ids, batch.claim_token);
+            return result({
+              events: [],
+              more: false,
+              next_steps: ['Cancelled. Call wait_for_webhook again.'],
+            });
+          }
           return result({
             ...batch,
-            next_steps: ['Act on the posts, then call wait_for_webhook again.'],
+            next_steps: [
+              batch.claim_token
+                ? `Act on the posts, then acknowledge them: call wait_for_webhook again with ack_ids: ${JSON.stringify(ids)} and ack_claim_token: "${batch.claim_token}", or call ack_webhook_events with those ids and claim_token. If you cannot act on them, call release_webhook_events with the same ids and claim_token.`
+                : 'Act on the posts, then call wait_for_webhook again.',
+            ],
           });
         }
         if (Date.now() >= deadline) {
@@ -387,6 +460,79 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
         }
         await sleep(interval, signals);
       }
+    }
+  );
+
+  // Only a store with leases holds claims to acknowledge or release.
+  if (!leases(ctx)) return;
+  const store = ctx.deps.store as Required<Pick<EventsShimStore, 'ackPending' | 'releasePending'>>;
+  const claimInput = {
+    ids: z
+      .array(z.string().trim().min(1).max(100))
+      .min(1)
+      .max(EVENTS_SHIM_LIMITS.batchSize)
+      .describe('Event ids from one wait_for_webhook batch.'),
+    claim_token: z
+      .string()
+      .trim()
+      .optional()
+      .describe('The claim_token wait_for_webhook returned with those posts.'),
+    claimed_at: z
+      .string()
+      .trim()
+      .optional()
+      .describe('Deprecated: the claimed_at of a claim made without a claim_token.'),
+  };
+  const annotations = {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  };
+
+  server.registerTool(
+    'ack_webhook_events',
+    {
+      title: 'Acknowledge webhook posts',
+      description:
+        'Marks posts that wait_for_webhook (auto_ack: false) handed you read, once your session has handled them. Only posts still held under that claim_token are acknowledged.',
+      inputSchema: claimInput,
+      annotations,
+    },
+    async (input) => {
+      await seen(ctx);
+      const claim = claimOf(input.claim_token, input.claimed_at);
+      if (!claim) return failure('claim_token is required to acknowledge posts.');
+      const acked = await store.ackPending(ctx.shim.id, input.ids, now(ctx).toISOString(), claim);
+      if (acked.length === 0) {
+        return failure(
+          'None of those posts is still held under that claim_token (its lease may have ended).'
+        );
+      }
+      return result({ acked });
+    }
+  );
+
+  server.registerTool(
+    'release_webhook_events',
+    {
+      title: 'Release webhook posts',
+      description:
+        'Gives posts that wait_for_webhook (auto_ack: false) handed you back to the inbox unread, so the next wait_for_webhook takes them at once instead of after the lease ends.',
+      inputSchema: claimInput,
+      annotations,
+    },
+    async (input) => {
+      await seen(ctx);
+      const claim = claimOf(input.claim_token, input.claimed_at);
+      if (!claim) return failure('claim_token is required to release posts.');
+      const released = await store.releasePending(ctx.shim.id, input.ids, claim);
+      if (released.length === 0) {
+        return failure(
+          'None of those posts is still held under that claim_token (its lease may have ended).'
+        );
+      }
+      return result({ released });
     }
   );
 }

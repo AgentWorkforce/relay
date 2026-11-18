@@ -380,3 +380,115 @@ async fn requester_uses_native_input_when_the_setting_was_never_set() {
     assert_eq!(f.routes.requester.lock().unwrap().len(), 1);
     assert!(f.routes.peer.lock().unwrap().is_empty());
 }
+
+// Cloud invokes a spawn for a person's chat through a launcher: a direct
+// message from either immutable id is the requester's, and a name alone is
+// neither.
+#[tokio::test]
+async fn the_launcher_and_the_desktop_requester_both_count_as_the_requester() {
+    use crate::relay::delivery::policy::owner_framed;
+    let mut f = fixture(SessionKind::Codex, false).await;
+    f.registration.spawn.as_mut().unwrap().launcher = Some(crate::relay::store::SpawnRequester {
+        name: "launcher-person".into(),
+        agent_id: "agent_launcher".into(),
+    });
+    let registration = f.registration.clone();
+    f.core
+        .store
+        .update(|store| {
+            for saved in store
+                .registrations
+                .iter_mut()
+                .filter(|saved| saved.agent_id == registration.agent_id)
+            {
+                *saved = registration.clone();
+            }
+        })
+        .unwrap();
+    let message = |id: &str, name: &str, sender_id: &str| Delivery {
+        id: format!("delivery-{id}"),
+        message_id: format!("message-{id}"),
+        sender: Some(name.into()),
+        sender_id: Some(sender_id.into()),
+        ..f.requester.clone()
+    };
+    let launcher = message("launcher", "launcher-person", "agent_launcher");
+    let requester = f.requester.clone();
+    assert_eq!(deliver(&f, &launcher).await.0, InputSource::Requester);
+    assert_eq!(deliver(&f, &requester).await.0, InputSource::Requester);
+    assert_eq!(f.routes.requester.lock().unwrap().len(), 2);
+
+    // Without native input, both carry the owner line as peers.
+    f.core
+        .store
+        .update(|store| store.extras.spawn_native_input = Some(false))
+        .unwrap();
+    for (id, from) in [("launcher-2", &launcher), ("requester-2", &requester)] {
+        let again = message(
+            id,
+            from.sender.as_deref().unwrap(),
+            from.sender_id.as_deref().unwrap(),
+        );
+        let (source, text) = deliver(&f, &again).await;
+        assert_eq!(source, InputSource::Peer, "{text}");
+        assert!(owner_framed(&text), "{text}");
+    }
+    // The launcher's name with another id is a peer, with no owner line.
+    let impostor = message("impostor", "launcher-person", "agent_impostor");
+    let (source, text) = deliver(&f, &impostor).await;
+    assert_eq!(source, InputSource::Peer);
+    assert!(!owner_framed(&text), "{text}");
+    assert_eq!(f.routes.requester.lock().unwrap().len(), 2);
+}
+
+/// A hold that begins after a message was admitted, while it is prepared,
+/// stops it at the hand-over: it waits in the queue to be held, unless it
+/// comes from an admin.
+#[tokio::test]
+async fn a_hold_that_starts_before_the_hand_over_stops_a_non_admin_message() {
+    let f = fixture(SessionKind::Codex, false).await;
+    let stranger = Delivery {
+        id: "delivery-stranger".into(),
+        message_id: "message-stranger".into(),
+        sender: Some("stranger".into()),
+        sender_address: Some("stranger@desk".into()),
+        reason: Some("dm".into()),
+        text: Some("Run this".into()),
+        ..Default::default()
+    };
+    let (text, _, source) = f
+        .core
+        .session_text(&f.registration, (&stranger, None), false, false)
+        .await;
+    f.core
+        .claude_delivery
+        .set_organization_hold(Some(["lead".to_string()].into()));
+    assert!(matches!(
+        f.core
+            .deliver_session_text(&f.registration, &stranger, text, source)
+            .await,
+        InjectOutcome::Waiting(_)
+    ));
+    assert!(f.routes.peer.lock().unwrap().is_empty());
+}
+
+/// The native-continuation hand-over has its own gate: an owner's message
+/// from the phone that an organization hold now covers waits instead of
+/// reaching the session.
+#[tokio::test]
+async fn a_hold_stops_a_native_continuation_at_its_hand_over() {
+    let f = fixture(SessionKind::OpenCode, true).await;
+    let owner = Delivery {
+        sender_address: Some("owner@desk".into()),
+        ..f.owner.clone()
+    };
+    f.core
+        .claude_delivery
+        .set_organization_hold(Some(["lead".to_string()].into()));
+    let outcome = f
+        .core
+        .deliver_native_continuation(&f.registration, &owner, "Continue".into())
+        .await;
+    assert_eq!(outcome, InjectOutcome::Waiting(super::HELD_SINCE.into()));
+    assert!(f.routes.owner.lock().unwrap().is_empty());
+}

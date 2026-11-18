@@ -165,6 +165,7 @@ fn restart_finds_only_its_live_host_and_never_adopts_a_reused_pid() {
         agent_id: None,
         token: None,
         requester: None,
+        launcher: None,
         target: None,
         process: None,
     };

@@ -404,6 +404,7 @@ fn it_owns_codex_threads_only() {
         agent_id: None,
         token: None,
         requester: None,
+        launcher: None,
         target: Some(Target::new(SessionKind::Codex, THREAD)),
         process: None,
         control_url: None,

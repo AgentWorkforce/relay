@@ -539,6 +539,7 @@ fn a_restart_finds_the_session_by_its_record_and_ends_a_half_started_leader() {
         agent_id: Some("agent-1".into()),
         token: None,
         requester: None,
+        launcher: None,
         target: target.map(|id| Target::new(SessionKind::Grok, id)),
         process,
         control_url: None,
@@ -727,6 +728,25 @@ fn the_last_turn_event_decides_the_work_state() {
         ),
         Some(WorkState::Idle)
     );
+}
+
+#[test]
+fn the_last_turn_mark_of_a_grok_leader_ignores_later_session_events() {
+    let first = b"{\"type\":\"turn_started\"}\n{\"type\":\"turn_ended\"}\n";
+    let mark = record::last_turn_mark(first, 0);
+    let ended = b"{\"type\":\"turn_ended\"}";
+    let at = first.len() - 1;
+    assert_eq!(mark, Some(at as u64));
+    assert_eq!(&first[at - ended.len()..at], ended);
+    let mut with_session = first.to_vec();
+    with_session.extend_from_slice(b"{\"type\":\"mcp_server_connected\"}\n");
+    assert_eq!(record::last_turn_mark(&with_session, 0), mark);
+    let mut another = with_session.clone();
+    another.extend_from_slice(b"{\"type\":\"turn_started\"}\n{\"type\":\"turn_ended\"}\n");
+    assert_ne!(record::last_turn_mark(&another, 0), mark);
+    // A read that starts mid-line still lands on that same turn.
+    let cut = 8;
+    assert_eq!(record::last_turn_mark(&first[cut..], cut as u64), mark);
 }
 
 #[test]
@@ -920,6 +940,7 @@ fn only_a_spawned_grok_takes_messages_through_its_leader() {
         agent_id: Some("agent-1".into()),
         token: None,
         requester: None,
+        launcher: None,
         target: None,
         process: None,
         control_url: None,

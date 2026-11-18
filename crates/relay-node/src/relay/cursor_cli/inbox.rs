@@ -207,22 +207,46 @@ pub(super) fn settle_claim(
     )
 }
 
+/// Where Cursor keeps a data folder's projects, each with its agents'
+/// transcripts in `agent_transcripts`.
+pub(super) fn projects_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("projects")
+}
+
+/// The folder of a project's agent transcripts, one subfolder per agent.
+pub(super) fn agent_transcripts(project: &Path) -> PathBuf {
+    project.join("agent-transcripts")
+}
+
+/// The transcript of `session_id` itself under a project's
+/// `agent_transcripts` folder: `<id>/<id>.jsonl`.
+pub(super) fn own_transcript(transcripts: &Path, session_id: &str) -> PathBuf {
+    transcripts
+        .join(session_id)
+        .join(format!("{session_id}.jsonl"))
+}
+
+/// The transcript of `session_id` as a subagent of the agent whose folder
+/// (in `agent_transcripts`) is `parent`: `<parent>/subagents/<id>.jsonl`.
+pub(super) fn subagent_transcript(parent: &Path, session_id: &str) -> PathBuf {
+    parent.join("subagents").join(format!("{session_id}.jsonl"))
+}
+
 /// Every transcript Cursor keeps for `session_id`, in any project: its own
 /// `<id>/<id>.jsonl`, or, for a subagent of the editor's agent,
 /// `<parent>/subagents/<id>.jsonl`. Subagent folders are listed only when
-/// no project has its own transcript.
+/// no project has its own transcript. What cannot be read is skipped.
 pub(super) fn transcripts(config: &CursorConfig, session_id: &str) -> Vec<PathBuf> {
-    let file = format!("{session_id}.jsonl");
-    let Ok(projects) = std::fs::read_dir(config.data_dir.join("projects")) else {
+    let Ok(projects) = std::fs::read_dir(projects_dir(&config.data_dir)) else {
         return Vec::new();
     };
     let roots: Vec<PathBuf> = projects
         .flatten()
-        .map(|project| project.path().join("agent-transcripts"))
+        .map(|project| agent_transcripts(&project.path()))
         .collect();
     let own: Vec<PathBuf> = roots
         .iter()
-        .map(|transcripts| transcripts.join(session_id).join(&file))
+        .map(|transcripts| own_transcript(transcripts, session_id))
         .filter(|path| path.is_file())
         .collect();
     if !own.is_empty() {
@@ -234,7 +258,7 @@ pub(super) fn transcripts(config: &CursorConfig, session_id: &str) -> Vec<PathBu
         .flat_map(|parents| {
             parents
                 .flatten()
-                .map(|parent| parent.path().join("subagents").join(&file))
+                .map(|parent| subagent_transcript(&parent.path(), session_id))
         })
         .filter(|path| path.is_file())
         .collect()

@@ -33,6 +33,7 @@ import {
   TEMP_WORKSPACE_SECONDS,
   type CliIo,
 } from './cli.js';
+import { sha256Hex } from './crypto.js';
 import { handleEventsShimRequest } from './http.js';
 import { MemoryEventsShimStore } from './memory-store.js';
 
@@ -101,9 +102,11 @@ async function setupWorld(
     badChecksum?: boolean;
     inboxWorkspace?: boolean;
     inboxClaimed?: boolean;
+    /** An inbox whose store has no leases (no \`ackPending\`/\`releasePending\`), like a host built before them. */
+    noLeases?: boolean;
   } = {}
 ) {
-  const store = new MemoryEventsShimStore();
+  const store = options.noLeases ? storeWithoutLeases() : new MemoryEventsShimStore();
   const shimFetch: typeof fetch = async (input, init) => {
     const request = input instanceof Request ? input : new Request(String(input), init);
     const path = new URL(request.url).pathname.replace('/api/v1/events-shim', '');
@@ -2187,41 +2190,55 @@ describe('events-shim CLI', () => {
     expect(readFileSync(chain, 'utf8')).toBe('1\n');
   });
 
-  it('listen --stop-hook keeps a post claimed just as the CLI let go for the next turn instead of losing it', async () => {
-    const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'g-1' }) });
-    w.io.readText = (path) => {
-      try {
-        return readFileSync(path, 'utf8');
-      } catch {
-        return null;
+  for (const leases of [true, false]) {
+    it(`listen --stop-hook ${leases ? 'releases' : 'keeps'} a post claimed just as the CLI let go for the next turn instead of losing it (${leases ? 'inbox with leases' : 'inbox without leases'})`, async () => {
+      const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'g-1' }), noLeases: !leases });
+      w.io.readText = (path) => {
+        try {
+          return readFileSync(path, 'utf8');
+        } catch {
+          return null;
+        }
+      };
+      await runCli(['setup', w.created.mcp_url], w.io);
+      w.out.length = 0;
+      let gone = false;
+      w.io.pidAlive = (pid) => pid === 4242 || (pid === 777 && !gone);
+      const listening = runCli(['listen', '--stop-hook', 'gemini'], w.io);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      // The post is claimed, but the CLI went away before the answer could be given.
+      const posted = w.post({ late: true });
+      gone = true;
+      await posted;
+      expect(await listening).toBe(0);
+      expect(w.out).toEqual(['{}']);
+      const held = join(
+        w.home,
+        '.config',
+        'agent-relay',
+        `held-${createHash('sha256').update(w.created.mcp_url).digest('hex').slice(0, 16)}.txt`
+      );
+      const [event] = await w.store.listRecent(await shimIdOf(w), 1);
+      if (leases) {
+        // Given back to the inbox at once, unread and unleased: any listener takes it next.
+        expect(existsSync(held)).toBe(false);
+        expect(event).toMatchObject({ delivery: 'pending' });
+        expect(event?.deliveredAt).toBeUndefined();
+      } else {
+        // The inbox marked it read when it handed it over: kept here for the next turn.
+        expect(event).toMatchObject({ delivery: 'read' });
+        expect(readFileSync(held, 'utf8')).toContain('{"late":true}');
       }
-    };
-    await runCli(['setup', w.created.mcp_url], w.io);
-    w.out.length = 0;
-    let gone = false;
-    w.io.pidAlive = (pid) => pid === 4242 || (pid === 777 && !gone);
-    const listening = runCli(['listen', '--stop-hook', 'gemini'], w.io);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    // The post is claimed, but the CLI went away before the answer could be given.
-    const posted = w.post({ late: true });
-    gone = true;
-    await posted;
-    expect(await listening).toBe(0);
-    expect(w.out).toEqual(['{}']);
-    const held = join(
-      w.home,
-      '.config',
-      'agent-relay',
-      `held-${createHash('sha256').update(w.created.mcp_url).digest('hex').slice(0, 16)}.txt`
-    );
-    expect(readFileSync(held, 'utf8')).toContain('{"late":true}');
-    // The next turn's hook answers with it at once.
-    gone = false;
-    w.out.length = 0;
-    expect(await runCli(['listen', '--stop-hook', 'gemini'], w.io)).toBe(0);
-    expect(JSON.parse(w.out[0]!).reason).toContain('{"late":true}');
-    expect(existsSync(held)).toBe(false);
-  });
+      // The next turn's hook answers with it at once.
+      gone = false;
+      w.out.length = 0;
+      expect(await runCli(['listen', '--stop-hook', 'gemini'], w.io)).toBe(0);
+      expect(JSON.parse(w.out[0]!).reason).toContain('{"late":true}');
+      expect(existsSync(held)).toBe(false);
+      const [after] = await w.store.listRecent(await shimIdOf(w), 1);
+      expect(after).toMatchObject({ delivery: 'read' });
+    });
+  }
 
   it('listen --stop-hook: a newer turn of the same session stops the older waiting hook and waits instead', async () => {
     const w = await setupWorld({ stdin: JSON.stringify({ session_id: 'g-1' }) });
@@ -2345,6 +2362,21 @@ describe('events-shim CLI', () => {
 });
 
 /** A file's permission bits, read through one open descriptor. */
+/** The id of the world's inbox. */
+async function shimIdOf(w: {
+  store: MemoryEventsShimStore;
+  created: { manage_token: string };
+}): Promise<string> {
+  return (await w.store.findByManageTokenHash(await sha256Hex(w.created.manage_token)))!.id;
+}
+
+/** A memory store as a host built before leases implements it: without \`ackPending\`/\`releasePending\`. */
+function storeWithoutLeases(): MemoryEventsShimStore {
+  const store = new MemoryEventsShimStore();
+  Object.assign(store, { ackPending: undefined, releasePending: undefined });
+  return store;
+}
+
 function modeOf(path: string): number {
   const fd = openSync(path, 'r');
   try {

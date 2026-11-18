@@ -846,7 +846,130 @@ its stage lands.
 | `daemon::Plugins::session_policy` | `src/relay/daemon/plugins.rs`   | Which sessions join by themselves, may be asked to join, and publish activity                                   | every session may join by itself; none is asked; none publishes | 4      |
 | `session_sources::SessionSources` | `src/relay/session_sources.rs`  | Remote sessions (Devin Cloud, Claude Code on the web) a build lists and delivers into; Hermes's homes           | none: only this computer's sessions                           | 2b       |
 
-`serve` builds its plugins with `local::plugins`: `LocalSessions`
+### The organization's settings policy
+
+A build's account hands the core the settings part of the organization's
+workspace policy with `Core::apply_settings_policy(Some(SettingsPolicy {
+locked, defaults, managed, consent }))`, whenever it reads a new one, and
+`None` when none applies any more (`src/relay/settings_policy.rs`). The core
+keeps the last one in the store (`organizationPolicy`), so a lock holds
+across a restart before the account reads the policy again. A headless core
+without an account has no policy and is unchanged.
+
+- **Locked** values are written into their settings once and every later
+  change to them is refused, from the apps (`settings.set`) and from agents
+  (`PATCH /settings`), with `refused` "This setting is set by your
+  organization." Setting a locked key to its locked value is accepted.
+  `GET /settings` lists it `writable: false` with that sentence in
+  `organization`. A lock holds under a setting's other name too: a locked
+  `spawn_full_access_<harness>` or `spawn_billing_<harness>` refuses the same
+  part of `spawn_harnesses`. A tool's own default pass
+  (`apply_integration_defaults`) leaves a locked setting alone.
+- **Defaults** are written once, as a starting value the person may change.
+  A changed default is written again only while the setting still reads as
+  the policy last left it (its value just after the write, so a normalized or
+  completed value compares right), so the person's own choice is never
+  reversed. A default is recorded only once its write succeeded, so a failed
+  one is tried on the next apply, and the record outlives the default, so one
+  dropped and added back later still sees the person's choice.
+  `GET /settings` says "Managed by your organization." in `organization`.
+- **Person-only settings** (`settings_policy::PERSON_ONLY`, the policy
+  allowlist's person-only column, each also in `PERSON_TURNS_ON` or
+  `PERSON_ADDS`): an operator value that **widens** one, turning it on or
+  adding entries to its list, applies (locked or default) only when the
+  computer is `managed` (enrolled with the organization's consent) **and**
+  the key is in `consent`. Otherwise the person's own value stays and the key
+  is listed as mismatched. A value that **narrows** one, turning it off or
+  keeping only some of its entries, applies on every computer.
+- **`analytics_enabled`**: locked or defaulted off applies on every
+  computer; on applies only on a managed one (no `consent` entry), otherwise
+  the person's value stays and it is listed as mismatched.
+- A key the core has no setting for (its tool has not run here, or it is a
+  policy key the core does not enforce here) is skipped.
+- `settings.get` carries the read-only record `organization_policy`:
+  `{locked, defaults, mismatched, managed}`, key names only, for Settings to
+  label each row; absent when no policy applies.
+
+### Messages the organization holds
+
+The policy's delivery section decides inbound messages in every harness
+(`src/relay/claude_delivery_policy.rs`, which keeps its Claude-named file,
+methods and fields for compatibility):
+
+- **Locked `inbound_default: "hold"`:** a message from a sender in
+  `admin_senders` (Control's resolved relay names and addresses of the
+  organization's owners and admins, matched by authenticated address or by
+  name) always delivers. Any other sender's message is held for the person,
+  in every `SessionKind`, through the existing hold path; a push without the
+  sender's address reads the queue first. The person approves or dismisses
+  each held message (`claude_delivery.status` lists them all, with
+  `organization_hold: true`), but "Always allow" for a sender is refused while
+  the rule applies ("Your organization holds messages from senders who are
+  not its admins…"). Exceptions saved before it stay saved and apply again
+  once it is lifted. The held record says "Held by your organization: the
+  sender is not one of its admins."
+- **Defaulted `inbound_default`:** `hold` turns the person's own
+  known-senders-only restriction on, `deliver` off, once, as any default is
+  written; the person may change it and a later apply does not undo that.
+- The rule is held in memory, given on every policy apply and at startup
+  from the stored policy, and lifted with the policy. Changing it asks every
+  agent's queue to be read again. A message admitted just before a hold
+  begins meets the hand-over gate (`hand_over_held`) at each point it is
+  handed to the session, with no await in between: inside the ordinary
+  route's and native continuation's blocking calls, right before the route,
+  and right before the mobile journal takes the turn. If the hold now
+  applies, it waits in the queue, to be held on the next pass. A channel
+  batch is gated as its pin is saved (the pin is its hand-over): the check and
+  the save are one step under the delivery lock, which every hold change also
+  takes (`Core::set_organization_hold`), so a hold arrives either before the
+  check or after the save. If the hold covers any of its posts, nothing is
+  pinned and the posts go one by one, held or delivered on their own. A message whose route call has
+  already begun, or a batch already pinned, completes.
+
+### Repositories that join by themselves
+
+`auto_join_repositories` (`src/relay/repositories.rs`) is a list of
+`owner/name` and `owner/*` entries (lower-cased, duplicates collapsed, at
+most 200; anything else is `invalid_params`). A session's repository is read
+from its directory's git `origin` remote (the work tree's `.git`, or a linked
+work tree's main repository), in any form git takes: the host and a trailing
+`.git` are dropped, so `git@host:Acme/Web.git` and
+`https://host/acme/web` are both `acme/web`. A local-path or `file://`
+remote names no repository. The config is read as git reads it (comments,
+quotes, the old `[remote.origin]` spelling), `url.<base>.insteadOf` rewrites
+from the repository's, `~/.gitconfig` and `$XDG_CONFIG_HOME/git/config` are
+applied first, `include` files and `includeIf "gitdir:…"` files are followed
+(matched against the work tree's own git directory, `.git/worktrees/<name>`
+for a linked one; other `includeIf` conditions are not), within a budget of
+64 files and 1 MiB per lookup; a config file over 256 KiB (global, shared,
+included or per-work-tree) or unreadable, a config that includes itself or
+exceeds the budget, and an `includeIf` pattern over 1 KiB, a git directory
+path over 4 KiB or a match over a fixed work budget all name no repository, a linked work tree's own
+`config.worktree` applies when the repository enables
+`extensions.worktreeConfig`, the first `url` set is used (the one `git fetch`
+uses), and a directory reached
+through a link is looked up where it really is. A one-letter host (`g:acme/web`) is an SSH alias except on
+Windows, where it is a drive.
+
+- **Locked by the organization's policy:** a live session in a matching
+  repository is activated (registered with its ready record) as if automatic
+  activation were on for its harness: with `auto_activate` off, without Pi's
+  or OpenCode's own opt-in, and in an excluded directory. The session
+  directory reads the core's current list on every check, through the
+  source `attach_plugins` gives it once
+  (`SessionDirectory::forced_repositories_from`), and `/setup/status`'s
+  `auto_activates` says the same.
+- **The person's own list** (set, or seeded by a policy default): it adds no
+  activation; matching sessions follow automatic activation like any other.
+- No match changes nothing: the list only adds activations. Channel joins
+  are unchanged (`#general` follows `auto_join_general`).
+- **Label:** an agent registered from a matching session carries
+  `repository: "owner/name"` in its Relaycast metadata (kept per agent id in
+  the store's `agentRepositories`, so later metadata updates carry it too)
+  and in `agents.list`. The URL, host and local path never leave this
+  computer.
+
+ `LocalSessions`
 (Codex and Claude discovery over a `process::ProcessTable`, fleet-owned
 sessions left out), `LocalInjector`, `ClaudeSettings` and the relay-send
 socket at its platform path; a build's `daemon::PluginBuilder` adds what it
@@ -999,6 +1122,33 @@ credentials. The control bridge adds no user-facing layout or platform-specific 
 agent-relay-node call spawn.targets --json
 agent-relay-node call spawn.status --params '{"caller_name":"my-local-agent","action":"spawn","invocation_id":"invocation_id_from_receipt"}' --json
 ```
+
+### Who asked for a spawn
+
+At a spawn the core reads the invocation back from Relaycast
+(`GET /v1/actions/spawn/invocations/<id>`, `spawn::report_back::requester_of`)
+and keeps who asked for it on the registration's `spawn` record:
+
+- `requester` (`{"name","agentID"}`): the identity the work is for. When the
+  invocation carries both `requester_agent_id` and `requester_name`, the
+  desktop identity (a person's chat) that Agent Relay Cloud verified asked
+  for the spawn, that pair is the requester. Otherwise it is the invoking
+  agent, `caller_id` and `caller_name`.
+- `launcher` (`{"name","agentID"}`, optional): the invoking `caller_id` and
+  `caller_name` when they are not the requester. Agent Relay Cloud invokes a
+  spawn through a per-user launcher participant, so its caller is the
+  launcher and not the person's chat.
+
+Each pair is both or none: a plain agent name and a non-empty id. A partial,
+empty or malformed requester pair is ignored and the caller stays the
+requester. Records saved before `launcher` existed load unchanged.
+
+The requester gets the first turn's final answer and is the name in the
+spawned agent's header. A 1:1 direct message whose Relaycast sender id is the
+requester's or the launcher's (`spawn::from_requester`) is the requester's:
+it is native input when that is on and otherwise carries the owner line. Ids
+are compared, never names. Release ownership and fork authorization accept
+either id too.
 
 ## Exact provider event subscriptions
 

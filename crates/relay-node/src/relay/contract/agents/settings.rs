@@ -230,6 +230,15 @@ pub struct SettingsValues {
     /// keep the channels they are in. Absent in older cores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_join_general: Option<bool>,
+    /// Repositories whose sessions join the relay by themselves, each
+    /// `owner/name` or `owner/*`, matched against the session directory's
+    /// git `origin` remote. Set by the organization, a matching session is
+    /// put on the relay even with automatic activation off; otherwise it
+    /// follows automatic activation as any session does. A matching agent's
+    /// registration names its `repository`. Empty unless set. Absent in
+    /// older cores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_join_repositories: Option<Vec<String>>,
     /// Days this computer keeps local session history: 7, 30 or 90, or 0
     /// to keep it forever. 30 unless changed. relayhistory removes older
     /// sessions from this computer; uploaded copies are not affected.
@@ -248,6 +257,31 @@ pub struct SettingsValues {
     /// setting. Absent in older cores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_changes: Option<Vec<AgentSettingsChange>>,
+    /// Read-only: the settings the organization's workspace policy decides
+    /// on this computer (`relay::settings_policy`). Absent when no policy
+    /// applies. A record, not a setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization_policy: Option<OrganizationPolicyState>,
+}
+
+/// What the organization's workspace policy does to this computer's
+/// settings, by key, for Settings to label each row.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct OrganizationPolicyState {
+    /// Settings the organization set: the person cannot change them. Settings
+    /// labels each "This setting is set by your organization."
+    pub locked: Vec<String>,
+    /// Settings whose value came from the organization as a starting point
+    /// the person may change. Settings labels each "Managed by your
+    /// organization."
+    pub defaults: Vec<String>,
+    /// Settings the organization would turn on or widen but that only the
+    /// person turns on: they apply only on a computer enrolled with the
+    /// organization's consent for that setting, so here the person's own
+    /// value stays and the organization sees the difference.
+    pub mismatched: Vec<String>,
+    /// Whether this computer was enrolled with the organization's consent.
+    pub managed: bool,
 }
 
 /// One setting an agent changed on the session socket, as Settings shows it.
@@ -627,6 +661,15 @@ pub struct SettingsChange {
     )]
     #[schemars(with = "bool")]
     pub auto_join_general: Option<bool>,
+    /// Replaces the repositories whose sessions join the relay by
+    /// themselves: each `owner/name` or `owner/*`, at most 200.
+    #[serde(
+        default,
+        deserialize_with = "given",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "Vec<String>")]
+    pub auto_join_repositories: Option<Vec<String>>,
     /// How long this computer keeps local session history: 7, 30 or 90
     /// days, or 0 to keep it forever.
     #[serde(
