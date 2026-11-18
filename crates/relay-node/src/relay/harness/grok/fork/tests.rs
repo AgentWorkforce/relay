@@ -1,7 +1,6 @@
 use super::super::leader::{LeaderRuntime, Opened, SessionOpen, SystemLeaders};
 use super::*;
 use crate::relay::existing_session::Outcome;
-use std::os::unix::fs::PermissionsExt;
 
 const SOURCE: &str = "01a0fd4c-3771-7a20-9f41-6f86d56624f9";
 const COPY: &str = "7b2e6f0a-1c4d-4e8f-9a3b-5d6c7e8f9a0b";
@@ -34,19 +33,44 @@ impl World {
         let line = std::fs::read_to_string(self.path().join(format!("grok.{name}"))).ok()?;
         Some(serde_json::from_str(&line).unwrap())
     }
+
+    /// Every removal the stand-in `grok` was asked for, in order.
+    fn deletes(&self) -> Vec<Value> {
+        std::fs::read_to_string(self.path().join("grok.delete"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    /// How the stand-in `grok` answers `method` (`load` or `delete`) from
+    /// now on: see `fake_grok`.
+    fn mode(&self, method: &str, mode: &str) {
+        std::fs::write(self.path().join(format!("grok.mode.{method}")), mode).unwrap();
+    }
 }
 
 /// How the stand-in `grok` answers `_x.ai/session/fork`.
 enum Answer {
     Copied(&'static str),
     Error(i64),
+    /// No answer at all.
+    Silent,
 }
 
 /// Sets how the stand-in `grok` answers the next fork, forgetting what it
 /// was sent before. A data file beside it, so one test writes (and runs)
 /// one script only.
 fn answer(world: &World, answer: Answer) {
-    for sent in ["arguments", "fork", "load", "prompt"] {
+    for sent in [
+        "arguments",
+        "fork",
+        "load",
+        "prompt",
+        "delete",
+        "mode.load",
+        "mode.delete",
+    ] {
         let _ = std::fs::remove_file(world.path().join(format!("grok.{sent}")));
     }
     let line = match answer {
@@ -54,6 +78,7 @@ fn answer(world: &World, answer: Answer) {
             json!({"jsonrpc": "2.0", "id": "@ID@", "result": {"newSessionId": id}})
         }
         // The error's data names the session's files, as Grok's can.
+        Answer::Silent => Value::Null,
         Answer::Error(code) => json!({
             "jsonrpc": "2.0",
             "id": "@ID@",
@@ -64,39 +89,83 @@ fn answer(world: &World, answer: Answer) {
             },
         }),
     };
-    std::fs::write(world.path().join("grok.answer"), format!("{line}\n")).unwrap();
+    let line = if line.is_null() {
+        String::new()
+    } else {
+        format!("{line}\n")
+    };
+    std::fs::write(world.path().join("grok.answer"), line).unwrap();
 }
 
 /// A stand-in `grok` that speaks the ACP a fork is opened with: initialize,
-/// `_x.ai/session/fork` (answered as `answer` set), `session/load` and one
-/// prompt, each kept beside it as it arrives (`grok.fork`, `grok.load`,
-/// `grok.prompt`).
+/// `_x.ai/session/fork` (answered as `answer` set), `session/load`,
+/// `session/new`, one prompt and `_x.ai/session/delete`, each kept beside
+/// it as it arrives (`grok.fork`, `grok.load`, `grok.prompt`, and every
+/// removal in `grok.delete`). `World::mode` makes the load fail (`error`)
+/// or name another session (`other`), and the removal fail (`error`) or
+/// never be answered (`silent`).
 fn fake_grok(world: &World, first: Answer) -> PathBuf {
     answer(world, first);
     let executable = world.path().join("grok");
     let script = format!(
         r#"#!/bin/sh
 id() {{ printf '%s' "$1" | sed -E 's/.*"id":"([^"]+)".*/\1/'; }}
+mode() {{ cat "$0.mode.$1" 2>/dev/null || echo ok; }}
 printf '%s\n' "$@" > "$0.arguments"
-read -r initialize || exit 0
-printf '{{"jsonrpc":"2.0","id":"%s","result":{{"protocolVersion":1,"_meta":{{"modelState":{{"currentModelId":"grok-4.7"}},"agentVersion":"1.0.46"}}}}}}\n' "$(id "$initialize")"
-read -r fork || exit 0
-printf '%s\n' "$fork" > "$0.fork"
-sed "s/@ID@/$(id "$fork")/" "$0.answer"
-grep -q '"error"' "$0.answer" && exit 0
-read -r load || exit 0
-printf '%s\n' "$load" > "$0.load"
-printf '{{"jsonrpc":"2.0","id":"%s","result":{{"sessionId":"{COPY}"}}}}\n' "$(id "$load")"
-read -r prompt || exit 0
-printf '%s\n' "$prompt" > "$0.prompt"
-printf '{{"jsonrpc":"2.0","method":"_x.ai/queue/changed","params":{{"sessionId":"{COPY}","runningPromptId":"server-1","runningText":"fix the build"}}}}\n'
-printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"{COPY}","update":{{"sessionUpdate":"user_message_chunk","content":{{"type":"text","text":"fix the build"}}}}}}}}\n'
-sleep 5
+while read -r line; do
+  rid=$(id "$line")
+  case "$line" in
+  *'"method":"initialize"'*)
+    printf '{{"jsonrpc":"2.0","id":"%s","result":{{"protocolVersion":1,"_meta":{{"modelState":{{"currentModelId":"grok-4.7"}},"agentVersion":"1.0.46"}}}}}}\n' "$rid" ;;
+  *'"method":"_x.ai/session/fork"'*)
+    printf '%s\n' "$line" > "$0.fork"
+    sed "s/@ID@/$rid/" "$0.answer" ;;
+  *'"method":"session/load"'*)
+    printf '%s\n' "$line" > "$0.load"
+    case "$(mode load)" in
+    error) printf '{{"jsonrpc":"2.0","id":"%s","error":{{"code":-32603,"message":"no"}}}}\n' "$rid" ;;
+    other) printf '{{"jsonrpc":"2.0","id":"%s","result":{{"sessionId":"{SOURCE}"}}}}\n' "$rid" ;;
+    *) printf '{{"jsonrpc":"2.0","id":"%s","result":{{"sessionId":"{COPY}"}}}}\n' "$rid" ;;
+    esac ;;
+  *'"method":"session/new"'*)
+    printf '{{"jsonrpc":"2.0","id":"%s","result":{{"sessionId":"{COPY}"}}}}\n' "$rid" ;;
+  *'"method":"session/prompt"'*)
+    printf '%s\n' "$line" > "$0.prompt"
+    printf '{{"jsonrpc":"2.0","method":"_x.ai/queue/changed","params":{{"sessionId":"{COPY}","runningPromptId":"server-1","runningText":"fix the build"}}}}\n'
+    printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"{COPY}","update":{{"sessionUpdate":"user_message_chunk","content":{{"type":"text","text":"fix the build"}}}}}}}}\n' ;;
+  *'"method":"_x.ai/session/delete"'*)
+    printf '%s\n' "$line" >> "$0.delete"
+    case "$(mode delete)" in
+    error) printf '{{"jsonrpc":"2.0","id":"%s","error":{{"code":-32601,"message":"no"}}}}\n' "$rid" ;;
+    silent) ;;
+    *) printf '{{"jsonrpc":"2.0","id":"%s","result":{{"success":true}}}}\n' "$rid" ;;
+    esac ;;
+  esac
+done
 "#
     );
-    std::fs::write(&executable, script).unwrap();
-    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    write_executable(&executable, &script);
     executable
+}
+
+/// Writes `script` to `path` from a child process. A file this process
+/// held open for writing would be inherited by any process another test
+/// starts meanwhile, and Linux refuses to run a file open for writing.
+fn write_executable(path: &Path, script: &str) {
+    use std::io::Write;
+    let mut writer = std::process::Command::new("sh")
+        .args(["-c", "cat > \"$1\" && chmod 700 \"$1\"", "sh"])
+        .arg(path)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    writer
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(script.as_bytes())
+        .unwrap();
+    assert!(writer.wait().unwrap().success());
 }
 
 fn open_fork(
@@ -105,6 +174,18 @@ fn open_fork(
     source: ForkFrom,
     directory: &Path,
 ) -> Result<(Opened, Outcome), OpenError> {
+    open_with(world, executable, Some(source), directory, &|_| true)
+}
+
+/// Opens a session as a launch does, its leader accepted when `accept`
+/// says so.
+fn open_with(
+    world: &World,
+    executable: &Path,
+    fork: Option<ForkFrom>,
+    directory: &Path,
+    accept: &dyn Fn(&Opened) -> bool,
+) -> Result<(Opened, Outcome), OpenError> {
     let socket = world.path().join("leader.sock");
     let open = SessionOpen {
         executable,
@@ -112,9 +193,200 @@ fn open_fork(
         directory,
         text: "fix the build",
         timeout: Duration::from_secs(10),
+        fork,
+    };
+    SystemLeaders.open(&open, accept)
+}
+
+/// The removal of the copy, made in `directory`, that Grok is asked for.
+fn removal(directory: &Path) -> Value {
+    json!({"sessionId": COPY, "cwd": directory})
+}
+
+#[test]
+fn a_copy_that_does_not_load_is_removed_again() {
+    let world = World::new();
+    let executable = fake_grok(&world, Answer::Copied(COPY));
+    let source_folder = world.folder("source");
+    let project = world.folder("project");
+    let source = ForkFrom {
+        session_id: SOURCE,
+        cwd: &source_folder,
+    };
+    for load in ["error", "other"] {
+        answer(&world, Answer::Copied(COPY));
+        world.mode("load", load);
+        let refused = open_fork(&world, &executable, source, &project);
+        assert_eq!(refused, Err(OpenError::Fork(FAILED.into())), "{load}");
+        let deletes = world.deletes();
+        assert_eq!(deletes.len(), 1, "{load}");
+        assert_eq!(deletes[0]["method"], "_x.ai/session/delete");
+        // The folder the copy was made and loaded in, not the source's.
+        assert_eq!(deletes[0]["params"], removal(&project), "{load}");
+        assert!(world.sent("prompt").is_none());
+    }
+}
+
+#[test]
+fn a_copy_whose_leader_is_not_accepted_is_removed_again() {
+    let world = World::new();
+    let executable = fake_grok(&world, Answer::Copied(COPY));
+    let project = world.folder("project");
+    let source = ForkFrom {
+        session_id: SOURCE,
+        cwd: &project,
+    };
+    let refused = open_with(&world, &executable, Some(source), &project, &|_| false);
+    assert_eq!(
+        refused,
+        Err(OpenError::Failed("its leader could not be verified".into()))
+    );
+    let deletes = world.deletes();
+    assert_eq!(deletes.len(), 1);
+    assert_eq!(deletes[0]["params"], removal(&project));
+    assert!(world.sent("prompt").is_none());
+}
+
+#[test]
+fn a_copy_whose_first_task_is_not_taken_is_removed_again() {
+    use crate::relay::existing_session::Failure;
+    let world = World::new();
+    let executable = fake_grok(&world, Answer::Copied(COPY));
+    let project = world.folder("project");
+    let source = ForkFrom {
+        session_id: SOURCE,
+        cwd: &project,
+    };
+    let socket = world.path().join("leader.sock");
+    let mut client = LeaderClient::start(&executable, &socket, &project).unwrap();
+    for (outcome, removed) in [
+        (Outcome::Retry(Failure::TimedOut), true),
+        (Outcome::Waiting(Failure::TimedOut), true),
+        (Outcome::Refused(Failure::IdentityMismatch), true),
+        (Outcome::InDoubt(Failure::TimedOut), false),
+        (
+            Outcome::Delivered {
+                receipt_id: "grok-acp:server-1".into(),
+            },
+            false,
+        ),
+    ] {
+        answer(&world, Answer::Copied(COPY));
+        settle(&mut client, source, COPY, &project, &outcome);
+        let expected = if removed {
+            vec![json!({
+                "jsonrpc": "2.0",
+                "method": "_x.ai/session/delete",
+                "params": removal(&project),
+            })]
+        } else {
+            vec![]
+        };
+        let deletes: Vec<Value> = world
+            .deletes()
+            .into_iter()
+            .map(|mut delete| {
+                delete.as_object_mut().unwrap().remove("id");
+                delete
+            })
+            .collect();
+        assert_eq!(deletes, expected, "{outcome:?}");
+    }
+}
+
+#[test]
+fn the_source_is_never_removed() {
+    let world = World::new();
+    let executable = fake_grok(&world, Answer::Copied(COPY));
+    let project = world.folder("project");
+    let source = ForkFrom {
+        session_id: SOURCE,
+        cwd: &project,
+    };
+    let socket = world.path().join("leader.sock");
+    let mut client = LeaderClient::start(&executable, &socket, &project).unwrap();
+    for copied in [SOURCE, "not-a-session", ""] {
+        discard(&mut client, source, copied, &project);
+        settle(
+            &mut client,
+            source,
+            copied,
+            &project,
+            &Outcome::Refused(crate::relay::existing_session::Failure::IdentityMismatch),
+        );
+    }
+    assert!(world.deletes().is_empty());
+}
+
+#[test]
+fn a_removal_that_fails_or_goes_unanswered_leaves_the_error_as_it_was() {
+    let world = World::new();
+    let executable = fake_grok(&world, Answer::Copied(COPY));
+    let project = world.folder("project");
+    let source = ForkFrom {
+        session_id: SOURCE,
+        cwd: &project,
+    };
+    for delete in ["error", "silent"] {
+        answer(&world, Answer::Copied(COPY));
+        world.mode("load", "error");
+        world.mode("delete", delete);
+        let started = Instant::now();
+        let refused = open_fork(&world, &executable, source, &project);
+        assert_eq!(refused, Err(OpenError::Fork(FAILED.into())), "{delete}");
+        assert!(started.elapsed() < DISCARD_TIMEOUT + Duration::from_secs(2));
+        assert_eq!(world.deletes().len(), 1, "{delete}");
+
+        answer(&world, Answer::Copied(COPY));
+        world.mode("delete", delete);
+        let started = Instant::now();
+        let refused = open_with(&world, &executable, Some(source), &project, &|_| false);
+        assert_eq!(
+            refused,
+            Err(OpenError::Failed("its leader could not be verified".into())),
+            "{delete}"
+        );
+        assert!(started.elapsed() < DISCARD_TIMEOUT + Duration::from_secs(2));
+        assert_eq!(world.deletes().len(), 1, "{delete}");
+    }
+}
+
+#[test]
+fn a_fork_that_grok_did_not_answer_removes_nothing() {
+    let world = World::new();
+    let executable = fake_grok(&world, Answer::Silent);
+    let project = world.folder("project");
+    let source = ForkFrom {
+        session_id: SOURCE,
+        cwd: &project,
+    };
+    let socket = world.path().join("leader.sock");
+    let open = SessionOpen {
+        executable: &executable,
+        socket: &socket,
+        directory: &project,
+        text: "fix the build",
+        timeout: Duration::from_secs(2),
         fork: Some(source),
     };
-    SystemLeaders.open(&open, &|_| true)
+    let refused = SystemLeaders.open(&open, &|_| true);
+    assert_eq!(refused, Err(OpenError::Fork(FAILED.into())));
+    assert!(world.sent("fork").is_some());
+    assert!(world.deletes().is_empty());
+}
+
+#[test]
+fn a_new_session_removes_nothing() {
+    let world = World::new();
+    let executable = fake_grok(&world, Answer::Copied(COPY));
+    let project = world.folder("project");
+    let (opened, _) = open_with(&world, &executable, None, &project, &|_| true).unwrap();
+    assert_eq!(opened.session_id, COPY);
+    assert!(world.sent("fork").is_none());
+    assert!(world.deletes().is_empty());
+    let refused = open_with(&world, &executable, None, &project, &|_| false);
+    assert!(refused.is_err());
+    assert!(world.deletes().is_empty());
 }
 
 #[test]
@@ -161,6 +433,7 @@ fn a_fork_copies_the_session_loads_the_copy_and_gives_it_the_task() {
     assert_eq!(prompt["method"], "session/prompt");
     assert_eq!(prompt["params"]["sessionId"], COPY);
     assert_eq!(prompt["params"]["prompt"][0]["text"], "fix the build");
+    assert!(world.deletes().is_empty());
 }
 
 #[test]
@@ -184,6 +457,7 @@ fn a_grok_without_forking_is_told_to_update_and_a_missing_session_is_not_found()
         assert!(!format!("{refused:?}").contains("someone"));
         assert!(world.sent("load").is_none());
         assert!(world.sent("prompt").is_none());
+        assert!(world.deletes().is_empty());
     }
 }
 
@@ -201,6 +475,7 @@ fn a_copy_named_badly_is_not_loaded() {
         let refused = open_fork(&world, &executable, source, &project);
         assert_eq!(refused, Err(OpenError::Fork(FAILED.into())), "{copy}");
         assert!(world.sent("load").is_none());
+        assert!(world.deletes().is_empty());
     }
 }
 

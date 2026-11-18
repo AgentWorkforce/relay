@@ -168,6 +168,9 @@ impl LeaderRuntime for SystemLeaders {
             agent_version,
         };
         if !accept(&opened) {
+            if let Some(source) = open.fork {
+                super::fork::discard(&mut client, source, &opened.session_id, open.directory);
+            }
             return Err("its leader could not be verified".into());
         }
         let outcome = client.prompt(
@@ -176,6 +179,15 @@ impl LeaderRuntime for SystemLeaders {
             open.text,
             Instant::now() + open.timeout,
         );
+        if let Some(source) = open.fork {
+            super::fork::settle(
+                &mut client,
+                source,
+                &opened.session_id,
+                open.directory,
+                &outcome,
+            );
+        }
         Ok((opened, outcome))
     }
 }

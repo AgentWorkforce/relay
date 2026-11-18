@@ -14,6 +14,7 @@ use super::leader::{answer, ForkFrom, OpenError};
 use super::{record, GrokAdapter, DESCRIPTOR};
 use crate::relay::existing_session::grok::{loaded_session_id, LeaderClient};
 use crate::relay::existing_session::platform::{self, OpenOptionsExt};
+use crate::relay::existing_session::Outcome;
 use crate::relay::grok::{decode_component, GrokConfig};
 pub(super) use crate::relay::spawn::fork::FOLDER_GONE;
 use crate::relay::spawn::launch::{Launch, LaunchError};
@@ -39,6 +40,8 @@ pub(super) const FAILED: &str =
 const MAX_FOLDERS: usize = 4096;
 /// The largest `summary.json` read.
 const SUMMARY_LIMIT: u64 = 1024 * 1024;
+/// How long Grok is given to remove a copy a failed fork left.
+const DISCARD_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// The session `launch` copies, if it is a fork: only a Grok session id,
 /// which is what Grok files a session under.
@@ -99,12 +102,52 @@ pub(super) fn copy(
     let params = json!({
         "sessionId": copied, "cwd": directory, "mcpServers": [], "_meta": {"yoloMode": true},
     });
-    let loaded = answer(client.request("session/load", params, Instant::now() + timeout))
-        .map_err(|_| OpenError::Fork(FAILED.into()))?;
-    if loaded_session_id(&loaded).as_deref() != Some(copied.as_str()) {
+    let loaded = answer(client.request("session/load", params, Instant::now() + timeout));
+    if loaded
+        .ok()
+        .and_then(|loaded| loaded_session_id(&loaded))
+        .as_deref()
+        != Some(copied.as_str())
+    {
+        discard(client, source, &copied, directory);
         return Err(OpenError::Fork(FAILED.into()));
     }
     Ok(copied)
+}
+
+/// Asks Grok to remove `copied`, the copy of `source` it made in
+/// `directory`, when the fork fails after the copy was made. Only a copy
+/// Grok named, never the source. Best effort: the answer is not read,
+/// because Grok reports success for a removal that did nothing too (an
+/// unknown session, or another folder), and an older Grok does not know
+/// the method.
+pub(super) fn discard(client: &mut LeaderClient, source: ForkFrom, copied: &str, directory: &Path) {
+    if !is_uuid(copied) || copied == source.session_id {
+        return;
+    }
+    let params = json!({"sessionId": copied, "cwd": directory});
+    let _ = client.call(
+        "_x.ai/session/delete",
+        params,
+        Instant::now() + DISCARD_TIMEOUT,
+    );
+}
+
+/// Removes the copy when its first task was not taken, as `launch` then
+/// fails the spawn.
+pub(super) fn settle(
+    client: &mut LeaderClient,
+    source: ForkFrom,
+    copied: &str,
+    directory: &Path,
+    outcome: &Outcome,
+) {
+    if matches!(
+        outcome,
+        Outcome::Retry(_) | Outcome::Waiting(_) | Outcome::Refused(_)
+    ) {
+        discard(client, source, copied, directory);
+    }
 }
 
 /// The folder `target`'s session ran in, when it is a Grok session the
