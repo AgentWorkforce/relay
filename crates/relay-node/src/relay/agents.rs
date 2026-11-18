@@ -1326,6 +1326,10 @@ impl Core {
         if let Some(policy) = self.settings_policy_state(&settings) {
             settings.insert(crate::relay::settings_policy::SETTING.into(), policy);
         }
+        // Read only, once the list has been read (`relay::leaders`).
+        if let Some(leaders) = self.workspace_leaders_status() {
+            settings.insert("workspace_leaders".into(), json!(leaders));
+        }
         settings
     }
 

@@ -349,8 +349,9 @@ impl SpawnFacet for CodexAdapter {
                 (claim, self.turn_ended(&target.id, message.message_id)),
                 (message.text, message.message_id),
                 // As every Codex delivery: a peer-framed message is hidden
-                // when relay messages are (`show_relay_messages` off); the
-                // owner's plain text has no attribution and stays visible.
+                // when relay messages are (`show_relay_messages` off); native
+                // input (the owner's plain text, or a requester's or leader's
+                // text under the native-input header) stays visible.
                 match crate::relay::codex::compact::enabled() {
                     true => app_server::Hide::IfAble,
                     false => app_server::Hide::Never,

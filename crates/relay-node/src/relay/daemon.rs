@@ -228,6 +228,8 @@ pub struct Core {
     pub(crate) integration_defaults: std::sync::atomic::AtomicBool,
     /// The spawn node, while spawns are on (`relay::spawn`).
     pub(crate) spawn_node: tokio::sync::Mutex<Option<crate::relay::spawn::node::SpawnNode>>,
+    /// The workspace's leaders, read on first need (`relay::leaders`).
+    pub(crate) leaders: crate::relay::leaders::Cache,
     pub(crate) me: std::sync::Weak<Core>,
 }
 
@@ -340,6 +342,7 @@ impl Core {
             integration_lock: tokio::sync::Mutex::new(()),
             integration_defaults: std::sync::atomic::AtomicBool::new(true),
             spawn_node: tokio::sync::Mutex::new(None),
+            leaders: Default::default(),
             me: me.clone(),
         });
         if let Some(trusted) = &core.plugins.trusted {
