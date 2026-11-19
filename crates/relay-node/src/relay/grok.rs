@@ -23,7 +23,10 @@
 //!
 //! Processes are read through a `ProcessTable`, so tests never start Grok.
 
+mod component;
 mod titles;
+pub(crate) use component::decode_component;
+use component::encode_component;
 use titles::title;
 pub(crate) use titles::{binding_title, native_title};
 
@@ -100,20 +103,6 @@ fn expand_tilde(path: &str, home: &Path) -> PathBuf {
         None if path == "~" => home.to_path_buf(),
         None => PathBuf::from(path),
     }
-}
-
-/// Grok's encoding of a working directory as one path component: every byte
-/// outside `A-Za-z0-9-_.!~*'()` becomes `%XX`.
-fn encode_component(text: &str) -> String {
-    let mut encoded = String::with_capacity(text.len() * 3);
-    for byte in text.bytes() {
-        if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&byte) {
-            encoded.push(byte as char);
-        } else {
-            encoded.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    encoded
 }
 
 /// One record of `active_sessions.json`.

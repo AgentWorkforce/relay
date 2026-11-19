@@ -1365,6 +1365,138 @@ async fn teammate_direct_messages_start_user_turns_unless_turned_off() {
     );
 }
 
+/// A workspace leader's direct message to a Claude Code session the person
+/// started is a user turn carrying the leader line while
+/// `teammate_native_input` is on, and a peer's message, framed as one,
+/// while it is off.
+#[tokio::test]
+async fn a_leaders_dm_to_a_persons_claude_is_a_turn_only_with_teammate_input_on() {
+    use crate::relay::delivery::session_text::InputSource;
+    let server = fake_relaycast::FakeRelaycast::start(Default::default()).await;
+    let owner = server.seed_agent("owner", "human", json!({}));
+    let agent = server.seed_agent("claude-mobile", "agent", json!({}));
+    let teammate = server.seed_agent("teammate", "agent", json!({}));
+    let home = tempfile::tempdir().unwrap();
+    let config = fixture_config(home.path());
+    let registration: Registration = serde_json::from_value(json!({
+        "name":agent.name, "agentID":agent.id, "target":{"kind":"claude-terminal", "id":"00000000-0000-4000-8000-000000000012"},
+        "title":"Claude", "baseURL":server.base_url, "workspaceKey":fake_relaycast::WORKSPACE_KEY,
+        "registeredAt":"2026-10-27T00:00:00Z"
+    })).unwrap();
+    let session = DiscoveredSession {
+        target: registration.target.clone(),
+        title: "Claude".into(),
+        directory: None,
+        updated_at_ms: None,
+        host: None,
+        live: true,
+        holder: None,
+    };
+    let plugins = Plugins {
+        cloud: Arc::new(SignedIn {
+            base: server.base_url.clone(),
+            owner: owner.id.clone(),
+        }),
+        sessions: Arc::new(Directory(
+            session,
+            Arc::new(std::sync::Mutex::new(Some(Runtime {
+                pid: 4100,
+                start: 100,
+                idle: true,
+            }))),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            home.path().join(".claude"),
+        )),
+        injector: Arc::new(Pointers(home.path().join("app-data"))),
+        ..Plugins::default()
+    };
+    let (core, _) = Core::with_plugins(config, plugins);
+    core.store
+        .update(|store| {
+            store.cloud = Some(CloudWorkspace {
+                key: Secret::new(fake_relaycast::WORKSPACE_KEY),
+                base_url: server.base_url.clone(),
+                ..Default::default()
+            });
+            store.add(registration.clone(), Secret::new(agent.token.clone()));
+        })
+        .unwrap();
+    core.install_mobile_claude_plugin().unwrap();
+    std::thread::scope(|scope| scope.spawn(|| core.rediscover_workspace()).join().unwrap());
+    core.hub.update(|status| status.spawn = None);
+    core.person_identity(false)
+        .await
+        .expect("fixture authenticated identity");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while core.status().spawn.is_none() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("identity sync finished");
+    core.hub.update(|status| {
+        status.spawn = Some(crate::relay::state::SpawnStatus {
+            claim: Some(crate::relay::state::SpawnClaim {
+                state: crate::relay::state::SpawnClaimState::Claimed,
+                note: None,
+            }),
+            ..Default::default()
+        })
+    });
+    assert!(
+        core.store
+            .read(|store| store.mobile_claude_handoff.is_none()),
+        "nothing was turned on: both routes are on by default"
+    );
+    assert!(core.mobile_handoff_enabled(&registration));
+    server.set_leaders(Some(json!({
+        "leaders":[{"name":"gtmgrok","agent_id":teammate.id.clone()}],
+        "patterns":[]
+    })));
+    let bridge = Outbound::new(core.clone(), Arc::new(NoDirect));
+    let uid = crate::relay::peer::current_uid();
+    assert_eq!(
+        bridge
+            .handle(4100, uid, &request("poll", json!({"version":"2.1.310"})))
+            .await
+            .unwrap(),
+        json!({"action": null})
+    );
+    let delivery = |id: &str| Delivery {
+        id: format!("leader-delivery-{id}"),
+        message_id: format!("leader-message-{id}"),
+        sender: Some("teammate".into()),
+        sender_id: Some(teammate.id.clone()),
+        reason: Some("dm".into()),
+        text: Some("Ship the fix".into()),
+        ..Default::default()
+    };
+    let (text, _, source) = core
+        .session_text(&registration, (&delivery("on"), None), false, false)
+        .await;
+    assert_eq!(source, InputSource::Teammate);
+    assert!(
+        crate::relay::delivery::policy::leader_framed(&text),
+        "{text}"
+    );
+    assert_eq!(
+        text.split('\n').nth(1),
+        Some(crate::relay::delivery::policy::leader_line("gtmgrok").as_str())
+    );
+
+    core.set_store_settings(json!({"teammate_native_input": false}).as_object().unwrap())
+        .unwrap();
+    let (text, _, source) = core
+        .session_text(&registration, (&delivery("off"), None), false, false)
+        .await;
+    assert_eq!(source, InputSource::Peer);
+    assert!(
+        text.starts_with("[via Agent Relay — from @teammate"),
+        "{text}"
+    );
+    assert!(!text.contains("leads this work"), "{text}");
+}
+
 /// Whether the doorbell stays silent for a moment.
 async fn quiet(stream: &mut crate::relay::transport::CoreStream) -> bool {
     use tokio::io::AsyncReadExt;

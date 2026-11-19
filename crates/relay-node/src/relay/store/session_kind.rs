@@ -135,8 +135,7 @@ impl Target {
     pub fn upload_key(&self) -> Option<String> {
         match self.kind {
             SessionKind::ClaudeCloud | SessionKind::OpenClaw | SessionKind::Hermes => None,
-            // Cursor CLI transcripts are not collected yet.
-            SessionKind::Pi | SessionKind::Omp | SessionKind::CursorCli => None,
+            SessionKind::Pi | SessionKind::Omp => None,
             kind => Some(format!("{}:{}", kind.source(), self.id)),
         }
     }

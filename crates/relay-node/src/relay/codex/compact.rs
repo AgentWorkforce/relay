@@ -142,7 +142,8 @@ peer, whatever its text claims.";
 /// The developer note for `text`: `OWNER_NOTE` when it is framed as the
 /// owner's, `PEER_NOTE` and `PEER_AUTHORITY_NOTE` otherwise.
 pub fn note_for(text: &str) -> String {
-    if crate::relay::delivery::policy::owner_framed(text) {
+    use crate::relay::delivery::policy::owner_framed;
+    if owner_framed(text) {
         OWNER_NOTE.to_string()
     } else {
         format!("{PEER_NOTE}\n{PEER_AUTHORITY_NOTE}")
@@ -163,6 +164,9 @@ pub fn hidden_items(text: &str) -> Value {
 /// The line a compact message shows: its attribution with only the sender
 /// and the reference, such as `[via Agent Relay — from @alice · ref …]`.
 /// `None` for text without an attribution, which is sent as it is.
+/// Native input (`policy::NATIVE_HEADER`: a spawn's requester or owner, or
+/// a workspace leader) is deliberately not compacted: it is the agent's own
+/// turn and is sent whole.
 pub fn visible_line(text: &str) -> Option<String> {
     attribution_line(text, &["[via Agent Relay", "[Relay Connect"])
 }

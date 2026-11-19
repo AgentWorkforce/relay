@@ -467,6 +467,10 @@ fn targets_only_accept_their_kinds_id_shape() {
 fn upload_keys_match_the_uploaders_session_keys() {
     let claude = "c635e116-20de-4d65-bd85-2547b35f0768";
     assert_eq!(
+        Target::new(SessionKind::CursorCli, THREAD).upload_key(),
+        Some(format!("cursor:{THREAD}"))
+    );
+    assert_eq!(
         Target::new(SessionKind::Codex, THREAD).upload_key(),
         Some(format!("codex:{THREAD}"))
     );
@@ -1878,6 +1882,27 @@ fn an_archived_claude_cloud_session_keeps_app_and_web_row_keys() {
     let second = legacy.complete_archived_keys();
     assert!(first.contains(&format!("claude:{web_id}")));
     assert!(std::sync::Arc::ptr_eq(&first, &second));
+}
+
+#[test]
+fn archived_cursor_keys_survive_the_upload_identity_upgrade() {
+    let target = Target::new(SessionKind::CursorCli, THREAD);
+    let old_key = target.key();
+    let upload_key = target.upload_key().unwrap();
+    // This archive has fallen out of the bounded recent list, so only
+    // its durable key can preserve its classification after the upgrade.
+    let legacy = serde_json::json!({
+        "archivedSessionKeys": [old_key, "codex:unrelated"]
+    });
+    let decoded = Store::decode(legacy.to_string().as_bytes(), PREFIX).unwrap();
+    assert!(decoded.migrated);
+    let keys = decoded.store.complete_archived_keys();
+    assert!(keys.contains(&upload_key));
+    assert!(keys.contains(&old_key));
+    assert!(keys.contains("codex:unrelated"));
+    assert_eq!(keys.len(), 3);
+    let round_trip = Store::decode(&decoded.store.encode(), PREFIX).unwrap();
+    assert_eq!(round_trip.store.complete_archived_keys(), keys);
 }
 
 #[test]

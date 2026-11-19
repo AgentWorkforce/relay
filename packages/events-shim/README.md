@@ -12,15 +12,25 @@ It adds the inbox's MCP server to every supported agent CLI on the machine, or o
 `--claude`, `--codex`, `--copilot`, `--cursor`, `--droid`, `--amp`, `--opencode`, `--muse`, `--gemini`, `--grok`, `--devin` (or `--cli claude,codex`).
 Each tool gets it its own way (`claude`/`codex`/`copilot`/`droid`/`amp`/`gemini`/`grok`/`devin`/`muse mcp add` at user scope; Cursor's
 `~/.cursor/mcp.json`, opencode's config file), re-running replaces it, and Claude Code and Codex also get
-the `agent-relay-webhooks` skill. The inbox is saved to `~/.config/agent-relay/webhooks.json` (0600). Then tell the
+the `agent-relay-webhooks` skill. The inbox is saved to `~/.config/agent-relay/webhooks.json` (0600), per CLI. Then tell the
 agent "watch for webhooks". Each post wakes it:
+
+**One inbox wakes one session, not one per agent.** To wake Claude Code and Codex (or any two agents) independently,
+make one inbox per agent and run `setup` once per agent with its own MCP URL (`setup '<inbox A>' --claude`, then
+`setup '<inbox B>' --codex`). Each CLI keeps the inbox it was set up with. Setup refuses to add a second waking CLI to
+an inbox another CLI already uses, or to an inbox linked to another agent's session, unless you pass `--share-inbox`.
+When CLIs share an inbox, setup says which session gets the posts: a relay wake link (Codex and the other CLIs woken
+through the core) takes every post while it works, and otherwise the hook listeners do.
 
 - **Claude Code, with or without Agent Relay: nothing to do.** `setup --claude` also installs SessionStart and Stop
   hooks (`async`, `asyncRewake`) in `~/.claude/settings.json` that run `events-shim listen --hook`. It waits for the
   next post and exits 2 with it, which wakes the idle session with the post; each turn's Stop hook re-arms it. One
-  listener per session, and none for a closed session. The hooks run in every Claude Code session, but only a
-  session that used the `webhooks` MCP (its transcript shows a `watch_webhooks`, `link_relay_wake`,
-  `wait_for_webhook`, `get_webhook_events`, `ack_webhook_events` or `release_webhook_events` call) listens. While the inbox has a working relay wake link
+  listener per session, and none for a closed session. The hooks run in every Claude Code session, but the inbox
+  wakes one: the most recently started session takes it over at its start (not a `claude -p` run or a compaction),
+  and the older session's listener stops before it takes another post. A session that calls a `webhooks` MCP tool
+  (`watch_webhooks`, `link_relay_wake`, `wait_for_webhook`, `get_webhook_events`, `ack_webhook_events` or
+  `release_webhook_events`) takes it over too, so telling an older session "watch for webhooks" moves the posts to
+  it. When the owning session closes, the next session to start or finish a turn takes over. While the inbox has a working relay wake link
   (`link_relay_wake`), no hook listener takes posts: the link delivers each one to the session that made it.
   `npx @agent-relay/events-shim uninstall --claude` removes the hooks.
 - **Codex, with or without Agent Relay Desktop: nothing to do.** `setup --codex` installs a SessionStart hook in
@@ -93,8 +103,8 @@ event arrives as a post naming the changed file (deduplicated per path and revis
 
 | Tool                     | What it does                                                                        |
 | ------------------------ | ----------------------------------------------------------------------------------- |
-| `watch_webhooks`         | Start here: webhook URLs, wake state, waiting posts and next steps                  |
-| `link_relay_wake`        | Link the session's relay webhook (checked with a test post first)                   |
+| `watch_webhooks`         | Start here: webhook URLs, wake state and the agent a link wakes, waiting posts      |
+| `link_relay_wake`        | Link the session's relay webhook (checked first); pass `agent`, your relay name     |
 | `unlink_relay_wake`      | Stop forwarding                                                                     |
 | `get_webhook_events`     | Unread posts (marks them read), or one post by id                                   |
 | `wait_for_webhook`       | Block until a post arrives (≤ 50 s), then return it (marks it read, or leases it)   |
@@ -123,6 +133,16 @@ The CLI's listeners (`listen`, `--hook`, `--stop-hook`) wait with `auto_ack: fal
 it is handed to the session (or printed), and release it when the session let go first. Against an inbox without
 leases (no `claim_token` in the result, see Hosting) they keep the older behaviour: the posts are already read,
 and a stop hook that let go keeps the post on disk for the next turn's hook.
+
+### Which session a link wakes
+
+Every session that has the inbox's MCP server reads the same wake state, so `watch_webhooks` names the Agent Relay
+agent a working link wakes (`linked_agent`, with `linked_at`) and tells the agent to compare it with its own name
+before saying the inbox is linked to it. `link_relay_wake` records its `agent` argument (events-shim's own links for
+Codex and the other CLIs woken through the core always pass it) and answers `replaced_agent` when it moves the link
+away from another session. A link made without a name is reported as `linked_agent: null`, and the agent is told to
+assume it wakes another session unless it made the link itself. Hosts keep the name in `WakeTarget.agent`. The page
+feed shows it as `agent.wake_agent`.
 
 ## Webhook URLs
 

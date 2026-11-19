@@ -102,6 +102,7 @@ pub mod hosted_mcp;
 pub mod inject;
 pub mod integration_defaults;
 pub mod integrations;
+pub mod leaders;
 pub mod links;
 pub mod local;
 pub mod local_methods;

@@ -321,7 +321,7 @@ impl Core {
         // TCC approval and unavailable volumes can stall filesystem calls.
         // Check before registering an agent, without blocking node heartbeats
         // or the desktop socket. A timed-out check has no launch side effects.
-        let checked_directory = directory.clone();
+        let (checked_directory, forking) = (directory.clone(), fork.is_some());
         tokio::time::timeout(
             Duration::from_secs(10),
             async move {
@@ -333,7 +333,7 @@ impl Core {
                 })
                 .await
                 .map_err(|_| "spawn_failed: could not check access to the working folder".to_string())?
-                .map_err(|reason| format!("spawn_invalid_input: {reason}"))
+                .map_err(|error| super::fork::directory_refusal(&error, forking))
             },
         )
         .await
@@ -345,6 +345,8 @@ impl Core {
             let app_data_dir = self.config.app_data_dir.clone();
             async move { report_back::requester(&workspace, &app_data_dir, &invocation_id).await }
         });
+        // The workspace's leaders, read again for the agent about to start.
+        self.reread_workspace_leaders(&workspace);
         // On disk before anything starts, so a restart finds what it left.
         let mut in_flight = InFlight {
             app_data_dir: self.config.app_data_dir.clone(),

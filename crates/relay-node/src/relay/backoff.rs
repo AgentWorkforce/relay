@@ -201,14 +201,13 @@ impl RelaycastBackoff {
         error: &RelayError,
     ) -> Option<BackoffNotice> {
         let admission = workspace.write_admission();
-        let busy = matches!(error, RelayError::Api { code, .. } if code == "workspace_busy")
-            && matches!(
-                classify(error, chrono::Utc::now().timestamp_millis()),
-                Some((Limit::Transient, _))
-            );
-        if busy {
+        let busy = matches!(error, RelayError::Api { code, .. } if code == "workspace_busy");
+        let busy = busy.then(|| classify(error, chrono::Utc::now().timestamp_millis()));
+        if let Some(Some((Limit::Transient, hint))) = busy {
             self.record_success(workspace);
-            self.record_error(&admission, error)
+            // The write gate is shared with socket pauses: a busy answer
+            // with no `Retry-After` must not cut short one already running.
+            self.record_error_keeping(&admission, error, hint.is_none())
         } else {
             self.record_success(&admission);
             self.record_error(workspace, error)
@@ -235,6 +234,17 @@ impl RelaycastBackoff {
         workspace: &WorkspaceScope,
         error: &RelayError,
     ) -> Option<BackoffNotice> {
+        self.record_error_keeping(workspace, error, false)
+    }
+
+    /// [`Self::record_error`]; with `keep_later`, a pause already running
+    /// past the new one is kept.
+    fn record_error_keeping(
+        &self,
+        workspace: &WorkspaceScope,
+        error: &RelayError,
+        keep_later: bool,
+    ) -> Option<BackoffNotice> {
         let now_ms = chrono::Utc::now().timestamp_millis();
         let Some((limit, retry_after)) = classify(error, now_ms) else {
             // A completed recheck that is no longer a pacing response ends
@@ -248,7 +258,14 @@ impl RelaycastBackoff {
             }
             return None;
         };
-        self.record_limit(workspace, limit, retry_after, now_ms, TRANSIENT_CAP, false)
+        self.record_limit(
+            workspace,
+            limit,
+            retry_after,
+            now_ms,
+            TRANSIENT_CAP,
+            keep_later,
+        )
     }
 
     /// Pauses `workspace`'s writes for a refusal outside the Relaycast API:
@@ -606,6 +623,20 @@ mod tests {
             held > SOCKET_CAP - Duration::from_secs(1) && held <= SOCKET_CAP,
             "{held:?}"
         );
+    }
+
+    #[test]
+    fn a_busy_write_without_retry_after_does_not_shorten_a_socket_pause() {
+        let gate = RelaycastBackoff::new(|| 1.0);
+        let workspace = WorkspaceScope::id("https://relay.example", "workspace-a", "A");
+        gate.record_write_pause(&workspace, Some(Duration::from_secs(120)));
+        gate.record_write_error(&workspace, &api("workspace_busy", 503, None));
+        assert!(gate.remaining_write(&workspace).unwrap() > Duration::from_secs(119));
+        // A busy answer that names its own wait still replaces it (with the
+        // third step of the transient schedule, 8 s, as the least wait).
+        gate.record_write_error(&workspace, &api("workspace_busy", 503, Some(5_000)));
+        let held = gate.remaining_write(&workspace).unwrap();
+        assert!(held <= Duration::from_secs(8), "{held:?}");
     }
 
     #[test]

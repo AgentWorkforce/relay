@@ -368,6 +368,46 @@ describe('events shim', () => {
     expect(feed.events.map((event) => event.delivery)).toEqual(['woken', 'woken']);
   });
 
+  it("names the agent a relay wake link wakes, so a session cannot take another one's link for its own", async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const codex = await h.connect(shim.mcp_url);
+    const linked = await codex.call('link_relay_wake', { ...RELAY_HOOK, agent: 'codex-session-1' });
+    expect(linked.structuredContent).toMatchObject({ wake: 'linked', linked_agent: 'codex-session-1' });
+
+    // Another session with the same MCP server (a Claude Code session, say) reads the wake state.
+    const claude = await h.connect(shim.mcp_url);
+    const watched = (await claude.call('watch_webhooks')).structuredContent as Record<string, unknown>;
+    expect(watched).toMatchObject({ wake: 'linked', linked_agent: 'codex-session-1' });
+    const steps = (watched.next_steps as string[]).join('\n');
+    expect(steps).toContain('linked to the Agent Relay agent "codex-session-1"');
+    expect(steps).toContain('Compare "codex-session-1" with your own Agent Relay agent name');
+    expect(steps).not.toContain('injected into this session');
+    expect((await h.feed(shim.manage_token)).body.agent.wake_agent).toBe('codex-session-1');
+
+    // Linking another session moves the link and says which one stops getting posts.
+    const moved = await claude.call('link_relay_wake', {
+      url: `${RELAY}/v1/hooks/wh_new`,
+      secret: RELAY_HOOK.secret,
+      agent: 'claude-session-2',
+    });
+    expect(moved.structuredContent).toMatchObject({
+      linked_agent: 'claude-session-2',
+      replaced_agent: 'codex-session-1',
+    });
+    expect((moved.structuredContent!.next_steps as string[]).join('\n')).toContain(
+      'The inbox no longer wakes "codex-session-1"'
+    );
+
+    // A link made without a name (an older client) is never presented as the reader's own.
+    await claude.call('link_relay_wake', RELAY_HOOK);
+    const unnamed = (await codex.call('watch_webhooks')).structuredContent as Record<string, unknown>;
+    expect(unnamed).toMatchObject({ wake: 'linked', linked_agent: null });
+    expect((unnamed.next_steps as string[]).join('\n')).toContain(
+      'Unless you called link_relay_wake yourself in this conversation, assume the link wakes another session'
+    );
+  });
+
   it('does not let a late failure from an old link break the new link', async () => {
     const h = createHarness();
     const shim = await h.create();

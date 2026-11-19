@@ -338,7 +338,7 @@ mod settings;
 pub use settings::{
     history_retention, AgentSettingsChange, ClaudeConfigDir, ClaudeConfigDirChange,
     OrganizationPolicyState, SettingsChange, SettingsValues, SpawnHarnessSettings,
-    TrustedWorkspaceMember,
+    TrustedWorkspaceMember, WorkspaceLeader, WorkspaceLeaders,
 };
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize)]

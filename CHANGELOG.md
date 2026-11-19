@@ -5,7 +5,25 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Fixed
+
+- `agent-relay-node`: local Cursor sessions expose the matching `cursor:<id>` history identity, so desktop apps can show their upload controls alongside messaging. Previously archived Cursor sessions keep their Archived classification after the upgrade.
+
+### Added
+
+- `agent-relay-node`: workspace leaders. The node reads the workspace's leaders from Relaycast (`GET /v1/workspace/leaders`), caches them for a minute and reads them again as each agent starts here. While reads fail the last list is kept for at most ten minutes after the last good read, and a 401, 403 or 404 drops it at once. A leader's 1:1 direct message is native input with a `[leader: @<name> leads this work; …]` line naming the leader as the list does: to spawned agents while `spawn_native_input` is on, and as a user turn to Claude Code sessions with teammate native input on; anywhere else it is a peer message. A leader's native input to a spawned Codex agent is the turn's visible input, as the requester's is, also while relay messages are hidden. A spawn's own requester keeps its requester framing even when it is a leader. Leaders are matched by agent id only, their channel and group messages stay peer messages, and they cannot answer approvals, fork or release. `settings.get` shows the list as `workspace_leaders`, read only.
+
+### Added
+
+- `agent-relay-node`: desktop spawns accept `fork_from` for a Grok session too, so a new Grok agent starts with a copy of that session's conversation, in its folder, and the original carries on untouched. Grok makes the copy itself. A Grok without session forking gets `spawn_fork_unavailable` with a prompt to run `grok update`, and a session Grok no longer has gets `spawn_fork_not_found`. Spawn capabilities now list `grok` among the harnesses that can fork. Not available on Windows, where Grok cannot be spawned. Grok sessions saved before Grok recorded their folder in the session summary can be forked too, and a Grok fork that fails after Grok made the copy removes the copy again, where Grok supports it. For every harness, a fork whose source folder has been deleted now gets `spawn_fork_not_found` without the folder's path, instead of `spawn_invalid_input` naming it, and one whose folder can't be read gets `spawn_fork_unavailable`.
+
+### Fixed
+
+- `@agent-relay/events-shim`: a fresh Claude Code session set up with `setup --claude` is woken by webhook posts again, with nothing to tell it. Since 18.9.0 only a session that had called a `webhooks` MCP tool listened, so a new session never woke. Now the most recently started Claude Code session takes the inbox over at its start (not a `claude -p` run or a compaction), and the older session's listener stops before it takes another post. Calling a `webhooks` tool also takes the inbox over, and when the owning session has closed, the next session's hook takes it. Posts still go to one session only, and no hook listener takes posts while the inbox has a working relay wake link.
+- `@agent-relay/events-shim`: `watch_webhooks` now says which Agent Relay agent a relay wake link wakes (`linked_agent`, `linked_at`) and tells the agent to compare that name with its own. Before, every session with the inbox's MCP server read `wake: linked` and was told "each post is injected into this session", so a session could claim a link that targets another agent. `link_relay_wake` takes the linking session's `agent` name and says when it moves the link away from another agent (`replaced_agent`). Links that events-shim makes for Codex and other CLIs woken through the core record the agent's name. The page feed reports it as `agent.wake_agent`. Hosts that persist `WakeTarget.agent` show the name; others report the link without one.
+- `@agent-relay/events-shim setup`: each agent CLI keeps the inbox it was set up with (`inboxes` in `~/.config/agent-relay/webhooks.json`), so one machine can give Claude Code and Codex separate inboxes that wake each independently. Before, the last setup's inbox replaced every CLI's. One inbox wakes one session: setup now refuses to add a second waking CLI to an inbox another CLI already uses, or to an inbox linked to another agent, and points to making a separate inbox. `--share-inbox` adds the CLI anyway. When several CLIs share an inbox, setup says which session gets the posts and how that changes.
 
 ### Added
 

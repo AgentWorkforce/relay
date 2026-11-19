@@ -181,7 +181,11 @@ fn plain_name(name: &str) -> bool {
 
 /// The identity a spawn invocation records under `name_key` and `id_key`:
 /// a plain agent name and a non-empty immutable id, both or none.
-fn identity_at(invocation: &Value, name_key: &str, id_key: &str) -> Option<SpawnRequester> {
+pub(crate) fn identity_at(
+    invocation: &Value,
+    name_key: &str,
+    id_key: &str,
+) -> Option<SpawnRequester> {
     let name = invocation[name_key]
         .as_str()
         .filter(|name| plain_name(name))?;
