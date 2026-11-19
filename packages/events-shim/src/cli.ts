@@ -1609,17 +1609,25 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
   // Every waking CLI on this inbox after this setup: one session of one of them gets each post.
   const sharing = AGENT_CLIS.filter((cli) => wakes(cli) && config.inboxes?.[cli.id] === mcpUrl);
   // A CLI the core links (Codex, …) on Claude's inbox takes every post once one of its sessions is open.
-  const claudeOutranked =
-    config.inboxes?.claude === mcpUrl && (sharing.some((cli) => cli.coreKind) || linkedElsewhere);
+  const coreSharing = sharing.filter((cli) => cli.coreKind);
+  // The link the inbox reports, whoever made it; a link to a Claude Code session still wakes Claude Code.
+  const linkedKind = linkedAgent
+    ? (coreAgents(io)?.find((entry) => entry.name === linkedAgent)?.target?.kind ?? null)
+    : null;
+  const linkedToOther = linkedAgent !== null && !(linkedKind ?? '').startsWith('claude');
+  const claudeOutranked = config.inboxes?.claude === mcpUrl && (coreSharing.length > 0 || linkedToOther);
   if (hooked.includes('claude') && !claudeOutranked) {
     io.stdout(
       'Start a new Claude Code session: each post wakes the most recently started Claude Code session by itself, with nothing to tell it. One session at a time: a newer session takes the posts over, and telling an older one "watch for webhooks" moves them back to it.'
     );
   }
   if (claudeOutranked) {
-    const holder = sharing.filter((cli) => cli.coreKind).map((cli) => cli.label);
+    const fix = `Give Claude Code its own inbox: make one at ${INBOX_PAGE}, then run \`npx @agent-relay/events-shim@latest setup <its MCP URL> --claude\`.`;
+    const labels = coreSharing.map((cli) => cli.label).join(' or ');
     io.stdout(
-      `WARNING: Claude Code shares this inbox with ${holder.length > 0 ? holder.join(', ') : `the Agent Relay agent "${linkedAgent || 'another session'}"`}, which is linked through Agent Relay and gets every post, so Claude Code sessions will not be woken. Give Claude Code its own inbox: make one at ${INBOX_PAGE}, then run \`npx @agent-relay/events-shim@latest setup <its MCP URL> --claude\`.`
+      linkedToOther
+        ? `WARNING: this inbox is linked through Agent Relay to "${linkedAgent || 'another session'}", which gets every post, so Claude Code sessions will not be woken. ${fix}`
+        : `WARNING: Claude Code shares this inbox with ${labels}. Once a ${labels} session is open, the inbox is linked to it through Agent Relay and it gets every post, so Claude Code sessions will not be woken. ${fix}`
     );
   }
   if (sharing.length > 1 || (linkedElsewhere && sharing.length > 0)) {
@@ -2056,15 +2064,27 @@ async function relayWakeLinked(io: CliIo, mcpUrl: string): Promise<{ agent: stri
   }
 }
 
+/** The Agent Relay agents the local core lists (name and session target), or null without a core. */
+function coreAgents(io: CliIo): { name?: string; target?: { id?: string; kind?: string } }[] | null {
+  const result = bridge(io, 'agents.list');
+  if (!result) return null;
+  return (Array.isArray(result.agents) ? result.agents : []) as {
+    name?: string;
+    target?: { id?: string; kind?: string };
+  }[];
+}
+
 /**
  * What a Claude Code session is told, once, when its inbox's posts go to another session through
  * a relay wake link (for example a Codex session set up on the same inbox): without it the session
  * just never wakes and nothing says why.
  */
-export function standDownNotice(agent: string | null): string {
+export function standDownNotice(agent: string | null, certain = true): string {
   const target = agent ? `the Agent Relay agent "${agent}"` : 'another Agent Relay session';
   return [
-    `Webhook posts to this inbox are not reaching this Claude Code session: the inbox is linked to ${target}, which gets every post.`,
+    certain
+      ? `Webhook posts to this inbox are not reaching this Claude Code session: the inbox is linked to ${target}, which gets every post.`
+      : `This inbox's posts go to ${target} through Agent Relay, not through this session's wake hook. If that agent is not this Claude Code session, posts are not reaching it.`,
     `To wake Claude Code with its own posts, give it its own inbox: make one at ${INBOX_PAGE}, then run \`npx @agent-relay/events-shim@latest setup <its MCP URL> --claude\`.`,
     'Tell the person this. (Shown once per session.)',
   ].join('\n');
@@ -2260,6 +2280,10 @@ async function listenHook(io: CliIo, flags: Record<string, string>): Promise<num
     () => false,
     owns,
     async (agent) => {
+      // A link this session made for itself delivers its posts here: nothing to say.
+      const agents = coreAgents(io);
+      const own = agents?.find((entry) => entry.target?.id === session)?.name ?? null;
+      if (agent && own === agent) return 0;
       const digest = createHash('sha256')
         .update(`${mcpUrl}\n${session}\n${agent ?? ''}`)
         .digest('hex')
@@ -2267,7 +2291,7 @@ async function listenHook(io: CliIo, flags: Record<string, string>): Promise<num
       const told = join(dirname(configPath(io)), `told-${digest}`);
       if (io.exists(told)) return 0;
       writePrivate(told, `${new Date().toISOString()}\n`);
-      io.stderr(standDownNotice(agent));
+      io.stderr(standDownNotice(agent, agents !== null && agent !== null));
       return 2;
     }
   );
