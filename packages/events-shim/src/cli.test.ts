@@ -44,6 +44,14 @@ const VERSION = (
 const BASE = 'https://shim.test/api/v1/events-shim';
 
 /**
+ * Expiry times for the fake temporary workspaces, relative to when the tests
+ * run. A fixed date turns these tests into a time bomb: once it passes,
+ * setup rightly refuses to keep an expired workspace and the tests fail.
+ */
+const MINTED_WORKSPACE_EXPIRES_AT = new Date(Date.now() + TEMP_WORKSPACE_SECONDS * 1000).toISOString();
+const INBOX_WORKSPACE_EXPIRES_AT = new Date(Date.now() + 2 * TEMP_WORKSPACE_SECONDS * 1000).toISOString();
+
+/**
  * Claude Code's hook input for a session that opted in to the inbox: its
  * transcript records a call to the webhooks MCP's \`watch_webhooks\`.
  */
@@ -194,7 +202,7 @@ async function setupWorld(
         return Response.json({
           workspace_id: '1',
           workspace_key: 'rk_live_frominbox',
-          workspace_expires_at: '2026-11-20T00:00:00.000Z',
+          workspace_expires_at: INBOX_WORKSPACE_EXPIRES_AT,
           temporary: true,
         });
       }
@@ -205,7 +213,7 @@ async function setupWorld(
           data: {
             workspace_id: 'ws1',
             api_key: `rk_live_temp${mints.length}`,
-            expires_at: '2026-11-19T14:00:00.000Z',
+            expires_at: MINTED_WORKSPACE_EXPIRES_AT,
           },
         });
       }
@@ -806,7 +814,7 @@ describe('events-shim CLI', () => {
     expect(w.mints).toEqual([expect.objectContaining({ expires_in_seconds: TEMP_WORKSPACE_SECONDS })]);
     const config = JSON.parse(readFileSync(configPath(w.io), 'utf8'));
     expect(config.workspaceKey).toBe('rk_live_temp1');
-    expect(config.workspaceExpiresAt).toBe('2026-11-19T14:00:00.000Z');
+    expect(config.workspaceExpiresAt).toBe(MINTED_WORKSPACE_EXPIRES_AT);
     expect(w.downloads).toHaveLength(1);
     expect(w.spawned.find((run) => run[1] === 'serve')).toEqual([
       join(w.home, '.agentworkforce', 'events-shim', 'bin', 'agent-relay-node'),
@@ -817,7 +825,9 @@ describe('events-shim CLI', () => {
     expect(said).toContain(
       'Start a Codex session and send it a first message, e.g. "Watch for webhooks". A Codex session can be woken only once it has started; a new window with no message yet cannot be reached.'
     );
-    expect(said).toContain('temporary Agent Relay workspace, deleted 2026-11-19');
+    expect(said).toContain(
+      `temporary Agent Relay workspace, deleted ${MINTED_WORKSPACE_EXPIRES_AT.slice(0, 10)}`
+    );
 
     // Setup again: the same workspace, no new download.
     expect(await runCli(['setup', w.created.mcp_url, '--codex'], w.io)).toBe(0);
@@ -859,9 +869,9 @@ describe('events-shim CLI', () => {
     const config = JSON.parse(readFileSync(configPath(w.io), 'utf8'));
     expect(config).toMatchObject({
       workspaceKey: 'rk_live_frominbox',
-      workspaceExpiresAt: '2026-11-20T00:00:00.000Z',
+      workspaceExpiresAt: INBOX_WORKSPACE_EXPIRES_AT,
     });
-    expect(w.out.join('\n')).toContain('deleted 2026-11-20');
+    expect(w.out.join('\n')).toContain(`deleted ${INBOX_WORKSPACE_EXPIRES_AT.slice(0, 10)}`);
   });
 
   it('setup wakes Devin, opencode and Codex through one core and runs the watcher as a user service', async () => {
