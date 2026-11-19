@@ -54,6 +54,7 @@ fn intent() -> Intent {
         gate_launch: false,
         name: "muse-test".into(),
         harness: ID,
+        approval_profile: None,
         node_id: "node-test".into(),
         node_name: "test-desktop".into(),
         title: "test".into(),

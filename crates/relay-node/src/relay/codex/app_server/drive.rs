@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-const REQUEST_TTL: Duration = Duration::from_secs(300);
+const REQUEST_TTL: Duration = Duration::from_secs(15 * 60);
 const POLL: Duration = Duration::from_secs(1);
 /// How often a driven turn asks whether it ended without this connection
 /// hearing `turn/completed`.
@@ -41,16 +41,19 @@ pub fn last_progress(thread: &str) -> Option<i64> {
 }
 
 pub fn awaiting_input(thread: &str) -> bool {
-    pending()
-        .values()
-        .any(|p| p.notice.thread.eq_ignore_ascii_case(thread))
+    let now = Instant::now();
+    pending().values().any(|pending| {
+        pending.notice.thread.eq_ignore_ascii_case(thread)
+            && pending.answer.is_none()
+            && now < pending.deadline
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Notice {
     pub reference: String,
     pub thread: String,
-    pub description: &'static str,
+    pub description: String,
     pub approvable: bool,
     /// Only fixed, non-sensitive choice labels are exposed over Relaycast.
     pub options: Vec<String>,
@@ -118,25 +121,116 @@ pub fn claim(thread: &str) -> Option<Claim> {
 
 /// What the owner is told a request is. Never its command text or
 /// parameters, which may hold credentials.
-fn describe(method: &str) -> Option<&'static str> {
+fn describe(method: &str, params: &Value) -> Option<String> {
     Some(match method {
         "item/commandExecution/requestApproval" | "execCommandApproval" => {
-            "Codex requests permission to run a command. Command text is withheld because it may contain credentials."
+            "Codex requests permission to run a command. Command text is withheld because it may contain credentials.".into()
         }
         "item/fileChange/requestApproval" | "applyPatchApproval" => {
-            "Codex requests permission to change files."
+            "Codex requests permission to change files.".into()
         }
         "item/permissions/requestApproval" => {
-            "Codex requests additional filesystem or network permissions."
+            "Codex requests additional filesystem or network permissions.".into()
         }
-        "mcpServer/elicitation/request" => {
-            "An MCP server requests confirmation or input, possibly for third-party access."
-        }
+        "mcpServer/elicitation/request" => mcp_description(params),
         "item/tool/requestUserInput" => {
-            "Codex requests a decision during a tool action, possibly involving computer use or third-party access."
+            "Codex requests a decision during a tool action, possibly involving computer use or third-party access.".into()
         }
         _ => return None,
     })
+}
+
+fn mcp_request(params: &Value) -> &Value {
+    params.get("request").unwrap_or(params)
+}
+
+fn mcp_meta(params: &Value) -> Option<&serde_json::Map<String, Value>> {
+    let request = mcp_request(params);
+    request
+        .get("_meta")
+        .or_else(|| request.get("meta"))
+        .and_then(Value::as_object)
+}
+
+/// Codex marks a message-only MCP tool call approval with this metadata. A
+/// real form, URL flow or user-verification request still cannot be approved
+/// through Relay because it needs values or a local proof.
+fn mcp_tool_approval(params: &Value) -> bool {
+    let request = mcp_request(params);
+    let empty_schema = request.get("requestedSchema").is_none_or(|schema| {
+        schema.is_null()
+            || schema
+                .get("properties")
+                .and_then(Value::as_object)
+                .is_some_and(serde_json::Map::is_empty)
+    });
+    empty_schema
+        && mcp_meta(params).is_some_and(|meta| {
+            meta.get("codex_approval_kind").and_then(Value::as_str) == Some("mcp_tool_call")
+        })
+}
+
+fn safe_label(value: Option<&Value>, fallback: &str) -> String {
+    value
+        .and_then(Value::as_str)
+        .map(|text| {
+            text.chars()
+                .filter(|ch| !ch.is_control())
+                .take(80)
+                .collect::<String>()
+        })
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn mcp_description(params: &Value) -> String {
+    if !mcp_tool_approval(params) {
+        return "An MCP server requests confirmation or input, possibly for third-party access."
+            .into();
+    }
+    let server = safe_label(params.get("serverName"), "unknown");
+    let meta = mcp_meta(params).expect("tool approval has metadata");
+    let tool = safe_label(meta.get("tool_name"), "unknown");
+    let mut arguments: Vec<String> = meta
+        .get("tool_params_display")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|value| {
+            let value = value.as_object()?;
+            Some(safe_label(
+                value.get("display_name").or_else(|| value.get("name")),
+                "argument",
+            ))
+        })
+        .collect();
+    if arguments.is_empty() {
+        arguments.extend(
+            meta.get("tool_params")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+                .map(|(name, _)| safe_label(Some(&Value::String(name.clone())), "argument")),
+        );
+    }
+    arguments.sort();
+    arguments.dedup();
+    let summary = if arguments.is_empty() {
+        "No arguments were supplied.".to_string()
+    } else {
+        let extra = arguments.len().saturating_sub(6);
+        arguments.truncate(6);
+        format!(
+            "Arguments: {}{} (values withheld).",
+            arguments.join(", "),
+            if extra == 0 {
+                String::new()
+            } else {
+                format!(", +{extra} more")
+            }
+        )
+    };
+    format!("Codex requests permission for MCP server `{server}` to run tool `{tool}`. {summary}")
 }
 
 /// The answer for `approved`, or the refusal an expiry or a closed
@@ -154,9 +248,10 @@ fn safe_answer(method: &str, approved: bool, params: &Value) -> Value {
             json!({"permissions": params["permissions"], "scope": "turn"})
         }
         "item/permissions/requestApproval" => json!({"permissions": {}}),
-        "mcpServer/elicitation/request" => {
-            json!({"action": if approved { "accept" } else { "cancel" }, "content": {}})
-        }
+        "mcpServer/elicitation/request" => json!({
+            "action": if approved { "accept" } else { "decline" },
+            "content": if approved { json!({}) } else { Value::Null }
+        }),
         "item/tool/requestUserInput" => json!({"answers": {}}),
         _ => Value::Null,
     }
@@ -225,7 +320,7 @@ fn register(thread: &str, connection: &str, request: Value) {
     let params = &request["params"];
     let (Some(id), Some(description), true, Some(reference)) = (
         id,
-        describe(method),
+        describe(method, params),
         belongs_to_thread(params, thread),
         reference(),
     ) else {
@@ -238,7 +333,8 @@ fn register(thread: &str, connection: &str, request: Value) {
         description,
         // MCP forms and device verification may require values or a proof
         // that must never be copied through Relay. They can be canceled.
-        approvable: !question && method != "mcpServer/elicitation/request",
+        approvable: !question
+            && (method != "mcpServer/elicitation/request" || mcp_tool_approval(params)),
         options: if question {
             choices(params)
         } else {
@@ -393,7 +489,10 @@ fn turn_completed(notifications: Vec<Value>, thread: &str) -> bool {
 fn take_requests(client: &mut Client<'_>, thread: &str, connection: &str) {
     for request in std::mem::take(&mut client.requests) {
         let ours = belongs_to_thread(&request["params"], thread);
-        let known = request["method"].as_str().and_then(describe).is_some();
+        let known = request["method"]
+            .as_str()
+            .and_then(|method| describe(method, &request["params"]))
+            .is_some();
         if ours && !known {
             let _ = client.send(
                 &json!({"id": request["id"], "error": {
@@ -626,8 +725,62 @@ mod tests {
         );
         assert_eq!(
             safe_answer("mcpServer/elicitation/request", false, &Value::Null)["action"],
-            "cancel"
+            "decline"
         );
+    }
+
+    #[test]
+    fn a_message_only_mcp_tool_approval_is_relay_approvable_and_described_without_values() {
+        let thread = "mcp-tool-approval";
+        register(
+            thread,
+            "mcp-tool-connection",
+            json!({"id": 74, "method": "mcpServer/elicitation/request", "params": {
+                "threadId": thread,
+                "serverName": "github",
+                "request": {
+                    "mode": "form",
+                    "message": "Allow GitHub to create an issue?",
+                    "requestedSchema": {"type": "object", "properties": {}},
+                    "_meta": {
+                        "codex_approval_kind": "mcp_tool_call",
+                        "tool_name": "create_issue",
+                        "tool_params": {"repo": "private/repo", "title": "secret title"},
+                        "tool_params_display": [
+                            {"name": "repo", "display_name": "Repository", "value": "private/repo"},
+                            {"name": "title", "display_name": "Title", "value": "secret title"}
+                        ]
+                    }
+                }
+            }}),
+        );
+        let notice = unforwarded(thread).pop().unwrap();
+        assert!(notice.approvable);
+        assert!(notice.description.contains("MCP server `github`"));
+        assert!(notice.description.contains("tool `create_issue`"));
+        assert!(notice.description.contains("Repository"));
+        assert!(notice.description.contains("Title"));
+        assert!(!notice.description.contains("private/repo"));
+        assert!(!notice.description.contains("secret title"));
+        assert_eq!(
+            answer(
+                thread,
+                &notice.reference,
+                Some("requester"),
+                Some("requester"),
+                true,
+            ),
+            ReplyResult::Answered
+        );
+        let entries = pending();
+        assert_eq!(
+            entries[&notice.reference].answer.as_ref().unwrap(),
+            &json!({
+                "action": "accept", "content": {}
+            })
+        );
+        drop(entries);
+        pending().remove(&notice.reference);
     }
 
     #[test]

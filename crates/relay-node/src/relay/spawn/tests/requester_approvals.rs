@@ -284,6 +284,25 @@ fn the_approval_dm_names_the_spawning_agent_only_when_it_may_answer() {
 }
 
 #[test]
+fn an_interactive_spawn_profile_keeps_approval_with_the_machine_owner() {
+    let home = tempfile::tempdir().unwrap();
+    let core = core_with_account(home.path(), Arc::new(FakeSpawner::default()));
+    set(&core, Some(false), Some(false));
+    let mut registration = spawned("codex", "profile-interactive-thread");
+    registration.spawn.as_mut().unwrap().approval_profile =
+        Some(crate::relay::spawn::wire::ApprovalProfile::Interactive);
+    assert!(core.approving_requester(&registration).is_none());
+
+    registration.spawn.as_mut().unwrap().approval_profile =
+        Some(crate::relay::spawn::wire::ApprovalProfile::Requester);
+    assert_eq!(
+        core.approving_requester(&registration)
+            .map(|requester| requester.agent_id),
+        Some("agent_grokbot".into())
+    );
+}
+
+#[test]
 fn a_core_without_an_account_never_lets_the_spawning_agent_answer() {
     let home = tempfile::tempdir().unwrap();
     let core = core(home.path(), Arc::new(FakeSpawner::default()));

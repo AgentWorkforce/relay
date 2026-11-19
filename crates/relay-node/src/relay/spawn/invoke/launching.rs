@@ -163,6 +163,7 @@ impl Core {
             task: String::new(),
             directory: None,
             fork_from: None,
+            approval_profile: in_flight.intent.approval_profile,
             launch_credential: None,
         };
         let saved = self.workspace().is_some_and(|workspace| {

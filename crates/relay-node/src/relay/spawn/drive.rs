@@ -161,17 +161,17 @@ pub(crate) fn who_may_answer(requester: Option<&str>) -> String {
 pub(crate) fn approval_text(agent: &str, notice: &Notice, requester: Option<&str>) -> String {
     let reference = &notice.reference;
     let response = if notice.approvable {
-        format!("Reply `approve {reference}` or `deny {reference}` within five minutes.")
+        format!("Reply `approve {reference}` or `deny {reference}` within 15 minutes.")
     } else if notice.options.is_empty() {
-        format!("Reply `deny {reference}` within five minutes. This question cannot be answered through a Relay DM.")
+        format!("Reply `deny {reference}` within 15 minutes. This question cannot be approved through a Relay DM because it requires input or local verification.")
     } else {
         format!(
-            "Options: {}. Reply `choose {reference} <number>` or `deny {reference}` within five minutes.",
+            "Options: {}. Reply `choose {reference} <number>` or `deny {reference}` within 15 minutes.",
             notice.options.join(", ")
         )
     };
     format!(
-        "[Codex approval {reference} for @{agent}]\n{}\n{response} {}",
+        "[Codex approval {reference} for @{agent}]\nStatus: `waiting_for_approval`. Unanswered requests expire as an explicit denial after 15 minutes.\n{}\n{response} {}",
         notice.description,
         who_may_answer(requester)
     )
@@ -300,9 +300,10 @@ impl Core {
     }
 
     /// The agent that spawned `registration`, when it may answer the
-    /// session's requests: native input and approvals from the spawning
-    /// agent are both on, the session is not taken over, and its requester's
-    /// immutable id is known. Teammates and other agents never may.
+    /// session's requests: its explicit profile permits requester approval,
+    /// or its legacy settings permit both native input and approvals. The
+    /// session must not be taken over and its requester's immutable id must
+    /// be known. Teammates and other agents never may.
     pub(crate) fn approving_requester(
         &self,
         registration: &Registration,
@@ -311,18 +312,25 @@ impl Core {
         if self.plugins.account.is_none() {
             return None;
         }
-        let development = self.development();
-        if !self
-            .store
-            .read(|store| super::settings::requester_approvals(store, development))
-        {
-            return None;
-        }
-        registration
+        let spawn = registration
             .spawn
             .as_ref()
-            .filter(|spawn| spawn.taken_over_at.is_none())
-            .and_then(|spawn| spawn.requester.clone())
+            .filter(|spawn| spawn.taken_over_at.is_none())?;
+        let allowed = match spawn.approval_profile {
+            Some(super::wire::ApprovalProfile::Requester) => true,
+            Some(
+                super::wire::ApprovalProfile::Interactive
+                | super::wire::ApprovalProfile::FullAccess,
+            ) => false,
+            None => {
+                let development = self.development();
+                self.store
+                    .read(|store| super::settings::requester_approvals(store, development))
+            }
+        };
+        allowed
+            .then(|| spawn.requester.clone())
+            .flatten()
             .filter(|requester| !requester.agent_id.is_empty())
     }
 

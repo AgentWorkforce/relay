@@ -692,6 +692,7 @@ fn intent(target: Option<Target>, process: Option<SpawnedProcess>) -> Intent {
         gate_launch: false,
         name: "o1".into(),
         harness: ID,
+        approval_profile: None,
         node_id: "node_desktop_1".into(),
         node_name: "mac-desktop".into(),
         title: "Fix CI".into(),

@@ -2,6 +2,7 @@ use super::*;
 use crate::relay::codex::app_server::tests::{server_frame, FakeAppServer};
 use crate::relay::codex::runner::tests::FakeRunner;
 use crate::relay::process::{FakeProcess, FakeProcesses};
+use serde_json::json;
 
 const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bdb7b";
 
@@ -387,6 +388,7 @@ fn it_owns_codex_threads_only() {
         gate_launch: false,
         name: "w1".into(),
         harness: ID,
+        approval_profile: None,
         node_id: "node_desktop_1".into(),
         node_name: "mac-desktop".into(),
         title: "Fix CI".into(),
@@ -488,6 +490,27 @@ fn codex_liveness_follows_the_app_server_and_work_the_rollout() {
         (WorkState::Working, true),
         "while hosted, the same rollout reads as working"
     );
+    let approval = crate::relay::codex::app_server::drive::open_request(
+        THREAD,
+        json!({"id": 901, "method": "item/fileChange/requestApproval",
+            "params": {"threadId": THREAD}}),
+    );
+    assert_eq!(
+        observer.work(THREAD),
+        (WorkState::Waiting, true),
+        "an open approval is a visible waiting state"
+    );
+    assert_eq!(
+        crate::relay::codex::app_server::drive::answer(
+            THREAD,
+            &approval.reference,
+            Some("owner"),
+            Some("owner"),
+            false,
+        ),
+        crate::relay::codex::app_server::drive::ReplyResult::Answered
+    );
+    assert_eq!(observer.work(THREAD), (WorkState::Working, true));
     // Archived: completed.
     assert_eq!(
         observer.observe(&[watched(false)])[0],
