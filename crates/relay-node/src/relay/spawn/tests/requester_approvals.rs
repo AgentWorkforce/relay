@@ -179,8 +179,8 @@ async fn only_the_spawning_agents_own_direct_message_with_both_settings_on_answe
     let approve = format!("approve {}", notice.reference);
     let not_one = |reply: OwnerReply| matches!(reply, OwnerReply::NotOne);
 
-    // Off in the release build until turned on (tests use a release data dir).
-    set(&core, None, None);
+    // The machine owner can turn requester approvals off explicitly.
+    set(&core, None, Some(false));
     assert!(core.approving_requester(&registration).is_none());
     assert!(not_one(
         core.owner_reply(&registration, &dm("grokbot", "agent_grokbot", &approve))
@@ -284,10 +284,10 @@ fn the_approval_dm_names_the_spawning_agent_only_when_it_may_answer() {
 }
 
 #[test]
-fn an_interactive_spawn_profile_keeps_approval_with_the_machine_owner() {
+fn spawn_profiles_cannot_bypass_the_machine_owners_approval_controls() {
     let home = tempfile::tempdir().unwrap();
     let core = core_with_account(home.path(), Arc::new(FakeSpawner::default()));
-    set(&core, Some(false), Some(false));
+    set(&core, Some(true), Some(true));
     let mut registration = spawned("codex", "profile-interactive-thread");
     registration.spawn.as_mut().unwrap().approval_profile =
         Some(crate::relay::spawn::wire::ApprovalProfile::Interactive);
@@ -295,6 +295,11 @@ fn an_interactive_spawn_profile_keeps_approval_with_the_machine_owner() {
 
     registration.spawn.as_mut().unwrap().approval_profile =
         Some(crate::relay::spawn::wire::ApprovalProfile::Requester);
+    set(&core, Some(false), Some(true));
+    assert!(core.approving_requester(&registration).is_none());
+    set(&core, Some(true), Some(false));
+    assert!(core.approving_requester(&registration).is_none());
+    set(&core, Some(true), Some(true));
     assert_eq!(
         core.approving_requester(&registration)
             .map(|requester| requester.agent_id),

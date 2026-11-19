@@ -66,8 +66,8 @@ pub struct SettingsValues {
     pub spawn_native_input: Option<bool>,
     /// The agent that spawned a session may answer its permission and
     /// approval requests by direct message, as the machine owner may; the
-    /// first answer counts. Needs `spawn_native_input`. On in Agent Relay Dev
-    /// and off in the release build unless set. Absent in older cores.
+    /// first answer counts. Needs `spawn_native_input`. On unless the machine
+    /// owner turns it off. Absent in older cores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_requester_approvals: Option<bool>,
     /// The workspace's leaders as Relaycast last listed them

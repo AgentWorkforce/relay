@@ -300,10 +300,10 @@ impl Core {
     }
 
     /// The agent that spawned `registration`, when it may answer the
-    /// session's requests: its explicit profile permits requester approval,
-    /// or its legacy settings permit both native input and approvals. The
-    /// session must not be taken over and its requester's immutable id must
-    /// be known. Teammates and other agents never may.
+    /// session's requests: the machine owner's native-input and requester-
+    /// approval settings permit it, the explicit profile does not restrict
+    /// it to the owner, the session is not taken over, and its requester's
+    /// immutable id is known. Teammates and other agents never may.
     pub(crate) fn approving_requester(
         &self,
         registration: &Registration,
@@ -312,25 +312,27 @@ impl Core {
         if self.plugins.account.is_none() {
             return None;
         }
-        let spawn = registration
+        let development = self.development();
+        if !self
+            .store
+            .read(|store| super::settings::requester_approvals(store, development))
+        {
+            return None;
+        }
+        registration
             .spawn
             .as_ref()
-            .filter(|spawn| spawn.taken_over_at.is_none())?;
-        let allowed = match spawn.approval_profile {
-            Some(super::wire::ApprovalProfile::Requester) => true,
-            Some(
-                super::wire::ApprovalProfile::Interactive
-                | super::wire::ApprovalProfile::FullAccess,
-            ) => false,
-            None => {
-                let development = self.development();
-                self.store
-                    .read(|store| super::settings::requester_approvals(store, development))
-            }
-        };
-        allowed
-            .then(|| spawn.requester.clone())
-            .flatten()
+            .filter(|spawn| {
+                spawn.taken_over_at.is_none()
+                    && !matches!(
+                        spawn.approval_profile,
+                        Some(
+                            super::wire::ApprovalProfile::Interactive
+                                | super::wire::ApprovalProfile::FullAccess
+                        )
+                    )
+            })
+            .and_then(|spawn| spawn.requester.clone())
             .filter(|requester| !requester.agent_id.is_empty())
     }
 
