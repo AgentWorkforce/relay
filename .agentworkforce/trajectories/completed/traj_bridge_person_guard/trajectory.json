@@ -1,0 +1,42 @@
+{
+  "id": "traj_bridge_person_guard",
+  "version": 1,
+  "task": {
+    "title": "Refuse person sends on the bridge from inside an agent session"
+  },
+  "status": "completed",
+  "startedAt": "2026-11-19T09:30:00Z",
+  "agents": [
+    {
+      "name": "claude",
+      "role": "delegate",
+      "joinedAt": "2026-11-19T09:30:00Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_person_guard",
+      "title": "Bridge person-send guard",
+      "agentName": "claude",
+      "startedAt": "2026-11-19T09:30:00Z",
+      "events": [
+        {
+          "ts": 1795084200000,
+          "type": "decision",
+          "content": "Refuse messages.send and agents.test_message when the bridge peer resolves, through the relay-send socket's caller walk, to a registered or unreadable agent session; serve an unknown pid as before.",
+          "raw": {
+            "question": "Which bridge callers may write as the person?",
+            "chosen": "Reuse SessionDirectory::caller through outbound::caller_session; refuse registered and unreadable sessions with ErrorKind::Refused naming agent-relay-probe send.",
+            "alternatives": [
+              "Refuse an unknown peer pid",
+              "Refuse every session, registered or not"
+            ],
+            "reasoning": "The bridge admits only this user, macOS LOCAL_PEERPID can fail and the core's own calls carry no pid, so refusing an unknown pid would break the app. The guard is not a boundary: a process outside every session, or one using the stored sign-in, is not stopped. The Trail CLI was not available here, so this file was written by hand."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "completedAt": "2026-11-19T10:57:29Z"
+}

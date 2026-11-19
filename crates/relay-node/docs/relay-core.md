@@ -68,6 +68,14 @@ Unix socket (on Windows, a named pipe; see **Windows** below):
   served; another user's connection is closed without a reply. This is the
   same trust boundary as the 0600 agent store, and no method returns a key or
   token. `call` likewise speaks only to a daemon run by this user.
+- **Person sends from sessions:** `messages.send` and `agents.test_message`
+  are refused (`refused`) when the peer runs inside an agent session
+  registered on this computer, found by the same process walk the relay-send
+  socket uses; the caller is told to send as its own agent with
+  `agent-relay-probe send`. A peer whose pid the platform does not report is
+  served as before. This is a guard, not a boundary: a process of this user
+  outside every session, or one using the stored sign-in directly, is not
+  stopped by it.
 - **Windows:** the socket path is only a key. The pipe is
   `\\.\pipe\agent-relay-<16 hex digits>` (the start of the SHA-256 of the
   path), created with a DACL that grants only the current user, refusing

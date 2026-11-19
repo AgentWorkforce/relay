@@ -543,13 +543,10 @@ impl Outbound {
         if uid != self.uid {
             return Err(OutboundError::not_this_user());
         }
-        let directory = self.core.plugins.sessions.clone();
-        match tokio::task::spawn_blocking(move || directory.caller(pid)).await {
-            Ok(Ok(session)) => Ok(session),
-            Ok(Err(CallerMiss::Unreadable(file))) => {
-                Err(OutboundError::session_file_unreadable(&file))
-            }
-            Ok(Err(CallerMiss::NotASession)) | Err(_) => Err(OutboundError::not_a_session()),
+        match caller_session(&self.core, pid).await {
+            Ok(session) => Ok(session),
+            Err(CallerMiss::Unreadable(file)) => Err(OutboundError::session_file_unreadable(&file)),
+            Err(CallerMiss::NotASession) => Err(OutboundError::not_a_session()),
         }
     }
 
@@ -1753,6 +1750,18 @@ impl Outbound {
         self.admit(&session.target.key())?;
         self.setup.handle(&session, route, request).await
     }
+}
+
+/// The supported live session the process `pid` runs inside, as the
+/// session directory walks up to it. The relay-send socket names its caller
+/// with this, and the bridge uses it to keep sessions from sending as the
+/// person (`relay::person_guard`). A walk that could not finish names no
+/// session.
+pub(crate) async fn caller_session(core: &Core, pid: i32) -> Result<DiscoveredSession, CallerMiss> {
+    let directory = core.plugins.sessions.clone();
+    tokio::task::spawn_blocking(move || directory.caller(pid))
+        .await
+        .unwrap_or(Err(CallerMiss::NotASession))
 }
 
 /// Reads one HTTP/1.1 request; `None` when the peer closed without one (a

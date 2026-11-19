@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay-node`: desktop spawns accept `fork_from` for a Grok session too, so a new Grok agent starts with a copy of that session's conversation, in its folder, and the original carries on untouched. Grok makes the copy itself. A Grok without session forking gets `spawn_fork_unavailable` with a prompt to run `grok update`, and a session Grok no longer has gets `spawn_fork_not_found`. Spawn capabilities now list `grok` among the harnesses that can fork. Not available on Windows, where Grok cannot be spawned. Grok sessions saved before Grok recorded their folder in the session summary can be forked too, and a Grok fork that fails after Grok made the copy removes the copy again, where Grok supports it. For every harness, a fork whose source folder has been deleted now gets `spawn_fork_not_found` without the folder's path, instead of `spawn_invalid_input` naming it, and one whose folder can't be read gets `spawn_fork_unavailable`.
 
+### Changed
+
+- `agent-relay-node`: the bridge refuses `messages.send` and `agents.test_message` with `refused` when the caller runs inside an agent session registered on this computer (or a live session whose file cannot be read), found by the same process walk the session socket's `/send` route uses, and tells it to send as its own agent with `agent-relay-probe send`. Apps and other callers outside every session, and clients whose process id the platform does not report, are served as before, on Linux, macOS and Windows. An app started from inside a registered session's shell is refused these two calls too. This is a guard, not a boundary: a process outside every session, or one using the stored sign-in directly, is not stopped.
+
 ## [18.10.0] - 2026-11-17
 
 ### Added

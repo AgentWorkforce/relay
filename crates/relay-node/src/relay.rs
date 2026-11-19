@@ -125,6 +125,7 @@ pub mod paseo;
 pub mod paths;
 pub mod peer;
 pub mod people;
+pub mod person_guard;
 pub mod pi;
 pub mod plan;
 pub mod probe_alias;
