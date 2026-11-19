@@ -502,6 +502,13 @@ fn upload_keys_match_the_uploaders_session_keys() {
             Some(format!("devin:{id}"))
         );
     }
+    // A Cursor conversation is cataloged under its own id, so the session
+    // list can join it to its upload row and offer to share it.
+    let conversation = "e142445f-0b1c-4d2e-9a8b-7c6d5e4f3a21";
+    assert_eq!(
+        Target::new(SessionKind::CursorCli, conversation).upload_key(),
+        Some(format!("cursor:{conversation}"))
+    );
     for kind in [
         SessionKind::OpenClaw,
         SessionKind::Hermes,

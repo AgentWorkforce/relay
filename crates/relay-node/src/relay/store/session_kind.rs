@@ -130,13 +130,15 @@ impl Target {
     /// names a session by its harness's own id. A Claude app session's
     /// transcript lives in Anthropic's cloud, OpenClaw and Hermes target an
     /// agent or profile, and Pi and omp are not matched yet, so they have none.
+    /// A Cursor session (the CLI's or the editor's) is named by its
+    /// conversation id, which is also the id RelayHistory catalogs its
+    /// transcript and chat store under, so it joins `cursor:<id>`.
     /// A host-specific discovered session uses `LocalSession::upload_key`
     /// instead.
     pub fn upload_key(&self) -> Option<String> {
         match self.kind {
             SessionKind::ClaudeCloud | SessionKind::OpenClaw | SessionKind::Hermes => None,
-            // Cursor CLI transcripts are not collected yet.
-            SessionKind::Pi | SessionKind::Omp | SessionKind::CursorCli => None,
+            SessionKind::Pi | SessionKind::Omp => None,
             kind => Some(format!("{}:{}", kind.source(), self.id)),
         }
     }
