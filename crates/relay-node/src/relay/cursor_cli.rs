@@ -586,16 +586,31 @@ pub fn run_hook_with(
         }
     };
     wait::stop_seen(config, payload);
-    let mut advisory = turn_end
-        .filter(|_| payload["hook_event_name"] == "stop" && payload["status"] == "completed")
-        .and_then(|turn_end| (turn_end.take)(session));
-    let ids = advisory.as_ref().map(|advisory| advisory.ids.clone());
+    let mut advisory = None;
+    let mut ids = None;
+    let mut take = || {
+        let advisory = turn_end
+            .filter(|_| payload["hook_event_name"] == "stop" && payload["status"] == "completed")
+            .and_then(|turn_end| (turn_end.take)(session));
+        ids = advisory.as_ref().map(|advisory| advisory.ids.clone());
+        advisory
+    };
     let answered = match watch {
         Some(watch) if wait::waits_after(payload) => {
-            wait::wait(config, table, holder, payload, watch, &mut advisory, write)
-                == wait::Ended::Answered
+            wait::wait_with_take(
+                config,
+                table,
+                holder,
+                payload,
+                watch,
+                (&mut advisory, &mut take),
+                write,
+            ) == wait::Ended::Answered
         }
-        _ => answer_now(config, payload, &mut advisory, write),
+        _ => {
+            advisory = take();
+            answer_now(config, payload, &mut advisory, write)
+        }
     };
     // Taken out of the option only once an answer carrying it was written.
     if let (Some(ids), None, Some(turn_end)) = (ids, &advisory, turn_end) {

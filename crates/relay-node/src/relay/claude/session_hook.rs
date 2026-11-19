@@ -372,12 +372,10 @@ impl ClaudeSessionHookSettings {
     /// The Stop hook's command: the SessionStart hook's, running
     /// [`STOP_SUBCOMMAND`] with the same executable and marker.
     fn stop_command(&self) -> String {
-        match self.command.rfind(SUBCOMMAND) {
-            Some(at) => format!(
-                "{}{STOP_SUBCOMMAND}{}",
-                &self.command[..at],
-                &self.command[at + SUBCOMMAND.len()..]
-            ),
+        let command = self.command.trim();
+        let (_, body) = crate::relay::hook_owner::owner(command);
+        match body.strip_suffix(&format!(" {SUBCOMMAND}")) {
+            Some(program) => format!("{program} {STOP_SUBCOMMAND}{}", &command[body.len()..]),
             None => self.command.clone(),
         }
     }
@@ -1357,6 +1355,34 @@ mod tests {
         assert!(settings.is_ours("Stop", &stop));
         assert!(!settings.is_ours("SessionStart", &stop));
         assert!(!settings.is_ours("Stop", "/Apps/Acme.app/probe claude-stop-hook"));
+    }
+
+    #[test]
+    fn stop_subcommand_never_rewrites_a_profile_or_socket_name() {
+        let root = tempfile::tempdir().unwrap();
+        let config = ClaudeConfig {
+            home: root.path().join(".claude"),
+            executable: None,
+            app_sessions: None,
+            dirs: ClaudeDirs::default(),
+        };
+        let build = Build::Profile("claude-session-hook".into());
+        let executable = Path::new("/Apps/claude-session-hook/probe");
+        let socket = Path::new("/s/claude-session-hook/relay.sock");
+        let settings = ClaudeSessionHookSettings::new(
+            &config,
+            ClaudeSessionHookSettings::command_for_build(executable, &build, socket),
+        );
+        assert_eq!(
+            settings.stop_command(),
+            crate::relay::hook_owner::command(
+                &crate::relay::outbound::shell_quote(&executable.to_string_lossy()),
+                STOP_SUBCOMMAND,
+                &build,
+                socket
+            )
+        );
+        assert!(settings.is_ours("Stop", &settings.stop_command()));
     }
 
     #[test]

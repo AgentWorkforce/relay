@@ -845,6 +845,16 @@ its stage lands.
 | `daemon::Plugins::account`       | `src/relay/daemon/plugins.rs`    | Sign-in and telemetry, from the build that has them                                                             | none: account, uploader and telemetry methods are not offered | 2c       |
 | `daemon::Plugins::session_policy` | `src/relay/daemon/plugins.rs`   | Which sessions join by themselves, may be asked to join, and publish activity                                   | every session may join by itself; none is asked; none publishes | 4      |
 | `daemon::Plugins::turn_end_advisories` | `src/relay/daemon/plugins.rs` | Advisories handed to a session once as its turn ends, through the core's stop hooks (`turn_end_advisories::reach` lists which providers it reaches; `POST /turn-end/take` and `/turn-end/shown` serve hooks outside the core) | none: nothing is handed | — |
+
+Turn-end plugins keep `pending` and `take` in memory. `pending` is a
+non-consuming presence check before Copilot's native proof; its conservative
+default requests proof, and cache implementations should override it to keep
+empty idle polls cheap. `take` runs after delivery guards pass. ID batches
+have the same limits at the plugin and acknowledgement boundaries: at most
+64 IDs, each nonempty and at most 256 bytes. Invalid batches are withheld as
+a whole. Socket routes require the caller to identify as exactly the named
+session, including Devin and Cursor CLI; same-user identity alone does not
+authorize an advisory read or acknowledgement.
 | `session_sources::SessionSources` | `src/relay/session_sources.rs`  | Remote sessions (Devin Cloud, Claude Code on the web) a build lists and delivers into; Hermes's homes           | none: only this computer's sessions                           | 2b       |
 
 ### The organization's settings policy

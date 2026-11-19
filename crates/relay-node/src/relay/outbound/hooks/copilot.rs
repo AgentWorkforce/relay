@@ -37,12 +37,10 @@ impl Outbound {
         // The build's turn-end advisory (`TurnEndAdvisories`), for a turn
         // that ended on its own. The hook's client re-asks every second while
         // a stop waits and Copilot sends no `stop_hook_active`, so this
-        // relies on `take` being one-shot. Taking it first lets an idle wait
-        // keep its cheap check: only a stop that carries one is sent through
-        // the full native proof (`relayTurnEndAdvisory`). One taken for a
-        // stop that then fails that proof is never acknowledged, so the
-        // plugin may hand it again.
-        let advisory = fields
+        // uses a non-consuming cache check: only a pending advisory forces
+        // full native proof. Take it only after that proof and the account
+        // generation check succeed, so rejected stops cannot consume it.
+        let advisory_target = fields
             .get("sessionId")
             .and_then(Value::as_str)
             .filter(|sid| crate::relay::store::is_uuid(sid))
@@ -50,11 +48,9 @@ impl Outbound {
                 fields.get("relayEvent").and_then(Value::as_str) == Some("stop")
                     && fields.get("stopReason").and_then(Value::as_str) == Some("end_turn")
             })
-            .and_then(|sid| {
-                let target = Target::new(SessionKind::Copilot, sid);
-                Some((self.core.take_turn_end_advisory(&target)?, target))
-            });
-        payload["relayTurnEndAdvisory"] = json!(advisory.is_some());
+            .map(|sid| Target::new(SessionKind::Copilot, sid))
+            .filter(|target| self.core.has_turn_end_advisory(target));
+        payload["relayTurnEndAdvisory"] = json!(advisory_target.is_some());
         let answer = tokio::task::spawn_blocking(move || directory.copilot_hook(pid, &payload))
             .await
             .ok()
@@ -65,6 +61,8 @@ impl Outbound {
         {
             return Err(OutboundError::not_a_session());
         }
+        let advisory = advisory_target
+            .and_then(|target| Some((self.core.take_turn_end_advisory(&target)?, target)));
         let answer = match advisory {
             Some((advisory, target)) => {
                 let merged =
