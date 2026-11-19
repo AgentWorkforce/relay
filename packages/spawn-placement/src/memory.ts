@@ -94,6 +94,16 @@ export function floorBytes(
   return nodeFloor !== null && nodeFloor > policyFloor ? nodeFloor : policyFloor;
 }
 
+/**
+ * Whether one more launch of `harness` fits on this candidate's machine.
+ *
+ * @param candidate The target, normalized by the control plane's adapter.
+ * @param harness The harness to launch; null or unknown uses the `*` budget.
+ * @param policy The memory policy (see `parseMemoryPolicy`).
+ * @param now The control plane's clock, for sample freshness.
+ * @returns The tier, admissibility and the figures behind them. Unknown or
+ *   stale memory is always admissible (fail open).
+ */
 export function assessMemory(
   candidate: PlacementCandidate,
   harness: string | null | undefined,
@@ -101,7 +111,9 @@ export function assessMemory(
   now: Date
 ): MemoryAssessment {
   const need = harnessNeed(policy, harness);
-  const held = count(candidate.activeAgents) + count(candidate.reservedAgents);
+  // Launches still starting hold a place too, even before Relaycast counts them.
+  const held =
+    count(candidate.activeAgents) + count(candidate.reservedAgents) + count(candidate.pendingLaunches);
   const sample = candidate.memory;
   const observedMs = sample?.observedAt ? Date.parse(sample.observedAt) : NaN;
   const age = Number.isFinite(observedMs) ? (now.getTime() - observedMs) / 1000 : null;

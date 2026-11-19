@@ -121,6 +121,15 @@ describe('assessMemory', () => {
     );
   });
 
+  it('gives a harness named like an Object member the default budget', () => {
+    for (const harness of ['constructor', 'toString', '__proto__']) {
+      expect(assessMemory(base, harness, DEFAULT_MEMORY_POLICY, now)).toMatchObject({
+        need_bytes: 1.5 * GIB,
+        tier: 'low',
+      });
+    }
+  });
+
   it('fails open on unparseable or absent samples', () => {
     for (const memory of [
       null,

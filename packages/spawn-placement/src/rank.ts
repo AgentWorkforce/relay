@@ -91,7 +91,15 @@ export function compareRanked(a: RankedCandidate, b: RankedCandidate): number {
   );
 }
 
-/** Best first. Ties keep the input (Relaycast roster) order. */
+/**
+ * Best first. Ties keep the input (Relaycast roster) order.
+ *
+ * Ranks candidates best first and assesses each one's memory.
+ *
+ * @param candidates Targets in roster order; ties keep this order.
+ * @param options The harness to judge memory for, the policy and the clock.
+ * @returns One entry per candidate with its memory assessment and admissibility.
+ */
 export function rankCandidates<T extends PlacementCandidate>(
   candidates: readonly T[],
   options: RankOptions
@@ -108,6 +116,11 @@ export function rankCandidates<T extends PlacementCandidate>(
  * Allowed targets that would take the same launch now: they offer the
  * harness, have room and (when memory ranks) enough memory. Ones sharing a
  * repository with the refused target come first. At most three.
+ *
+ * @param ranked The output of `rankCandidates` for the same harness.
+ * @param harness The refused launch's harness.
+ * @param refused The refused target's id and repositories.
+ * @returns At most three entries that would take the launch now.
  */
 export function alternativesFor<T extends PlacementCandidate>(
   ranked: ReadonlyArray<RankedCandidate<T>>,
@@ -127,7 +140,13 @@ export function alternativesFor<T extends PlacementCandidate>(
   return [...fits.filter(shares), ...fits.filter((entry) => !shares(entry))].slice(0, MAX_ALTERNATIVES);
 }
 
-/** The memory refusal for a target, only in `enforce`; null when the launch may proceed. */
+/**
+ * The memory refusal for a target, only in `enforce`; null when the launch may proceed.
+ *
+ * @param entry A ranked target.
+ * @param policy The memory policy.
+ * @returns The assessment to refuse with, or null.
+ */
 export function memoryRefusal(entry: RankedCandidate, policy: MemoryPolicy): MemoryAssessment | null {
   return policy.mode === 'enforce' && !entry.memory.admissible ? entry.memory : null;
 }

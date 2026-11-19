@@ -305,8 +305,8 @@ const FIXTURES: GoldenFixture[] = [
     ],
     pendingLaunches: { inflight: 2 },
     expected: {
-      // both low; fewer held agents breaks the tie.
-      order: ['clear', 'inflight', 'reserved'],
+      // both low, both holding two places (reserved or in flight): roster order.
+      order: ['clear', 'reserved', 'inflight'],
       memory: {
         reserved: { tier: 'low', admissible: false, reason: 'available' },
         inflight: { tier: 'low', admissible: false, reason: 'available' },
@@ -412,6 +412,61 @@ const FIXTURES: GoldenFixture[] = [
     expected: {
       order: ['codex-fit'],
       memory: { 'codex-fit': { tier: 'low', admissible: false, reason: 'available' } },
+    },
+  },
+  {
+    name: 'launches in flight count toward the density cap',
+    tags: [],
+    now: NOW,
+    settings: { mode: 'enforce' },
+    harness: 'codex',
+    userId: ME,
+    owners: mine('nearly-dense'),
+    // cap (16 − 2) / 1 = 14; 13 active + 1 in flight = 14 held.
+    nodes: [
+      node({ id: 'nearly-dense', kind: 'desktop', maxAgents: 0, active: 13, totalGiB: 16, availableGiB: 12 }),
+    ],
+    pendingLaunches: { 'nearly-dense': 1 },
+    expected: {
+      order: ['nearly-dense'],
+      memory: { 'nearly-dense': { tier: 'low', admissible: false, reason: 'density' } },
+      refusal: { target: 'nearly-dense', memoryLow: true, alternatives: [] },
+    },
+  },
+  {
+    name: 'alternatives: a node sharing the repository comes first, and at most three are offered',
+    tags: [],
+    now: NOW,
+    settings: { mode: 'enforce' },
+    harness: 'claude',
+    userId: ME,
+    owners: mine('repo-low', 'calm-1', 'calm-2', 'calm-3', 'calm-4', 'repo-busy'),
+    nodes: [
+      node({ id: 'repo-low', kind: 'desktop', totalGiB: 16, availableGiB: 2.5, repositories: ['acme/app'] }),
+      node({ id: 'calm-1', kind: 'desktop', totalGiB: 64, availableGiB: 40, load1m: 1 }),
+      node({ id: 'calm-2', kind: 'desktop', totalGiB: 64, availableGiB: 40, load1m: 1 }),
+      node({ id: 'calm-3', kind: 'desktop', totalGiB: 64, availableGiB: 40, load1m: 1 }),
+      node({ id: 'calm-4', kind: 'desktop', totalGiB: 64, availableGiB: 40, load1m: 1 }),
+      node({
+        id: 'repo-busy',
+        kind: 'desktop',
+        totalGiB: 64,
+        availableGiB: 40,
+        load1m: 8,
+        repositories: ['acme/app'],
+      }),
+    ],
+    expected: {
+      order: ['calm-1', 'calm-2', 'calm-3', 'calm-4', 'repo-busy', 'repo-low'],
+      memory: {
+        'repo-low': { tier: 'low', admissible: false, reason: 'available' },
+        'calm-1': { tier: 'ample', admissible: true, reason: null },
+        'calm-2': { tier: 'ample', admissible: true, reason: null },
+        'calm-3': { tier: 'ample', admissible: true, reason: null },
+        'calm-4': { tier: 'ample', admissible: true, reason: null },
+        'repo-busy': { tier: 'ample', admissible: true, reason: null },
+      },
+      refusal: { target: 'repo-low', memoryLow: true, alternatives: ['repo-busy', 'calm-1', 'calm-2'] },
     },
   },
 ];

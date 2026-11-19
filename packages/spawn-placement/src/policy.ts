@@ -216,7 +216,10 @@ export function parseMemoryPolicy(
 /** The launch budget for this harness, or the default (`*`) when it has none or none is named. */
 export function harnessNeed(policy: MemoryPolicy, harness: string | null | undefined): number {
   return (
-    (harness ? policy.harnessNeedBytes[harness] : undefined) ??
+    // Own keys only: a harness named like an Object.prototype member must not resolve to it.
+    (harness && Object.hasOwn(policy.harnessNeedBytes, harness)
+      ? policy.harnessNeedBytes[harness]
+      : undefined) ??
     policy.harnessNeedBytes['*'] ??
     DEFAULT_MEMORY_POLICY.harnessNeedBytes['*']
   );
