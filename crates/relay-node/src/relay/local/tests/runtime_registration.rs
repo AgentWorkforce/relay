@@ -506,9 +506,37 @@ fn runtime_presence_filters_fleet_ownership_but_keeps_manual_excluded_chats() {
     assert!(!w.sessions.present_targets(&[]).contains(&target));
 }
 
+#[test]
+/// A hand-registered chat a fleet now owns is not kept present by its lock.
+fn registered_presence_skips_fleet_owned_chats() {
+    let w = world();
+    let db = seed(&w, &[THREAD, OTHER]);
+    db.execute("update threads set has_user_event=0", [])
+        .unwrap();
+    let target = Target::new(SessionKind::Codex, THREAD);
+    let other = Target::new(SessionKind::Codex, OTHER);
+    let both = [target.clone(), other.clone()];
+    assert_eq!(
+        w.sessions.registered_present(&both),
+        HashSet::from([target.clone(), other.clone()])
+    );
+    w.sessions
+        .fleet_owned
+        .lock()
+        .unwrap()
+        .insert(target.clone());
+    assert_eq!(w.sessions.registered_present(&both), HashSet::from([other]));
+}
+
 /// A hand-registered stdio app-server chat with no user evidence in the
 /// catalog: registration accepted it on its writer lock alone.
-fn hand_registered_core(w: World, home: &std::path::Path) -> (Arc<Core>, Arc<LocalSessions>) {
+///
+/// The world's temp directory (its Codex catalog, rollouts and locks) is
+/// returned to live until the test ends.
+fn hand_registered_core(
+    w: World,
+    home: &std::path::Path,
+) -> (Arc<Core>, Arc<LocalSessions>, tempfile::TempDir) {
     let sessions = Arc::new(w.sessions);
     let (core, _) = Core::with_plugins(
         Config {
@@ -540,7 +568,7 @@ fn hand_registered_core(w: World, home: &std::path::Path) -> (Arc<Core>, Arc<Loc
             )
         })
         .unwrap();
-    (core, sessions)
+    (core, sessions, w._temp)
 }
 
 fn missing_since(core: &Core) -> Option<String> {
@@ -562,11 +590,15 @@ async fn a_hand_registered_stdio_chat_stays_present_while_its_writer_lock_is_hel
     let fake = fake_relaycast::FakeRelaycast::start(Default::default()).await;
     let data = temp.path().join("app-data");
     fake_relaycast::sign_in_store(&data, fake_relaycast::WORKSPACE_KEY, &fake.base_url);
-    let (core, sessions) = hand_registered_core(w, temp.path());
+    let (core, sessions, _world_temp) = hand_registered_core(w, temp.path());
     core.rediscover_workspace();
     core.store.update(|s| s.auto_activate = Some(true)).unwrap();
     assert!(sessions.automatic_candidates().is_empty());
-    assert!(sessions.present_targets(&sessions.sessions()).is_empty());
+    // The world's live Claude terminal stays; no Codex chat is present.
+    assert!(sessions
+        .present_targets(&sessions.sessions())
+        .iter()
+        .all(|t| t.kind != SessionKind::Codex));
 
     for _ in 0..2 {
         let failures = core.activate_new_sessions().await;

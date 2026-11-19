@@ -466,6 +466,17 @@ pub fn thread_is_live(
     processes::reply_capable(table, uid, thread)
 }
 
+/// The `threads` (lowercased) for which `thread_is_live` holds, from one
+/// pass over the process table.
+pub fn live_threads<'a>(
+    _config: &CodexConfig,
+    table: &dyn ProcessTable,
+    uid: u32,
+    threads: impl IntoIterator<Item = &'a str>,
+) -> BTreeSet<String> {
+    processes::reply_capable_threads(table, uid, threads)
+}
+
 /// The person's most recently updated Codex threads, newest first (see
 /// `threads::read_recent`); empty when the database cannot be read.
 pub fn recent_threads(config: &CodexConfig, limit: usize) -> Vec<CodexThread> {
@@ -1137,6 +1148,17 @@ mod tests {
         assert!(thread_is_live(&config, &table, UID, &THREAD.to_uppercase()));
         assert!(!thread_is_live(&config, &table, UID, SECOND));
         assert!(!thread_is_live(&config, &table, UID, "not-a-thread"));
+        // One pass answers the same for several threads.
+        let upper = THREAD.to_uppercase();
+        assert_eq!(
+            live_threads(
+                &config,
+                &table,
+                UID,
+                [upper.as_str(), SECOND, "not-a-thread"]
+            ),
+            BTreeSet::from([THREAD.to_string()])
+        );
     }
 
     // CodexBridge.recentThreads / openThreadIDs (DesktopCloudSession.catalog).
