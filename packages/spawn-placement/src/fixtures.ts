@@ -177,7 +177,7 @@ const FIXTURES: GoldenFixture[] = [
     harness: 'codex',
     userId: ME,
     owners: mine('codex-desktop'),
-    // floor max(2 GIB, 1.6 GIB) = 2 GIB; 3.2 − 2 − 1 = 0.2 GiB headroom.
+    // floor max(2 GiB, 1.6 GiB) = 2 GiB; 3.2 − 2 − 1 = 0.2 GiB headroom.
     nodes: [node({ id: 'codex-desktop', kind: 'desktop', totalGiB: 16, availableGiB: 3.2 })],
     expected: {
       order: ['codex-desktop'],
@@ -221,10 +221,10 @@ const FIXTURES: GoldenFixture[] = [
     userId: ME,
     owners: mine('tight', 'unknown', 'ok'),
     nodes: [
-      // floor 2 GIB; 4.5 − 2 − 1.5 = 1 GiB headroom: tight.
+      // floor 2 GiB; 4.5 − 2 − 1.5 = 1 GiB headroom: tight.
       node({ id: 'tight', kind: 'desktop', totalGiB: 16, availableGiB: 4.5 }),
       node({ id: 'unknown', kind: 'desktop', totalGiB: null, availableGiB: null }),
-      // floor 6.4 GIB; 12 − 6.4 − 1.5 = 4.1 GiB headroom, (12 − 1.5) / 64 = 16%: ok.
+      // floor 6.4 GiB; 12 − 6.4 − 1.5 = 4.1 GiB headroom, (12 − 1.5) / 64 = 16%: ok.
       node({ id: 'ok', kind: 'desktop', totalGiB: 64, availableGiB: 12 }),
     ],
     expected: {
@@ -347,7 +347,7 @@ const FIXTURES: GoldenFixture[] = [
     owners: mine('my-desktop'),
     nodes: [
       node({ id: 'my-desktop', kind: 'desktop', totalGiB: 16, availableGiB: 2.5 }),
-      // broker floor max(1 GIB, 1.6 GIB) = 1.6 GIB; 20 − 1.6 − 1.5 = 16.9 GIB, 58%: ample.
+      // broker floor max(1 GiB, 1.6 GiB) = 1.6 GiB; 20 − 1.6 − 1.5 = 16.9 GiB, 58%: ample.
       node({ id: 'shared-broker', kind: 'broker', totalGiB: 32, availableGiB: 20 }),
     ],
     expected: {
