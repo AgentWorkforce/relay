@@ -25,6 +25,12 @@ export interface WakeTarget {
   /** The `wh_live_…` bearer Relaycast showed once. Hosts store it encrypted. */
   secret: string;
   linkedAt: string;
+  /**
+   * The Agent Relay agent name of the session the link wakes, as the linker gave it
+   * (`link_relay_wake`'s `agent`). Tools report it so an agent can tell whether the link is its
+   * own. Hosts that do not store it report the link without a name.
+   */
+  agent?: string;
   /** Set when the last forward was refused for good (revoked or deleted hook). */
   brokenAt?: string;
   brokenReason?: string;
