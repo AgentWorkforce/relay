@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Minor]
 
+### Fixed
+
+- `agent-relay-node`: local Cursor sessions expose the matching `cursor:<id>` history identity, so desktop apps can show their upload controls alongside messaging. Previously archived Cursor sessions keep their Archived classification after the upgrade.
+
 ### Added
 
 - `agent-relay-node`: workspace leaders. The node reads the workspace's leaders from Relaycast (`GET /v1/workspace/leaders`), caches them for a minute and reads them again as each agent starts here. While reads fail the last list is kept for at most ten minutes after the last good read, and a 401, 403 or 404 drops it at once. A leader's 1:1 direct message is native input with a `[leader: @<name> leads this work; …]` line naming the leader as the list does: to spawned agents while `spawn_native_input` is on, and as a user turn to Claude Code sessions with teammate native input on; anywhere else it is a peer message. A leader's native input to a spawned Codex agent is the turn's visible input, as the requester's is, also while relay messages are hidden. A spawn's own requester keeps its requester framing even when it is a leader. Leaders are matched by agent id only, their channel and group messages stay peer messages, and they cannot answer approvals, fork or release. `settings.get` shows the list as `workspace_leaders`, read only.

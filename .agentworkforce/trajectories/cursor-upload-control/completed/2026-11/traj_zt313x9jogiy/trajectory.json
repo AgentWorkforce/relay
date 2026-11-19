@@ -1,0 +1,53 @@
+{
+  "id": "traj_zt313x9jogiy",
+  "version": 1,
+  "task": {
+    "title": "Preserve archived Cursor classification during identity upgrade"
+  },
+  "status": "completed",
+  "startedAt": "2026-11-19T10:40:59.041Z",
+  "completedAt": "2026-11-19T10:41:16.334Z",
+  "agents": [
+    {
+      "name": "codex-cursor-upload",
+      "role": "lead",
+      "joinedAt": "2026-11-19T10:40:59.074Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_7g49rgl7jo9k",
+      "title": "Initial work",
+      "agentName": "codex-cursor-upload",
+      "startedAt": "2026-11-19T10:40:59.074Z",
+      "endedAt": "2026-11-19T10:41:16.334Z",
+      "events": [
+        {
+          "ts": 1795084859528,
+          "type": "decision",
+          "content": "Retain old archive keys and add the canonical history identity during store decoding: Retain old archive keys and add the canonical history identity during store decoding",
+          "raw": {
+            "question": "Retain old archive keys and add the canonical history identity during store decoding",
+            "chosen": "Retain old archive keys and add the canonical history identity during store decoding",
+            "alternatives": [],
+            "reasoning": "A failing regression proves archived Cursor chats otherwise lose their Archived classification once their bounded recent archive entry is gone. The migration preserves compatibility and stabilizes after the first upgrade."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Reproduced loss of Archived classification for durable cursor-cli keys after the upload identity change. Added the canonical history key while retaining the old key at store decode. All 97 relay store tests pass, including the new regression, round trip, and existing Claude archive coverage.",
+    "approach": "Standard approach",
+    "confidence": 0.98
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "98e1aa80432ff9fd23b7171b1a646e3280e69982",
+    "endRef": "98e1aa80432ff9fd23b7171b1a646e3280e69982"
+  }
+}
