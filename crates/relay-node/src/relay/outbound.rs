@@ -546,7 +546,9 @@ impl Outbound {
         match caller_session(&self.core, pid).await {
             Ok(session) => Ok(session),
             Err(CallerMiss::Unreadable(file)) => Err(OutboundError::session_file_unreadable(&file)),
-            Err(CallerMiss::NotASession) => Err(OutboundError::not_a_session()),
+            Err(CallerMiss::NotASession | CallerMiss::Unattributed) => {
+                Err(OutboundError::not_a_session())
+            }
         }
     }
 

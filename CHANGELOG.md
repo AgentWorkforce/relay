@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `agent-relay-node`: the bridge refuses `messages.send` and `agents.test_message` with `refused` when the caller runs inside an agent session registered on this computer (or a live session whose file cannot be read), found by the same process walk the session socket's `/send` route uses, and tells it to send as its own agent with `agent-relay-probe send`. Apps and other callers outside every session, and clients whose process id the platform does not report, are served as before, on Linux, macOS and Windows. An app started from inside a registered session's shell is refused these two calls too. This is a guard, not a boundary: a process outside every session, or one using the stored sign-in directly, is not stopped.
+- `agent-relay-node`: the bridge refuses `messages.send` and `agents.test_message` with `refused` when the caller runs inside an agent session registered on this computer (or a live session whose file cannot be read, or under an agent process whose one session cannot be named, such as an OpenCode holding two sessions), found by the same process walk the session socket's `/send` route uses, and tells it to send as its own agent with `agent-relay-probe send`. Apps and other callers outside every session, and clients whose process id the platform does not report, are served as before, on Linux, macOS and Windows. An app started from inside a registered session's shell is refused these two calls too. This is a guard, not a boundary: a process outside every session, or one using the stored sign-in directly, is not stopped.
 
 ## [18.10.0] - 2026-11-17
 

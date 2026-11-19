@@ -267,6 +267,12 @@ impl LocalSessions {
     /// `CallerMiss::Unreadable`. A present `CODEX_THREAD_ID`
     /// decides alone after the nearest trusted Codex's writer lock is
     /// checked, including the claimed lock of a shared app-server.
+    ///
+    /// A walk that stops at an agent process of this user's without naming
+    /// one session, and a session tag that names nobody while the caller
+    /// runs under such a process, are `CallerMiss::Unattributed`;
+    /// `CallerMiss::NotASession` only when no agent process is above the
+    /// caller at all.
     fn caller_target(&self, pid: i32) -> Result<Target, CallerMiss> {
         let table = &*self.table;
         let uid = self.config.uid;
@@ -284,7 +290,7 @@ impl LocalSessions {
         if grok_caller::codex_tag_names_caller(table, pid, uid, opencode_nearest, devin_nearest) {
             return codex_caller_thread(table, pid, uid)
                 .map(|id| Target::new(SessionKind::Codex, id))
-                .ok_or(CallerMiss::NotASession);
+                .ok_or_else(|| self.tag_miss(pid, &claude));
         }
         // Grok gives each tool process its session's id as
         // `GROK_SESSION_ID`, the way Codex gives `CODEX_THREAD_ID`. It
@@ -297,7 +303,7 @@ impl LocalSessions {
         {
             return self
                 .grok_target(pid, &session_id)
-                .ok_or(CallerMiss::NotASession);
+                .ok_or_else(|| self.tag_miss(pid, &claude));
         }
         // OpenCode's shells carry `AGENT_RELAY_OPENCODE_SESSION`, which
         // Agent Relay's plugin sets from OpenCode's own `shell.env` hook.
@@ -313,7 +319,7 @@ impl LocalSessions {
         {
             return self
                 .opencode_caller(pid, Some(&session_id))
-                .ok_or(CallerMiss::NotASession);
+                .ok_or(CallerMiss::Unattributed);
         }
         // One Grok leader can hold several sessions, and without
         // `GROK_SESSION_ID` nothing in a tool process says which one started
@@ -324,6 +330,31 @@ impl LocalSessions {
         // failure can let the walk past a leader.
         let stop_at_grok_leaders =
             self.config.existing_grok.is_some() || self.config.spawned_grok.is_some();
+        self.walk_caller(pid, &claude, stop_at_grok_leaders)
+    }
+
+    /// Why a session tag in the caller's environment named nobody: the
+    /// caller is still under an agent process of this user's when the walk
+    /// up from it would stop at one (a Grok leader included, whether or not
+    /// its route is on), and outside every agent only when it would not.
+    fn tag_miss(&self, pid: i32, claude: &claude::Registry) -> CallerMiss {
+        match self.walk_caller(pid, claude, true) {
+            Err(CallerMiss::NotASession) => CallerMiss::NotASession,
+            _ => CallerMiss::Unattributed,
+        }
+    }
+
+    /// The walk up the caller's ancestry that `caller_target` ends with when
+    /// no session tag decides: the nearest agent process of this user's
+    /// names the session, or the caller is `CallerMiss::Unattributed`.
+    fn walk_caller(
+        &self,
+        pid: i32,
+        claude: &claude::Registry,
+        stop_at_grok_leaders: bool,
+    ) -> Result<Target, CallerMiss> {
+        let table = &*self.table;
+        let uid = self.config.uid;
         let mut current = pid;
         // The process the walk came up from: the session's own child once
         // the walk reaches a session.
@@ -337,7 +368,7 @@ impl LocalSessions {
             let process = table.process(current).ok_or(CallerMiss::NotASession)?;
             let own = process.uid == uid;
             if let Some(found) = own
-                .then(|| self.claude_caller(&claude, process, below.as_ref()))
+                .then(|| self.claude_caller(claude, process, below.as_ref()))
                 .flatten()
             {
                 return found;
@@ -350,7 +381,7 @@ impl LocalSessions {
                 return Err(CallerMiss::Unreadable(file.clone()));
             }
             if own && lock_held::unattributed_runtime(table, current, stop_at_grok_leaders) {
-                return Err(CallerMiss::NotASession);
+                return Err(CallerMiss::Unattributed);
             }
             // Under OpenCode, without a session tag that can be read, the
             // caller is the one session that OpenCode process holds, or
@@ -359,7 +390,7 @@ impl LocalSessions {
             if own && crate::relay::opencode::is_opencode_process(table, current) {
                 return self
                     .opencode_caller(pid, None)
-                    .ok_or(CallerMiss::NotASession);
+                    .ok_or(CallerMiss::Unattributed);
             }
             // Muse gives a tool process no session id, only a call id, but
             // its runtime registry records each open TUI's pid, and a Paseo
@@ -376,7 +407,7 @@ impl LocalSessions {
                 return session
                     .filter(|_| same)
                     .map(|session| Target::new(SessionKind::MuseOpen, session.session_id))
-                    .ok_or(CallerMiss::NotASession);
+                    .ok_or(CallerMiss::Unattributed);
             }
             if let Some(caller) = lock_held::caller(&self.config, table, pid, current, process) {
                 return caller;
@@ -394,7 +425,7 @@ impl LocalSessions {
                 return thread
                     .filter(|_| same)
                     .map(|id| Target::new(SessionKind::Codex, id))
-                    .ok_or(CallerMiss::NotASession);
+                    .ok_or(CallerMiss::Unattributed);
             }
             current = process.parent;
             below = Some(process);
@@ -5189,7 +5220,9 @@ mod tests {
                 ..FakeProcess::default()
             },
         );
-        assert_eq!(mine.caller(tool).ok(), None);
+        // It runs under this user's Grok leader all the same, so it is not
+        // outside every agent either: nothing may send for it as the person.
+        assert!(matches!(mine.caller(tool), Err(CallerMiss::Unattributed)));
 
         // With `GROK_SESSION_ID`, as Grok sets it for every tool process,
         // the tool names its session, once Grok's registry lists it for a
@@ -5203,7 +5236,8 @@ mod tests {
             .unwrap()
             .environment
             .insert("GROK_SESSION_ID".to_string(), session.to_uppercase());
-        assert!(matches!(mine.caller(tool), Err(CallerMiss::NotASession)));
+        // Before Grok lists it, the tag names nobody, under a leader.
+        assert!(matches!(mine.caller(tool), Err(CallerMiss::Unattributed)));
         let grok_home = &mine.config.grok.home;
         std::fs::create_dir_all(grok_home).unwrap();
         let tui = tool + 1;
@@ -5942,10 +5976,11 @@ printf '{{"jsonrpc":"2.0","id":"%s","result":{{"stopReason":"end_turn","outputTo
         // hook recorded it, its tool naming it puts it on this window.
         assert_eq!(sessions.caller_target(710).ok(), Some(target.clone()));
         // Without the conversation's own id, an inherited Codex thread or
-        // the Claude Code session above names nobody.
+        // the Claude Code session above names nobody, and the tool is still
+        // under the window's extension host.
         assert!(matches!(
             sessions.caller_target(720),
-            Err(CallerMiss::NotASession)
+            Err(CallerMiss::Unattributed)
         ));
         let injector = LocalInjector::new(
             config.clone(),
@@ -5991,7 +6026,7 @@ printf '{{"jsonrpc":"2.0","id":"%s","result":{{"stopReason":"end_turn","outputTo
         );
         assert!(matches!(
             sessions.caller_target(742),
-            Err(CallerMiss::NotASession)
+            Err(CallerMiss::Unattributed)
         ));
         // A reloaded window is another extension host.
         world.table.insert(700, host(701));
@@ -6068,8 +6103,12 @@ printf '{{"jsonrpc":"2.0","id":"%s","result":{{"stopReason":"end_turn","outputTo
             sessions.caller_target(610).ok(),
             Some(Target::new(SessionKind::OpenCodeOpen, held))
         );
-        // A session that OpenCode does not hold is nobody's claim.
-        assert!(sessions.caller_target(620).is_err());
+        // A session that OpenCode does not hold is nobody's claim, from a
+        // shell that is under OpenCode all the same.
+        assert!(matches!(
+            sessions.caller_target(620),
+            Err(CallerMiss::Unattributed)
+        ));
         // A shell whose tag cannot be read (an Apple binary on macOS) is the
         // one session its OpenCode holds, never the Claude Code session
         // OpenCode runs inside.
@@ -6136,7 +6175,27 @@ printf '{{"jsonrpc":"2.0","id":"%s","result":{{"stopReason":"end_turn","outputTo
             two.caller_target(610).ok(),
             Some(Target::new(SessionKind::OpenCodeOpen, held))
         );
-        assert!(two.caller_target(630).is_err());
+        // Without one, the shell names neither, but it is under OpenCode:
+        // never outside every agent, so nothing sends for it as the person.
+        assert!(matches!(
+            two.caller_target(630),
+            Err(CallerMiss::Unattributed)
+        ));
+        // A process of this user's under no agent at all is outside every
+        // session, whatever OpenCode holds.
+        world.table.insert(
+            670,
+            FakeProcess {
+                parent: 1,
+                uid,
+                start: 670,
+                ..FakeProcess::default()
+            },
+        );
+        assert!(matches!(
+            two.caller_target(670),
+            Err(CallerMiss::NotASession)
+        ));
         // With the route off, OpenCode is not a caller: its tag is ignored
         // and the walk goes on as it did before the route existed.
         config.opencode_open = false;

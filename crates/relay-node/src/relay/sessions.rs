@@ -77,8 +77,14 @@ pub struct UnreadableSessionFile {
 /// Why no session is named for a caller.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CallerMiss {
-    /// No supported live session is among the caller's ancestors.
+    /// No supported live session is among the caller's ancestors, and no
+    /// agent process of this user's is either.
     NotASession,
+    /// The caller runs under an agent process of this user's, but no one
+    /// session can be named for it: the agent holds several sessions or
+    /// none, or the tag it set names none of them. Anything that sends as
+    /// the person must treat it as a session, not as the person.
+    Unattributed,
     /// The nearest session around the caller is running, but its own
     /// registry file does not parse.
     Unreadable(UnreadableSessionFile),

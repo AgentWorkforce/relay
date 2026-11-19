@@ -269,9 +269,11 @@ fn restart_finds_only_its_live_host_and_never_adopts_a_reused_pid() {
             ..Default::default()
         },
     );
+    // A tool under the held worker names no session, but it is under Droid:
+    // never outside every agent.
     assert!(matches!(
         sessions.caller(42),
-        Err(crate::relay::sessions::CallerMiss::NotASession)
+        Err(crate::relay::sessions::CallerMiss::Unattributed)
     ));
     // A dead host must not free its still-owned child or block cleanup.
     std::fs::write(

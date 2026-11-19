@@ -72,8 +72,9 @@ Unix socket (on Windows, a named pipe; see **Windows** below):
   are refused (`refused`) when the peer runs inside an agent session
   registered on this computer, found by the same process walk the relay-send
   socket uses; the caller is told to send as its own agent with
-  `agent-relay-probe send`. A peer whose pid the platform does not report is
-  served as before. This is a guard, not a boundary: a process of this user
+  `agent-relay-probe send`. A peer under an agent process of this user's
+  whose one session cannot be named is refused too. A peer whose pid the
+  platform does not report is served as before. This is a guard, not a boundary: a process of this user
   outside every session, or one using the stored sign-in directly, is not
   stopped by it.
 - **Windows:** the socket path is only a key. The pipe is

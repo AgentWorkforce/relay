@@ -43,7 +43,7 @@ impl LocalSessions {
             {
                 let listed = self.openclaw.sessions(openclaw);
                 return Some(
-                    crate::relay::openclaw::caller_agent(&listed).ok_or(CallerMiss::NotASession),
+                    crate::relay::openclaw::caller_agent(&listed).ok_or(CallerMiss::Unattributed),
                 );
             }
             current = process.parent;

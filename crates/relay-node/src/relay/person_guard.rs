@@ -5,12 +5,14 @@
 //! `agents.test_message` send as the signed-in person. A process the session
 //! directory places inside a registered agent session (the same peer-process
 //! walk the relay-send socket names its caller with) is refused those
-//! methods and told to send as its own agent instead. A process outside every
-//! session, and a client the platform reports no pid for, are served as
-//! before.
+//! methods and told to send as its own agent instead, and so is a process
+//! under an agent process of this user's whose one session cannot be named
+//! (an OpenCode holding two sessions, say, under an Apple `curl` that hides
+//! its tag): when in doubt, the guard refuses. A process outside every agent,
+//! and a client the platform reports no pid for, are served as before.
 //!
 //! This is a guard, not a boundary: a process of this user outside every
-//! session, or one using the stored sign-in directly, is not stopped by it.
+//! agent, or one using the stored sign-in directly, is not stopped by it.
 
 use crate::relay::daemon::{CallContext, Core};
 use crate::relay::outbound::caller_session;
@@ -22,8 +24,9 @@ use crate::relay::sessions::CallerMiss;
 enum Caller {
     /// Outside every agent session, or not identifiable: served as before.
     Person,
-    /// Inside a registered agent session, or a live session whose own file
-    /// does not parse, so its registration cannot be ruled out.
+    /// Inside a registered agent session, a live session whose own file
+    /// does not parse, or under an agent process whose one session cannot be
+    /// named, so its registration cannot be ruled out.
     Session,
 }
 
@@ -47,7 +50,7 @@ async fn caller(core: &Core, context: &CallContext) -> Caller {
                 Caller::Person
             }
         }
-        Err(CallerMiss::Unreadable(_)) => Caller::Session,
+        Err(CallerMiss::Unreadable(_) | CallerMiss::Unattributed) => Caller::Session,
         Err(CallerMiss::NotASession) => Caller::Person,
     }
 }
@@ -85,6 +88,7 @@ mod tests {
     const UNREGISTERED: i32 = 4102;
     const UNREADABLE: i32 = 4103;
     const OUTSIDE: i32 = 4104;
+    const UNATTRIBUTED: i32 = 4105;
 
     /// Callers by pid, and every pid the guard asked about.
     #[derive(Default)]
@@ -106,6 +110,9 @@ mod tests {
                     pid: 4100,
                     error: "expected value".into(),
                 }));
+            }
+            if pid == UNATTRIBUTED {
+                return Err(CallerMiss::Unattributed);
             }
             self.sessions
                 .get(&pid)
@@ -198,6 +205,34 @@ mod tests {
             *callers.asked.lock().unwrap(),
             [REGISTERED, UNREADABLE, UNREGISTERED, OUTSIDE, OUTSIDE]
         );
+    }
+
+    #[tokio::test]
+    async fn a_caller_under_an_agent_whose_session_cannot_be_named_is_refused() {
+        let home = tempfile::tempdir().unwrap();
+        let callers = Arc::new(Callers::default());
+        let core = core(home.path(), callers.clone());
+        assert_eq!(
+            caller(&core, &from(Some(UNATTRIBUTED))).await,
+            Caller::Session
+        );
+        let context = from(Some(UNATTRIBUTED));
+        for (method, params) in [
+            ("messages.send", json!({"to": "reviewer", "text": "hello"})),
+            ("agents.test_message", json!({"name": "codex-api"})),
+        ] {
+            let refused = crate::relay::server::call_from(&core, &context, method, params)
+                .await
+                .unwrap_err();
+            assert_eq!(refused.data.kind, ErrorKind::Refused, "{method}");
+            assert!(
+                refused.message.contains("agent-relay-probe send"),
+                "{method}"
+            );
+        }
+        admit_person_send(&core, &from(Some(OUTSIDE)))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
