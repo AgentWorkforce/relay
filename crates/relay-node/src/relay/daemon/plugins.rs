@@ -120,9 +120,17 @@ pub struct TurnEndAdvisory {
 ///
 /// [`turn_end_advisories::reach`]: crate::relay::turn_end_advisories::reach
 pub trait TurnEndAdvisories: Send + Sync + 'static {
+    /// Non-consuming, cached check used before native ownership proof. No I/O.
+    /// The conservative default preserves existing plugins: it forces proof
+    /// before asking `take`. Override it to keep empty idle polls cheap.
+    fn pending(&self, _target: &crate::relay::store::Target) -> bool {
+        true
+    }
     /// What `target`'s session should see as its turn ends, or None. Called on the hook path:
     /// must return promptly, never block on I/O. Taking is one-shot: the plugin must not
     /// return the same ids again for this target until it decides to redeliver.
+    /// IDs must satisfy `turn_end_advisories::valid_ids` (at most 64, each
+    /// nonempty and at most 256 bytes); the core withholds invalid batches.
     fn take(&self, target: &crate::relay::store::Target) -> Option<TurnEndAdvisory>;
     /// The answer carrying `ids` was handed to `target`'s session (answered over the socket,
     /// or written by the hook process). The plugin acks them upstream.

@@ -408,6 +408,32 @@ pub fn wait(
     advisory: &mut Option<TurnEndAdvisory>,
     write: &mut dyn FnMut(&Value) -> bool,
 ) -> Ended {
+    wait_with_take(
+        config,
+        table,
+        holder,
+        payload,
+        watch,
+        (advisory, &mut || None),
+        write,
+    )
+}
+
+/// The core hook's lazy take: called only inside the guarded initial claim,
+/// never by the poll loop or a hook that was stopped, retired or removed.
+pub(super) fn wait_with_take(
+    config: &CursorConfig,
+    table: &dyn ProcessTable,
+    holder: Holder,
+    payload: &Value,
+    watch: &Watch<'_>,
+    initial: (
+        &mut Option<TurnEndAdvisory>,
+        &mut dyn FnMut() -> Option<TurnEndAdvisory>,
+    ),
+    write: &mut dyn FnMut(&Value) -> bool,
+) -> Ended {
+    let (advisory, take) = initial;
     let waiting = match Waiting::new(config, table, holder, payload, watch.pid) {
         Ok(waiting) => waiting,
         Err(ended) => return ended,
@@ -425,7 +451,12 @@ pub fn wait(
                 (watch.claiming)(&mut || {
                     (!store(config, waiting.session, &waiting.me))
                         .then_some(Ended::Failed)
-                        .or_else(|| answer(config, payload, advisory, write))
+                        .or_else(|| {
+                            if advisory.is_none() {
+                                *advisory = take();
+                            }
+                            answer(config, payload, advisory, write)
+                        })
                 })
             })
     });

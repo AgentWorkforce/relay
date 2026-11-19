@@ -13,19 +13,16 @@
 //! - `devin` and `cursor-cli`: their hooks prove the session in the hook
 //!   process itself (Devin reads its own inbox; Cursor's `hook_caller` walks
 //!   to the `cursor-agent` or editor host holding the conversation). Here a
-//!   caller that identifies as another session of the same kind is told
-//!   nothing; one the core cannot identify is answered on its user alone.
+//!   core must also identify the caller as exactly the named session.
+//!   An unidentified process is told nothing.
 //!
 //! Every other kind, and a kind the core does not know, is answered
 //! `{"text": null, "ids": []}`: Codex and Copilot are answered in the core.
 use super::{payload, Outbound, OutboundError, Purpose, Request};
 use crate::relay::sessions::CallerMiss;
 use crate::relay::store::{SessionKind, Target};
+use crate::relay::turn_end_advisories::{valid_ids, MAX_IDS, MAX_ID_BYTES};
 use serde_json::{json, Map, Value};
-
-/// The most ids one `shown` names, and the longest id.
-const MAX_IDS: usize = 64;
-const MAX_ID_BYTES: usize = 256;
 
 impl Outbound {
     pub(in crate::relay::outbound) async fn turn_end_route(
@@ -72,9 +69,7 @@ impl Outbound {
             .unwrap_or(Err(CallerMiss::NotASession));
         match caller {
             Ok(session) if session.target == target => Some(target),
-            Ok(session) if session.target.kind == kind => None,
-            _ if kind == SessionKind::ClaudeTerminal => None,
-            _ => Some(target),
+            _ => None,
         }
     }
 }
@@ -88,14 +83,19 @@ fn shown_ids(fields: &Map<String, Value>) -> Result<Vec<String>, OutboundError> 
     if ids.len() > MAX_IDS {
         return Err(invalid());
     }
-    ids.iter()
+    let ids: Vec<String> = ids
+        .iter()
         .map(|id| {
             id.as_str()
                 .filter(|id| !id.is_empty() && id.len() <= MAX_ID_BYTES)
                 .map(str::to_string)
                 .ok_or_else(invalid)
         })
-        .collect()
+        .collect::<Result<_, _>>()?;
+    if !valid_ids(&ids) {
+        return Err(invalid());
+    }
+    Ok(ids)
 }
 
 #[cfg(test)]
@@ -119,19 +119,23 @@ mod tests {
     /// Devin session `DEVIN`, pid 30 inside no session.
     /// Also answers Copilot's hook `{}`, recording each payload it saw.
     #[derive(Default)]
-    struct Sessions(std::sync::Mutex<Vec<Value>>);
+    struct Sessions(std::sync::Mutex<Vec<Value>>, std::sync::atomic::AtomicBool);
     impl SessionDirectory for Sessions {
         fn sessions(&self) -> Vec<DiscoveredSession> {
             Vec::new()
         }
         fn copilot_hook(&self, _pid: i32, payload: &Value) -> Option<Value> {
             self.0.lock().unwrap().push(payload.clone());
+            if self.1.load(std::sync::atomic::Ordering::SeqCst) {
+                return None;
+            }
             Some(json!({}))
         }
         fn caller(&self, pid: i32) -> Result<DiscoveredSession, CallerMiss> {
             let target = match pid {
                 10 => Target::new(SessionKind::ClaudeTerminal, CLAUDE),
                 20 => Target::new(SessionKind::Devin, DEVIN),
+                25 => Target::new(SessionKind::CursorCli, "conv"),
                 _ => return Err(CallerMiss::NotASession),
             };
             Ok(DiscoveredSession {
@@ -255,10 +259,36 @@ mod tests {
         assert_eq!(queue.shown(), vec![(target, vec!["x".to_string()])]);
         assert!(shown(10, json!("x")).await.is_err());
         assert!(shown(10, json!([1])).await.is_err());
+        assert!(shown(10, json!(vec!["x"; MAX_IDS + 1])).await.is_err());
     }
 
     #[tokio::test]
-    async fn devin_and_cursor_are_refused_only_when_the_caller_is_another_session() {
+    async fn invalid_plugin_ids_are_withheld_instead_of_displayed_without_an_ack() {
+        for ids in [
+            vec!["x".into(); 65],
+            vec![String::new()],
+            vec!["x".repeat(257)],
+        ] {
+            let target = Target::new(SessionKind::ClaudeTerminal, CLAUDE);
+            let queue = Arc::new(Queue::default());
+            queue.pending.lock().unwrap().push((
+                target,
+                crate::relay::daemon::TurnEndAdvisory {
+                    text: "Heads up.".into(),
+                    ids,
+                },
+            ));
+            let (_temp, outbound) = fixture(Some(queue.clone()));
+            assert_eq!(
+                take(&outbound, 10, "claude-terminal", CLAUDE).await,
+                NOTHING()
+            );
+            assert!(queue.shown().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn devin_and_cursor_require_the_exact_identified_caller() {
         let devin = Target::new(SessionKind::Devin, DEVIN);
         let cursor = Target::new(SessionKind::CursorCli, "conv");
         let queue = Arc::new(Queue::with(devin.clone(), "D", &["d"]));
@@ -283,9 +313,11 @@ mod tests {
             take(&outbound, 20, "devin", DEVIN).await,
             json!({"text": "D", "ids": ["d"]})
         );
-        // A caller the core cannot place is answered on its user alone.
+        // Unidentified callers and another provider cannot consume the cache.
+        assert_eq!(take(&outbound, 30, "cursor-cli", "conv").await, NOTHING());
+        assert_eq!(take(&outbound, 10, "cursor-cli", "conv").await, NOTHING());
         assert_eq!(
-            take(&outbound, 30, "cursor-cli", "conv").await,
+            take(&outbound, 25, "cursor-cli", "conv").await,
             json!({"text": "C", "ids": ["c"]})
         );
     }
@@ -353,6 +385,28 @@ mod tests {
         // and the idle check is cheap again.
         assert_eq!(ask(hook("end_turn")).await, json!({}));
         assert_eq!(sessions.0.lock().unwrap()[2]["relayTurnEndAdvisory"], false);
+        assert_eq!(queue.shown().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_rejected_copilot_stop_keeps_its_one_shot_advisory() {
+        const SID: &str = "1069773c-0824-4fad-b7f9-d3dc3c4ed148";
+        let target = Target::new(SessionKind::Copilot, SID);
+        let queue = Arc::new(Queue::with(target, "Heads up.", &["k"]));
+        let (_temp, outbound, sessions) = fixture_with(Some(queue.clone()));
+        let request = request(
+            "/copilot/hook",
+            json!({"sessionId":SID,"relayEvent":"stop","stopReason":"end_turn"}),
+        );
+        sessions.1.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(outbound.handle(10, outbound.uid, &request).await.is_err());
+        assert!(queue.taken.lock().unwrap().is_empty());
+        assert_eq!(queue.pending.lock().unwrap().len(), 1);
+        sessions.1.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            outbound.handle(10, outbound.uid, &request).await.unwrap(),
+            json!({"decision":"block","reason":"Heads up."})
+        );
         assert_eq!(queue.shown().len(), 1);
     }
 }

@@ -23,8 +23,25 @@ use serde_json::{json, Value};
 /// The most an advisory's text may be, in bytes; longer text is cut at a
 /// char boundary.
 pub const MAX_BYTES: usize = 4096;
+/// Shared by the plugin boundary and the socket acknowledgement route.
+pub const MAX_IDS: usize = 64;
+pub const MAX_ID_BYTES: usize = 256;
+
+pub fn valid_ids(ids: &[String]) -> bool {
+    ids.len() <= MAX_IDS
+        && ids
+            .iter()
+            .all(|id| !id.is_empty() && id.len() <= MAX_ID_BYTES)
+}
 
 impl Core {
+    /// Non-consuming cached presence check, so native proof precedes a one-shot take.
+    pub fn has_turn_end_advisory(&self, target: &Target) -> bool {
+        self.plugins
+            .turn_end_advisories
+            .as_deref()
+            .is_some_and(|p| p.pending(target))
+    }
     /// The advisory `target`'s session should see as its turn ends: the
     /// build's [`TurnEndAdvisories::take`], its text trimmed and bounded, or
     /// `None` (no plugin, nothing to show, or only blank text). Taking is
@@ -34,6 +51,9 @@ impl Core {
     /// [`TurnEndAdvisories::take`]: crate::relay::daemon::TurnEndAdvisories::take
     pub fn take_turn_end_advisory(&self, target: &Target) -> Option<TurnEndAdvisory> {
         let advisory = self.plugins.turn_end_advisories.as_deref()?.take(target)?;
+        if !valid_ids(&advisory.ids) {
+            return None;
+        }
         Some(TurnEndAdvisory {
             text: bounded(&advisory.text)?,
             ids: advisory.ids,
@@ -226,6 +246,13 @@ pub mod fake {
     }
 
     impl TurnEndAdvisories for Queue {
+        fn pending(&self, target: &Target) -> bool {
+            self.pending
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(t, _)| t == target)
+        }
         fn take(&self, target: &Target) -> Option<TurnEndAdvisory> {
             self.taken.lock().unwrap().push(target.clone());
             let mut pending = self.pending.lock().unwrap();
@@ -244,6 +271,14 @@ pub mod fake {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugin_ids_have_the_same_limits_as_socket_acknowledgements() {
+        assert!(valid_ids(&vec!["x".repeat(MAX_ID_BYTES); MAX_IDS]));
+        assert!(!valid_ids(&vec!["x".into(); MAX_IDS + 1]));
+        assert!(!valid_ids(&[String::new()]));
+        assert!(!valid_ids(&["x".repeat(MAX_ID_BYTES + 1)]));
+    }
 
     #[test]
     fn merge_stop_appends_to_a_block_or_makes_one() {

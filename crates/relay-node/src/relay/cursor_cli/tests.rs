@@ -1171,6 +1171,19 @@ impl Advisories {
         waits: bool,
         writes: bool,
     ) -> (bool, Vec<Value>) {
+        self.run_guarded(config, table, pid, payload, (waits, writes), (false, true))
+    }
+
+    fn run_guarded(
+        &self,
+        config: &CursorConfig,
+        table: &FakeProcesses,
+        pid: i32,
+        payload: &Value,
+        delivery: (bool, bool),
+        checks: (bool, bool),
+    ) -> (bool, Vec<Value>) {
+        let (waits, writes) = delivery;
         let take = |session: &str| {
             assert_eq!(session, SESSION);
             self.asked.set(self.asked.get() + 1);
@@ -1184,15 +1197,21 @@ impl Advisories {
             take: &take,
             shown: &shown,
         };
-        let never = || false;
-        let always = || true;
-        let claiming = |claim: &mut dyn FnMut() -> Option<wait::Ended>| claim();
+        let stopping = || checks.0;
+        let installed = || checks.1;
+        let claiming = |claim: &mut dyn FnMut() -> Option<wait::Ended>| {
+            if checks.1 {
+                claim()
+            } else {
+                Some(wait::Ended::Removed)
+            }
+        };
         let watch = wait::Watch {
             pid,
             until: std::time::Instant::now() + Duration::from_millis(300),
             poll: Duration::from_millis(10),
-            stopping: &never,
-            installed: &always,
+            stopping: &stopping,
+            installed: &installed,
             claiming: &claiming,
         };
         let mut written = Vec::new();
@@ -1303,4 +1322,34 @@ fn a_waiting_stop_carries_the_advisory_at_once_and_never_while_it_waits() {
         (false, Vec::new())
     );
     assert_eq!(advisories.shown.borrow().len(), 1);
+}
+
+#[test]
+fn stopped_removed_or_stale_waits_do_not_take_an_advisory() {
+    for (stopping, installed, stale) in [
+        (true, true, false),
+        (false, false, false),
+        (false, true, true),
+    ] {
+        let (_temp, config, table) = world();
+        table.insert(501, shell(400));
+        let prompt = json!({"hook_event_name":"beforeSubmitPrompt","conversation_id":SESSION,
+            "generation_id":if stale { "gen-2" } else { "gen-1" }});
+        run_hook(&config, &table, 501, &prompt, None, &mut |_| true);
+        let advisories = Advisories::one("Heads up.");
+        assert_eq!(
+            advisories.run_guarded(
+                &config,
+                &table,
+                501,
+                &completed("gen-1"),
+                (true, true),
+                (stopping, installed)
+            ),
+            (false, Vec::new())
+        );
+        assert_eq!(advisories.asked.get(), 0);
+        assert!(advisories.pending.borrow().is_some());
+        assert!(advisories.shown.borrow().is_empty());
+    }
 }

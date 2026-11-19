@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Desktop spawns accept `fork_from` to continue an existing Claude or Codex agent's conversation in a new agent, without stopping the original.
 - `agent-relay-node`: a `TurnEndAdvisories` plugin can hand a session a short advisory as its turn ends, once, through the core's stop hooks for Codex, Copilot, Devin, Cursor CLI and Claude Code (a new `claude-stop-hook`, installed with the Claude Code SessionStart hook). Hooks that run outside the core ask the new `POST /turn-end/take` and `POST /turn-end/shown` session routes.
+  Rejected Copilot and Cursor stops leave cached advisories untaken. Socket hooks require the caller's exact session, and malformed advisory ID batches are withheld. Claude's Stop hook stays quiet in automated runs and preserves profile/socket markers.
 
 ### Changed
 

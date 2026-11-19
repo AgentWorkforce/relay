@@ -396,7 +396,7 @@ fn hook_parent(_table: &crate::relay::process::SystemProcesses) -> i32 {
 /// Agent Relay's Claude Code Stop hook (`claude::session_hook` installs it
 /// beside the SessionStart hook). Reads Claude's Stop input and, when the
 /// stop is not already continuing from a stop hook's block
-/// (`stop_hook_active`) and a Claude Code process owns this hook, asks the
+/// (`stop_hook_active`) and an interactive Claude Code process owns this hook, asks the
 /// core for the session's turn-end advisory (`POST /turn-end/take`, which
 /// the core answers only for the Claude Code session this process runs
 /// in). With one it prints `{"decision":"block","reason":<advisory>}`, so
@@ -413,7 +413,9 @@ pub fn claude_stop_hook(socket: Option<&Path>, build: &Build) -> Result<()> {
     let found = (!active)
         .then(|| {
             // Cursor CLI also runs the hooks in Claude's settings.json.
-            crate::relay::claude::session_hook::claude_ancestor(&table, hook_parent(&table))?;
+            if !crate::relay::claude::session_hook::has_person(&table, hook_parent(&table)) {
+                return None;
+            }
             let socket = session_hook_socket(socket, build)?;
             let advisory = turn_end_take(&socket, SessionKind::ClaudeTerminal, &session)?;
             Some((socket, advisory))
