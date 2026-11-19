@@ -108,10 +108,13 @@ const KINDS: readonly NodeKind[] = ['desktop', 'broker', 'hosted'];
 
 /** `1.5GiB`, `512MiB`, `2GB` or a whole number of bytes. Rounds down to a whole byte. */
 export function parseBytes(value: string): number | null {
-  const match = /^\s*(\d+(?:\.\d+)?)\s*([a-zA-Z]*)\s*$/.exec(value);
+  // Trim first and bound the length, so the pattern has no ambiguous whitespace to backtrack over.
+  const text = value.trim();
+  if (text.length === 0 || text.length > 32) return null;
+  const match = /^(\d{1,20}(?:\.\d{1,20})?) ?([a-zA-Z]{0,3})$/.exec(text);
   if (!match) return null;
   const unit = match[2].toLowerCase();
-  const scale = unit === '' ? 1 : UNITS[unit];
+  const scale = unit === '' ? 1 : Object.hasOwn(UNITS, unit) ? UNITS[unit] : undefined;
   if (scale === undefined || (unit === '' && match[1].includes('.'))) return null;
   const bytes = Math.floor(Number(match[1]) * scale);
   return Number.isSafeInteger(bytes) ? bytes : null;

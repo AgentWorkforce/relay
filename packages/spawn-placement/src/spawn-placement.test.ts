@@ -228,5 +228,8 @@ describe('parseMemoryPolicy', () => {
     expect(parseBytes('1.5')).toBeNull();
     expect(parseBytes('-1GiB')).toBeNull();
     expect(parseBytes('1TiB')).toBeNull();
+    expect(parseBytes(' 1.5 GiB ')).toBe(1.5 * GIB);
+    expect(parseBytes('0' + '\t'.repeat(50_000))).toBeNull();
+    expect(parseBytes('1 constructor')).toBeNull();
   });
 });
