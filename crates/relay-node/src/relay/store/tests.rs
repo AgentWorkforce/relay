@@ -467,6 +467,10 @@ fn targets_only_accept_their_kinds_id_shape() {
 fn upload_keys_match_the_uploaders_session_keys() {
     let claude = "c635e116-20de-4d65-bd85-2547b35f0768";
     assert_eq!(
+        Target::new(SessionKind::CursorCli, THREAD).upload_key(),
+        Some(format!("cursor:{THREAD}"))
+    );
+    assert_eq!(
         Target::new(SessionKind::Codex, THREAD).upload_key(),
         Some(format!("codex:{THREAD}"))
     );
