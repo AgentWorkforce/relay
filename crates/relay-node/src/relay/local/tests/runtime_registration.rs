@@ -505,3 +505,130 @@ fn runtime_presence_filters_fleet_ownership_but_keeps_manual_excluded_chats() {
         .insert(target.clone());
     assert!(!w.sessions.present_targets(&[]).contains(&target));
 }
+
+/// A hand-registered stdio app-server chat with no user evidence in the
+/// catalog: registration accepted it on its writer lock alone.
+fn hand_registered_core(w: World, home: &std::path::Path) -> (Arc<Core>, Arc<LocalSessions>) {
+    let sessions = Arc::new(w.sessions);
+    let (core, _) = Core::with_plugins(
+        Config {
+            paths: CorePaths::for_socket(home.join("core.sock")).unwrap(),
+            home: home.into(),
+            app_data_dir: home.join("app-data"),
+            env: Default::default(),
+            version: "test".into(),
+            host_name: "Test Desk.local".into(),
+            rediscover_every: Duration::from_secs(3600),
+            push_timing: Default::default(),
+            delivery_timing: Default::default(),
+        },
+        Plugins {
+            sessions: sessions.clone(),
+            ..Default::default()
+        },
+    );
+    core.store
+        .update(|s| {
+            s.registrations.push(
+                serde_json::from_value(serde_json::json!({
+                    "name": "lead", "agentID": "lead",
+                    "target": Target::new(SessionKind::Codex, THREAD),
+                    "title": "lead", "baseURL": "https://example.invalid",
+                    "registeredAt": "2026-10-28T00:00:00Z"
+                }))
+                .unwrap(),
+            )
+        })
+        .unwrap();
+    (core, sessions)
+}
+
+fn missing_since(core: &Core) -> Option<String> {
+    core.store
+        .read(|s| s.registrations[0].missing_since.clone())
+}
+
+#[tokio::test]
+/// The lock that registration accepted keeps a hand-registered chat present
+/// without admitting the unregistered chat beside it.
+async fn a_hand_registered_stdio_chat_stays_present_while_its_writer_lock_is_held() {
+    let w = world();
+    let db = seed(&w, &[THREAD, OTHER]);
+    db.execute("update threads set has_user_event=0", [])
+        .unwrap();
+    let table = w.table.clone();
+    let host = table.processes.lock().unwrap()[&500].clone();
+    let temp = tempfile::tempdir().unwrap();
+    let fake = fake_relaycast::FakeRelaycast::start(Default::default()).await;
+    let data = temp.path().join("app-data");
+    fake_relaycast::sign_in_store(&data, fake_relaycast::WORKSPACE_KEY, &fake.base_url);
+    let (core, sessions) = hand_registered_core(w, temp.path());
+    core.rediscover_workspace();
+    core.store.update(|s| s.auto_activate = Some(true)).unwrap();
+    assert!(sessions.automatic_candidates().is_empty());
+    assert!(sessions.present_targets(&sessions.sessions()).is_empty());
+
+    for _ in 0..2 {
+        let failures = core.activate_new_sessions().await;
+        assert!(failures.is_empty(), "{failures:?}");
+        assert_eq!(missing_since(&core), None);
+    }
+    // The unregistered chat in the same state is still not admitted.
+    assert_eq!(fake.calls("POST", "/v1/agents").len(), 0);
+    assert_eq!(core.store.read(|s| s.registrations.len()), 1);
+
+    // The writer drops this thread's lock.
+    let mut dropped = host.clone();
+    dropped
+        .open_files
+        .retain(|p| !p.ends_with(format!("{THREAD}.lock")));
+    table.insert(500, dropped);
+    core.activate_new_sessions().await;
+    assert!(missing_since(&core).is_some());
+
+    table.insert(500, host);
+    core.activate_new_sessions().await;
+    assert_eq!(missing_since(&core), None);
+
+    // The writer exits.
+    table.remove(500);
+    core.activate_new_sessions().await;
+    assert!(missing_since(&core).is_some());
+}
+
+#[test]
+/// Only a trusted Codex of this user holding this thread's own lock counts.
+fn registered_presence_needs_this_threads_lock_held_by_a_trusted_codex() {
+    let target = Target::new(SessionKind::Codex, THREAD);
+    let w = world();
+    let db = seed(&w, &[THREAD]);
+    db.execute("update threads set has_user_event=0", [])
+        .unwrap();
+    assert!(w
+        .sessions
+        .registered_present(std::slice::from_ref(&target))
+        .contains(&target));
+    let host = w.table.processes.lock().unwrap()[&500].clone();
+    for untrusted in [
+        FakeProcess {
+            executable: Some("/tmp/fake-codex".into()),
+            ..host.clone()
+        },
+        FakeProcess {
+            uid: UID + 1,
+            ..host.clone()
+        },
+    ] {
+        w.table.insert(500, untrusted);
+        assert!(w
+            .sessions
+            .registered_present(std::slice::from_ref(&target))
+            .is_empty());
+    }
+    // Another thread's lock never stands in for this one.
+    let w = world();
+    let db = seed(&w, &[OTHER]);
+    db.execute("update threads set has_user_event=0", [])
+        .unwrap();
+    assert!(w.sessions.registered_present(&[target]).is_empty());
+}

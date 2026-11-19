@@ -223,6 +223,19 @@ impl SessionDirectory for LocalSessions {
         targets
     }
 
+    /// A hand-registered Codex thread stays present while a trusted Codex of
+    /// this user holds its writer lock: the proof its registration accepted.
+    fn registered_present(&self, targets: &[Target]) -> HashSet<Target> {
+        targets
+            .iter()
+            .filter(|t| t.kind == SessionKind::Codex)
+            .filter(|t| {
+                codex::thread_is_live(&self.config.codex, &*self.table, self.config.uid, &t.id)
+            })
+            .cloned()
+            .collect()
+    }
+
     /// A trusted host ancestry grants only a global discovery nudge.
     fn trusted_codex_discovery_signal(&self, pid: i32) -> bool {
         crate::relay::process::trusted_codex_host(&*self.table, pid, self.config.uid)

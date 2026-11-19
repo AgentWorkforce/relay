@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay-node`: a Codex chat you register by hand from a desktop stdio `codex app-server` stays listed as present while a trusted Codex of yours holds that chat's writer lock, the same proof registration accepted. Before, it was marked missing on the next presence pass when the chat had no user turn on record, and stopped heartbeating. It is marked missing again once that Codex exits or lets the lock go. Chats are still never added automatically on this evidence, and messages to such a chat still wait until it has a delivery route.
 - `agent-relay-node`: local Cursor sessions expose the matching `cursor:<id>` history identity, so desktop apps can show their upload controls alongside messaging. Previously archived Cursor sessions keep their Archived classification after the upgrade.
 
 ### Added
