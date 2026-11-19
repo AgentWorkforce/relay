@@ -156,6 +156,26 @@ describe('assessMemory', () => {
   });
 });
 
+describe('rankCandidates', () => {
+  it('does not admit a node that lacks the named harness', () => {
+    const roomy = { ...base, memory: { ...base.memory!, availableBytes: 40 * GIB, totalBytes: 64 * GIB } };
+    const policy = parseMemoryPolicy({ mode: 'rank' });
+    const ranked = rankCandidates(
+      [
+        { ...roomy, id: 'codex-only', harnesses: ['codex'] },
+        { ...base, id: 'claude-low' },
+        { ...roomy, id: 'claude-ok' },
+      ],
+      { harness: 'claude', policy, now }
+    );
+    expect(ranked.map((entry) => [entry.candidate.id, entry.admissible])).toEqual([
+      ['claude-ok', true],
+      ['codex-only', false],
+      ['claude-low', false],
+    ]);
+  });
+});
+
 describe('parseMemoryPolicy', () => {
   it('parses every setting', () => {
     const policy = parseMemoryPolicy({

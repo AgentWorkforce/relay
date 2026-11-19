@@ -20,7 +20,7 @@ const TIER_ORDER: Record<MemoryTier, number> = { ample: 0, ok: 1, unknown: 2, ti
 export interface RankedCandidate<T extends PlacementCandidate = PlacementCandidate> {
   candidate: T;
   memory: MemoryAssessment;
-  /** Has slot room and, when the policy ranks by memory, enough memory. */
+  /** Offers the named harness, has slot room and, when the policy ranks by memory, enough memory. */
   admissible: boolean;
 }
 
@@ -107,7 +107,9 @@ export function rankCandidates<T extends PlacementCandidate>(
   const ranks = memoryRanks(options.policy);
   const entries = candidates.map((candidate): RankedCandidate<T> => {
     const memory = assessMemory(candidate, options.harness ?? null, options.policy, options.now);
-    return { candidate, memory, admissible: hasRoom(candidate) && (!ranks || memory.admissible) };
+    // A node that does not offer the named harness would not take this launch either.
+    const offers = !options.harness || candidate.harnesses.includes(options.harness);
+    return { candidate, memory, admissible: offers && hasRoom(candidate) && (!ranks || memory.admissible) };
   });
   return entries.sort((a, b) => (ranks ? compareRanked(a, b) : compareLegacy(a.candidate, b.candidate)));
 }

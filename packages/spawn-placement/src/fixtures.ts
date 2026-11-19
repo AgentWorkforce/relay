@@ -10,7 +10,7 @@
  */
 
 import type { MemoryLowReason, MemoryTier } from './memory.js';
-import type { MemoryPolicySettings } from './policy.js';
+import { GIB, type MemoryPolicySettings } from './policy.js';
 
 export interface GoldenFixture {
   name: string;
@@ -35,7 +35,6 @@ export interface GoldenFixture {
   };
 }
 
-const GiB = 1024 ** 3;
 const NOW = '2026-11-19T12:00:00.000Z';
 const ago = (seconds: number) => new Date(Date.parse(NOW) - seconds * 1000).toISOString();
 const ME = 'user-me';
@@ -64,16 +63,16 @@ function node(spec: NodeSpec): Record<string, unknown> {
     load_1m: spec.load1m === undefined ? 2 : spec.load1m,
     memory_total_bytes:
       spec.totalGiB === undefined
-        ? 16 * GiB
+        ? 16 * GIB
         : spec.totalGiB === null
           ? null
-          : Math.round(spec.totalGiB * GiB),
+          : Math.round(spec.totalGiB * GIB),
     memory_available_bytes:
       spec.availableGiB === undefined
-        ? 8 * GiB
+        ? 8 * GIB
         : spec.availableGiB === null
           ? null
-          : Math.round(spec.availableGiB * GiB),
+          : Math.round(spec.availableGiB * GIB),
   };
   const configured: Record<string, unknown> = {
     node_kind: spec.kind,
@@ -178,7 +177,7 @@ const FIXTURES: GoldenFixture[] = [
     harness: 'codex',
     userId: ME,
     owners: mine('codex-desktop'),
-    // floor max(2 GiB, 1.6 GiB) = 2 GiB; 3.2 − 2 − 1 = 0.2 GiB headroom.
+    // floor max(2 GIB, 1.6 GIB) = 2 GIB; 3.2 − 2 − 1 = 0.2 GiB headroom.
     nodes: [node({ id: 'codex-desktop', kind: 'desktop', totalGiB: 16, availableGiB: 3.2 })],
     expected: {
       order: ['codex-desktop'],
@@ -222,10 +221,10 @@ const FIXTURES: GoldenFixture[] = [
     userId: ME,
     owners: mine('tight', 'unknown', 'ok'),
     nodes: [
-      // floor 2 GiB; 4.5 − 2 − 1.5 = 1 GiB headroom: tight.
+      // floor 2 GIB; 4.5 − 2 − 1.5 = 1 GiB headroom: tight.
       node({ id: 'tight', kind: 'desktop', totalGiB: 16, availableGiB: 4.5 }),
       node({ id: 'unknown', kind: 'desktop', totalGiB: null, availableGiB: null }),
-      // floor 6.4 GiB; 12 − 6.4 − 1.5 = 4.1 GiB headroom, (12 − 1.5) / 64 = 16%: ok.
+      // floor 6.4 GIB; 12 − 6.4 − 1.5 = 4.1 GiB headroom, (12 − 1.5) / 64 = 16%: ok.
       node({ id: 'ok', kind: 'desktop', totalGiB: 64, availableGiB: 12 }),
     ],
     expected: {
@@ -325,9 +324,9 @@ const FIXTURES: GoldenFixture[] = [
     owners: mine('raised', 'lowered'),
     nodes: [
       // floor raised to 4 GiB; 4.5 − 4 − 1 < 0.
-      node({ id: 'raised', kind: 'desktop', totalGiB: 16, availableGiB: 4.5, memoryFloorBytes: 4 * GiB }),
+      node({ id: 'raised', kind: 'desktop', totalGiB: 16, availableGiB: 4.5, memoryFloorBytes: 4 * GIB }),
       // a 0.5 GiB request is ignored: floor stays 2 GiB; 3 − 2 − 1 = 0: tight.
-      node({ id: 'lowered', kind: 'desktop', totalGiB: 16, availableGiB: 3, memoryFloorBytes: 0.5 * GiB }),
+      node({ id: 'lowered', kind: 'desktop', totalGiB: 16, availableGiB: 3, memoryFloorBytes: 0.5 * GIB }),
     ],
     expected: {
       order: ['lowered', 'raised'],
@@ -348,7 +347,7 @@ const FIXTURES: GoldenFixture[] = [
     owners: mine('my-desktop'),
     nodes: [
       node({ id: 'my-desktop', kind: 'desktop', totalGiB: 16, availableGiB: 2.5 }),
-      // broker floor max(1 GiB, 1.6 GiB) = 1.6 GiB; 20 − 1.6 − 1.5 = 16.9 GiB, 58%: ample.
+      // broker floor max(1 GIB, 1.6 GIB) = 1.6 GIB; 20 − 1.6 − 1.5 = 16.9 GIB, 58%: ample.
       node({ id: 'shared-broker', kind: 'broker', totalGiB: 32, availableGiB: 20 }),
     ],
     expected: {
