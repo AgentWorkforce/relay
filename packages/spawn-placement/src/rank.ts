@@ -3,7 +3,13 @@
  * and wording stay with each control plane; the order is decided here.
  */
 
-import { assessMemory, availableSlots, type MemoryAssessment, type MemoryTier, type PlacementCandidate } from './memory.js';
+import {
+  assessMemory,
+  availableSlots,
+  type MemoryAssessment,
+  type MemoryTier,
+  type PlacementCandidate,
+} from './memory.js';
 import type { MemoryPolicy, NodeKind } from './policy.js';
 
 export const MAX_ALTERNATIVES = 3;
@@ -36,7 +42,8 @@ function hasRoom(candidate: PlacementCandidate): boolean {
 
 /** Load per CPU when the machine reports it, else Relaycast's slot utilization; unknown sorts last. */
 export function loadScore(candidate: PlacementCandidate): number {
-  if (candidate.load1m !== null && candidate.load1m !== undefined && candidate.cpus) return candidate.load1m / candidate.cpus;
+  if (candidate.load1m !== null && candidate.load1m !== undefined && candidate.cpus)
+    return candidate.load1m / candidate.cpus;
   return candidate.utilization ?? Number.POSITIVE_INFINITY;
 }
 
@@ -52,12 +59,14 @@ function byLoad(a: PlacementCandidate, b: PlacementCandidate): number {
  */
 export function compareLegacy(a: PlacementCandidate, b: PlacementCandidate): number {
   const slots = (candidate: PlacementCandidate) => availableSlots(candidate) ?? 0;
-  return Number(b.allowed) - Number(a.allowed) ||
+  return (
+    Number(b.allowed) - Number(a.allowed) ||
     Number(b.isYours) - Number(a.isYours) ||
     KIND_ORDER[a.kind] - KIND_ORDER[b.kind] ||
     Number(hasRoom(b)) - Number(hasRoom(a)) ||
     byLoad(a, b) ||
-    slots(b) - slots(a);
+    slots(b) - slots(a)
+  );
 }
 
 /**
@@ -69,7 +78,8 @@ export function compareLegacy(a: PlacementCandidate, b: PlacementCandidate): num
 export function compareRanked(a: RankedCandidate, b: RankedCandidate): number {
   const fit = (entry: RankedCandidate) => entry.memory.agents_fit ?? -1;
   const slots = (entry: RankedCandidate) => availableSlots(entry.candidate) ?? 0;
-  return Number(b.candidate.allowed) - Number(a.candidate.allowed) ||
+  return (
+    Number(b.candidate.allowed) - Number(a.candidate.allowed) ||
     Number(b.admissible) - Number(a.admissible) ||
     Number(b.candidate.isYours) - Number(a.candidate.isYours) ||
     KIND_ORDER[a.candidate.kind] - KIND_ORDER[b.candidate.kind] ||
@@ -77,17 +87,21 @@ export function compareRanked(a: RankedCandidate, b: RankedCandidate): number {
     byLoad(a.candidate, b.candidate) ||
     a.memory.held - b.memory.held ||
     fit(b) - fit(a) ||
-    slots(b) - slots(a);
+    slots(b) - slots(a)
+  );
 }
 
 /** Best first. Ties keep the input (Relaycast roster) order. */
-export function rankCandidates<T extends PlacementCandidate>(candidates: readonly T[], options: RankOptions): Array<RankedCandidate<T>> {
+export function rankCandidates<T extends PlacementCandidate>(
+  candidates: readonly T[],
+  options: RankOptions
+): Array<RankedCandidate<T>> {
   const ranks = memoryRanks(options.policy);
   const entries = candidates.map((candidate): RankedCandidate<T> => {
     const memory = assessMemory(candidate, options.harness ?? null, options.policy, options.now);
     return { candidate, memory, admissible: hasRoom(candidate) && (!ranks || memory.admissible) };
   });
-  return entries.sort((a, b) => ranks ? compareRanked(a, b) : compareLegacy(a.candidate, b.candidate));
+  return entries.sort((a, b) => (ranks ? compareRanked(a, b) : compareLegacy(a.candidate, b.candidate)));
 }
 
 /**
@@ -95,12 +109,21 @@ export function rankCandidates<T extends PlacementCandidate>(candidates: readonl
  * harness, have room and (when memory ranks) enough memory. Ones sharing a
  * repository with the refused target come first. At most three.
  */
-export function alternativesFor<T extends PlacementCandidate>(ranked: ReadonlyArray<RankedCandidate<T>>, harness: string,
-  refused: { id: string; repositories?: readonly string[] }): Array<RankedCandidate<T>> {
+export function alternativesFor<T extends PlacementCandidate>(
+  ranked: ReadonlyArray<RankedCandidate<T>>,
+  harness: string,
+  refused: { id: string; repositories?: readonly string[] }
+): Array<RankedCandidate<T>> {
   const repositories = new Set(refused.repositories ?? []);
-  const fits = ranked.filter((entry) => entry.candidate.allowed && entry.candidate.id !== refused.id &&
-    entry.candidate.harnesses.includes(harness) && entry.admissible);
-  const shares = (entry: RankedCandidate<T>) => entry.candidate.repositories.some((repository) => repositories.has(repository));
+  const fits = ranked.filter(
+    (entry) =>
+      entry.candidate.allowed &&
+      entry.candidate.id !== refused.id &&
+      entry.candidate.harnesses.includes(harness) &&
+      entry.admissible
+  );
+  const shares = (entry: RankedCandidate<T>) =>
+    entry.candidate.repositories.some((repository) => repositories.has(repository));
   return [...fits.filter(shares), ...fits.filter((entry) => !shares(entry))].slice(0, MAX_ALTERNATIVES);
 }
 

@@ -70,20 +70,36 @@ function bytes(value: number | null | undefined): number | null {
 }
 
 /** Free launch slots by Relaycast's count; null means unlimited. */
-export function availableSlots(candidate: Pick<PlacementCandidate, 'maxAgents' | 'activeAgents' | 'reservedAgents'>): number | null {
-  return candidate.maxAgents === 0 ? null
+export function availableSlots(
+  candidate: Pick<PlacementCandidate, 'maxAgents' | 'activeAgents' | 'reservedAgents'>
+): number | null {
+  return candidate.maxAgents === 0
+    ? null
     : Math.max(0, candidate.maxAgents - count(candidate.activeAgents) - count(candidate.reservedAgents));
 }
 
 /** Policy floor for this node, raised (never lowered) by the node's own floor. */
-export function floorBytes(policy: MemoryPolicy, kind: NodeKind, totalBytes: number | null, nodeFloorBytes?: number | null): number {
+export function floorBytes(
+  policy: MemoryPolicy,
+  kind: NodeKind,
+  totalBytes: number | null,
+  nodeFloorBytes?: number | null
+): number {
   const floor = policy.floor[kind];
-  const policyFloor = Math.max(floor.bytes, totalBytes === null ? 0 : Math.floor(floor.fraction * totalBytes));
+  const policyFloor = Math.max(
+    floor.bytes,
+    totalBytes === null ? 0 : Math.floor(floor.fraction * totalBytes)
+  );
   const nodeFloor = bytes(nodeFloorBytes);
   return nodeFloor !== null && nodeFloor > policyFloor ? nodeFloor : policyFloor;
 }
 
-export function assessMemory(candidate: PlacementCandidate, harness: string | null | undefined, policy: MemoryPolicy, now: Date): MemoryAssessment {
+export function assessMemory(
+  candidate: PlacementCandidate,
+  harness: string | null | undefined,
+  policy: MemoryPolicy,
+  now: Date
+): MemoryAssessment {
   const need = harnessNeed(policy, harness);
   const held = count(candidate.activeAgents) + count(candidate.reservedAgents);
   const sample = candidate.memory;
@@ -92,13 +108,24 @@ export function assessMemory(candidate: PlacementCandidate, harness: string | nu
   const available = bytes(sample?.availableBytes);
   const reportedTotal = bytes(sample?.totalBytes);
   const total = reportedTotal !== null && reportedTotal > 0 ? reportedTotal : null;
-  const fresh = age !== null && age >= -policy.futureSkewSeconds && age <= policy.freshSeconds && available !== null;
+  const fresh =
+    age !== null && age >= -policy.futureSkewSeconds && age <= policy.freshSeconds && available !== null;
   const base: MemoryAssessment = {
-    tier: 'unknown', admissible: true, reason: null,
-    available_bytes: available, projected_available_bytes: null, total_bytes: total,
+    tier: 'unknown',
+    admissible: true,
+    reason: null,
+    available_bytes: available,
+    projected_available_bytes: null,
+    total_bytes: total,
     available_fraction: available !== null && total !== null ? available / total : null,
-    floor_bytes: null, need_bytes: need, agents_fit: null, memory_cap: null, held,
-    observed_at: sample?.observedAt ?? null, age_seconds: age === null ? null : Math.round(age), fresh,
+    floor_bytes: null,
+    need_bytes: need,
+    agents_fit: null,
+    memory_cap: null,
+    held,
+    observed_at: sample?.observedAt ?? null,
+    age_seconds: age === null ? null : Math.round(age),
+    fresh,
   };
   // Unknown or stale memory never refuses a launch (fail open).
   if (!fresh || available === null) return base;
@@ -108,14 +135,23 @@ export function assessMemory(candidate: PlacementCandidate, harness: string | nu
   const projected = available - pending * harnessNeed(policy, null);
   const headroom = projected - floor - need;
   const densityApplies = candidate.maxAgents === 0 || policy.densityCapsConfigured;
-  const cap = total !== null && densityApplies ? Math.max(0, Math.floor((total - floor) / policy.agentSteadyBytes)) : null;
+  const cap =
+    total !== null && densityApplies
+      ? Math.max(0, Math.floor((total - floor) / policy.agentSteadyBytes))
+      : null;
 
   const slots = availableSlots(candidate);
   let fit = Math.max(0, Math.floor((projected - floor) / need));
   if (cap !== null) fit = Math.min(fit, Math.max(0, cap - held));
   if (slots !== null) fit = Math.min(fit, slots);
 
-  const assessed = { ...base, floor_bytes: floor, projected_available_bytes: projected, agents_fit: fit, memory_cap: cap };
+  const assessed = {
+    ...base,
+    floor_bytes: floor,
+    projected_available_bytes: projected,
+    agents_fit: fit,
+    memory_cap: cap,
+  };
   if (cap !== null && held >= cap) return { ...assessed, tier: 'low', admissible: false, reason: 'density' };
   if (headroom < 0) return { ...assessed, tier: 'low', admissible: false, reason: 'available' };
   const ampleBytes = headroom >= policy.ampleHeadroomBytes;
@@ -133,24 +169,29 @@ export function formatGigabytes(value: number): string {
 /** The sentence for `spawn_memory_low`, the same on every control plane. */
 export function memoryLowMessage(node: string, harness: string, memory: MemoryAssessment): string {
   if (memory.reason === 'density') {
-    return `Node "${node}" already runs ${memory.held} agent${memory.held === 1 ? '' : 's'}, the most its ` +
-      `${memory.total_bytes === null ? '' : `${formatGigabytes(memory.total_bytes)} of `}memory supports.`;
+    return (
+      `Node "${node}" already runs ${memory.held} agent${memory.held === 1 ? '' : 's'}, the most its ` +
+      `${memory.total_bytes === null ? '' : `${formatGigabytes(memory.total_bytes)} of `}memory supports.`
+    );
   }
   const free = memory.projected_available_bytes ?? memory.available_bytes ?? 0;
-  return `Node "${node}" has ${formatGigabytes(Math.max(0, free))} free; launching ${harness} needs ` +
-    `${formatGigabytes(memory.need_bytes)} on top of the ${formatGigabytes(memory.floor_bytes ?? 0)} it keeps free.`;
+  return (
+    `Node "${node}" has ${formatGigabytes(Math.max(0, free))} free; launching ${harness} needs ` +
+    `${formatGigabytes(memory.need_bytes)} on top of the ${formatGigabytes(memory.floor_bytes ?? 0)} it keeps free.`
+  );
 }
 
 /** A short clause for a target's `why`, or null when there is nothing worth saying. */
 export function memoryClause(memory: MemoryAssessment, harness: string | null | undefined): string | null {
-  if (memory.tier === 'unknown') return memory.fresh || memory.observed_at === null ? null : 'Its memory reading is out of date.';
+  if (memory.tier === 'unknown')
+    return memory.fresh || memory.observed_at === null ? null : 'Its memory reading is out of date.';
   const free = formatGigabytes(Math.max(0, memory.projected_available_bytes ?? memory.available_bytes ?? 0));
   const of = memory.total_bytes === null ? '' : ` of ${formatGigabytes(memory.total_bytes)}`;
   if (memory.tier === 'low') {
     return memory.reason === 'density'
       ? `Not enough memory for another agent: it already runs ${memory.held}, the most its memory supports.`
       : `Not enough memory: ${free} free${of}; it keeps ${formatGigabytes(memory.floor_bytes ?? 0)} free and ` +
-        `${harness ?? 'an agent'} needs ${formatGigabytes(memory.need_bytes)}.`;
+          `${harness ?? 'an agent'} needs ${formatGigabytes(memory.need_bytes)}.`;
   }
   if (memory.tier === 'tight') return `Memory is tight: ${free} free${of}.`;
   return `${free} free${of}.`;

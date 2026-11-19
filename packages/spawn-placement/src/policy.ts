@@ -85,14 +85,23 @@ export interface MemoryPolicySettings {
 }
 
 export class MemoryPolicyError extends Error {
-  constructor(readonly setting: keyof MemoryPolicySettings, message: string) {
+  constructor(
+    readonly setting: keyof MemoryPolicySettings,
+    message: string
+  ) {
     super(message);
     this.name = 'MemoryPolicyError';
   }
 }
 
 const UNITS: Record<string, number> = {
-  b: 1, kib: KIB, mib: MIB, gib: GIB, kb: 1e3, mb: 1e6, gb: 1e9,
+  b: 1,
+  kib: KIB,
+  mib: MIB,
+  gib: GIB,
+  kb: 1e3,
+  mb: 1e6,
+  gb: 1e9,
 };
 const HARNESS = /^(?:\*|[a-z0-9][a-z0-9-]{0,31})$/;
 const KINDS: readonly NodeKind[] = ['desktop', 'broker', 'hosted'];
@@ -109,7 +118,10 @@ export function parseBytes(value: string): number | null {
 }
 
 function pairs(setting: keyof MemoryPolicySettings, value: string): Array<[string, string]> {
-  const entries = value.split(',').map((entry) => entry.trim()).filter(Boolean);
+  const entries = value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
   if (entries.length === 0) throw new MemoryPolicyError(setting, `${setting} is empty`);
   return entries.map((entry) => {
     const at = entry.indexOf('=');
@@ -122,7 +134,10 @@ function pairs(setting: keyof MemoryPolicySettings, value: string): Array<[strin
  * Settings to a frozen policy. Throws `MemoryPolicyError` naming the setting
  * on any invalid value, so a control plane fails at startup, not at launch.
  */
-export function parseMemoryPolicy(settings: MemoryPolicySettings = {}, base: MemoryPolicy = DEFAULT_MEMORY_POLICY): MemoryPolicy {
+export function parseMemoryPolicy(
+  settings: MemoryPolicySettings = {},
+  base: MemoryPolicy = DEFAULT_MEMORY_POLICY
+): MemoryPolicy {
   let mode = base.mode;
   if (settings.mode !== undefined && settings.mode.trim() !== '') {
     const value = settings.mode.trim().toLowerCase();
@@ -135,7 +150,8 @@ export function parseMemoryPolicy(settings: MemoryPolicySettings = {}, base: Mem
   const floor: Record<NodeKind, MemoryFloor> = { ...base.floor };
   if (settings.floor !== undefined && settings.floor.trim() !== '') {
     for (const [kind, value] of pairs('floor', settings.floor)) {
-      if (!(KINDS as readonly string[]).includes(kind)) throw new MemoryPolicyError('floor', `floor kind "${kind}" is not desktop, broker or hosted`);
+      if (!(KINDS as readonly string[]).includes(kind))
+        throw new MemoryPolicyError('floor', `floor kind "${kind}" is not desktop, broker or hosted`);
       const match = /^([^/]+)\/(\d+(?:\.\d+)?)%$/.exec(value);
       const bytes = match ? parseBytes(match[1]) : null;
       const percent = match ? Number(match[2]) : NaN;
@@ -150,8 +166,13 @@ export function parseMemoryPolicy(settings: MemoryPolicySettings = {}, base: Mem
   if (settings.harnessMemory !== undefined && settings.harnessMemory.trim() !== '') {
     for (const [harness, value] of pairs('harnessMemory', settings.harnessMemory)) {
       const bytes = parseBytes(value);
-      if (!HARNESS.test(harness)) throw new MemoryPolicyError('harnessMemory', `harness "${harness}" is not a harness id or *`);
-      if (bytes === null || bytes <= 0) throw new MemoryPolicyError('harnessMemory', `memory for ${harness} must be a positive size such as 1.5GiB`);
+      if (!HARNESS.test(harness))
+        throw new MemoryPolicyError('harnessMemory', `harness "${harness}" is not a harness id or *`);
+      if (bytes === null || bytes <= 0)
+        throw new MemoryPolicyError(
+          'harnessMemory',
+          `memory for ${harness} must be a positive size such as 1.5GiB`
+        );
       harnessNeedBytes[harness] = bytes;
     }
   }
@@ -159,14 +180,16 @@ export function parseMemoryPolicy(settings: MemoryPolicySettings = {}, base: Mem
   let agentSteadyBytes = base.agentSteadyBytes;
   if (settings.agentMemory !== undefined && settings.agentMemory.trim() !== '') {
     const bytes = parseBytes(settings.agentMemory);
-    if (bytes === null || bytes <= 0) throw new MemoryPolicyError('agentMemory', 'agentMemory must be a positive size such as 1GiB');
+    if (bytes === null || bytes <= 0)
+      throw new MemoryPolicyError('agentMemory', 'agentMemory must be a positive size such as 1GiB');
     agentSteadyBytes = bytes;
   }
 
   let densityCapsConfigured = base.densityCapsConfigured;
   if (settings.densityCapsConfigured !== undefined && settings.densityCapsConfigured.trim() !== '') {
     const value = settings.densityCapsConfigured.trim().toLowerCase();
-    if (value !== 'true' && value !== 'false') throw new MemoryPolicyError('densityCapsConfigured', 'densityCapsConfigured must be true or false');
+    if (value !== 'true' && value !== 'false')
+      throw new MemoryPolicyError('densityCapsConfigured', 'densityCapsConfigured must be true or false');
     densityCapsConfigured = value === 'true';
   }
 
@@ -174,7 +197,8 @@ export function parseMemoryPolicy(settings: MemoryPolicySettings = {}, base: Mem
   if (settings.freshSeconds !== undefined && settings.freshSeconds.trim() !== '') {
     const value = settings.freshSeconds.trim();
     const seconds = /^\d+$/.test(value) ? Number(value) : NaN;
-    if (!(seconds >= 1 && seconds <= 3600)) throw new MemoryPolicyError('freshSeconds', 'freshSeconds must be a whole number from 1 to 3600');
+    if (!(seconds >= 1 && seconds <= 3600))
+      throw new MemoryPolicyError('freshSeconds', 'freshSeconds must be a whole number from 1 to 3600');
     freshSeconds = seconds;
   }
 
@@ -191,5 +215,9 @@ export function parseMemoryPolicy(settings: MemoryPolicySettings = {}, base: Mem
 
 /** The launch budget for this harness, or the default (`*`) when it has none or none is named. */
 export function harnessNeed(policy: MemoryPolicy, harness: string | null | undefined): number {
-  return (harness ? policy.harnessNeedBytes[harness] : undefined) ?? policy.harnessNeedBytes['*'] ?? DEFAULT_MEMORY_POLICY.harnessNeedBytes['*'];
+  return (
+    (harness ? policy.harnessNeedBytes[harness] : undefined) ??
+    policy.harnessNeedBytes['*'] ??
+    DEFAULT_MEMORY_POLICY.harnessNeedBytes['*']
+  );
 }

@@ -62,8 +62,18 @@ function node(spec: NodeSpec): Record<string, unknown> {
   const resources = {
     cpus: spec.cpus ?? 10,
     load_1m: spec.load1m === undefined ? 2 : spec.load1m,
-    memory_total_bytes: spec.totalGiB === undefined ? 16 * GiB : spec.totalGiB === null ? null : Math.round(spec.totalGiB * GiB),
-    memory_available_bytes: spec.availableGiB === undefined ? 8 * GiB : spec.availableGiB === null ? null : Math.round(spec.availableGiB * GiB),
+    memory_total_bytes:
+      spec.totalGiB === undefined
+        ? 16 * GiB
+        : spec.totalGiB === null
+          ? null
+          : Math.round(spec.totalGiB * GiB),
+    memory_available_bytes:
+      spec.availableGiB === undefined
+        ? 8 * GiB
+        : spec.availableGiB === null
+          ? null
+          : Math.round(spec.availableGiB * GiB),
   };
   const configured: Record<string, unknown> = {
     node_kind: spec.kind,
@@ -96,14 +106,25 @@ function node(spec: NodeSpec): Record<string, unknown> {
 const mine = (...ids: string[]) => Object.fromEntries(ids.map((id) => [id, { userId: ME, name: 'Me' }]));
 
 /** A 16 GiB desktop with 2.5 GiB available, and a 64 GiB desktop with 30 GiB available, same load. */
-const SMALL = node({ id: 'small-desktop', kind: 'desktop', totalGiB: 16, availableGiB: 2.5, repositories: ['acme/app'] });
+const SMALL = node({
+  id: 'small-desktop',
+  kind: 'desktop',
+  totalGiB: 16,
+  availableGiB: 2.5,
+  repositories: ['acme/app'],
+});
 const LARGE = node({ id: 'large-desktop', kind: 'desktop', totalGiB: 64, availableGiB: 30 });
 
 const FIXTURES: GoldenFixture[] = [
   {
-    name: 'observe keeps today\'s order: a low-memory desktop still ties a healthy one',
-    tags: [], now: NOW, settings: { mode: 'observe' }, harness: 'claude', userId: ME,
-    owners: mine('small-desktop', 'large-desktop'), nodes: [SMALL, LARGE],
+    name: "observe keeps today's order: a low-memory desktop still ties a healthy one",
+    tags: [],
+    now: NOW,
+    settings: { mode: 'observe' },
+    harness: 'claude',
+    userId: ME,
+    owners: mine('small-desktop', 'large-desktop'),
+    nodes: [SMALL, LARGE],
     expected: {
       order: ['small-desktop', 'large-desktop'],
       memory: {
@@ -115,8 +136,13 @@ const FIXTURES: GoldenFixture[] = [
   },
   {
     name: 'rank puts the healthy desktop first and does not refuse',
-    tags: [], now: NOW, settings: { mode: 'rank' }, harness: 'claude', userId: ME,
-    owners: mine('small-desktop', 'large-desktop'), nodes: [SMALL, LARGE],
+    tags: [],
+    now: NOW,
+    settings: { mode: 'rank' },
+    harness: 'claude',
+    userId: ME,
+    owners: mine('small-desktop', 'large-desktop'),
+    nodes: [SMALL, LARGE],
     expected: {
       order: ['large-desktop', 'small-desktop'],
       memory: {
@@ -128,8 +154,13 @@ const FIXTURES: GoldenFixture[] = [
   },
   {
     name: 'enforce refuses the low-memory desktop with the healthy one as the alternative',
-    tags: [], now: NOW, settings: { mode: 'enforce' }, harness: 'claude', userId: ME,
-    owners: mine('small-desktop', 'large-desktop'), nodes: [SMALL, LARGE],
+    tags: [],
+    now: NOW,
+    settings: { mode: 'enforce' },
+    harness: 'claude',
+    userId: ME,
+    owners: mine('small-desktop', 'large-desktop'),
+    nodes: [SMALL, LARGE],
     expected: {
       order: ['large-desktop', 'small-desktop'],
       memory: {
@@ -141,7 +172,11 @@ const FIXTURES: GoldenFixture[] = [
   },
   {
     name: 'codex needs less than claude, so the same desktop fits codex',
-    tags: [], now: NOW, settings: { mode: 'enforce' }, harness: 'codex', userId: ME,
+    tags: [],
+    now: NOW,
+    settings: { mode: 'enforce' },
+    harness: 'codex',
+    userId: ME,
     owners: mine('codex-desktop'),
     // floor max(2 GiB, 1.6 GiB) = 2 GiB; 3.2 − 2 − 1 = 0.2 GiB headroom.
     nodes: [node({ id: 'codex-desktop', kind: 'desktop', totalGiB: 16, availableGiB: 3.2 })],
@@ -153,7 +188,11 @@ const FIXTURES: GoldenFixture[] = [
   },
   {
     name: 'freshness: 45 s old and 30 s ahead are fresh; 46 s old, 31 s ahead and missing are unknown',
-    tags: [], now: NOW, settings: { mode: 'enforce' }, harness: 'claude', userId: ME,
+    tags: [],
+    now: NOW,
+    settings: { mode: 'enforce' },
+    harness: 'claude',
+    userId: ME,
     owners: mine('fresh-45', 'ahead-30', 'stale-46', 'ahead-31', 'no-stamp'),
     nodes: [
       node({ id: 'fresh-45', kind: 'desktop', totalGiB: 16, availableGiB: 2.5, observedAt: ago(45) }),
@@ -176,7 +215,11 @@ const FIXTURES: GoldenFixture[] = [
   },
   {
     name: 'unknown memory ranks between ok and tight',
-    tags: [], now: NOW, settings: { mode: 'rank' }, harness: 'claude', userId: ME,
+    tags: [],
+    now: NOW,
+    settings: { mode: 'rank' },
+    harness: 'claude',
+    userId: ME,
     owners: mine('tight', 'unknown', 'ok'),
     nodes: [
       // floor 2 GiB; 4.5 − 2 − 1.5 = 1 GiB headroom: tight.
@@ -196,7 +239,11 @@ const FIXTURES: GoldenFixture[] = [
   },
   {
     name: 'an unlimited node is full at its density cap',
-    tags: [], now: NOW, settings: { mode: 'enforce' }, harness: 'codex', userId: ME,
+    tags: [],
+    now: NOW,
+    settings: { mode: 'enforce' },
+    harness: 'codex',
+    userId: ME,
     owners: mine('dense'),
     // (16 − 2) / 1 = 14 agents; 14 held.
     nodes: [node({ id: 'dense', kind: 'desktop', maxAgents: 0, active: 14, totalGiB: 16, availableGiB: 12 })],
@@ -208,9 +255,15 @@ const FIXTURES: GoldenFixture[] = [
   },
   {
     name: 'a finite maxAgents ignores the density cap unless configured',
-    tags: [], now: NOW, settings: { mode: 'enforce' }, harness: 'codex', userId: ME,
+    tags: [],
+    now: NOW,
+    settings: { mode: 'enforce' },
+    harness: 'codex',
+    userId: ME,
     owners: mine('finite'),
-    nodes: [node({ id: 'finite', kind: 'desktop', maxAgents: 20, active: 14, totalGiB: 16, availableGiB: 12 })],
+    nodes: [
+      node({ id: 'finite', kind: 'desktop', maxAgents: 20, active: 14, totalGiB: 16, availableGiB: 12 }),
+    ],
     expected: {
       order: ['finite'],
       // 12 − 2 − 1 = 9 GiB headroom, (12 − 1) / 16 = 69%: ample.
@@ -220,9 +273,15 @@ const FIXTURES: GoldenFixture[] = [
   },
   {
     name: 'with density caps configured, a finite maxAgents is capped by memory too',
-    tags: [], now: NOW, settings: { mode: 'enforce', densityCapsConfigured: 'true' }, harness: 'codex', userId: ME,
+    tags: [],
+    now: NOW,
+    settings: { mode: 'enforce', densityCapsConfigured: 'true' },
+    harness: 'codex',
+    userId: ME,
     owners: mine('finite'),
-    nodes: [node({ id: 'finite', kind: 'desktop', maxAgents: 20, active: 14, totalGiB: 16, availableGiB: 12 })],
+    nodes: [
+      node({ id: 'finite', kind: 'desktop', maxAgents: 20, active: 14, totalGiB: 16, availableGiB: 12 }),
+    ],
     expected: {
       order: ['finite'],
       memory: { finite: { tier: 'low', admissible: false, reason: 'density' } },
@@ -231,7 +290,11 @@ const FIXTURES: GoldenFixture[] = [
   },
   {
     name: 'reserved places and in-flight launches are subtracted from the sample',
-    tags: [], now: NOW, settings: { mode: 'enforce' }, harness: 'claude', userId: ME,
+    tags: [],
+    now: NOW,
+    settings: { mode: 'enforce' },
+    harness: 'claude',
+    userId: ME,
     owners: mine('reserved', 'inflight', 'clear'),
     nodes: [
       // 5 − 2 × 1.5 = 2 GiB projected; 2 − 2 − 1.5 < 0.
@@ -254,7 +317,11 @@ const FIXTURES: GoldenFixture[] = [
   },
   {
     name: 'a node floor raises the policy floor and cannot lower it',
-    tags: [], now: NOW, settings: { mode: 'enforce' }, harness: 'codex', userId: ME,
+    tags: [],
+    now: NOW,
+    settings: { mode: 'enforce' },
+    harness: 'codex',
+    userId: ME,
     owners: mine('raised', 'lowered'),
     nodes: [
       // floor raised to 4 GiB; 4.5 − 4 − 1 < 0.
@@ -273,7 +340,11 @@ const FIXTURES: GoldenFixture[] = [
   },
   {
     name: 'admissible ranks above yours: a shared broker with memory beats your low desktop',
-    tags: [], now: NOW, settings: { mode: 'rank' }, harness: 'claude', userId: ME,
+    tags: [],
+    now: NOW,
+    settings: { mode: 'rank' },
+    harness: 'claude',
+    userId: ME,
     owners: mine('my-desktop'),
     nodes: [
       node({ id: 'my-desktop', kind: 'desktop', totalGiB: 16, availableGiB: 2.5 }),
@@ -290,7 +361,11 @@ const FIXTURES: GoldenFixture[] = [
   },
   {
     name: 'without memory ranking, your low desktop stays above the shared broker',
-    tags: [], now: NOW, settings: { mode: 'observe' }, harness: 'claude', userId: ME,
+    tags: [],
+    now: NOW,
+    settings: { mode: 'observe' },
+    harness: 'claude',
+    userId: ME,
     owners: mine('my-desktop'),
     nodes: [
       node({ id: 'my-desktop', kind: 'desktop', totalGiB: 16, availableGiB: 2.5 }),
@@ -306,7 +381,11 @@ const FIXTURES: GoldenFixture[] = [
   },
   {
     name: 'within a tier, load still decides',
-    tags: [], now: NOW, settings: { mode: 'rank' }, harness: 'claude', userId: ME,
+    tags: [],
+    now: NOW,
+    settings: { mode: 'rank' },
+    harness: 'claude',
+    userId: ME,
     owners: mine('busy', 'quiet'),
     nodes: [
       node({ id: 'busy', kind: 'desktop', totalGiB: 64, availableGiB: 40, load1m: 8, cpus: 10 }),
@@ -322,7 +401,11 @@ const FIXTURES: GoldenFixture[] = [
   },
   {
     name: 'with no harness named, the default budget applies',
-    tags: [], now: NOW, settings: { mode: 'rank' }, harness: null, userId: ME,
+    tags: [],
+    now: NOW,
+    settings: { mode: 'rank' },
+    harness: null,
+    userId: ME,
     owners: mine('codex-fit'),
     // codex would fit (0.2 GiB headroom) but the 1.5 GiB default does not.
     nodes: [node({ id: 'codex-fit', kind: 'desktop', totalGiB: 16, availableGiB: 3.2 })],
