@@ -91,6 +91,29 @@ function claudeHook(session: string, extra: Record<string, unknown> = {}, optedI
   return JSON.stringify({ session_id: session, transcript_path: transcript, ...extra });
 }
 
+/** Records \`session\` (its \`claude\` process \`pid\`) as the Claude Code session that owns the inbox's posts. */
+function claudeOwnedBy(home: string, mcpUrl: string, session: string, pid: number): void {
+  const dir = join(home, '.config', 'agent-relay');
+  mkdirSync(dir, { recursive: true });
+  const digest = createHash('sha256').update(mcpUrl).digest('hex').slice(0, 16);
+  writeFileSync(join(dir, `claude-owner-${digest}.json`), JSON.stringify({ session, pid }));
+}
+
+function claudeOwnerOf(home: string, mcpUrl: string): string | null {
+  const digest = createHash('sha256').update(mcpUrl).digest('hex').slice(0, 16);
+  try {
+    return (
+      JSON.parse(
+        readFileSync(join(home, '.config', 'agent-relay', `claude-owner-${digest}.json`), 'utf8')
+      ) as {
+        session: string;
+      }
+    ).session;
+  } catch {
+    return null;
+  }
+}
+
 /** A real inbox served in-process, and a CLI environment pointed at a temp HOME. */
 async function setupWorld(
   options: {
@@ -378,7 +401,14 @@ describe('events-shim CLI', () => {
       'webhooks',
       w.created.mcp_url,
     ]);
-    expect(w.out.join('\n')).toContain('Each post wakes it by itself; there is nothing to tell it.');
+    expect(w.out.join('\n')).toContain(
+      'each post wakes the most recently started Claude Code session by itself, with nothing to tell it'
+    );
+    expect(w.out.join('\n')).toContain(
+      'Claude Code: MCP server "webhooks" added, skill installed; its most recently started session is woken by every post'
+    );
+    // One CLI on the inbox: nothing about sharing it.
+    expect(w.out.join('\n')).not.toContain('One inbox wakes one session');
   });
 
   it('setup says when Agent Relay is running, and when no agent CLI is installed', async () => {
@@ -609,7 +639,7 @@ describe('events-shim CLI', () => {
     expect(await runCli(['setup', w.created.mcp_url, '--cursor'], w.io)).toBe(0);
     expect(modeOf(cursor)).toBe(0o600);
     const fresh = join(w.home, '.config', 'opencode', 'opencode.json');
-    expect(await runCli(['setup', w.created.mcp_url, '--opencode'], w.io)).toBe(0);
+    expect(await runCli(['setup', w.created.mcp_url, '--opencode', '--share-inbox'], w.io)).toBe(0);
     expect(modeOf(fresh)).toBe(0o600);
 
     // Exists but unreadable: left alone, with the manual step.
@@ -794,7 +824,7 @@ describe('events-shim CLI', () => {
     expect(w.mints).toHaveLength(1);
     expect(w.downloads).toHaveLength(1);
     // Setting up another CLI on the same inbox keeps the Codex workspace.
-    expect(await runCli(['setup', w.created.mcp_url, '--claude'], w.io)).toBe(0);
+    expect(await runCli(['setup', w.created.mcp_url, '--claude', '--share-inbox'], w.io)).toBe(0);
     expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).workspaceKey).toBe('rk_live_temp1');
 
     // The core adds its own Codex hooks; uninstall removes them and stops the core it started.
@@ -864,8 +894,8 @@ describe('events-shim CLI', () => {
       'Devin: MCP server "webhooks" added; its newest open session is woken by every post'
     );
 
-    // Adding Muse later keeps the others.
-    expect(await runCli(['setup', w.created.mcp_url, '--muse'], w.io)).toBe(0);
+    // Adding Muse later (to the same inbox, so asked for) keeps the others.
+    expect(await runCli(['setup', w.created.mcp_url, '--muse', '--share-inbox'], w.io)).toBe(0);
     expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).wakeKinds).toEqual([
       'codex',
       'devin',
@@ -1014,10 +1044,14 @@ describe('events-shim CLI', () => {
       () => {
         byId('dv_d').live = false;
       },
-      // The inbox changes: the same open session is linked again for it.
+      // The inbox changes (setup again with another one): the same open session is linked again for it.
       () => {
         const saved = JSON.parse(readFileSync(configPath(w.io), 'utf8'));
-        writeFileSync(configPath(w.io), JSON.stringify({ ...saved, mcpUrl: `${saved.mcpUrl}/` }));
+        const next = saved.mcpUrl.replace(/esm_[A-Za-z0-9_-]{43}/, `esm_${'n'.repeat(43)}`);
+        writeFileSync(
+          configPath(w.io),
+          JSON.stringify({ ...saved, mcpUrl: next, inboxes: { opencode: next, devin: next } })
+        );
       },
     ];
     w.io.sleep = vi.fn(async () => {
@@ -1156,10 +1190,13 @@ describe('events-shim CLI', () => {
       ['agents.webhook.create', { name: 'codex-01a1' }],
       ['agents.webhook.create', { name: 'codex-01a1' }],
     ]);
+    // The link names the session's agent, so the inbox can tell every session which one it wakes.
     expect(linked).toEqual({
       url: 'https://cast.agentrelay.com/v1/hooks/wh2',
       secret: 'wh_live_0123456789abcdef',
+      agent: 'codex-01a1',
     });
+    expect((await inboxTool(w, 'watch_webhooks')).linked_agent).toBe('codex-01a1');
     expect(w.logs.at(-1)).toContain('linked codex-01a1');
     // The inbox call fails after the webhook was made: it is still recorded as ours, so a retry replaces it.
     const fetchOk = w.io.fetchImpl;
@@ -1228,24 +1265,76 @@ describe('events-shim CLI', () => {
     expect(woke).toContain('untrusted data');
   });
 
-  it('listen --hook listens only in a session that opted in to the inbox, and remembers it', async () => {
-    const w = await fileWorld({ stdin: claudeHook('other-1', {}, false) });
-    await runCli(['setup', w.created.mcp_url], w.io);
-    await w.post({ for: 'the session that asked' });
-    // Every Claude Code session runs the hook, but this one never used the webhooks MCP: it takes nothing.
+  it('listen --hook: a fresh session wakes with nothing said to it; a session that does not own the inbox takes nothing', async () => {
+    const w = await fileWorld({ stdin: claudeHook('other-1', { hook_event_name: 'Stop' }, false) });
+    await runCli(['setup', w.created.mcp_url, '--claude'], w.io);
+    // A newer session (its Claude Code still open) owns the inbox: every other session's hook runs too, but takes nothing.
+    claudeOwnedBy(w.home, w.created.mcp_url, 'newer-1', 777);
+    await w.post({ for: 'the newest session' });
     expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
     expect(w.err).toEqual([]);
-    expect((await inboxTool(w, 'watch_webhooks')).waiting).toBe(1); // still there for the session that asked
-    const optedIn = await fileWorld({ stdin: claudeHook('mine-1') });
-    await runCli(['setup', optedIn.created.mcp_url], optedIn.io);
-    await optedIn.post({ for: 'me' });
-    expect(await runCli(['listen', '--hook'], optedIn.io)).toBe(2);
-    expect(optedIn.err.join('\n')).toContain('{"for":"me"}');
-    const dir = join(optedIn.home, '.config', 'agent-relay');
-    expect(readdirSync(dir).some((file) => file.startsWith('optin-'))).toBe(true);
+    expect((await inboxTool(w, 'watch_webhooks')).waiting).toBe(1); // still there for the owner
+
+    // A brand-new session that never used the webhooks MCP takes the inbox over by starting, and is woken.
+    w.io.readStdin = async () =>
+      claudeHook('fresh-1', { hook_event_name: 'SessionStart', source: 'startup' }, false);
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(2);
+    expect(w.err.join('\n')).toContain('{"for":"the newest session"}');
+    expect(claudeOwnerOf(w.home, w.created.mcp_url)).toBe('fresh-1');
   });
 
-  it('listen --hook finds an opt-in past the first chunk of a long transcript, reading each part once', async () => {
+  it('listen --hook: a newer session takes the inbox over and the older listener stops before taking a post', async () => {
+    const w = await fileWorld();
+    await runCli(['setup', w.created.mcp_url, '--claude'], w.io);
+    // Two Claude Code sessions, each with its own hook process (pids 4242 and 5002) and output.
+    for (const pid of [4242, 5002]) w.listeners.add(pid);
+    const errs: Record<string, string[]> = { first: [], second: [] };
+    const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 10));
+    const session = (name: 'first' | 'second', pid: number): CliIo => ({
+      ...w.io,
+      pid,
+      stderr: (line) => errs[name]!.push(line),
+      readStdin: async () =>
+        claudeHook(`${name}-1`, { hook_event_name: 'SessionStart', source: 'startup' }, false),
+      sleep: tick,
+    });
+    const first = runCli(['listen', '--hook'], session('first', 4242));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(claudeOwnerOf(w.home, w.created.mcp_url)).toBe('first-1');
+    const second = runCli(['listen', '--hook'], session('second', 5002));
+    // The older listener notices the takeover and leaves without a post.
+    expect(await first).toBe(0);
+    expect(claudeOwnerOf(w.home, w.created.mcp_url)).toBe('second-1');
+    await w.post({ for: 'the newer session' });
+    expect(await second).toBe(2);
+    expect(errs.second!.join('\n')).toContain('{"for":"the newer session"}');
+    expect(errs.first).toEqual([]);
+  }, 15_000);
+
+  it("listen --hook: a closed owner's inbox goes to the next session's hook; claude -p and compaction take nothing over", async () => {
+    const w = await fileWorld({ stdin: claudeHook('next-1', { hook_event_name: 'Stop' }, false) });
+    await runCli(['setup', w.created.mcp_url, '--claude'], w.io);
+    claudeOwnedBy(w.home, w.created.mcp_url, 'gone-1', 999); // its Claude Code has exited
+    await w.post({ for: 'whoever is left' });
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(2);
+    expect(claudeOwnerOf(w.home, w.created.mcp_url)).toBe('next-1');
+
+    // A non-interactive \`claude -p\` run starting, or a session compacting, does not take it from next-1.
+    await w.post({ for: 'next-1 still' });
+    const processArgs = w.io.processArgs;
+    w.io.processArgs = (pid) => (pid === 777 ? 'claude -p summarize this' : processArgs(pid));
+    w.io.readStdin = async () =>
+      claudeHook('print-1', { hook_event_name: 'SessionStart', source: 'startup' }, false);
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
+    w.io.processArgs = processArgs;
+    w.io.readStdin = async () =>
+      claudeHook('compact-1', { hook_event_name: 'SessionStart', source: 'compact' }, false);
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
+    expect(claudeOwnerOf(w.home, w.created.mcp_url)).toBe('next-1');
+    expect((await inboxTool(w, 'watch_webhooks')).waiting).toBe(1);
+  });
+
+  it('listen --hook: a webhooks tool call takes the inbox over, found past the first chunk of a long transcript, reading each part once', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'events-shim-transcript-'));
     const transcript = join(dir, 'long-1.jsonl');
     const turn = (n: number) =>
@@ -1261,6 +1350,7 @@ describe('events-shim CLI', () => {
       return readTextChunk(path, offset, 100);
     };
     await runCli(['setup', w.created.mcp_url], w.io);
+    claudeOwnedBy(w.home, w.created.mcp_url, 'newer-1', 777); // another session owns the inbox
     await w.post({ for: 'the long session' });
     expect(await runCli(['listen', '--hook'], w.io)).toBe(0); // no webhooks call yet
     const scanned = Math.max(...reads);
@@ -1276,8 +1366,10 @@ describe('events-shim CLI', () => {
       })}\n`
     );
     reads.length = 0;
+    // The call takes the inbox over for this session.
     expect(await runCli(['listen', '--hook'], w.io)).toBe(2);
     expect(w.err.join('\n')).toContain('{"for":"the long session"}');
+    expect(claudeOwnerOf(w.home, w.created.mcp_url)).toBe('long-1');
     expect(Math.min(...reads)).toBeGreaterThanOrEqual(scanned - 100);
   });
 
@@ -1303,7 +1395,7 @@ describe('events-shim CLI', () => {
     expect(readTextChunk(file, 1, 4)).toEqual({ text: '😀', end: 5 });
   });
 
-  it('listen --hook finds an opt-in right after a chunk boundary inside a character', async () => {
+  it('listen --hook finds a webhooks tool call right after a chunk boundary inside a character', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'events-shim-transcript-'));
     const transcript = join(dir, 'split-1.jsonl');
     const call = JSON.stringify({
@@ -1326,7 +1418,7 @@ describe('events-shim CLI', () => {
     expect(w.err.join('\n')).toContain('{"for":"split"}');
   });
 
-  it('listen --hook: a webhooks tool name inside another call is not an opt-in', async () => {
+  it('listen --hook: a webhooks tool name inside another call does not take the inbox over', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'events-shim-transcript-'));
     const transcript = join(dir, 'other-2.jsonl');
     writeFileSync(
@@ -1348,6 +1440,7 @@ describe('events-shim CLI', () => {
       stdin: JSON.stringify({ session_id: 'other-2', transcript_path: transcript }),
     });
     await runCli(['setup', w.created.mcp_url], w.io);
+    claudeOwnedBy(w.home, w.created.mcp_url, 'newer-1', 777);
     await w.post({ for: 'someone else' });
     expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
     expect((await inboxTool(w, 'watch_webhooks')).waiting).toBe(1);
@@ -1361,6 +1454,24 @@ describe('events-shim CLI', () => {
     w.io.fetchImpl = async (input, init) => {
       const response = await fetchImpl(input, init);
       if (typeof init?.body === 'string' && init.body.includes('"watch_webhooks"')) {
+        w.io.pidAlive = (pid) => pid === 4242; // Claude (777) exits meanwhile
+      }
+      return response;
+    };
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
+    expect(w.err).toEqual([]);
+    w.io.fetchImpl = fetchImpl;
+    expect((await inboxTool(w, 'watch_webhooks')).waiting).toBe(1);
+  });
+
+  it('listen --hook takes nothing when its session closes while it asks whether the inbox leases', async () => {
+    const w = await fileWorld({ stdin: claudeHook('closing-2') });
+    await runCli(['setup', w.created.mcp_url], w.io);
+    await w.post({ for: 'a live session' });
+    const fetchImpl = w.io.fetchImpl;
+    w.io.fetchImpl = async (input, init) => {
+      const response = await fetchImpl(input, init);
+      if (typeof init?.body === 'string' && init.body.includes('"tools/list"')) {
         w.io.pidAlive = (pid) => pid === 4242; // Claude (777) exits meanwhile
       }
       return response;
@@ -1423,6 +1534,176 @@ describe('events-shim CLI', () => {
     expect(await runCli(['listen', '--hook'], w.io)).toBe(2);
     expect(w.err.join('\n')).toContain('{"waiting":true}');
     expect(() => readFileSync(lockFile, 'utf8')).toThrow(); // released on exit
+  });
+
+  for (const leases of [true, false]) {
+    it(`listen --hook hands a post claimed just as another session took over to the new owner (${leases ? 'inbox with leases' : 'inbox without leases'})`, async () => {
+      const w = await fileWorld({
+        noLeases: !leases,
+        stdin: claudeHook('old-1', { hook_event_name: 'SessionStart', source: 'startup' }, false),
+      });
+      await runCli(['setup', w.created.mcp_url, '--claude'], w.io);
+      await w.post({ for: 'the new owner' });
+      const fetchImpl = w.io.fetchImpl;
+      w.io.fetchImpl = async (input, init) => {
+        const response = await fetchImpl(input, init);
+        // A newer session starts while the wait is returning the post.
+        if (typeof init?.body === 'string' && init.body.includes('"wait_for_webhook"'))
+          claudeOwnedBy(w.home, w.created.mcp_url, 'new-1', 777);
+        return response;
+      };
+      expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
+      expect(w.err).toEqual([]); // the old session is not woken with it
+      w.io.fetchImpl = fetchImpl;
+      w.io.readStdin = async () => claudeHook('new-1', { hook_event_name: 'Stop' }, false);
+      expect(await runCli(['listen', '--hook'], w.io)).toBe(2);
+      expect(w.err.join('\n')).toContain('{"for":"the new owner"}');
+    });
+  }
+
+  it('listen --hook takes a post a release before canonical inbox URLs kept under the trailing-slash name', async () => {
+    const w = await fileWorld({
+      stdin: claudeHook('up-1', { hook_event_name: 'SessionStart', source: 'startup' }, false),
+    });
+    await runCli(['setup', w.created.mcp_url, '--claude'], w.io);
+    const digest = createHash('sha256').update(`${w.created.mcp_url}/`).digest('hex').slice(0, 16);
+    writeFileSync(join(w.home, '.config', 'agent-relay', `held-${digest}.txt`), 'kept by an older release');
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(2);
+    expect(w.err.join('\n')).toContain('kept by an older release');
+  });
+
+  it('listen --hook: a claude -p run never takes a vacant inbox by itself', async () => {
+    const w = await fileWorld({ stdin: claudeHook('print-2', { hook_event_name: 'Stop' }, false) });
+    await runCli(['setup', w.created.mcp_url, '--claude'], w.io);
+    await w.post({ for: 'an interactive session' });
+    const processArgs = w.io.processArgs;
+    w.io.processArgs = (pid) => (pid === 777 ? 'claude --print run the report' : processArgs(pid));
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(0); // no owner yet, still not taken
+    expect(claudeOwnerOf(w.home, w.created.mcp_url)).toBeNull();
+    expect((await inboxTool(w, 'watch_webhooks')).waiting).toBe(1);
+  });
+
+  it("a config saved before per-CLI inboxes keeps a turn-end CLI's hook on its inbox too", async () => {
+    const w = await fileWorld();
+    const old = 'https://shim.test/api/v1/events-shim/t/esm_' + 'b'.repeat(43) + '/mcp';
+    mkdirSync(dirname(configPath(w.io)), { recursive: true });
+    writeFileSync(configPath(w.io), JSON.stringify({ mcpUrl: old }));
+    mkdirSync(join(w.home, '.copilot', 'hooks'), { recursive: true });
+    writeFileSync(
+      join(w.home, '.copilot', 'hooks', 'agent-relay-webhooks.json'),
+      JSON.stringify({ hooks: { agentStop: [{ type: 'command', bash: stopHookCommand('copilot') }] } })
+    );
+    expect(await runCli(['setup', w.created.mcp_url, '--claude'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).inboxes).toEqual({
+      copilot: old,
+      claude: w.created.mcp_url,
+    });
+  });
+
+  it('setup refuses to add a second waking CLI to an inbox another one uses, unless asked, and then says which session wins', async () => {
+    const w = await fileWorld({ core: true });
+    expect(await runCli(['setup', w.created.mcp_url, '--claude'], w.io)).toBe(0);
+    const saved = readFileSync(configPath(w.io), 'utf8');
+    expect(await runCli(['setup', w.created.mcp_url, '--codex'], w.io)).toBe(2);
+    const refused = w.err.join('\n');
+    expect(refused).toContain(
+      'This inbox already wakes Claude Code. One inbox wakes one session, not one per agent'
+    );
+    expect(refused).toContain(
+      'make another at https://agentrelay.com/mcp-events-shim and run setup with its MCP URL --codex'
+    );
+    expect(refused).toContain('--share-inbox');
+    expect(readFileSync(configPath(w.io), 'utf8')).toBe(saved); // nothing changed
+    expect(w.runs.some((run) => run[0] === 'codex')).toBe(false);
+
+    // Asked for: set up, and setup says plainly which session gets the posts.
+    w.out.length = 0;
+    expect(await runCli(['setup', w.created.mcp_url, '--codex', '--share-inbox'], w.io)).toBe(0);
+    const said = w.out.join('\n');
+    expect(said).toContain(
+      'One inbox wakes one session, not one per agent. Claude Code, Codex share this inbox, so:'
+    );
+    expect(said).toContain('Once a Codex session is open, the inbox is linked to the newest one');
+    expect(said).toContain('While that link works, Claude Code sessions get none.');
+    expect(said).toContain('give each its own inbox');
+    // Re-running the same setup is not adding anything: no refusal.
+    expect(await runCli(['setup', w.created.mcp_url, '--claude', '--codex'], w.io)).toBe(0);
+  });
+
+  it('setup of several CLIs on one inbox says one session wins; an inbox linked to another agent is refused by name', async () => {
+    const w = await fileWorld({ core: true });
+    expect(await runCli(['setup', w.created.mcp_url, '--claude', '--codex'], w.io)).toBe(0);
+    expect(w.out.join('\n')).toContain('One inbox wakes one session, not one per agent');
+
+    const other = await fileWorld();
+    await inboxTool(other, 'link_relay_wake', {
+      url: 'https://cast.agentrelay.com/v1/hooks/h1',
+      secret: 'wh_live_0123456789abcdef',
+      agent: 'codex-elsewhere',
+    });
+    expect(await runCli(['setup', other.created.mcp_url, '--claude'], other.io)).toBe(2);
+    expect(other.err.join('\n')).toContain(
+      'This inbox already wakes the Agent Relay agent "codex-elsewhere"'
+    );
+    expect(await runCli(['setup', other.created.mcp_url, '--claude', '--share-inbox'], other.io)).toBe(0);
+    expect(other.out.join('\n')).toContain(
+      'The inbox is linked to the Agent Relay agent "codex-elsewhere" now: it gets every post, and Claude Code sessions get none'
+    );
+  });
+
+  it('each agent CLI keeps its own inbox: Claude Code wakes on one, Codex is linked to the other', async () => {
+    const w = await fileWorld({
+      core: true,
+      stdin: claudeHook('claude-1', { hook_event_name: 'SessionStart', source: 'startup' }, false),
+    });
+    // A second inbox on the same host, for Codex.
+    const second = (await (await w.shimFetch(`${BASE}/shims`, { method: 'POST' })).json()) as {
+      mcp_url: string;
+      webhook_url: string;
+    };
+    expect(await runCli(['setup', w.created.mcp_url, '--claude'], w.io)).toBe(0);
+    expect(await runCli(['setup', second.mcp_url, '--codex'], w.io)).toBe(0); // its own inbox: no refusal
+    const config = JSON.parse(readFileSync(configPath(w.io), 'utf8'));
+    expect(config.inboxes).toEqual({ claude: w.created.mcp_url, codex: second.mcp_url });
+    expect(w.out.join('\n')).not.toContain('One inbox wakes one session');
+
+    // Codex's session is linked to its own inbox, by name.
+    w.core.hooks = 1;
+    w.core.agents.push({ name: 'codex-abc', target: { kind: 'codex', id: 'thread-abc' } });
+    expect(await runCli(['link', '--kind', 'codex', '--session', 'thread-abc'], w.io)).toBe(0);
+    expect(await inboxTool({ ...w, created: second as typeof w.created }, 'watch_webhooks')).toMatchObject({
+      wake: 'linked',
+      linked_agent: 'codex-abc',
+    });
+    // Claude Code's inbox is not linked, so a fresh Claude Code session is woken by its posts.
+    expect((await inboxTool(w, 'watch_webhooks')).wake).toBe('none');
+    await w.post({ for: 'claude' });
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(2);
+    expect(w.err.join('\n')).toContain('{"for":"claude"}');
+  });
+
+  it('the same inbox written with or without a trailing slash is one inbox to setup', async () => {
+    const w = await fileWorld({ core: true });
+    expect(await runCli(['setup', w.created.mcp_url, '--claude'], w.io)).toBe(0);
+    // The slash form reaches the same inbox: adding Codex there is still refused without --share-inbox.
+    expect(await runCli(['setup', `${w.created.mcp_url}/`, '--codex'], w.io)).toBe(2);
+    expect(w.err.join('\n')).toContain('This inbox already wakes Claude Code');
+    expect(await runCli(['setup', `${w.created.mcp_url}/`, '--claude'], w.io)).toBe(0);
+    expect(JSON.parse(readFileSync(configPath(w.io), 'utf8')).inboxes).toEqual({ claude: w.created.mcp_url });
+  });
+
+  it('a config saved before per-CLI inboxes keeps the CLIs it set up on their inbox when another inbox is set up', async () => {
+    const w = await fileWorld({ core: true });
+    const old = 'https://shim.test/api/v1/events-shim/t/esm_' + 'a'.repeat(43) + '/mcp';
+    mkdirSync(dirname(configPath(w.io)), { recursive: true });
+    writeFileSync(configPath(w.io), JSON.stringify({ mcpUrl: old, wakeKinds: ['codex'] }));
+    expect(await runCli(['setup', w.created.mcp_url, '--claude'], w.io)).toBe(0);
+    const config = JSON.parse(readFileSync(configPath(w.io), 'utf8'));
+    expect(config).toMatchObject({
+      mcpUrl: w.created.mcp_url,
+      wakeKinds: ['codex'],
+      inboxes: { codex: old, claude: w.created.mcp_url },
+    });
   });
 
   it('a duplicate post says it was not delivered again', async () => {
