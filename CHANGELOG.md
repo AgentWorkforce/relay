@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Minor]
 
+### Added
+
+- `@agent-relay/spawn-placement`: a new package with the spawn placement policy that Agent Relay Cloud and relay-control will share: whether a machine has the memory for one more agent (a floor kept free, a per-harness launch budget, launches still starting, a 45 s freshness window and a density cap for unlimited nodes), memory-aware ranking, the alternatives a refusal offers, and golden fixtures each control plane runs in CI. Modes are `off`, `observe` (the default: report only), `rank` and `enforce` (refuse with `spawn_memory_low`). Nothing uses it yet. Spec: relay-control `docs/specs/spawn-placement-memory.md`.
+
 ### Fixed
 
 - `agent-relay-node`: local Cursor sessions expose the matching `cursor:<id>` history identity, so desktop apps can show their upload controls alongside messaging. Previously archived Cursor sessions keep their Archived classification after the upgrade.

@@ -466,7 +466,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/fast-path-packs"
           # The packages publish.yml publishes besides the main package.
-          for pkg in cloud config cli-surface connect core-bridge utils sdk integration-prompts session events-shim; do
+          for pkg in cloud config cli-surface connect core-bridge utils sdk integration-prompts session events-shim spawn-placement; do
             (cd "packages/$pkg" && npm pack --ignore-scripts --pack-destination "$GITHUB_WORKSPACE/fast-path-packs")
           done
       # Same preparation as publish.yml publish-main before it packs agent-relay.
