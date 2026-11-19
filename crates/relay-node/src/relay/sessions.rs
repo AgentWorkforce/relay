@@ -260,6 +260,12 @@ pub trait SessionDirectory: Send + Sync + 'static {
             .collect()
     }
 
+    /// Of these hand-registered targets, the ones still held by the evidence
+    /// their registration accepted. Presence only: never admits or delivers.
+    fn registered_present(&self, _targets: &[Target]) -> HashSet<Target> {
+        HashSet::new()
+    }
+
     /// This only schedules global discovery and grants no chat identity.
     fn trusted_codex_discovery_signal(&self, _pid: i32) -> bool {
         false

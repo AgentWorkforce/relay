@@ -223,6 +223,33 @@ impl SessionDirectory for LocalSessions {
         targets
     }
 
+    /// A hand-registered Codex thread stays present while a trusted Codex of
+    /// this user holds its writer lock: the proof its registration accepted.
+    /// A fleet-owned thread is not, as in `present_targets`.
+    fn registered_present(&self, targets: &[Target]) -> HashSet<Target> {
+        let codex: Vec<&Target> = {
+            let owned = self
+                .fleet_owned
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            targets
+                .iter()
+                .filter(|t| t.kind == SessionKind::Codex && !owned.contains(&fleet_key(t)))
+                .collect()
+        };
+        let live = codex::live_threads(
+            &self.config.codex,
+            &*self.table,
+            self.config.uid,
+            codex.iter().map(|t| t.id.as_str()),
+        );
+        codex
+            .into_iter()
+            .filter(|t| live.contains(&t.id.to_lowercase()))
+            .cloned()
+            .collect()
+    }
+
     /// A trusted host ancestry grants only a global discovery nudge.
     fn trusted_codex_discovery_signal(&self, pid: i32) -> bool {
         crate::relay::process::trusted_codex_host(&*self.table, pid, self.config.uid)
