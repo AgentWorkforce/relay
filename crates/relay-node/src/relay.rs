@@ -106,6 +106,7 @@ pub mod leaders;
 pub mod links;
 pub mod local;
 pub mod local_methods;
+pub mod local_notices;
 pub mod machine;
 pub mod managed_sessions;
 pub mod message_pointer;

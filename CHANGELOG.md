@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `agent-relay-node`: an in-process coordination plugin can deliver a bounded, escaped automated notice to an exact local registration through its peer route. Notices carry no human authority or reply route; stale registrations are refused, and cancellation keeps the delivery lock until the handoff ends. The caller retains durable delivery receipts.
 - `@agent-relay/spawn-placement`: a new package with the spawn placement policy that Agent Relay Cloud and relay-control will share: whether a machine has the memory for one more agent (a floor kept free, a per-harness launch budget, launches still starting, a 45 s freshness window and a density cap for unlimited nodes), memory-aware ranking, the alternatives a refusal offers, and golden fixtures for each control plane to run in its CI. Modes are `off`, `observe` (the default: report only), `rank` and `enforce` (refuse with `spawn_memory_low`). Nothing uses it yet. Spec: relay-control `docs/specs/spawn-placement-memory.md`.
 
 ### Fixed
