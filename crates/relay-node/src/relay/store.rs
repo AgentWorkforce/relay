@@ -1855,7 +1855,7 @@ impl Store {
             store.record_pending_key_migration(legacy);
         }
         let mut migrated =
-            legacy.apply(&mut store) | numeric_dates | store.migrate_claude_archive_keys();
+            legacy.apply(&mut store) | numeric_dates | store.migrate_archive_keys();
         for registration in &mut store.registrations {
             if registration.machine_prefix.is_none() {
                 registration.machine_prefix = Some(machine_prefix.into());

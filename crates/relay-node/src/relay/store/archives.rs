@@ -61,18 +61,22 @@ impl Store {
         )
     }
 
-    /// Completes the host-aware identity added after older stores had already
-    /// persisted their target-only Claude archive keys.
-    pub(super) fn migrate_claude_archive_keys(&mut self) -> bool {
+    /// Completes history identities added after older stores had already
+    /// persisted their target-only archive keys.
+    pub(super) fn migrate_archive_keys(&mut self) -> bool {
         let additions: Vec<_> = self
             .archived_session_keys
             .iter()
-            .filter_map(|key| key.strip_prefix("claude-cloud:"))
-            .map(|id| {
+            .filter_map(|key| {
+                if let Some(id) = key.strip_prefix("cursor-cli:") {
+                    return Some(format!("cursor:{id}"));
+                }
+                let id = key.strip_prefix("claude-cloud:")?;
                 let target = Target::new(SessionKind::ClaudeCloud, id);
-                crate::relay::claude_web::web_session_id(&target).unwrap_or_else(|| id.to_string())
+                let id = crate::relay::claude_web::web_session_id(&target)
+                    .unwrap_or_else(|| id.to_string());
+                Some(format!("claude:{id}"))
             })
-            .map(|id| format!("claude:{id}"))
             .filter(|key| !self.archived_session_keys.contains(key))
             .collect();
         if additions.is_empty() {
