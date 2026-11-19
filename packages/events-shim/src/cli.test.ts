@@ -1501,7 +1501,15 @@ describe('events-shim CLI', () => {
     });
     expect(linked.wake).toBe('linked');
     // The hook leaves without waiting: a wait would mark the next post read and take it from the
-    // session the relay link wakes.
+    // session the relay link wakes. The session is told why, once, so it is not left silently unwoken.
+    await w.post({ for: 'the linked session' });
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(2);
+    const told = w.err.join('\n');
+    expect(told).toContain('Webhook posts to this inbox are not reaching this Claude Code session');
+    expect(told).toContain('setup <its MCP URL> --claude');
+    expect(told).not.toContain('the linked session'); // no post was taken
+    // Every later turn stands down quietly: no loop of notices.
+    w.err.length = 0;
     expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
     expect(w.err).toEqual([]);
   });
@@ -1636,6 +1644,9 @@ describe('events-shim CLI', () => {
     expect(said).toContain('Once a Codex session is open, the inbox is linked to the newest one');
     expect(said).toContain('While that link works, Claude Code sessions get none.');
     expect(said).toContain('give each its own inbox');
+    // Claude Code is outranked on this inbox: setup warns instead of promising every post wakes it.
+    expect(said).toContain('WARNING: Claude Code shares this inbox with Codex');
+    expect(said).not.toContain('each post wakes the most recently started Claude Code session');
     // Re-running the same setup is not adding anything: no refusal.
     expect(await runCli(['setup', w.created.mcp_url, '--claude', '--codex'], w.io)).toBe(0);
   });

@@ -1608,9 +1608,18 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
   io.stdout('');
   // Every waking CLI on this inbox after this setup: one session of one of them gets each post.
   const sharing = AGENT_CLIS.filter((cli) => wakes(cli) && config.inboxes?.[cli.id] === mcpUrl);
-  if (hooked.includes('claude')) {
+  // A CLI the core links (Codex, …) on Claude's inbox takes every post once one of its sessions is open.
+  const claudeOutranked =
+    config.inboxes?.claude === mcpUrl && (sharing.some((cli) => cli.coreKind) || linkedElsewhere);
+  if (hooked.includes('claude') && !claudeOutranked) {
     io.stdout(
       'Start a new Claude Code session: each post wakes the most recently started Claude Code session by itself, with nothing to tell it. One session at a time: a newer session takes the posts over, and telling an older one "watch for webhooks" moves them back to it.'
+    );
+  }
+  if (claudeOutranked) {
+    const holder = sharing.filter((cli) => cli.coreKind).map((cli) => cli.label);
+    io.stdout(
+      `WARNING: Claude Code shares this inbox with ${holder.length > 0 ? holder.join(', ') : `the Agent Relay agent "${linkedAgent || 'another session'}"`}, which is linked through Agent Relay and gets every post, so Claude Code sessions will not be woken. Give Claude Code its own inbox: make one at ${INBOX_PAGE}, then run \`npx @agent-relay/events-shim@latest setup <its MCP URL> --claude\`.`
     );
   }
   if (sharing.length > 1 || (linkedElsewhere && sharing.length > 0)) {
@@ -1923,7 +1932,8 @@ async function listenAsSessionOwner(
   takeOver = false,
   takeHeld?: () => string | null,
   drain: () => boolean = () => false,
-  owns: () => boolean = () => true
+  owns: () => boolean = () => true,
+  standDown?: (agent: string | null) => Promise<number | null>
 ): Promise<number> {
   const dir = dirname(configPath(io));
   const digest = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 16);
@@ -1963,7 +1973,8 @@ async function listenAsSessionOwner(
           if (kept) return (await deliver(kept, false)) ?? 0;
           // A relay wake link delivers every post to the session that linked it. Claiming one here
           // would take it from that session, so stand down.
-          if (await relayWakeLinked(io, mcpUrl)) return 0;
+          const linked = await relayWakeLinked(io, mcpUrl);
+          if (linked) return (await standDown?.(linked.agent)) ?? 0;
           if (!leasesKnown) {
             leased = await inboxLeases(io, mcpUrl);
             leasesKnown = true;
@@ -2031,18 +2042,32 @@ async function listenAsSessionOwner(
  * succeeded and the link is not broken). Unknown (the inbox could not be asked) reads as not
  * linked: the listener keeps its old behaviour rather than going quiet.
  */
-async function relayWakeLinked(io: CliIo, mcpUrl: string): Promise<boolean> {
+async function relayWakeLinked(io: CliIo, mcpUrl: string): Promise<{ agent: string | null } | null> {
   try {
     const state = await callTool(io, mcpUrl, 'watch_webhooks', {}, AbortSignal.timeout(15_000));
-    if (state.wake !== 'linked') return false;
-    const agent = typeof state.linked_agent === 'string' ? `"${state.linked_agent}"` : 'another session';
+    if (state.wake !== 'linked') return null;
+    const agent = typeof state.linked_agent === 'string' && state.linked_agent ? state.linked_agent : null;
     io.appendLog(
-      `${new Date().toISOString()} listen: standing down; the inbox's relay wake link delivers every post to ${agent}`
+      `${new Date().toISOString()} listen: standing down; the inbox's relay wake link delivers every post to ${agent ? `"${agent}"` : 'another session'}`
     );
-    return true;
+    return { agent };
   } catch {
-    return false;
+    return null;
   }
+}
+
+/**
+ * What a Claude Code session is told, once, when its inbox's posts go to another session through
+ * a relay wake link (for example a Codex session set up on the same inbox): without it the session
+ * just never wakes and nothing says why.
+ */
+export function standDownNotice(agent: string | null): string {
+  const target = agent ? `the Agent Relay agent "${agent}"` : 'another Agent Relay session';
+  return [
+    `Webhook posts to this inbox are not reaching this Claude Code session: the inbox is linked to ${target}, which gets every post.`,
+    `To wake Claude Code with its own posts, give it its own inbox: make one at ${INBOX_PAGE}, then run \`npx @agent-relay/events-shim@latest setup <its MCP URL> --claude\`.`,
+    'Tell the person this. (Shown once per session.)',
+  ].join('\n');
 }
 
 /** The hook's JSON input on stdin (Claude Code and Codex both send \`session_id\`). */
@@ -2233,7 +2258,18 @@ async function listenHook(io: CliIo, flags: Record<string, string>): Promise<num
     false,
     () => takeHeldPost(io, mcpUrl),
     () => false,
-    owns
+    owns,
+    async (agent) => {
+      const digest = createHash('sha256')
+        .update(`${mcpUrl}\n${session}\n${agent ?? ''}`)
+        .digest('hex')
+        .slice(0, 16);
+      const told = join(dirname(configPath(io)), `told-${digest}`);
+      if (io.exists(told)) return 0;
+      writePrivate(told, `${new Date().toISOString()}\n`);
+      io.stderr(standDownNotice(agent));
+      return 2;
+    }
   );
 }
 

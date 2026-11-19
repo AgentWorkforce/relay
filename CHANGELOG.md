@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `@agent-relay/events-shim`: a Claude Code session whose inbox is linked to another agent (for example a Codex session set up on the same inbox) is told once that posts go elsewhere and how to give Claude Code its own inbox, instead of never waking with no explanation; setup warns about such a shared inbox instead of promising every post wakes Claude Code.
 
 ## [18.11.0] - 2026-11-19
 
