@@ -335,6 +335,21 @@ pub enum RelayCommands {
         #[arg(long, conflicts_with = "dev")]
         profile: Option<String>,
     },
+    /// Agent Relay's Claude Code PreToolUse hook for AskUserQuestion. Hands
+    /// the question to Agent Relay; with question escalation on it goes to
+    /// the question inbox and the dialog is refused with the reason, and
+    /// otherwise, or on any failure, the dialog is shown as usual.
+    ClaudeQuestionHook {
+        /// Ask Agent Relay Dev instead of Agent Relay.
+        #[arg(long, conflicts_with = "socket")]
+        dev: bool,
+        /// The session socket; default is the one the running app points to.
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        /// Ask the profile build with this id, as `claude-session-hook` does.
+        #[arg(long, conflicts_with = "dev")]
+        profile: Option<String>,
+    },
     /// Print Agent Relay's settings, as the app's Settings shows them, or
     /// change them with KEY=VALUE pairs (`auto_join_general=true`). Every
     /// change is recorded with this session's name and listed in Settings.
@@ -671,6 +686,11 @@ pub fn run(command: RelayCommands) -> Result<()> {
             socket,
             profile,
         } => relay::cli::claude_stop_hook(socket.as_deref(), &build(dev, profile)?),
+        RelayCommands::ClaudeQuestionHook {
+            dev,
+            socket,
+            profile,
+        } => relay::cli::claude_question_hook(socket.as_deref(), &build(dev, profile)?),
         RelayCommands::Settings {
             changes,
             dev,

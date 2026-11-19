@@ -89,7 +89,7 @@ impl Core {
 
     /// Whether `registration` is a spawned Claude whose recorded process
     /// ended. Without a recorded process, nothing says it did.
-    pub(super) async fn claude_ended(&self, registration: &Registration) -> bool {
+    pub(crate) async fn claude_ended(&self, registration: &Registration) -> bool {
         let Some(process) = registration
             .spawn
             .as_ref()

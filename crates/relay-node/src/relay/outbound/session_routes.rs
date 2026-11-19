@@ -29,6 +29,7 @@ pub const SESSION_ROUTES: &[(&str, &str)] = &[
     ("POST", "/turn-end/take"),
     ("POST", "/turn-end/shown"),
     ("POST", "/claude/attestation"),
+    ("POST", "/claude/question"),
     ("GET", "/setup/status"),
     ("POST", "/setup/sign-in"),
     ("POST", "/setup/sharing"),

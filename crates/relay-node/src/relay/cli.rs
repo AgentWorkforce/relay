@@ -448,6 +448,43 @@ pub fn claude_stop_hook(socket: Option<&Path>, build: &Build) -> Result<()> {
     Ok(())
 }
 
+/// How long the question hook waits for `POST /claude/question`: past the
+/// route's own limit (`question::ROUTE_LIMIT`), inside the time Claude Code
+/// waits for the hook (`QUESTION_HOOK_TIMEOUT`).
+const QUESTION_HOOK_WAIT: Duration = Duration::from_secs(25);
+
+/// Agent Relay's Claude Code PreToolUse hook for `AskUserQuestion`
+/// (`claude::session_hook` installs it beside the SessionStart hook). Hands
+/// Claude's hook input to `POST /claude/question`; when the question went
+/// to the question inbox, prints the decision that refuses the dialog with
+/// the reason, so the session keeps working. Otherwise, and on any failure,
+/// prints `{}`, and Claude shows the dialog as usual.
+pub fn claude_question_hook(socket: Option<&Path>, build: &Build) -> Result<()> {
+    let mut input = Vec::new();
+    let _ = std::io::stdin().take(4 << 20).read_to_end(&mut input);
+    let output = match session_hook_socket(socket, build) {
+        Some(socket) => {
+            match socket_response(
+                &socket,
+                "POST",
+                "/claude/question",
+                &input,
+                QUESTION_HOOK_WAIT,
+            ) {
+                Ok((status, body)) => {
+                    crate::relay::claude::session_hook::question_hook_output(status, &body)
+                }
+                Err(_) => json!({}),
+            }
+        }
+        None => json!({}),
+    };
+    let mut stdout = std::io::stdout();
+    stdout.write_all(&serde_json::to_vec(&output)?)?;
+    stdout.write_all(b"\n")?;
+    Ok(())
+}
+
 /// Agent Relay's Devin lifecycle hook (`devin::DevinSettings` installs it).
 /// Reads Devin's hook payload on stdin and prints the injection for the
 /// event — pending inbox messages as `additionalContext` while the session

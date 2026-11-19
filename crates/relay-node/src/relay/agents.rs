@@ -58,6 +58,7 @@ const NAME_ATTEMPTS: usize = 100;
 fn store_setting(key: &str) -> bool {
     crate::relay::store_settings::STORE_SETTINGS.contains(&key)
         || crate::relay::spawn::settings::KEYS.contains(&key)
+        || crate::relay::question::settings::KEYS.contains(&key)
 }
 
 /// The settings that are lists or values, not true or false: their owners
@@ -65,6 +66,7 @@ fn store_setting(key: &str) -> bool {
 fn checked_by_owner(key: &str) -> bool {
     is_list_setting(key)
         || crate::relay::spawn::CONFIGURED_KEYS.contains(&key)
+        || crate::relay::question::settings::KEYS.contains(&key)
         || key == crate::relay::repositories::SETTING
 }
 
@@ -1315,6 +1317,7 @@ impl Core {
     pub fn settings(&self) -> Map<String, Value> {
         let mut settings = self.store_settings();
         settings.extend(self.spawn_setting_values());
+        settings.extend(self.store.read(crate::relay::question::settings::values));
         for extension in &self.plugins.settings {
             settings.extend(extension.get());
         }

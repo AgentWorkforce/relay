@@ -224,6 +224,11 @@ impl Core {
     /// spawning agent. With neither it is never forwarded, and the request
     /// expires to a refusal.
     async fn forward_to_owner(&self, registration: &Registration, token: &Secret, notice: &Notice) {
+        // A question goes to the question inbox instead, when escalation is
+        // on; one it cannot send is forwarded as any other request.
+        if self.escalate_codex_question(registration, notice).await {
+            return;
+        }
         let requester = self.approving_requester(registration);
         let text = approval_text(
             &registration.name,
