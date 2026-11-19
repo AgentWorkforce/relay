@@ -251,6 +251,8 @@ fn record(registration: &Registration, base_key: &str) -> Record {
         state: State::Open,
         questions: vec![pick(false)],
         via: Via::Claude,
+        sending: false,
+        notified: false,
     }
 }
 
@@ -262,6 +264,7 @@ fn reserved(registration: &Registration, base_key: &str) -> (String, String) {
             (reference, key)
         }
         Reserved::Open { .. } => panic!("already open"),
+        Reserved::InFlight => panic!("being sent"),
     }
 }
 
@@ -321,7 +324,9 @@ fn only_the_inbox_answers_an_open_question_once_before_it_expires() {
             "Question {second} expired; @asker-checks continued without it."
         ))
     );
-    assert_eq!(expire(&second), None, "already closed by the late reply");
+    // Closed by the late reply, the session is still told, once.
+    assert!(expire(&second).is_some());
+    assert_eq!(expire(&second), None);
 }
 
 #[test]
@@ -357,6 +362,8 @@ const ACCEPT: u8 = 0;
 const REFUSE: u8 = 1;
 /// Reads the DM, then answers nothing for a while: a send that times out.
 const HANG: u8 = 2;
+/// Takes the DM after a short while: a send still in flight.
+const SLOW: u8 = 3;
 
 /// A Relaycast that knows the agent `triage` and takes DMs (refusing them
 /// when `refuse`), keeping each request's line and body.
@@ -371,6 +378,21 @@ fn relaycast(refuse: bool) -> (String, Arc<Mutex<Vec<String>>>) {
 
 /// `relaycast`, answering DMs as `mode` says at the time.
 fn relaycast_in(mode: Arc<std::sync::atomic::AtomicU8>) -> (String, Arc<Mutex<Vec<String>>>) {
+    relaycast_with(mode, &[("triage", "agent-triage")])
+}
+
+/// `relaycast_in`, where looking up a name in the asking agent's workspace
+/// finds the agent ids `agents` gives.
+fn relaycast_with(
+    mode: Arc<std::sync::atomic::AtomicU8>,
+    agents: &[(&str, &str)],
+) -> (String, Arc<Mutex<Vec<String>>>) {
+    let agents: Arc<HashMap<String, String>> = Arc::new(
+        agents
+            .iter()
+            .map(|(name, id)| (name.to_string(), id.to_string()))
+            .collect(),
+    );
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let hits = Arc::new(Mutex::new(Vec::new()));
@@ -378,7 +400,7 @@ fn relaycast_in(mode: Arc<std::sync::atomic::AtomicU8>) -> (String, Arc<Mutex<Ve
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { return };
-            let (seen, mode) = (seen.clone(), mode.clone());
+            let (seen, mode, agents) = (seen.clone(), mode.clone(), agents.clone());
             std::thread::spawn(move || {
                 let mut request = Vec::new();
                 let mut buffer = [0_u8; 8192];
@@ -425,11 +447,18 @@ fn relaycast_in(mode: Arc<std::sync::atomic::AtomicU8>) -> (String, Arc<Mutex<Ve
                     std::thread::sleep(Duration::from_secs(5));
                     return;
                 }
-                let (status, reply) = if line.starts_with("GET /v1/agents/triage") {
-                    (
-                        "200 OK",
-                        r#"{"ok":true,"data":{"id":"agent-triage","name":"triage"}}"#,
-                    )
+                if mode == SLOW && line.starts_with("POST /v1/dm") {
+                    std::thread::sleep(Duration::from_millis(400));
+                }
+                let found = line
+                    .strip_prefix("GET /v1/agents/")
+                    .and_then(|rest| rest.split([' ', '?']).next())
+                    .and_then(|name| agents.get(name).map(|id| (name.to_string(), id.clone())));
+                let found = found.map(|(name, id)| {
+                    json!({"ok": true, "data": {"id": id, "name": name}}).to_string()
+                });
+                let (status, reply) = if let Some(found) = found.as_deref() {
+                    ("200 OK", found)
                 } else if line.starts_with("GET /v1/agents/") {
                     (
                         "404 Not Found",
@@ -458,6 +487,16 @@ fn relaycast_in(mode: Arc<std::sync::atomic::AtomicU8>) -> (String, Arc<Mutex<Ve
 }
 
 fn core(base: &str, asker: &Registration, on: bool) -> (Arc<Core>, tempfile::TempDir) {
+    core_with(base, asker, on, crate::relay::daemon::Plugins::default())
+}
+
+/// `core`, built with `plugins`.
+fn core_with(
+    base: &str,
+    asker: &Registration,
+    on: bool,
+    plugins: crate::relay::daemon::Plugins,
+) -> (Arc<Core>, tempfile::TempDir) {
     let temp = tempfile::tempdir().unwrap();
     let config = crate::relay::daemon::Config {
         paths: crate::relay::paths::CorePaths::for_socket(temp.path().join("core.sock")).unwrap(),
@@ -470,7 +509,7 @@ fn core(base: &str, asker: &Registration, on: bool) -> (Arc<Core>, tempfile::Tem
         push_timing: crate::relay::push::PushTiming::default(),
         delivery_timing: crate::relay::delivery::DeliveryTiming::default(),
     };
-    let (core, _signals) = Core::new(config);
+    let (core, _signals) = Core::with_plugins(config, plugins);
     *core.workspace.lock().unwrap() = Some(crate::relay::workspace::Workspace {
         key: Secret::new("rk_live_test"),
         base_url: base.into(),
@@ -907,4 +946,407 @@ fn an_answer_is_cleaned_before_it_is_typed() {
         text::answer_line("q0123abcd", &one, &answers),
         "[Answer to question q0123abcd] keep it"
     );
+}
+
+/// An injector that answers each delivery with the next outcome it was
+/// given (then `Delivered`), keeping the text of every attempt.
+#[derive(Default)]
+struct Scripted {
+    outcomes: Mutex<std::collections::VecDeque<InjectOutcome>>,
+    typed: Mutex<Vec<String>>,
+}
+
+impl Scripted {
+    fn new(outcomes: impl IntoIterator<Item = InjectOutcome>) -> Arc<Scripted> {
+        Arc::new(Scripted {
+            outcomes: Mutex::new(outcomes.into_iter().collect()),
+            typed: Mutex::default(),
+        })
+    }
+    fn typed(&self) -> Vec<String> {
+        self.typed.lock().unwrap().clone()
+    }
+}
+
+impl crate::relay::inject::Injector for Scripted {
+    fn inject(&self, _: &Target, _: &str, text: &str) -> InjectOutcome {
+        self.typed.lock().unwrap().push(text.to_string());
+        self.outcomes
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(InjectOutcome::Delivered)
+    }
+    fn reply_hint(&self, _: &Target, _: Option<&str>, _: Option<&str>, _: &str) -> Option<String> {
+        None
+    }
+    fn final_answer(&self, _: &Target, _: &str) -> Option<String> {
+        None
+    }
+}
+
+fn scripted_core(
+    base: &str,
+    asker: &Registration,
+    injector: &Arc<Scripted>,
+) -> (Arc<Core>, tempfile::TempDir) {
+    core_with(
+        base,
+        asker,
+        true,
+        crate::relay::daemon::Plugins {
+            injector: injector.clone(),
+            ..crate::relay::daemon::Plugins::default()
+        },
+    )
+}
+
+fn state_of(reference: &str) -> Option<State> {
+    records().get(reference).map(|record| record.state)
+}
+
+fn replies_to_inbox(hits: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
+    hits.lock()
+        .unwrap()
+        .iter()
+        .filter(|hit| hit.contains("key=question-reply-"))
+        .cloned()
+        .collect()
+}
+
+/// A Claude that is working, or waiting on a request, takes no input: the
+/// answer is kept, not reported delivered, and typed once it is idle.
+#[tokio::test]
+async fn a_busy_claude_gets_the_answer_once_it_is_idle() {
+    let (base, hits) = relaycast(false);
+    let asker = registration(
+        "asker-busy",
+        Target::new(SessionKind::ClaudeTerminal, "sess-busy"),
+        &base,
+    );
+    let (reference, _) = reserved(&asker, "question-sess-busy-1");
+    let injector = Scripted::new([InjectOutcome::WaitingForTurn(
+        "Claude is finishing its current turn".into(),
+    )]);
+    let (core, _temp) = scripted_core(&base, &asker, &injector);
+    let token = Secret::new("at_live_asker");
+    let acting = (base.as_str(), &token);
+    let answer = reply("d-busy", "agent-triage", &format!("answer {reference} 1"));
+    assert!(matches!(
+        core.question_reply(&asker, &answer, acting).await,
+        OwnerReply::Unsaved
+    ));
+    assert_eq!(state_of(&reference), Some(State::Open));
+    assert!(
+        replies_to_inbox(&hits).is_empty(),
+        "nothing is reported yet"
+    );
+    assert!(!core.store.read(|store| store.was_injected("d-busy")));
+    // Read again on the next pass, once Claude is idle: typed, and settled.
+    let OwnerReply::Settled(detail) = core.question_reply(&asker, &answer, acting).await else {
+        panic!("delivered on the next pass");
+    };
+    assert!(detail.ends_with("answered"), "{detail}");
+    assert_eq!(state_of(&reference), Some(State::Answered));
+    let typed = injector.typed();
+    assert_eq!(typed.len(), 2, "{typed:?}");
+    assert!(
+        typed.iter().all(|line| line.contains("Postgres")),
+        "{typed:?}"
+    );
+    let replies = replies_to_inbox(&hits);
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    assert!(
+        replies[0].contains("delivered to @asker-busy"),
+        "{}",
+        replies[0]
+    );
+}
+
+/// An answer that may or may not have arrived is never typed again, and the
+/// inbox is not told it was delivered.
+#[tokio::test]
+async fn an_answer_in_doubt_is_not_reported_delivered_or_typed_again() {
+    let (base, hits) = relaycast(false);
+    let asker = registration(
+        "asker-doubt",
+        Target::new(SessionKind::ClaudeTerminal, "sess-doubt"),
+        &base,
+    );
+    let (reference, _) = reserved(&asker, "question-sess-doubt-1");
+    let injector = Scripted::new([InjectOutcome::InDoubt("cut off".into())]);
+    let (core, _temp) = scripted_core(&base, &asker, &injector);
+    let token = Secret::new("at_live_asker");
+    let acting = (base.as_str(), &token);
+    let answer = reply("d-doubt", "agent-triage", &format!("answer {reference} 1"));
+    assert!(matches!(
+        core.question_reply(&asker, &answer, acting).await,
+        OwnerReply::Settled(_)
+    ));
+    let replies = replies_to_inbox(&hits);
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    assert!(
+        replies[0].contains("may not have reached @asker-doubt")
+            && !replies[0].contains("delivered to"),
+        "{}",
+        replies[0]
+    );
+    // A second answer is not typed.
+    let again = reply(
+        "d-doubt-2",
+        "agent-triage",
+        &format!("answer {reference} 2"),
+    );
+    assert!(matches!(
+        core.question_reply(&asker, &again, acting).await,
+        OwnerReply::Settled(_)
+    ));
+    assert_eq!(injector.typed().len(), 1);
+}
+
+/// Two hook calls for the same question at once send it once, and a send
+/// finishing late never opens a question that was answered meanwhile.
+#[tokio::test]
+async fn the_same_question_asked_twice_at_once_is_sent_once() {
+    let mode = Arc::new(std::sync::atomic::AtomicU8::new(SLOW));
+    let (base, hits) = relaycast_in(mode);
+    let asker = registration(
+        "asker-race",
+        Target::new(SessionKind::ClaudeTerminal, "sess-race"),
+        &base,
+    );
+    let (core, _temp) = core(&base, &asker, true);
+    let question = input();
+    let (first, second) = tokio::join!(
+        core.escalate_question(&asker, asked(&question)),
+        core.escalate_question(&asker, asked(&question)),
+    );
+    let Escalation::Sent { reference, .. } = &first else {
+        panic!("{first:?}");
+    };
+    assert_eq!(first, second);
+    let dms = hits
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|hit| hit.starts_with("POST /v1/dm"))
+        .count();
+    assert_eq!(dms, 1, "one message for one question");
+    // A late `opened` (a send that finished after the answer) does nothing.
+    assert!(check(reference, &asker, Some("agent-triage"), "1").is_ok());
+    settle(reference);
+    opened(reference);
+    assert_eq!(state_of(reference), Some(State::Answered));
+}
+
+/// A record kept unsent is sent by one caller at a time.
+#[test]
+fn an_unsent_record_is_sent_by_one_caller_at_a_time() {
+    let asker = registration(
+        "asker-inflight",
+        Target::new(SessionKind::ClaudeTerminal, "sess-inflight"),
+        "https://cast.test",
+    );
+    let Some(Reserved::Send { reference, .. }) =
+        reserve(record(&asker, "question-sess-inflight-1"))
+    else {
+        panic!("reserved");
+    };
+    assert!(
+        !matches!(
+            reserve(record(&asker, "question-sess-inflight-1")),
+            Some(Reserved::Send { .. })
+        ),
+        "a second caller does not send {reference} while it is being sent"
+    );
+}
+
+/// The same Claude session removed and added again is another agent: its
+/// question is sent again for it, not suppressed by the old agent's.
+#[tokio::test]
+async fn a_session_added_again_asks_as_its_new_agent() {
+    let (base, hits) = relaycast(false);
+    let target = Target::new(SessionKind::ClaudeTerminal, "sess-readded");
+    let old = registration("asker-readded", target.clone(), &base);
+    let question = input();
+    let base_key = format!("question-sess-readded-{}", input_hash(&question));
+    let (old_reference, _) = reserved(&old, &base_key);
+    let mut new = old.clone();
+    new.agent_id = "agent-asker-readded-2".into();
+    let (core, _temp) = core(&base, &new, true);
+    let escalation = core.escalate_question(&new, asked(&question)).await;
+    let Escalation::Sent { reference, .. } = escalation else {
+        panic!("{escalation:?}");
+    };
+    assert_ne!(reference, old_reference);
+    assert!(known(&reference, &new));
+    assert_eq!(
+        hits.lock()
+            .unwrap()
+            .iter()
+            .filter(|hit| hit.starts_with("POST /v1/dm"))
+            .count(),
+        1
+    );
+    // The old agent's question no longer stands for the session.
+    let reason = escalated("sess-readded", &question).unwrap();
+    assert!(reason.contains(&reference), "{reason}");
+}
+
+/// A Codex answer whose record could not be saved is still the request's
+/// result: the redelivery finds it handled, and Codex has its answer.
+#[tokio::test]
+async fn a_codex_answer_survives_a_failed_save() {
+    let (base, hits) = relaycast(false);
+    let thread = "019a0000-0000-7000-8000-00000000c0df";
+    let asker = registration(
+        "asker-codex-save",
+        Target::new(SessionKind::Codex, thread),
+        &base,
+    );
+    let (core, temp) = core(&base, &asker, true);
+    let notice = drive::open_request(
+        thread,
+        json!({"id": 8, "method": "item/tool/requestUserInput", "params": {
+            "threadId": thread, "turnId": "t", "itemId": "i",
+            "questions": [{"id": "db", "header": "Database", "question": "Which?",
+                "options": [{"label": "Postgres", "description": ""},
+                            {"label": "SQLite", "description": ""}]}],
+        }}),
+    );
+    assert!(core.escalate_codex_question(&asker, &notice).await);
+    let reference = records()
+        .iter()
+        .find(|(_, record)| record.target.id == thread)
+        .map(|(reference, _)| reference.clone())
+        .unwrap();
+    // The store can no longer be saved.
+    let store = temp
+        .path()
+        .join("app-data")
+        .join(crate::relay::app_store::STORE_FILE);
+    std::fs::write(&store, b"not a store").unwrap();
+    let token = Secret::new("at_live_asker");
+    let acting = (base.as_str(), &token);
+    let answer = reply(
+        "d-codex-save",
+        "agent-triage",
+        &format!("answer {reference} 2"),
+    );
+    let _ = core.question_reply(&asker, &answer, acting).await;
+    // Redelivered while the store still cannot be saved: never acknowledged
+    // without Codex having the answer.
+    let _ = core.question_reply(&asker, &answer, acting).await;
+    assert_eq!(
+        drive::recorded_answer(&notice.reference),
+        Some(json!({"answers": {"db": {"answers": ["SQLite"]}}}))
+    );
+    assert_eq!(state_of(&reference), Some(State::Answered));
+    let replies = replies_to_inbox(&hits);
+    assert!(
+        replies
+            .iter()
+            .all(|reply| !reply.contains("already answered")),
+        "{replies:?}"
+    );
+}
+
+/// A late reply that closes an expired question first still leaves the
+/// session its expiry notice, given once.
+#[test]
+fn an_expiry_closed_by_a_late_reply_still_tells_the_session() {
+    let asker = registration(
+        "asker-late",
+        Target::new(SessionKind::ClaudeTerminal, "sess-late"),
+        "https://cast.test",
+    );
+    let (reference, _) = reserved(&asker, "question-sess-late-1");
+    expire_now(&reference);
+    assert!(check(&reference, &asker, Some("agent-triage"), "1").is_err());
+    assert!(expire(&reference).is_some(), "the timer still tells Claude");
+    assert_eq!(expire(&reference), None, "once");
+}
+
+/// Signed in as the person `owner` (`agent-owner`), whose identity is in the
+/// Relaycast at `base`.
+struct Owner(String);
+
+impl crate::relay::cloud_session::CloudAccess for Owner {
+    fn account(&self) -> Option<crate::relay::cloud_session::CloudAccount> {
+        Some(crate::relay::cloud_session::CloudAccount {
+            site_url: "https://agentrelay.example".into(),
+            workspace_id: "cloud-workspace".into(),
+            user_id: Some("user-owner".into()),
+        })
+    }
+    fn agent_owner(&self) -> Option<crate::relay::cloud_session::AgentOwner> {
+        None
+    }
+    fn request(
+        &self,
+        _: &'static str,
+        path: String,
+        _: Option<Value>,
+    ) -> futures_util::future::BoxFuture<'_, Result<Value, crate::relay::cloud_session::CloudError>>
+    {
+        let base = self.0.clone();
+        Box::pin(async move {
+            Ok(if path.ends_with("/messaging/identity/credential") {
+                json!({"identity": {"name": "owner", "agentId": "agent-owner",
+                    "token": "at_live_owner", "relaycastUrl": base}})
+            } else {
+                Value::Null
+            })
+        })
+    }
+}
+
+/// With no inbox set, the question goes to the owner's person identity only
+/// when the asking agent's workspace holds that identity: the name alone,
+/// on the same Relaycast origin, may be another workspace's agent.
+#[tokio::test]
+async fn the_owner_is_the_inbox_only_in_its_own_workspace() {
+    for (found, sent) in [("agent-impostor", false), ("agent-owner", true)] {
+        let mode = Arc::new(std::sync::atomic::AtomicU8::new(ACCEPT));
+        let (base, hits) = relaycast_with(mode, &[("owner", found)]);
+        let session = format!("sess-owner-{sent}");
+        let asker = registration(
+            &format!("asker-owner-{sent}"),
+            Target::new(SessionKind::ClaudeTerminal, &session),
+            &base,
+        );
+        let (core, _temp) = core_with(
+            &base,
+            &asker,
+            true,
+            crate::relay::daemon::Plugins {
+                cloud: Arc::new(Owner(base.clone())),
+                ..crate::relay::daemon::Plugins::default()
+            },
+        );
+        core.store
+            .remember(|store| store.extras.question_escalation_inbox = None)
+            .unwrap();
+        let escalation = core.escalate_question(&asker, asked(&input())).await;
+        let dms: Vec<String> = hits
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|hit| hit.starts_with("POST /v1/dm"))
+            .cloned()
+            .collect();
+        if sent {
+            assert!(
+                matches!(&escalation, Escalation::Sent { inbox, .. } if inbox == "owner"),
+                "{escalation:?}"
+            );
+            assert_eq!(dms.len(), 1, "{dms:?}");
+        } else {
+            assert!(
+                matches!(&escalation, Escalation::Failed(why) if why.contains("another Relaycast workspace")),
+                "{escalation:?}"
+            );
+            assert!(dms.is_empty(), "nothing reaches @owner there: {dms:?}");
+        }
+    }
 }

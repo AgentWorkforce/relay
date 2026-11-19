@@ -22,11 +22,23 @@
 //! same question asked again is sent again under the same key, so Relaycast
 //! keeps one message however many times it was tried.
 //!
+//! A record is sent by one caller at a time (`Record::sending`): the same
+//! question asked again while its message is on the way waits for that
+//! send's outcome instead of sending it again, and only a record still
+//! unsent is opened by a send that finishes.
+//!
 //! A reply to a question is only taken as an answer while escalation is on
 //! and the asking session has a record of that reference; any other
 //! `answer q…` message is an ordinary direct message. While an answer is
 //! being delivered the record is `Delivering`: a second reply and the expiry
-//! timer wait for the outcome, so one question is never answered twice.
+//! timer wait for the outcome, so one question is never answered twice. An
+//! answer the session cannot take yet (a spawned Claude still in its turn)
+//! is not acknowledged: the question opens again and the same reply is read
+//! again on a later pass. An answer that may have arrived is never typed
+//! again, and the inbox is told it may not have.
+//!
+//! A question past its expiry tells its Claude session so once, whichever
+//! of the timer and a late reply closes it first (`Record::notified`).
 
 pub mod settings;
 pub mod text;
@@ -53,6 +65,13 @@ use text::{Answer, Asker, Question};
 pub const TTL: Duration = Duration::from_secs(30 * 60);
 /// How long a closed question is remembered after it expires.
 const KEEP: Duration = Duration::from_secs(60 * 60);
+/// How often an expiry notice the session could not take yet is tried
+/// again, and for how long.
+const NOTICE_RETRY: Duration = Duration::from_secs(15);
+const NOTICE_FOR: Duration = KEEP;
+/// How often a caller waiting on another's send of the same question looks
+/// again.
+const IN_FLIGHT_POLL: Duration = Duration::from_millis(25);
 /// The longest `POST /claude/question` takes to answer: shorter than the
 /// PreToolUse hook's own timeout (`claude::session_hook::QUESTION_HOOK_TIMEOUT`,
 /// 30 s), so the hook always hears the outcome before Claude gives up on it.
@@ -104,6 +123,18 @@ struct Record {
     state: State,
     questions: Vec<Question>,
     via: Via,
+    /// Its message is being sent now: nobody else sends it meanwhile.
+    sending: bool,
+    /// The session was told it expired, or never needs to be.
+    notified: bool,
+}
+
+impl Record {
+    /// The same question from the same agent: a session removed and added
+    /// again is another agent, whose question is its own.
+    fn same(&self, other: &Record) -> bool {
+        self.base_key == other.base_key && self.agent_id == other.agent_id
+    }
 }
 
 fn records() -> MutexGuard<'static, HashMap<String, Record>> {
@@ -141,14 +172,17 @@ not depend on it and act on the reply when it arrives as a message. It expires i
     )
 }
 
-/// An open question the same session already asked with the same input:
-/// its reference and inbox.
-fn open_for(base_key: &str) -> Option<(String, String)> {
+/// An open question the same agent already asked from the same session
+/// with the same input: its reference and inbox.
+fn open_for(base_key: &str, agent_id: &str) -> Option<(String, String)> {
     let now = Instant::now();
     records()
         .iter()
         .find(|(_, record)| {
-            record.base_key == base_key && record.state.pending() && now < record.expires
+            record.base_key == base_key
+                && record.agent_id == agent_id
+                && record.state.pending()
+                && now < record.expires
         })
         .map(|(reference, record)| (reference.clone(), record.inbox.clone()))
 }
@@ -168,28 +202,49 @@ enum Reserved {
     Send { reference: String, key: String },
     /// The same question is already open under this reference.
     Open { reference: String, inbox: String },
+    /// The same question is being sent by another caller now: look again
+    /// once that send's outcome is known.
+    InFlight,
 }
 
 /// Keeps `record`, unsent, under a new reference before it is sent, unless
-/// the same question is open. The same question kept unsent for the same
-/// inbox is sent again under its own reference and key.
+/// the same question is open or being sent. The same question kept unsent
+/// for the same inbox is sent again under its own reference and key. The
+/// record handed back to send is marked `sending` until `opened`, `release`
+/// or the caller's `Sending` guard is dropped.
 fn reserve(record: Record) -> Option<Reserved> {
     let mut records = records();
     let now = Instant::now();
-    if let Some((reference, open)) = records.iter().find(|(_, open)| {
-        open.base_key == record.base_key && open.state.pending() && now < open.expires
-    }) {
+    // The same session's question from an agent it no longer is (removed
+    // and added again) can never be answered: closed, with nothing to tell.
+    for earlier in records.values_mut() {
+        if earlier.base_key == record.base_key
+            && earlier.agent_id != record.agent_id
+            && earlier.state == State::Open
+        {
+            earlier.state = State::Expired;
+            earlier.notified = true;
+        }
+    }
+    if let Some((reference, open)) = records
+        .iter()
+        .find(|(_, open)| open.same(&record) && open.state.pending() && now < open.expires)
+    {
         return Some(Reserved::Open {
             reference: reference.clone(),
             inbox: open.inbox.clone(),
         });
     }
     if let Some((reference, unsent)) = records.iter_mut().find(|(_, unsent)| {
-        unsent.base_key == record.base_key
+        unsent.same(&record)
             && unsent.state == State::Unsent
             && unsent.inbox_id == record.inbox_id
             && now < unsent.expires
     }) {
+        if unsent.sending {
+            return Some(Reserved::InFlight);
+        }
+        unsent.sending = true;
         unsent.expires = record.expires;
         return Some(Reserved::Send {
             key: send_key(&unsent.base_key, reference),
@@ -205,23 +260,47 @@ fn reserve(record: Record) -> Option<Reserved> {
         reference.clone(),
         Record {
             state: State::Unsent,
+            sending: true,
+            notified: false,
             ..record
         },
     );
     Some(Reserved::Send { reference, key })
 }
 
-/// Drops `reference`, whose message was not sent.
+/// Drops `reference`, whose message was not sent, while it is still unsent.
 fn release(reference: &str) {
-    records().remove(reference);
+    let mut records = records();
+    if records
+        .get(reference)
+        .is_some_and(|record| record.state == State::Unsent)
+    {
+        records.remove(reference);
+    }
 }
 
-/// Opens `reference` once its message was sent: it waits a full `TTL` from
-/// now.
+/// Opens `reference` once its message was sent, only from unsent: it waits
+/// a full `TTL` from now. A record already open, answered or expired is
+/// left as it is.
 fn opened(reference: &str) {
     if let Some(record) = records().get_mut(reference) {
-        record.state = State::Open;
-        record.expires = Instant::now() + TTL;
+        record.sending = false;
+        if record.state == State::Unsent {
+            record.state = State::Open;
+            record.expires = Instant::now() + TTL;
+        }
+    }
+}
+
+/// Clears `Record::sending` when the send it guards ends however it ends,
+/// including a caller dropped at its time limit.
+struct Sending(String);
+
+impl Drop for Sending {
+    fn drop(&mut self) {
+        if let Some(record) = records().get_mut(&self.0) {
+            record.sending = false;
+        }
     }
 }
 
@@ -361,16 +440,20 @@ fn reopen(reference: &str) -> bool {
     Instant::now() >= record.expires
 }
 
-/// Marks `reference` expired when it is still open past its expiry: the
-/// session and harness it was asked from. One with an answer being
-/// delivered is left to that delivery (`reopen`).
+/// Marks `reference` expired when it is still open past its expiry, and
+/// hands back the session and harness to tell, once: whether the timer or
+/// a late reply (`check`) closed it. One with an answer being delivered is
+/// left to that delivery (`reopen`).
 fn expire(reference: &str) -> Option<(Target, Via)> {
     let mut records = records();
     let record = records.get_mut(reference)?;
-    if record.state != State::Open || Instant::now() < record.expires {
+    if record.state == State::Open && Instant::now() >= record.expires {
+        record.state = State::Expired;
+    }
+    if record.state != State::Expired || record.notified {
         return None;
     }
-    record.state = State::Expired;
+    record.notified = true;
     Some((record.target.clone(), record.via.clone()))
 }
 
@@ -470,7 +553,7 @@ impl Core {
         let input_hash = input_hash(asked.input);
         let session = &registration.target.id;
         let base_key = format!("question-{session}-{input_hash}");
-        if let Some((reference, inbox)) = open_for(&base_key) {
+        if let Some((reference, inbox)) = open_for(&base_key, &registration.agent_id) {
             return Escalation::Sent { reference, inbox };
         }
         // A launched agent acts through its relaygate registration.
@@ -480,7 +563,10 @@ impl Core {
         else {
             return Escalation::Failed(format!("@{} is not registered", registration.name));
         };
-        let (inbox, inbox_id) = match self.question_inbox(registration, &acting.base_url).await {
+        let (inbox, inbox_id) = match self
+            .question_inbox(registration, (&acting.base_url, &token))
+            .await
+        {
             Ok(inbox) => inbox,
             Err(error) => return Escalation::Failed(error),
         };
@@ -496,14 +582,22 @@ impl Core {
             state: State::Open,
             questions: asked.questions.clone(),
             via: asked.via,
+            sending: false,
+            notified: false,
         };
-        let (reference, key) = match reserve(record) {
-            Some(Reserved::Send { reference, key }) => (reference, key),
-            Some(Reserved::Open { reference, inbox }) => {
-                return Escalation::Sent { reference, inbox }
+        let (reference, key) = loop {
+            match reserve(record.clone()) {
+                Some(Reserved::Send { reference, key }) => break (reference, key),
+                Some(Reserved::Open { reference, inbox }) => {
+                    return Escalation::Sent { reference, inbox }
+                }
+                // Another call is sending the same question: its outcome
+                // decides this one's (open, or sent again when it failed).
+                Some(Reserved::InFlight) => tokio::time::sleep(IN_FLIGHT_POLL).await,
+                None => return Escalation::Failed("no question reference could be made".into()),
             }
-            None => return Escalation::Failed("no question reference could be made".into()),
         };
+        let _sending = Sending(reference.clone());
         let message = text::render(
             &Asker {
                 reference: &reference,
@@ -551,18 +645,35 @@ impl Core {
 
     /// The inbox's name and immutable id: the owner's person identity, or
     /// the agent `question_escalation_inbox` names, in the asking agent's
-    /// workspace.
+    /// workspace. `acting` is the base and token the question is sent with.
     async fn question_inbox(
         &self,
         registration: &Registration,
-        acting_base: &str,
+        (acting_base, acting_token): (&str, &Secret),
     ) -> Result<(String, String), String> {
         let Some(name) = self.store.read(settings::inbox) else {
             let owner = self.person_identity(false).await.map_err(|error| {
                 format!("the owner's identity is unavailable: {}", error.message)
             })?;
+            let elsewhere = || "the owner's identity is in another Relaycast workspace".to_string();
             if owner.base_url != registration.base_url && owner.base_url != acting_base {
-                return Err("the owner's identity is in another Relaycast workspace".into());
+                return Err(elsewhere());
+            }
+            // The question is sent by name with the asking agent's own
+            // credential, so the name must find the owner's identity in the
+            // asking agent's workspace: one origin holds many workspaces,
+            // and another may have an agent of that name.
+            let http = sdk_gaps::http(acting_base, acting_token)
+                .map_err(|error| format!("the workspace is unreachable: {error}"))?;
+            let found = sdk_gaps::get_agent(&http, &owner.name)
+                .await
+                .map_err(|error| format!("@{} could not be looked up: {error}", owner.name))?;
+            if found
+                .as_ref()
+                .and_then(|agent| agent["id"].as_str())
+                .is_none_or(|id| id != owner.agent_id)
+            {
+                return Err(elsewhere());
             }
             return Ok((owner.name, owner.agent_id));
         };
@@ -673,7 +784,10 @@ impl Core {
             Err(Unchecked::Unknown) => return OwnerReply::NotOne,
             Err(Unchecked::Delivering) => return OwnerReply::Unsaved,
             Err(Unchecked::Refused(refusal)) => {
-                return self.refuse_reply(delivery, token, &refusal).await
+                let refused = self.refuse_reply(delivery, token, &refusal).await;
+                // A late reply may be what closed it: the session hears too.
+                self.expire_question(&reference).await;
+                return refused;
             }
         };
         let delivered = format!(
@@ -687,7 +801,12 @@ impl Core {
                     .deliver_session_text(registration, delivery, line, InputSource::Requester)
                     .await
                 {
-                    InjectOutcome::Retry(_) | InjectOutcome::Waiting(_) => {
+                    // Not taken: a spawned Claude in its turn or waiting on a
+                    // request writes nothing (`WaitingForTurn`). Not
+                    // acknowledged, so the same reply is read again.
+                    InjectOutcome::Retry(_)
+                    | InjectOutcome::Waiting(_)
+                    | InjectOutcome::WaitingForTurn(_) => {
                         self.reopen_question(&reference).await;
                         OwnerReply::Unsaved
                     }
@@ -697,53 +816,68 @@ impl Core {
                             format!("The answer to question {reference} was not delivered: {why}");
                         self.refuse_reply(delivery, token, &refusal).await
                     }
-                    _ => {
-                        // Recorded before it is settled, as the Codex path
-                        // does: a redelivery after a failed save finds the
-                        // reply handled, not a question already answered.
-                        let saved = self
-                            .store
-                            .remember(|store| store.record_injected(&delivery.id))
-                            .is_ok();
-                        settle(&reference);
-                        if !saved {
-                            return OwnerReply::Unsaved;
-                        }
-                        self.reply_to_sender(delivery, token, &delivered).await;
-                        OwnerReply::Settled(format!("question {reference} answered"))
+                    // It may have arrived: never typed again, and the inbox
+                    // is told it may not have.
+                    InjectOutcome::InDoubt(why) => {
+                        let unsure = format!(
+                            "The answer to question {reference} may not have reached @{}: {why}. \
+It is not sent again.",
+                            checked.agent
+                        );
+                        self.answered(&reference, delivery, token, &unsure).await
+                    }
+                    InjectOutcome::Delivered | InjectOutcome::Accepted(_) => {
+                        self.answered(&reference, delivery, token, &delivered).await
                     }
                 }
             }
             Via::Codex { request } => {
-                if self
-                    .store
-                    .remember(|store| store.record_injected(&delivery.id))
-                    .is_err()
-                {
-                    self.reopen_question(&reference).await;
-                    return OwnerReply::Unsaved;
-                }
+                // The answer is the request's result first, and the reply
+                // recorded handled only after: a record that could not be
+                // saved never leaves a reply handled that Codex never had.
                 let value = codex_answer(&checked.questions, &checked.answers);
                 match drive::answer_question(&registration.target.id, request, value) {
                     ReplyResult::Answered => {
-                        settle(&reference);
-                        self.reply_to_sender(delivery, token, &delivered).await;
-                        OwnerReply::Settled(format!("question {reference} answered"))
+                        self.answered(&reference, delivery, token, &delivered).await
                     }
                     _ => {
                         if let Some(record) = records().get_mut(&reference) {
                             record.state = State::Expired;
+                            record.notified = true;
                         }
                         let refusal = format!(
                             "Question {reference} expired; @{} continued without it.",
                             checked.agent
                         );
-                        self.reply_to_sender(delivery, token, &refusal).await;
-                        OwnerReply::Settled(format!("question {reference} reply: {refusal}"))
+                        self.refuse_reply(delivery, token, &refusal).await
                     }
                 }
             }
         }
+    }
+
+    /// Settles `reference`, whose answer reached the session (or may have),
+    /// records the reply handled, and tells the inbox `told`. When the
+    /// record cannot be saved the reply is left unacknowledged: its
+    /// redelivery finds it handled in memory and is acknowledged then. The
+    /// inbox is told either way; its reply is sent once by its key.
+    async fn answered(
+        &self,
+        reference: &str,
+        delivery: &Delivery,
+        token: (&str, &Secret),
+        told: &str,
+    ) -> OwnerReply {
+        settle(reference);
+        let saved = self
+            .store
+            .remember(|store| store.record_injected(&delivery.id))
+            .is_ok();
+        self.reply_to_sender(delivery, token, told).await;
+        if !saved {
+            return OwnerReply::Unsaved;
+        }
+        OwnerReply::Settled(format!("question {reference} answered"))
     }
 
     async fn refuse_reply(
@@ -804,14 +938,35 @@ impl Core {
         if via != Via::Claude {
             return;
         }
+        match self.arc() {
+            // A session that cannot take it yet (a spawned Claude in its
+            // turn) is told once it can, for as long as it is remembered.
+            Some(core) => {
+                let reference = reference.to_string();
+                tokio::spawn(async move {
+                    let until = Instant::now() + NOTICE_FOR;
+                    while !core.tell_expired(&target, &reference).await && Instant::now() < until {
+                        tokio::time::sleep(NOTICE_RETRY).await;
+                    }
+                });
+            }
+            None => {
+                self.tell_expired(&target, reference).await;
+            }
+        }
+    }
+
+    /// Tells `target`'s Claude session that `reference` expired: false only
+    /// when the session is running and could not take it yet.
+    async fn tell_expired(&self, target: &Target, reference: &str) -> bool {
         let Some(registration) = self
             .store
-            .read(|store| store.registration_for(&target).cloned())
+            .read(|store| store.registration_for(target).cloned())
         else {
-            return;
+            return true;
         };
         if !self.question_session_running(&registration).await {
-            return;
+            return true;
         }
         let id = format!("question-expired-{reference}");
         let delivery = Delivery {
@@ -820,14 +975,16 @@ impl Core {
             reason: Some("dm".into()),
             ..Delivery::default()
         };
-        let _ = self
-            .deliver_session_text(
+        !matches!(
+            self.deliver_session_text(
                 &registration,
                 &delivery,
                 text::expired_line(reference),
                 InputSource::Requester,
             )
-            .await;
+            .await,
+            InjectOutcome::Retry(_) | InjectOutcome::Waiting(_) | InjectOutcome::WaitingForTurn(_)
+        )
     }
 
     /// Whether `registration`'s session is still running: a spawned
