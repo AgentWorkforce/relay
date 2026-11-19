@@ -3,6 +3,33 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const THREAD: &str = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 
+#[test]
+fn coordination_notice_cannot_find_or_change_an_existing_native_message_choice() {
+    let temp = tempfile::tempdir().unwrap();
+    let fake = Fake::new(temp.path());
+    let router = CodexRouter::new(fake.clone());
+    let message_id = "123456789";
+    fake.idle.store(false, Ordering::SeqCst);
+    assert!(matches!(
+        router.inject_native_existing(THREAD, message_id, "original owner input"),
+        InjectOutcome::WaitingForTurn(_)
+    ));
+    assert!(router.native_choice(THREAD, message_id));
+    let path = receipt_path(&fake.path, THREAD, message_id);
+    let before = std::fs::read(&path).unwrap();
+    let notice_key = crate::relay::local_notices::provider_key(message_id).unwrap();
+    assert!(!router.native_choice(THREAD, &notice_key));
+    fake.idle.store(true, Ordering::SeqCst);
+    assert_eq!(
+        router.inject(THREAD, &notice_key, "automated untrusted notice"),
+        InjectOutcome::Delivered
+    );
+    assert_eq!(fake.peer.load(Ordering::SeqCst), 1);
+    assert!(fake.native.lock().unwrap().is_empty());
+    assert_eq!(std::fs::read(path).unwrap(), before);
+    assert!(router.native_choice(THREAD, message_id));
+}
+
 struct Fake {
     path: PathBuf,
     owner: Mutex<Option<String>>,

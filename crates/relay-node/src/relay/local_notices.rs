@@ -4,7 +4,7 @@
 use crate::relay::daemon::Core;
 use crate::relay::delivery::policy::{frame, is_plain_id};
 use crate::relay::inject::{DeliveryRoute, InjectOutcome};
-use crate::relay::store::Registration;
+use crate::relay::store::{Registration, SessionKind};
 use std::sync::Arc;
 
 /// This label contains a space, so `agents::normalize_name` cannot admit it
@@ -13,17 +13,54 @@ pub const AUTHOR: &str = "coordination service";
 /// Bound the untrusted body before escaping or allocating a frame.
 pub const MAX_BODY_BYTES: usize = 4096;
 
+/// Relaycast assigns numeric message IDs. Core-owned local notices never use
+/// that namespace, including in providers' durable native-choice journals.
+const KEY_PREFIX: &str = "local-notice-";
+
+pub(crate) fn provider_key(advisory_id: &str) -> Option<String> {
+    if !is_plain_id(advisory_id) {
+        return None;
+    }
+    let key = format!("{KEY_PREFIX}{advisory_id}");
+    is_plain_id(&key).then_some(key)
+}
+
+/// Gateway routes create a conversation for the sender rather than carrying
+/// a party-less notice into the exact existing chat. Future kinds need review.
+fn supported(kind: SessionKind) -> bool {
+    match kind {
+        SessionKind::OpenClaw | SessionKind::Hermes => false,
+        SessionKind::Droid
+        | SessionKind::Pi
+        | SessionKind::Omp
+        | SessionKind::Codex
+        | SessionKind::ClaudeTerminal
+        | SessionKind::ClaudeCloud
+        | SessionKind::Grok
+        | SessionKind::GrokOpen
+        | SessionKind::OpenCode
+        | SessionKind::MuseOpen
+        | SessionKind::OpenCodeOpen
+        | SessionKind::Devin
+        | SessionKind::CursorCli
+        | SessionKind::Copilot => true,
+    }
+}
+
 impl Core {
     /// Hands an automated, untrusted notice to this exact registration using
     /// its ordinary peer route. Only an in-process plugin can call this seam;
     /// no local RPC or session socket exposes it. It offers no reply, creates
     /// no DM/history entry and never uses native input or owner authority.
     ///
-    /// `advisory_id` is the stable provider message key on every observation,
-    /// including `Accepted` and `WaitingForTurn`; neither means `Delivered`.
+    /// Core prefixes `advisory_id` into a disjoint stable provider key on
+    /// every observation, including `Accepted` and `WaitingForTurn`; neither
+    /// means `Delivered`. The prefixed key must fit the provider's 128-byte
+    /// plain-ID bound. Longer IDs are refused, never truncated or shortened.
     /// The caller owns scheduling and durable per-device deduplication. Core
     /// adds no receipt store: a restart must not erase the caller's proof of
     /// delivery. An uncertain handoff must never be blindly resubmitted.
+    /// OpenClaw and Hermes cannot carry a party-less notice and are refused.
     ///
     /// A changed or removed registration is refused rather than retargeted.
     /// Once injection starts its delivery lock survives caller cancellation,
@@ -34,8 +71,17 @@ impl Core {
         advisory_id: &str,
         body: &str,
     ) -> InjectOutcome {
-        if !is_plain_id(advisory_id) || body.len() > MAX_BODY_BYTES || body.trim().is_empty() {
+        let Some(provider_key) = provider_key(advisory_id) else {
+            return InjectOutcome::Refused("Invalid local coordination notice key.".into());
+        };
+        if body.len() > MAX_BODY_BYTES || body.trim().is_empty() {
             return InjectOutcome::Refused("Invalid local coordination notice.".into());
+        }
+        if !supported(expected.target.kind) {
+            return InjectOutcome::Refused(
+                "This provider cannot carry a local coordination notice without a DM conversation."
+                    .into(),
+            );
         }
         let text = format!(
             "[Agent Relay automated notice — author: {AUTHOR} (service); advisory {advisory_id}]\n\
@@ -46,7 +92,6 @@ impl Core {
         let guard = self.agent_locks.get(&expected.name).lock_owned().await;
         let core = self.clone();
         let expected = expected.clone();
-        let advisory_id = advisory_id.to_owned();
         // Move the owned guard onto the blocking thread. Dropping this
         // future cannot release it while a provider is still injecting.
         tokio::task::spawn_blocking(move || {
@@ -77,8 +122,8 @@ impl Core {
                 return InjectOutcome::Refused("The local notice registration changed.".into());
             };
             let route = DeliveryRoute {
-                delivery_id: &advisory_id,
-                message_id: &advisory_id,
+                delivery_id: &provider_key,
+                message_id: &provider_key,
                 sender: Some(AUTHOR),
                 // No registered sender, channel, reply parent or native turn.
                 ..DeliveryRoute::default()

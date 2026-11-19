@@ -133,7 +133,7 @@ async fn notice_is_a_bounded_escaped_service_frame_without_a_reply_or_history_en
     let calls = probe.calls.lock().unwrap();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].0, registration);
-    assert_eq!(calls[0].1, "advisory-1");
+    assert_eq!(calls[0].1, "local-notice-advisory-1");
     let text = &calls[0].2;
     assert!(
         text.starts_with("[Agent Relay automated notice — author: coordination service (service);")
@@ -178,7 +178,7 @@ async fn provider_outcomes_and_the_advisory_key_are_preserved_on_observation() {
         .lock()
         .unwrap()
         .iter()
-        .all(|call| call.1 == "stable-advisory"));
+        .all(|call| call.1 == "local-notice-stable-advisory"));
 }
 
 #[tokio::test]
@@ -225,6 +225,68 @@ async fn a_notice_waiting_in_another_workspace_is_not_injected() {
         InjectOutcome::Refused(_)
     ));
     assert!(probe.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn gateway_kinds_are_refused_before_any_provider_or_conversation_is_opened() {
+    let (_home, core, probe, mut registration) = fixture();
+    for kind in [SessionKind::OpenClaw, SessionKind::Hermes] {
+        registration.target.kind = kind;
+        core.store
+            .update(|store| store.registrations = vec![registration.clone()])
+            .unwrap();
+        assert!(matches!(
+            core.inject_local_notice(&registration, "notice", "body")
+                .await,
+            InjectOutcome::Refused(_)
+        ));
+    }
+    assert!(probe.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn supported_kind_admission_preserves_the_exact_target_and_disjoint_key() {
+    let (_home, core, probe, mut registration) = fixture();
+    for kind in [
+        SessionKind::Droid,
+        SessionKind::Pi,
+        SessionKind::Omp,
+        SessionKind::Codex,
+        SessionKind::ClaudeTerminal,
+        SessionKind::ClaudeCloud,
+        SessionKind::Grok,
+        SessionKind::GrokOpen,
+        SessionKind::OpenCode,
+        SessionKind::MuseOpen,
+        SessionKind::OpenCodeOpen,
+        SessionKind::Devin,
+        SessionKind::CursorCli,
+        SessionKind::Copilot,
+    ] {
+        registration.target.kind = kind;
+        core.store
+            .update(|store| store.registrations = vec![registration.clone()])
+            .unwrap();
+        assert_eq!(
+            core.inject_local_notice(&registration, "123456789", "body")
+                .await,
+            InjectOutcome::Delivered
+        );
+        let calls = probe.calls.lock().unwrap();
+        let (actual, key, _) = calls.last().unwrap();
+        assert_eq!(actual, &registration);
+        assert_eq!(key, "local-notice-123456789");
+    }
+}
+
+#[test]
+fn provider_key_is_stable_disjoint_and_fits_provider_id_bounds() {
+    assert_eq!(
+        provider_key("123456789"),
+        Some("local-notice-123456789".into())
+    );
+    assert!(provider_key(&"a".repeat(128 - KEY_PREFIX.len())).is_some());
+    assert!(provider_key(&"a".repeat(129 - KEY_PREFIX.len())).is_none());
 }
 
 #[tokio::test]
