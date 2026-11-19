@@ -229,7 +229,11 @@ describe('parseMemoryPolicy', () => {
     expect(parseBytes('-1GiB')).toBeNull();
     expect(parseBytes('1TiB')).toBeNull();
     expect(parseBytes(' 1.5 GiB ')).toBe(1.5 * GIB);
-    expect(parseBytes('0' + '\t'.repeat(50_000))).toBeNull();
+    // Long whitespace runs are trimmed or refused, never backtracked over (CodeQL js/polynomial-redos).
+    const started = Date.now();
+    expect(parseBytes('0' + '\t'.repeat(50_000) + 'x')).toBeNull();
+    expect(parseBytes('0' + '\t'.repeat(50_000))).toBe(0);
+    expect(Date.now() - started).toBeLessThan(100);
     expect(parseBytes('1 constructor')).toBeNull();
   });
 });
