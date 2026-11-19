@@ -33,6 +33,14 @@
 //! the hook. Taking the hook out leaves the file as the person had it: their
 //! own copy (`.relay-desktop-backup`) goes back byte for byte when nothing
 //! else changed, and a file Agent Relay created goes once it is empty.
+//!
+//! Beside it goes a PreToolUse hook for `AskUserQuestion`
+//! ([`QUESTION_SUBCOMMAND`]), which hands a question to
+//! `POST /claude/question` before Claude shows it: with question escalation
+//! on, the question goes to the question inbox and the tool call is refused
+//! with the reason; otherwise, or on any failure, the dialog is shown as
+//! usual. It comes and goes with the SessionStart hook and the same build
+//! marker, and Claude waits for it at most [`QUESTION_HOOK_TIMEOUT`].
 
 use crate::relay::agents::SettingsExtension;
 use crate::relay::claude::ClaudeConfig;
@@ -49,9 +57,9 @@ mod permission_tests;
 mod permissions;
 mod rollback;
 pub use output::{
-    claude_ancestor, has_person, hook_output, joining, nudge, read_probe, read_status,
-    registration_off, StatusRead, JOINING_FOR_PERSON, NUDGE_FOR_PERSON, OBSERVE_HEADER,
-    OBSERVE_VALUE,
+    claude_ancestor, has_person, hook_output, joining, nudge, question_hook_output, read_probe,
+    read_status, registration_off, StatusRead, JOINING_FOR_PERSON, NUDGE_FOR_PERSON,
+    OBSERVE_HEADER, OBSERVE_VALUE,
 };
 #[cfg(test)]
 pub use permissions::covers;
@@ -67,6 +75,45 @@ pub const SETTING: &str = "claude_session_hook";
 
 /// The subcommand the hook runs; also how the hook is recognized as ours.
 pub const SUBCOMMAND: &str = "claude-session-hook";
+
+/// The subcommand the `AskUserQuestion` PreToolUse hook runs; also how that
+/// hook is recognized as ours.
+pub const QUESTION_SUBCOMMAND: &str = "claude-question-hook";
+
+/// How long Claude Code waits for the question hook (its `timeout`). The
+/// route answers within `question::ROUTE_LIMIT`, well inside it, so Claude
+/// never gives up on a hook whose question was sent.
+pub const QUESTION_HOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The tool the question hook matches.
+const QUESTION_TOOL: &str = "AskUserQuestion";
+
+/// The hooks this extension installs, by Claude Code hook event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Event {
+    /// The session start hook ([`SUBCOMMAND`]).
+    Start,
+    /// The `AskUserQuestion` PreToolUse hook ([`QUESTION_SUBCOMMAND`]).
+    Question,
+}
+
+impl Event {
+    const ALL: [Event; 2] = [Event::Start, Event::Question];
+
+    fn key(self) -> &'static str {
+        match self {
+            Event::Start => "SessionStart",
+            Event::Question => "PreToolUse",
+        }
+    }
+
+    fn subcommand(self) -> &'static str {
+        match self {
+            Event::Start => SUBCOMMAND,
+            Event::Question => QUESTION_SUBCOMMAND,
+        }
+    }
+}
 
 /// Installs and removes the hook. The files are the source of truth, so the
 /// setting is on when any known login has this build's hook.
@@ -211,6 +258,17 @@ impl ClaudeSessionHookSettings {
         )
     }
 
+    /// The question hook's command: this build's hook command running
+    /// [`QUESTION_SUBCOMMAND`] with the same program and build marker.
+    fn question_command(&self) -> String {
+        let command = self.command.trim();
+        let (_, body) = crate::relay::hook_owner::owner(command);
+        match body.strip_suffix(SUBCOMMAND) {
+            Some(program) => format!("{program}{QUESTION_SUBCOMMAND}{}", &command[body.len()..]),
+            None => format!("{command} {QUESTION_SUBCOMMAND}"),
+        }
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, ()> {
         self.lock
             .lock()
@@ -312,12 +370,14 @@ impl ClaudeSessionHookSettings {
             .map_err(|_| Self::fail(&path, "cannot be written"))
     }
 
-    /// Whether `value` holds this build's hook. Its permission rules come
-    /// and go with it; a rule alone may be the person's own.
+    /// Whether `value` holds either of this build's hooks. Its permission
+    /// rules come and go with them; a rule alone may be the person's own.
     fn holds_ours(&self, value: &Value) -> bool {
-        value["hooks"]["SessionStart"]
-            .as_array()
-            .is_some_and(|groups| !self.our_commands(groups).is_empty())
+        Event::ALL.into_iter().any(|event| {
+            value["hooks"][event.key()]
+                .as_array()
+                .is_some_and(|groups| !self.our_commands(groups, event).is_empty())
+        })
     }
 
     /// `value` with this build's hook and its permission rules (the current
@@ -342,28 +402,32 @@ impl ClaudeSessionHookSettings {
     /// Helper" hook, say) as a displaced copy of its own, at `refresh`; a
     /// profile build never matches it, nor a hook naming another build's
     /// socket.
-    fn is_ours(&self, command: &str) -> bool {
+    fn is_ours(&self, command: &str, event: Event) -> bool {
         crate::relay::hook_owner::same_build(command, &self.command, |body| {
-            body.ends_with(SUBCOMMAND)
+            body.ends_with(event.subcommand())
         })
     }
 
-    fn our_commands<'a>(&self, groups: &'a [Value]) -> Vec<&'a str> {
+    fn our_commands<'a>(&self, groups: &'a [Value], event: Event) -> Vec<&'a str> {
         groups
             .iter()
             .flat_map(|group| group["hooks"].as_array().into_iter().flatten())
             .filter_map(|hook| hook["command"].as_str())
-            .filter(|command| self.is_ours(command))
+            .filter(|command| self.is_ours(command, event))
             .collect()
     }
 
-    /// Removes this build's hooks from `groups`, and any group that held
-    /// only them. Whether anything changed.
-    fn take_out(&self, groups: &mut Vec<Value>) -> bool {
+    /// Removes this build's `event` hooks from `groups`, and any group that
+    /// held only them. Whether anything changed.
+    fn take_out(&self, groups: &mut Vec<Value>, event: Event) -> bool {
         let before = groups.clone();
         for group in groups.iter_mut() {
             if let Some(hooks) = group["hooks"].as_array_mut() {
-                hooks.retain(|hook| !hook["command"].as_str().is_some_and(|c| self.is_ours(c)));
+                hooks.retain(|hook| {
+                    !hook["command"]
+                        .as_str()
+                        .is_some_and(|c| self.is_ours(c, event))
+                });
             }
         }
         groups.retain(|group| {
@@ -374,8 +438,20 @@ impl ClaudeSessionHookSettings {
         *groups != before
     }
 
-    fn entry(&self) -> Value {
-        json!({"hooks": [{"type": "command", "command": self.command, "timeout": 10}]})
+    fn entry(&self, event: Event) -> Value {
+        match event {
+            Event::Start => {
+                json!({"hooks": [{"type": "command", "command": self.command, "timeout": 10}]})
+            }
+            Event::Question => json!({
+                "matcher": QUESTION_TOOL,
+                "hooks": [{
+                    "type": "command",
+                    "command": self.question_command(),
+                    "timeout": QUESTION_HOOK_TIMEOUT.as_secs(),
+                }],
+            }),
+        }
     }
 
     fn file_has_hook(&self, path: &Path) -> bool {
@@ -384,7 +460,7 @@ impl ClaudeSessionHookSettings {
                 .get("hooks")
                 .and_then(|hooks| hooks.get("SessionStart"))
                 .and_then(Value::as_array)
-                .is_some_and(|groups| !self.our_commands(groups).is_empty())
+                .is_some_and(|groups| !self.our_commands(groups, Event::Start).is_empty())
         })
     }
 
@@ -408,18 +484,33 @@ impl ClaudeSessionHookSettings {
                 "has a hooks value that is not an object, so it was left unchanged",
             ));
         };
-        let start = hooks.entry("SessionStart").or_insert_with(|| json!([]));
-        let Some(groups) = start.as_array_mut() else {
-            return Err(Self::fail(
-                path,
-                "has a SessionStart value that is not a list, so it was left unchanged",
-            ));
-        };
-        let entry = self.entry();
-        let current = groups.contains(&entry) && self.our_commands(groups).len() == 1;
-        if !current {
-            self.take_out(groups);
-            groups.push(entry);
+        // Both lists are checked before either changes, so a bad one
+        // leaves the file as it was.
+        for event in Event::ALL {
+            if hooks
+                .get(event.key())
+                .is_some_and(|value| !value.is_array())
+            {
+                return Err(Self::fail(
+                    path,
+                    &format!(
+                        "has a {} value that is not a list, so it was left unchanged",
+                        event.key()
+                    ),
+                ));
+            }
+        }
+        for event in Event::ALL {
+            let list = hooks.entry(event.key()).or_insert_with(|| json!([]));
+            let Some(groups) = list.as_array_mut() else {
+                continue;
+            };
+            let entry = self.entry(event);
+            let current = groups.contains(&entry) && self.our_commands(groups, event).len() == 1;
+            if !current {
+                self.take_out(groups, event);
+                groups.push(entry);
+            }
         }
         Ok(())
     }
@@ -428,16 +519,20 @@ impl ClaudeSessionHookSettings {
         let Some(hooks) = object.get_mut("hooks").and_then(Value::as_object_mut) else {
             return;
         };
-        let Some(groups) = hooks.get_mut("SessionStart").and_then(Value::as_array_mut) else {
-            return;
-        };
-        if !self.take_out(groups) {
-            return;
+        let mut changed = false;
+        for event in Event::ALL {
+            let Some(groups) = hooks.get_mut(event.key()).and_then(Value::as_array_mut) else {
+                continue;
+            };
+            if !self.take_out(groups, event) {
+                continue;
+            }
+            changed = true;
+            if groups.is_empty() {
+                hooks.remove(event.key());
+            }
         }
-        if groups.is_empty() {
-            hooks.remove("SessionStart");
-        }
-        if hooks.is_empty() {
+        if changed && hooks.is_empty() {
             object.remove("hooks");
         }
     }
@@ -1169,6 +1264,152 @@ mod tests {
         let kept = std::fs::read(&primary).unwrap();
         assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
         assert_eq!(std::fs::read(&primary).unwrap(), kept);
+    }
+
+    fn question_commands(value: &Value) -> Vec<(&str, &str, u64)> {
+        value["hooks"]["PreToolUse"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|group| {
+                let matcher = group["matcher"].as_str().unwrap_or("");
+                group["hooks"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(move |hook| {
+                        (
+                            matcher,
+                            hook["command"].as_str().unwrap_or(""),
+                            hook["timeout"].as_u64().unwrap_or(0),
+                        )
+                    })
+            })
+            .collect()
+    }
+
+    // Review on question escalation (finding 4b): the Claude path needs a
+    // PreToolUse hook for AskUserQuestion, installed with the SessionStart
+    // hook, with the same build marker, and removed with it, leaving the
+    // person's own PreToolUse hooks alone.
+    #[test]
+    fn the_question_hook_comes_and_goes_with_the_session_hook() {
+        let root = tempfile::tempdir().unwrap();
+        login(root.path(), ".claude");
+        let primary = root.path().join(".claude/settings.json");
+        let own = json!({"matcher": "Bash", "hooks": [{"type": "command", "command": "lint"}]});
+        std::fs::write(
+            &primary,
+            serde_json::to_vec(&json!({"hooks": {"PreToolUse": [own.clone()]}})).unwrap(),
+        )
+        .unwrap();
+        let settings = settings(root.path());
+        assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+        let installed = read(&primary);
+        assert_eq!(installed["hooks"]["PreToolUse"][0], own, "{installed}");
+        assert_eq!(
+            question_commands(&installed),
+            vec![
+                ("Bash", "lint", 0),
+                (
+                    "AskUserQuestion",
+                    "'/Apps/Agent Relay.app/probe' claude-question-hook",
+                    QUESTION_HOOK_TIMEOUT.as_secs()
+                )
+            ],
+            "{installed}"
+        );
+        assert!(
+            QUESTION_HOOK_TIMEOUT > crate::relay::question::ROUTE_LIMIT,
+            "Claude waits for the hook longer than the route takes"
+        );
+        let bytes = std::fs::read(&primary).unwrap();
+        assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+        assert_eq!(std::fs::read(&primary).unwrap(), bytes, "idempotent");
+
+        // A question hook taken out alone is put back at refresh.
+        let mut value = read(&primary);
+        value["hooks"]["PreToolUse"]
+            .as_array_mut()
+            .unwrap()
+            .truncate(1);
+        std::fs::write(&primary, serde_json::to_vec(&value).unwrap()).unwrap();
+        settings.refresh();
+        assert_eq!(question_commands(&read(&primary)).len(), 2);
+
+        assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+        let removed = read(&primary);
+        assert_eq!(
+            removed,
+            json!({"hooks": {"PreToolUse": [own]}}),
+            "{removed}"
+        );
+    }
+
+    #[test]
+    fn each_build_has_its_own_question_hook() {
+        for (build, socket) in [
+            (Build::Development, ""),
+            (Build::Profile("acme".into()), "/run/acme/relay.sock"),
+        ] {
+            let hooks = ClaudeSessionHookSettings::new(
+                &ClaudeConfig {
+                    home: PathBuf::from("/nowhere/.claude"),
+                    executable: None,
+                    app_sessions: None,
+                    dirs: ClaudeDirs::default(),
+                },
+                ClaudeSessionHookSettings::command_for_build(
+                    Path::new("/p/probe"),
+                    &build,
+                    Path::new(socket),
+                ),
+            );
+            let expected = crate::relay::hook_owner::command(
+                "/p/probe",
+                QUESTION_SUBCOMMAND,
+                &build,
+                Path::new(socket),
+            );
+            assert_eq!(hooks.question_command(), expected);
+            assert!(hooks.is_ours(&expected, Event::Question));
+            assert!(!hooks.is_ours(&expected, Event::Start));
+            assert!(!hooks.is_ours("/p/probe claude-question-hook", Event::Question));
+        }
+    }
+
+    #[test]
+    fn a_question_hook_answer_refuses_the_dialog_only_when_escalated() {
+        let sent = json!({"ok": true, "data": {"escalated": true, "ref": "q1",
+            "inbox": "triage", "reason": "Sent to @triage as q1."}});
+        let out = question_hook_output(200, sent.to_string().as_bytes());
+        assert_eq!(out["hookSpecificOutput"]["hookEventName"], "PreToolUse");
+        assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(
+            out["hookSpecificOutput"]["permissionDecisionReason"],
+            "Sent to @triage as q1."
+        );
+        for (status, body) in [
+            (
+                200,
+                json!({"ok": true, "data": {"escalated": false}}).to_string(),
+            ),
+            (
+                200,
+                json!({"ok": true, "data": {"escalated": false, "reason": "late"}}).to_string(),
+            ),
+            (
+                404,
+                json!({"ok": false, "data": {"escalated": true, "reason": "x"}}).to_string(),
+            ),
+            (200, "not json".into()),
+        ] {
+            assert_eq!(
+                question_hook_output(status, body.as_bytes()),
+                json!({}),
+                "{body}"
+            );
+        }
     }
 
     #[test]

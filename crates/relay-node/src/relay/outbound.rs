@@ -66,6 +66,7 @@ mod http;
 mod mobile_handoff;
 mod mobile_handoff_permission;
 mod mobile_handoff_result;
+mod question;
 mod send_files;
 mod session_routes;
 mod settings;
@@ -494,6 +495,7 @@ impl Outbound {
                 self.hook_route(pid, uid, request).await
             }
             ("POST", "/copilot/mcp") => self.hook_route(pid, uid, request).await,
+            ("POST", "/claude/question") => self.question_route(pid, uid, request).await,
             ("GET", "/setup/status") => {
                 // The SessionStart hook only reads. Applying the agent-led
                 // defaults here would turn automatic activation on, which is
