@@ -681,14 +681,22 @@ impl Core {
             return Err(format!("@{name} cannot answer its own questions"));
         }
         let workspace = self.workspace().ok_or("no workspace is connected")?;
-        if workspace.base_url != registration.base_url
-            || registration.workspace_key.as_ref() != Some(&workspace.key)
-        {
+        // The inbox is named in the person's workspace: the asking agent must
+        // be in it, by its key, or (registered through relaygate, which
+        // keeps no key) the workspace is that gate's.
+        let same_workspace = workspace.base_url == registration.base_url
+            && match registration.workspace_key.as_ref() {
+                Some(key) => *key == workspace.key,
+                None => workspace.is_gate_only(),
+            };
+        if !same_workspace {
             return Err(
                 "the asking agent is in a different workspace from the question inbox".into(),
             );
         }
-        let http = sdk_gaps::workspace_http(&workspace)
+        // Found as the question is sent: by name, with the asking agent's own
+        // credential.
+        let http = sdk_gaps::http(acting_base, acting_token)
             .map_err(|error| format!("the workspace is unreachable: {error}"))?;
         let agent = sdk_gaps::get_agent(&http, &name)
             .await

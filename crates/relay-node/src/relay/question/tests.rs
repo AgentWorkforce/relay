@@ -1350,3 +1350,39 @@ async fn the_owner_is_the_inbox_only_in_its_own_workspace() {
         }
     }
 }
+
+/// An agent registered through relaygate keeps no workspace key: the named
+/// inbox is found with the agent's own credential, in its own workspace.
+#[tokio::test]
+async fn a_gate_agent_asks_the_named_inbox() {
+    let (base, hits) = relaycast(false);
+    let mut asker = registration(
+        "asker-gate",
+        Target::new(SessionKind::ClaudeTerminal, "sess-gate"),
+        &base,
+    );
+    asker.workspace_key = None;
+    let (core, _temp) = core(&base, &asker, true);
+    // Without a key, the agent is not taken to be in a keyed workspace.
+    assert_eq!(
+        core.escalate_question(&asker, asked(&input())).await,
+        Escalation::Failed(
+            "the asking agent is in a different workspace from the question inbox".into()
+        )
+    );
+    // The daemon's workspace is the gate's: the inbox is found and asked.
+    core.workspace.lock().unwrap().as_mut().unwrap().gate_url = Some(base.clone());
+    let escalation = core.escalate_question(&asker, asked(&input())).await;
+    assert!(
+        matches!(&escalation, Escalation::Sent { inbox, .. } if inbox == "triage"),
+        "{escalation:?}"
+    );
+    let lookups: Vec<String> = hits
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|hit| hit.starts_with("GET /v1/agents/triage"))
+        .cloned()
+        .collect();
+    assert_eq!(lookups.len(), 1, "{lookups:?}");
+}
