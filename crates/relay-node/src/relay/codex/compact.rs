@@ -28,11 +28,55 @@ pub fn enabled() -> bool {
 }
 
 /// Held by tests that set the process-wide flag or depend on its value.
+/// A store load or save (`adopt`) takes it too, so another test's store
+/// cannot flip the flag under a test holding it; the holder's own loads
+/// and saves still set it.
 #[cfg(test)]
-pub static FLAG_LOCK: Mutex<()> = Mutex::new(());
+pub static FLAG_LOCK: FlagLock = FlagLock {
+    lock: Mutex::new(()),
+    holder: Mutex::new(None),
+};
+
+#[cfg(test)]
+pub struct FlagLock {
+    lock: Mutex<()>,
+    holder: Mutex<Option<std::thread::ThreadId>>,
+}
+
+#[cfg(test)]
+pub struct FlagGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+#[cfg(test)]
+impl FlagLock {
+    pub fn lock(&'static self) -> std::sync::LockResult<FlagGuard> {
+        let held = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
+        *self.holder.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(std::thread::current().id());
+        Ok(FlagGuard(held))
+    }
+
+    fn held_here(&self) -> bool {
+        *self.holder.lock().unwrap_or_else(PoisonError::into_inner)
+            == Some(std::thread::current().id())
+    }
+}
+
+#[cfg(test)]
+impl Drop for FlagGuard {
+    fn drop(&mut self) {
+        *FLAG_LOCK.holder.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+}
 
 pub fn set_enabled(on: bool) {
     COMPACT.store(on, Ordering::Relaxed);
+}
+
+/// Sets the flag from the store, as it loads or a save adopts it.
+pub fn adopt(on: bool) {
+    #[cfg(test)]
+    let _flag = (!FLAG_LOCK.held_here()).then(|| FLAG_LOCK.lock());
+    set_enabled(on);
 }
 
 /// What one thread's history holds of one message's whole text.
