@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay-node`: local Cursor sessions expose the matching `cursor:<id>` history identity, so desktop apps can show their upload controls alongside messaging.
+- `agent-relay-node`: local Cursor sessions expose the matching `cursor:<id>` history identity, so desktop apps can show their upload controls alongside messaging. Previously archived Cursor sessions keep their Archived classification after the upgrade.
 
 ### Added
 
