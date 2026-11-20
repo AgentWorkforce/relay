@@ -4,6 +4,12 @@ mod mobile_claude_roots;
 mod session_activity;
 
 impl SessionDirectory for LocalSessions {
+    fn cursor_hook_matches(&self, pid: i32, conversation: &str) -> bool {
+        self.openclaw_caller(pid).is_none()
+            && cursor_cli::hook_caller(&self.config.cursor, &*self.table, pid, conversation)
+                .is_some()
+    }
+
     fn copilot_context_accepted(&self, sid: &str, context: &str) -> bool {
         crate::relay::copilot::context_accepted(&self.config.copilot, sid, context)
     }

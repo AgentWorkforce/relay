@@ -315,6 +315,17 @@ pub trait SessionDirectory: Send + Sync + 'static {
         Err(CallerMiss::NotASession)
     }
 
+    /// Whether this Cursor hook's process ancestry proves the exact
+    /// conversation supplied by its payload. Editor hooks need not have
+    /// the conversation environment variable that ordinary tools carry.
+    /// This is hook authentication only, not generic caller identity.
+    fn cursor_hook_matches(&self, pid: i32, conversation: &str) -> bool {
+        self.caller(pid).is_ok_and(|session| {
+            session.target.kind == crate::relay::store::SessionKind::CursorCli
+                && session.target.id == conversation
+        })
+    }
+
     /// Whether a hook's nearest trusted writer holds only this Codex thread.
     /// SessionStart lacks a turn id, so a shared writer must defer context.
     /// May block; ordinary caller identity resolution is separate.

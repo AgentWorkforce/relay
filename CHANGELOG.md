@@ -5,7 +5,13 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `agent-relay-node`: a `TurnEndAdvisories` plugin can hand a session a short advisory as its turn ends, once, through the core's stop hooks for Codex, Copilot, Devin, Cursor CLI and Claude Code (a new `claude-stop-hook`, installed with the Claude Code SessionStart hook). Hooks that run outside the core ask the new `POST /turn-end/take` and `POST /turn-end/shown` session routes.
+  Rejected Copilot and Cursor stops leave cached advisories untaken. Socket hooks require the caller's exact session, and malformed advisory ID batches are withheld. Claude's Stop hook stays quiet in automated runs and preserves profile/socket markers. Cursor editor hooks use their payload-aware process proof; stale generations and hooks cancelled during an advisory request leave notes unacknowledged.
+- `agent-relay-node`: an in-process coordination plugin can deliver a bounded, escaped automated notice to an exact local registration through its peer route. Notices carry no human authority or reply route; stale registrations are refused, and cancellation keeps the delivery lock until the handoff ends. Provider keys use a separate namespace. OpenClaw and Hermes are refused because their routes create sender conversations. Codex queue and Copilot native receipts recognize the service notice reference without changing peer-pointer routing or granting native input authority. The caller retains durable delivery receipts.
 
 ## [18.11.0] - 2026-11-19
 
