@@ -13,7 +13,9 @@
 //! - `devin` and `cursor-cli`: their hooks prove the session in the hook
 //!   process itself (Devin reads its own inbox; Cursor's `hook_caller` walks
 //!   to the `cursor-agent` or editor host holding the conversation). Here a
-//!   core must also identify the caller as exactly the named session.
+//!   core must also verify the caller against exactly the named session.
+//!   Cursor editor hooks use payload-aware hook proof, since the editor
+//!   supplies their conversation only in the payload, not the environment.
 //!   An unidentified process is told nothing.
 //!
 //! Every other kind, and a kind the core does not know, is answered
@@ -64,6 +66,15 @@ impl Outbound {
             .filter(|id| !id.is_empty() && id.len() <= MAX_ID_BYTES)?;
         let target = Target::new(kind, id);
         let directory = self.core.plugins.sessions.clone();
+        if kind == SessionKind::CursorCli {
+            return tokio::task::spawn_blocking(move || {
+                directory
+                    .cursor_hook_matches(pid, &target.id)
+                    .then_some(target)
+            })
+            .await
+            .unwrap_or(None);
+        }
         let caller = tokio::task::spawn_blocking(move || directory.caller(pid))
             .await
             .unwrap_or(Err(CallerMiss::NotASession));
@@ -217,6 +228,126 @@ mod tests {
     }
 
     const NOTHING: fn() -> Value = || json!({"text": null, "ids": []});
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cursor_editor_hook_uses_payload_proof_without_lending_other_chats_its_identity() {
+        use crate::relay::{
+            cursor_cli,
+            local::{LocalConfig, LocalSessions},
+            process::{FakeProcess, FakeProcesses},
+        };
+        let own = "9daab59d-0f1f-4c29-9f5d-717d3ecca68f";
+        let other = "97d763c9-121c-4438-a6c8-596ba4288c37";
+        let target = Target::new(SessionKind::CursorCli, own);
+        let queue = Arc::new(Queue::with(target.clone(), "Heads up.", &["c"]));
+        let (temp, original) = fixture(None);
+        let config = original.core.config.clone();
+        let local = LocalConfig::from_env(&|_| None, temp.path());
+        let table = Arc::new(FakeProcesses::default());
+        let main = std::path::PathBuf::from("/Applications/Cursor.app/Contents/MacOS/Cursor");
+        let helper=std::path::PathBuf::from("/Applications/Cursor.app/Contents/Frameworks/Cursor Helper (Plugin).app/Contents/MacOS/Cursor Helper (Plugin)");
+        table.trust_cursor(main.clone());
+        table.trust_cursor(helper.clone());
+        table.insert(
+            600,
+            FakeProcess {
+                parent: 1,
+                uid: original.uid,
+                start: 10,
+                executable: Some(main.clone()),
+                arguments: vec![main.to_string_lossy().into()],
+                ..Default::default()
+            },
+        );
+        for (host, pid, session) in [(650, 700, own), (660, 710, other)] {
+            table.insert(
+                host,
+                FakeProcess {
+                    parent: 600,
+                    uid: original.uid,
+                    start: 20,
+                    executable: Some(helper.clone()),
+                    arguments: vec!["Cursor Helper (Plugin): extension-host api [1-2]".into()],
+                    ..Default::default()
+                },
+            );
+            table.insert(
+                pid,
+                FakeProcess {
+                    parent: host,
+                    uid: original.uid,
+                    start: 100,
+                    executable: Some("/bin/zsh".into()),
+                    arguments: vec!["/bin/zsh".into()],
+                    cwd: Some("/work/api".into()),
+                    ..Default::default()
+                },
+            );
+            let path = local
+                .cursor
+                .data_dir
+                .join("projects/work-api/agent-transcripts")
+                .join(session)
+                .join(format!("{session}.jsonl"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "").unwrap();
+            assert!(cursor_cli::record_editor_hook(
+                &local.cursor,
+                &*table,
+                pid,
+                host,
+                &json!({"conversation_id":session,"workspace_roots":["/work/api"]})
+            ));
+        }
+        table.insert(
+            800,
+            FakeProcess {
+                parent: 1,
+                uid: original.uid,
+                start: 100,
+                ..Default::default()
+            },
+        );
+        let sessions = Arc::new(LocalSessions::new(local, table.clone()));
+        assert!(
+            sessions.caller(700).is_err(),
+            "ordinary tool identity still requires its environment"
+        );
+        let (core, _) = Core::with_plugins(
+            config,
+            Plugins {
+                sessions,
+                turn_end_advisories: Some(queue.clone()),
+                ..Default::default()
+            },
+        );
+        let outbound = Outbound::new(core, Arc::new(Direct));
+        assert_eq!(take(&outbound, 710, "cursor-cli", own).await, NOTHING());
+        assert_eq!(take(&outbound, 800, "cursor-cli", own).await, NOTHING());
+        assert_eq!(take(&outbound, 700, "cursor-cli", other).await, NOTHING());
+        let answer = take(&outbound, 700, "cursor-cli", own).await;
+        assert_eq!(answer, json!({"text":"Heads up.","ids":["c"]}));
+        let shown = request(
+            "/turn-end/shown",
+            json!({"kind":"cursor-cli","session_id":own,"ids":["c"]}),
+        );
+        outbound.handle(710, outbound.uid, &shown).await.unwrap();
+        assert!(queue.shown().is_empty());
+        outbound.handle(700, outbound.uid, &shown).await.unwrap();
+        assert_eq!(queue.shown(), vec![(target, vec!["c".into()])]);
+        // A caller explicitly naming another conversation cannot use the
+        // payload to override that independent ancestry evidence.
+        table
+            .processes
+            .lock()
+            .unwrap()
+            .get_mut(&700)
+            .unwrap()
+            .environment
+            .insert(cursor_cli::editor::CONVERSATION_VAR.into(), other.into());
+        assert!(!outbound.core.plugins.sessions.cursor_hook_matches(700, own));
+    }
 
     #[tokio::test]
     async fn claude_takes_only_its_own_advisory_once_and_acks_it() {

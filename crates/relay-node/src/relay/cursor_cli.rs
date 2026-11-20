@@ -586,6 +586,9 @@ pub fn run_hook_with(
         }
     };
     wait::stop_seen(config, payload);
+    if wait::stale_stop(config, payload) {
+        return false;
+    }
     let mut advisory = None;
     let mut ids = None;
     let mut take = || {
@@ -609,7 +612,7 @@ pub fn run_hook_with(
         }
         _ => {
             advisory = take();
-            answer_now(config, payload, &mut advisory, write)
+            !wait::stale_stop(config, payload) && answer_now(config, payload, &mut advisory, write)
         }
     };
     // Taken out of the option only once an answer carrying it was written.

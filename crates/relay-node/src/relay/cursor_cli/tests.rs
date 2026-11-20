@@ -1353,3 +1353,135 @@ fn stopped_removed_or_stale_waits_do_not_take_an_advisory() {
         assert!(advisories.shown.borrow().is_empty());
     }
 }
+
+#[test]
+fn an_immediate_stale_stop_keeps_the_current_turn_advisory_untaken() {
+    let (_temp, config, table) = world();
+    table.insert(501, shell(400));
+    for generation in ["gen-1", "gen-2"] {
+        let mut prompt = completed(generation);
+        prompt["hook_event_name"] = json!("beforeSubmitPrompt");
+        wait::turn_seen(&config, &prompt);
+    }
+    let advisories = Advisories::one("Heads up.");
+    assert_eq!(
+        advisories.run(&config, &table, 501, &completed("gen-1"), false, true),
+        (false, vec![])
+    );
+    assert_eq!(advisories.asked.get(), 0);
+    assert!(advisories.shown.borrow().is_empty());
+    assert!(
+        advisories
+            .run(&config, &table, 501, &completed("gen-2"), false, true)
+            .0
+    );
+    assert_eq!(advisories.shown.borrow().len(), 1);
+}
+
+#[test]
+fn an_immediate_completed_stop_without_generation_evidence_still_gets_its_advisory() {
+    let (_temp, config, table) = world();
+    table.insert(501, shell(400));
+    let mut prompt = completed("current");
+    prompt["hook_event_name"] = json!("beforeSubmitPrompt");
+    wait::turn_seen(&config, &prompt);
+    let mut payload = completed("unused");
+    payload.as_object_mut().unwrap().remove("generation_id");
+    let advisories = Advisories::one("Heads up.");
+    assert!(
+        advisories
+            .run(&config, &table, 501, &payload, false, true)
+            .0
+    );
+    assert_eq!(advisories.shown.borrow().len(), 1);
+}
+
+#[test]
+fn cancellation_during_the_advisory_request_neither_writes_nor_acknowledges_it() {
+    use std::cell::Cell;
+    let (_temp, config, table) = world();
+    table.insert(501, shell(400));
+    let mut prompt = completed("gen-1");
+    prompt["hook_event_name"] = json!("beforeSubmitPrompt");
+    wait::turn_seen(&config, &prompt);
+    let stopping = Cell::new(false);
+    let writes = Cell::new(0);
+    let acks = Cell::new(0);
+    let take = |_: &str| {
+        // Model cancellation arriving during the synchronous socket read.
+        stopping.set(true);
+        Some(crate::relay::daemon::TurnEndAdvisory {
+            text: "Heads up.".into(),
+            ids: vec!["a-1".into()],
+        })
+    };
+    let shown = |_: &str, _: &[String]| acks.set(acks.get() + 1);
+    let stop = || stopping.get();
+    let installed = || true;
+    let claiming = |claim: &mut dyn FnMut() -> Option<wait::Ended>| claim();
+    let watch = wait::Watch {
+        pid: 501,
+        until: std::time::Instant::now() + Duration::from_secs(3),
+        poll: Duration::from_millis(10),
+        stopping: &stop,
+        installed: &installed,
+        claiming: &claiming,
+    };
+    assert!(!run_hook_with(
+        &config,
+        &table,
+        501,
+        &completed("gen-1"),
+        Some(&watch),
+        Some(&TurnEnd {
+            take: &take,
+            shown: &shown
+        }),
+        &mut |_| {
+            writes.set(writes.get() + 1);
+            true
+        }
+    ));
+    assert!(stopping.get());
+    assert_eq!(writes.get(), 0);
+    assert_eq!(acks.get(), 0);
+}
+
+#[test]
+fn an_immediate_stop_that_becomes_stale_during_take_neither_writes_nor_acknowledges() {
+    use std::cell::Cell;
+    let (_temp, config, table) = world();
+    table.insert(501, shell(400));
+    let mut prompt = completed("gen-1");
+    prompt["hook_event_name"] = json!("beforeSubmitPrompt");
+    wait::turn_seen(&config, &prompt);
+    let writes = Cell::new(0);
+    let acks = Cell::new(0);
+    let take = |_: &str| {
+        let mut newer = completed("gen-2");
+        newer["hook_event_name"] = json!("beforeSubmitPrompt");
+        wait::turn_seen(&config, &newer);
+        Some(crate::relay::daemon::TurnEndAdvisory {
+            text: "Heads up.".into(),
+            ids: vec!["a-1".into()],
+        })
+    };
+    let shown = |_: &str, _: &[String]| acks.set(acks.get() + 1);
+    assert!(!run_hook_with(
+        &config,
+        &table,
+        501,
+        &completed("gen-1"),
+        None,
+        Some(&TurnEnd {
+            take: &take,
+            shown: &shown
+        }),
+        &mut |_| {
+            writes.set(writes.get() + 1);
+            true
+        }
+    ));
+    assert_eq!(writes.get(), 0);
+    assert_eq!(acks.get(), 0);
+}

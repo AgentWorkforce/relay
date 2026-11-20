@@ -326,6 +326,17 @@ pub fn waits_after(payload: &Value) -> bool {
         && generation(payload).is_some()
 }
 
+/// A stop naming a turn different from the recorded current one must not
+/// consume that turn's advisory. Missing generation evidence is supported.
+pub(super) fn stale_stop(config: &CursorConfig, payload: &Value) -> bool {
+    payload["hook_event_name"] == "stop"
+        && payload_session(payload)
+            .zip(generation(payload))
+            .is_some_and(|(session, generation)| {
+                current_turn(config, session).is_some_and(|current| current != generation)
+            })
+}
+
 /// What a waiting hook checks besides its conversation's inbox.
 pub struct Watch<'a> {
     /// The waiting hook's own pid.
@@ -455,7 +466,9 @@ pub(super) fn wait_with_take(
                             if advisory.is_none() {
                                 *advisory = take();
                             }
-                            answer(config, payload, advisory, write)
+                            // A socket take can block while shutdown or
+                            // cancellation asks this hook to stop.
+                            interrupted(watch).or_else(|| answer(config, payload, advisory, write))
                         })
                 })
             })

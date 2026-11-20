@@ -349,19 +349,14 @@ async fn registration_is_rechecked_after_waiting_for_the_delivery_lock() {
     let (_home, core, probe, registration) = fixture();
     let lock = core.agent_locks.get(&registration.name);
     let held = lock.lock_owned().await;
-    let caller = {
-        let core = core.clone();
-        let registration = registration.clone();
-        tokio::spawn(async move {
-            core.inject_local_notice(&registration, "notice", "body")
-                .await
-        })
-    };
+    let caller = core.inject_local_notice(&registration, "notice", "body");
+    tokio::pin!(caller);
+    assert!(futures_util::poll!(&mut caller).is_pending());
     core.store
         .update(|store| store.registrations[0].target.id = "replacement".into())
         .unwrap();
     drop(held);
-    assert!(matches!(caller.await.unwrap(), InjectOutcome::Refused(_)));
+    assert!(matches!(caller.await, InjectOutcome::Refused(_)));
     assert!(probe.calls.lock().unwrap().is_empty());
 }
 
@@ -401,3 +396,5 @@ async fn cancelling_a_caller_keeps_the_delivery_lock_until_injection_finishes() 
         .await
         .unwrap();
 }
+
+mod receipts;
