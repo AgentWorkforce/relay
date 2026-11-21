@@ -337,6 +337,9 @@ test("omp's ask goes to the core that has the session; the first that does not i
   assert.equal(first.length, 1);
   assert.equal(second.length, 1, 'one question sent');
   assert.equal(second[0].tool_name, 'ask');
+  // Each core is told the time left of the extension's own bound.
+  assert.ok(second[0].budget_ms > 0 && second[0].budget_ms <= 23000, String(second[0].budget_ms));
+  assert.ok(second[0].budget_ms <= first[0].budget_ms, 'the second core gets what is left');
   assert.equal(second[0].session_id, id);
   assert.deepEqual(second[0].tool_input, event.input);
 });

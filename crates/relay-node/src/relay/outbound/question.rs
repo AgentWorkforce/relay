@@ -25,6 +25,7 @@ impl Outbound {
         uid: u32,
         request: &super::Request,
     ) -> Result<Value, OutboundError> {
+        let arrived = std::time::Instant::now();
         let fields = payload(request, Purpose::Json)?;
         let session = self.identify(pid, uid).await?;
         self.admit(&session.target.key())?;
@@ -70,12 +71,42 @@ impl Outbound {
             cwd: &cwd,
             via: Via::Session,
         };
+        // A caller that waits less than the route's own limit (the Pi and
+        // omp extension, which shares its time across cores) says so: the
+        // question is sent only while a full send still fits in what is
+        // left of it, caller checks included.
+        let Some(limit) = send_limit(&fields, arrived.elapsed()) else {
+            return Ok(serde_json::json!({"escalated": false,
+                "reason": "too little of the caller's time is left to send the question"}));
+        };
         Ok(self
             .core
-            .escalate_question_within(&registration, asked, question::ROUTE_LIMIT)
+            .escalate_question_within(&registration, asked, limit)
             .await
             .response())
     }
+}
+
+/// The least time a send is given; less is not tried.
+const MIN_SEND: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Time kept back for the answer to reach the caller.
+const SEND_MARGIN: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The send limit for a question whose caller gave `budget_ms` (its own
+/// time left when it asked), `elapsed` after it arrived: `ROUTE_LIMIT`, or
+/// less when the caller's time is shorter; `None` when too little is left.
+fn send_limit(
+    fields: &Map<String, Value>,
+    elapsed: std::time::Duration,
+) -> Option<std::time::Duration> {
+    let Some(budget) = fields.get("budget_ms").and_then(Value::as_u64) else {
+        return Some(question::ROUTE_LIMIT);
+    };
+    let left = std::time::Duration::from_millis(budget)
+        .checked_sub(elapsed + SEND_MARGIN)?
+        .min(question::ROUTE_LIMIT);
+    (left >= MIN_SEND).then_some(left)
 }
 
 /// Whether `registration` is pinned to the session's `live` route binding
@@ -393,6 +424,38 @@ mod tests {
             assert!(route_questions(&top, kind).is_empty(), "{kind:?}");
             assert!(!route_questions(&multi, kind)[0].multi, "{kind:?}");
         }
+    }
+
+    /// A caller's own time left bounds the send: a full limit with none
+    /// given, the caller's time less the margin and what the checks took,
+    /// and nothing when too little is left.
+    #[test]
+    fn the_callers_time_bounds_the_send() {
+        use std::time::Duration;
+        let fields = |budget: Option<u64>| {
+            let mut fields = Map::new();
+            if let Some(budget) = budget {
+                fields.insert("budget_ms".into(), json!(budget));
+            }
+            fields
+        };
+        assert_eq!(
+            send_limit(&fields(None), Duration::ZERO),
+            Some(question::ROUTE_LIMIT)
+        );
+        assert_eq!(
+            send_limit(&fields(Some(60_000)), Duration::ZERO),
+            Some(question::ROUTE_LIMIT)
+        );
+        assert_eq!(
+            send_limit(&fields(Some(18_000)), Duration::from_secs(5)),
+            Some(Duration::from_secs(12))
+        );
+        assert_eq!(
+            send_limit(&fields(Some(3_500)), Duration::from_secs(1)),
+            None
+        );
+        assert_eq!(send_limit(&fields(Some(500)), Duration::ZERO), None);
     }
 
     #[test]

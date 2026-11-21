@@ -153,11 +153,12 @@ function askCore(socket, body, deadline) {
 // undefined, and the tool runs.
 async function escalateQuestion(sessionId, cwd, toolName, input) {
   const deadline = Date.now() + QUESTION_LIMIT_MS;
-  const body = JSON.stringify({ hook_event_name: 'PreToolUse', session_id: sessionId,
-    tool_name: toolName, tool_input: input, cwd });
   for (const name of QUESTION_POINTERS) {
     const socket = pointedSocket(name);
     if (!socket || Date.now() >= deadline) continue;
+    // The core sends only while a full send fits in the time left here.
+    const body = JSON.stringify({ hook_event_name: 'PreToolUse', session_id: sessionId,
+      tool_name: toolName, tool_input: input, cwd, budget_ms: Math.max(0, deadline - Date.now() - 500) });
     const result = await askCore(socket, body, deadline);
     if (result.unknown) return undefined;
     if (result.refused) continue;

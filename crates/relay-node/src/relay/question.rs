@@ -534,6 +534,9 @@ fn expire(reference: &str) -> Option<(Target, Via)> {
     Some((record.target.clone(), record.via.clone()))
 }
 
+/// How many managed OpenCode sessions are read at once.
+const OPENCODE_POLL_AT_ONCE: usize = 4;
+
 /// How often a managed OpenCode session's pending questions are read.
 const OPENCODE_POLL: Duration = Duration::from_secs(2);
 
@@ -1141,62 +1144,72 @@ impl Core {
         if !self.store.read(settings::on) {
             return;
         }
-        for registration in sessions {
-            let (injector, held) = (self.plugins.injector.clone(), registration.clone());
-            let Some(pending) =
-                tokio::task::spawn_blocking(move || injector.opencode_questions(&held))
-                    .await
-                    .ok()
-                    .flatten()
-            else {
+        // Each session on its own, a few at a time: one slow server or send
+        // does not hold up the others' questions.
+        use futures_util::StreamExt;
+        futures_util::stream::iter(sessions)
+            .for_each_concurrent(OPENCODE_POLL_AT_ONCE, |registration| async move {
+                self.poll_opencode_session(&registration).await;
+            })
+            .await;
+    }
+
+    /// One managed OpenCode session's pass of `poll_opencode_questions`.
+    async fn poll_opencode_session(&self, registration: &Registration) {
+        let registration = registration.clone();
+        let (injector, held) = (self.plugins.injector.clone(), registration.clone());
+        let Some(pending) = tokio::task::spawn_blocking(move || injector.opencode_questions(&held))
+            .await
+            .ok()
+            .flatten()
+        else {
+            return;
+        };
+        let ids: Vec<String> = pending
+            .iter()
+            .filter_map(|request| request["id"].as_str().map(str::to_string))
+            .collect();
+        close_answered_in_session(&registration.target, Some(&ids));
+        for request in &pending {
+            let Some(id) = request["id"].as_str() else {
                 continue;
             };
-            let ids: Vec<String> = pending
-                .iter()
-                .filter_map(|request| request["id"].as_str().map(str::to_string))
-                .collect();
-            close_answered_in_session(&registration.target, Some(&ids));
-            for request in &pending {
-                let Some(id) = request["id"].as_str() else {
-                    continue;
-                };
-                let key = format!("{}:{id}", registration.target.key());
-                // A core stopping sends nothing more.
-                if self.stopping() {
-                    return;
+            let key = format!("{}:{id}", registration.target.key());
+            // A core stopping sends nothing more.
+            if self.stopping() {
+                return;
+            }
+            let tried = self.config.app_data_dir.join(OPENCODE_TRIED_FILE);
+            if opencode_mark_tried(&tried, &key) {
+                continue;
+            }
+            let Some(questions) = text::opencode_questions(request) else {
+                continue;
+            };
+            let cwd = registration
+                .spawn
+                .as_ref()
+                .and_then(|spawn| spawn.worker_cwd.clone())
+                .unwrap_or_default();
+            let asked = Asked {
+                questions,
+                input: request,
+                cwd: &cwd,
+                via: Via::OpenCode {
+                    request: id.to_string(),
+                },
+            };
+            match self
+                .escalate_question_within(&registration, asked, ROUTE_LIMIT)
+                .await
+            {
+                Escalation::Failed(error) | Escalation::TimedOut(error) => {
+                    crate::relay::diagnostics::write(format_args!(
+                        "question from @{} not escalated: {error}",
+                        registration.name
+                    ));
                 }
-                let tried = self.config.app_data_dir.join(OPENCODE_TRIED_FILE);
-                if opencode_mark_tried(&tried, &key) {
-                    continue;
-                }
-                let Some(questions) = text::opencode_questions(request) else {
-                    continue;
-                };
-                let cwd = registration
-                    .spawn
-                    .as_ref()
-                    .and_then(|spawn| spawn.worker_cwd.clone())
-                    .unwrap_or_default();
-                let asked = Asked {
-                    questions,
-                    input: request,
-                    cwd: &cwd,
-                    via: Via::OpenCode {
-                        request: id.to_string(),
-                    },
-                };
-                match self
-                    .escalate_question_within(&registration, asked, ROUTE_LIMIT)
-                    .await
-                {
-                    Escalation::Failed(error) | Escalation::TimedOut(error) => {
-                        crate::relay::diagnostics::write(format_args!(
-                            "question from @{} not escalated: {error}",
-                            registration.name
-                        ));
-                    }
-                    Escalation::Sent { .. } | Escalation::Off => {}
-                }
+                Escalation::Sent { .. } | Escalation::Off => {}
             }
         }
     }
@@ -1310,10 +1323,24 @@ session at its next turn.",
                 }
             }
             Via::OpenCode { request } => {
+                // The organization's hold on the inbox's messages holds its
+                // answer too, as it holds one typed into a session: read
+                // again once it is let through.
+                if self.organization_now_holds(registration, delivery) {
+                    self.reopen_question(&reference).await;
+                    return OwnerReply::Unsaved;
+                }
+                // A structured answer takes the sender's text as written:
+                // only escapes and control characters come out.
+                let structured =
+                    text::parse_structured_answer(delivery.text.as_deref().unwrap_or_default())
+                        .and_then(|(_, rest)| {
+                            text::resolve_structured(&checked.questions, &rest).ok()
+                        })
+                        .unwrap_or_else(|| checked.answers.clone());
                 // One attempt: OpenCode takes it, or the question stays open
                 // in its own dialog and the inbox is told.
-                let answers: Value = checked
-                    .answers
+                let answers: Value = structured
                     .iter()
                     .map(|answer| json!(answer.values))
                     .collect();

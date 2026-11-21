@@ -374,6 +374,33 @@ pub const MAX_ANSWER: usize = 4096;
 /// and line-separator characters become spaces, brackets parentheses,
 /// whitespace runs collapse), and at most `MAX_ANSWER` characters.
 pub fn clean(text: &str) -> String {
+    capped(crate::relay::delivery::policy::one_line(&without_escapes(
+        text,
+    )))
+}
+
+/// `text` as a structured answer takes it (OpenCode's reply): escape
+/// sequences and control characters out, nothing else rewritten, so
+/// brackets and the sender's own spacing stay as written.
+pub fn structured(text: &str) -> String {
+    let plain: String = without_escapes(text)
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    capped(plain.trim().to_string())
+}
+
+fn capped(line: String) -> String {
+    if line.chars().count() <= MAX_ANSWER {
+        return line;
+    }
+    let mut cut: String = line.chars().take(MAX_ANSWER - 1).collect();
+    cut.push('…');
+    cut
+}
+
+/// `text` without terminal escape sequences.
+fn without_escapes(text: &str) -> String {
     let mut plain = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
@@ -413,18 +440,22 @@ pub fn clean(text: &str) -> String {
             c => plain.push(c),
         }
     }
-    let line = crate::relay::delivery::policy::one_line(&plain);
-    if line.chars().count() <= MAX_ANSWER {
-        return line;
-    }
-    let mut cut: String = line.chars().take(MAX_ANSWER - 1).collect();
-    cut.push('…');
-    cut
+    plain
 }
 
 /// `answer <ref> <rest>` or `answer <ref>: <rest>` (the verb in any case):
 /// the reference, lower case, and the rest, `clean`ed (empty when none).
 pub fn parse_answer(text: &str) -> Option<(String, String)> {
+    parse_answer_with(text, clean)
+}
+
+/// `parse_answer`, with the rest as a structured answer takes it
+/// (`structured`).
+pub fn parse_structured_answer(text: &str) -> Option<(String, String)> {
+    parse_answer_with(text, structured)
+}
+
+fn parse_answer_with(text: &str, tidy: fn(&str) -> String) -> Option<(String, String)> {
     let text = text.trim_start();
     let (verb, rest) = text.split_once(char::is_whitespace)?;
     if !verb.eq_ignore_ascii_case("answer") {
@@ -440,7 +471,7 @@ pub fn parse_answer(text: &str) -> Option<(String, String)> {
     }
     let rest = rest.trim_start();
     let rest = rest.strip_prefix(':').unwrap_or(rest).trim();
-    Some((reference.to_ascii_lowercase(), clean(rest)))
+    Some((reference.to_ascii_lowercase(), tidy(rest)))
 }
 
 /// What a reply chose for one question: the labels (or the sender's own
@@ -454,6 +485,19 @@ pub struct Answer {
 /// The answers `rest` gives `questions`, one per question (`;` between
 /// them when there are several); or why it cannot be read.
 pub fn resolve(questions: &[Question], rest: &str) -> Result<Vec<Answer>, String> {
+    resolve_with(questions, rest, clean)
+}
+
+/// `resolve`, with free text as a structured answer takes it.
+pub fn resolve_structured(questions: &[Question], rest: &str) -> Result<Vec<Answer>, String> {
+    resolve_with(questions, rest, structured)
+}
+
+fn resolve_with(
+    questions: &[Question],
+    rest: &str,
+    tidy: fn(&str) -> String,
+) -> Result<Vec<Answer>, String> {
     if rest.is_empty() {
         return Err("give a number or text after the reference".into());
     }
@@ -471,11 +515,15 @@ pub fn resolve(questions: &[Question], rest: &str) -> Result<Vec<Answer>, String
     questions
         .iter()
         .zip(parts)
-        .map(|(question, part)| resolve_one(question, part))
+        .map(|(question, part)| resolve_one(question, part, tidy))
         .collect()
 }
 
-fn resolve_one(question: &Question, part: &str) -> Result<Answer, String> {
+fn resolve_one(
+    question: &Question,
+    part: &str,
+    tidy: fn(&str) -> String,
+) -> Result<Answer, String> {
     let numbers: Option<Vec<usize>> = (!question.options.is_empty())
         .then(|| {
             part.split(',')
@@ -485,7 +533,7 @@ fn resolve_one(question: &Question, part: &str) -> Result<Answer, String> {
         .flatten();
     let choose = || format!("choose a number from 1 to {}", question.options.len());
     let text = || {
-        let words = clean(part);
+        let words = tidy(part);
         Answer {
             values: vec![words.clone()],
             shown: words,

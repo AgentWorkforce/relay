@@ -2199,6 +2199,8 @@ struct OpenCodeServer {
     pending: Mutex<Option<Vec<Value>>>,
     replies: Mutex<Vec<(String, Value)>>,
     outcome: Mutex<crate::relay::opencode_existing::ReplyOutcome>,
+    /// How long each read of the pending questions takes.
+    slow: Mutex<Duration>,
 }
 
 impl OpenCodeServer {
@@ -2207,6 +2209,7 @@ impl OpenCodeServer {
             pending: Mutex::new(Some(Vec::new())),
             replies: Mutex::default(),
             outcome: Mutex::new(crate::relay::opencode_existing::ReplyOutcome::Taken),
+            slow: Mutex::new(Duration::ZERO),
         })
     }
     fn ask(&self, pending: Option<Vec<Value>>) {
@@ -2224,8 +2227,16 @@ impl crate::relay::inject::Injector for OpenCodeServer {
     fn final_answer(&self, _: &Target, _: &str) -> Option<String> {
         None
     }
-    fn opencode_questions(&self, _: &Registration) -> Option<Vec<Value>> {
-        self.pending.lock().unwrap().clone()
+    fn opencode_questions(&self, registration: &Registration) -> Option<Vec<Value>> {
+        let slow = *self.slow.lock().unwrap();
+        std::thread::sleep(slow);
+        // Each session's own questions, from a shared list.
+        self.pending.lock().unwrap().clone().map(|pending| {
+            pending
+                .into_iter()
+                .filter(|request| request["sessionID"] == registration.target.id.as_str())
+                .collect()
+        })
     }
     fn opencode_reply(
         &self,
@@ -2600,4 +2611,119 @@ async fn an_unparseable_opencode_record_starts_a_new_one() {
     records().retain(|_, record| record.target.id != session);
     core.poll_opencode_questions().await;
     assert_eq!(dm_count(&hits), 1, "then not again");
+}
+
+/// A free-text answer reaches OpenCode as the inbox wrote it: brackets and
+/// spacing stay; only what a terminal would act on comes out.
+#[tokio::test]
+async fn an_opencode_free_text_answer_is_sent_as_written() {
+    let (base, _hits) = relaycast(false);
+    let session = "ses_oc_text";
+    let asker = registration(
+        "asker-oc-text",
+        Target::new(SessionKind::OpenCode, session),
+        &base,
+    );
+    let server = OpenCodeServer::new();
+    let (core, _temp) = opencode_core(&base, &asker, &server);
+    server.ask(Some(vec![opencode_request(session, "que_oc_text")]));
+    core.poll_opencode_questions().await;
+    let reference = reference_for(session);
+    let token = Secret::new("at_live_asker");
+    let answer = reply(
+        "d-oc-text",
+        "agent-triage",
+        &format!("answer {reference} [1, 2]  as  a list\u{1b}[31m"),
+    );
+    let _ = core
+        .question_reply(&asker, &answer, (base.as_str(), &token))
+        .await;
+    assert_eq!(
+        server.replies.lock().unwrap().as_slice(),
+        [("que_oc_text".to_string(), json!([["[1, 2]  as  a list"]]))]
+    );
+}
+
+/// The organization's hold on messages from outside its admins holds an
+/// inbox's OpenCode answer too: nothing reaches OpenCode until it lifts.
+#[tokio::test]
+async fn an_opencode_answer_waits_for_the_organizations_hold() {
+    let (base, _hits) = relaycast(false);
+    let session = "ses_oc_held";
+    let asker = registration(
+        "asker-oc-held",
+        Target::new(SessionKind::OpenCode, session),
+        &base,
+    );
+    let server = OpenCodeServer::new();
+    let (core, _temp) = opencode_core(&base, &asker, &server);
+    server.ask(Some(vec![opencode_request(session, "que_oc_held")]));
+    core.poll_opencode_questions().await;
+    let reference = reference_for(session);
+    assert!(
+        core.set_organization_hold(Some(std::collections::BTreeSet::from(
+            ["admin".to_string()]
+        )))
+    );
+    let token = Secret::new("at_live_asker");
+    let answer = reply(
+        "d-oc-held",
+        "agent-triage",
+        &format!("answer {reference} 1"),
+    );
+    assert!(matches!(
+        core.question_reply(&asker, &answer, (base.as_str(), &token))
+            .await,
+        OwnerReply::Unsaved
+    ));
+    assert!(server.replies.lock().unwrap().is_empty(), "held");
+    assert_eq!(state_of(&reference), Some(State::Open));
+    core.set_organization_hold(None);
+    let OwnerReply::Settled(_) = core
+        .question_reply(&asker, &answer, (base.as_str(), &token))
+        .await
+    else {
+        panic!("let through");
+    };
+    assert_eq!(server.replies.lock().unwrap().len(), 1);
+}
+
+/// One slow OpenCode server does not hold up another session's questions:
+/// sessions are read at the same time.
+#[tokio::test]
+async fn slow_opencode_sessions_are_read_at_the_same_time() {
+    let (base, hits) = relaycast(false);
+    let server = OpenCodeServer::new();
+    *server.slow.lock().unwrap() = Duration::from_millis(600);
+    let first = registration(
+        "asker-oc-slow-1",
+        Target::new(SessionKind::OpenCode, "ses_oc_slow_1"),
+        &base,
+    );
+    let (core, _temp) = opencode_core(&base, &first, &server);
+    let second = registration(
+        "asker-oc-slow-2",
+        Target::new(SessionKind::OpenCode, "ses_oc_slow_2"),
+        &base,
+    );
+    core.store
+        .remember(|store| {
+            store
+                .tokens
+                .insert(second.name.clone(), Secret::new("at_live_asker"));
+            store.registrations.push(second.clone());
+        })
+        .unwrap();
+    server.ask(Some(vec![
+        opencode_request("ses_oc_slow_1", "que_oc_slow_1"),
+        opencode_request("ses_oc_slow_2", "que_oc_slow_2"),
+    ]));
+    let started = Instant::now();
+    core.poll_opencode_questions().await;
+    assert!(
+        started.elapsed() < Duration::from_millis(1100),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(dm_count(&hits), 2);
 }

@@ -85,10 +85,11 @@ live session.",
         SessionKind::OpenCode => row(
             "OpenCode sessions Agent Relay serves",
             Partial,
-            "Questions OpenCode's question tool asks in a session on a server Agent Relay runs, \
-read from that server: the question shows in OpenCode's dialog and in the inbox, and the \
-first answer wins. Such a server may have no window a person watches, so a question that \
-cannot be sent stays there unseen. Not yet proven in a live session.",
+            "Questions OpenCode's question tool asks in a person's session on a server Agent \
+Relay runs, read from that server: the question shows in OpenCode's dialog and in the inbox, \
+and the first answer wins. Agents Agent Relay spawns keep the question tool off, as no one \
+watches them. Such a server may have no window a person watches, so a question that cannot \
+be sent stays there unseen. Not yet proven in a live session.",
         ),
         SessionKind::OpenCodeOpen => row(
             "OpenCode in a terminal",
