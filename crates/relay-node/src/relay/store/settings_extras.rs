@@ -67,9 +67,10 @@ pub struct SettingsExtras {
         skip_serializing_if = "Option::is_none"
     )]
     pub opencode_auto_activate: Option<bool>,
-    /// Missing means false: a Claude Code session's `AskUserQuestion` is
-    /// shown in its dialog. On, it goes to `question_escalation_inbox` over
-    /// Agent Relay instead (`relay::question`).
+    /// Missing means true: a Claude Code session's `AskUserQuestion` goes to
+    /// `question_escalation_inbox` over Agent Relay instead of its dialog
+    /// (`relay::question`). Only an explicit false (`off`) shows the dialog;
+    /// it is kept, as any set flag is, through a reload and a merge.
     #[serde(
         rename = "questionEscalation",
         default,
@@ -249,6 +250,58 @@ mod tests {
             SettingsExtras::merged(&base, &base, &theirs_flag).auto_join_general,
             Some(false)
         );
+    }
+
+    /// Question escalation is on unless turned off, so an explicit off must
+    /// never be lost to a merge: kept when either side set it and the other
+    /// left it, or when the other side changed only other settings.
+    #[test]
+    fn a_merge_keeps_an_explicit_question_escalation_off() {
+        let unset = SettingsExtras::default();
+        let off = SettingsExtras {
+            question_escalation: Some(false),
+            ..SettingsExtras::default()
+        };
+        assert_eq!(
+            SettingsExtras::merged(&unset, &off, &unset).question_escalation,
+            Some(false)
+        );
+        assert_eq!(
+            SettingsExtras::merged(&unset, &unset, &off).question_escalation,
+            Some(false)
+        );
+        // Already off in the base: another process writing other settings
+        // (or the inbox) keeps it off.
+        let other = SettingsExtras {
+            auto_join_general: Some(true),
+            question_escalation_inbox: Some("lead".into()),
+            ..off.clone()
+        };
+        for (ours, theirs) in [(&off, &other), (&other, &off)] {
+            let merged = SettingsExtras::merged(&off, ours, theirs);
+            assert_eq!(merged.question_escalation, Some(false));
+            assert_eq!(merged.auto_join_general, Some(true));
+        }
+        // An explicit on is kept the same way.
+        let on = SettingsExtras {
+            question_escalation: Some(true),
+            ..SettingsExtras::default()
+        };
+        assert_eq!(
+            SettingsExtras::merged(&unset, &on, &unset).question_escalation,
+            Some(true)
+        );
+        assert_eq!(
+            SettingsExtras::merged(&unset, &unset, &on).question_escalation,
+            Some(true)
+        );
+        // Saved and read back, off stays an explicit false.
+        let mut store = Store::default();
+        store.extras = off;
+        let value = serde_json::to_value(&store).unwrap();
+        assert_eq!(value["questionEscalation"], false);
+        let back: Store = serde_json::from_value(value).unwrap();
+        assert_eq!(back.extras.question_escalation, Some(false));
     }
 
     #[test]
