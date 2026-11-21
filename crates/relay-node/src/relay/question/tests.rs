@@ -369,7 +369,7 @@ const BROKEN: u8 = 4;
 
 /// A Relaycast that knows the agent `triage` and takes DMs (refusing them
 /// when `refuse`), keeping each request's line and body.
-fn relaycast(refuse: bool) -> (String, Arc<Mutex<Vec<String>>>) {
+pub(crate) fn relaycast(refuse: bool) -> (String, Arc<Mutex<Vec<String>>>) {
     let mode = Arc::new(std::sync::atomic::AtomicU8::new(if refuse {
         REFUSE
     } else {
@@ -1802,6 +1802,139 @@ async fn a_codex_hook_input_that_does_not_parse_is_asked_as_usual() {
     assert_eq!(
         core.escalate_codex_hook_question(&stranger, &input, "")
             .await,
+        None
+    );
+    assert_eq!(dm_count(&hits), 0);
+}
+
+/// A spawner whose agents still run.
+struct Running;
+
+impl crate::relay::spawn::launch::Spawner for Running {
+    fn available(&self) -> Vec<crate::relay::harness::HarnessId> {
+        Vec::new()
+    }
+    fn launch(
+        &self,
+        _: &crate::relay::spawn::launch::Launch,
+        _: crate::relay::spawn::launch::Started,
+    ) -> Result<crate::relay::spawn::launch::Launched, crate::relay::spawn::launch::LaunchError>
+    {
+        Err(crate::relay::spawn::launch::LaunchError::Unavailable(
+            "a test spawner".into(),
+        ))
+    }
+    fn alive(&self, _: &Target, _: Option<&crate::relay::spawn::launch::SpawnedProcess>) -> bool {
+        true
+    }
+    fn stop(&self, _: &Target, _: Option<&crate::relay::spawn::launch::SpawnedProcess>) {}
+}
+
+/// `name` spawned here with a process of its own, as a spawned Devin or
+/// Claude has.
+fn spawned_with_process(name: &str, target: Target, base: &str) -> Registration {
+    let mut registration = registration(name, target, base);
+    registration.spawn = Some(
+        serde_json::from_value(json!({"nodeID": "node-1", "nodeName": "desk",
+            "invocationID": format!("inv-{name}"), "harness": "devin",
+            "process": {"pid": 4242, "start": 7}}))
+        .unwrap(),
+    );
+    registration
+}
+
+/// A spawned agent whose process ended is not told its question expired,
+/// whatever its harness, and the inbox's late answer is refused with the
+/// question closed; one whose process runs is told.
+#[tokio::test]
+async fn an_ended_spawned_agent_is_not_told_and_its_late_answer_is_refused() {
+    let (base, hits) = relaycast(false);
+    let ended = spawned_with_process(
+        "asker-ended",
+        Target::new(SessionKind::Devin, "spawned-ended"),
+        &base,
+    );
+    let injector = Scripted::new([]);
+    // The default spawner answers that nothing it started still runs.
+    let (core, _temp) = scripted_core(&base, &ended, &injector);
+    let input = input();
+    let Escalation::Sent { reference, .. } = core.escalate_question(&ended, asked(&input)).await
+    else {
+        panic!("sent");
+    };
+    assert!(core.tell_expired(&ended.target, &reference).await);
+    assert!(injector.typed().is_empty(), "an ended agent is not told");
+    let token = Secret::new("at_live_asker");
+    let answer = reply("d-ended", "agent-triage", &format!("answer {reference} 1"));
+    let OwnerReply::Settled(detail) = core
+        .question_reply(&ended, &answer, (base.as_str(), &token))
+        .await
+    else {
+        panic!("refused");
+    };
+    assert!(detail.contains("is closed"), "{detail}");
+    assert!(injector.typed().is_empty(), "nothing is typed into it");
+    assert_eq!(state_of(&reference), Some(State::Expired));
+    assert!(replies_to_inbox(&hits)
+        .iter()
+        .any(|reply| reply.contains("has ended")));
+
+    let running = spawned_with_process(
+        "asker-running",
+        Target::new(SessionKind::Devin, "spawned-running"),
+        &base,
+    );
+    let typed = Scripted::new([]);
+    let (core, _temp) = core_with(
+        &base,
+        &running,
+        true,
+        crate::relay::daemon::Plugins {
+            injector: typed.clone(),
+            spawner: Arc::new(Running),
+            ..crate::relay::daemon::Plugins::default()
+        },
+    );
+    let Escalation::Sent { reference, .. } = core.escalate_question(&running, asked(&input)).await
+    else {
+        panic!("sent");
+    };
+    assert!(core.tell_expired(&running.target, &reference).await);
+    assert_eq!(typed.typed().len(), 1, "a running agent is told");
+}
+
+/// Cases 3 and 4 with a Codex target, through the hook's own entry:
+/// signed out (no workspace for a named inbox, no account for the owner's)
+/// and an inbox that cannot be found each answer no reason, so Codex shows
+/// the question.
+#[tokio::test]
+async fn a_codex_hook_question_is_asked_as_usual_when_signed_out_or_unresolved() {
+    let (base, hits) = relaycast(false);
+    let input = codex_hook_fixture()["input"]["tool_input"].clone();
+    let asker = registration(
+        "asker-codex-hook-34",
+        Target::new(SessionKind::Codex, "019a0000-0000-7000-8000-0000000071ee"),
+        &base,
+    );
+    let (core, _temp) = core(&base, &asker, true);
+    let workspace = core.workspace.lock().unwrap().take();
+    assert_eq!(
+        core.escalate_codex_hook_question(&asker, &input, "").await,
+        None
+    );
+    core.store
+        .remember(|store| store.extras.question_escalation_inbox = None)
+        .unwrap();
+    assert_eq!(
+        core.escalate_codex_hook_question(&asker, &input, "").await,
+        None
+    );
+    *core.workspace.lock().unwrap() = workspace;
+    core.store
+        .remember(|store| store.extras.question_escalation_inbox = Some("nobody".into()))
+        .unwrap();
+    assert_eq!(
+        core.escalate_codex_hook_question(&asker, &input, "").await,
         None
     );
     assert_eq!(dm_count(&hits), 0);
