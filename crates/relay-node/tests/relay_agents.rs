@@ -3593,6 +3593,156 @@ async fn messages_go_out_as_you_and_history_reads_in_threads() {
     h.stop().await;
 }
 
+/// The relay-send socket's Claude Code setting, which `/send` never reads.
+struct NoDirect;
+
+impl agent_relay_node::relay::setup::DirectDelivery for NoDirect {
+    fn delivers_directly(&self) -> bool {
+        false
+    }
+    fn managed_value(&self) -> Option<String> {
+        None
+    }
+    fn user_choice(&self) -> Option<String> {
+        None
+    }
+    fn set_direct_delivery(&self, _enabled: bool) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+// A process inside a registered agent session may not write as you over the
+// bridge; it sends as its own agent through the relay-send socket instead.
+// A process outside every session, or inside one that is not on the relay,
+// sends as you as before.
+#[tokio::test]
+async fn a_registered_session_sends_as_itself_never_as_you_over_the_bridge() {
+    use agent_relay_node::relay::outbound::{Outbound, Request};
+    use agent_relay_node::relay::usage::{UsageOperation, UsageOutcome};
+    let usage = Arc::new(UsageRecorder::default());
+    let h = Harness::start_with_usage(
+        |fake| Some(signed_in(fake)),
+        |_, _| {},
+        DeliveryTiming::default(),
+        Some(usage.clone()),
+    )
+    .await;
+    let mut client = h.client().await;
+    h.fake.seed_agent("reviewer", "agent", json!({}));
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    let person = h.fake.agent(PERSON).unwrap();
+    let person_bearer = format!("Bearer {}", person.token);
+    // This test process is the bridge's peer.
+    let me = std::process::id() as i32;
+
+    // Outside every session: as you.
+    client
+        .ok(
+            "messages.send",
+            json!({"to": "reviewer", "text": "outside"}),
+        )
+        .await;
+    let dm = h.fake.calls("POST", "/v1/dm").pop().unwrap();
+    assert_eq!(dm.body["text"], "outside");
+    assert_eq!(dm.authorization.as_deref(), Some(person_bearer.as_str()));
+
+    // Inside a session that is not on the relay: as you, as before.
+    h.sessions.call_from(
+        me,
+        session(
+            SessionKind::ClaudeTerminal,
+            CLAUDE,
+            "/Users/me/Projects/api",
+        ),
+    );
+    client
+        .ok(
+            "messages.send",
+            json!({"to": "reviewer", "text": "unregistered"}),
+        )
+        .await;
+    assert_eq!(
+        h.fake.calls("POST", "/v1/dm").pop().unwrap().body["text"],
+        "unregistered"
+    );
+
+    // Inside the registered Codex session: both person sends are refused.
+    h.sessions.call_from(
+        me,
+        session(
+            SessionKind::Codex,
+            CODEX,
+            "/Users/me/Projects/Relay Desktop",
+        ),
+    );
+    let dms = h.fake.calls("POST", "/v1/dm").len();
+    let (kind, message) = client
+        .error(
+            "messages.send",
+            json!({"to": "reviewer", "text": "as the person"}),
+        )
+        .await;
+    assert_eq!(kind, "refused");
+    assert!(message.contains("agent-relay-probe send"), "{message}");
+    assert!(!message.contains(CODEX), "{message}");
+    let (kind, message) = client
+        .error("agents.test_message", json!({"name": "codex-api"}))
+        .await;
+    assert_eq!(kind, "refused");
+    assert!(message.contains("agent-relay-probe send"), "{message}");
+    assert_eq!(
+        h.fake.calls("POST", "/v1/dm").len(),
+        dms,
+        "nothing went out"
+    );
+    for operation in [UsageOperation::MessageSend, UsageOperation::MessageTest] {
+        eventually("the refusal's usage", || {
+            usage
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|e| e.operation == operation && e.outcome == UsageOutcome::Failed)
+        })
+        .await;
+    }
+
+    // The session still sends, as its own agent, through `/send`.
+    let outbound = Outbound::new(h.core.clone(), Arc::new(NoDirect));
+    let sent = outbound
+        .handle(
+            me,
+            agent_relay_node::relay::peer::current_uid(),
+            &Request {
+                method: "POST".into(),
+                path: "/send".into(),
+                query: vec![("to".into(), "reviewer".into())],
+                headers: Default::default(),
+                body: b"as itself".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(sent["message_id"].as_str().is_some(), "{sent}");
+    let dm = h.fake.calls("POST", "/v1/dm").pop().unwrap();
+    assert_eq!(dm.body["text"], "as itself");
+    let agent = h.fake.agent("codex-api").unwrap();
+    assert_eq!(
+        dm.authorization.as_deref(),
+        Some(format!("Bearer {}", agent.token).as_str())
+    );
+
+    // Once the process is outside every session again, it sends as you.
+    h.sessions.1.lock().unwrap().remove(&me);
+    client
+        .ok("messages.send", json!({"to": "reviewer", "text": "back"}))
+        .await;
+    let dm = h.fake.calls("POST", "/v1/dm").pop().unwrap();
+    assert_eq!(dm.body["text"], "back");
+    assert_eq!(dm.authorization.as_deref(), Some(person_bearer.as_str()));
+    h.stop().await;
+}
+
 #[tokio::test]
 async fn an_exact_address_history_needs_immutable_proof() {
     let h = Harness::signed_in().await;

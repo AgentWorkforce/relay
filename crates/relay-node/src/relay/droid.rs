@@ -100,6 +100,6 @@ pub fn caller(
         record
             .filter(|record| record.child.pid == pid && verified(record, table))
             .map(|record| record.session_id)
-            .ok_or(crate::relay::sessions::CallerMiss::NotASession),
+            .ok_or(crate::relay::sessions::CallerMiss::Unattributed),
     )
 }

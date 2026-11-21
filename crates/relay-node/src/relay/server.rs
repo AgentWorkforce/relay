@@ -519,7 +519,7 @@ pub async fn call_from(
             answer::<method::WorkspaceVerify, _>(raw, |_| core.verify_workspace()).await
         }
         _ => {
-            let answer = match methods::call(core, name, raw.clone()).await {
+            let answer = match methods::call(core, context, name, raw.clone()).await {
                 Some(answer) => Some(answer),
                 None => match local_methods::call_from(core, context, name, raw.clone()).await {
                     Some(answer) => Some(answer),
