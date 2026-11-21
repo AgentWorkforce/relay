@@ -93,6 +93,24 @@ pub fn codex_questions(params: &Value) -> Option<Vec<Question>> {
         .collect()
 }
 
+/// The questions in Codex's `request_user_input` arguments, as its
+/// PreToolUse hook gives them (`tool_input`): `{questions: [{id, header,
+/// question, options: [{label, description}]}]}`. Codex adds a free-text
+/// choice to every one itself, so each takes text. `None` for anything
+/// else, so the question is shown as usual.
+pub fn codex_tool_questions(input: &Value) -> Option<Vec<Question>> {
+    let questions = codex_questions(input)?;
+    Some(
+        questions
+            .into_iter()
+            .map(|question| Question {
+                free: true,
+                ..question
+            })
+            .collect(),
+    )
+}
+
 /// Who asked, for the message's first lines.
 pub struct Asker<'a> {
     pub reference: &'a str,

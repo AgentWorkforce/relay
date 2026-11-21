@@ -250,7 +250,7 @@ fn record(registration: &Registration, base_key: &str) -> Record {
         expires: Instant::now() + TTL,
         state: State::Open,
         questions: vec![pick(false)],
-        via: Via::Claude,
+        via: Via::Session,
         sending: false,
         notified: false,
     }
@@ -551,7 +551,7 @@ fn asked(input: &Value) -> Asked<'_> {
         questions: text::claude_questions(input),
         input,
         cwd: "",
-        via: Via::Claude,
+        via: Via::Session,
     }
 }
 
@@ -1478,7 +1478,7 @@ async fn an_undelivered_question_is_asked_in_the_session() {
                 questions: Vec::new(),
                 input: &empty,
                 cwd: "",
-                via: Via::Claude,
+                via: Via::Session,
             },
         )
         .await;
@@ -1616,4 +1616,193 @@ async fn a_codex_question_not_sent_in_time_is_forwarded() {
     assert!(!core.escalate_codex_question(&asker, &notice).await);
     assert_eq!(drive::unforwarded(thread).len(), 1);
     assert!(CODEX_LIMIT < Duration::from_secs(300));
+}
+
+/// The question hook's input as Codex 0.154 gives it
+/// (`fixtures/questions/codex-0.154-pre-tool-use-request-user-input.json`).
+fn codex_hook_fixture() -> Value {
+    serde_json::from_str(include_str!(
+        "../fixtures/questions/codex-0.154-pre-tool-use-request-user-input.json"
+    ))
+    .unwrap()
+}
+
+/// The `requestUserInput` a spawned Codex raises for the fixture's question
+/// when its tool runs (`app-server-protocol` v2 `ToolRequestUserInputParams`).
+fn codex_request_for(thread: &str, id: u64) -> Value {
+    json!({"id": id, "method": "item/tool/requestUserInput", "params": {
+        "threadId": thread, "turnId": "t", "itemId": "call_question_1",
+        "questions": [{"id": "database", "header": "Database",
+            "question": "Which database should the service use?",
+            "isOther": true, "isSecret": false,
+            "options": [{"label": "Postgres", "description": "Shared server"},
+                        {"label": "SQLite", "description": "One file"}]}],
+    }})
+}
+
+/// How many questions were sent: DMs by idempotency key, since the SDK
+/// retries a server error under the same key.
+fn dm_count(hits: &Arc<Mutex<Vec<String>>>) -> usize {
+    hits.lock()
+        .unwrap()
+        .iter()
+        .filter(|hit| hit.starts_with("POST /v1/dm"))
+        .filter_map(|hit| {
+            hit.split(" key=")
+                .nth(1)?
+                .split(' ')
+                .next()
+                .map(str::to_string)
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+}
+
+/// Codex's question hook, with escalation on by default: the question goes
+/// to the inbox once, the tool call is refused with the reason, and the
+/// inbox's answer is typed into the session.
+#[tokio::test]
+async fn a_codex_hook_question_goes_to_the_inbox() {
+    let (base, hits) = relaycast(false);
+    let fixture = codex_hook_fixture();
+    let thread = fixture["input"]["session_id"].as_str().unwrap();
+    let asker = registration(
+        "asker-codex-hook",
+        Target::new(SessionKind::Codex, thread),
+        &base,
+    );
+    let (core, _temp) = core(&base, &asker, true);
+    core.store
+        .remember(|store| store.extras.question_escalation = None)
+        .unwrap();
+    let input = &fixture["input"]["tool_input"];
+    let reason = core
+        .escalate_codex_hook_question(&asker, input, "/work/project")
+        .await
+        .expect("sent");
+    assert!(
+        reason.starts_with("Sent to @triage over Agent Relay as question q"),
+        "{reason}"
+    );
+    assert_eq!(dm_count(&hits), 1);
+    let sent = hits
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|hit| hit.starts_with("POST /v1/dm"))
+        .cloned()
+        .unwrap();
+    assert!(
+        sent.contains("Which database should the service use?"),
+        "{sent}"
+    );
+    // Asked again by the same turn: the open question, not a second DM.
+    let again = core
+        .escalate_codex_hook_question(&asker, input, "/work/project")
+        .await;
+    assert_eq!(again.as_deref(), Some(reason.as_str()));
+    assert_eq!(dm_count(&hits), 1);
+    let (reference, via) = records()
+        .iter()
+        .find(|(_, record)| record.target.id == thread)
+        .map(|(reference, record)| (reference.clone(), record.via.clone()))
+        .unwrap();
+    assert_eq!(via, Via::Session, "the answer is typed into the session");
+    assert!(reason.contains(&reference));
+    // Codex lets the person type their own answer: free text is taken.
+    let questions = text::codex_tool_questions(input).unwrap();
+    assert!(questions.iter().all(|question| question.free));
+}
+
+/// A question the hook cannot send is asked as usual: the hook answers no
+/// reason (Codex runs the tool and shows its dialog), and a spawned Codex's
+/// `requestUserInput` that follows goes to the session's owner as any other
+/// request, without a second inbox attempt or wait. Off, nothing is sent.
+#[tokio::test]
+async fn a_codex_hook_question_that_cannot_be_sent_is_asked_once_as_usual() {
+    let mode = Arc::new(std::sync::atomic::AtomicU8::new(REFUSE));
+    let (base, hits) = relaycast_in(mode.clone());
+    let fixture = codex_hook_fixture();
+    let input = fixture["input"]["tool_input"].clone();
+    for (n, failing) in [REFUSE, BROKEN, HANG].into_iter().enumerate() {
+        mode.store(failing, std::sync::atomic::Ordering::SeqCst);
+        let thread = format!("019a0000-0000-7000-8000-0000000071{n:02}");
+        let asker = registration(
+            &format!("asker-codex-hook-{n}"),
+            Target::new(SessionKind::Codex, &thread),
+            &base,
+        );
+        let (core, _temp) = core(&base, &asker, true);
+        let before = dm_count(&hits);
+        let reason = core
+            .escalate_codex_hook_question_within(&asker, &input, "", Duration::from_millis(300))
+            .await;
+        assert_eq!(reason, None, "mode {failing}");
+        let attempted = dm_count(&hits);
+        assert!(attempted <= before + 1, "one attempt");
+        // The tool runs: a spawned Codex raises requestUserInput, which is
+        // forwarded, not escalated again.
+        let notice = drive::open_request(&thread, codex_request_for(&thread, 40 + n as u64));
+        assert!(!core.escalate_codex_question(&asker, &notice).await);
+        assert_eq!(dm_count(&hits), attempted, "no second inbox attempt");
+        assert_eq!(drive::unforwarded(&thread).len(), 1, "forwarded as usual");
+        assert_eq!(
+            escalated(&thread, &input),
+            None,
+            "nothing is left open for the question"
+        );
+    }
+    // Off: the hook answers nothing and sends nothing.
+    mode.store(ACCEPT, std::sync::atomic::Ordering::SeqCst);
+    let asker = registration(
+        "asker-codex-hook-off",
+        Target::new(SessionKind::Codex, "019a0000-0000-7000-8000-00000000710f"),
+        &base,
+    );
+    let (core, _temp) = core(&base, &asker, false);
+    let before = dm_count(&hits);
+    assert_eq!(
+        core.escalate_codex_hook_question(&asker, &input, "").await,
+        None
+    );
+    assert_eq!(dm_count(&hits), before);
+}
+
+/// Input that is not `request_user_input`'s, or that names no question,
+/// is never escalated: Codex shows whatever it is as usual.
+#[tokio::test]
+async fn a_codex_hook_input_that_does_not_parse_is_asked_as_usual() {
+    let (base, hits) = relaycast(false);
+    let asker = registration(
+        "asker-codex-hook-bad",
+        Target::new(SessionKind::Codex, "019a0000-0000-7000-8000-0000000071bb"),
+        &base,
+    );
+    let (core, _temp) = core(&base, &asker, true);
+    for bad in [
+        json!({}),
+        json!({"questions": []}),
+        json!({"questions": "Which?"}),
+        json!({"questions": [{"question": "No id"}]}),
+        json!({"command": "ls"}),
+    ] {
+        assert_eq!(
+            core.escalate_codex_hook_question(&asker, &bad, "").await,
+            None,
+            "{bad}"
+        );
+    }
+    // A session that is not on the relay is not asked for either.
+    let stranger = registration(
+        "stranger-codex-hook",
+        Target::new(SessionKind::Codex, "019a0000-0000-7000-8000-0000000071cc"),
+        &base,
+    );
+    let input = codex_hook_fixture()["input"]["tool_input"].clone();
+    assert_eq!(
+        core.escalate_codex_hook_question(&stranger, &input, "")
+            .await,
+        None
+    );
+    assert_eq!(dm_count(&hits), 0);
 }

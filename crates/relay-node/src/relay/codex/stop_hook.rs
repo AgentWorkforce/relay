@@ -59,8 +59,25 @@ pub const HELD: &str = "Waiting — handed over when the Conductor chat's turn e
 
 /// The Codex hook events the hook runs for, as `hooks.json` names them.
 /// At SessionStart it gives the session its Agent Relay preamble
-/// (`hosted_mcp::codex_preamble`).
-const EVENTS: [&str; 3] = ["Stop", "PostToolUse", "SessionStart"];
+/// (`hosted_mcp::codex_preamble`). At PreToolUse, for `request_user_input`
+/// alone ([`QUESTION_TOOL`]), it hands the question to question escalation
+/// (`relay::question`).
+const EVENTS: [&str; 4] = ["Stop", "PostToolUse", "SessionStart", QUESTION_EVENT];
+
+/// The event the question hook runs at, as `hooks.json` names it.
+pub const QUESTION_EVENT: &str = "PreToolUse";
+
+/// The tool the question hook matches: Codex's ask-the-user tool. Codex
+/// 0.154 runs PreToolUse for every function tool, this one included, and a
+/// deny reaches the model as the tool's result instead of the dialog.
+pub const QUESTION_TOOL: &str = "request_user_input";
+
+/// How long Codex waits for the question hook, in seconds: past the hook
+/// client's own wait (`cli::codex_stop_hook`, 25 s), which is past the
+/// question route's limit (`question::ROUTE_LIMIT`, 20 s), so Codex never
+/// cuts the hook off while a question is being handed over. A hook Codex
+/// does stop, like one that fails, lets the tool run.
+pub const QUESTION_TIMEOUT_SECS: u64 = 30;
 
 /// Writes `hooks.json` atomically, keeping its mode; `backup` is the copy
 /// kept beside it the first time.
@@ -501,7 +518,13 @@ impl CodexStopHookSettings {
         *groups != before
     }
 
-    fn entry(&self) -> Value {
+    /// The group the hook adds for `event`: the question hook matches only
+    /// [`QUESTION_TOOL`], with a longer timeout.
+    fn entry(&self, event: &str) -> Value {
+        if event == QUESTION_EVENT {
+            return json!({"matcher": QUESTION_TOOL, "hooks": [{"type": "command",
+                "command": self.command, "timeout": QUESTION_TIMEOUT_SECS}]});
+        }
         json!({"hooks": [{"type": "command", "command": self.command, "timeout": 10}]})
     }
 
@@ -519,11 +542,10 @@ impl CodexStopHookSettings {
 
     /// Whether every event holds this build's current hook, once.
     fn current(&self) -> bool {
-        let entry = self.entry();
         self.read().is_ok_and(|value| {
             EVENTS.iter().all(|event| {
                 value["hooks"][*event].as_array().is_some_and(|groups| {
-                    groups.contains(&entry) && self.our_commands(groups).len() == 1
+                    groups.contains(&self.entry(event)) && self.our_commands(groups).len() == 1
                 })
             })
         })
@@ -544,9 +566,9 @@ impl CodexStopHookSettings {
         let Some(hooks) = hooks.as_object_mut() else {
             return Err("~/.codex/hooks.json has a `hooks` that is not an object.".into());
         };
-        let entry = self.entry();
         let mut changed = false;
         for event in EVENTS {
+            let entry = self.entry(event);
             let groups = hooks.entry(event).or_insert_with(|| json!([]));
             let Some(groups) = groups.as_array_mut() else {
                 return Err(format!(
@@ -556,7 +578,7 @@ impl CodexStopHookSettings {
             let current = groups.contains(&entry) && self.our_commands(groups).len() == 1;
             if !current {
                 self.take_out(groups);
-                groups.push(entry.clone());
+                groups.push(entry);
                 changed = true;
             }
         }
@@ -1089,6 +1111,72 @@ mod tests {
 
         assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
         assert_eq!(tree(&codex), before);
+    }
+
+    /// The question hook comes with an upgrade: a file this build wrote
+    /// before it (Stop, PostToolUse, SessionStart) gains only a PreToolUse
+    /// group matching `request_user_input`, beside a person's own
+    /// PreToolUse hook; the delivery groups are left as they are and trusted
+    /// again. A second install changes nothing, and taking the hook out
+    /// leaves the person's own entry.
+    #[test]
+    fn an_upgrade_adds_only_the_question_hook_and_keeps_the_persons_entries() {
+        let home = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        std::fs::create_dir_all(&codex).unwrap();
+        let entry = json!({"hooks": [{"type": "command", "command": ours(), "timeout": 10}]});
+        let theirs = json!({"matcher": "shell", "hooks": [{"type": "command",
+            "command": "their-own-check", "timeout": 5}]});
+        let earlier = json!({"hooks": {
+            "Stop": [entry], "PostToolUse": [entry], "SessionStart": [entry],
+            "PreToolUse": [theirs],
+        }});
+        std::fs::write(
+            codex.join("hooks.json"),
+            serde_json::to_vec_pretty(&earlier).unwrap(),
+        )
+        .unwrap();
+        let (settings, trusted, inbox) = settings(home.path());
+        assert!(!settings.current(), "an earlier install is not current");
+
+        settings.refresh();
+        assert!(inbox.is_ready(), "delivery still works");
+        assert_eq!(trusted.lock().unwrap().as_slice(), [ours()]);
+        let read = || -> Value {
+            serde_json::from_slice(&std::fs::read(codex.join("hooks.json")).unwrap()).unwrap()
+        };
+        let value = read();
+        for event in ["Stop", "PostToolUse", "SessionStart"] {
+            assert_eq!(value["hooks"][event], json!([entry]), "{event}");
+        }
+        assert_eq!(
+            value["hooks"][QUESTION_EVENT],
+            json!([theirs, {"matcher": "request_user_input", "hooks": [{"type": "command",
+                "command": ours(), "timeout": 30}]}])
+        );
+        assert!(settings.current());
+
+        // Again: nothing changes.
+        let bytes = std::fs::read(codex.join("hooks.json")).unwrap();
+        assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+        assert_eq!(std::fs::read(codex.join("hooks.json")).unwrap(), bytes);
+
+        // Off: the person's own PreToolUse hook stays, alone.
+        assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+        let value = read();
+        assert_eq!(value["hooks"][QUESTION_EVENT], json!([theirs]));
+        for event in ["Stop", "PostToolUse", "SessionStart"] {
+            assert!(value["hooks"].get(event).is_none(), "{event}");
+        }
+    }
+
+    /// The question hook waits longer than the hook client, which waits
+    /// longer than the question route: Codex never cuts a handover off.
+    #[test]
+    fn the_question_hook_outlasts_the_question_route() {
+        let wait = crate::relay::cli::QUESTION_HOOK_WAIT;
+        assert!(wait > crate::relay::question::ROUTE_LIMIT);
+        assert!(std::time::Duration::from_secs(QUESTION_TIMEOUT_SECS) > wait);
     }
 
     #[test]
@@ -1836,7 +1924,15 @@ mod tests {
             .iter()
             .map(|c| json!({"hooks": [{"type": "command", "command": c, "timeout": 10}]}))
             .collect();
-        let value = json!({"hooks": {"Stop": hooks, "PostToolUse": hooks, "SessionStart": hooks}});
+        let questions: Vec<Value> = commands
+            .iter()
+            .map(|c| {
+                json!({"matcher": QUESTION_TOOL, "hooks": [{"type": "command", "command": c,
+                    "timeout": QUESTION_TIMEOUT_SECS}]})
+            })
+            .collect();
+        let value = json!({"hooks": {"Stop": hooks, "PostToolUse": hooks, "SessionStart": hooks,
+            QUESTION_EVENT: questions}});
         std::fs::write(home.join(".codex/hooks.json"), value.to_string()).unwrap();
     }
 
