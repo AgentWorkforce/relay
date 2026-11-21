@@ -94,6 +94,12 @@ impl Outbound {
                 }
                 return Ok(answer);
             }
+            Some("before")
+                if fields.get("toolName").and_then(Value::as_str)
+                    == Some(crate::relay::copilot::QUESTION_TOOL) =>
+            {
+                return Ok(self.copilot_question(&target, fields).await);
+            }
             _ => return Ok(answer),
         }
         // The same normal auto-activation consent and excluded-directory rules
@@ -128,6 +134,33 @@ impl Outbound {
             return Err(OutboundError::not_a_session());
         }
         Ok(answer)
+    }
+
+    /// Copilot's `ask_user`, from a session whose native proof just passed:
+    /// with question escalation on, the question goes to the question inbox
+    /// and the tool call is denied with the reason, so the session keeps
+    /// working and the answer arrives as a message. Anything else (a session
+    /// not on the relay, escalation off, arguments of another shape, a
+    /// question not sent within `question::ROUTE_LIMIT`) answers `{}`, and
+    /// Copilot asks as usual.
+    async fn copilot_question(&self, target: &Target, fields: &Map<String, Value>) -> Value {
+        let Some(registration) = self
+            .core
+            .store
+            .read(|store| store.registration_for(target).cloned())
+        else {
+            return json!({});
+        };
+        let args = fields.get("toolArgs").cloned().unwrap_or(Value::Null);
+        let cwd = fields
+            .get("cwd")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let reason = self
+            .core
+            .escalate_copilot_question(&registration, &args, cwd)
+            .await;
+        copilot_question_answer(reason.as_deref())
     }
 
     // Registration can finish after SessionStart's bounded wait. The next
@@ -228,5 +261,29 @@ impl Outbound {
         let message = answer["additionalContext"].as_str().unwrap_or("");
         answer["additionalContext"] = json!(format!("{context}\n{message}"));
         answer
+    }
+}
+
+/// Copilot's `preToolUse` answer for `ask_user`: denied with `reason` once
+/// the question went to the inbox (`permissionDecision`, as VS Code's and
+/// GitHub's hook references give it), otherwise `{}`.
+fn copilot_question_answer(reason: Option<&str>) -> Value {
+    match reason {
+        Some(reason) => json!({"permissionDecision": "deny", "permissionDecisionReason": reason}),
+        None => json!({}),
+    }
+}
+
+#[cfg(test)]
+mod question_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_sent_question_denies_ask_user() {
+        assert_eq!(copilot_question_answer(None), json!({}));
+        assert_eq!(
+            copilot_question_answer(Some("Sent to @triage.")),
+            json!({"permissionDecision": "deny", "permissionDecisionReason": "Sent to @triage."})
+        );
     }
 }

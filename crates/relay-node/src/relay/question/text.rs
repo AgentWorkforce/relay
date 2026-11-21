@@ -164,6 +164,45 @@ pub fn codex_tool_questions(input: &Value) -> Option<Vec<Question>> {
     )
 }
 
+/// The question in Copilot's `ask_user` arguments: `{question, choices?,
+/// allowFreeform?}`, `choices` a list of strings (the Copilot runtime 1.0.94
+/// checks both). `None` for any other shape, so Copilot shows it.
+pub fn copilot_questions(args: &Value) -> Option<Vec<Question>> {
+    let text = args["question"]
+        .as_str()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())?;
+    let options = match args.get("choices") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(choices)) => choices
+            .iter()
+            .map(|choice| {
+                choice.as_str().map(|label| Choice {
+                    label: label.trim().to_string(),
+                    description: String::new(),
+                })
+            })
+            .collect::<Option<Vec<Choice>>>()?
+            .into_iter()
+            .filter(|choice| !choice.label.is_empty())
+            .collect(),
+        Some(_) => return None,
+    };
+    let free = match args.get("allowFreeform") {
+        None | Some(Value::Null) => true,
+        Some(Value::Bool(free)) => *free,
+        Some(_) => return None,
+    };
+    Some(vec![Question {
+        id: String::new(),
+        header: String::new(),
+        text: text.to_string(),
+        free: free || options.is_empty(),
+        options,
+        multi: false,
+    }])
+}
+
 /// Who asked, for the message's first lines.
 pub struct Asker<'a> {
     pub reference: &'a str,
