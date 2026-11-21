@@ -2466,7 +2466,7 @@ async fn each_opencode_reply_outcome_is_told_as_it_is() {
         (
             3,
             ReplyOutcome::Refused,
-            "OpenCode did not take it. It is still open in the session",
+            "OpenCode did not take it. It is still open in the session: answer it there",
             State::Expired,
         ),
         (
@@ -2541,4 +2541,63 @@ async fn an_opencode_question_is_not_sent_again_after_a_restart() {
     let restarted = core_in(dir.path(), &base, &asker, true, plugins());
     restarted.poll_opencode_questions().await;
     assert_eq!(dm_count(&hits), 1, "not sent again");
+}
+
+/// A question left open in OpenCode is offered once however long it stays
+/// open: its entry is kept while it is pending, even past the time an
+/// entry of a question gone from the list would be dropped.
+#[tokio::test]
+async fn an_opencode_question_left_open_is_not_offered_again() {
+    let (base, hits) = relaycast(false);
+    let session = "ses_oc_left_open";
+    let asker = registration(
+        "asker-oc-left",
+        Target::new(SessionKind::OpenCode, session),
+        &base,
+    );
+    let server = OpenCodeServer::new();
+    server.ask(Some(vec![opencode_request(session, "que_oc_left")]));
+    let (core, _temp) = opencode_core(&base, &asker, &server);
+    let path = core.config.app_data_dir.join(OPENCODE_TRIED_FILE);
+    let key = format!("{}:que_oc_left", asker.target.key());
+    let long_ago = now_ms() - 2 * (TTL + KEEP).as_millis() as u64;
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&json!({ key.clone(): long_ago })).unwrap(),
+    )
+    .unwrap();
+    core.poll_opencode_questions().await;
+    assert_eq!(dm_count(&hits), 0, "still pending: not offered again");
+    let kept: std::collections::BTreeMap<String, u64> =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(now_ms() - kept[&key] < 60_000, "kept fresh while pending");
+}
+
+/// A record that does not parse starts a new one: the questions pending
+/// then are offered once more, and then not again.
+#[tokio::test]
+async fn an_unparseable_opencode_record_starts_a_new_one() {
+    let (base, hits) = relaycast(false);
+    let session = "ses_oc_torn";
+    let asker = registration(
+        "asker-oc-torn",
+        Target::new(SessionKind::OpenCode, session),
+        &base,
+    );
+    let server = OpenCodeServer::new();
+    server.ask(Some(vec![opencode_request(session, "que_oc_torn")]));
+    let (core, _temp) = opencode_core(&base, &asker, &server);
+    let path = core.config.app_data_dir.join(OPENCODE_TRIED_FILE);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"").unwrap();
+    core.poll_opencode_questions().await;
+    assert_eq!(dm_count(&hits), 1);
+    let record: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(record
+        .get(format!("{}:que_oc_torn", asker.target.key()))
+        .is_some());
+    records().retain(|_, record| record.target.id != session);
+    core.poll_opencode_questions().await;
+    assert_eq!(dm_count(&hits), 1, "then not again");
 }

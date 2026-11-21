@@ -553,25 +553,44 @@ fn now_ms() -> u64 {
 }
 
 /// Marks `key` tried in the core's file: whether it was tried before (or
-/// the file cannot be read or written, which then tries nothing). Entries
-/// are dropped once past a question's expiry and its memory.
+/// the file cannot be read, which then tries nothing). An entry is kept
+/// while its question is still pending (each poll that lists it keeps it
+/// fresh) and dropped once it has been gone past a question's expiry and
+/// its memory, so a question left open is offered once, however long it
+/// stays open. A file that does not parse (a crash between write and
+/// rename can leave one) starts a new set: the questions pending then are
+/// offered once more, rather than none ever again.
 fn opencode_mark_tried(path: &std::path::Path, key: &str) -> bool {
     static FILE: Mutex<()> = Mutex::new(());
     let _held = FILE.lock().unwrap_or_else(PoisonError::into_inner);
     let mut tried: std::collections::BTreeMap<String, u64> = match std::fs::read(path) {
-        Ok(bytes) => match serde_json::from_slice(&bytes) {
-            Ok(tried) => tried,
-            Err(_) => return true,
-        },
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+            warn_once(format_args!(
+                "relay: the record of OpenCode questions already offered does not parse; \
+starting a new one"
+            ));
+            Default::default()
+        }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Default::default(),
-        Err(_) => return true,
+        Err(error) => {
+            warn_once(format_args!(
+                "relay: the record of OpenCode questions already offered cannot be read \
+({error}); OpenCode questions are not sent until it can"
+            ));
+            return true;
+        }
     };
     let now = now_ms();
-    let keep = (TTL + KEEP).as_millis() as u64;
-    tried.retain(|_, at| now.saturating_sub(*at) < keep);
-    if tried.contains_key(key) {
+    if let Some(at) = tried.get_mut(key) {
+        // Still pending: kept, written again at most once a minute.
+        if now.saturating_sub(*at) >= OPENCODE_TRIED_REFRESH_MS {
+            *at = now;
+            let _ = write_tried(path, &tried);
+        }
         return true;
     }
+    let keep = (TTL + KEEP).as_millis() as u64;
+    tried.retain(|_, at| now.saturating_sub(*at) < keep);
     tried.insert(key.to_string(), now);
     while tried.len() > OPENCODE_TRIED_KEPT {
         let oldest = tried
@@ -583,19 +602,33 @@ fn opencode_mark_tried(path: &std::path::Path, key: &str) -> bool {
             None => break,
         };
     }
-    let Ok(bytes) = serde_json::to_vec(&tried) else {
-        return true;
-    };
-    let temporary = path.with_extension("json.tmp");
-    let written = path
-        .parent()
-        .map(std::fs::create_dir_all)
-        .unwrap_or(Ok(()))
-        .and_then(|()| std::fs::write(&temporary, &bytes))
-        .and_then(|()| std::fs::rename(&temporary, path));
     // A question that could not be recorded is not sent: after a restart
     // it would be sent again.
-    written.is_err()
+    write_tried(path, &tried).is_err()
+}
+
+/// How often a still-pending question's entry is written again.
+const OPENCODE_TRIED_REFRESH_MS: u64 = 60_000;
+
+fn write_tried(
+    path: &std::path::Path,
+    tried: &std::collections::BTreeMap<String, u64>,
+) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec(tried).map_err(std::io::Error::other)?;
+    let temporary = path.with_extension("json.tmp");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&temporary, &bytes)?;
+    std::fs::rename(&temporary, path)
+}
+
+/// Writes `message` to the core's diagnostics once per run.
+fn warn_once(message: std::fmt::Arguments<'_>) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !WARNED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        crate::relay::diagnostics::write(message);
+    }
 }
 
 /// What the inbox is told about a question its session closed itself: it
@@ -1325,7 +1358,7 @@ session: OpenCode did not confirm it. It is not sent again."
                         };
                         let refusal = format!(
                             "The answer to question {reference} was not delivered to @{agent}: \
-{why}. It is still open in the session."
+{why}. It is still open in the session: answer it there."
                         );
                         self.refuse_reply(delivery, token, &refusal).await
                     }
