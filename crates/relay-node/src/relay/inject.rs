@@ -133,9 +133,25 @@ pub trait Injector: Send + Sync + 'static {
 
     /// Observes a Connect handoff the provider already accepted. The
     /// default route is unchanged, while Codex overrides this to prohibit a
-    /// second queue write.
+    /// second queue write. The default submits, so this is not a generic
+    /// read-only observer: local notices use `observe_local_notice`.
     fn observe_connect(&self, target: &Target, message_id: &str, text: &str) -> InjectOutcome {
         self.inject_connect(target, message_id, text)
+    }
+
+    /// Reads what became of a local coordination notice this injector was
+    /// handed under `message_id` (`Core::observe_local_notice`), without
+    /// submitting anything. There is no text: an implementation must answer
+    /// from the provider's own queue and transcript, and must never call a
+    /// delivery method (`inject`, `inject_connect`, `observe_connect`,
+    /// `inject_routed`, `inject_spawned`) or a spawner's route. A route with
+    /// no provably read-only receipt keeps this default.
+    fn observe_local_notice(
+        &self,
+        _registration: &Registration,
+        _message_id: &str,
+    ) -> crate::relay::local_notices::NoticeObservation {
+        crate::relay::local_notices::NoticeObservation::Unsupported
     }
 
     /// Registration-aware delivery for routes whose immutable authority is

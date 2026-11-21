@@ -261,3 +261,5 @@ async fn copilot_notice_hook_claim_only_settles_after_its_actual_native_receipt(
         InjectOutcome::Delivered
     );
 }
+
+mod observe;
