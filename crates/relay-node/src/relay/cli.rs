@@ -276,8 +276,38 @@ const SESSION_START_TIMEOUT: Duration = Duration::from_secs(8);
 pub fn codex_stop_hook(socket: Option<&Path>, build: &Build) -> Result<()> {
     let mut input = Vec::new();
     let _ = std::io::stdin().take(4 << 20).read_to_end(&mut input);
-    let (answer, receipt) = (|| -> Result<(Value, Option<(std::path::PathBuf, Vec<u8>)>)> {
-        let hook: Value = serde_json::from_slice(&input)?;
+    let (answer, receipt) = codex_hook_exchange(&input, socket, build);
+    let mut stdout = std::io::stdout();
+    write_codex_hook_answer(&mut stdout, &answer, || {
+        if let Some((socket, body)) = receipt {
+            // Output is already flushed; acknowledgement cannot replace it
+            // with {} or extend the normal hook budget substantially.
+            let _ = socket_response(
+                &socket,
+                "POST",
+                "/codex/stop-hook",
+                &body,
+                Duration::from_millis(250),
+            );
+        }
+    })
+}
+
+/// The identity receipt a SessionStart answer asks the hook to send back:
+/// the socket and the request body.
+type IdentityReceipt = Option<(std::path::PathBuf, Vec<u8>)>;
+
+/// What Agent Relay's Codex hook prints for `input`, and the receipt to
+/// acknowledge after: the core's answer, or `{}` on any failure (input
+/// that does not parse, no socket, a socket that cannot be reached or
+/// answers otherwise), so Codex goes on as it would without the hook.
+fn codex_hook_exchange(
+    input: &[u8],
+    socket: Option<&Path>,
+    build: &Build,
+) -> (Value, IdentityReceipt) {
+    (|| -> Result<(Value, IdentityReceipt)> {
+        let hook: Value = serde_json::from_slice(input)?;
         let question = hook["hook_event_name"] == crate::relay::codex::stop_hook::QUESTION_EVENT;
         let mut body = json!({
             "session_id": hook["session_id"],
@@ -323,21 +353,7 @@ pub fn codex_stop_hook(socket: Option<&Path>, build: &Build) -> Result<()> {
     })()
     .ok()
     .filter(|(answer, _)| answer.is_object())
-    .unwrap_or_else(|| (json!({}), None));
-    let mut stdout = std::io::stdout();
-    write_codex_hook_answer(&mut stdout, &answer, || {
-        if let Some((socket, body)) = receipt {
-            // Output is already flushed; acknowledgement cannot replace it
-            // with {} or extend the normal hook budget substantially.
-            let _ = socket_response(
-                &socket,
-                "POST",
-                "/codex/stop-hook",
-                &body,
-                Duration::from_millis(250),
-            );
-        }
-    })
+    .unwrap_or_else(|| (json!({}), None))
 }
 
 /// Flush context to the host before acknowledging the startup response.
@@ -928,6 +944,28 @@ fn socket_response_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Codex's question hook with no core to reach prints `{}`, which Codex
+    /// takes as allow: the question shows in its dialog, never lost.
+    #[test]
+    fn the_codex_question_hook_lets_the_dialog_show_when_the_core_is_unreachable() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "fixtures/questions/codex-0.154-pre-tool-use-request-user-input.json"
+        ))
+        .unwrap();
+        let input = serde_json::to_vec(&fixture["input"]).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("no-core.sock");
+        let not_a_socket = temp.path().join("plain-file.sock");
+        std::fs::write(&not_a_socket, b"").unwrap();
+        for socket in [&missing, &not_a_socket] {
+            let (answer, receipt) = codex_hook_exchange(&input, Some(socket), &Build::Production);
+            assert_eq!(answer, json!({}), "{}", socket.display());
+            assert!(receipt.is_none());
+        }
+        let (answer, _) = codex_hook_exchange(b"not json", Some(&missing), &Build::Production);
+        assert_eq!(answer, json!({}));
+    }
 
     /// Failed writes/flushes must leave startup fallback available.
     #[test]

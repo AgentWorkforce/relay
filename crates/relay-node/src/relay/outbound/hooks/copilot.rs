@@ -9,6 +9,18 @@ impl Outbound {
         uid: u32,
         fields: &Map<String, Value>,
     ) -> Result<Value, OutboundError> {
+        self.copilot_hook_within(pid, uid, fields, QUESTION_BUDGET)
+            .await
+    }
+
+    /// `copilot_hook`, where an `ask_user` may take `budget` in all.
+    async fn copilot_hook_within(
+        &self,
+        pid: i32,
+        uid: u32,
+        fields: &Map<String, Value>,
+        budget: std::time::Duration,
+    ) -> Result<Value, OutboundError> {
         if uid != self.uid {
             return Err(OutboundError::not_this_user());
         }
@@ -102,7 +114,7 @@ impl Outbound {
                 // The native proof above took part of the time Copilot
                 // waits for this hook: a question that might not be sent
                 // before Copilot gives up is not sent at all.
-                if !question_time_left(arrived.elapsed()) {
+                if !question_time_left(arrived.elapsed(), budget) {
                     return Ok(json!({}));
                 }
                 return Ok(self.copilot_question(&target, fields).await);
@@ -284,8 +296,8 @@ const QUESTION_MARGIN: std::time::Duration = std::time::Duration::from_secs(3);
 /// the budget after `elapsed` was spent proving the caller. Otherwise the
 /// question is not sent, so Copilot never shows a dialog for a question the
 /// core also sends.
-fn question_time_left(elapsed: std::time::Duration) -> bool {
-    elapsed + crate::relay::question::ROUTE_LIMIT + QUESTION_MARGIN <= QUESTION_BUDGET
+fn question_time_left(elapsed: std::time::Duration, budget: std::time::Duration) -> bool {
+    elapsed + crate::relay::question::ROUTE_LIMIT + QUESTION_MARGIN <= budget
 }
 
 /// Copilot's `preToolUse` answer for `ask_user`: denied with `reason` once
@@ -307,10 +319,16 @@ mod question_tests {
     #[test]
     fn a_slow_proof_leaves_the_question_to_copilot() {
         use std::time::Duration;
-        assert!(question_time_left(Duration::ZERO));
-        assert!(question_time_left(Duration::from_secs(32)));
-        assert!(!question_time_left(Duration::from_secs(33)));
-        assert!(!question_time_left(Duration::from_secs(50)));
+        assert!(question_time_left(Duration::ZERO, QUESTION_BUDGET));
+        assert!(question_time_left(Duration::from_secs(32), QUESTION_BUDGET));
+        assert!(!question_time_left(
+            Duration::from_secs(33),
+            QUESTION_BUDGET
+        ));
+        assert!(!question_time_left(
+            Duration::from_secs(50),
+            QUESTION_BUDGET
+        ));
         assert!(
             QUESTION_BUDGET < Duration::from_secs(58),
             "inside the client's wait"
@@ -324,5 +342,140 @@ mod question_tests {
             copilot_question_answer(Some("Sent to @triage.")),
             json!({"permissionDecision": "deny", "permissionDecisionReason": "Sent to @triage."})
         );
+    }
+
+    /// The route itself: a native proof that takes too long leaves the
+    /// question to Copilot, with nothing sent; a quick one sends it and
+    /// denies the tool.
+    mod route {
+        use super::super::*;
+        use crate::relay::{
+            daemon::{Config, Core, Plugins},
+            delivery::DeliveryTiming,
+            outbound::Outbound,
+            paths::CorePaths,
+            push::PushTiming,
+            sessions::{DiscoveredSession, SessionDirectory},
+            setup::DirectDelivery,
+            workspace::{Secret, Workspace},
+        };
+        use std::{collections::BTreeMap, sync::Arc, time::Duration};
+
+        const SID: &str = "019a0000-0000-7000-8000-00000000c013";
+
+        /// A directory whose Copilot proof passes after `proof`.
+        struct Proved {
+            proof: Duration,
+        }
+        impl SessionDirectory for Proved {
+            fn sessions(&self) -> Vec<DiscoveredSession> {
+                Vec::new()
+            }
+            fn copilot_hook(&self, _: i32, _: &Value) -> Option<Value> {
+                std::thread::sleep(self.proof);
+                Some(json!({}))
+            }
+        }
+        struct Direct;
+        impl DirectDelivery for Direct {
+            fn delivers_directly(&self) -> bool {
+                true
+            }
+            fn managed_value(&self) -> Option<String> {
+                None
+            }
+            fn user_choice(&self) -> Option<String> {
+                None
+            }
+            fn set_direct_delivery(&self, _: bool) -> Result<(), String> {
+                Ok(())
+            }
+        }
+
+        fn outbound(temp: &std::path::Path, proof: Duration, base: &str) -> Outbound {
+            let config = Config {
+                paths: CorePaths::for_socket(temp.join("core.sock")).unwrap(),
+                home: temp.into(),
+                app_data_dir: temp.join("data"),
+                env: BTreeMap::new(),
+                version: "test".into(),
+                host_name: "Test Desk".into(),
+                rediscover_every: Duration::from_secs(3600),
+                push_timing: PushTiming::default(),
+                delivery_timing: DeliveryTiming::default(),
+            };
+            let plugins = Plugins {
+                sessions: Arc::new(Proved { proof }),
+                ..Plugins::default()
+            };
+            let (core, _) = Core::with_plugins(config, plugins);
+            *core.workspace.lock().unwrap() = Some(Workspace {
+                key: Secret::new("rk_live_test"),
+                base_url: base.into(),
+                workspace_id: Some("workspace".into()),
+                source: crate::relay::workspace::WorkspaceSource::Cloud,
+                control_url: None,
+                gate_url: None,
+            });
+            let asker = crate::relay::question::tests::registration(
+                "asker-copilot-route",
+                Target::new(SessionKind::Copilot, SID),
+                base,
+            );
+            core.store
+                .remember(|store| {
+                    store
+                        .tokens
+                        .insert(asker.name.clone(), Secret::new("at_live_asker"));
+                    store.registrations.push(asker);
+                    store.extras.question_escalation_inbox = Some("triage".into());
+                })
+                .unwrap();
+            Outbound::new(core, Arc::new(Direct))
+        }
+
+        fn asked() -> Map<String, Value> {
+            let fixture: Value = serde_json::from_str(include_str!(
+                "../../fixtures/questions/copilot-1.0.94-pre-tool-use-ask-user.json"
+            ))
+            .unwrap();
+            let mut fields = fixture["input"].as_object().unwrap().clone();
+            fields.insert("sessionId".into(), json!(SID));
+            fields.insert("relayEvent".into(), json!("before"));
+            fields
+        }
+
+        fn dms(hits: &std::sync::Mutex<Vec<String>>) -> usize {
+            hits.lock()
+                .unwrap()
+                .iter()
+                .filter(|hit| hit.starts_with("POST /v1/dm"))
+                .count()
+        }
+
+        #[tokio::test]
+        async fn a_slow_proof_through_the_route_sends_nothing() {
+            let (base, hits) = crate::relay::question::tests::relaycast(false);
+            // Budget: room for the send and the margin, and 200 ms more.
+            let budget =
+                crate::relay::question::ROUTE_LIMIT + QUESTION_MARGIN + Duration::from_millis(200);
+            let temp = tempfile::tempdir().unwrap();
+            let slow = outbound(temp.path(), Duration::from_millis(400), &base);
+            let answer = slow
+                .copilot_hook_within(42, slow.uid, &asked(), budget)
+                .await
+                .unwrap();
+            assert_eq!(answer, json!({}), "Copilot asks as usual");
+            assert_eq!(dms(&hits), 0, "and nothing was sent");
+
+            let temp = tempfile::tempdir().unwrap();
+            let quick = outbound(temp.path(), Duration::ZERO, &base);
+            let answer = quick
+                .copilot_hook_within(42, quick.uid, &asked(), budget)
+                .await
+                .unwrap();
+            assert_eq!(answer["permissionDecision"], "deny", "{answer}");
+            assert_eq!(dms(&hits), 1);
+        }
     }
 }
