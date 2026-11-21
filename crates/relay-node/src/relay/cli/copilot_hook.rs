@@ -138,15 +138,29 @@ fn input(reader: impl Read, event: &str) -> Option<Value> {
     let mut fields = if event == "before" {
         let hook = read_hook::<Value>(reader)?;
         let raw_name = hook.tool_name.as_deref()?;
+        // Copilot's own question tool goes to question escalation; its
+        // arguments may come as a JSON string.
+        let question = raw_name == crate::relay::copilot::QUESTION_TOOL;
         // New Copilot installations use an unambiguous managed server ID.
         // Forward legacy names too; Desktop decides which calls it can sign.
-        let name = raw_name
-            .strip_prefix("agentrelay-")
-            .or_else(|| raw_name.strip_prefix("agent-relay-"))?;
-        if name.is_empty() {
-            return None;
+        if !question {
+            let name = raw_name
+                .strip_prefix("agentrelay-")
+                .or_else(|| raw_name.strip_prefix("agent-relay-"))?;
+            if name.is_empty() {
+                return None;
+            }
         }
-        let args = hook.tool_args.as_ref().filter(|v| v.is_object())?;
+        let parsed = hook
+            .tool_args
+            .as_ref()
+            .and_then(Value::as_str)
+            .filter(|_| question)
+            .and_then(|text| serde_json::from_str::<Value>(text).ok());
+        let args = parsed
+            .as_ref()
+            .or(hook.tool_args.as_ref())
+            .filter(|v| v.is_object())?;
         if serde_json::to_vec(args).ok()?.len() > 32 * 1024 {
             return None;
         }
@@ -195,6 +209,37 @@ mod tests {
             assert_eq!(value["relayEvent"], "before");
         }
     }
+    /// Copilot's `ask_user` is forwarded for question escalation, its
+    /// arguments as an object or a JSON string; anything else is not.
+    #[test]
+    fn before_forwards_ask_user_with_object_or_string_arguments() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../fixtures/questions/copilot-1.0.94-pre-tool-use-ask-user.json"
+        ))
+        .unwrap();
+        let payload = fixture["input"].clone();
+        let value = input(serde_json::to_vec(&payload).unwrap().as_slice(), "before").unwrap();
+        assert_eq!(value["toolName"], "ask_user");
+        assert_eq!(value["toolArgs"], payload["toolArgs"]);
+        let mut stringly = payload.clone();
+        stringly["toolArgs"] = json!(payload["toolArgs"].to_string());
+        let value = input(serde_json::to_vec(&stringly).unwrap().as_slice(), "before").unwrap();
+        assert_eq!(value["toolArgs"], payload["toolArgs"]);
+        for args in [json!("not json"), json!("[1,2]"), json!(3)] {
+            let mut bad = payload.clone();
+            bad["toolArgs"] = args.clone();
+            assert!(
+                input(serde_json::to_vec(&bad).unwrap().as_slice(), "before").is_none(),
+                "{args}"
+            );
+        }
+        // A string is only parsed for ask_user: a relay tool's must be an object.
+        let mut relay = payload.clone();
+        relay["toolName"] = json!("agentrelay-send_relay_message");
+        relay["toolArgs"] = json!("{}");
+        assert!(input(serde_json::to_vec(&relay).unwrap().as_slice(), "before").is_none());
+    }
+
     #[test]
     fn before_rejects_empty_and_unrelated_names_without_creating_a_call() {
         for name in [

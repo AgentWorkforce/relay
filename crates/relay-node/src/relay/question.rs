@@ -885,6 +885,50 @@ impl Core {
         }
     }
 
+    /// Copilot's `ask_user` (`args`), from `registration`'s session: the
+    /// reason its tool call is denied with once the question went to the
+    /// inbox; `None` otherwise, and Copilot asks as usual.
+    pub(crate) async fn escalate_copilot_question(
+        &self,
+        registration: &Registration,
+        args: &Value,
+        cwd: &str,
+    ) -> Option<String> {
+        self.escalate_copilot_question_within(registration, args, cwd, ROUTE_LIMIT)
+            .await
+    }
+
+    /// `escalate_copilot_question` within `limit`.
+    pub(crate) async fn escalate_copilot_question_within(
+        &self,
+        registration: &Registration,
+        args: &Value,
+        cwd: &str,
+        limit: Duration,
+    ) -> Option<String> {
+        let questions = text::copilot_questions(args)?;
+        let asked = Asked {
+            questions,
+            input: args,
+            cwd,
+            via: Via::Session,
+        };
+        match self
+            .escalate_question_within(registration, asked, limit)
+            .await
+        {
+            Escalation::Sent { reference, inbox } => Some(reason(&inbox, &reference)),
+            Escalation::Off => None,
+            Escalation::Failed(error) | Escalation::TimedOut(error) => {
+                crate::relay::diagnostics::write(format_args!(
+                    "question from @{} not escalated: {error}",
+                    registration.name
+                ));
+                None
+            }
+        }
+    }
+
     /// A direct message `answer <ref> ...` to `registration`, the agent that
     /// asked: delivered as the answer when the inbox sent it, and refused
     /// with a short reply otherwise. `base` and `token` are what the asking

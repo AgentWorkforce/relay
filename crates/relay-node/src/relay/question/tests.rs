@@ -1994,3 +1994,69 @@ async fn a_devin_question_goes_to_the_inbox() {
         None
     );
 }
+
+/// Copilot's `ask_user` (`fixtures/questions/copilot-1.0.94-...`): sent once
+/// to the inbox with its choices; refused, or of another shape, Copilot
+/// asks as usual.
+#[tokio::test]
+async fn a_copilot_question_goes_to_the_inbox() {
+    let mode = Arc::new(std::sync::atomic::AtomicU8::new(ACCEPT));
+    let (base, hits) = relaycast_in(mode.clone());
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../fixtures/questions/copilot-1.0.94-pre-tool-use-ask-user.json"
+    ))
+    .unwrap();
+    let args = fixture["input"]["toolArgs"].clone();
+    let sid = fixture["input"]["sessionId"].as_str().unwrap();
+    let asker = registration(
+        "asker-copilot",
+        Target::new(SessionKind::Copilot, sid),
+        &base,
+    );
+    let (core, _temp) = core(&base, &asker, true);
+    let reason = core
+        .escalate_copilot_question(&asker, &args, "")
+        .await
+        .expect("sent");
+    assert!(reason.starts_with("Sent to @triage"), "{reason}");
+    assert_eq!(dm_count(&hits), 1);
+    let dm = hits
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|hit| hit.starts_with("POST /v1/dm"))
+        .cloned()
+        .unwrap();
+    assert!(dm.contains("After the deploy"), "{dm}");
+    for bad in [
+        json!({}),
+        json!({"question": ""}),
+        json!({"question": "Which?", "choices": [1]}),
+        json!({"question": "Which?", "choices": "A"}),
+        json!({"question": "Which?", "allowFreeform": "yes"}),
+        json!({"message": "Which?"}),
+    ] {
+        assert_eq!(
+            core.escalate_copilot_question(&asker, &bad, "").await,
+            None,
+            "{bad}"
+        );
+    }
+    assert_eq!(dm_count(&hits), 1);
+    mode.store(REFUSE, std::sync::atomic::Ordering::SeqCst);
+    let other = registration(
+        "asker-copilot-2",
+        Target::new(SessionKind::Copilot, "019a0000-0000-7000-8000-00000000c012"),
+        &base,
+    );
+    let (second, _second_temp) = self::core(&base, &other, true);
+    assert_eq!(
+        second
+            .escalate_copilot_question_within(&other, &args, "", Duration::from_millis(300))
+            .await,
+        None
+    );
+    let questions = text::copilot_questions(&args).unwrap();
+    assert_eq!(questions[0].options.len(), 2);
+    assert!(questions[0].free);
+}
