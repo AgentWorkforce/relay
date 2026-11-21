@@ -135,6 +135,14 @@ impl Core {
     /// It takes the same provider key, agent lock, kind gate and
     /// registration and workspace fences as `inject_local_notice`. A route
     /// without a provably read-only receipt answers `Unsupported`.
+    ///
+    /// Only `Delivered` is final. While the provider's record does not show
+    /// the notice, later looks can answer `Pending` and `InDoubt` in turn,
+    /// and `Delivered` once it is recorded. On the Codex route a look at a
+    /// notice that is neither queued nor recorded starts the router's
+    /// recording grace for it, so an `inject_local_notice` of the same id
+    /// inside that grace is answered `Accepted` without submitting. Observe
+    /// only what was handed over.
     pub async fn observe_local_notice(
         self: &Arc<Self>,
         expected: &Registration,
@@ -246,7 +254,8 @@ pub enum NoticeObservation {
     /// recorded, or its queue cannot be read right now. Look again later.
     Pending(String),
     /// It was accepted earlier, and is now neither queued nor recorded.
-    /// It may still have arrived; never hand it over again.
+    /// It may still have arrived; never hand it over again. A later look
+    /// can still answer `Pending` or `Delivered`.
     InDoubt(String),
     /// This route has no read-only receipt for a notice.
     Unsupported,
