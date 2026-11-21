@@ -113,7 +113,7 @@ impl StoreHandle {
     /// without it, so the flag is set from what was loaded.
     pub fn open_agent_store(path: PathBuf, machine_prefix: &str) -> StoreHandle {
         let store = StoreHandle::open(path, machine_prefix);
-        crate::relay::codex::compact::set_enabled(store.read(Store::hides_relay_messages));
+        crate::relay::codex::compact::adopt(store.read(Store::hides_relay_messages));
         store
     }
 }
