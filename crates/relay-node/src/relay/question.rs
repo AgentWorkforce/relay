@@ -474,9 +474,7 @@ itself.",
         }
         State::Delivering => return Err(Unchecked::Delivering),
         State::Answered if record.answered_in_session => {
-            return refused(format!(
-                "Question {reference} was already answered in the session."
-            ))
+            return refused(closed_in_session(reference))
         }
         State::Answered => return refused(format!("Question {reference} was already answered.")),
         State::Expired => {
@@ -539,17 +537,83 @@ fn expire(reference: &str) -> Option<(Target, Via)> {
 /// How often a managed OpenCode session's pending questions are read.
 const OPENCODE_POLL: Duration = Duration::from_secs(2);
 
-/// OpenCode questions already tried, by session and request id, with when:
-/// each is offered to the inbox once, whatever came of it.
-fn opencode_tried() -> MutexGuard<'static, HashMap<String, Instant>> {
-    static TRIED: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
-    let mut tried = TRIED
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    let now = Instant::now();
-    tried.retain(|_, at| now < *at + TTL + KEEP);
-    tried
+/// The file a core keeps the OpenCode questions it already tried in, by
+/// session and request id, with when (milliseconds since the epoch): each
+/// is offered to the inbox once, whatever came of it, across a restart too.
+const OPENCODE_TRIED_FILE: &str = "opencode-questions-tried.json";
+
+/// The most tried OpenCode questions kept.
+const OPENCODE_TRIED_KEPT: usize = 1024;
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Marks `key` tried in the core's file: whether it was tried before (or
+/// the file cannot be read or written, which then tries nothing). Entries
+/// are dropped once past a question's expiry and its memory.
+fn opencode_mark_tried(path: &std::path::Path, key: &str) -> bool {
+    static FILE: Mutex<()> = Mutex::new(());
+    let _held = FILE.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut tried: std::collections::BTreeMap<String, u64> = match std::fs::read(path) {
+        Ok(bytes) => match serde_json::from_slice(&bytes) {
+            Ok(tried) => tried,
+            Err(_) => return true,
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Default::default(),
+        Err(_) => return true,
+    };
+    let now = now_ms();
+    let keep = (TTL + KEEP).as_millis() as u64;
+    tried.retain(|_, at| now.saturating_sub(*at) < keep);
+    if tried.contains_key(key) {
+        return true;
+    }
+    tried.insert(key.to_string(), now);
+    while tried.len() > OPENCODE_TRIED_KEPT {
+        let oldest = tried
+            .iter()
+            .min_by_key(|(_, at)| **at)
+            .map(|(key, _)| key.clone());
+        match oldest {
+            Some(oldest) => tried.remove(&oldest),
+            None => break,
+        };
+    }
+    let Ok(bytes) = serde_json::to_vec(&tried) else {
+        return true;
+    };
+    let temporary = path.with_extension("json.tmp");
+    let written = path
+        .parent()
+        .map(std::fs::create_dir_all)
+        .unwrap_or(Ok(()))
+        .and_then(|()| std::fs::write(&temporary, &bytes))
+        .and_then(|()| std::fs::rename(&temporary, path));
+    // A question that could not be recorded is not sent: after a restart
+    // it would be sent again.
+    written.is_err()
+}
+
+/// What the inbox is told about a question its session closed itself: it
+/// cannot tell an answer from a dismissal there.
+fn closed_in_session(reference: &str) -> String {
+    format!(
+        "Question {reference} is no longer open in the session: it was answered or dismissed \
+there."
+    )
+}
+
+/// Closes `reference` as closed in its own session.
+fn close_in_session(reference: &str) {
+    if let Some(record) = records().get_mut(reference) {
+        record.state = State::Answered;
+        record.answered_in_session = true;
+        record.notified = true;
+    }
 }
 
 /// The managed OpenCode sessions each core polls, by the core's socket:
@@ -1064,7 +1128,12 @@ impl Core {
                     continue;
                 };
                 let key = format!("{}:{id}", registration.target.key());
-                if opencode_tried().insert(key, Instant::now()).is_some() {
+                // A core stopping sends nothing more.
+                if self.stopping() {
+                    return;
+                }
+                let tried = self.config.app_data_dir.join(OPENCODE_TRIED_FILE);
+                if opencode_mark_tried(&tried, &key) {
                     continue;
                 }
                 let Some(questions) = text::opencode_questions(request) else {
@@ -1220,22 +1289,43 @@ session at its next turn.",
                     registration.clone(),
                     request.clone(),
                 );
+                use crate::relay::opencode_existing::ReplyOutcome;
                 let replied = tokio::task::spawn_blocking(move || {
                     injector.opencode_reply(&held, &request, &answers)
                 })
                 .await
-                .unwrap_or_else(|_| Err("the reply stopped unexpectedly".into()));
+                .unwrap_or(ReplyOutcome::Unknown);
+                let agent = &checked.agent;
                 match replied {
-                    Ok(()) => self.answered(&reference, delivery, token, &delivered).await,
-                    Err(why) => {
+                    ReplyOutcome::Taken => {
+                        self.answered(&reference, delivery, token, &delivered).await
+                    }
+                    // It may have landed: kept answered, never sent again.
+                    ReplyOutcome::Unknown => {
+                        let unsure = format!(
+                            "The answer to question {reference} may have reached @{agent}'s \
+session: OpenCode did not confirm it. It is not sent again."
+                        );
+                        self.answered(&reference, delivery, token, &unsure).await
+                    }
+                    ReplyOutcome::NoLongerPending => {
+                        close_in_session(&reference);
+                        self.refuse_reply(delivery, token, &closed_in_session(&reference))
+                            .await
+                    }
+                    ReplyOutcome::Refused | ReplyOutcome::Unavailable => {
                         if let Some(record) = records().get_mut(&reference) {
                             record.state = State::Expired;
                             record.notified = true;
                         }
+                        let why = if replied == ReplyOutcome::Refused {
+                            "OpenCode did not take it"
+                        } else {
+                            "its OpenCode server could not be reached"
+                        };
                         let refusal = format!(
-                            "The answer to question {reference} was not delivered to @{}: {why}. \
-It is still open in the session.",
-                            checked.agent
+                            "The answer to question {reference} was not delivered to @{agent}: \
+{why}. It is still open in the session."
                         );
                         self.refuse_reply(delivery, token, &refusal).await
                     }

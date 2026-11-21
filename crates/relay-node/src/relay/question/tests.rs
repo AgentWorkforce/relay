@@ -508,10 +508,24 @@ fn core_with(
     plugins: crate::relay::daemon::Plugins,
 ) -> (Arc<Core>, tempfile::TempDir) {
     let temp = tempfile::tempdir().unwrap();
+    let core = core_in(temp.path(), base, asker, on, plugins);
+    (core, temp)
+}
+
+/// `core_with`, in `dir`: a second core in the same `dir` is the first one
+/// restarted.
+fn core_in(
+    dir: &std::path::Path,
+    base: &str,
+    asker: &Registration,
+    on: bool,
+    plugins: crate::relay::daemon::Plugins,
+) -> Arc<Core> {
+    let temp = dir;
     let config = crate::relay::daemon::Config {
-        paths: crate::relay::paths::CorePaths::for_socket(temp.path().join("core.sock")).unwrap(),
-        home: temp.path().into(),
-        app_data_dir: temp.path().join("app-data"),
+        paths: crate::relay::paths::CorePaths::for_socket(temp.join("core.sock")).unwrap(),
+        home: temp.into(),
+        app_data_dir: temp.join("app-data"),
         env: std::collections::BTreeMap::new(),
         version: "0.0.0-test".into(),
         host_name: "Test Desk.local".into(),
@@ -544,7 +558,7 @@ fn core_with(
             }
         })
         .unwrap();
-    (core, temp)
+    core
 }
 
 fn asked(input: &Value) -> Asked<'_> {
@@ -2184,7 +2198,7 @@ fn every_question_shape_keeps_the_caps() {
 struct OpenCodeServer {
     pending: Mutex<Option<Vec<Value>>>,
     replies: Mutex<Vec<(String, Value)>>,
-    takes: std::sync::atomic::AtomicBool,
+    outcome: Mutex<crate::relay::opencode_existing::ReplyOutcome>,
 }
 
 impl OpenCodeServer {
@@ -2192,7 +2206,7 @@ impl OpenCodeServer {
         Arc::new(OpenCodeServer {
             pending: Mutex::new(Some(Vec::new())),
             replies: Mutex::default(),
-            takes: std::sync::atomic::AtomicBool::new(true),
+            outcome: Mutex::new(crate::relay::opencode_existing::ReplyOutcome::Taken),
         })
     }
     fn ask(&self, pending: Option<Vec<Value>>) {
@@ -2218,16 +2232,12 @@ impl crate::relay::inject::Injector for OpenCodeServer {
         _: &Registration,
         request: &str,
         answers: &Value,
-    ) -> Result<(), String> {
+    ) -> crate::relay::opencode_existing::ReplyOutcome {
         self.replies
             .lock()
             .unwrap()
             .push((request.to_string(), answers.clone()));
-        if self.takes.load(std::sync::atomic::Ordering::SeqCst) {
-            Ok(())
-        } else {
-            Err("refused".into())
-        }
+        *self.outcome.lock().unwrap()
     }
 }
 
@@ -2346,7 +2356,7 @@ async fn an_opencode_question_answered_in_the_session_refuses_the_inbox() {
         panic!("refused");
     };
     assert!(
-        detail.contains("already answered in the session"),
+        detail.contains("no longer open in the session: it was answered or dismissed there"),
         "{detail}"
     );
     assert!(server.replies.lock().unwrap().is_empty());
@@ -2376,9 +2386,7 @@ async fn an_opencode_reply_is_one_attempt_and_off_sends_nothing() {
     server.ask(Some(vec![opencode_request(session, "que_oc_3")]));
     core.poll_opencode_questions().await;
     let reference = reference_for(session);
-    server
-        .takes
-        .store(false, std::sync::atomic::Ordering::SeqCst);
+    *server.outcome.lock().unwrap() = crate::relay::opencode_existing::ReplyOutcome::Refused;
     let token = Secret::new("at_live_asker");
     let answer = reply("d-oc-3", "agent-triage", &format!("answer {reference} 2"));
     let OwnerReply::Settled(detail) = core
@@ -2432,4 +2440,105 @@ async fn an_opencode_reply_is_one_attempt_and_off_sends_nothing() {
         .unwrap();
     core.poll_opencode_questions().await;
     assert_eq!(state_of(&reference), Some(State::Answered));
+}
+
+/// Every outcome of the inbox's answer to an OpenCode question is told as
+/// it is: no longer open there (answered or dismissed: it cannot tell),
+/// unknown once the reply went out, refused, or not reachable. No text
+/// carries a type name.
+#[tokio::test]
+async fn each_opencode_reply_outcome_is_told_as_it_is() {
+    use crate::relay::opencode_existing::ReplyOutcome;
+    let (base, hits) = relaycast(false);
+    for (n, outcome, told, state) in [
+        (
+            1,
+            ReplyOutcome::NoLongerPending,
+            "no longer open in the session: it was answered or dismissed there",
+            State::Answered,
+        ),
+        (
+            2,
+            ReplyOutcome::Unknown,
+            "may have reached",
+            State::Answered,
+        ),
+        (
+            3,
+            ReplyOutcome::Refused,
+            "OpenCode did not take it. It is still open in the session",
+            State::Expired,
+        ),
+        (
+            4,
+            ReplyOutcome::Unavailable,
+            "its OpenCode server could not be reached",
+            State::Expired,
+        ),
+    ] {
+        let session = format!("ses_oc_outcome_{n}");
+        let asker = registration(
+            &format!("asker-oc-outcome-{n}"),
+            Target::new(SessionKind::OpenCode, &session),
+            &base,
+        );
+        let server = OpenCodeServer::new();
+        *server.outcome.lock().unwrap() = outcome;
+        let (core, _temp) = opencode_core(&base, &asker, &server);
+        server.ask(Some(vec![opencode_request(
+            &session,
+            &format!("que_outcome_{n}"),
+        )]));
+        core.poll_opencode_questions().await;
+        let reference = reference_for(&session);
+        let token = Secret::new("at_live_asker");
+        let answer = reply(
+            &format!("d-oc-outcome-{n}"),
+            "agent-triage",
+            &format!("answer {reference} 1"),
+        );
+        let _ = core
+            .question_reply(&asker, &answer, (base.as_str(), &token))
+            .await;
+        let said = replies_to_inbox(&hits)
+            .iter()
+            .find(|reply| reply.contains(&reference))
+            .cloned()
+            .unwrap_or_default();
+        assert!(said.contains(told), "{outcome:?}: {said}");
+        assert!(
+            !said.contains("ReplyOutcome") && !said.contains("Failure"),
+            "{said}"
+        );
+        assert_eq!(state_of(&reference), Some(state), "{outcome:?}");
+    }
+}
+
+/// A core that restarts does not send a still-pending OpenCode question
+/// again: what it tried is kept in its own data.
+#[tokio::test]
+async fn an_opencode_question_is_not_sent_again_after_a_restart() {
+    let (base, hits) = relaycast(false);
+    let session = "ses_oc_restart";
+    let asker = registration(
+        "asker-oc-restart",
+        Target::new(SessionKind::OpenCode, session),
+        &base,
+    );
+    let server = OpenCodeServer::new();
+    server.ask(Some(vec![opencode_request(session, "que_oc_restart")]));
+    let dir = tempfile::tempdir().unwrap();
+    let plugins = || crate::relay::daemon::Plugins {
+        injector: server.clone(),
+        ..crate::relay::daemon::Plugins::default()
+    };
+    let first = core_in(dir.path(), &base, &asker, true, plugins());
+    first.poll_opencode_questions().await;
+    assert_eq!(dm_count(&hits), 1);
+    drop(first);
+    // A restart loses the records held in memory.
+    records().retain(|_, record| record.target.id != session);
+    let restarted = core_in(dir.path(), &base, &asker, true, plugins());
+    restarted.poll_opencode_questions().await;
+    assert_eq!(dm_count(&hits), 1, "not sent again");
 }

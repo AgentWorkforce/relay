@@ -771,15 +771,37 @@ mod tests {
             assert!(!source.contains(build_specific), "{build_specific}");
         }
         assert!(source.contains("'relay-socket', 'relay-socket.dev'"));
-        std::fs::create_dir_all(&config.agent_dir).unwrap();
-        config.install().unwrap();
-        let production = std::fs::read(config.extension_file()).unwrap();
-        // The other build installs from the same home: the same bytes.
-        PiConfig::from_env(&|_| None, home.path())
-            .install()
-            .unwrap();
-        assert_eq!(std::fs::read(config.extension_file()).unwrap(), production);
-        assert_eq!(production, source.as_bytes());
+        // Each build's own configuration, as its core makes it: Agent Relay
+        // and Agent Relay Dev (an app data folder ending `.dev`).
+        let build = |data: &str| {
+            let daemon = crate::relay::daemon::Config {
+                paths: crate::relay::paths::CorePaths::for_socket(
+                    home.path().join(format!("{data}.sock")),
+                )
+                .unwrap(),
+                home: home.path().into(),
+                app_data_dir: home.path().join(data),
+                env: std::collections::BTreeMap::new(),
+                version: "test".into(),
+                host_name: "Test Desk".into(),
+                rediscover_every: std::time::Duration::from_secs(3600),
+                push_timing: Default::default(),
+                delivery_timing: Default::default(),
+            };
+            crate::relay::local::local_config(&daemon, home.path(), &|_| None).pi
+        };
+        let production = build("agent-relay");
+        let development = build("agent-relay.dev");
+        std::fs::create_dir_all(&production.agent_dir).unwrap();
+        production.install().unwrap();
+        let installed = std::fs::read(production.extension_file()).unwrap();
+        development.install().unwrap();
+        assert_eq!(development.extension_file(), production.extension_file());
+        assert_eq!(
+            std::fs::read(development.extension_file()).unwrap(),
+            installed
+        );
+        assert_eq!(installed, source.as_bytes());
     }
 
     #[test]

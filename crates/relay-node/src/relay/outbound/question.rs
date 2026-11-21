@@ -56,7 +56,7 @@ impl Outbound {
             }
         }
         let input = &fields["tool_input"];
-        let questions = route_questions(&fields);
+        let questions = route_questions(&fields, session.target.kind);
         if questions.is_empty() {
             return Err(OutboundError::new(
                 400,
@@ -87,13 +87,16 @@ fn pinned_to(registration: &crate::relay::store::Registration, live: Option<&str
 /// The questions in a hook's `fields`. A hook that cut the input short
 /// (Grok's `toolInputTruncated`) does not hand over the whole question, so
 /// it asks nothing and the harness shows it.
-fn route_questions(fields: &Map<String, Value>) -> Vec<text::Question> {
+fn route_questions(fields: &Map<String, Value>, kind: SessionKind) -> Vec<text::Question> {
     let truncated = fields.get("toolInputTruncated") == Some(&Value::Bool(true))
         || fields.get("tool_input_truncated") == Some(&Value::Bool(true));
     if truncated {
         return Vec::new();
     }
-    text::hook_questions(&fields["tool_input"])
+    match kind {
+        SessionKind::Pi | SessionKind::Omp => text::pi_questions(&fields["tool_input"]),
+        _ => text::hook_questions(&fields["tool_input"]),
+    }
 }
 
 /// Grok's ask-the-user tool, as its hooks name it (Grok 1.0.77).
@@ -363,10 +366,32 @@ mod tests {
                     .status,
                 400
             );
-            let questions = route_questions(&fields);
+            let questions = route_questions(&fields, kind);
             assert_eq!(questions.len(), 1, "{kind:?}");
             assert!(questions[0].text.ends_with('?'));
             assert_eq!(questions[0].options.len(), 2);
+        }
+    }
+
+    /// Pi's shapes (a question at the top level, omp's `multi`) are read
+    /// for Pi and omp alone; every other harness keeps the strict shape.
+    #[test]
+    fn pi_shapes_are_read_for_pi_and_omp_only() {
+        let fields = |input: Value| json!({"tool_input": input}).as_object().unwrap().clone();
+        let top = fields(json!({"question": "Which?", "options": [{"label": "A"}]}));
+        let multi = fields(json!({"questions": [{"question": "Which?", "multi": true,
+            "options": [{"label": "A"}, {"label": "B"}]}]}));
+        for kind in [SessionKind::Pi, SessionKind::Omp] {
+            assert_eq!(route_questions(&top, kind).len(), 1, "{kind:?}");
+            assert!(route_questions(&multi, kind)[0].multi, "{kind:?}");
+        }
+        for kind in [
+            SessionKind::ClaudeTerminal,
+            SessionKind::Devin,
+            SessionKind::Grok,
+        ] {
+            assert!(route_questions(&top, kind).is_empty(), "{kind:?}");
+            assert!(!route_questions(&multi, kind)[0].multi, "{kind:?}");
         }
     }
 
@@ -376,9 +401,12 @@ mod tests {
             .as_object()
             .unwrap()
             .clone();
-        assert_eq!(route_questions(&fields).len(), 1);
+        assert_eq!(
+            route_questions(&fields, SessionKind::ClaudeTerminal).len(),
+            1
+        );
         fields.insert("toolInputTruncated".into(), json!(true));
-        assert!(route_questions(&fields).is_empty());
+        assert!(route_questions(&fields, SessionKind::ClaudeTerminal).is_empty());
     }
 
     #[test]
@@ -392,6 +420,7 @@ mod tests {
             json!({"questions": [{"question": "Which?", "options": "A, B"}]}),
             json!({"questions": [{"question": ""}]}),
             json!({"questions": [{"question": "Which?"}, {"prompt": "Then?"}]}),
+            json!({"question": "Which?"}),
         ] {
             assert!(text::hook_questions(&bad).is_empty(), "{bad}");
         }
@@ -420,5 +449,160 @@ mod tests {
         let tool = question_registration(&fields("s-1", "Bash"), &target, found);
         assert_eq!(tool.unwrap_err().status, 400);
         assert!(question_registration(&fields("S-1", "AskUserQuestion"), &target, found).is_ok());
+    }
+
+    /// Through the route: a Pi caller whose registration is pinned to
+    /// another instance than the live binding gets the unknown-session 404,
+    /// and nothing is sent; pinned to it, the question goes out.
+    mod route {
+        use super::*;
+        use crate::relay::{
+            daemon::{Config, Core, Plugins},
+            delivery::DeliveryTiming,
+            outbound::{Outbound, Request},
+            paths::CorePaths,
+            push::PushTiming,
+            sessions::{CallerMiss, DiscoveredSession, SessionDirectory},
+            setup::DirectDelivery,
+            workspace::{Secret, Workspace},
+        };
+        use std::{collections::BTreeMap, sync::Arc, time::Duration};
+
+        const SESSION: &str = "12345678-1234-4234-8234-123456789abc";
+
+        struct PiCaller;
+        fn listed() -> DiscoveredSession {
+            DiscoveredSession {
+                target: Target::new(SessionKind::Omp, SESSION),
+                title: "Oh My Pi session".into(),
+                directory: Some("/work".into()),
+                updated_at_ms: None,
+                host: None,
+                live: true,
+                holder: None,
+            }
+        }
+        impl SessionDirectory for PiCaller {
+            fn sessions(&self) -> Vec<DiscoveredSession> {
+                vec![listed()]
+            }
+            fn caller(&self, _pid: i32) -> Result<DiscoveredSession, CallerMiss> {
+                Ok(DiscoveredSession {
+                    target: Target::new(SessionKind::Omp, SESSION),
+                    title: "Oh My Pi session".into(),
+                    directory: Some("/work".into()),
+                    updated_at_ms: None,
+                    host: None,
+                    live: true,
+                    holder: None,
+                })
+            }
+            fn route_binding(&self, _target: &Target) -> Option<String> {
+                Some("omp:42:7:live".into())
+            }
+        }
+        struct Direct;
+        impl DirectDelivery for Direct {
+            fn delivers_directly(&self) -> bool {
+                true
+            }
+            fn managed_value(&self) -> Option<String> {
+                None
+            }
+            fn user_choice(&self) -> Option<String> {
+                None
+            }
+            fn set_direct_delivery(&self, _: bool) -> Result<(), String> {
+                Ok(())
+            }
+        }
+
+        fn outbound(temp: &std::path::Path, base: &str, pinned: &str) -> Outbound {
+            let config = Config {
+                paths: CorePaths::for_socket(temp.join("core.sock")).unwrap(),
+                home: temp.into(),
+                app_data_dir: temp.join("data"),
+                env: BTreeMap::new(),
+                version: "test".into(),
+                host_name: "Test Desk".into(),
+                rediscover_every: Duration::from_secs(3600),
+                push_timing: PushTiming::default(),
+                delivery_timing: DeliveryTiming::default(),
+            };
+            let plugins = Plugins {
+                sessions: Arc::new(PiCaller),
+                ..Plugins::default()
+            };
+            let (core, _) = Core::with_plugins(config, plugins);
+            *core.workspace.lock().unwrap() = Some(Workspace {
+                key: Secret::new("rk_live_test"),
+                base_url: base.into(),
+                workspace_id: Some("workspace".into()),
+                source: crate::relay::workspace::WorkspaceSource::Cloud,
+                control_url: None,
+                gate_url: None,
+            });
+            let mut asker = crate::relay::question::tests::registration(
+                "asker-omp-route",
+                Target::new(SessionKind::Omp, SESSION),
+                base,
+            );
+            asker.route_binding = Some(pinned.into());
+            core.store
+                .remember(|store| {
+                    store
+                        .tokens
+                        .insert(asker.name.clone(), Secret::new("at_live_asker"));
+                    store.registrations.push(asker);
+                    store.extras.question_escalation_inbox = Some("triage".into());
+                })
+                .unwrap();
+            Outbound::new(core, Arc::new(Direct))
+        }
+
+        fn ask(question: &str) -> Request {
+            Request {
+                method: "POST".into(),
+                path: "/claude/question".into(),
+                query: Vec::new(),
+                headers: Default::default(),
+                body: serde_json::to_vec(&json!({"hook_event_name": "PreToolUse",
+                    "session_id": SESSION, "tool_name": "ask", "cwd": "/work",
+                    "tool_input": {"questions": [{"id": "q", "question": question,
+                        "options": [{"label": "A"}, {"label": "B"}]}]}}))
+                .unwrap(),
+            }
+        }
+
+        #[tokio::test]
+        async fn a_pi_caller_not_on_the_live_binding_is_unknown_and_nothing_is_sent() {
+            let (base, hits) = crate::relay::question::tests::relaycast(false);
+            let dms = || {
+                hits.lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|hit| hit.starts_with("POST /v1/dm"))
+                    .count()
+            };
+            let temp = tempfile::tempdir().unwrap();
+            let stale = outbound(temp.path(), &base, "omp:42:7:old");
+            let error = stale
+                .question_route(42, stale.uid, &ask("Which store for the stale route?"))
+                .await
+                .unwrap_err();
+            assert_eq!(
+                (error.status, error.code.as_str()),
+                (404, "question_session_unknown")
+            );
+            assert_eq!(dms(), 0);
+            let temp = tempfile::tempdir().unwrap();
+            let live = outbound(temp.path(), &base, "omp:42:7:live");
+            let answer = live
+                .question_route(42, live.uid, &ask("Which store for the live route?"))
+                .await
+                .unwrap();
+            assert_eq!(answer["escalated"], true, "{answer}");
+            assert_eq!(dms(), 1);
+        }
     }
 }

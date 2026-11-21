@@ -124,7 +124,8 @@ function askCore(socket, body, deadline) {
     let done = false;
     let written = false;
     const finish = value => { if (!done) { done = true; clearTimeout(connectTimer); clearTimeout(totalTimer); resolve(value); } };
-    const req = httpRequest({ socketPath: socket, path: '/claude/question', method: 'POST',
+    // One connection per ask: a kept-alive one would never report its connect.
+    const req = httpRequest({ socketPath: socket, path: '/claude/question', method: 'POST', agent: false,
       headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } }, res => {
       const chunks = [];
       let size = 0;
@@ -138,7 +139,11 @@ function askCore(socket, body, deadline) {
     const connectTimer = setTimeout(() => { if (!written) { req.destroy(); finish({ refused: true }); } }, QUESTION_CONNECT_MS);
     const totalTimer = setTimeout(() => { req.destroy(); finish(written ? { unknown: true } : { refused: true }); },
       Math.max(0, deadline - Date.now()));
-    req.on('socket', sock => sock.on('connect', () => { written = true; }));
+    req.on('socket', sock => {
+      // Already connected (a reused socket): the request goes out at once.
+      if (sock.connecting === false) written = true;
+      else sock.on('connect', () => { written = true; });
+    });
     req.on('error', () => finish(written ? { unknown: true } : { refused: true }));
     req.end(body);
   });
@@ -156,11 +161,14 @@ async function escalateQuestion(sessionId, cwd, toolName, input) {
     const result = await askCore(socket, body, deadline);
     if (result.unknown) return undefined;
     if (result.refused) continue;
+    // Only a core that does not have this session (403, 404) passes the ask
+    // on. Any other answer ends it: the core took the request, and its send
+    // may have gone out even when it answers escalated:false.
+    if (result.answer.status === 403 || result.answer.status === 404) continue;
     const data = result.answer.body?.data;
     if (result.answer.status === 200 && data?.escalated === true &&
         typeof data.reason === 'string' && data.reason.trim()) return data.reason;
-    // This core does not have the session, or did not send it: the next may.
-    if (![200, 403, 404].includes(result.answer.status)) return undefined;
+    return undefined;
   }
   return undefined;
 }

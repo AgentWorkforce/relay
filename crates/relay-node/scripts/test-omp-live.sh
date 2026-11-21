@@ -5,6 +5,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OMP_TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/relay-omp-live.XXXXXX")"
 trap 'rm -rf "$OMP_TEST_ROOT"' EXIT
 
+# The extension's own tests under Bun, the runtime Pi and Oh My Pi run it in.
+bun test "$REPO_ROOT/src/relay/pi/extension.test.mjs"
+
 package='@oh-my-pi/pi-coding-agent@18.12.6'
 (cd "$OMP_TEST_ROOT" && bun init -y >/dev/null && bun add --exact "$package")
 RELAY_OMP_CLI="$OMP_TEST_ROOT/node_modules/.bin/omp" \

@@ -56,17 +56,27 @@ pub const MAX_OPTIONS: usize = 50;
 /// header, options: [{label, description}] or [label]}]}`. Each always takes
 /// an answer in the user's own words. Empty for any other shape.
 pub fn hook_questions(input: &Value) -> Vec<Question> {
-    // Pi's example `question` tool asks one, at the top level.
-    let single;
-    let asked = match input["questions"].as_array() {
-        Some(asked) => asked,
-        None if input["question"].is_string() => {
-            single = vec![input.clone()];
-            &single
-        }
-        // Strict: a shape none of them gives asks nothing, and the tool runs.
-        None => return Vec::new(),
+    // Strict: a shape none of them gives asks nothing, and the tool runs.
+    let Some(asked) = input["questions"].as_array() else {
+        return Vec::new();
     };
+    read_questions(asked, false)
+}
+
+/// The questions Pi's and omp's extension hands over: omp's `ask`
+/// (`{questions: [{id, question, header?, options, multi?}]}`) or the
+/// `question` tool of Pi's example extension, which asks one at the top
+/// level (`{question, options}`). Read as strictly as `hook_questions`.
+pub fn pi_questions(input: &Value) -> Vec<Question> {
+    match input["questions"].as_array() {
+        Some(asked) => read_questions(asked, true),
+        None if input["question"].is_string() => read_questions(std::slice::from_ref(input), true),
+        None => Vec::new(),
+    }
+}
+
+/// `asked` read strictly; `multi` names a multiple choice too (omp's).
+fn read_questions(asked: &[Value], omp: bool) -> Vec<Question> {
     if asked.len() > MAX_QUESTIONS {
         return Vec::new();
     }
@@ -112,7 +122,7 @@ pub fn hook_questions(input: &Value) -> Vec<Question> {
                 .collect(),
             multi: question["multiSelect"] == true
                 || question["multi_select"] == true
-                || question["multi"] == true,
+                || (omp && question["multi"] == true),
             free: true,
         })
         .collect()
