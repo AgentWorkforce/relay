@@ -20,11 +20,8 @@ pub const STATUS: &str = "question_escalation_status";
 /// The longest inbox name accepted, in characters.
 pub const MAX_INBOX: usize = 128;
 
-/// What `question_escalation_status` says.
-pub const STATUS_TEXT: &str = "Available for Claude Code sessions (interactive and spawned), \
-through Agent Relay's Claude Code hook (claude_session_hook), and spawned Codex sessions. \
-Unavailable for interactive Codex, Cursor, Copilot, Grok and OpenCode \
-sessions: they have no hook before a question is shown.";
+/// Read-only: each kind of session's reach (`super::coverage`).
+pub const COVERAGE: &str = "question_escalation_coverage";
 
 /// Whether questions are escalated: on unless turned off. Only an explicit
 /// `off` (`Some(false)`) is off; a store that never set it is on.
@@ -49,7 +46,8 @@ pub fn values(store: &Store) -> Map<String, Value> {
         json!(if on(store) { "on" } else { "off" }),
     );
     values.insert(INBOX.into(), json!(inbox(store).unwrap_or_default()));
-    values.insert(STATUS.into(), json!(STATUS_TEXT));
+    values.insert(STATUS.into(), json!(super::coverage::status_text()));
+    values.insert(COVERAGE.into(), super::coverage::value());
     values
 }
 
@@ -126,9 +124,9 @@ mod tests {
         let values = values(&store);
         assert_eq!(values[ESCALATION], "on");
         assert_eq!(values[INBOX], "");
-        assert_eq!(values[STATUS], STATUS_TEXT);
-        assert!(STATUS_TEXT
-            .contains("Unavailable for interactive Codex, Cursor, Copilot, Grok and OpenCode"));
+        assert_eq!(values[STATUS], super::super::coverage::status_text());
+        assert_eq!(values[COVERAGE], super::super::coverage::value());
+        assert_eq!(values[COVERAGE]["claude-terminal"]["state"], "covered");
     }
 
     #[test]

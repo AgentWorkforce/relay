@@ -42,6 +42,7 @@
 //! A question past its expiry tells its Claude session so once, whichever
 //! of the timer and a late reply closes it first (`Record::notified`).
 
+pub mod coverage;
 pub mod settings;
 pub mod text;
 
