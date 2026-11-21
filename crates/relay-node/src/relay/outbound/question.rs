@@ -39,7 +39,7 @@ impl Outbound {
                 .read(|store| store.registration_for(target).cloned())
         })?;
         let input = &fields["tool_input"];
-        let questions = text::claude_questions(input);
+        let questions = text::hook_questions(input);
         if questions.is_empty() {
             return Err(OutboundError::new(
                 400,
@@ -61,8 +61,9 @@ impl Outbound {
     }
 }
 
-/// The registration of the Claude Code session that sent `fields`: it must
-/// be an `AskUserQuestion` from the caller's own session.
+/// The registration of the session that sent `fields`: it must be its
+/// harness's own ask-the-user tool (Claude Code's `AskUserQuestion`,
+/// Devin's `ask_user_question`), from the caller's own session.
 fn question_registration(
     fields: &Map<String, Value>,
     target: &crate::relay::store::Target,
@@ -70,11 +71,17 @@ fn question_registration(
         &crate::relay::store::Target,
     ) -> Option<crate::relay::store::Registration>,
 ) -> Result<crate::relay::store::Registration, OutboundError> {
-    if fields.get("tool_name").and_then(Value::as_str) != Some("AskUserQuestion") {
+    // Each harness's own ask-the-user tool, from its own kind of session.
+    let tool = match target.kind {
+        SessionKind::ClaudeTerminal | SessionKind::ClaudeCloud => "AskUserQuestion",
+        SessionKind::Devin => crate::relay::devin::QUESTION_TOOL,
+        _ => "AskUserQuestion",
+    };
+    if fields.get("tool_name").and_then(Value::as_str) != Some(tool) {
         return Err(OutboundError::new(
             400,
             "question_invalid",
-            "tool_name must be AskUserQuestion",
+            format!("tool_name must be {tool}"),
         ));
     }
     let unknown = || {
@@ -84,15 +91,15 @@ fn question_registration(
             "this Claude Code session is not registered with Agent Relay",
         )
     };
-    let claude = matches!(
+    let covered = matches!(
         target.kind,
-        SessionKind::ClaudeTerminal | SessionKind::ClaudeCloud
+        SessionKind::ClaudeTerminal | SessionKind::ClaudeCloud | SessionKind::Devin
     );
     let same = fields
         .get("session_id")
         .and_then(Value::as_str)
         .is_some_and(|id| id.eq_ignore_ascii_case(&target.id));
-    if !claude || !same {
+    if !covered || !same {
         return Err(unknown());
     }
     registration_for(target).ok_or_else(unknown)
@@ -116,6 +123,56 @@ mod tests {
         .as_object()
         .unwrap()
         .clone()
+    }
+
+    /// Devin's own session asking with its own tool, in the shape Devin's
+    /// hook gives (`fixtures/questions/devin-3000.12.57-...`); Claude's tool
+    /// name from a Devin session, or Devin's from Claude's, is refused.
+    #[test]
+    fn a_devin_session_asks_with_its_own_tool() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../fixtures/questions/devin-3000.12.57-pre-tool-use-ask-user-question.json"
+        ))
+        .unwrap();
+        let fields = fixture["input"].as_object().unwrap().clone();
+        let devin = Target::new(SessionKind::Devin, "real-gallium");
+        let found = |target: &Target| {
+            Some(crate::relay::question::tests::registration(
+                "asker",
+                target.clone(),
+                "https://cast.test",
+            ))
+        };
+        assert!(question_registration(&fields, &devin, found).is_ok());
+        let questions = text::hook_questions(&fields["tool_input"]);
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].text, "Which auth method should the API use?");
+        assert_eq!(questions[0].options.len(), 2);
+        assert!(!questions[0].multi && questions[0].free);
+        let mut claude_tool = fields.clone();
+        claude_tool.insert("tool_name".into(), json!("AskUserQuestion"));
+        assert_eq!(
+            question_registration(&claude_tool, &devin, found)
+                .unwrap_err()
+                .status,
+            400
+        );
+        let claude = Target::new(SessionKind::ClaudeTerminal, "real-gallium");
+        assert_eq!(
+            question_registration(&fields, &claude, found)
+                .unwrap_err()
+                .status,
+            400
+        );
+        // An argument shape Devin's schema does not give asks nothing, so
+        // the route refuses it and the hook lets Devin show the question.
+        for bad in [
+            json!({}),
+            json!({"questions": "x"}),
+            json!({"questions": [{"prompt": "?"}]}),
+        ] {
+            assert!(text::hook_questions(&bad).is_empty(), "{bad}");
+        }
     }
 
     #[test]

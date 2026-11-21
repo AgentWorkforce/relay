@@ -518,6 +518,31 @@ pub fn devin_hook(development: bool) -> Result<()> {
         Ok(home) => home,
         Err(_) => return Ok(()),
     };
+    // The question hook: Devin's ask_user_question goes to question
+    // escalation, and is blocked with the reason once it was sent. Any
+    // failure prints nothing, and Devin shows the question.
+    if payload["hook_event_name"] == crate::relay::devin::QUESTION_EVENT {
+        if payload["tool_name"] != crate::relay::devin::QUESTION_TOOL {
+            return Ok(());
+        }
+        let output = session_hook_socket(None, &hook_build(development)).and_then(|socket| {
+            let (status, body) = socket_response(
+                &socket,
+                "POST",
+                "/claude/question",
+                &input,
+                QUESTION_HOOK_WAIT,
+            )
+            .ok()?;
+            crate::relay::devin::question_hook_output(status, &body)
+        });
+        if let Some(output) = output {
+            let mut stdout = std::io::stdout();
+            stdout.write_all(&serde_json::to_vec(&output)?)?;
+            stdout.write_all(b"\n")?;
+        }
+        return Ok(());
+    }
     let config = crate::relay::devin::DevinConfig::from_env(&|key| std::env::var(key).ok(), &home)
         .development(development);
     let mut answer = crate::relay::devin::hook_answer(&config, &payload);
