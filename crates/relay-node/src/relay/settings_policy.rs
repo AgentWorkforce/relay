@@ -898,11 +898,13 @@ mod tests {
     #[test]
     fn a_question_escalation_lock_holds_through_a_merge() {
         use crate::relay::store::Store;
-        let mut base = Store::default();
-        base.organization_policy = Some(Stored {
-            policy: Some(policy(json!({"locked": {"question_escalation": "off"}}))),
-            applied_defaults: BTreeMap::new(),
-        });
+        let mut base = Store {
+            organization_policy: Some(Stored {
+                policy: Some(policy(json!({"locked": {"question_escalation": "off"}}))),
+                applied_defaults: BTreeMap::new(),
+            }),
+            ..Store::default()
+        };
         base.extras.question_escalation = Some(false);
         let mut stale = Store::default();
         stale.extras.question_escalation = Some(true);
