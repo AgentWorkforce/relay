@@ -273,7 +273,26 @@ impl LocalSessions {
     /// runs under such a process, are `CallerMiss::Unattributed`;
     /// `CallerMiss::NotASession` only when no agent process is above the
     /// caller at all.
+    /// The Pi or omp session whose live binding `pid` holds itself.
+    fn pi_caller(&self, pid: i32) -> Option<Target> {
+        [SessionKind::Pi, SessionKind::Omp]
+            .into_iter()
+            .find_map(|kind| {
+                let extension = self.config.extension(kind)?;
+                crate::relay::pi::caller(extension, &*self.table, self.config.uid, pid)
+                    .map(|binding| Target::new(kind, binding.session_id()))
+            })
+    }
+
     fn caller_target(&self, pid: i32) -> Result<Target, CallerMiss> {
+        // Agent Relay's Pi and omp extension runs inside the Pi or omp
+        // process and speaks to the socket itself: the caller is a process
+        // that holds a live session binding (`pi::bindings`: this exact
+        // process, by pid and kernel start time, holding its instance's
+        // session file open).
+        if let Some(target) = self.pi_caller(pid) {
+            return Ok(target);
+        }
         let table = &*self.table;
         let uid = self.config.uid;
         let claude = claude::registry(&self.config.claude, table);
@@ -1894,6 +1913,38 @@ impl Injector for LocalInjector {
             return None;
         };
         self.opencode.as_ref()?.final_answer(&binding, message_ref)
+    }
+
+    fn opencode_questions(
+        &self,
+        registration: &crate::relay::store::Registration,
+    ) -> Option<Vec<serde_json::Value>> {
+        if registration.target.kind != SessionKind::OpenCode {
+            return None;
+        }
+        let ManagedBinding::OpenCode(binding) =
+            self.managed.as_ref()?.binding(&registration.target)?
+        else {
+            return None;
+        };
+        self.opencode.as_ref()?.pending_questions(&binding).ok()
+    }
+
+    fn opencode_reply(
+        &self,
+        registration: &crate::relay::store::Registration,
+        request_id: &str,
+        answers: &serde_json::Value,
+    ) -> opencode_existing::ReplyOutcome {
+        let binding = (registration.target.kind == SessionKind::OpenCode)
+            .then(|| self.managed.as_ref()?.binding(&registration.target))
+            .flatten();
+        let (Some(ManagedBinding::OpenCode(binding)), Some(injector)) =
+            (binding, self.opencode.as_ref())
+        else {
+            return opencode_existing::ReplyOutcome::Unavailable;
+        };
+        injector.reply_question(&binding, request_id, answers)
     }
 }
 

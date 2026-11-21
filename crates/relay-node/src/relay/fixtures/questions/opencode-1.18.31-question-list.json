@@ -1,0 +1,26 @@
+{
+  "_source": "OpenCode v1.18.31 (commit 014614d), from its OpenAPI (GET /doc of an `opencode serve` run in throwaway directories, nothing signed in): GET /question (operationId question.list) answers QuestionRequest[] across sessions, each {id, sessionID, questions: QuestionInfo[], tool?: {messageID, callID}}, QuestionInfo {question, header, options: [{label, description}], multiple?, custom?}; POST /question/{requestID}/reply takes {answers: string[][]}, one list of labels per question, and answers true. Source: packages/opencode/src/question/index.ts, packages/schema/src/v1/question.ts, packages/opencode/src/server/routes/instance/httpapi/groups/question.ts. The turn waits until the question is replied or rejected; a reply from the API closes the TUI's dialog (packages/tui/src/context/sync.tsx). Values are synthetic.",
+  "list": [
+    {
+      "id": "que_exact",
+      "sessionID": "ses_exact",
+      "questions": [
+        {
+          "question": "Which package manager should the project use?",
+          "header": "Package manager",
+          "options": [
+            {"label": "pnpm", "description": "Fast, strict"},
+            {"label": "npm", "description": "Bundled with Node"}
+          ],
+          "multiple": false
+        }
+      ],
+      "tool": {"messageID": "msg_tool", "callID": "call_question"}
+    },
+    {
+      "id": "que_other_session",
+      "sessionID": "ses_other",
+      "questions": [{"question": "Not ours?", "header": "Other", "options": []}]
+    }
+  ]
+}

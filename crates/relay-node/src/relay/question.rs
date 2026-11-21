@@ -1,5 +1,6 @@
 //! Question escalation: a question a session asks its person (Claude's
-//! `AskUserQuestion`, a spawned Codex's `item/tool/requestUserInput`) is
+//! `AskUserQuestion`, a spawned Codex's `item/tool/requestUserInput`, and
+//! the others `coverage` lists) is
 //! sent over Relaycast to an inbox instead, the owner's person identity
 //! unless `question_escalation_inbox` names another agent, and the session
 //! keeps working. The inbox answers with `answer <ref> <n|text>`; only the
@@ -39,6 +40,11 @@
 //! is not acknowledged: the question opens again and the same reply is read
 //! again on a later pass. An answer that may have arrived is never typed
 //! again, and the inbox is told it may not have.
+//!
+//! A managed OpenCode session's question is read from its own server
+//! (`opencode_question_loop`) and stays open in OpenCode's dialog as well:
+//! the first answer wins. One answered there is closed, and the inbox's
+//! late answer is refused; the inbox's answer is one reply to OpenCode.
 //!
 //! A question past its expiry tells its session so once, whichever
 //! of the timer and a late reply closes it first (`Record::notified`).
@@ -118,6 +124,11 @@ pub enum Via {
     /// A spawned Codex's `item/tool/requestUserInput`: the answer is the
     /// request's result, by the drive's reference.
     Codex { request: String },
+    /// A managed OpenCode session's question tool, read from its own server
+    /// (`opencode_question_loop`): the question stays open in OpenCode's
+    /// dialog too, and the first answer wins. The inbox's answer is the
+    /// reply to OpenCode's question `request`.
+    OpenCode { request: String },
 }
 
 #[derive(Clone, Debug)]
@@ -138,6 +149,8 @@ struct Record {
     sending: bool,
     /// The session was told it expired, or never needs to be.
     notified: bool,
+    /// Closed because the session answered it itself (OpenCode's dialog).
+    answered_in_session: bool,
 }
 
 impl Record {
@@ -460,6 +473,9 @@ itself.",
             ))
         }
         State::Delivering => return Err(Unchecked::Delivering),
+        State::Answered if record.answered_in_session => {
+            return refused(closed_in_session(reference))
+        }
         State::Answered => return refused(format!("Question {reference} was already answered.")),
         State::Expired => {
             return refused(format!(
@@ -516,6 +532,154 @@ fn expire(reference: &str) -> Option<(Target, Via)> {
     }
     record.notified = true;
     Some((record.target.clone(), record.via.clone()))
+}
+
+/// How many managed OpenCode sessions are read at once.
+const OPENCODE_POLL_AT_ONCE: usize = 4;
+
+/// How often a managed OpenCode session's pending questions are read.
+const OPENCODE_POLL: Duration = Duration::from_secs(2);
+
+/// The file a core keeps the OpenCode questions it already tried in, by
+/// session and request id, with when (milliseconds since the epoch): each
+/// is offered to the inbox once, whatever came of it, across a restart too.
+const OPENCODE_TRIED_FILE: &str = "opencode-questions-tried.json";
+
+/// The most tried OpenCode questions kept.
+const OPENCODE_TRIED_KEPT: usize = 1024;
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Marks `key` tried in the core's file: whether it was tried before (or
+/// the file cannot be read, which then tries nothing). An entry is kept
+/// while its question is still pending (each poll that lists it keeps it
+/// fresh) and dropped once it has been gone past a question's expiry and
+/// its memory, so a question left open is offered once, however long it
+/// stays open. A file that does not parse (a crash between write and
+/// rename can leave one) starts a new set: the questions pending then are
+/// offered once more, rather than none ever again.
+fn opencode_mark_tried(path: &std::path::Path, key: &str) -> bool {
+    static FILE: Mutex<()> = Mutex::new(());
+    let _held = FILE.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut tried: std::collections::BTreeMap<String, u64> = match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+            warn_once(format_args!(
+                "relay: the record of OpenCode questions already offered does not parse; \
+starting a new one"
+            ));
+            Default::default()
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Default::default(),
+        Err(error) => {
+            warn_once(format_args!(
+                "relay: the record of OpenCode questions already offered cannot be read \
+({error}); OpenCode questions are not sent until it can"
+            ));
+            return true;
+        }
+    };
+    let now = now_ms();
+    if let Some(at) = tried.get_mut(key) {
+        // Still pending: kept, written again at most once a minute.
+        if now.saturating_sub(*at) >= OPENCODE_TRIED_REFRESH_MS {
+            *at = now;
+            let _ = write_tried(path, &tried);
+        }
+        return true;
+    }
+    let keep = (TTL + KEEP).as_millis() as u64;
+    tried.retain(|_, at| now.saturating_sub(*at) < keep);
+    tried.insert(key.to_string(), now);
+    while tried.len() > OPENCODE_TRIED_KEPT {
+        let oldest = tried
+            .iter()
+            .min_by_key(|(_, at)| **at)
+            .map(|(key, _)| key.clone());
+        match oldest {
+            Some(oldest) => tried.remove(&oldest),
+            None => break,
+        };
+    }
+    // A question that could not be recorded is not sent: after a restart
+    // it would be sent again.
+    write_tried(path, &tried).is_err()
+}
+
+/// How often a still-pending question's entry is written again.
+const OPENCODE_TRIED_REFRESH_MS: u64 = 60_000;
+
+fn write_tried(
+    path: &std::path::Path,
+    tried: &std::collections::BTreeMap<String, u64>,
+) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec(tried).map_err(std::io::Error::other)?;
+    let temporary = path.with_extension("json.tmp");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&temporary, &bytes)?;
+    std::fs::rename(&temporary, path)
+}
+
+/// Writes `message` to the core's diagnostics once per run.
+fn warn_once(message: std::fmt::Arguments<'_>) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !WARNED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        crate::relay::diagnostics::write(message);
+    }
+}
+
+/// What the inbox is told about a question its session closed itself: it
+/// cannot tell an answer from a dismissal there.
+fn closed_in_session(reference: &str) -> String {
+    format!(
+        "Question {reference} is no longer open in the session: it was answered or dismissed \
+there."
+    )
+}
+
+/// Closes `reference` as closed in its own session.
+fn close_in_session(reference: &str) {
+    if let Some(record) = records().get_mut(reference) {
+        record.state = State::Answered;
+        record.answered_in_session = true;
+        record.notified = true;
+    }
+}
+
+/// The managed OpenCode sessions each core polls, by the core's socket:
+/// one whose session leaves the relay closes its questions.
+fn opencode_polled() -> MutexGuard<'static, HashMap<Target, String>> {
+    static POLLED: OnceLock<Mutex<HashMap<Target, String>>> = OnceLock::new();
+    POLLED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Closes the open OpenCode questions of `target` that OpenCode no longer
+/// waits on (`pending`, or `None` when the session is gone): answered or
+/// dismissed in its own dialog, or the session ended. A late inbox answer
+/// is then refused.
+fn close_answered_in_session(target: &Target, pending: Option<&[String]>) {
+    for record in records().values_mut() {
+        let Via::OpenCode { request } = &record.via else {
+            continue;
+        };
+        if record.target != *target || !matches!(record.state, State::Open | State::Unsent) {
+            continue;
+        }
+        if pending.is_none_or(|pending| !pending.contains(request)) {
+            record.state = State::Answered;
+            record.answered_in_session = true;
+            record.notified = true;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -650,6 +814,7 @@ impl Core {
             via: asked.via,
             sending: false,
             notified: false,
+            answered_in_session: false,
         };
         let (reference, key) = loop {
             match reserve(record.clone()) {
@@ -934,6 +1099,121 @@ impl Core {
         }
     }
 
+    /// Watches the managed OpenCode sessions on the relay for questions
+    /// their question tool asks, while the core runs.
+    pub(crate) async fn opencode_question_loop(self: std::sync::Arc<Self>) {
+        while !self.stopping() {
+            tokio::time::sleep(OPENCODE_POLL).await;
+            self.poll_opencode_questions().await;
+        }
+    }
+
+    /// One pass: each new question of a managed OpenCode session goes to
+    /// the inbox once; one OpenCode no longer waits on is closed. Any
+    /// failure to read a session leaves its questions as they are, in
+    /// OpenCode's dialog.
+    pub(crate) async fn poll_opencode_questions(&self) {
+        let sessions: Vec<Registration> = self.store.read(|store| {
+            store
+                .registrations
+                .iter()
+                .filter(|r| r.target.kind == crate::relay::store::SessionKind::OpenCode)
+                .cloned()
+                .collect()
+        });
+        // A session this core polled that is no longer on the relay: its
+        // questions are closed.
+        let current: Vec<Target> = sessions.iter().map(|r| r.target.clone()).collect();
+        let core_id = self.config.paths.socket.to_string_lossy().into_owned();
+        let gone: Vec<Target> = {
+            let mut polled = opencode_polled();
+            let gone = polled
+                .iter()
+                .filter(|(target, owner)| **owner == core_id && !current.contains(target))
+                .map(|(target, _)| target.clone())
+                .collect::<Vec<_>>();
+            polled.retain(|target, _| !gone.contains(target));
+            for target in &current {
+                polled.insert(target.clone(), core_id.clone());
+            }
+            gone
+        };
+        for target in gone {
+            close_answered_in_session(&target, None);
+        }
+        if !self.store.read(settings::on) {
+            return;
+        }
+        // Each session on its own, a few at a time: one slow server or send
+        // does not hold up the others' questions.
+        use futures_util::StreamExt;
+        futures_util::stream::iter(sessions)
+            .for_each_concurrent(OPENCODE_POLL_AT_ONCE, |registration| async move {
+                self.poll_opencode_session(&registration).await;
+            })
+            .await;
+    }
+
+    /// One managed OpenCode session's pass of `poll_opencode_questions`.
+    async fn poll_opencode_session(&self, registration: &Registration) {
+        let registration = registration.clone();
+        let (injector, held) = (self.plugins.injector.clone(), registration.clone());
+        let Some(pending) = tokio::task::spawn_blocking(move || injector.opencode_questions(&held))
+            .await
+            .ok()
+            .flatten()
+        else {
+            return;
+        };
+        let ids: Vec<String> = pending
+            .iter()
+            .filter_map(|request| request["id"].as_str().map(str::to_string))
+            .collect();
+        close_answered_in_session(&registration.target, Some(&ids));
+        for request in &pending {
+            let Some(id) = request["id"].as_str() else {
+                continue;
+            };
+            let key = format!("{}:{id}", registration.target.key());
+            // A core stopping sends nothing more.
+            if self.stopping() {
+                return;
+            }
+            let tried = self.config.app_data_dir.join(OPENCODE_TRIED_FILE);
+            if opencode_mark_tried(&tried, &key) {
+                continue;
+            }
+            let Some(questions) = text::opencode_questions(request) else {
+                continue;
+            };
+            let cwd = registration
+                .spawn
+                .as_ref()
+                .and_then(|spawn| spawn.worker_cwd.clone())
+                .unwrap_or_default();
+            let asked = Asked {
+                questions,
+                input: request,
+                cwd: &cwd,
+                via: Via::OpenCode {
+                    request: id.to_string(),
+                },
+            };
+            match self
+                .escalate_question_within(&registration, asked, ROUTE_LIMIT)
+                .await
+            {
+                Escalation::Failed(error) | Escalation::TimedOut(error) => {
+                    crate::relay::diagnostics::write(format_args!(
+                        "question from @{} not escalated: {error}",
+                        registration.name
+                    ));
+                }
+                Escalation::Sent { .. } | Escalation::Off => {}
+            }
+        }
+    }
+
     /// A direct message `answer <ref> ...` to `registration`, the agent that
     /// asked: delivered as the answer when the inbox sent it, and refused
     /// with a short reply otherwise. `base` and `token` are what the asking
@@ -1039,6 +1319,75 @@ session at its next turn.",
                             checked.agent
                         );
                         self.answered(&reference, delivery, token, &queued).await
+                    }
+                }
+            }
+            Via::OpenCode { request } => {
+                // The organization's hold on the inbox's messages holds its
+                // answer too, as it holds one typed into a session: read
+                // again once it is let through.
+                if self.organization_now_holds(registration, delivery) {
+                    self.reopen_question(&reference).await;
+                    return OwnerReply::Unsaved;
+                }
+                // A structured answer takes the sender's text as written:
+                // only escapes and control characters come out.
+                let structured =
+                    text::parse_structured_answer(delivery.text.as_deref().unwrap_or_default())
+                        .and_then(|(_, rest)| {
+                            text::resolve_structured(&checked.questions, &rest).ok()
+                        })
+                        .unwrap_or_else(|| checked.answers.clone());
+                // One attempt: OpenCode takes it, or the question stays open
+                // in its own dialog and the inbox is told.
+                let answers: Value = structured
+                    .iter()
+                    .map(|answer| json!(answer.values))
+                    .collect();
+                let (injector, held, request) = (
+                    self.plugins.injector.clone(),
+                    registration.clone(),
+                    request.clone(),
+                );
+                use crate::relay::opencode_existing::ReplyOutcome;
+                let replied = tokio::task::spawn_blocking(move || {
+                    injector.opencode_reply(&held, &request, &answers)
+                })
+                .await
+                .unwrap_or(ReplyOutcome::Unknown);
+                let agent = &checked.agent;
+                match replied {
+                    ReplyOutcome::Taken => {
+                        self.answered(&reference, delivery, token, &delivered).await
+                    }
+                    // It may have landed: kept answered, never sent again.
+                    ReplyOutcome::Unknown => {
+                        let unsure = format!(
+                            "The answer to question {reference} may have reached @{agent}'s \
+session: OpenCode did not confirm it. It is not sent again."
+                        );
+                        self.answered(&reference, delivery, token, &unsure).await
+                    }
+                    ReplyOutcome::NoLongerPending => {
+                        close_in_session(&reference);
+                        self.refuse_reply(delivery, token, &closed_in_session(&reference))
+                            .await
+                    }
+                    ReplyOutcome::Refused | ReplyOutcome::Unavailable => {
+                        if let Some(record) = records().get_mut(&reference) {
+                            record.state = State::Expired;
+                            record.notified = true;
+                        }
+                        let why = if replied == ReplyOutcome::Refused {
+                            "OpenCode did not take it"
+                        } else {
+                            "its OpenCode server could not be reached"
+                        };
+                        let refusal = format!(
+                            "The answer to question {reference} was not delivered to @{agent}: \
+{why}. It is still open in the session: answer it there."
+                        );
+                        self.refuse_reply(delivery, token, &refusal).await
                     }
                 }
             }
@@ -1225,7 +1574,11 @@ impl Core {
             crate::relay::store::SessionKind::Devin => {
                 self.settings().get(crate::relay::devin::SETTING) != Some(&Value::Bool(false))
             }
-            crate::relay::store::SessionKind::GrokOpen => {
+            // Pi and omp take an answer through the extension's live
+            // binding, which the directory finds only while it holds.
+            crate::relay::store::SessionKind::Pi
+            | crate::relay::store::SessionKind::Omp
+            | crate::relay::store::SessionKind::GrokOpen => {
                 let (sessions, target) =
                     (self.plugins.sessions.clone(), registration.target.clone());
                 tokio::task::spawn_blocking(move || sessions.find_session(&target).is_some())

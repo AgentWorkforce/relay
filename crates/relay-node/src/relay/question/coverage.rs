@@ -35,19 +35,19 @@ pub const KINDS: [SessionKind; 16] = [
 ];
 
 /// One kind's row: its name as people know it, its state and why.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
     pub label: &'static str,
     pub state: QuestionCoverageState,
-    pub reason: &'static str,
+    pub reason: std::borrow::Cow<'static, str>,
 }
 
 /// The row for `kind`. A new kind does not compile until it has one.
 pub fn row(kind: SessionKind) -> Row {
-    let row = |label, state, reason| Row {
+    let row = |label, state, reason: &'static str| Row {
         label,
         state,
-        reason,
+        reason: reason.into(),
     };
     match kind {
         SessionKind::ClaudeTerminal => row(
@@ -83,15 +83,19 @@ are from Copilot's user-input handler, not yet checked against the hook's own pa
 live session.",
         ),
         SessionKind::OpenCode => row(
-            "OpenCode",
-            NotCovered,
-            "Not yet: Agent Relay does not read the question events of the OpenCode server it \
-runs.",
+            "OpenCode sessions Agent Relay serves",
+            Partial,
+            "Questions OpenCode's question tool asks in a person's session on a server Agent \
+Relay runs, read from that server: the question shows in OpenCode's dialog and in the inbox, \
+and the first answer wins. Agents Agent Relay spawns keep the question tool off, as no one \
+watches them. Such a server may have no window a person watches, so a question that cannot \
+be sent stays there unseen. Not yet proven in a live session.",
         ),
         SessionKind::OpenCodeOpen => row(
-            "OpenCode",
+            "OpenCode in a terminal",
             NotCovered,
-            "Not yet: Agent Relay's OpenCode plugin does not hand questions over.",
+            "Agent Relay reaches it through its OpenCode plugin, whose socket answers delivery \
+only, not OpenCode's questions.",
         ),
         SessionKind::Grok | SessionKind::GrokOpen => row(
             "Grok",
@@ -106,20 +110,36 @@ Grok runs it for that tool and honours its refusal is not yet proven, so Grok as
 are off until turned on; not where Devin's config holds a PreToolUse value that is not a list. \
 Its argument names are read from the Devin CLI itself; not yet proven in a live session.",
         ),
-        SessionKind::Droid => row(
-            "Droid",
-            NotCovered,
-            "Not yet: Agent Relay answers droid.ask_user as unsupported, so Droid asks as usual.",
-        ),
+        // Relay-owned Droid sessions run only once Agent Relay's managed
+        // Droid messaging is available: until then, its own reason.
+        SessionKind::Droid => match crate::relay::harness::droid::unavailable_reason() {
+            Some(reason) => Row {
+                label: "Droid",
+                state: NotCovered,
+                reason: reason.into(),
+            },
+            None => row(
+                "Droid",
+                NotCovered,
+                "Not yet: Agent Relay answers droid.ask_user as unsupported, so Droid asks as \
+usual.",
+            ),
+        },
         SessionKind::Pi => row(
             "Pi",
-            NotCovered,
-            "Not yet. Pi has no built-in ask tool; a question tool comes from an extension.",
+            Partial,
+            "Pi has no built-in ask tool: the question tool of Pi's example extension, through \
+Agent Relay's Pi extension (pi_extension). Not on Windows, and not where only a profile build \
+runs (profile builds do not install the extension); an older build that rewrites the \
+extension drops it until a newer build starts. Not yet proven in a live session.",
         ),
         SessionKind::Omp => row(
             "Oh My Pi",
-            NotCovered,
-            "Not yet: Agent Relay's extension does not hand omp's ask tool over.",
+            Partial,
+            "omp's ask tool, through Agent Relay's Oh My Pi extension (pi_extension). Not on \
+Windows, and not where only a profile build runs (profile builds do not install the \
+extension); an older build that rewrites the extension drops it until a newer build starts. \
+Not yet proven in a live session.",
         ),
         SessionKind::MuseOpen => row(
             "Muse",
@@ -149,7 +169,7 @@ pub fn value() -> Value {
             let row = row(*kind);
             let entry = QuestionCoverage {
                 state: row.state,
-                reason: row.reason.to_string(),
+                reason: row.reason.into_owned(),
             };
             (
                 kind.as_str().to_string(),
@@ -227,6 +247,14 @@ mod tests {
             assert_eq!(place(*kind), i, "{kind:?}");
             let row = row(*kind);
             assert!(!row.label.is_empty() && !row.reason.is_empty());
+            // Text a person reads: no stray continuation or line break.
+            for text in [row.label, &row.reason] {
+                assert!(
+                    !text.contains('\\') && !text.contains('\n'),
+                    "{kind:?}: {text}"
+                );
+                assert!(!text.contains("  "), "{kind:?}: {text}");
+            }
         }
         let value = value();
         let map = value.as_object().unwrap();
@@ -235,6 +263,17 @@ mod tests {
             let entry = &map[kind.as_str()];
             assert!(entry["state"].is_string(), "{entry}");
             assert!(entry["reason"].is_string(), "{entry}");
+        }
+    }
+
+    /// Droid's row is not covered, with the reason Agent Relay's managed
+    /// Droid messaging is unavailable, for as long as it is.
+    #[test]
+    fn droid_follows_its_availability() {
+        let droid = row(SessionKind::Droid);
+        assert_eq!(droid.state, NotCovered);
+        if let Some(reason) = crate::relay::harness::droid::unavailable_reason() {
+            assert_eq!(droid.reason, reason);
         }
     }
 
@@ -267,7 +306,9 @@ mod tests {
         let text = status_text();
         assert!(text.starts_with("Available for Claude Code."), "{text}");
         assert!(
-            text.contains("Partly available for Codex, Copilot, Devin."),
+            text.contains(
+                "Partly available for Codex, Copilot, OpenCode sessions Agent Relay serves, Devin, Pi, Oh My Pi."
+            ),
             "{text}"
         );
         assert!(

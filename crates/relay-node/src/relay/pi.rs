@@ -96,6 +96,17 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     atomic_write_guarded(path, bytes, &|| true).map(|_| ())
 }
 
+impl Binding {
+    /// The Pi or omp process that holds the session open.
+    pub fn pid(&self) -> i32 {
+        self.registry.pid
+    }
+
+    pub fn session_id(&self) -> &str {
+        &self.registry.session_id
+    }
+}
+
 pub fn bindings(config: &PiConfig, table: &dyn ProcessTable, uid: u32) -> Vec<Binding> {
     if !config.enabled || config.turned_off() || !private(&config.runtime, uid, true) {
         return vec![];
@@ -159,6 +170,24 @@ pub fn bindings(config: &PiConfig, table: &dyn ProcessTable, uid: u32) -> Vec<Bi
             == 1
     });
     bindings
+}
+
+/// The live binding `pid` holds itself: the extension speaks to the core
+/// from inside the Pi or omp process, so the caller is that exact process
+/// (pid and kernel start time) holding its instance's session file open.
+/// Another process, or a pid reused since, holds none.
+pub fn caller(config: &PiConfig, table: &dyn ProcessTable, uid: u32, pid: i32) -> Option<Binding> {
+    let process = table.process(pid)?;
+    let prefix = format!(
+        "{}:{}:{}:",
+        config.flavor.kind().as_str(),
+        pid,
+        process.start
+    );
+    let found = bindings(config, table, uid)
+        .into_iter()
+        .find(|binding| binding.pid() == pid && binding.reference.starts_with(&prefix))?;
+    (table.process(pid) == Some(process)).then_some(found)
 }
 
 pub fn binding(config: &PiConfig, table: &dyn ProcessTable, uid: u32, id: &str) -> Option<Binding> {
@@ -707,6 +736,72 @@ mod tests {
         let new = send(&config, &table, uid, &registration, "m-2", "hello");
         assert!(matches!(new, InjectOutcome::Refused(_)), "{new:?}");
         assert_eq!(files(), before);
+    }
+
+    /// Only the process holding the session's file open is its caller: not
+    /// another process, and not a pid whose holder let go (as a reused pid
+    /// never holds it).
+    #[test]
+    fn the_caller_is_the_exact_process_holding_the_binding() {
+        let (_temp, config, held, registration) = fixture();
+        let table = SystemProcesses::default();
+        let me = std::process::id() as i32;
+        let found = caller(&config, &table, current_uid(), me).unwrap();
+        assert_eq!(found.session_id(), ID);
+        assert_eq!(
+            registration.route_binding.as_deref(),
+            Some(found.reference.as_str())
+        );
+        let parent = table.process(me).unwrap().parent;
+        assert!(caller(&config, &table, current_uid(), parent).is_none());
+        assert!(caller(&config, &table, current_uid().wrapping_add(1), me).is_none());
+        drop(held);
+        assert!(caller(&config, &table, current_uid(), me).is_none());
+    }
+
+    /// The extension names no build: every build writes the same bytes (it
+    /// finds the cores through the build pointers beside its runtime), so
+    /// Agent Relay and Agent Relay Dev never rewrite each other's copy.
+    #[test]
+    fn the_extension_is_the_same_file_for_every_build() {
+        let home = tempfile::tempdir().unwrap();
+        let config = PiConfig::from_env(&|_| None, home.path());
+        let source = config.extension_source();
+        for build_specific in ["--dev", "--profile", ".sock", "agent-relay-probe", "__"] {
+            assert!(!source.contains(build_specific), "{build_specific}");
+        }
+        assert!(source.contains("'relay-socket', 'relay-socket.dev'"));
+        // Each build's own configuration, as its core makes it: Agent Relay
+        // and Agent Relay Dev (an app data folder ending `.dev`).
+        let build = |data: &str| {
+            let daemon = crate::relay::daemon::Config {
+                paths: crate::relay::paths::CorePaths::for_socket(
+                    home.path().join(format!("{data}.sock")),
+                )
+                .unwrap(),
+                home: home.path().into(),
+                app_data_dir: home.path().join(data),
+                env: std::collections::BTreeMap::new(),
+                version: "test".into(),
+                host_name: "Test Desk".into(),
+                rediscover_every: std::time::Duration::from_secs(3600),
+                push_timing: Default::default(),
+                delivery_timing: Default::default(),
+            };
+            crate::relay::local::local_config(&daemon, home.path(), &|_| None).pi
+        };
+        let production = build("agent-relay");
+        let development = build("agent-relay.dev");
+        std::fs::create_dir_all(&production.agent_dir).unwrap();
+        production.install().unwrap();
+        let installed = std::fs::read(production.extension_file()).unwrap();
+        development.install().unwrap();
+        assert_eq!(development.extension_file(), production.extension_file());
+        assert_eq!(
+            std::fs::read(development.extension_file()).unwrap(),
+            installed
+        );
+        assert_eq!(installed, source.as_bytes());
     }
 
     #[test]

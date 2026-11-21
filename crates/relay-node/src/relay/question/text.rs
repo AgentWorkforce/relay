@@ -60,6 +60,23 @@ pub fn hook_questions(input: &Value) -> Vec<Question> {
     let Some(asked) = input["questions"].as_array() else {
         return Vec::new();
     };
+    read_questions(asked, false)
+}
+
+/// The questions Pi's and omp's extension hands over: omp's `ask`
+/// (`{questions: [{id, question, header?, options, multi?}]}`) or the
+/// `question` tool of Pi's example extension, which asks one at the top
+/// level (`{question, options}`). Read as strictly as `hook_questions`.
+pub fn pi_questions(input: &Value) -> Vec<Question> {
+    match input["questions"].as_array() {
+        Some(asked) => read_questions(asked, true),
+        None if input["question"].is_string() => read_questions(std::slice::from_ref(input), true),
+        None => Vec::new(),
+    }
+}
+
+/// `asked` read strictly; `multi` names a multiple choice too (omp's).
+fn read_questions(asked: &[Value], omp: bool) -> Vec<Question> {
     if asked.len() > MAX_QUESTIONS {
         return Vec::new();
     }
@@ -103,7 +120,9 @@ pub fn hook_questions(input: &Value) -> Vec<Question> {
                 })
                 .filter(|choice| !choice.label.is_empty())
                 .collect(),
-            multi: question["multiSelect"] == true || question["multi_select"] == true,
+            multi: question["multiSelect"] == true
+                || question["multi_select"] == true
+                || (omp && question["multi"] == true),
             free: true,
         })
         .collect()
@@ -222,6 +241,57 @@ pub fn copilot_questions(args: &Value) -> Option<Vec<Question>> {
     }])
 }
 
+/// The questions of one of OpenCode's pending question requests
+/// (`GET /question`, OpenCode 1.18): `{id, sessionID, questions: [{question,
+/// header, options: [{label, description}], multiple?, custom?}]}`;
+/// `custom` (on unless false) lets the person type their own answer.
+/// `None` for any other shape, or more than the caps allow: the question
+/// is then left to OpenCode's own dialog.
+pub fn opencode_questions(request: &Value) -> Option<Vec<Question>> {
+    let asked = request["questions"].as_array()?;
+    if asked.is_empty() || asked.len() > MAX_QUESTIONS {
+        return None;
+    }
+    asked
+        .iter()
+        .map(|question| {
+            let text = question["question"]
+                .as_str()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())?;
+            let options = match question.get("options") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(Value::Array(options)) if options.len() <= MAX_OPTIONS => options
+                    .iter()
+                    .map(|option| {
+                        Some(Choice {
+                            label: option["label"].as_str()?.trim().to_string(),
+                            description: string(&option["description"]),
+                        })
+                    })
+                    .collect::<Option<Vec<Choice>>>()?
+                    .into_iter()
+                    .filter(|choice| !choice.label.is_empty())
+                    .collect(),
+                Some(_) => return None,
+            };
+            let free = match question.get("custom") {
+                None | Some(Value::Null) => true,
+                Some(Value::Bool(custom)) => *custom,
+                Some(_) => return None,
+            };
+            Some(Question {
+                id: String::new(),
+                header: string(&question["header"]),
+                text: text.to_string(),
+                free: free || options.is_empty(),
+                options,
+                multi: question["multiple"] == true,
+            })
+        })
+        .collect()
+}
+
 /// Who asked, for the message's first lines.
 pub struct Asker<'a> {
     pub reference: &'a str,
@@ -304,6 +374,33 @@ pub const MAX_ANSWER: usize = 4096;
 /// and line-separator characters become spaces, brackets parentheses,
 /// whitespace runs collapse), and at most `MAX_ANSWER` characters.
 pub fn clean(text: &str) -> String {
+    capped(crate::relay::delivery::policy::one_line(&without_escapes(
+        text,
+    )))
+}
+
+/// `text` as a structured answer takes it (OpenCode's reply): escape
+/// sequences and control characters out, nothing else rewritten, so
+/// brackets and the sender's own spacing stay as written.
+pub fn structured(text: &str) -> String {
+    let plain: String = without_escapes(text)
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    capped(plain.trim().to_string())
+}
+
+fn capped(line: String) -> String {
+    if line.chars().count() <= MAX_ANSWER {
+        return line;
+    }
+    let mut cut: String = line.chars().take(MAX_ANSWER - 1).collect();
+    cut.push('…');
+    cut
+}
+
+/// `text` without terminal escape sequences.
+fn without_escapes(text: &str) -> String {
     let mut plain = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
@@ -343,18 +440,22 @@ pub fn clean(text: &str) -> String {
             c => plain.push(c),
         }
     }
-    let line = crate::relay::delivery::policy::one_line(&plain);
-    if line.chars().count() <= MAX_ANSWER {
-        return line;
-    }
-    let mut cut: String = line.chars().take(MAX_ANSWER - 1).collect();
-    cut.push('…');
-    cut
+    plain
 }
 
 /// `answer <ref> <rest>` or `answer <ref>: <rest>` (the verb in any case):
 /// the reference, lower case, and the rest, `clean`ed (empty when none).
 pub fn parse_answer(text: &str) -> Option<(String, String)> {
+    parse_answer_with(text, clean)
+}
+
+/// `parse_answer`, with the rest as a structured answer takes it
+/// (`structured`).
+pub fn parse_structured_answer(text: &str) -> Option<(String, String)> {
+    parse_answer_with(text, structured)
+}
+
+fn parse_answer_with(text: &str, tidy: fn(&str) -> String) -> Option<(String, String)> {
     let text = text.trim_start();
     let (verb, rest) = text.split_once(char::is_whitespace)?;
     if !verb.eq_ignore_ascii_case("answer") {
@@ -370,7 +471,7 @@ pub fn parse_answer(text: &str) -> Option<(String, String)> {
     }
     let rest = rest.trim_start();
     let rest = rest.strip_prefix(':').unwrap_or(rest).trim();
-    Some((reference.to_ascii_lowercase(), clean(rest)))
+    Some((reference.to_ascii_lowercase(), tidy(rest)))
 }
 
 /// What a reply chose for one question: the labels (or the sender's own
@@ -384,6 +485,19 @@ pub struct Answer {
 /// The answers `rest` gives `questions`, one per question (`;` between
 /// them when there are several); or why it cannot be read.
 pub fn resolve(questions: &[Question], rest: &str) -> Result<Vec<Answer>, String> {
+    resolve_with(questions, rest, clean)
+}
+
+/// `resolve`, with free text as a structured answer takes it.
+pub fn resolve_structured(questions: &[Question], rest: &str) -> Result<Vec<Answer>, String> {
+    resolve_with(questions, rest, structured)
+}
+
+fn resolve_with(
+    questions: &[Question],
+    rest: &str,
+    tidy: fn(&str) -> String,
+) -> Result<Vec<Answer>, String> {
     if rest.is_empty() {
         return Err("give a number or text after the reference".into());
     }
@@ -401,11 +515,15 @@ pub fn resolve(questions: &[Question], rest: &str) -> Result<Vec<Answer>, String
     questions
         .iter()
         .zip(parts)
-        .map(|(question, part)| resolve_one(question, part))
+        .map(|(question, part)| resolve_one(question, part, tidy))
         .collect()
 }
 
-fn resolve_one(question: &Question, part: &str) -> Result<Answer, String> {
+fn resolve_one(
+    question: &Question,
+    part: &str,
+    tidy: fn(&str) -> String,
+) -> Result<Answer, String> {
     let numbers: Option<Vec<usize>> = (!question.options.is_empty())
         .then(|| {
             part.split(',')
@@ -415,7 +533,7 @@ fn resolve_one(question: &Question, part: &str) -> Result<Answer, String> {
         .flatten();
     let choose = || format!("choose a number from 1 to {}", question.options.len());
     let text = || {
-        let words = clean(part);
+        let words = tidy(part);
         Answer {
             values: vec![words.clone()],
             shown: words,
