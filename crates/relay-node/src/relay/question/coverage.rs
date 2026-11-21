@@ -110,8 +110,11 @@ Its argument names are read from the Devin CLI itself; not yet proven in a live 
         ),
         SessionKind::Droid => row(
             "Droid",
-            NotCovered,
-            "Not yet: Agent Relay answers droid.ask_user as unsupported, so Droid asks as usual.",
+            Partial,
+            "droid.ask_user in Droid sessions Agent Relay starts: the host holds it for up to 23 s \
+while the question goes to the inbox, and Droid is told where it went; the answer arrives as \
+a message. Droid sessions started elsewhere are not on Agent Relay. Not yet proven in a live \
+session.",
         ),
         SessionKind::Pi => row(
             "Pi",
@@ -276,7 +279,7 @@ mod tests {
         assert!(text.starts_with("Available for Claude Code."), "{text}");
         assert!(
             text.contains(
-                "Partly available for Codex, Copilot, OpenCode sessions Agent Relay serves, Devin, Pi, Oh My Pi."
+                "Partly available for Codex, Copilot, OpenCode sessions Agent Relay serves, Devin, Droid, Pi, Oh My Pi."
             ),
             "{text}"
         );

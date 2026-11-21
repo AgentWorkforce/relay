@@ -536,6 +536,23 @@ fn expire(reference: &str) -> Option<(Target, Via)> {
     Some((record.target.clone(), record.via.clone()))
 }
 
+/// How often the Relay-owned Droid hosts are asked for held questions:
+/// well inside their lease (`harness::droid::protocol::QUESTION_LEASE`).
+const DROID_POLL: Duration = Duration::from_secs(1);
+
+/// Droid's result for questions that went to the inbox: each one answered
+/// with where it went, as Droid requires one answer per question index.
+fn droid_sent(questions: &[Question], reason: &str) -> Value {
+    json!({"answers": questions
+        .iter()
+        .map(|question| json!({
+            "index": question.id.parse::<u64>().unwrap_or(0),
+            "question": question.text,
+            "answer": reason,
+        }))
+        .collect::<Vec<_>>()})
+}
+
 /// How often a managed OpenCode session's pending questions are read.
 const OPENCODE_POLL: Duration = Duration::from_secs(2);
 
@@ -999,6 +1016,79 @@ impl Core {
         }
     }
 
+    /// Watches the Relay-owned Droid sessions for the `droid.ask_user`
+    /// requests their hosts hold, while the core runs. Only while escalation
+    /// is on and a workspace is connected does it ask, which is what renews
+    /// each host's lease: otherwise the hosts answer at once, as before.
+    pub(crate) async fn droid_question_loop(self: std::sync::Arc<Self>) {
+        while !self.stopping() {
+            tokio::time::sleep(DROID_POLL).await;
+            self.poll_droid_questions().await;
+        }
+    }
+
+    /// One pass: each held question goes to the inbox once, and its host is
+    /// given its one answer: once sent, each question answered with where it
+    /// went (the inbox's answer arrives as a message); otherwise declined, as
+    /// before.
+    pub(crate) async fn poll_droid_questions(&self) {
+        if !self.store.read(settings::on) || self.workspace().is_none() {
+            return;
+        }
+        let sessions: Vec<Registration> = self.store.read(|store| {
+            store
+                .registrations
+                .iter()
+                .filter(|r| r.target.kind == crate::relay::store::SessionKind::Droid)
+                .cloned()
+                .collect()
+        });
+        for registration in sessions {
+            let (injector, held) = (self.plugins.injector.clone(), registration.clone());
+            let Some(pending) =
+                tokio::task::spawn_blocking(move || injector.droid_questions(&held))
+                    .await
+                    .ok()
+                    .flatten()
+            else {
+                continue;
+            };
+            for request in pending {
+                let id = request["id"].clone();
+                let params = &request["params"];
+                let result = match text::droid_questions(params) {
+                    Some(questions) => {
+                        let cwd = registration
+                            .spawn
+                            .as_ref()
+                            .and_then(|spawn| spawn.worker_cwd.clone())
+                            .unwrap_or_default();
+                        let asked = Asked {
+                            questions: questions.clone(),
+                            input: params,
+                            cwd: &cwd,
+                            via: Via::Session,
+                        };
+                        match self
+                            .escalate_question_within(&registration, asked, ROUTE_LIMIT)
+                            .await
+                        {
+                            Escalation::Sent { reference, inbox } => {
+                                Some(droid_sent(&questions, &reason(&inbox, &reference)))
+                            }
+                            _ => None,
+                        }
+                    }
+                    None => None,
+                };
+                let (injector, held) = (self.plugins.injector.clone(), registration.clone());
+                let _ =
+                    tokio::task::spawn_blocking(move || injector.droid_answer(&held, &id, result))
+                        .await;
+            }
+        }
+    }
+
     /// Watches the managed OpenCode sessions on the relay for questions
     /// their question tool asks, while the core runs.
     pub(crate) async fn opencode_question_loop(self: std::sync::Arc<Self>) {
@@ -1423,6 +1513,11 @@ impl Core {
         match registration.target.kind {
             crate::relay::store::SessionKind::Devin => {
                 self.settings().get(crate::relay::devin::SETTING) != Some(&Value::Bool(false))
+            }
+            // A Relay-owned Droid takes its answer as a turn through its
+            // host, which must still run.
+            crate::relay::store::SessionKind::Droid => {
+                self.spawned_process_alive(registration).await != Some(false)
             }
             // Pi and omp take an answer through the extension's live
             // binding, which the directory finds only while it holds.

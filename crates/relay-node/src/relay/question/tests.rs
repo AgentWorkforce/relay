@@ -2433,3 +2433,155 @@ async fn an_opencode_reply_is_one_attempt_and_off_sends_nothing() {
     core.poll_opencode_questions().await;
     assert_eq!(state_of(&reference), Some(State::Answered));
 }
+
+/// A Relay-owned Droid's host as the injector reaches it: the questions it
+/// hands over (each once), how often it was asked, and its answers.
+struct DroidHost {
+    held: Mutex<Vec<Value>>,
+    asked: std::sync::atomic::AtomicUsize,
+    answers: Mutex<Vec<(Value, Option<Value>)>>,
+}
+
+impl DroidHost {
+    fn holding(questions: Vec<Value>) -> Arc<DroidHost> {
+        Arc::new(DroidHost {
+            held: Mutex::new(questions),
+            asked: Default::default(),
+            answers: Mutex::default(),
+        })
+    }
+}
+
+impl crate::relay::inject::Injector for DroidHost {
+    fn inject(&self, _: &Target, _: &str, _: &str) -> InjectOutcome {
+        InjectOutcome::Delivered
+    }
+    fn reply_hint(&self, _: &Target, _: Option<&str>, _: Option<&str>, _: &str) -> Option<String> {
+        None
+    }
+    fn final_answer(&self, _: &Target, _: &str) -> Option<String> {
+        None
+    }
+    fn droid_questions(&self, _: &Registration) -> Option<Vec<Value>> {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(std::mem::take(&mut *self.held.lock().unwrap()))
+    }
+    fn droid_answer(&self, _: &Registration, id: &Value, result: Option<Value>) -> bool {
+        self.answers.lock().unwrap().push((id.clone(), result));
+        true
+    }
+}
+
+/// `droid.ask_user` as the host hands it over
+/// (`fixtures/questions/droid-sdk-0.11.0-ask-user.json`), under `id`.
+fn droid_request(id: &str) -> Value {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../fixtures/questions/droid-sdk-0.11.0-ask-user.json"
+    ))
+    .unwrap();
+    json!({"id": id, "params": fixture["frame"]["params"]})
+}
+
+fn droid_core(
+    base: &str,
+    asker: &Registration,
+    host: &Arc<DroidHost>,
+    on: bool,
+) -> (Arc<Core>, tempfile::TempDir) {
+    core_with(
+        base,
+        asker,
+        on,
+        crate::relay::daemon::Plugins {
+            injector: host.clone(),
+            ..crate::relay::daemon::Plugins::default()
+        },
+    )
+}
+
+/// A held Droid question goes to the inbox once, and the host is given one
+/// answer: each question answered with where it went, one per index, as
+/// Droid requires.
+#[tokio::test]
+async fn a_droid_question_goes_to_the_inbox_and_its_host_gets_one_answer() {
+    let (base, hits) = relaycast(false);
+    let asker = registration(
+        "asker-droid",
+        Target::new(SessionKind::Droid, "019a0000-0000-7000-8000-0000000d0001"),
+        &base,
+    );
+    let host = DroidHost::holding(vec![droid_request("ask-1")]);
+    let (core, _temp) = droid_core(&base, &asker, &host, true);
+    core.poll_droid_questions().await;
+    core.poll_droid_questions().await;
+    assert_eq!(dm_count(&hits), 1);
+    let answers = host.answers.lock().unwrap().clone();
+    assert_eq!(answers.len(), 1, "one answer");
+    assert_eq!(answers[0].0, "ask-1");
+    let result = answers[0].1.clone().expect("answered, not declined");
+    let given = result["answers"].as_array().unwrap();
+    assert_eq!(given.len(), 1);
+    assert_eq!(given[0]["index"], 1);
+    assert_eq!(
+        given[0]["question"],
+        "Which database should the service use?"
+    );
+    assert!(given[0]["answer"]
+        .as_str()
+        .unwrap()
+        .starts_with("Sent to @triage over Agent Relay as question q"));
+    assert!(result.get("cancelled").is_none());
+}
+
+/// Off, or signed out, the core never asks the host: its lease lapses and
+/// the host answers `droid.ask_user` at once, as before. A question of
+/// another shape, over the caps, or not sent is declined, once.
+#[tokio::test]
+async fn a_droid_question_is_declined_or_never_held_when_it_cannot_go() {
+    let (base, hits) = relaycast(true);
+    let asker = registration(
+        "asker-droid-2",
+        Target::new(SessionKind::Droid, "019a0000-0000-7000-8000-0000000d0002"),
+        &base,
+    );
+    let host = DroidHost::holding(vec![droid_request("ask-2")]);
+    let (off, _off_temp) = droid_core(&base, &asker, &host, false);
+    off.poll_droid_questions().await;
+    assert_eq!(
+        host.asked.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "off: never asked"
+    );
+    let (core, _temp) = droid_core(&base, &asker, &host, true);
+    let workspace = core.workspace.lock().unwrap().take();
+    core.poll_droid_questions().await;
+    assert_eq!(
+        host.asked.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "signed out"
+    );
+    *core.workspace.lock().unwrap() = workspace;
+
+    let mut wide = droid_request("ask-wide");
+    wide["params"]["questions"][0]["options"] = json!((0..=text::MAX_OPTIONS)
+        .map(|i| format!("o{i}"))
+        .collect::<Vec<_>>());
+    let mut odd = droid_request("ask-odd");
+    odd["params"]["questions"][0]["options"] = json!([{"label": "not a string"}]);
+    *host.held.lock().unwrap() = vec![droid_request("ask-2"), wide, odd];
+    // Relaycast refuses the send for ask-2.
+    core.poll_droid_questions().await;
+    let answers = host.answers.lock().unwrap().clone();
+    assert_eq!(answers.len(), 3);
+    assert!(
+        answers.iter().all(|(_, result)| result.is_none()),
+        "{answers:?}"
+    );
+    let questions_sent = hits
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|hit| hit.starts_with("POST /v1/dm") && hit.contains("[Question"))
+        .count();
+    assert!(questions_sent <= 1, "only the refused one was tried");
+}

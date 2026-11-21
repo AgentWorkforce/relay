@@ -1,0 +1,21 @@
+{
+  "_source": "@factory/droid-sdk 0.11.0 (npm, read as text, not run): droid.ask_user is a server-to-client JSON-RPC request (dist/chunk-NWFX4MPJ.mjs:1591). Params AskUserRequestParamsSchema {toolCallId, questions: [{index (1-based), topic, question, options: string[], optionDescriptions?: string[], multiSelect?}], blocking?, context?} (chunk:4793-4823); result {cancelled?, answers: [{index, question, answer}]} (chunk:4828-4840), which the daemon accepts uncancelled only with exactly one answer per question index (validateResult, chunk:35342-35370). The SDK puts no timeout on the client's answer (the handler is awaited untimed, dist/node.mjs:2537-2560; its 30000 ms DEFAULT_REQUEST_TIMEOUT covers only requests the client sends, node.mjs:535). Values are synthetic.",
+  "frame": {
+    "jsonrpc": "2.0",
+    "id": "ask-1",
+    "method": "droid.ask_user",
+    "params": {
+      "toolCallId": "call_ask_user_1",
+      "questions": [
+        {
+          "index": 1,
+          "topic": "Database",
+          "question": "Which database should the service use?",
+          "options": ["Postgres", "SQLite"],
+          "optionDescriptions": ["Shared server", "One file"],
+          "multiSelect": false
+        }
+      ]
+    }
+  }
+}

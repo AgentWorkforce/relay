@@ -282,6 +282,57 @@ pub fn opencode_questions(request: &Value) -> Option<Vec<Question>> {
         .collect()
 }
 
+/// The questions of a Droid `droid.ask_user` (`@factory/droid-sdk` 0.11):
+/// `{questions: [{index, topic, question, options: [string],
+/// optionDescriptions?: [string], multiSelect?}], blocking?, context?}`.
+/// Droid adds no free-text choice, but its answer is a string, so text is
+/// taken. `None` for any other shape or over the caps.
+pub fn droid_questions(params: &Value) -> Option<Vec<Question>> {
+    let asked = params["questions"].as_array()?;
+    if asked.is_empty() || asked.len() > MAX_QUESTIONS {
+        return None;
+    }
+    asked
+        .iter()
+        .map(|question| {
+            let index = question["index"].as_u64().filter(|index| *index >= 1)?;
+            let text = question["question"]
+                .as_str()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())?;
+            let options = question["options"].as_array()?;
+            if options.len() > MAX_OPTIONS {
+                return None;
+            }
+            let descriptions = question["optionDescriptions"].as_array();
+            let options = options
+                .iter()
+                .enumerate()
+                .map(|(i, option)| {
+                    Some(Choice {
+                        label: option.as_str()?.trim().to_string(),
+                        description: descriptions
+                            .and_then(|descriptions| descriptions.get(i))
+                            .map(string)
+                            .unwrap_or_default(),
+                    })
+                })
+                .collect::<Option<Vec<Choice>>>()?
+                .into_iter()
+                .filter(|choice| !choice.label.is_empty())
+                .collect();
+            Some(Question {
+                id: index.to_string(),
+                header: string(&question["topic"]),
+                text: text.to_string(),
+                options,
+                multi: question["multiSelect"] == true,
+                free: true,
+            })
+        })
+        .collect()
+}
+
 /// Who asked, for the message's first lines.
 pub struct Asker<'a> {
     pub reference: &'a str,

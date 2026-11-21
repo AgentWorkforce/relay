@@ -349,6 +349,14 @@ fn drive(
         if accept_control(listener, &mut pending, engine)? {
             return Ok(());
         }
+        // Held questions: the core's answers, and those past their hold.
+        engine.expire_questions(Instant::now());
+        while let Some(answer) = engine.next_answer() {
+            if send(input, answer).is_err() {
+                engine.uncertain();
+                return Err(anyhow!("Droid JSON-RPC input closed"));
+            }
+        }
         if let Some(frame) = engine.next(session) {
             if send(input, frame).is_err() {
                 engine.uncertain();
@@ -375,13 +383,22 @@ fn send(input: &mut impl Write, mut frame: Value) -> Result<()> {
     input.write_all(&bytes)?;
     Ok(())
 }
-fn answer_request(input: &mut impl Write, frame: &Value, engine: Option<&Engine>) -> Result<()> {
+fn answer_request(
+    input: &mut impl Write,
+    frame: &Value,
+    engine: Option<&mut Engine>,
+) -> Result<()> {
     if frame.get("id").is_some() && frame.get("method").is_some() {
         let response = if frame["method"] == "droid.request_permission" {
             let allowed = engine.is_some_and(|e| e.permit(frame));
             json!({"jsonrpc":"2.0","id":frame["id"],"result":{"selectedOption":if allowed {"proceed_once"} else {"cancel"}}})
+        } else if frame["method"] == "droid.ask_user"
+            && engine.is_some_and(|e| e.hold_question(frame, Instant::now()))
+        {
+            // Held for the core's question escalation; answered later, once.
+            return Ok(());
         } else {
-            json!({"jsonrpc":"2.0","id":frame["id"],"error":{"code":-32601,"message":"Client method unsupported"}})
+            super::protocol::unsupported(&frame["id"])
         };
         send(input, response)?;
     }

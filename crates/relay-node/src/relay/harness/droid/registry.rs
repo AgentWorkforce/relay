@@ -182,6 +182,56 @@ pub(super) fn exchange(record: &Record, table: &dyn ProcessTable, request: Value
     exchange_result(record, table, request).ok()
 }
 
+/// The `droid.ask_user` requests `session`'s host holds for question
+/// escalation, each once, and a renewed lease for holding more
+/// (`protocol::QUESTION_LEASE`). `None` when there is no verified host, or
+/// a host from before question escalation, which refuses the op: then no
+/// question is ever held there.
+pub fn questions(
+    config: &DroidConfig,
+    table: &dyn ProcessTable,
+    session: &str,
+) -> Option<Vec<Value>> {
+    let record = session_record(config, session)?;
+    questions_from(exchange(&record, table, json!({"op":"questions"}))?)
+}
+
+/// The held questions in a host's `questions` answer; `None` for any other.
+pub(super) fn questions_from(response: Value) -> Option<Vec<Value>> {
+    if response["status"] != "ok" {
+        return None;
+    }
+    response["questions"].as_array().cloned()
+}
+
+/// Gives `session`'s host the one answer to held question `id`: `result`,
+/// or a decline (answered as unsupported, as before) when `None`. Whether
+/// the host took it.
+pub fn answer_question(
+    config: &DroidConfig,
+    table: &dyn ProcessTable,
+    session: &str,
+    id: &Value,
+    result: Option<Value>,
+) -> bool {
+    let Some(record) = session_record(config, session) else {
+        return false;
+    };
+    let request = match result {
+        Some(result) => json!({"op":"question_answer","id":id,"result":result}),
+        None => json!({"op":"question_answer","id":id,"declined":true}),
+    };
+    exchange(&record, table, request).is_some_and(|response| response["status"] == "answered")
+}
+
+fn session_record(config: &DroidConfig, session: &str) -> Option<Record> {
+    if !is_session_id(session) || super::unavailable_reason().is_some() {
+        return None;
+    }
+    read_record(&runtime(config).join(format!("{session}.json")))
+        .filter(|record| record.session_id == session)
+}
+
 pub fn deliver(
     config: &DroidConfig,
     table: &dyn ProcessTable,

@@ -354,6 +354,23 @@ pub trait Injector: Send + Sync + 'static {
         None
     }
 
+    /// The `droid.ask_user` requests a Relay-owned Droid's host holds for
+    /// question escalation (`harness::droid::questions`); `None` for any
+    /// other session, no host, or a host from before it.
+    fn droid_questions(&self, _registration: &Registration) -> Option<Vec<serde_json::Value>> {
+        None
+    }
+
+    /// The one answer to a held `droid.ask_user`: `result`, or a decline.
+    fn droid_answer(
+        &self,
+        _registration: &Registration,
+        _id: &serde_json::Value,
+        _result: Option<serde_json::Value>,
+    ) -> bool {
+        false
+    }
+
     /// Answers a managed OpenCode session's pending question once, through
     /// its own server (`opencode_existing::reply_question`).
     fn opencode_reply(

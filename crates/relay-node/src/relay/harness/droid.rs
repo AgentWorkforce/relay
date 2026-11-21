@@ -83,8 +83,8 @@ pub(crate) fn unavailable_reason() -> Option<String> {
 mod registry;
 #[cfg(unix)]
 use registry::write_record;
+pub use registry::{answer_question, deliver, questions, runtime, Record};
 use registry::{child_owned, exchange, host_owned};
-pub use registry::{deliver, runtime, Record};
 pub(crate) use registry::{read_record, verified};
 
 type Terminate = Arc<dyn Fn(&dyn ProcessTable, SpawnedProcess) + Send + Sync>;

@@ -910,6 +910,8 @@ async fn run_with(
     tokio::spawn(crate::relay::trusted::keep_members_current(core.clone()));
     // Questions a managed OpenCode session's question tool asks.
     tokio::spawn(core.clone().opencode_question_loop());
+    // `droid.ask_user` requests Relay-owned Droid hosts hold.
+    tokio::spawn(core.clone().droid_question_loop());
     let _ = stopping.wait_for(|stop| *stop).await;
 
     if let Some(relay_send) = relay_send {

@@ -110,7 +110,8 @@ pub struct SettingsValues {
     pub spawn_harnesses: Option<BTreeMap<String, SpawnHarnessSettings>>,
     /// Question escalation, `off` or `on`; on unless turned off. On, a
     /// question a covered session asks its user (Claude Code, Codex, Devin,
-    /// Copilot, OpenCode, Pi, Oh My Pi: see `question_escalation_coverage`) is
+    /// Copilot, OpenCode, Droid, Pi, Oh My Pi: see
+    /// `question_escalation_coverage`) is
     /// sent over Agent Relay to `question_escalation_inbox` instead, the
     /// session keeps working, and the reply (`answer <ref> <n|text>`) is
     /// delivered to it; an unanswered question expires after 30 minutes. A

@@ -1915,6 +1915,34 @@ impl Injector for LocalInjector {
         self.opencode.as_ref()?.final_answer(&binding, message_ref)
     }
 
+    fn droid_questions(
+        &self,
+        registration: &crate::relay::store::Registration,
+    ) -> Option<Vec<serde_json::Value>> {
+        (registration.target.kind == SessionKind::Droid).then_some(())?;
+        crate::relay::harness::droid::questions(
+            &crate::relay::droid::DroidConfig::from_local(&self.config),
+            &*self.table,
+            &registration.target.id,
+        )
+    }
+
+    fn droid_answer(
+        &self,
+        registration: &crate::relay::store::Registration,
+        id: &serde_json::Value,
+        result: Option<serde_json::Value>,
+    ) -> bool {
+        registration.target.kind == SessionKind::Droid
+            && crate::relay::harness::droid::answer_question(
+                &crate::relay::droid::DroidConfig::from_local(&self.config),
+                &*self.table,
+                &registration.target.id,
+                id,
+                result,
+            )
+    }
+
     fn opencode_questions(
         &self,
         registration: &crate::relay::store::Registration,
