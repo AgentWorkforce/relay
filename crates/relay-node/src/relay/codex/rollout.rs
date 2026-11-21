@@ -980,13 +980,25 @@ mod tests {
     }
 
     // A notice can never be a hidden user turn: only relayed messages and
-    // Relay Connect messages are.
+    // Relay Connect messages are, outside a turn or inside a running one.
     #[test]
     fn a_notice_in_a_user_history_item_is_not_a_hidden_delivery() {
-        let line = notice_context("advisory-10", false).replace("\"developer\"", "\"user\"");
-        let summary = RolloutSummary::parse([line, started("turn-10")].join("\n").as_bytes());
-        assert!(summary.turn_by_message_ref.is_empty());
-        assert!(summary.hidden_refs.is_empty());
+        let user = |advisory| notice_context(advisory, false).replace("\"developer\"", "\"user\"");
+        let outside = RolloutSummary::parse(
+            [user("advisory-10"), started("turn-10")]
+                .join("\n")
+                .as_bytes(),
+        );
+        let inside = RolloutSummary::parse(
+            [started("turn-12"), user("advisory-12")]
+                .join("\n")
+                .as_bytes(),
+        );
+        for summary in [outside, inside] {
+            assert!(summary.turn_by_message_ref.is_empty());
+            assert!(summary.hidden_refs.is_empty());
+            assert!(summary.relay_turns.is_empty());
+        }
     }
 
     // A notice the Stop hook handed over is a HookPrompt in that turn.

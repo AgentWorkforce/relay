@@ -78,10 +78,7 @@ impl World {
     fn new() -> World {
         let codex_home = tempfile::tempdir().unwrap();
         let config = CodexConfig::from_env(&|_| None, codex_home.path());
-        let routes = Arc::new(DiskRoutes {
-            config: config.clone(),
-            sends: AtomicUsize::new(0),
-        });
+        let routes = Arc::new(DiskRoutes::new(config.clone()));
         let elapsed = Arc::new(Mutex::new(Duration::ZERO));
         let injector = Arc::new(Observed {
             router: Mutex::new(Observed::router(&routes, &elapsed)),
@@ -114,6 +111,13 @@ impl World {
 
     fn sends(&self) -> usize {
         self.routes.sends.load(Ordering::SeqCst)
+    }
+
+    /// Every call of a route that can put text in front of Codex: the queue,
+    /// app-server turns (plain, spawned and hidden), the app window, the
+    /// native window and stall recovery.
+    fn submissions(&self) -> Vec<&'static str> {
+        self.routes.submissions()
     }
 
     /// Rows in Codex's queue, read with a separate connection.
@@ -193,10 +197,20 @@ impl World {
             .await
     }
 
+    /// Observes the notice, failing the test if that reached any route
+    /// that can submit.
     async fn observe(&self) -> NoticeObservation {
-        self.core
-            .observe_local_notice(&self.registration, ADVISORY)
-            .await
+        self.observe_id(ADVISORY).await
+    }
+
+    async fn observe_id(&self, advisory: &str) -> NoticeObservation {
+        let before = self.submissions();
+        let observed = self
+            .core
+            .observe_local_notice(&self.registration, advisory)
+            .await;
+        assert_eq!(self.submissions(), before, "an observation submitted");
+        observed
     }
 
     /// Hands the notice over once and returns the text Codex queued.
@@ -206,6 +220,7 @@ impl World {
             InjectOutcome::WaitingForTurn(_)
         ));
         assert_eq!(self.sends(), 1);
+        assert_eq!(self.submissions(), ["queue_send"]);
         assert_eq!(self.queued_rows(), 1);
         self.queued_text()
     }
@@ -228,6 +243,7 @@ async fn observing_a_queued_notice_is_pending_and_a_recorded_one_delivered_witho
     assert_eq!(world.observe().await, NoticeObservation::Delivered);
     assert_eq!(world.observe().await, NoticeObservation::Delivered);
     assert_eq!(world.sends(), 1);
+    assert_eq!(world.submissions(), ["queue_send"]);
     // Delivered settles through the router's own cleanup of its queue copy.
     assert_eq!(
         queue::is_waiting(&world.config, SID, &world.reference()),
@@ -245,6 +261,7 @@ async fn a_notice_the_post_tool_use_hook_handed_over_is_observed_delivered_witho
     assert_eq!(world.observe().await, NoticeObservation::Delivered);
     assert_eq!(world.observe().await, NoticeObservation::Delivered);
     assert_eq!(world.sends(), 0);
+    assert!(world.submissions().is_empty());
     assert_eq!(world.queued_rows(), 0);
 }
 
@@ -296,6 +313,7 @@ async fn a_consumed_notice_not_yet_recorded_is_observed_and_never_handed_over_ag
     world.record(&text);
     assert_eq!(world.observe().await, NoticeObservation::Delivered);
     assert_eq!((world.sends(), world.queued_rows()), (1, 0));
+    assert_eq!(world.submissions(), ["queue_send"]);
 }
 
 #[tokio::test]
@@ -315,11 +333,13 @@ async fn after_a_restart_a_second_inject_resubmits_a_consumed_notice_and_observi
     // handoff, the queue no longer holds it and the rollout does not show
     // it yet, so handing it over again queues a second copy.
     world.injector.restart();
+    assert_eq!(world.submissions(), ["queue_send"]);
     assert!(matches!(
         world.inject().await,
         InjectOutcome::WaitingForTurn(_)
     ));
     assert_eq!((world.sends(), world.queued_rows()), (2, 1));
+    assert_eq!(world.submissions(), ["queue_send", "queue_send"]);
 }
 
 #[tokio::test]
@@ -335,6 +355,7 @@ async fn an_unreadable_queue_is_pending_and_left_untouched() {
         );
     }
     assert_eq!(world.sends(), 1);
+    assert_eq!(world.submissions(), ["queue_send"]);
     assert_eq!(std::fs::read(world.queue_path()).unwrap(), garbage);
 }
 
@@ -346,14 +367,12 @@ async fn a_notice_never_handed_over_is_pending_and_nothing_is_written() {
         NoticeObservation::Pending(RECORDING.into())
     );
     assert_eq!(world.sends(), 0);
+    assert!(world.submissions().is_empty());
     assert!(!world.config.sqlite_home.exists());
     assert!(!world.config.home.join("sessions").exists());
     // A key that cannot be a notice is fenced before any read.
     assert!(matches!(
-        world
-            .core
-            .observe_local_notice(&world.registration, "not a key")
-            .await,
+        world.observe_id("not a key").await,
         NoticeObservation::Fenced(_)
     ));
 }
@@ -453,10 +472,7 @@ async fn injectors_without_a_receipt_and_gateway_kinds_are_unsupported() {
 fn the_local_injector_observes_only_the_codex_router_route() {
     let codex_home = tempfile::tempdir().unwrap();
     let config = CodexConfig::from_env(&|_| None, codex_home.path());
-    let routes = Arc::new(DiskRoutes {
-        config: config.clone(),
-        sends: AtomicUsize::new(0),
-    });
+    let routes = Arc::new(DiskRoutes::new(config.clone()));
     let local_home = tempfile::tempdir().unwrap();
     let injector = LocalInjector::new(
         LocalConfig::from_env(&|_| None, local_home.path()),
@@ -476,6 +492,17 @@ fn the_local_injector_observes_only_the_codex_router_route() {
         )
         .unwrap();
     assert_eq!(routes.sends.load(Ordering::SeqCst), 1);
+    assert_eq!(routes.submissions(), ["queue_send"]);
+    // Each observation leaves the submissions as they were.
+    let observe = |registration: &Registration| {
+        let observed = injector.observe_local_notice(registration, &key);
+        assert_eq!(
+            routes.submissions(),
+            ["queue_send"],
+            "an observation submitted"
+        );
+        observed
+    };
     let (_core_home, _core, _probe, mut registration) = fixture();
     registration.target.id = SID.into();
     let spawn = |harness: &str, taken_over: bool| {
@@ -492,17 +519,14 @@ fn the_local_injector_observes_only_the_codex_router_route() {
     for origin in [None, spawn("codex", true)] {
         registration.spawn = origin;
         assert_eq!(
-            injector.observe_local_notice(&registration, &key),
+            observe(&registration),
             NoticeObservation::Pending(crate::relay::codex::router::BEHIND_TURN.into())
         );
     }
     // A running spawn goes to its harness first, which leaves no queue item.
     for origin in [spawn("codex", false), spawn("opencode", false)] {
         registration.spawn = origin;
-        assert_eq!(
-            injector.observe_local_notice(&registration, &key),
-            NoticeObservation::Unsupported
-        );
+        assert_eq!(observe(&registration), NoticeObservation::Unsupported);
     }
     registration.spawn = None;
     for kind in [
@@ -523,10 +547,7 @@ fn the_local_injector_observes_only_the_codex_router_route() {
         SessionKind::Hermes,
     ] {
         registration.target.kind = kind;
-        assert_eq!(
-            injector.observe_local_notice(&registration, &key),
-            NoticeObservation::Unsupported
-        );
+        assert_eq!(observe(&registration), NoticeObservation::Unsupported);
     }
     assert_eq!(routes.sends.load(Ordering::SeqCst), 1);
     assert_eq!(
