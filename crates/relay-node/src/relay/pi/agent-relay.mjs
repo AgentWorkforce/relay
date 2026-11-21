@@ -114,6 +114,10 @@ function pointedSocket(name) {
   } catch { return undefined; }
 }
 
+// The errors of a connection that never opened, so no request reached a
+// core: Node's codes, and Bun 1.3's own for a socket it could not open.
+const NEVER_CONNECTED = new Set(['ENOENT', 'ECONNREFUSED', 'ENOTSOCK', 'EACCES', 'FailedToOpenSocket']);
+
 // One POST /claude/question to `socket`. Resolves { answer } with the core's
 // answer, { refused: true } when no request reached it (no socket, refused
 // connection), or { unknown: true } once a request was written and no full
@@ -139,12 +143,12 @@ function askCore(socket, body, deadline) {
     const connectTimer = setTimeout(() => { if (!written) { req.destroy(); finish({ refused: true }); } }, QUESTION_CONNECT_MS);
     const totalTimer = setTimeout(() => { req.destroy(); finish(written ? { unknown: true } : { refused: true }); },
       Math.max(0, deadline - Date.now()));
-    req.on('socket', sock => {
-      // Already connected (a reused socket): the request goes out at once.
-      if (sock.connecting === false) written = true;
-      else sock.on('connect', () => { written = true; });
-    });
-    req.on('error', () => finish(written ? { unknown: true } : { refused: true }));
+    // Written once it is on its way: Node reports the connect; Bun 1.3 does
+    // not, and reports the request finished as soon as it is queued, even
+    // for a socket that is gone. The error then says which it was.
+    req.on('socket', sock => sock.on('connect', () => { written = true; }));
+    req.on('finish', () => { written = true; });
+    req.on('error', error => finish(!NEVER_CONNECTED.has(error?.code) && written ? { unknown: true } : { refused: true }));
     req.end(body);
   });
 }
