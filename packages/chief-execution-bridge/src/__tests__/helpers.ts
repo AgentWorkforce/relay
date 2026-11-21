@@ -257,7 +257,8 @@ export const REVISION = 'c0ffee'.padEnd(40, '0');
 
 /**
  * Scripted git. Answers every step of a refresh with success unless `fail` names that
- * subcommand. `hold` makes the next fetch wait until `release` is called.
+ * subcommand. `holdNextFetch` makes the next fetch wait until `release` is called;
+ * `fetchHeld` resolves once that fetch is waiting.
  */
 export class FakeGit {
   readonly calls: Array<{ cwd: string; args: string[] }> = [];
@@ -265,6 +266,7 @@ export class FakeGit {
   remoteHeadSet = true;
   revision = REVISION;
   private held: Array<() => void> = [];
+  private heldWaiters: Array<() => void> = [];
   holdNextFetch = false;
 
   readonly run: GitRunner = async (args, { cwd }) => {
@@ -272,7 +274,10 @@ export class FakeGit {
     const [command] = args;
     if (command === 'fetch' && this.holdNextFetch) {
       this.holdNextFetch = false;
-      await new Promise<void>((resolve) => this.held.push(resolve));
+      await new Promise<void>((resolve) => {
+        this.held.push(resolve);
+        for (const notify of this.heldWaiters.splice(0)) notify();
+      });
     }
     if (this.fail.has(command ?? '')) throw new GitError('git_exit');
     if (command === 'rev-parse' && args.includes('--show-toplevel')) return `${cwd}\n`;
@@ -287,6 +292,12 @@ export class FakeGit {
 
   release(): void {
     for (const resolve of this.held.splice(0)) resolve();
+  }
+
+  /** Resolves once a fetch is held (at once if one already is). */
+  fetchHeld(): Promise<void> {
+    if (this.held.length > 0) return Promise.resolve();
+    return new Promise((resolve) => this.heldWaiters.push(resolve));
   }
 
   commands(): string[] {
