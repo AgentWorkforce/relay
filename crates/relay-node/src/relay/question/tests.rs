@@ -253,6 +253,7 @@ fn record(registration: &Registration, base_key: &str) -> Record {
         via: Via::Session,
         sending: false,
         notified: false,
+        answered_in_session: false,
     }
 }
 
@@ -2122,4 +2123,259 @@ async fn a_question_whose_answer_cannot_reach_the_session_is_asked_as_usual() {
         Escalation::Off
     );
     assert_eq!(dm_count(&hits), 0);
+}
+
+/// A managed OpenCode server as the injector reads it: its pending
+/// questions (`None`: not readable), and the replies it was given.
+struct OpenCodeServer {
+    pending: Mutex<Option<Vec<Value>>>,
+    replies: Mutex<Vec<(String, Value)>>,
+    takes: std::sync::atomic::AtomicBool,
+}
+
+impl OpenCodeServer {
+    fn new() -> Arc<OpenCodeServer> {
+        Arc::new(OpenCodeServer {
+            pending: Mutex::new(Some(Vec::new())),
+            replies: Mutex::default(),
+            takes: std::sync::atomic::AtomicBool::new(true),
+        })
+    }
+    fn ask(&self, pending: Option<Vec<Value>>) {
+        *self.pending.lock().unwrap() = pending;
+    }
+}
+
+impl crate::relay::inject::Injector for OpenCodeServer {
+    fn inject(&self, _: &Target, _: &str, _: &str) -> InjectOutcome {
+        InjectOutcome::Delivered
+    }
+    fn reply_hint(&self, _: &Target, _: Option<&str>, _: Option<&str>, _: &str) -> Option<String> {
+        None
+    }
+    fn final_answer(&self, _: &Target, _: &str) -> Option<String> {
+        None
+    }
+    fn opencode_questions(&self, _: &Registration) -> Option<Vec<Value>> {
+        self.pending.lock().unwrap().clone()
+    }
+    fn opencode_reply(
+        &self,
+        _: &Registration,
+        request: &str,
+        answers: &Value,
+    ) -> Result<(), String> {
+        self.replies
+            .lock()
+            .unwrap()
+            .push((request.to_string(), answers.clone()));
+        if self.takes.load(std::sync::atomic::Ordering::SeqCst) {
+            Ok(())
+        } else {
+            Err("refused".into())
+        }
+    }
+}
+
+/// OpenCode's pending question for `session`, as `GET /question` lists it
+/// (`fixtures/questions/opencode-1.18.31-question-list.json`), under `id`.
+fn opencode_request(session: &str, id: &str) -> Value {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../fixtures/questions/opencode-1.18.31-question-list.json"
+    ))
+    .unwrap();
+    let mut request = fixture["list"][0].clone();
+    request["id"] = json!(id);
+    request["sessionID"] = json!(session);
+    request
+}
+
+fn opencode_core(
+    base: &str,
+    asker: &Registration,
+    server: &Arc<OpenCodeServer>,
+) -> (Arc<Core>, tempfile::TempDir) {
+    core_with(
+        base,
+        asker,
+        true,
+        crate::relay::daemon::Plugins {
+            injector: server.clone(),
+            ..crate::relay::daemon::Plugins::default()
+        },
+    )
+}
+
+fn reference_for(target: &str) -> String {
+    records()
+        .iter()
+        .find(|(_, record)| record.target.id == target)
+        .map(|(reference, _)| reference.clone())
+        .unwrap()
+}
+
+/// A managed OpenCode question goes to the inbox once and stays in
+/// OpenCode's dialog; the inbox's answer is OpenCode's reply, once.
+#[tokio::test]
+async fn an_opencode_question_is_answered_from_the_inbox_once() {
+    let (base, hits) = relaycast(false);
+    let session = "ses_oc_answered";
+    let asker = registration(
+        "asker-oc",
+        Target::new(SessionKind::OpenCode, session),
+        &base,
+    );
+    let server = OpenCodeServer::new();
+    let (core, _temp) = opencode_core(&base, &asker, &server);
+    server.ask(Some(vec![opencode_request(session, "que_oc_1")]));
+    core.poll_opencode_questions().await;
+    core.poll_opencode_questions().await;
+    assert_eq!(dm_count(&hits), 1, "once");
+    let reference = reference_for(session);
+    let dm = hits
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|hit| hit.starts_with("POST /v1/dm"))
+        .cloned()
+        .unwrap();
+    assert!(
+        dm.contains("Which package manager should the project use?"),
+        "{dm}"
+    );
+    let token = Secret::new("at_live_asker");
+    let answer = reply("d-oc", "agent-triage", &format!("answer {reference} 1"));
+    let OwnerReply::Settled(_) = core
+        .question_reply(&asker, &answer, (base.as_str(), &token))
+        .await
+    else {
+        panic!("answered");
+    };
+    assert_eq!(
+        server.replies.lock().unwrap().as_slice(),
+        [("que_oc_1".to_string(), json!([["pnpm"]]))]
+    );
+    assert_eq!(state_of(&reference), Some(State::Answered));
+}
+
+/// The first answer wins: a question answered in OpenCode's own dialog is
+/// closed, and the inbox's late answer is refused without touching OpenCode.
+/// A read that fails leaves the question as it is.
+#[tokio::test]
+async fn an_opencode_question_answered_in_the_session_refuses_the_inbox() {
+    let (base, hits) = relaycast(false);
+    let session = "ses_oc_session";
+    let asker = registration(
+        "asker-oc-2",
+        Target::new(SessionKind::OpenCode, session),
+        &base,
+    );
+    let server = OpenCodeServer::new();
+    let (core, _temp) = opencode_core(&base, &asker, &server);
+    server.ask(Some(vec![opencode_request(session, "que_oc_2")]));
+    core.poll_opencode_questions().await;
+    let reference = reference_for(session);
+    // Not readable: nothing changes.
+    server.ask(None);
+    core.poll_opencode_questions().await;
+    assert_eq!(state_of(&reference), Some(State::Open));
+    // Answered in OpenCode: closed.
+    server.ask(Some(Vec::new()));
+    core.poll_opencode_questions().await;
+    assert_eq!(state_of(&reference), Some(State::Answered));
+    let token = Secret::new("at_live_asker");
+    let answer = reply("d-oc-2", "agent-triage", &format!("answer {reference} 1"));
+    let OwnerReply::Settled(detail) = core
+        .question_reply(&asker, &answer, (base.as_str(), &token))
+        .await
+    else {
+        panic!("refused");
+    };
+    assert!(
+        detail.contains("already answered in the session"),
+        "{detail}"
+    );
+    assert!(server.replies.lock().unwrap().is_empty());
+    let questions = hits
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|hit| hit.starts_with("POST /v1/dm") && hit.contains("[Question"))
+        .count();
+    assert_eq!(questions, 1);
+}
+
+/// A reply OpenCode refuses is not tried again: the question stays in its
+/// dialog and the inbox is told. A session that left the relay closes its
+/// questions. Off, or a question of another shape, sends nothing.
+#[tokio::test]
+async fn an_opencode_reply_is_one_attempt_and_off_sends_nothing() {
+    let (base, hits) = relaycast(false);
+    let session = "ses_oc_refused";
+    let asker = registration(
+        "asker-oc-3",
+        Target::new(SessionKind::OpenCode, session),
+        &base,
+    );
+    let server = OpenCodeServer::new();
+    let (core, _temp) = opencode_core(&base, &asker, &server);
+    server.ask(Some(vec![opencode_request(session, "que_oc_3")]));
+    core.poll_opencode_questions().await;
+    let reference = reference_for(session);
+    server
+        .takes
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let token = Secret::new("at_live_asker");
+    let answer = reply("d-oc-3", "agent-triage", &format!("answer {reference} 2"));
+    let OwnerReply::Settled(detail) = core
+        .question_reply(&asker, &answer, (base.as_str(), &token))
+        .await
+    else {
+        panic!("refused");
+    };
+    assert!(detail.contains("still open in the session"), "{detail}");
+    let again = reply("d-oc-3b", "agent-triage", &format!("answer {reference} 1"));
+    let _ = core
+        .question_reply(&asker, &again, (base.as_str(), &token))
+        .await;
+    assert_eq!(server.replies.lock().unwrap().len(), 1, "one attempt");
+    let questions = |hits: &Arc<Mutex<Vec<String>>>| {
+        hits.lock()
+            .unwrap()
+            .iter()
+            .filter(|hit| hit.starts_with("POST /v1/dm") && hit.contains("[Question"))
+            .count()
+    };
+    let sent = questions(&hits);
+
+    // Off: a new question is not sent; another shape is not either.
+    core.store
+        .remember(|store| store.extras.question_escalation = Some(false))
+        .unwrap();
+    server.ask(Some(vec![opencode_request(session, "que_oc_4")]));
+    core.poll_opencode_questions().await;
+    core.store
+        .remember(|store| store.extras.question_escalation = None)
+        .unwrap();
+    server.ask(Some(vec![json!({"id": "que_oc_5", "sessionID": session,
+        "questions": [{"question": "Which?", "options": "a, b"}]})]));
+    core.poll_opencode_questions().await;
+    assert_eq!(questions(&hits), sent);
+
+    // A session that left the relay: its open questions close.
+    let session_gone = "ses_oc_gone";
+    let gone = registration(
+        "asker-oc-4",
+        Target::new(SessionKind::OpenCode, session_gone),
+        &base,
+    );
+    let (core, _temp) = opencode_core(&base, &gone, &server);
+    server.ask(Some(vec![opencode_request(session_gone, "que_oc_6")]));
+    core.poll_opencode_questions().await;
+    let reference = reference_for(session_gone);
+    core.store
+        .remember(|store| store.registrations.clear())
+        .unwrap();
+    core.poll_opencode_questions().await;
+    assert_eq!(state_of(&reference), Some(State::Answered));
 }

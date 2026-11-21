@@ -214,6 +214,57 @@ pub fn copilot_questions(args: &Value) -> Option<Vec<Question>> {
     }])
 }
 
+/// The questions of one of OpenCode's pending question requests
+/// (`GET /question`, OpenCode 1.18): `{id, sessionID, questions: [{question,
+/// header, options: [{label, description}], multiple?, custom?}]}`;
+/// `custom` (on unless false) lets the person type their own answer.
+/// `None` for any other shape, or more than the caps allow: the question
+/// is then left to OpenCode's own dialog.
+pub fn opencode_questions(request: &Value) -> Option<Vec<Question>> {
+    let asked = request["questions"].as_array()?;
+    if asked.is_empty() || asked.len() > MAX_QUESTIONS {
+        return None;
+    }
+    asked
+        .iter()
+        .map(|question| {
+            let text = question["question"]
+                .as_str()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())?;
+            let options = match question.get("options") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(Value::Array(options)) if options.len() <= MAX_OPTIONS => options
+                    .iter()
+                    .map(|option| {
+                        Some(Choice {
+                            label: option["label"].as_str()?.trim().to_string(),
+                            description: string(&option["description"]),
+                        })
+                    })
+                    .collect::<Option<Vec<Choice>>>()?
+                    .into_iter()
+                    .filter(|choice| !choice.label.is_empty())
+                    .collect(),
+                Some(_) => return None,
+            };
+            let free = match question.get("custom") {
+                None | Some(Value::Null) => true,
+                Some(Value::Bool(custom)) => *custom,
+                Some(_) => return None,
+            };
+            Some(Question {
+                id: String::new(),
+                header: string(&question["header"]),
+                text: text.to_string(),
+                free: free || options.is_empty(),
+                options,
+                multi: question["multiple"] == true,
+            })
+        })
+        .collect()
+}
+
 /// Who asked, for the message's first lines.
 pub struct Asker<'a> {
     pub reference: &'a str,

@@ -1,5 +1,6 @@
 //! Question escalation: a question a session asks its person (Claude's
-//! `AskUserQuestion`, a spawned Codex's `item/tool/requestUserInput`) is
+//! `AskUserQuestion`, a spawned Codex's `item/tool/requestUserInput`, and
+//! the others `coverage` lists) is
 //! sent over Relaycast to an inbox instead, the owner's person identity
 //! unless `question_escalation_inbox` names another agent, and the session
 //! keeps working. The inbox answers with `answer <ref> <n|text>`; only the
@@ -39,6 +40,11 @@
 //! is not acknowledged: the question opens again and the same reply is read
 //! again on a later pass. An answer that may have arrived is never typed
 //! again, and the inbox is told it may not have.
+//!
+//! A managed OpenCode session's question is read from its own server
+//! (`opencode_question_loop`) and stays open in OpenCode's dialog as well:
+//! the first answer wins. One answered there is closed, and the inbox's
+//! late answer is refused; the inbox's answer is one reply to OpenCode.
 //!
 //! A question past its expiry tells its session so once, whichever
 //! of the timer and a late reply closes it first (`Record::notified`).
@@ -118,6 +124,11 @@ pub enum Via {
     /// A spawned Codex's `item/tool/requestUserInput`: the answer is the
     /// request's result, by the drive's reference.
     Codex { request: String },
+    /// A managed OpenCode session's question tool, read from its own server
+    /// (`opencode_question_loop`): the question stays open in OpenCode's
+    /// dialog too, and the first answer wins. The inbox's answer is the
+    /// reply to OpenCode's question `request`.
+    OpenCode { request: String },
 }
 
 #[derive(Clone, Debug)]
@@ -138,6 +149,8 @@ struct Record {
     sending: bool,
     /// The session was told it expired, or never needs to be.
     notified: bool,
+    /// Closed because the session answered it itself (OpenCode's dialog).
+    answered_in_session: bool,
 }
 
 impl Record {
@@ -460,6 +473,11 @@ itself.",
             ))
         }
         State::Delivering => return Err(Unchecked::Delivering),
+        State::Answered if record.answered_in_session => {
+            return refused(format!(
+                "Question {reference} was already answered in the session."
+            ))
+        }
         State::Answered => return refused(format!("Question {reference} was already answered.")),
         State::Expired => {
             return refused(format!(
@@ -516,6 +534,52 @@ fn expire(reference: &str) -> Option<(Target, Via)> {
     }
     record.notified = true;
     Some((record.target.clone(), record.via.clone()))
+}
+
+/// How often a managed OpenCode session's pending questions are read.
+const OPENCODE_POLL: Duration = Duration::from_secs(2);
+
+/// OpenCode questions already tried, by session and request id, with when:
+/// each is offered to the inbox once, whatever came of it.
+fn opencode_tried() -> MutexGuard<'static, HashMap<String, Instant>> {
+    static TRIED: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    let mut tried = TRIED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let now = Instant::now();
+    tried.retain(|_, at| now < *at + TTL + KEEP);
+    tried
+}
+
+/// The managed OpenCode sessions each core polls, by the core's socket:
+/// one whose session leaves the relay closes its questions.
+fn opencode_polled() -> MutexGuard<'static, HashMap<Target, String>> {
+    static POLLED: OnceLock<Mutex<HashMap<Target, String>>> = OnceLock::new();
+    POLLED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Closes the open OpenCode questions of `target` that OpenCode no longer
+/// waits on (`pending`, or `None` when the session is gone): answered or
+/// dismissed in its own dialog, or the session ended. A late inbox answer
+/// is then refused.
+fn close_answered_in_session(target: &Target, pending: Option<&[String]>) {
+    for record in records().values_mut() {
+        let Via::OpenCode { request } = &record.via else {
+            continue;
+        };
+        if record.target != *target || !matches!(record.state, State::Open | State::Unsent) {
+            continue;
+        }
+        if pending.is_none_or(|pending| !pending.contains(request)) {
+            record.state = State::Answered;
+            record.answered_in_session = true;
+            record.notified = true;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -650,6 +714,7 @@ impl Core {
             via: asked.via,
             sending: false,
             notified: false,
+            answered_in_session: false,
         };
         let (reference, key) = loop {
             match reserve(record.clone()) {
@@ -934,6 +999,106 @@ impl Core {
         }
     }
 
+    /// Watches the managed OpenCode sessions on the relay for questions
+    /// their question tool asks, while the core runs.
+    pub(crate) async fn opencode_question_loop(self: std::sync::Arc<Self>) {
+        while !self.stopping() {
+            tokio::time::sleep(OPENCODE_POLL).await;
+            self.poll_opencode_questions().await;
+        }
+    }
+
+    /// One pass: each new question of a managed OpenCode session goes to
+    /// the inbox once; one OpenCode no longer waits on is closed. Any
+    /// failure to read a session leaves its questions as they are, in
+    /// OpenCode's dialog.
+    pub(crate) async fn poll_opencode_questions(&self) {
+        let sessions: Vec<Registration> = self.store.read(|store| {
+            store
+                .registrations
+                .iter()
+                .filter(|r| r.target.kind == crate::relay::store::SessionKind::OpenCode)
+                .cloned()
+                .collect()
+        });
+        // A session this core polled that is no longer on the relay: its
+        // questions are closed.
+        let current: Vec<Target> = sessions.iter().map(|r| r.target.clone()).collect();
+        let core_id = self.config.paths.socket.to_string_lossy().into_owned();
+        let gone: Vec<Target> = {
+            let mut polled = opencode_polled();
+            let gone = polled
+                .iter()
+                .filter(|(target, owner)| **owner == core_id && !current.contains(target))
+                .map(|(target, _)| target.clone())
+                .collect::<Vec<_>>();
+            polled.retain(|target, _| !gone.contains(target));
+            for target in &current {
+                polled.insert(target.clone(), core_id.clone());
+            }
+            gone
+        };
+        for target in gone {
+            close_answered_in_session(&target, None);
+        }
+        if !self.store.read(settings::on) {
+            return;
+        }
+        for registration in sessions {
+            let (injector, held) = (self.plugins.injector.clone(), registration.clone());
+            let Some(pending) =
+                tokio::task::spawn_blocking(move || injector.opencode_questions(&held))
+                    .await
+                    .ok()
+                    .flatten()
+            else {
+                continue;
+            };
+            let ids: Vec<String> = pending
+                .iter()
+                .filter_map(|request| request["id"].as_str().map(str::to_string))
+                .collect();
+            close_answered_in_session(&registration.target, Some(&ids));
+            for request in &pending {
+                let Some(id) = request["id"].as_str() else {
+                    continue;
+                };
+                let key = format!("{}:{id}", registration.target.key());
+                if opencode_tried().insert(key, Instant::now()).is_some() {
+                    continue;
+                }
+                let Some(questions) = text::opencode_questions(request) else {
+                    continue;
+                };
+                let cwd = registration
+                    .spawn
+                    .as_ref()
+                    .and_then(|spawn| spawn.worker_cwd.clone())
+                    .unwrap_or_default();
+                let asked = Asked {
+                    questions,
+                    input: request,
+                    cwd: &cwd,
+                    via: Via::OpenCode {
+                        request: id.to_string(),
+                    },
+                };
+                match self
+                    .escalate_question_within(&registration, asked, ROUTE_LIMIT)
+                    .await
+                {
+                    Escalation::Failed(error) | Escalation::TimedOut(error) => {
+                        crate::relay::diagnostics::write(format_args!(
+                            "question from @{} not escalated: {error}",
+                            registration.name
+                        ));
+                    }
+                    Escalation::Sent { .. } | Escalation::Off => {}
+                }
+            }
+        }
+    }
+
     /// A direct message `answer <ref> ...` to `registration`, the agent that
     /// asked: delivered as the answer when the inbox sent it, and refused
     /// with a short reply otherwise. `base` and `token` are what the asking
@@ -1028,6 +1193,40 @@ It is not sent again.",
                     }
                     InjectOutcome::Delivered | InjectOutcome::Accepted(_) => {
                         self.answered(&reference, delivery, token, &delivered).await
+                    }
+                }
+            }
+            Via::OpenCode { request } => {
+                // One attempt: OpenCode takes it, or the question stays open
+                // in its own dialog and the inbox is told.
+                let answers: Value = checked
+                    .answers
+                    .iter()
+                    .map(|answer| json!(answer.values))
+                    .collect();
+                let (injector, held, request) = (
+                    self.plugins.injector.clone(),
+                    registration.clone(),
+                    request.clone(),
+                );
+                let replied = tokio::task::spawn_blocking(move || {
+                    injector.opencode_reply(&held, &request, &answers)
+                })
+                .await
+                .unwrap_or_else(|_| Err("the reply stopped unexpectedly".into()));
+                match replied {
+                    Ok(()) => self.answered(&reference, delivery, token, &delivered).await,
+                    Err(why) => {
+                        if let Some(record) = records().get_mut(&reference) {
+                            record.state = State::Expired;
+                            record.notified = true;
+                        }
+                        let refusal = format!(
+                            "The answer to question {reference} was not delivered to @{}: {why}. \
+It is still open in the session.",
+                            checked.agent
+                        );
+                        self.refuse_reply(delivery, token, &refusal).await
                     }
                 }
             }
