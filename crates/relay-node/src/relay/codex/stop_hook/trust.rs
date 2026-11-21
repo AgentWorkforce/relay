@@ -17,6 +17,11 @@ const APP_SERVER_TIMEOUT: Duration = Duration::from_secs(15);
 /// Codex's own `/hooks` review does: `hooks/list` gives each entry's key and
 /// current hash, and `config/value/write` records those in `hooks.state`.
 /// `installed` is the Codex the core found (`CodexConfig::executable`).
+///
+/// The question hook ([`QUESTION_EVENT`]) is trusted after the others, on
+/// its own: one Codex does not list, or does not take, stays untrusted,
+/// which Codex skips, so its questions are asked in the dialog as before
+/// and message delivery is never held up by it.
 pub(super) fn with_app_server(
     codex_home: &Path,
     command: &str,
@@ -26,9 +31,52 @@ pub(super) fn with_app_server(
         codex_for_hooks(installed).ok_or("No Codex to trust the hook with was found.")?;
     let mut session = AppServer::open(&executable, codex_home)?;
     let listed = session.request("hooks/list", json!({"cwds": [codex_home]}))?;
+    let (untrusted, question) = untrusted(&listed, command)?;
+    if !untrusted.is_empty() {
+        session.request("config/value/write", trust_write(untrusted))?;
+    }
+    if let Some(question) = question {
+        if let Err(error) = session.request("config/value/write", trust_write(question)) {
+            crate::relay::diagnostics::write(format_args!(
+                "relay: Codex's question hook was not trusted; its questions are asked as usual: \
+{error}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The `config/value/write` that records `entries` in `hooks.state`.
+fn trust_write(entries: Map<String, Value>) -> Value {
+    json!({
+        "keyPath": "hooks.state",
+        "mergeStrategy": "upsert",
+        "value": entries,
+    })
+}
+
+/// The delivery hooks' entries to trust, and apart from them the question
+/// hook's, each by key with the hash to trust.
+type Untrusted = (Map<String, Value>, Option<Map<String, Value>>);
+
+/// The entries of the hook running `command` that `listed` (a `hooks/list`
+/// answer) shows untrusted, by key, each with the hash to trust: those the
+/// hook needs to deliver messages, and apart from them the question hook's.
+/// A required event Codex does not list is an error; an optional one, or
+/// the question hook, is left out.
+fn untrusted(listed: &Value, command: &str) -> Result<Untrusted, String> {
+    let pending = |hook: &Value| -> Result<Option<(String, Value)>, String> {
+        if hook["trustStatus"] == "trusted" {
+            return Ok(None);
+        }
+        let (Some(key), Some(hash)) = (hook["key"].as_str(), hook["currentHash"].as_str()) else {
+            return Err("Codex lists Agent Relay's hook without a key or hash.".into());
+        };
+        Ok(Some((key.to_string(), json!({"trusted_hash": hash}))))
+    };
     let mut untrusted = Map::new();
     for event in EVENTS {
-        let Some(hook) = listed_hooks(&listed, command).find(|hook| hook["eventName"] == event)
+        let Some(hook) = listed_hooks(listed, command).find(|hook| hook["eventName"] == event)
         else {
             // A Codex without SessionStart hooks still runs the others.
             if OPTIONAL_EVENTS.contains(&event) {
@@ -36,30 +84,24 @@ pub(super) fn with_app_server(
             }
             return Err("Codex does not list Agent Relay's hook.".into());
         };
-        if hook["trustStatus"] == "trusted" {
-            continue;
+        if let Some((key, value)) = pending(hook)? {
+            untrusted.insert(key, value);
         }
-        let (Some(key), Some(hash)) = (hook["key"].as_str(), hook["currentHash"].as_str()) else {
-            return Err("Codex lists Agent Relay's hook without a key or hash.".into());
-        };
-        untrusted.insert(key.to_string(), json!({"trusted_hash": hash}));
     }
-    if untrusted.is_empty() {
-        return Ok(());
-    }
-    session.request(
-        "config/value/write",
-        json!({
-            "keyPath": "hooks.state",
-            "mergeStrategy": "upsert",
-            "value": untrusted,
-        }),
-    )?;
-    Ok(())
+    let question = listed_hooks(listed, command)
+        .find(|hook| hook["eventName"] == QUESTION_EVENT)
+        .and_then(|hook| pending(hook).ok().flatten())
+        .map(|(key, value)| Map::from_iter([(key, value)]));
+    Ok((untrusted, question))
 }
 
-/// The hook events trusted, as `hooks/list` names them.
+/// The hook events trusted for message delivery, as `hooks/list` names
+/// them.
 const EVENTS: [&str; 3] = ["stop", "postToolUse", "sessionStart"];
+
+/// The question hook's event, as `hooks/list` names it: trusted on its own
+/// (`with_app_server`), and not needed for message delivery.
+const QUESTION_EVENT: &str = "preToolUse";
 
 /// Events trusted when Codex lists them: the hook delivers messages without
 /// them, so a Codex that does not run them still has it trusted.
@@ -99,7 +141,12 @@ pub(super) fn untrust_with_app_server(
         .request("hooks/list", json!({"cwds": [codex_home]}))
         .map(|listed| {
             listed_hooks(&listed, command)
-                .filter(|hook| EVENTS.iter().any(|event| hook["eventName"] == *event))
+                .filter(|hook| {
+                    EVENTS
+                        .iter()
+                        .chain([&QUESTION_EVENT])
+                        .any(|event| hook["eventName"] == *event)
+                })
                 .filter_map(|hook| hook["key"].as_str().map(str::to_string))
                 .collect()
         })
@@ -297,6 +344,58 @@ impl Drop for AppServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `hooks/list` as Codex 0.154 answers it, with `command` as the hook's.
+    fn listed(command: &str) -> Value {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../fixtures/questions/codex-0.154-hooks-list.json"
+        ))
+        .unwrap();
+        serde_json::from_str(&fixture["response"].to_string().replace("COMMAND", command)).unwrap()
+    }
+
+    /// An install that already trusts the delivery hooks keeps that trust:
+    /// only the new question hook is trusted, on its own write, and a
+    /// person's own hook never is.
+    #[test]
+    fn the_question_hook_is_trusted_apart_from_the_delivery_hooks() {
+        let command = "probe codex-stop-hook";
+        let (required, question) = untrusted(&listed(command), command).unwrap();
+        assert!(required.is_empty(), "{required:?}");
+        assert_eq!(
+            question,
+            Some(Map::from_iter([(
+                "k-question".to_string(),
+                json!({"trusted_hash": "h-question"})
+            )]))
+        );
+        // A delivery hook that lost its trust is trusted with the required
+        // write, never with the question hook's.
+        let mut changed = listed(command);
+        changed["data"][0]["hooks"][1]["trustStatus"] = json!("modified");
+        let (required, question) = untrusted(&changed, command).unwrap();
+        assert_eq!(required.keys().collect::<Vec<_>>(), ["k-post"]);
+        assert!(question.is_some());
+        // A Codex that does not list the question hook still trusts the
+        // rest: its questions are asked in the dialog.
+        let mut older = listed(command);
+        older["data"][0]["hooks"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|hook| hook["eventName"] != "preToolUse" || hook["command"] != command);
+        assert_eq!(untrusted(&older, command).unwrap().1, None);
+        // A question hook already trusted needs nothing.
+        let mut trusted = listed(command);
+        trusted["data"][0]["hooks"][3]["trustStatus"] = json!("trusted");
+        assert_eq!(untrusted(&trusted, command).unwrap(), (Map::new(), None));
+        // A delivery hook Codex does not list is still an error.
+        let mut missing = listed(command);
+        missing["data"][0]["hooks"]
+            .as_array_mut()
+            .unwrap()
+            .remove(0);
+        assert!(untrusted(&missing, command).is_err());
+    }
 
     // The background core's PATH has no Homebrew or npm Codex: the one the
     // core found trusts the hook.

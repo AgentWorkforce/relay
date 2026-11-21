@@ -55,6 +55,36 @@ fn registration_context(socket: &std::path::Path) -> Option<Value> {
     }}))
 }
 
+/// Codex's PreToolUse answer for the question hook: refused with `reason`
+/// once the question went to the inbox, so Codex tells the model instead
+/// of showing the dialog; otherwise `{}`, which lets the tool run and the
+/// dialog show (Codex 0.154, `hooks/src/events/pre_tool_use.rs`).
+fn question_hook_answer(reason: Option<&str>) -> Value {
+    match reason {
+        Some(reason) => json!({"hookSpecificOutput": {
+            "hookEventName": crate::relay::codex::stop_hook::QUESTION_EVENT,
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }}),
+        None => json!({}),
+    }
+}
+
+#[cfg(test)]
+mod question_hook_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_sent_question_refuses_the_tool() {
+        assert_eq!(question_hook_answer(None), json!({}));
+        assert_eq!(
+            question_hook_answer(Some("Sent to @triage.")),
+            json!({"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                "permissionDecision": "deny", "permissionDecisionReason": "Sent to @triage."}})
+        );
+    }
+}
+
 impl Outbound {
     /// Agent Relay's Codex hook (`codex::stop_hook`), from a Codex turn after
     /// a tool call (PostToolUse) or as it ends (Stop): the next relayed
@@ -108,6 +138,9 @@ impl Outbound {
                 .filter(|cwd| std::path::Path::new(cwd).is_absolute())
                 .map(str::to_string);
             return self.codex_session_start(pid, thread, cwd).await;
+        }
+        if event_name == Some(crate::relay::codex::stop_hook::QUESTION_EVENT) {
+            return self.codex_question_hook(pid, thread, fields).await;
         }
         let Some(event) = HookEvent::named(event_name) else {
             return Ok(json!({}));
@@ -249,6 +282,63 @@ impl Outbound {
         })
         .await
         .unwrap_or_else(|_| Ok(json!({})))
+    }
+
+    /// Agent Relay's Codex hook at PreToolUse, which `hooks.json` runs for
+    /// `request_user_input` alone: with question escalation on, the question
+    /// goes to the question inbox and the tool call is refused with the
+    /// reason, so the session keeps working and the answer arrives as a
+    /// message. Only the thread's running turn, held by the trusted Codex
+    /// writer that called, is answered. Anything else (another tool, a
+    /// session not on the relay, escalation off, input that does not parse,
+    /// a question not sent within `question::ROUTE_LIMIT`) answers `{}`, and
+    /// Codex shows the question as usual.
+    async fn codex_question_hook(
+        &self,
+        pid: i32,
+        thread: String,
+        fields: &Map<String, Value>,
+    ) -> Result<Value, OutboundError> {
+        use crate::relay::codex::stop_hook::QUESTION_TOOL;
+        if fields.get("tool_name").and_then(Value::as_str) != Some(QUESTION_TOOL) {
+            return Ok(json!({}));
+        }
+        let Some(input) = fields.get("tool_input").filter(|input| input.is_object()) else {
+            return Ok(json!({}));
+        };
+        let turn = fields
+            .get("turn_id")
+            .and_then(Value::as_str)
+            .filter(|turn| !turn.is_empty())
+            .ok_or_else(OutboundError::not_a_session)?
+            .to_string();
+        let directory = self.core.plugins.sessions.clone();
+        let caller = thread.clone();
+        let matches = tokio::task::spawn_blocking(move || {
+            directory.codex_hook_turn_matches(pid, &caller, &turn)
+        })
+        .await
+        .unwrap_or(false);
+        if !matches {
+            return Err(OutboundError::not_a_session());
+        }
+        let target = Target::new(SessionKind::Codex, thread);
+        let Some(registration) = self
+            .core
+            .store
+            .read(|store| store.registration_for(&target).cloned())
+        else {
+            return Ok(json!({}));
+        };
+        let cwd = fields
+            .get("cwd")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let reason = self
+            .core
+            .escalate_codex_hook_question(&registration, input, cwd)
+            .await;
+        Ok(question_hook_answer(reason.as_deref()))
     }
 
     /// Agent Relay's Codex hook at SessionStart: the session's Agent Relay

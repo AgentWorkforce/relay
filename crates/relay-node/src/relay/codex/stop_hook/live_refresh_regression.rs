@@ -184,11 +184,12 @@ fn settings(f: &Fixture) -> anyhow::Result<CodexStopHookSettings> {
         super::trust::live::refresh_with(home, command, table.as_ref(), runner.as_ref(), UID, None)
     });
     // END_LIVE_RUNTIME_CONTEXT
-    let entry = settings.entry();
+    let entry = settings.entry("Stop");
     std::fs::write(
         f.home.join("hooks.json"),
         serde_json::to_vec(&json!({"hooks":{
-            "Stop":[entry.clone()],"PostToolUse":[entry.clone()],"SessionStart":[entry]
+            "Stop":[entry.clone()],"PostToolUse":[entry.clone()],"SessionStart":[entry],
+            "PreToolUse":[settings.entry(super::QUESTION_EVENT)]
         }}))?,
     )?;
     Ok(settings)
