@@ -41,7 +41,8 @@ pub const RECORDS: [&str; 3] = [
 /// run; mobile continuation permits native owner input; approvals from the
 /// spawning agent let it answer its session's permission prompts;
 /// `connect_detected_tools` turns on the routes into the tools found here).
-/// An agent may turn them off.
+/// An agent may turn them off. A setting whose
+/// value is `"on"`/`"off"` rather than a boolean counts `"on"` as on.
 pub const PERSON_TURNS_ON: [&str; 27] = [
     "accept_spawns",
     "allow_self_registration",
@@ -82,6 +83,12 @@ pub const PERSON_ADDS: [&str; 3] = [
     crate::relay::trusted::SETTING,
 ];
 
+/// Settings only the person sets to a value, in Settings: the inbox whose
+/// replies are typed into the person's sessions as answers. An agent may
+/// clear it. (An agent may turn `question_escalation` itself on and off:
+/// with the inbox unset, questions go to the person.)
+pub const PERSON_SETS: [&str; 1] = ["question_escalation_inbox"];
+
 /// Settings with a part only the person turns on: a watched folder's
 /// sharing, a spawned harness's full access.
 pub const PERSON_TURNS_ON_PART: [(&str, &str); 2] = [
@@ -100,6 +107,11 @@ pub fn person_only(key: &str) -> Option<String> {
     if PERSON_ADDS.contains(&key) {
         return Some(format!(
             "Only the person can add to {key}, in Agent Relay's Settings. An agent may remove entries."
+        ));
+    }
+    if PERSON_SETS.contains(&key) {
+        return Some(format!(
+            "Only the person can set {key}, in Agent Relay's Settings. An agent may clear it."
         ));
     }
     PERSON_TURNS_ON_PART
@@ -293,6 +305,7 @@ fn allowed(key: &str) -> Option<Value> {
         "history_retention_days" => Some(json!(
             crate::relay::contract::agents::history_retention::CHOICES
         )),
+        crate::relay::question::settings::ESCALATION => Some(json!(["off", "on"])),
         _ => None,
     }
 }
@@ -349,6 +362,7 @@ mod tests {
             "auto_join_repositories",
             "claude_session_hook",
             "history_retention_days",
+            "question_escalation",
             "show_relay_messages",
             "spawn_billing_claude",
             "spawn_billing_codex",

@@ -95,6 +95,8 @@ mod socket_request_tests {
             vec!["read", "m1", build.flag().as_str()],
             [&["codex-stop-hook", "--profile=-acme"][..], &socket].concat(),
             [&["claude-session-hook", "--profile=-acme"][..], &socket].concat(),
+            [&["claude-stop-hook", "--profile=-acme"][..], &socket].concat(),
+            [&["claude-question-hook", "--profile=-acme"][..], &socket].concat(),
             vec![
                 "droid-spawn-host",
                 "--executable",
@@ -138,6 +140,13 @@ mod socket_request_tests {
                     profile, ..
                 })
                 | Commands::Node(relay_commands::RelayCommands::ClaudeSessionHook {
+                    profile,
+                    ..
+                })
+                | Commands::Node(relay_commands::RelayCommands::ClaudeStopHook {
+                    profile, ..
+                })
+                | Commands::Node(relay_commands::RelayCommands::ClaudeQuestionHook {
                     profile,
                     ..
                 })

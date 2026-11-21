@@ -617,6 +617,7 @@ jobs:
           - integration-prompts
           - session
           - events-shim
+          - spawn-placement
 
     steps:
       - name: Checkout code

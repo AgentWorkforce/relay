@@ -383,11 +383,60 @@ pub fn mark_forwarded(reference: &str) {
     }
 }
 
+/// The params of the open `item/tool/requestUserInput` `reference`, for
+/// question escalation (`crate::relay::question`).
+pub fn user_input(reference: &str) -> Option<Value> {
+    pending()
+        .get(reference)
+        .filter(|entry| {
+            entry.method == "item/tool/requestUserInput"
+                && entry.answer.is_none()
+                && Instant::now() < entry.deadline
+        })
+        .map(|entry| entry.params.clone())
+}
+
+/// Marks `reference` escalated as a question: forwarded, and waiting `ttl`
+/// from now for its answer.
+pub fn escalate(reference: &str, ttl: Duration) {
+    if let Some(entry) = pending().get_mut(reference) {
+        entry.forwarded = true;
+        entry.deadline = Instant::now() + ttl;
+    }
+}
+
+/// Answers the escalated question `reference` of `thread` with `value`.
+/// The question inbox's id was checked by the caller; the first answer
+/// counts.
+pub fn answer_question(thread: &str, reference: &str, value: Value) -> ReplyResult {
+    let mut entries = pending();
+    match entries.get_mut(reference).filter(|entry| {
+        entry.notice.thread == thread
+            && entry.method == "item/tool/requestUserInput"
+            && entry.answer.is_none()
+            && Instant::now() < entry.deadline
+    }) {
+        Some(entry) => {
+            entry.answer = Some(value);
+            ReplyResult::Answered
+        }
+        None => ReplyResult::Unknown,
+    }
+}
+
 /// A request `thread` has open, as a live connection registers it.
 #[cfg(test)]
 pub(crate) fn open_request(thread: &str, request: Value) -> Notice {
     register(thread, "test-connection", request);
     unforwarded(thread).pop().expect("registered")
+}
+
+/// The answer recorded for `reference`, before the drive sends it.
+#[cfg(test)]
+pub(crate) fn recorded_answer(reference: &str) -> Option<Value> {
+    pending()
+        .get(reference)
+        .and_then(|entry| entry.answer.clone())
 }
 
 #[cfg(test)]

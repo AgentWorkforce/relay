@@ -212,27 +212,58 @@ pub fn is_terminal_codex(table: &dyn ProcessTable, pid: i32) -> bool {
 /// that socket, including a root CLI that also holds proven subagent locks,
 /// or (older Codex, no locks) `resume <thread>`.
 pub fn reply_capable(table: &dyn ProcessTable, uid: u32, thread: &str) -> bool {
-    let thread = thread.to_lowercase();
-    if !crate::relay::store::is_uuid(&thread) {
-        return false;
+    !reply_capable_threads(table, uid, [thread]).is_empty()
+}
+
+/// The `threads` (lowercased) that are `reply_capable`, from one pass over
+/// the process table.
+pub fn reply_capable_threads<'a>(
+    table: &dyn ProcessTable,
+    uid: u32,
+    threads: impl IntoIterator<Item = &'a str>,
+) -> BTreeSet<String> {
+    let mut pending: BTreeSet<String> = threads
+        .into_iter()
+        .map(str::to_lowercase)
+        .filter(|thread| crate::relay::store::is_uuid(thread))
+        .collect();
+    let mut capable = BTreeSet::new();
+    if pending.is_empty() {
+        return capable;
     }
     let mut trust = Trust::default();
-    table.all_pids().into_iter().any(|pid| {
+    for pid in table.all_pids() {
         if table.process(pid).filter(|p| p.uid == uid).is_none() {
-            return false;
+            continue;
         }
         if !table
             .executable(pid)
             .is_some_and(|exe| trust.trusted(table, &exe))
         {
-            return false;
+            continue;
         }
-        let locked = codex_locked_threads(table, pid);
-        if !locked.is_empty() {
-            return codex_process_vouches_for_thread(table, pid, &thread);
+        let found: Vec<String> = if codex_locked_threads(table, pid).is_empty() {
+            resume_argument(&table.arguments(pid))
+                .map(str::to_lowercase)
+                .filter(|thread| pending.contains(thread))
+                .into_iter()
+                .collect()
+        } else {
+            pending
+                .iter()
+                .filter(|thread| codex_process_vouches_for_thread(table, pid, thread))
+                .cloned()
+                .collect()
+        };
+        for thread in found {
+            pending.remove(&thread);
+            capable.insert(thread);
         }
-        resume_argument(&table.arguments(pid)).map(str::to_lowercase) == Some(thread.clone())
-    })
+        if pending.is_empty() {
+            break;
+        }
+    }
+    capable
 }
 
 /// macOS system curl hides CODEX_THREAD_ID. A trusted `resume <thread>`

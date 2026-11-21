@@ -260,6 +260,12 @@ pub trait SessionDirectory: Send + Sync + 'static {
             .collect()
     }
 
+    /// Of these hand-registered targets, the ones still held by the evidence
+    /// their registration accepted. Presence only: never admits or delivers.
+    fn registered_present(&self, _targets: &[Target]) -> HashSet<Target> {
+        HashSet::new()
+    }
+
     /// This only schedules global discovery and grants no chat identity.
     fn trusted_codex_discovery_signal(&self, _pid: i32) -> bool {
         false
@@ -307,6 +313,17 @@ pub trait SessionDirectory: Send + Sync + 'static {
     /// process says about itself. May block.
     fn caller(&self, _pid: i32) -> Result<DiscoveredSession, CallerMiss> {
         Err(CallerMiss::NotASession)
+    }
+
+    /// Whether this Cursor hook's process ancestry proves the exact
+    /// conversation supplied by its payload. Editor hooks need not have
+    /// the conversation environment variable that ordinary tools carry.
+    /// This is hook authentication only, not generic caller identity.
+    fn cursor_hook_matches(&self, pid: i32, conversation: &str) -> bool {
+        self.caller(pid).is_ok_and(|session| {
+            session.target.kind == crate::relay::store::SessionKind::CursorCli
+                && session.target.id == conversation
+        })
     }
 
     /// Whether a hook's nearest trusted writer holds only this Codex thread.

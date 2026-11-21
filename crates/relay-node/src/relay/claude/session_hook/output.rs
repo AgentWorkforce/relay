@@ -51,6 +51,31 @@ pub fn read_probe(body: &[u8]) -> Option<std::path::PathBuf> {
     probe.is_absolute().then_some(probe)
 }
 
+/// What the question hook prints for `POST /claude/question`'s answer: a
+/// PreToolUse decision refusing `AskUserQuestion` with the route's reason
+/// when the question went to the question inbox, and otherwise `{}`, so
+/// Claude Code shows the dialog. A failure never refuses it.
+pub fn question_hook_output(http_status: u16, body: &[u8]) -> Value {
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return json!({});
+    };
+    let data = &value["data"];
+    match data["reason"].as_str() {
+        Some(reason)
+            if (200..300).contains(&http_status)
+                && data["escalated"] == true
+                && !reason.trim().is_empty() =>
+        {
+            json!({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }})
+        }
+        _ => json!({}),
+    }
+}
+
 /// `session.registered` from a session-socket response, or why it is not
 /// known. A failure is never treated as a reason to register.
 pub fn read_status(http_status: u16, body: &[u8]) -> StatusRead {

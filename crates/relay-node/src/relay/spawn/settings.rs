@@ -279,6 +279,8 @@ pub struct Change {
     native_input: Option<bool>,
     requester_approvals: Option<bool>,
     configured: ConfiguredChange,
+    /// Question escalation's settings, saved in the same write.
+    question: crate::relay::question::settings::Change,
 }
 
 impl Change {
@@ -286,6 +288,7 @@ impl Change {
     /// with the reason, before anything is changed.
     pub fn read(changes: &Map<String, Value>) -> Result<Change, String> {
         let configured = ConfiguredChange::read(changes)?;
+        let question = crate::relay::question::settings::Change::read(changes)?;
         let full_access = harnesses::changes(changes)?
             .into_iter()
             .filter_map(|(id, change)| Some((id, change.full_access?)))
@@ -308,6 +311,7 @@ impl Change {
                 })
                 .transpose()?,
             configured,
+            question,
         })
     }
 
@@ -336,11 +340,18 @@ impl Change {
             store.spawn_allow_teammates = self.allow_teammates;
         }
         self.configured.apply(store);
+        self.question.apply(store);
     }
 
     /// Puts back each field [`Self::apply`] wrote (see `put_back!`).
     fn restore(&self, store: &mut Store, write: &StoreWrite) -> bool {
         let mut restored = false;
+        if self.question.escalation.is_some() {
+            restored |= put_back!(store, write, extras.question_escalation);
+        }
+        if self.question.inbox.is_some() {
+            restored |= put_back!(store, write, extras.question_escalation_inbox);
+        }
         if self.accept.is_some() {
             restored |= put_back!(store, write, accept_spawns);
         }

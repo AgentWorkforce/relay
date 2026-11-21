@@ -335,6 +335,10 @@ pub const RELAYED_PREFIXES: [&str; 2] = ["[via Agent Relay", "[Agent Relay nativ
 /// A Relay Connect room message's header, pointed to as relayed input is.
 pub const CONNECT_PREFIX: &str = "[Relay Connect";
 
+/// Core-owned service notices carry receipts, but are not peer pointers or
+/// native input. Keep this separate from `RELAYED_PREFIXES`.
+pub const AUTOMATED_NOTICE_PREFIX: &str = "[Agent Relay automated notice — ";
+
 /// Twelve hex digits derived from a message id, carried in the injected
 /// attribution line so a transcript turn can be tied back to its message.
 pub struct MessageRef;
@@ -349,7 +353,10 @@ impl MessageRef {
 
     /// The reference carried by `text`, if its first line is an attribution.
     pub fn in_text(text: &str) -> Option<String> {
-        if !(relayed_input(text) || text.starts_with("[Relay Connect ")) {
+        if !(relayed_input(text)
+            || text.starts_with("[Relay Connect ")
+            || text.starts_with(AUTOMATED_NOTICE_PREFIX))
+        {
             return None;
         }
         let first = text.lines().next()?;

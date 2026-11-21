@@ -7,9 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Minor]
 
+### Added
+
+- `agent-relay-node`: a `TurnEndAdvisories` plugin can hand a session a short advisory as its turn ends, once, through the core's stop hooks for Codex, Copilot, Devin, Cursor CLI and Claude Code (a new `claude-stop-hook`, installed with the Claude Code SessionStart hook). Hooks that run outside the core ask the new `POST /turn-end/take` and `POST /turn-end/shown` session routes.
+  Rejected Copilot and Cursor stops leave cached advisories untaken. Socket hooks require the caller's exact session, and malformed advisory ID batches are withheld. Claude's Stop hook stays quiet in automated runs and preserves profile/socket markers. Cursor editor hooks use their payload-aware process proof; stale generations and hooks cancelled during an advisory request leave notes unacknowledged.
+- `agent-relay-node`: an in-process coordination plugin can deliver a bounded, escaped automated notice to an exact local registration through its peer route. Notices carry no human authority or reply route; stale registrations are refused, and cancellation keeps the delivery lock until the handoff ends. Provider keys use a separate namespace. OpenClaw and Hermes are refused because their routes create sender conversations. Codex queue and Copilot native receipts recognize the service notice reference without changing peer-pointer routing or granting native input authority. The caller retains durable delivery receipts.
+
 ### Fixed
 
 - `agent-relay-node`: spawned Codex MCP tool approvals now reach the verified spawning agent with the server, tool and argument names, remain visibly `waiting_for_approval` for 15 minutes, and accept authenticated Relay approval replies instead of silently timing out after five minutes. Spawn actions also accept an `approval_profile` (`interactive`, `requester`, or machine-owner-enabled `full_access`) so hosted launchers can declare the prompt policy up front.
+
+## [18.11.0] - 2026-11-19
+
+### Added
+
+- `@agent-relay/spawn-placement`: a new package with the spawn placement policy that Agent Relay Cloud and relay-control will share: whether a machine has the memory for one more agent (a floor kept free, a per-harness launch budget, launches still starting, a 45 s freshness window and a density cap for unlimited nodes), memory-aware ranking, the alternatives a refusal offers, and golden fixtures for each control plane to run in its CI. Modes are `off`, `observe` (the default: report only), `rank` and `enforce` (refuse with `spawn_memory_low`). Nothing uses it yet. Spec: relay-control `docs/specs/spawn-placement-memory.md`.
+
+### Fixed
+
+- `agent-relay-node`: a Codex chat you register by hand from a desktop stdio `codex app-server` stays listed as present while a trusted Codex of yours holds that chat's writer lock, the same proof registration accepted. Before, it was marked missing on the next presence pass when the chat had no user turn on record, and stopped heartbeating. It is marked missing again once that Codex exits or lets the lock go. Chats are still never added automatically on this evidence, and messages to such a chat still wait until it has a delivery route.
 - `agent-relay-node`: local Cursor sessions expose the matching `cursor:<id>` history identity, so desktop apps can show their upload controls alongside messaging. Previously archived Cursor sessions keep their Archived classification after the upgrade.
 
 ### Added
@@ -25,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@agent-relay/events-shim`: a fresh Claude Code session set up with `setup --claude` is woken by webhook posts again, with nothing to tell it. Since 18.9.0 only a session that had called a `webhooks` MCP tool listened, so a new session never woke. Now the most recently started Claude Code session takes the inbox over at its start (not a `claude -p` run or a compaction), and the older session's listener stops before it takes another post. Calling a `webhooks` tool also takes the inbox over, and when the owning session has closed, the next session's hook takes it. Posts still go to one session only, and no hook listener takes posts while the inbox has a working relay wake link.
 - `@agent-relay/events-shim`: `watch_webhooks` now says which Agent Relay agent a relay wake link wakes (`linked_agent`, `linked_at`) and tells the agent to compare that name with its own. Before, every session with the inbox's MCP server read `wake: linked` and was told "each post is injected into this session", so a session could claim a link that targets another agent. `link_relay_wake` takes the linking session's `agent` name and says when it moves the link away from another agent (`replaced_agent`). Links that events-shim makes for Codex and other CLIs woken through the core record the agent's name. The page feed reports it as `agent.wake_agent`. Hosts that persist `WakeTarget.agent` show the name; others report the link without one.
 - `@agent-relay/events-shim setup`: each agent CLI keeps the inbox it was set up with (`inboxes` in `~/.config/agent-relay/webhooks.json`), so one machine can give Claude Code and Codex separate inboxes that wake each independently. Before, the last setup's inbox replaced every CLI's. One inbox wakes one session: setup now refuses to add a second waking CLI to an inbox another CLI already uses, or to an inbox linked to another agent, and points to making a separate inbox. `--share-inbox` adds the CLI anyway. When several CLIs share an inbox, setup says which session gets the posts and how that changes.
+
+### Added
+
+- `agent-relay-node`: question escalation. With the new `question_escalation` setting `on` (default `off`; an agent may turn it on or off, but only the person or fleet policy sets `question_escalation_inbox`, which an agent may only clear), a question a Claude Code session asks with AskUserQuestion (through a new PreToolUse hook, `agent-relay-probe claude-question-hook`, which Agent Relay installs and removes with its Claude Code hook, `claude_session_hook`, and which calls the new `POST /claude/question` route) or a spawned Codex session asks with `requestUserInput` is sent as a DM to `question_escalation_inbox` (an agent name, default the owner's person identity) instead of waiting on a dialog, and the session keeps working. The inbox answers with `answer <ref> <n|text>` (comma-separated numbers for multi-select); only the inbox may answer, the answer is delivered to the session as `[Answer to question <ref>] ...`, and a question unanswered after 30 minutes expires and the session continues without it. Interactive Codex, Cursor, Copilot, Grok and OpenCode sessions report it as unavailable.
 
 ## [18.10.0] - 2026-11-17
 
