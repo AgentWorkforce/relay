@@ -1501,9 +1501,46 @@ describe('events-shim CLI', () => {
     });
     expect(linked.wake).toBe('linked');
     // The hook leaves without waiting: a wait would mark the next post read and take it from the
-    // session the relay link wakes.
+    // session the relay link wakes. The session is told, once, so it is not left silently unwoken;
+    // with no core to say whose link it is, the wording does not claim posts never reach it.
+    await w.post({ for: 'the linked session' });
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(2);
+    const told = w.err.join('\n');
+    expect(told).toContain("not through this session's wake hook");
+    expect(told).toContain('If that agent is not this Claude Code session');
+    expect(told).toContain('setup <its MCP URL> --claude');
+    expect(told).not.toContain('the linked session'); // no post was taken
+    // Every later turn stands down quietly: no loop of notices.
+    w.err.length = 0;
     expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
     expect(w.err).toEqual([]);
+  });
+
+  it('listen --hook says plainly when the link goes to another agent, and nothing when it is its own', async () => {
+    const w = await fileWorld({ core: true, stdin: claudeHook('abc-123') });
+    await runCli(['setup', w.created.mcp_url], w.io);
+    w.core.agents.push({ name: 'claude-me', target: { kind: 'claude-terminal', id: 'abc-123' } });
+    w.core.agents.push({ name: 'codex-other', target: { kind: 'codex', id: 'codex-1' } });
+
+    // Linked to this very session: its posts arrive through the relay, so there is nothing to say.
+    await inboxTool(w, 'link_relay_wake', {
+      url: 'https://cast.agentrelay.com/v1/hooks/h1',
+      secret: 'wh_live_0123456789abcdef',
+      agent: 'claude-me',
+    });
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(0);
+    expect(w.err).toEqual([]);
+
+    // Linked to a Codex session: the notice says so without hedging.
+    await inboxTool(w, 'link_relay_wake', {
+      url: 'https://cast.agentrelay.com/v1/hooks/h2',
+      secret: 'wh_live_fedcba9876543210',
+      agent: 'codex-other',
+    });
+    expect(await runCli(['listen', '--hook'], w.io)).toBe(2);
+    const told = w.err.join('\n');
+    expect(told).toContain('Webhook posts to this inbox are not reaching this Claude Code session');
+    expect(told).toContain('"codex-other"');
   });
 
   it('listen --hook: one listener per inbox; a waiting session takes over when the owner is gone; a closed one claims nothing', async () => {
@@ -1636,8 +1673,50 @@ describe('events-shim CLI', () => {
     expect(said).toContain('Once a Codex session is open, the inbox is linked to the newest one');
     expect(said).toContain('While that link works, Claude Code sessions get none.');
     expect(said).toContain('give each its own inbox');
+    // Claude Code is outranked on this inbox: setup warns instead of promising every post wakes it.
+    expect(said).toContain('WARNING: Claude Code shares this inbox with Codex. Once a Codex session is open');
+    expect(said).not.toContain('each post wakes the most recently started Claude Code session');
     // Re-running the same setup is not adding anything: no refusal.
     expect(await runCli(['setup', w.created.mcp_url, '--claude', '--codex'], w.io)).toBe(0);
+  });
+
+  it('setup does not promise a new Claude Code session the posts of an inbox linked to an existing one', async () => {
+    const w = await fileWorld({ core: true });
+    expect(await runCli(['setup', w.created.mcp_url, '--claude'], w.io)).toBe(0);
+    w.core.agents.push({ name: 'claude-old', target: { kind: 'claude-terminal', id: 'old-1' } });
+    await inboxTool(w, 'link_relay_wake', {
+      url: 'https://cast.agentrelay.com/v1/hooks/h7',
+      secret: 'wh_live_0123456789abcdef',
+      agent: 'claude-old',
+    });
+    const saved = JSON.parse(readFileSync(configPath(w.io), 'utf8'));
+    writeFileSync(configPath(w.io), JSON.stringify({ ...saved, ownWebhooks: { 'claude-old': 'wh7' } }));
+    w.out.length = 0;
+    expect(await runCli(['setup', w.created.mcp_url, '--claude'], w.io)).toBe(0);
+    const said = w.out.join('\n');
+    expect(said).toContain('linked through Agent Relay to the Claude Code session "claude-old"');
+    expect(said).not.toContain('each post wakes the most recently started Claude Code session');
+    expect(said).not.toContain('WARNING'); // a Claude Code session does get the posts
+  });
+
+  it('setup warns when the inbox is linked to a non-Claude agent, even one this machine linked', async () => {
+    const w = await fileWorld({ core: true });
+    expect(await runCli(['setup', w.created.mcp_url, '--claude'], w.io)).toBe(0);
+    expect(w.out.join('\n')).toContain('each post wakes the most recently started Claude Code session');
+    w.core.agents.push({ name: 'codex-old', target: { kind: 'codex', id: 'codex-9' } });
+    await inboxTool(w, 'link_relay_wake', {
+      url: 'https://cast.agentrelay.com/v1/hooks/h9',
+      secret: 'wh_live_0123456789abcdef',
+      agent: 'codex-old',
+    });
+    // A link this machine made (Codex later moved to another inbox) is still a link.
+    const saved = JSON.parse(readFileSync(configPath(w.io), 'utf8'));
+    writeFileSync(configPath(w.io), JSON.stringify({ ...saved, ownWebhooks: { 'codex-old': 'wh9' } }));
+    w.out.length = 0;
+    expect(await runCli(['setup', w.created.mcp_url, '--claude'], w.io)).toBe(0);
+    const said = w.out.join('\n');
+    expect(said).toContain('WARNING: this inbox is linked through Agent Relay to "codex-old"');
+    expect(said).not.toContain('each post wakes the most recently started Claude Code session');
   });
 
   it('setup of several CLIs on one inbox says one session wins; an inbox linked to another agent is refused by name', async () => {

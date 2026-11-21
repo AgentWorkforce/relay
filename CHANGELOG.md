@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Rejected Copilot and Cursor stops leave cached advisories untaken. Socket hooks require the caller's exact session, and malformed advisory ID batches are withheld. Claude's Stop hook stays quiet in automated runs and preserves profile/socket markers. Cursor editor hooks use their payload-aware process proof; stale generations and hooks cancelled during an advisory request leave notes unacknowledged.
 - `agent-relay-node`: an in-process coordination plugin can deliver a bounded, escaped automated notice to an exact local registration through its peer route. Notices carry no human authority or reply route; stale registrations are refused, and cancellation keeps the delivery lock until the handoff ends. Provider keys use a separate namespace. OpenClaw and Hermes are refused because their routes create sender conversations. Codex queue and Copilot native receipts recognize the service notice reference without changing peer-pointer routing or granting native input authority. The caller retains durable delivery receipts.
 
+### Fixed
+
+- `@agent-relay/events-shim`: a Claude Code session whose inbox is linked to another agent (for example a Codex session set up on the same inbox) is told once that posts go elsewhere and how to give Claude Code its own inbox, instead of never waking with no explanation; setup warns about such a shared inbox instead of promising every post wakes Claude Code.
+
 ## [18.11.0] - 2026-11-19
 
 ### Added
