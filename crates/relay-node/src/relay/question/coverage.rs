@@ -98,8 +98,10 @@ Relay's Grok client leaves once a message is delivered.",
         ),
         SessionKind::Devin => row(
             "Devin",
-            NotCovered,
-            "Not yet: Devin's ask_user_question is not handed to Agent Relay.",
+            Partial,
+            "ask_user_question, through Agent Relay's Devin hooks (devin_direct_delivery), which \
+are off until turned on. Its argument names are read from the Devin CLI itself; not yet proven \
+in a live session.",
         ),
         SessionKind::Droid => row(
             "Droid",
@@ -261,7 +263,10 @@ mod tests {
     fn the_status_text_is_written_from_the_table() {
         let text = status_text();
         assert!(text.starts_with("Available for Claude Code."), "{text}");
-        assert!(text.contains("Partly available for Codex."), "{text}");
+        assert!(
+            text.contains("Partly available for Codex, Devin."),
+            "{text}"
+        );
         assert!(
             text.contains("Unavailable for Claude Code in the cloud,"),
             "{text}"
