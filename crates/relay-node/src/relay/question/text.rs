@@ -45,6 +45,15 @@ fn choices(question: &Value) -> Vec<Choice> {
         .collect()
 }
 
+/// The questions a hook hands over in its `tool_input`: Claude's
+/// `AskUserQuestion` (`multiSelect`) or Devin's `ask_user_question`
+/// (`multi_select`), which share the shape `{questions: [{question, header,
+/// options: [{label, description}]}]}`. Both always take an answer in the
+/// user's own words.
+pub fn hook_questions(input: &Value) -> Vec<Question> {
+    claude_questions(input)
+}
+
 /// The questions of Claude's `AskUserQuestion` `tool_input`; empty when it
 /// asks none. Claude always takes an answer in the user's own words.
 pub fn claude_questions(input: &Value) -> Vec<Question> {
@@ -57,7 +66,7 @@ pub fn claude_questions(input: &Value) -> Vec<Question> {
             header: string(&question["header"]),
             text: string(&question["question"]),
             options: choices(question),
-            multi: question["multiSelect"] == true,
+            multi: question["multiSelect"] == true || question["multi_select"] == true,
             free: true,
         })
         .filter(|question| !question.text.is_empty())

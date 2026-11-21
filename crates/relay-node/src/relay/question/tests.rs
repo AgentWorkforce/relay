@@ -1939,3 +1939,58 @@ async fn a_codex_hook_question_is_asked_as_usual_when_signed_out_or_unresolved()
     );
     assert_eq!(dm_count(&hits), 0);
 }
+
+/// Devin's question hook, through the route's shared path: the question in
+/// Devin's shape goes to the inbox once, and its answer is typed into the
+/// session; refused, it is asked in Devin as usual.
+#[tokio::test]
+async fn a_devin_question_goes_to_the_inbox() {
+    let mode = Arc::new(std::sync::atomic::AtomicU8::new(ACCEPT));
+    let (base, hits) = relaycast_in(mode.clone());
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../fixtures/questions/devin-3000.12.57-pre-tool-use-ask-user-question.json"
+    ))
+    .unwrap();
+    let input = fixture["input"]["tool_input"].clone();
+    let asker = registration(
+        "asker-devin",
+        Target::new(SessionKind::Devin, "real-gallium"),
+        &base,
+    );
+    let (core, _temp) = core(&base, &asker, true);
+    let devin = |input: &Value| Asked {
+        questions: text::hook_questions(input),
+        input: &fixture["input"]["tool_input"],
+        cwd: "",
+        via: Via::Session,
+    };
+    let sent = core.escalate_question(&asker, devin(&input)).await;
+    assert!(
+        matches!(&sent, Escalation::Sent { inbox, .. } if inbox == "triage"),
+        "{sent:?}"
+    );
+    assert_eq!(dm_count(&hits), 1);
+    let dm = hits
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|hit| hit.starts_with("POST /v1/dm"))
+        .cloned()
+        .unwrap();
+    assert!(dm.contains("Which auth method should the API use?"), "{dm}");
+    // Another session's question, refused by Relaycast: no reason, so
+    // Devin's hook prints nothing and Devin shows it.
+    mode.store(REFUSE, std::sync::atomic::Ordering::SeqCst);
+    let other = registration(
+        "asker-devin-2",
+        Target::new(SessionKind::Devin, "real-argon"),
+        &base,
+    );
+    let (second, _second_temp) = self::core(&base, &other, true);
+    let refused = second.escalate_question(&other, devin(&input)).await;
+    let body = json!({"ok": true, "data": refused.response()});
+    assert_eq!(
+        crate::relay::devin::question_hook_output(200, body.to_string().as_bytes()),
+        None
+    );
+}

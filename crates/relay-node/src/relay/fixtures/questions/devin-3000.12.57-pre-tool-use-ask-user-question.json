@@ -1,0 +1,22 @@
+{
+  "_source": "Devin CLI 3000.12.57. Hook stdin fields (hook_event_name, session_id, tool_name, tool_input) and the block output {decision, reason} from docs.devin.ai/cli/extensibility/hooks/lifecycle-hooks.md and .../hooks/overview.md (read 2026-11-21). The ask_user_question argument names (questions[], header, options[{label, description}], multi_select) are from the tool schema text embedded in the installed devin binary; the question text's own key is not legible there and is taken to be `question`. Values are synthetic.",
+  "input": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "real-gallium",
+    "cwd": "/work/project",
+    "tool_name": "ask_user_question",
+    "tool_input": {
+      "questions": [
+        {
+          "question": "Which auth method should the API use?",
+          "header": "Auth method",
+          "options": [
+            {"label": "OAuth", "description": "Delegated sign-in"},
+            {"label": "API key", "description": "One shared secret"}
+          ],
+          "multi_select": false
+        }
+      ]
+    }
+  }
+}
