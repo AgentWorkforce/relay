@@ -2540,7 +2540,7 @@ mod tests {
         let http = Arc::new(FakeHttp::default());
         http.push(200, session());
         http.push(200, question_list());
-        let injector = injector(temp.path(), table(), http.clone());
+        let injector = injector(&temp.path().join("journal"), table(), http.clone());
         let pending = injector.pending_questions(&binding()).unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0]["id"], "que_exact");
@@ -2572,7 +2572,7 @@ mod tests {
     fn a_reply_goes_once_to_the_exact_pending_question() {
         let temp = tempfile::tempdir().unwrap();
         let http = Arc::new(FakeHttp::default());
-        let injector = injector(temp.path(), table(), http.clone());
+        let injector = injector(&temp.path().join("journal"), table(), http.clone());
         let answers = json!([["pnpm"]]);
         for _ in 0..2 {
             http.push(200, session());
