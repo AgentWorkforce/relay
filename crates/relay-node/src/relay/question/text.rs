@@ -46,12 +46,56 @@ fn choices(question: &Value) -> Vec<Choice> {
 }
 
 /// The questions a hook hands over in its `tool_input`: Claude's
-/// `AskUserQuestion` (`multiSelect`) or Devin's `ask_user_question`
-/// (`multi_select`), which share the shape `{questions: [{question, header,
-/// options: [{label, description}]}]}`. Both always take an answer in the
-/// user's own words.
+/// `AskUserQuestion` (`multiSelect`), Devin's `ask_user_question`
+/// (`multi_select`) or Grok's, which share the shape `{questions: [{question,
+/// header, options: [{label, description}] or [label]}]}`. Each always takes
+/// an answer in the user's own words. Empty for any other shape.
 pub fn hook_questions(input: &Value) -> Vec<Question> {
-    claude_questions(input)
+    // Strict: a shape none of them gives asks nothing, and the tool runs.
+    let Some(asked) = input["questions"].as_array() else {
+        return Vec::new();
+    };
+    let known = asked.iter().all(|question| {
+        question["question"]
+            .as_str()
+            .is_some_and(|text| !text.trim().is_empty())
+            && question.get("options").is_none_or(|options| {
+                options.as_array().is_some_and(|options| {
+                    options
+                        .iter()
+                        .all(|option| option.is_string() || option["label"].is_string())
+                })
+            })
+    });
+    if !known {
+        return Vec::new();
+    }
+    asked
+        .iter()
+        .map(|question| Question {
+            id: String::new(),
+            header: string(&question["header"]),
+            text: string(&question["question"]),
+            options: question["options"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|option| match option.as_str() {
+                    Some(label) => Choice {
+                        label: label.trim().to_string(),
+                        description: String::new(),
+                    },
+                    None => Choice {
+                        label: string(&option["label"]),
+                        description: string(&option["description"]),
+                    },
+                })
+                .filter(|choice| !choice.label.is_empty())
+                .collect(),
+            multi: question["multiSelect"] == true || question["multi_select"] == true,
+            free: true,
+        })
+        .collect()
 }
 
 /// The questions of Claude's `AskUserQuestion` `tool_input`; empty when it

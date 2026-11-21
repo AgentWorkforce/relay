@@ -61,9 +61,12 @@ impl Outbound {
     }
 }
 
+/// Grok's ask-the-user tool, as its hooks name it (Grok 1.0.77).
+const GROK_QUESTION_TOOL: &str = "ask_user_question";
+
 /// The registration of the session that sent `fields`: it must be its
 /// harness's own ask-the-user tool (Claude Code's `AskUserQuestion`,
-/// Devin's `ask_user_question`), from the caller's own session.
+/// Devin's and Grok's `ask_user_question`), from the caller's own session.
 fn question_registration(
     fields: &Map<String, Value>,
     target: &crate::relay::store::Target,
@@ -75,6 +78,10 @@ fn question_registration(
     let tool = match target.kind {
         SessionKind::ClaudeTerminal | SessionKind::ClaudeCloud => "AskUserQuestion",
         SessionKind::Devin => crate::relay::devin::QUESTION_TOOL,
+        // Grok runs Claude Code's hooks from `~/.claude/settings.json`, and
+        // matches `AskUserQuestion` to its own `ask_user_question`, which
+        // is the name it gives the hook.
+        SessionKind::Grok | SessionKind::GrokOpen => GROK_QUESTION_TOOL,
         _ => "AskUserQuestion",
     };
     if fields.get("tool_name").and_then(Value::as_str) != Some(tool) {
@@ -93,7 +100,11 @@ fn question_registration(
     };
     let covered = matches!(
         target.kind,
-        SessionKind::ClaudeTerminal | SessionKind::ClaudeCloud | SessionKind::Devin
+        SessionKind::ClaudeTerminal
+            | SessionKind::ClaudeCloud
+            | SessionKind::Devin
+            | SessionKind::Grok
+            | SessionKind::GrokOpen
     );
     let same = fields
         .get("session_id")
@@ -170,6 +181,76 @@ mod tests {
             json!({}),
             json!({"questions": "x"}),
             json!({"questions": [{"prompt": "?"}]}),
+        ] {
+            assert!(text::hook_questions(&bad).is_empty(), "{bad}");
+        }
+    }
+
+    /// Grok runs Agent Relay's Claude Code hook and names the tool its own
+    /// way (`fixtures/questions/grok-1.0.77-...`): a Grok session, managed
+    /// or already open, asks with `ask_user_question`; the hook's deny is
+    /// the shape Grok reads.
+    #[test]
+    fn a_grok_session_asks_through_the_claude_hook() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../fixtures/questions/grok-1.0.77-pre-tool-use-ask-user-question.json"
+        ))
+        .unwrap();
+        let fields = fixture["input"].as_object().unwrap().clone();
+        let session = fields["session_id"].as_str().unwrap();
+        let found = |target: &Target| {
+            Some(crate::relay::question::tests::registration(
+                "asker",
+                target.clone(),
+                "https://cast.test",
+            ))
+        };
+        for kind in [SessionKind::Grok, SessionKind::GrokOpen] {
+            let target = Target::new(kind, session);
+            assert!(
+                question_registration(&fields, &target, found).is_ok(),
+                "{kind:?}"
+            );
+            let mut claude_tool = fields.clone();
+            claude_tool.insert("tool_name".into(), json!("AskUserQuestion"));
+            assert_eq!(
+                question_registration(&claude_tool, &target, found)
+                    .unwrap_err()
+                    .status,
+                400
+            );
+        }
+        let questions = text::hook_questions(&fields["tool_input"]);
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].options[1].label, "Jest");
+        let sent = json!({"ok": true, "data": {"escalated": true, "ref": "q1",
+            "inbox": "triage", "reason": "Sent to @triage as q1."}});
+        let out = crate::relay::claude::session_hook::question_hook_output(
+            200,
+            sent.to_string().as_bytes(),
+        );
+        assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(
+            out["hookSpecificOutput"]["permissionDecisionReason"],
+            "Sent to @triage as q1."
+        );
+    }
+
+    /// The hook's questions are read strictly: options may be labelled
+    /// objects or plain labels; any other shape asks nothing, so the route
+    /// refuses it and the harness shows its question.
+    #[test]
+    fn only_a_known_question_shape_is_read() {
+        let plain = json!({"questions": [{"question": "Which?", "options": ["A", "B"]}]});
+        assert_eq!(text::hook_questions(&plain)[0].options[1].label, "B");
+        let open = json!({"questions": [{"question": "Why?"}]});
+        assert!(text::hook_questions(&open)[0].options.is_empty());
+        for bad in [
+            json!({"questions": [{"question": "Which?", "options": [1, 2]}]}),
+            json!({"questions": [{"question": "Which?", "options": "A, B"}]}),
+            json!({"questions": [{"question": ""}]}),
+            json!({"questions": [{"question": "Which?"}, {"prompt": "Then?"}]}),
+            json!({"question": "Which?"}),
         ] {
             assert!(text::hook_questions(&bad).is_empty(), "{bad}");
         }
