@@ -1746,6 +1746,14 @@ impl Injector for LocalInjector {
         self.connect_cancel(target, message_id);
     }
 
+    fn observe_local_notice(
+        &self,
+        registration: &crate::relay::store::Registration,
+        message_id: &str,
+    ) -> crate::relay::local_notices::NoticeObservation {
+        self.observe_notice(registration, message_id)
+    }
+
     fn inject_registered(
         &self,
         registration: &crate::relay::store::Registration,
@@ -1894,6 +1902,9 @@ mod gateways;
 mod grok_caller;
 mod lock_held;
 mod nearest;
+mod notice_observe;
+#[cfg(test)]
+pub(crate) use notice_observe::observe_codex_notice;
 mod opencode_reply;
 mod plugins;
 pub use plugins::{
