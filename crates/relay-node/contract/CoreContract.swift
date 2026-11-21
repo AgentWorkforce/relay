@@ -4315,8 +4315,8 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
     public let piAutoActivate: Bool?
     /// Installs (`true`) or removes (`false`) Agent Relay's Pi extension.
     public let piExtension: Bool?
-    /// Turns question escalation `on` or `off`: questions a Claude Code
-    /// session or a spawned Codex session asks go over Agent Relay to
+    /// Turns question escalation `on` or `off`: questions a covered session
+    /// asks (`question_escalation_coverage`) go over Agent Relay to
     /// `question_escalation_inbox` instead of a dialog, and expire after 30
     /// minutes. An agent may turn it on or off; only the person (or fleet
     /// policy) sets `question_escalation_inbox`.
@@ -4659,8 +4659,9 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// never run.
     public let piExtension: Bool?
     /// Question escalation, `off` or `on`; on unless turned off. On, a
-    /// question a Claude Code session or a spawned Codex session asks its
-    /// user is sent over Agent Relay to `question_escalation_inbox` instead,
+    /// question a covered session asks its user (Claude Code, Codex: see
+    /// `question_escalation_coverage`) is sent over Agent Relay to
+    /// `question_escalation_inbox` instead,
     /// the session keeps working, and the reply (`answer <ref> <n|text>`) is
     /// delivered to it; an unanswered question expires after 30 minutes. A
     /// question that cannot be sent is asked in the session as usual. Absent
@@ -4674,9 +4675,8 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// The agent escalated questions go to, by name; empty means the
     /// owner's person identity. Absent in older cores.
     public let questionEscalationInbox: String?
-    /// Where question escalation works: the sessions it covers and those
-    /// it cannot, which have no hook before a question is shown. Read-only;
-    /// absent in older cores.
+    /// Where question escalation works, in words: written from
+    /// `question_escalation_coverage`. Read-only; absent in older cores.
     public let questionEscalationStatus: String?
     /// Whether relay messages show in agent chats. Off unless turned on: the
     /// agent reads each message from hidden history and the chat shows none

@@ -109,8 +109,9 @@ pub struct SettingsValues {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_harnesses: Option<BTreeMap<String, SpawnHarnessSettings>>,
     /// Question escalation, `off` or `on`; on unless turned off. On, a
-    /// question a Claude Code session or a spawned Codex session asks its
-    /// user is sent over Agent Relay to `question_escalation_inbox` instead,
+    /// question a covered session asks its user (Claude Code, Codex: see
+    /// `question_escalation_coverage`) is sent over Agent Relay to
+    /// `question_escalation_inbox` instead,
     /// the session keeps working, and the reply (`answer <ref> <n|text>`) is
     /// delivered to it; an unanswered question expires after 30 minutes. A
     /// question that cannot be sent is asked in the session as usual. Absent
@@ -121,9 +122,8 @@ pub struct SettingsValues {
     /// owner's person identity. Absent in older cores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question_escalation_inbox: Option<String>,
-    /// Where question escalation works: the sessions it covers and those
-    /// it cannot, which have no hook before a question is shown. Read-only;
-    /// absent in older cores.
+    /// Where question escalation works, in words: written from
+    /// `question_escalation_coverage`. Read-only; absent in older cores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question_escalation_status: Option<String>,
     /// How far question escalation reaches each kind of session, by its
@@ -523,8 +523,8 @@ pub struct SettingsChange {
     )]
     #[schemars(with = "BTreeMap<String, SpawnHarnessSettings>")]
     pub spawn_harnesses: Option<BTreeMap<String, SpawnHarnessSettings>>,
-    /// Turns question escalation `on` or `off`: questions a Claude Code
-    /// session or a spawned Codex session asks go over Agent Relay to
+    /// Turns question escalation `on` or `off`: questions a covered session
+    /// asks (`question_escalation_coverage`) go over Agent Relay to
     /// `question_escalation_inbox` instead of a dialog, and expire after 30
     /// minutes. An agent may turn it on or off; only the person (or fleet
     /// policy) sets `question_escalation_inbox`.
