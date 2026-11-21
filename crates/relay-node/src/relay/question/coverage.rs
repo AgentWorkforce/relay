@@ -72,7 +72,8 @@ terminal Codex and in sessions Agent Relay starts, through Agent Relay's Codex h
         SessionKind::CursorCli => row(
             "Cursor CLI",
             NotCovered,
-            "Not yet: its AskQuestion tool is not handed to Agent Relay's Cursor hooks.",
+            "Cursor's AskQuestion is asked through Cursor's servers, not as a tool its hooks see, \
+so no Cursor hook can take it over.",
         ),
         SessionKind::Copilot => row(
             "Copilot",
