@@ -62,6 +62,9 @@ pub struct SettingsValues {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_allow_teammates: Option<bool>,
     /// Allow verified spawning agents to send native input; on by default.
+    /// Once this computer's ownership is verified, the agent that spawned
+    /// a session then directs it with the person's authority, changes to
+    /// permissions, instructions and configuration included.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_native_input: Option<bool>,
     /// The agent that spawned a session may answer its permission and

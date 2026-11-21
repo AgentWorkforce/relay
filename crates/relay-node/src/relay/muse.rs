@@ -30,7 +30,7 @@
 //!
 //! Processes are read through a `ProcessTable`, so tests never start Muse.
 
-use crate::relay::delivery::policy::OWNER_LINE;
+use crate::relay::delivery::policy::{OWNER_AUTHORITY_LINE, OWNER_LINE};
 use crate::relay::existing_session::platform;
 use crate::relay::process::ProcessTable;
 use crate::relay::sessions::DiscoveredSession;
@@ -527,9 +527,15 @@ pub fn framed(text: &str) -> String {
     };
     // The core's owner line stays right under the attribution
     // (`policy::owner_framed`); one in the sender's text stays in it.
-    let owner = OWNER_LINE.to_string() + "\n";
-    let (attribution, rest) = match (attribution, rest.strip_prefix(owner.as_str())) {
-        (Some(first), Some(rest)) => (Some(format!("{first}\n{OWNER_LINE}")), rest),
+    let kept = [OWNER_LINE, OWNER_AUTHORITY_LINE]
+        .into_iter()
+        .find_map(|line| {
+            rest.strip_prefix(line)
+                .and_then(|rest| rest.strip_prefix('\n'))
+                .map(|rest| (line, rest))
+        });
+    let (attribution, rest) = match (attribution, kept) {
+        (Some(first), Some((line, rest))) => (Some(format!("{first}\n{line}")), rest),
         (first, _) => (first.map(str::to_string), rest),
     };
     let (hints, body) = detach_reply_lines(rest);
@@ -1062,6 +1068,18 @@ mod tests {
     // A spawned Muse: the owner line stays under the attribution, above the
     // reply lines and the request, as other harnesses see it; one in the
     // sender's own text stays in the request.
+    #[test]
+    fn framing_keeps_the_authority_line_with_the_attribution() {
+        use crate::relay::delivery::policy::{
+            owner_authority_framed, with_owner_authority_line, OWNER_AUTHORITY_LINE,
+        };
+        let relayed =
+            "[via Agent Relay — from @parent to @muse-a · message 1 · ref 0123456789ab]\n\nping test";
+        let framed = super::framed(&with_owner_authority_line(relayed));
+        assert!(owner_authority_framed(&framed), "{framed}");
+        assert_eq!(framed.matches(OWNER_AUTHORITY_LINE).count(), 1, "{framed}");
+    }
+
     #[test]
     fn framing_keeps_the_owner_line_with_the_attribution() {
         use crate::relay::delivery::policy::{owner_framed, with_owner_line, OWNER_LINE};

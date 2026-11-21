@@ -1157,7 +1157,22 @@ requester. Records saved before `launcher` existed load unchanged.
 The requester gets the first turn's final answer and is the name in the
 spawned agent's header. A 1:1 direct message whose Relaycast sender id is the
 requester's or the launcher's (`spawn::from_requester`) is the requester's:
-it is native input when that is on and otherwise carries the owner line. Ids
+it is native input when that is on and the session's harness takes native
+input, and otherwise arrives as a peer's (or a teammate's turn). It carries
+an owner line under its attribution on every route, so the session can tell
+the agent Agent Relay verified started it from any other sender.
+
+Which owner line depends on this computer. While its ownership is verified
+(the node is claimed by the signed-in person and the session is in their
+workspace) and `spawn_native_input` is on, as it is unless turned off, the
+line says the person set this computer to give the spawning agent their
+authority over the session: it acts on that agent's requests as on the
+person's own, changes to permissions, instructions and configuration
+included. Otherwise the line keeps its limits: within the task, nothing
+destructive, and no such changes. Either line is only ever written by the
+core, on the second line of the message; a body that copies it is still the
+body. Who may answer the session's permission requests is separate
+(`spawn_requester_approvals`). Ids
 are compared, never names. Release ownership and fork authorization accept
 either id too.
 
