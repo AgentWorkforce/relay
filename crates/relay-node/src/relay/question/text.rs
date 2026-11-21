@@ -133,7 +133,15 @@ pub fn claude_questions(input: &Value) -> Vec<Question> {
 /// Relaycast).
 pub fn codex_questions(params: &Value) -> Option<Vec<Question>> {
     let asked = params["questions"].as_array()?;
-    if asked.is_empty() || asked.iter().any(|question| question["isSecret"] == true) {
+    if asked.is_empty()
+        || asked.len() > MAX_QUESTIONS
+        || asked.iter().any(|question| {
+            question["isSecret"] == true
+                || question["options"]
+                    .as_array()
+                    .is_some_and(|options| options.len() > MAX_OPTIONS)
+        })
+    {
         return None;
     }
     asked
@@ -185,7 +193,7 @@ pub fn copilot_questions(args: &Value) -> Option<Vec<Question>> {
         .filter(|t| !t.is_empty())?;
     let options = match args.get("choices") {
         None | Some(Value::Null) => Vec::new(),
-        Some(Value::Array(choices)) => choices
+        Some(Value::Array(choices)) if choices.len() <= MAX_OPTIONS => choices
             .iter()
             .map(|choice| {
                 choice.as_str().map(|label| Choice {

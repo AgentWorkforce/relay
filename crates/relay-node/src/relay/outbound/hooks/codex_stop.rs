@@ -55,6 +55,13 @@ fn registration_context(socket: &std::path::Path) -> Option<Value> {
     }}))
 }
 
+/// How long the question hook may take in all, from the request's
+/// arrival: the hook client's own wait (`cli::QUESTION_HOOK_WAIT`).
+const QUESTION_BUDGET: std::time::Duration = crate::relay::cli::QUESTION_HOOK_WAIT;
+
+/// Time kept back for answering once the question was sent.
+const QUESTION_MARGIN: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// Codex's PreToolUse answer for the question hook: refused with `reason`
 /// once the question went to the inbox, so Codex tells the model instead
 /// of showing the dialog; otherwise `{}`, which lets the tool run and the
@@ -299,6 +306,20 @@ impl Outbound {
         thread: String,
         fields: &Map<String, Value>,
     ) -> Result<Value, OutboundError> {
+        self.codex_question_hook_within(pid, thread, fields, QUESTION_BUDGET)
+            .await
+    }
+
+    /// `codex_question_hook`, where the question may take `budget` in all
+    /// from the request's arrival.
+    async fn codex_question_hook_within(
+        &self,
+        pid: i32,
+        thread: String,
+        fields: &Map<String, Value>,
+        budget: std::time::Duration,
+    ) -> Result<Value, OutboundError> {
+        let arrived = std::time::Instant::now();
         use crate::relay::codex::stop_hook::QUESTION_TOOL;
         if fields.get("tool_name").and_then(Value::as_str) != Some(QUESTION_TOOL) {
             return Ok(json!({}));
@@ -334,6 +355,12 @@ impl Outbound {
         else {
             return Ok(json!({}));
         };
+        // The caller check took part of the time the hook client waits: a
+        // question that might not be sent before it gives up is not sent,
+        // so Codex never shows a dialog for a question the core also sends.
+        if arrived.elapsed() + crate::relay::question::ROUTE_LIMIT + QUESTION_MARGIN > budget {
+            return Ok(json!({}));
+        }
         let cwd = fields
             .get("cwd")
             .and_then(Value::as_str)
@@ -504,6 +531,10 @@ mod tests {
             pid == 42 && thread == THREAD
         }
         fn codex_hook_turn_matches(&self, pid: i32, thread: &str, turn: &str) -> bool {
+            if turn == "question-turn-slow" {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                return self.holds_codex_thread(pid, thread);
+            }
             if turn.starts_with("question-turn") {
                 QUESTION_CHECKS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 return self.holds_codex_thread(pid, thread) && turn == "question-turn";
@@ -1044,5 +1075,42 @@ mod tests {
             before
         );
         assert_eq!(hits.lock().unwrap().len(), sent);
+    }
+
+    /// A caller check that leaves no room for a full send leaves the
+    /// question to Codex's dialog, with nothing sent; a quick one sends.
+    #[tokio::test]
+    async fn a_slow_caller_check_leaves_the_question_to_codex() {
+        let (base, hits) = crate::relay::question::tests::relaycast(false);
+        let (_temp, outbound, _) = fixture();
+        register(&outbound, &base);
+        let budget = crate::relay::question::ROUTE_LIMIT
+            + QUESTION_MARGIN
+            + std::time::Duration::from_millis(200);
+        let dms = || {
+            hits.lock()
+                .unwrap()
+                .iter()
+                .filter(|hit| hit.starts_with("POST /v1/dm"))
+                .count()
+        };
+        let slow = question("request_user_input", asked(), Some("question-turn-slow"));
+        let answer = outbound
+            .codex_question_hook_within(42, THREAD.into(), &slow, budget)
+            .await
+            .unwrap();
+        assert_eq!(answer, json!({}));
+        assert_eq!(dms(), 0, "nothing sent");
+        // A question of its own: another test may have this thread's
+        // fixture question open already.
+        let mut own = asked();
+        own["questions"][0]["question"] = json!("Which cache should the service use?");
+        let quick = question("request_user_input", own, Some("question-turn"));
+        let answer = outbound
+            .codex_question_hook_within(42, THREAD.into(), &quick, budget)
+            .await
+            .unwrap();
+        assert_eq!(answer["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(dms(), 1);
     }
 }

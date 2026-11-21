@@ -1026,8 +1026,19 @@ It is not sent again.",
                         );
                         self.answered(&reference, delivery, token, &unsure).await
                     }
-                    InjectOutcome::Delivered | InjectOutcome::Accepted(_) => {
+                    InjectOutcome::Delivered => {
                         self.answered(&reference, delivery, token, &delivered).await
+                    }
+                    // Queued in the session (a Devin session's hooks drain
+                    // it at its next turn): it is kept, never typed again,
+                    // and the inbox is not told it arrived.
+                    InjectOutcome::Accepted(_) => {
+                        let queued = format!(
+                            "Answer to question {reference} is queued for @{}: it reaches the \
+session at its next turn.",
+                            checked.agent
+                        );
+                        self.answered(&reference, delivery, token, &queued).await
                     }
                 }
             }

@@ -2123,3 +2123,57 @@ async fn a_question_whose_answer_cannot_reach_the_session_is_asked_as_usual() {
     );
     assert_eq!(dm_count(&hits), 0);
 }
+
+/// An answer the session only queued (a Devin session whose hooks drain it
+/// at its next turn) is not reported delivered: the inbox is told it waits
+/// for the session's next turn.
+#[tokio::test]
+async fn a_queued_answer_is_not_reported_delivered() {
+    let (base, hits) = relaycast(false);
+    let asker = registration(
+        "asker-queued",
+        Target::new(SessionKind::Devin, "real-queued"),
+        &base,
+    );
+    let (reference, _) = reserved(&asker, "question-real-queued-1");
+    let injector = Scripted::new([InjectOutcome::Accepted(
+        "in the session's inbox; its next lifecycle hook boundary drains it".into(),
+    )]);
+    let (core, _temp) = scripted_core(&base, &asker, &injector);
+    let token = Secret::new("at_live_asker");
+    let answer = reply("d-queued", "agent-triage", &format!("answer {reference} 1"));
+    let OwnerReply::Settled(_) = core
+        .question_reply(&asker, &answer, (base.as_str(), &token))
+        .await
+    else {
+        panic!("settled");
+    };
+    let replies = replies_to_inbox(&hits);
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    assert!(!replies[0].contains("delivered to"), "{}", replies[0]);
+    assert!(replies[0].contains("next turn"), "{}", replies[0]);
+    assert_eq!(
+        state_of(&reference),
+        Some(State::Answered),
+        "not typed again"
+    );
+}
+
+/// The caps hold on every question shape: Codex's (hook and spawned
+/// request) and Copilot's.
+#[test]
+fn every_question_shape_keeps_the_caps() {
+    let codex = |questions: usize, options: usize| {
+        json!({"questions": (0..questions).map(|i| json!({"id": format!("q{i}"), "header": "H",
+            "question": format!("Q{i}?"),
+            "options": (0..options).map(|j| json!({"label": format!("o{j}"), "description": ""}))
+                .collect::<Vec<_>>()})).collect::<Vec<_>>()})
+    };
+    assert!(text::codex_questions(&codex(text::MAX_QUESTIONS, text::MAX_OPTIONS)).is_some());
+    assert!(text::codex_questions(&codex(text::MAX_QUESTIONS + 1, 2)).is_none());
+    assert!(text::codex_questions(&codex(1, text::MAX_OPTIONS + 1)).is_none());
+    assert!(text::codex_tool_questions(&codex(text::MAX_QUESTIONS + 1, 2)).is_none());
+    let copilot = |choices: usize| json!({"question": "Which?", "choices": (0..choices).map(|j| format!("c{j}")).collect::<Vec<_>>()});
+    assert!(text::copilot_questions(&copilot(text::MAX_OPTIONS)).is_some());
+    assert!(text::copilot_questions(&copilot(text::MAX_OPTIONS + 1)).is_none());
+}
