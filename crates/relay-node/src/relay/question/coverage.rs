@@ -35,19 +35,19 @@ pub const KINDS: [SessionKind; 16] = [
 ];
 
 /// One kind's row: its name as people know it, its state and why.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
     pub label: &'static str,
     pub state: QuestionCoverageState,
-    pub reason: &'static str,
+    pub reason: std::borrow::Cow<'static, str>,
 }
 
 /// The row for `kind`. A new kind does not compile until it has one.
 pub fn row(kind: SessionKind) -> Row {
-    let row = |label, state, reason| Row {
+    let row = |label, state, reason: &'static str| Row {
         label,
         state,
-        reason,
+        reason: reason.into(),
     };
     match kind {
         SessionKind::ClaudeTerminal => row(
@@ -109,11 +109,21 @@ Grok runs it for that tool and honours its refusal is not yet proven, so Grok as
 are off until turned on; not where Devin's config holds a PreToolUse value that is not a list. \
 Its argument names are read from the Devin CLI itself; not yet proven in a live session.",
         ),
-        SessionKind::Droid => row(
-            "Droid",
-            NotCovered,
-            "Not yet: Agent Relay answers droid.ask_user as unsupported, so Droid asks as usual.",
-        ),
+        // Relay-owned Droid sessions run only once Agent Relay's managed
+        // Droid messaging is available: until then, its own reason.
+        SessionKind::Droid => match crate::relay::harness::droid::unavailable_reason() {
+            Some(reason) => Row {
+                label: "Droid",
+                state: NotCovered,
+                reason: reason.into(),
+            },
+            None => row(
+                "Droid",
+                NotCovered,
+                "Not yet: Agent Relay answers droid.ask_user as unsupported, so Droid asks as \
+usual.",
+            ),
+        },
         SessionKind::Pi => row(
             "Pi",
             Partial,
@@ -158,7 +168,7 @@ pub fn value() -> Value {
             let row = row(*kind);
             let entry = QuestionCoverage {
                 state: row.state,
-                reason: row.reason.to_string(),
+                reason: row.reason.into_owned(),
             };
             (
                 kind.as_str().to_string(),
@@ -237,7 +247,7 @@ mod tests {
             let row = row(*kind);
             assert!(!row.label.is_empty() && !row.reason.is_empty());
             // Text a person reads: no stray continuation or line break.
-            for text in [row.label, row.reason] {
+            for text in [row.label, &row.reason] {
                 assert!(
                     !text.contains('\\') && !text.contains('\n'),
                     "{kind:?}: {text}"
@@ -252,6 +262,17 @@ mod tests {
             let entry = &map[kind.as_str()];
             assert!(entry["state"].is_string(), "{entry}");
             assert!(entry["reason"].is_string(), "{entry}");
+        }
+    }
+
+    /// Droid's row is not covered, with the reason Agent Relay's managed
+    /// Droid messaging is unavailable, for as long as it is.
+    #[test]
+    fn droid_follows_its_availability() {
+        let droid = row(SessionKind::Droid);
+        assert_eq!(droid.state, NotCovered);
+        if let Some(reason) = crate::relay::harness::droid::unavailable_reason() {
+            assert_eq!(droid.reason, reason);
         }
     }
 
