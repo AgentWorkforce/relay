@@ -76,6 +76,45 @@ matching change are deployed. A report is fixed when it is queued, so reports al
 the outbox keep the shape they were queued with, and findings are kept only for results
 received while the flag is on.
 
+## Report usage (designed, not built)
+
+Relay Chief accepts an optional `usage` field on terminal reports (relay-chief#13):
+`{ costMicros, inputTokens?, outputTokens?, source: "worker_reported" }`. It records the
+figure as a claim, caps it at the task's reservation, and uses it to settle the budget
+only when its own policy opts in. This bridge does not send it yet, because it cannot see
+the cost:
+
+- The bridge learns of a result only from the agent's Relay DM (`onAgentMessage`), which
+  is text. Relay-node's `final_answer::claude` returns only the answer's text.
+- The spawned Claude runs as `claude -p --output-format stream-json`, so its log
+  (`<app data>/spawned-agents/<session>.jsonl`) holds the `result` event with
+  `total_cost_usd` and `usage`. But the only core RPC over that log, `agents.transcript`,
+  turns events into display entries and drops every `result` event that is not an error.
+- No core RPC, and nothing in `@agent-relay/core-bridge`, returns cost or token counts.
+
+What is missing, and the planned change:
+
+1. **relay-node.** Add a core RPC, `agents.usage {name}`. For a spawned Claude, it returns
+   `{ cost_micros, input_tokens, output_tokens }` read from the `result` events in its own
+   stream-json log, and `refused` for a harness without one (Codex). It converts
+   `total_cost_usd` to microdollars by rounding up, rejects negative or non-finite values,
+   and returns no message text. Before building it, check against a real multi-turn log
+   whether each `result`'s `total_cost_usd` is cumulative for the process (take the last)
+   or covers one turn only (add them up).
+2. **Bridge.** Add `NodePort.usage(name)` in `CoreNode` and a `reportUsage` setting
+   (`z.boolean().default(false)`). With it on, when a task has a pending result, the
+   bridge reads usage once before `finish` queues the terminal report. It stores the usage
+   in a new nullable ledger column and adds `usage` to that `completed` or `failed` report.
+   If the core is unavailable or refuses, the report goes out without `usage` and the
+   chief charges the full reservation. Failures before a launch (`queue_timeout`,
+   `budget_exceeded`, `spawn_*`) never carry `usage`.
+3. **Deploy order.** Deploy relay-chief with #13, then a core with `agents.usage`. Turn
+   `reportUsage` on last. The flag is separate from `reportExtensions`, so either can be
+   rolled back alone.
+
+The figure comes from the agent's own process output, so it is labelled
+`worker_reported`. It is never a bill: provider-side accounting stays the authority.
+
 ## Repository refresh
 
 Each configured folder in `repositories` is the spawned agent's working copy. Without help
