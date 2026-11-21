@@ -1368,8 +1368,20 @@ describe('fleet command support', () => {
     };
     const events: string[] = [];
     const warnings: string[] = [];
-    const materializeCloudRelayfileRepository = vi.fn(async () => {
+    const materializeCloudRelayfileRepository = vi.fn(async (_input, options) => {
       events.push('materialize');
+      options?.onProgress?.({
+        status: 'queued',
+        waitedMs: 65_000,
+        wait: {
+          reason: 'waiting_on_output_lock',
+          ownerJobId: 'older-clone-job',
+          ownerStatus: 'running',
+          ownerStartedAt: '2026-10-02T10:00:00.000Z',
+          ownerUpdatedAt: '2026-10-02T10:01:00.000Z',
+          leaseExpiresAt: '2026-10-02T10:16:00.000Z',
+        },
+      });
       return {
         cloudWorkspaceId: 'cloud-workspace',
         repository: 'AgentWorkforce/cloud',
@@ -1457,11 +1469,14 @@ describe('fleet command support', () => {
     );
 
     expect(events).toEqual(['materialize', 'ensure', 'spawn']);
-    expect(materializeCloudRelayfileRepository).toHaveBeenCalledWith({
-      workspaceId: 'rw_abc',
-      repository: 'AgentWorkforce/cloud',
-      revision,
-    });
+    expect(materializeCloudRelayfileRepository).toHaveBeenCalledWith(
+      {
+        workspaceId: 'rw_abc',
+        repository: 'AgentWorkforce/cloud',
+        revision,
+      },
+      { onProgress: expect.any(Function) }
+    );
     expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
       expect.objectContaining({
         mountRelayfile: true,
@@ -1484,6 +1499,7 @@ describe('fleet command support', () => {
     // The generated identity is printed before Cloud work so an interrupted
     // run can be resumed with --sandbox-id instead of creating a second sandbox.
     expect(warnings).toEqual([
+      'Materializing AgentWorkforce/cloud into Relayfile: waiting on output lock held by clone job older-clone-job (running; owner updated 2026-10-02T10:01:00.000Z; lease expires 2026-10-02T10:16:00.000Z; 65s elapsed).',
       `Cloud sandbox identity: ${String(ensureInput.sandboxId)}. If this command is interrupted, re-run it with --sandbox-id ${String(ensureInput.sandboxId)} to resume the same sandbox instead of creating another.`,
       'Cloud sandbox preparation: relayfile_mount_bootstrap (pending, generation 2).',
     ]);
@@ -1714,11 +1730,14 @@ describe('fleet command support', () => {
     // strictly before materialization.
     expect(resolveSandboxRepository.mock.calls[0]?.[3]).toBe('identity');
     expect(resolveSandboxRepository).toHaveBeenNthCalledWith(2, expect.any(String), undefined);
-    expect(materializeCloudRelayfileRepository).toHaveBeenCalledWith({
-      workspaceId: 'rw_abc',
-      repository: 'AgentWorkforce/cloud',
-      revision,
-    });
+    expect(materializeCloudRelayfileRepository).toHaveBeenCalledWith(
+      {
+        workspaceId: 'rw_abc',
+        repository: 'AgentWorkforce/cloud',
+        revision,
+      },
+      { onProgress: expect.any(Function) }
+    );
     expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
       expect.objectContaining({
         mountRelayfile: true,
