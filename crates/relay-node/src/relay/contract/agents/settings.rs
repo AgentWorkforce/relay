@@ -123,6 +123,12 @@ pub struct SettingsValues {
     /// absent in older cores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question_escalation_status: Option<String>,
+    /// How far question escalation reaches each kind of session, by its
+    /// kind (`claude-terminal`, `codex`, `cursor-cli`, ...): a state the
+    /// apps switch on and a short reason they may show. One entry per kind
+    /// this core knows. Read-only; absent in older cores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question_escalation_coverage: Option<BTreeMap<String, QuestionCoverage>>,
     /// Whether Agent Relay's Claude Code SessionStart hook is installed in
     /// each known Claude login's `settings.json`. Off unless turned on.
     /// Absent when no Claude login directory exists. The hook never
@@ -272,6 +278,29 @@ pub struct SettingsValues {
     /// applies. A record, not a setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub organization_policy: Option<OrganizationPolicyState>,
+}
+
+/// Whether question escalation reaches one kind of session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum QuestionCoverageState {
+    /// Its questions go to the question inbox.
+    Covered,
+    /// Some of its sessions or questions do; `reason` says which.
+    Partial,
+    /// It can ask its person, but Agent Relay cannot take the question
+    /// over yet; `reason` says why. Its questions are asked as usual.
+    NotCovered,
+    /// It has no question for its person to take over.
+    NotApplicable,
+}
+
+/// Question escalation's reach for one kind of session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct QuestionCoverage {
+    pub state: QuestionCoverageState,
+    /// Why, in words the apps may show as they are.
+    pub reason: String,
 }
 
 /// What the organization's workspace policy does to this computer's
