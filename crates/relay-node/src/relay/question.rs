@@ -5,9 +5,10 @@
 //! keeps working. The inbox answers with `answer <ref> <n|text>`; only the
 //! inbox, by its immutable agent id, may. The answer reaches the session as
 //! one line of native input. A question not answered within 30 minutes
-//! expires: a Claude session still running is told to continue without it,
-//! and a Codex question is answered with no answers, as an unanswered
-//! request always is.
+//! expires: a session still running whose question a hook refused (Claude
+//! Code, Codex, Devin, Grok, Copilot) is told to continue without it, and a
+//! spawned Codex's `requestUserInput` is answered with no answers, as an
+//! unanswered request always is.
 //!
 //! Unlike the spawn approval requests (`harness::claude::requests`), the
 //! question's text and options are copied into the message: that is what
@@ -39,7 +40,7 @@
 //! again on a later pass. An answer that may have arrived is never typed
 //! again, and the inbox is told it may not have.
 //!
-//! A question past its expiry tells its Claude session so once, whichever
+//! A question past its expiry tells its session so once, whichever
 //! of the timer and a late reply closes it first (`Record::notified`).
 
 pub mod coverage;
@@ -932,6 +933,19 @@ impl Core {
             checked.agent
         );
         match &checked.via {
+            // A spawned agent whose process ended cannot take it: the
+            // question closes, and the inbox is told.
+            Via::Session if self.spawned_process_alive(registration).await == Some(false) => {
+                if let Some(record) = records().get_mut(&reference) {
+                    record.state = State::Expired;
+                    record.notified = true;
+                }
+                let refusal = format!(
+                    "Question {reference} is closed: @{} has ended.",
+                    checked.agent
+                );
+                self.refuse_reply(delivery, token, &refusal).await
+            }
             Via::Session => {
                 let line = text::answer_line(&reference, &checked.questions, &checked.answers);
                 match self
@@ -1064,9 +1078,10 @@ It is not sent again.",
         .await;
     }
 
-    /// Closes `reference` when it is still open past its expiry; a Claude
-    /// session still running is told to continue without it. A Codex
-    /// request expires in the drive, to no answers.
+    /// Closes `reference` when it is still open past its expiry; a session
+    /// still running whose question a hook refused (`Via::Session`) is told
+    /// to continue without it. A spawned Codex's request expires in the
+    /// drive, to no answers.
     pub(crate) async fn expire_question(&self, reference: &str) {
         let Some((target, via)) = expire(reference) else {
             return;
@@ -1076,7 +1091,7 @@ It is not sent again.",
             return;
         }
         match self.arc() {
-            // A session that cannot take it yet (a spawned Claude in its
+            // A session that cannot take it yet (a spawned agent in its
             // turn) is told once it can, for as long as it is remembered.
             Some(core) => {
                 let reference = reference.to_string();
@@ -1093,8 +1108,10 @@ It is not sent again.",
         }
     }
 
-    /// Tells `target`'s Claude session that `reference` expired: false only
-    /// when the session is running and could not take it yet.
+    /// Tells `target`'s session that `reference` expired: false only when
+    /// the session is running and could not take it yet. A session that has
+    /// ended (a spawned agent's process gone, or one the directory no longer
+    /// finds) is not told.
     async fn tell_expired(&self, target: &Target, reference: &str) -> bool {
         let Some(registration) = self
             .store
@@ -1125,19 +1142,34 @@ It is not sent again.",
     }
 
     /// Whether `registration`'s session is still running: a spawned
-    /// Claude's process, or a session the directory still finds.
+    /// agent's own process, whatever its harness, or else a session the
+    /// directory still finds.
     async fn question_session_running(&self, registration: &Registration) -> bool {
-        if registration
-            .spawn
-            .as_ref()
-            .is_some_and(|spawn| spawn.process.is_some())
-        {
-            return !self.claude_ended(registration).await;
+        if let Some(alive) = self.spawned_process_alive(registration).await {
+            return alive;
         }
         let (sessions, target) = (self.plugins.sessions.clone(), registration.target.clone());
         tokio::task::spawn_blocking(move || sessions.find_session(&target).is_some())
             .await
             .unwrap_or(false)
+    }
+}
+
+impl Core {
+    /// Whether a spawned agent's own process still runs, by the spawner
+    /// that started it; `None` for a session with no process of its own (a
+    /// person's session, or a spawned Codex thread in Codex's daemon).
+    async fn spawned_process_alive(&self, registration: &Registration) -> Option<bool> {
+        let process = registration
+            .spawn
+            .as_ref()
+            .and_then(|spawn| spawn.process)?;
+        let (spawner, target) = (self.plugins.spawner.clone(), registration.target.clone());
+        Some(
+            tokio::task::spawn_blocking(move || spawner.alive(&target, Some(&process)))
+                .await
+                .unwrap_or(true),
+        )
     }
 }
 

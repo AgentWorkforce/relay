@@ -306,6 +306,10 @@ impl Outbound {
         let Some(input) = fields.get("tool_input").filter(|input| input.is_object()) else {
             return Ok(json!({}));
         };
+        // Off costs nothing: no caller check, no lookup, nothing sent.
+        if !self.core.store.read(crate::relay::question::settings::on) {
+            return Ok(json!({}));
+        }
         let turn = fields
             .get("turn_id")
             .and_then(Value::as_str)
@@ -500,9 +504,16 @@ mod tests {
             pid == 42 && thread == THREAD
         }
         fn codex_hook_turn_matches(&self, pid: i32, thread: &str, turn: &str) -> bool {
+            if turn.starts_with("question-turn") {
+                QUESTION_CHECKS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return self.holds_codex_thread(pid, thread) && turn == "question-turn";
+            }
             self.holds_codex_thread(pid, thread) && turn == "fixture-turn"
         }
     }
+
+    /// How many times the question hook asked the directory about a turn.
+    static QUESTION_CHECKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     struct Direct;
     impl DirectDelivery for Direct {
         fn delivers_directly(&self) -> bool {
@@ -877,5 +888,161 @@ mod tests {
                 .unwrap(),
             json!({})
         );
+    }
+
+    /// The question hook's input for `tool`, `input` and `turn`, as Codex
+    /// 0.154 gives it (`fixtures/questions/codex-0.154-...`), from THREAD.
+    fn question(tool: &str, input: Value, turn: Option<&str>) -> Map<String, Value> {
+        let mut fields = json!({"session_id": THREAD, "hook_event_name": "PreToolUse",
+            "tool_name": tool, "tool_input": input, "cwd": "/work"})
+        .as_object()
+        .unwrap()
+        .clone();
+        if let Some(turn) = turn {
+            fields.insert("turn_id".into(), json!(turn));
+        }
+        fields
+    }
+
+    fn asked() -> Value {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../fixtures/questions/codex-0.154-pre-tool-use-request-user-input.json"
+        ))
+        .unwrap();
+        fixture["input"]["tool_input"].clone()
+    }
+
+    /// Puts THREAD on the relay in a workspace at `base`, with escalation
+    /// on and the inbox `triage`.
+    fn register(outbound: &Outbound, base: &str) {
+        let asker = crate::relay::question::tests::registration(
+            "asker-route",
+            Target::new(SessionKind::Codex, THREAD),
+            base,
+        );
+        outbound
+            .core
+            .workspace
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .base_url = base.into();
+        outbound
+            .core
+            .workspace
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .key = Secret::new("rk_live_test");
+        outbound
+            .core
+            .store
+            .remember(|store| {
+                store
+                    .tokens
+                    .insert(asker.name.clone(), Secret::new("at_live_asker"));
+                store.registrations.push(asker);
+                store.extras.question_escalation_inbox = Some("triage".into());
+            })
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_question_hook_answers_only_its_own_turns_question() {
+        let (base, hits) = crate::relay::question::tests::relaycast(false);
+        let (_temp, outbound, _) = fixture();
+        let ask = |fields: Map<String, Value>| {
+            let outbound = &outbound;
+            async move { outbound.codex_stop_hook(42, outbound.uid, &fields).await }
+        };
+        // Another tool, or input that is not an object: allowed at once.
+        assert_eq!(
+            ask(question("shell", asked(), Some("question-turn")))
+                .await
+                .unwrap(),
+            json!({})
+        );
+        assert_eq!(
+            ask(question(
+                "request_user_input",
+                json!("Which?"),
+                Some("question-turn")
+            ))
+            .await
+            .unwrap(),
+            json!({})
+        );
+        // No turn, an empty one, or one the caller does not hold.
+        for turn in [None, Some(""), Some("question-turn-other")] {
+            let error = ask(question("request_user_input", asked(), turn))
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, OutboundError::not_a_session().code, "{turn:?}");
+        }
+        let other_caller = outbound
+            .codex_stop_hook(
+                7,
+                outbound.uid,
+                &question("request_user_input", asked(), Some("question-turn")),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(other_caller.code, OutboundError::not_a_session().code);
+        // Not on the relay: allowed.
+        assert_eq!(
+            ask(question(
+                "request_user_input",
+                asked(),
+                Some("question-turn")
+            ))
+            .await
+            .unwrap(),
+            json!({})
+        );
+        // On the relay: sent, and the tool is refused with the reason.
+        register(&outbound, &base);
+        let answer = ask(question(
+            "request_user_input",
+            asked(),
+            Some("question-turn"),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(answer["hookSpecificOutput"]["hookEventName"], "PreToolUse");
+        assert_eq!(answer["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert!(answer["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .unwrap()
+            .starts_with("Sent to @triage over Agent Relay as question q"));
+        assert!(hits
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|hit| hit.starts_with("POST /v1/dm")));
+        // Off: allowed, with no directory check and nothing sent.
+        outbound
+            .core
+            .store
+            .remember(|store| store.extras.question_escalation = Some(false))
+            .unwrap();
+        let before = QUESTION_CHECKS.load(std::sync::atomic::Ordering::SeqCst);
+        let sent = hits.lock().unwrap().len();
+        assert_eq!(
+            ask(question(
+                "request_user_input",
+                asked(),
+                Some("question-turn-off")
+            ))
+            .await
+            .unwrap(),
+            json!({})
+        );
+        assert_eq!(
+            QUESTION_CHECKS.load(std::sync::atomic::Ordering::SeqCst),
+            before
+        );
+        assert_eq!(hits.lock().unwrap().len(), sent);
     }
 }

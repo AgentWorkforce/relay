@@ -262,13 +262,17 @@ const STOP_HOOK_TIMEOUT: Duration = Duration::from_secs(5);
 const SESSION_START_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Agent Relay's Codex hook (`codex::stop_hook`), run after each tool call
-/// (PostToolUse), as a turn ends (Stop) and as a session starts
-/// (SessionStart): reads Codex's hook input, asks the core what this
-/// thread's running turn should be given (at SessionStart, its Agent Relay
-/// preamble), and prints Codex's hook output. Only the thread, turn, event,
-/// working folder and whether the turn already continued are sent, so a
-/// long tool output or last message cannot exceed the socket's body limit.
-/// Any failure prints `{}`, so Codex goes on as it would without the hook.
+/// (PostToolUse), as a turn ends (Stop), as a session starts (SessionStart)
+/// and before `request_user_input` (PreToolUse): reads Codex's hook input,
+/// asks the core what this thread's running turn should be given (at
+/// SessionStart, its Agent Relay preamble; at PreToolUse, whether its
+/// question went to the question inbox), and prints Codex's hook output.
+/// Only the thread, turn, event, working folder and whether the turn
+/// already continued are sent, and at PreToolUse the tool's name and its
+/// input too, so a long tool output or last message cannot exceed the
+/// socket's body limit; a question too large for it is refused, and Codex
+/// shows it. Any failure prints `{}`, so Codex goes on as it would without
+/// the hook.
 pub fn codex_stop_hook(socket: Option<&Path>, build: &Build) -> Result<()> {
     let mut input = Vec::new();
     let _ = std::io::stdin().take(4 << 20).read_to_end(&mut input);
