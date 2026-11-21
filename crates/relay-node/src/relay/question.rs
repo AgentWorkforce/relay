@@ -110,9 +110,10 @@ impl State {
 /// Which harness asked, and how its answer goes back.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Via {
-    /// Claude's `AskUserQuestion`, through the PreToolUse hook: the answer
-    /// is native input.
-    Claude,
+    /// A question a hook refused before it was shown (Claude's
+    /// `AskUserQuestion`, Codex's `request_user_input`): the answer is
+    /// typed into the session as native input.
+    Session,
     /// A spawned Codex's `item/tool/requestUserInput`: the answer is the
     /// request's result, by the drive's reference.
     Codex { request: String },
@@ -164,6 +165,56 @@ fn new_reference() -> Option<String> {
         "q{}",
         bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
     ))
+}
+
+/// How long a Codex hook's attempt that did not send a question is
+/// remembered, so the `requestUserInput` the tool raises next for a spawned
+/// Codex is forwarded as it would be without escalation, not tried again.
+const HOOK_TRIED_FOR: Duration = Duration::from_secs(120);
+
+/// What is remembered of each thread's last question a hook could not send:
+/// its questions' ids and texts, and when.
+fn hook_tried() -> MutexGuard<'static, HashMap<String, (String, Instant)>> {
+    static TRIED: OnceLock<Mutex<HashMap<String, (String, Instant)>>> = OnceLock::new();
+    let mut tried = TRIED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let now = Instant::now();
+    tried.retain(|_, (_, at)| now < *at + HOOK_TRIED_FOR);
+    tried
+}
+
+/// The same questions, as the hook's tool input and the app-server request
+/// both give them.
+fn signature(questions: &[Question]) -> String {
+    questions
+        .iter()
+        .map(|question| format!("{}\u{1f}{}", question.id, question.text))
+        .collect::<Vec<_>>()
+        .join("\u{1e}")
+}
+
+/// Notes that the hook tried `questions` for `thread` and did not send them.
+fn note_hook_attempt(thread: &str, questions: &[Question]) {
+    hook_tried().insert(
+        thread.to_ascii_lowercase(),
+        (signature(questions), Instant::now()),
+    );
+}
+
+/// Whether the hook already tried `questions` for `thread`: once only.
+fn take_hook_attempt(thread: &str, questions: &[Question]) -> bool {
+    let mut tried = hook_tried();
+    let key = thread.to_ascii_lowercase();
+    if tried
+        .get(&key)
+        .is_some_and(|(tried, _)| *tried == signature(questions))
+    {
+        tried.remove(&key);
+        return true;
+    }
+    false
 }
 
 /// The first 16 hex digits of the sha256 of what was asked.
@@ -345,7 +396,7 @@ pub fn escalated(session: &str, input: &Value) -> Option<String> {
     records()
         .iter()
         .find(|(_, record)| {
-            record.via == Via::Claude
+            record.via == Via::Session
                 && record.target.id.eq_ignore_ascii_case(session)
                 && record.input_hash == hash
                 && record.state.pending()
@@ -748,6 +799,11 @@ impl Core {
         let Some(questions) = text::codex_questions(&params) else {
             return false;
         };
+        // The question hook already tried it, and could not send it: it is
+        // asked as it would be without escalation, with no second wait.
+        if take_hook_attempt(&registration.target.id, &questions) {
+            return false;
+        }
         let cwd = registration
             .spawn
             .as_ref()
@@ -776,6 +832,54 @@ impl Core {
                     registration.name
                 ));
                 false
+            }
+        }
+    }
+
+    /// Codex's question hook: `input` is `request_user_input`'s arguments,
+    /// from `registration`'s session. The reason its tool call is refused
+    /// with when the question went to the inbox; `None` when it did not, and
+    /// Codex shows it as it would without escalation. A spawned Codex's
+    /// `requestUserInput` for a question the hook could not send is not
+    /// tried again (`escalate_codex_question`).
+    pub(crate) async fn escalate_codex_hook_question(
+        &self,
+        registration: &Registration,
+        input: &Value,
+        cwd: &str,
+    ) -> Option<String> {
+        self.escalate_codex_hook_question_within(registration, input, cwd, ROUTE_LIMIT)
+            .await
+    }
+
+    /// `escalate_codex_hook_question` within `limit`.
+    pub(crate) async fn escalate_codex_hook_question_within(
+        &self,
+        registration: &Registration,
+        input: &Value,
+        cwd: &str,
+        limit: Duration,
+    ) -> Option<String> {
+        let questions = text::codex_tool_questions(input)?;
+        let asked = Asked {
+            questions: questions.clone(),
+            input,
+            cwd,
+            via: Via::Session,
+        };
+        match self
+            .escalate_question_within(registration, asked, limit)
+            .await
+        {
+            Escalation::Sent { reference, inbox } => Some(reason(&inbox, &reference)),
+            Escalation::Off => None,
+            Escalation::Failed(error) | Escalation::TimedOut(error) => {
+                note_hook_attempt(&registration.target.id, &questions);
+                crate::relay::diagnostics::write(format_args!(
+                    "question from @{} not escalated: {error}",
+                    registration.name
+                ));
+                None
             }
         }
     }
@@ -828,7 +932,7 @@ impl Core {
             checked.agent
         );
         match &checked.via {
-            Via::Claude => {
+            Via::Session => {
                 let line = text::answer_line(&reference, &checked.questions, &checked.answers);
                 match self
                     .deliver_session_text(registration, delivery, line, InputSource::Requester)
@@ -968,7 +1072,7 @@ It is not sent again.",
             return;
         };
         crate::relay::diagnostics::write(format_args!("question {reference} expired"));
-        if via != Via::Claude {
+        if via != Via::Session {
             return;
         }
         match self.arc() {

@@ -51,7 +51,7 @@ impl Outbound {
             questions,
             input,
             cwd: &cwd,
-            via: Via::Claude,
+            via: Via::Session,
         };
         Ok(self
             .core

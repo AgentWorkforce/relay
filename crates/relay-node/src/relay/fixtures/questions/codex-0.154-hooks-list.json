@@ -1,0 +1,19 @@
+{
+  "_source": "openai/codex tag rust-v0.154.0 (commit 6b9826e3): codex-rs/app-server-protocol/src/protocol/v2/plugin.rs HooksListResponse, HooksListEntry, HookMetadata (handler flattened with tag handlerType, camelCase) and v2/hook.rs HookEventName and HookTrustStatus. Agent Relay's three delivery hooks trusted, its question hook not yet. Values are synthetic; COMMAND is replaced by the test.",
+  "response": {
+    "data": [
+      {
+        "cwd": "/home/user/.codex",
+        "warnings": [],
+        "errors": [],
+        "hooks": [
+          {"key": "k-stop", "eventName": "stop", "handlerType": "command", "command": "COMMAND", "async": false, "matcher": null, "timeoutSec": 10, "statusMessage": null, "additionalContextLimit": null, "sourcePath": "/home/user/.codex/hooks.json", "source": "user", "pluginId": null, "displayOrder": 0, "enabled": true, "isManaged": false, "currentHash": "h-stop", "trustStatus": "trusted"},
+          {"key": "k-post", "eventName": "postToolUse", "handlerType": "command", "command": "COMMAND", "async": false, "matcher": null, "timeoutSec": 10, "statusMessage": null, "additionalContextLimit": null, "sourcePath": "/home/user/.codex/hooks.json", "source": "user", "pluginId": null, "displayOrder": 1, "enabled": true, "isManaged": false, "currentHash": "h-post", "trustStatus": "trusted"},
+          {"key": "k-start", "eventName": "sessionStart", "handlerType": "command", "command": "COMMAND", "async": false, "matcher": null, "timeoutSec": 10, "statusMessage": null, "additionalContextLimit": null, "sourcePath": "/home/user/.codex/hooks.json", "source": "user", "pluginId": null, "displayOrder": 2, "enabled": true, "isManaged": false, "currentHash": "h-start", "trustStatus": "trusted"},
+          {"key": "k-question", "eventName": "preToolUse", "handlerType": "command", "command": "COMMAND", "async": false, "matcher": "request_user_input", "timeoutSec": 30, "statusMessage": null, "additionalContextLimit": null, "sourcePath": "/home/user/.codex/hooks.json", "source": "user", "pluginId": null, "displayOrder": 3, "enabled": true, "isManaged": false, "currentHash": "h-question", "trustStatus": "untrusted"},
+          {"key": "k-theirs", "eventName": "preToolUse", "handlerType": "command", "command": "their-own-hook", "async": false, "matcher": "shell", "timeoutSec": 5, "statusMessage": null, "additionalContextLimit": null, "sourcePath": "/home/user/.codex/hooks.json", "source": "user", "pluginId": null, "displayOrder": 4, "enabled": true, "isManaged": false, "currentHash": "h-theirs", "trustStatus": "untrusted"}
+        ]
+      }
+    ]
+  }
+}

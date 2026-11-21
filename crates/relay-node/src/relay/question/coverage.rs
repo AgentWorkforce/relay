@@ -65,8 +65,9 @@ Code hook does not run.",
         SessionKind::Codex => row(
             "Codex",
             Partial,
-            "Sessions Agent Relay starts (requestUserInput). A Codex you start yourself, in a \
-terminal or the Codex app, has no hook before its question is shown.",
+            "Questions Codex asks with request_user_input (Plan mode), in a terminal Codex and \
+in sessions Agent Relay starts, through Agent Relay's Codex hook (codex_stop_hook). Not \
+verified yet in the Codex app.",
         ),
         SessionKind::CursorCli => row(
             "Cursor CLI",
