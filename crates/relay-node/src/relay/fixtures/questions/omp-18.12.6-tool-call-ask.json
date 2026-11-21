@@ -1,0 +1,23 @@
+{
+  "_source": "Oh My Pi (can1357/oh-my-pi) tag v18.12.6: the tool_call event {type, toolName, toolCallId, input} (packages/coding-agent/src/extensibility/extensions/types.ts:1331-1339) for the built-in ask tool, whose arguments are {questions: [{id, question, header?, options: [{label, description?, preview?}], multi?, recommended?}]} (packages/coding-agent/src/tools/ask.ts:60-83). A handler returns {block, reason}, the reason going to the model as the tool's error (shared-events.ts:331-335); one past extensionHandlers.toolCallTimeoutMs (30 s by default) blocks the tool. Values are synthetic.",
+  "event": {
+    "type": "tool_call",
+    "toolName": "ask",
+    "toolCallId": "call_ask_1",
+    "input": {
+      "questions": [
+        {
+          "id": "db",
+          "question": "Which database should the service use?",
+          "header": "Database",
+          "options": [
+            {"label": "Postgres", "description": "Shared server"},
+            {"label": "SQLite", "description": "One file", "preview": "db.sqlite"}
+          ],
+          "multi": false,
+          "recommended": 0
+        }
+      ]
+    }
+  }
+}
