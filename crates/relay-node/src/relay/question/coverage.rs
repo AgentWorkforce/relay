@@ -92,9 +92,10 @@ runs.",
         ),
         SessionKind::Grok | SessionKind::GrokOpen => row(
             "Grok",
-            NotCovered,
-            "Grok has no hook before ask_user_question that Agent Relay installs, and Agent \
-Relay's Grok client leaves once a message is delivered.",
+            Partial,
+            "ask_user_question, through Agent Relay's Claude Code hook (claude_session_hook), \
+which Grok runs from ~/.claude/settings.json. Its argument names are read from the Grok CLI \
+itself; not yet proven in a live session.",
         ),
         SessionKind::Devin => row(
             "Devin",
@@ -264,7 +265,7 @@ mod tests {
         let text = status_text();
         assert!(text.starts_with("Available for Claude Code."), "{text}");
         assert!(
-            text.contains("Partly available for Codex, Devin."),
+            text.contains("Partly available for Codex, Grok, Devin."),
             "{text}"
         );
         assert!(
