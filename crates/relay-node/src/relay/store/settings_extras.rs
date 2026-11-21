@@ -296,8 +296,10 @@ mod tests {
             Some(true)
         );
         // Saved and read back, off stays an explicit false.
-        let mut store = Store::default();
-        store.extras = off;
+        let store = Store {
+            extras: off,
+            ..Store::default()
+        };
         let value = serde_json::to_value(&store).unwrap();
         assert_eq!(value["questionEscalation"], false);
         let back: Store = serde_json::from_value(value).unwrap();
