@@ -106,7 +106,8 @@ pub struct SettingsValues {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_harnesses: Option<BTreeMap<String, SpawnHarnessSettings>>,
     /// Question escalation, `off` or `on`; on unless turned off. On, a
-    /// question a covered session asks its user (Claude Code, Codex: see
+    /// question a covered session asks its user (Claude Code, Codex, Devin,
+    /// Grok, Copilot: see
     /// `question_escalation_coverage`) is sent over Agent Relay to
     /// `question_escalation_inbox` instead,
     /// the session keeps working, and the reply (`answer <ref> <n|text>`) is
