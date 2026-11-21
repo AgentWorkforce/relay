@@ -76,8 +76,10 @@ terminal Codex and in sessions Agent Relay starts, through Agent Relay's Codex h
         ),
         SessionKind::Copilot => row(
             "Copilot",
-            NotCovered,
-            "Not yet: its question tool is not handed to Agent Relay's Copilot hooks.",
+            Partial,
+            "ask_user, through Agent Relay's Copilot hooks (VS Code on macOS). Its argument names \
+are from Copilot's user-input handler, not yet checked against the hook's own payload or in a \
+live session.",
         ),
         SessionKind::OpenCode => row(
             "OpenCode",
@@ -265,7 +267,7 @@ mod tests {
         let text = status_text();
         assert!(text.starts_with("Available for Claude Code."), "{text}");
         assert!(
-            text.contains("Partly available for Codex, Grok, Devin."),
+            text.contains("Partly available for Codex, Copilot, Grok, Devin."),
             "{text}"
         );
         assert!(
