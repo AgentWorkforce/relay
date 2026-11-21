@@ -1586,12 +1586,18 @@ impl Core {
     pub(crate) async fn activate_new_sessions(&self) -> Vec<String> {
         let mut reconciling = self.auto_activation.lock().await;
         let sessions = self.plugins.sessions.clone();
-        let registered: Vec<(String, Target)> = self.store.read(|s| {
-            s.registrations
-                .iter()
-                .filter(|r| r.archived_at.is_none())
-                .map(|r| (r.name.clone(), r.target.clone()))
-                .collect()
+        let (registered, manual): (Vec<(String, Target)>, Vec<Target>) = self.store.read(|s| {
+            let active = s.registrations.iter().filter(|r| r.archived_at.is_none());
+            (
+                active
+                    .clone()
+                    .map(|r| (r.name.clone(), r.target.clone()))
+                    .collect(),
+                active
+                    .filter(|r| r.auto_activated != Some(true) && r.spawn.is_none())
+                    .map(|r| r.target.clone())
+                    .collect(),
+            )
         });
         let title_revision = self
             .roster_revision
@@ -1604,7 +1610,8 @@ impl Core {
         let discovered = tokio::task::spawn_blocking(move || {
             sessions.pi_auto_join(pi_auto_join);
             let all = sessions.sessions();
-            let live = sessions.present_targets(&all);
+            let mut live = sessions.present_targets(&all);
+            live.extend(sessions.registered_present(&manual));
             let targets: Vec<Target> = registered.iter().map(|(_, t)| t.clone()).collect();
             let archived = sessions.archived(&targets);
             let archived: Vec<String> = registered

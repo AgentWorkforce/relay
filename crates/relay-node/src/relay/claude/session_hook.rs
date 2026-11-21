@@ -75,6 +75,7 @@ pub const SETTING: &str = "claude_session_hook";
 
 /// The subcommand the hook runs; also how the hook is recognized as ours.
 pub const SUBCOMMAND: &str = "claude-session-hook";
+pub const STOP_SUBCOMMAND: &str = "claude-stop-hook";
 
 /// The subcommand the `AskUserQuestion` PreToolUse hook runs; also how that
 /// hook is recognized as ours.
@@ -93,16 +94,19 @@ const QUESTION_TOOL: &str = "AskUserQuestion";
 enum Event {
     /// The session start hook ([`SUBCOMMAND`]).
     Start,
+    /// The coordination advisory Stop hook.
+    Stop,
     /// The `AskUserQuestion` PreToolUse hook ([`QUESTION_SUBCOMMAND`]).
     Question,
 }
 
 impl Event {
-    const ALL: [Event; 2] = [Event::Start, Event::Question];
+    const ALL: [Event; 3] = [Event::Start, Event::Question, Event::Stop];
 
     fn key(self) -> &'static str {
         match self {
             Event::Start => "SessionStart",
+            Event::Stop => "Stop",
             Event::Question => "PreToolUse",
         }
     }
@@ -110,6 +114,7 @@ impl Event {
     fn subcommand(self) -> &'static str {
         match self {
             Event::Start => SUBCOMMAND,
+            Event::Stop => STOP_SUBCOMMAND,
             Event::Question => QUESTION_SUBCOMMAND,
         }
     }
@@ -266,6 +271,15 @@ impl ClaudeSessionHookSettings {
         match body.strip_suffix(SUBCOMMAND) {
             Some(program) => format!("{program}{QUESTION_SUBCOMMAND}{}", &command[body.len()..]),
             None => format!("{command} {QUESTION_SUBCOMMAND}"),
+        }
+    }
+
+    fn stop_command(&self) -> String {
+        let command = self.command.trim();
+        let (_, body) = crate::relay::hook_owner::owner(command);
+        match body.strip_suffix(SUBCOMMAND) {
+            Some(program) => format!("{program}{STOP_SUBCOMMAND}{}", &command[body.len()..]),
+            None => format!("{command} {STOP_SUBCOMMAND}"),
         }
     }
 
@@ -440,6 +454,9 @@ impl ClaudeSessionHookSettings {
 
     fn entry(&self, event: Event) -> Value {
         match event {
+            Event::Stop => {
+                json!({"hooks":[{"type":"command","command":self.stop_command(),"timeout":5}]})
+            }
             Event::Start => {
                 json!({"hooks": [{"type": "command", "command": self.command, "timeout": 10}]})
             }
@@ -1292,6 +1309,39 @@ mod tests {
     // PreToolUse hook for AskUserQuestion, installed with the SessionStart
     // hook, with the same build marker, and removed with it, leaving the
     // person's own PreToolUse hooks alone.
+    #[test]
+    fn start_question_and_stop_hooks_coexist_and_preserve_the_persons_hooks() {
+        let root = tempfile::tempdir().unwrap();
+        login(root.path(), ".claude");
+        let primary = root.path().join(".claude/settings.json");
+        let own = json!({"hooks":[{"type":"command","command":"my-stop-hook"}]});
+        std::fs::write(
+            &primary,
+            serde_json::to_vec(&json!({"hooks":{"Stop":[own.clone()]}})).unwrap(),
+        )
+        .unwrap();
+        let settings = settings(root.path());
+        assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+        let installed = read(&primary);
+        assert_eq!(installed["hooks"]["Stop"][0], own);
+        for event in Event::ALL {
+            assert_eq!(
+                settings
+                    .our_commands(installed["hooks"][event.key()].as_array().unwrap(), event)
+                    .len(),
+                1
+            );
+        }
+        assert_eq!(installed["hooks"]["Stop"][1]["hooks"][0]["timeout"], 5);
+        let before = std::fs::read(&primary).unwrap();
+        settings.refresh();
+        assert_eq!(std::fs::read(&primary).unwrap(), before);
+        assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+        let removed = read(&primary);
+        assert_eq!(removed["hooks"]["Stop"], json!([own]));
+        assert!(removed["hooks"]["PreToolUse"].is_null());
+    }
+
     #[test]
     fn the_question_hook_comes_and_goes_with_the_session_hook() {
         let root = tempfile::tempdir().unwrap();

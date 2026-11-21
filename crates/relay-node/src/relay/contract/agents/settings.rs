@@ -62,6 +62,9 @@ pub struct SettingsValues {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_allow_teammates: Option<bool>,
     /// Allow verified spawning agents to send native input; on by default.
+    /// Once this computer's ownership is verified, the agent that spawned
+    /// a session then directs it with the person's authority, changes to
+    /// permissions, instructions and configuration included.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_native_input: Option<bool>,
     /// The agent that spawned a session may answer its permission and
@@ -105,12 +108,13 @@ pub struct SettingsValues {
     /// the flat keys above as well. Absent in older cores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_harnesses: Option<BTreeMap<String, SpawnHarnessSettings>>,
-    /// Question escalation, `off` or `on`; off unless set. On, a question a
-    /// Claude Code session or a spawned Codex session asks its user is sent
-    /// over Agent Relay to `question_escalation_inbox` instead, the session
-    /// keeps working, and the reply (`answer <ref> <n|text>`) is delivered to
-    /// it; an unanswered question expires after 30 minutes. Absent in older
-    /// cores.
+    /// Question escalation, `off` or `on`; on unless turned off. On, a
+    /// question a Claude Code session or a spawned Codex session asks its
+    /// user is sent over Agent Relay to `question_escalation_inbox` instead,
+    /// the session keeps working, and the reply (`answer <ref> <n|text>`) is
+    /// delivered to it; an unanswered question expires after 30 minutes. A
+    /// question that cannot be sent is asked in the session as usual. Absent
+    /// in older cores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question_escalation: Option<String>,
     /// The agent escalated questions go to, by name; empty means the

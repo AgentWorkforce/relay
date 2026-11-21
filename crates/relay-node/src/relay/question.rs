@@ -11,7 +11,9 @@
 //!
 //! Unlike the spawn approval requests (`harness::claude::requests`), the
 //! question's text and options are copied into the message: that is what
-//! the inbox needs to answer it, and the setting is off unless turned on.
+//! the inbox needs to answer it. The setting is on unless turned off; a
+//! question that cannot be delivered is asked in the session as it would be
+//! with the setting off.
 //!
 //! Records are kept in memory only, for an hour past their expiry so a late
 //! reply still hears why it was not delivered. A record is kept before its
@@ -76,6 +78,12 @@ const IN_FLIGHT_POLL: Duration = Duration::from_millis(25);
 /// PreToolUse hook's own timeout (`claude::session_hook::QUESTION_HOOK_TIMEOUT`,
 /// 30 s), so the hook always hears the outcome before Claude gives up on it.
 pub const ROUTE_LIMIT: Duration = Duration::from_secs(20);
+/// The longest a spawned Codex's question is held for escalation before it
+/// is forwarded as any other request: the same as `ROUTE_LIMIT`, well inside
+/// the request's own five minutes (`drive::REQUEST_TTL`), so a slow
+/// Relaycast never holds the session's other requests or lets one expire
+/// unforwarded.
+pub const CODEX_LIMIT: Duration = ROUTE_LIMIT;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {
@@ -711,11 +719,24 @@ impl Core {
 
     /// Answers a spawned Codex's `requestUserInput` `notice` through the
     /// question inbox when escalation is on: true once it was sent, and the
-    /// request now waits as long as the question does.
+    /// request now waits as long as the question does. False when it was not
+    /// sent within `CODEX_LIMIT`, or not at all: the request is then
+    /// forwarded as it would be with escalation off.
     pub(crate) async fn escalate_codex_question(
         &self,
         registration: &Registration,
         notice: &drive::Notice,
+    ) -> bool {
+        self.escalate_codex_question_within(registration, notice, CODEX_LIMIT)
+            .await
+    }
+
+    /// `escalate_codex_question` within `limit`.
+    pub(crate) async fn escalate_codex_question_within(
+        &self,
+        registration: &Registration,
+        notice: &drive::Notice,
+        limit: Duration,
     ) -> bool {
         if !self.store.read(settings::on) {
             return false;
@@ -739,7 +760,10 @@ impl Core {
                 request: notice.reference.clone(),
             },
         };
-        match self.escalate_question(registration, asked).await {
+        match self
+            .escalate_question_within(registration, asked, limit)
+            .await
+        {
             Escalation::Sent { .. } => {
                 drive::escalate(&notice.reference, TTL);
                 true

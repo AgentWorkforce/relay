@@ -174,7 +174,7 @@ pub const HIDDEN_TURN_PENDING: &str =
 pub const BEHIND_HIDDEN: &str = "Waiting — behind an earlier relay message the session holds";
 
 /// How long a handoff is given to show up in the rollout.
-const HANDOFF_GRACE: Duration = Duration::from_secs(45);
+pub(crate) const HANDOFF_GRACE: Duration = Duration::from_secs(45);
 /// How long a handoff is remembered at all.
 const HANDOFF_MEMORY: Duration = Duration::from_secs(60 * 60);
 
@@ -182,7 +182,7 @@ const HANDOFF_MEMORY: Duration = Duration::from_secs(60 * 60);
 pub struct CodexRouter {
     routes: Arc<dyn CodexRoutes>,
     handed_off: Mutex<HashMap<String, Instant>>,
-    now: Box<dyn Fn() -> Instant + Send + Sync>,
+    pub(crate) now: Box<dyn Fn() -> Instant + Send + Sync>,
     /// Messages for Conductor chats, handed over by Agent Relay's Codex Stop
     /// hook as a turn Conductor shows ends (`stop_hook`).
     stop_hook: Option<Arc<StopHookInbox>>,

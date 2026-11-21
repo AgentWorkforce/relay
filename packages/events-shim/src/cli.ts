@@ -1616,7 +1616,14 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
     : null;
   const linkedToOther = linkedAgent !== null && !(linkedKind ?? '').startsWith('claude');
   const claudeOutranked = config.inboxes?.claude === mcpUrl && (coreSharing.length > 0 || linkedToOther);
-  if (hooked.includes('claude') && !claudeOutranked) {
+  // Linked to a Claude Code session already: that session gets the posts, not a newly started one.
+  const linkedToClaude = linkedAgent !== null && !linkedToOther;
+  if (hooked.includes('claude') && linkedToClaude && config.inboxes?.claude === mcpUrl) {
+    io.stdout(
+      `This inbox is linked through Agent Relay to the Claude Code session "${linkedAgent || 'another session'}": it gets every post, and a newly started Claude Code session does not. To move the posts to another session, have that session link the inbox to itself (link_relay_wake), or remove the link (unlink_relay_wake).`
+    );
+  }
+  if (hooked.includes('claude') && !claudeOutranked && !linkedToClaude) {
     io.stdout(
       'Start a new Claude Code session: each post wakes the most recently started Claude Code session by itself, with nothing to tell it. One session at a time: a newer session takes the posts over, and telling an older one "watch for webhooks" moves them back to it.'
     );

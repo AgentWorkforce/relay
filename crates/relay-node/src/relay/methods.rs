@@ -13,9 +13,10 @@ use crate::relay::contract::agents::{
 use crate::relay::contract::claude_delivery::ClaudeDeliveryChanged;
 use crate::relay::contract::directory::People;
 use crate::relay::contract::{answer, method, Done};
-use crate::relay::daemon::Core;
+use crate::relay::daemon::{CallContext, Core};
 use crate::relay::links::{self, Endpoint};
 use crate::relay::people::RosterQuery;
+use crate::relay::person_guard::admit_person_send;
 use crate::relay::protocol::{ErrorKind, RpcError};
 use crate::relay::usage::{action, UsageEvent, UsageOperation as Op};
 use serde_json::{Map, Value};
@@ -61,8 +62,14 @@ async fn unsubscribe(
         .await
 }
 
-/// Answers `method`, or `None` when this module has no such method.
-pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<Value, RpcError>> {
+/// Answers `method` for the client `context` describes, or `None` when this
+/// module has no such method.
+pub async fn call(
+    core: &Arc<Core>,
+    context: &CallContext,
+    method: &str,
+    raw: Value,
+) -> Option<Result<Value, RpcError>> {
     Some(match method {
         method::AgentsList::NAME => {
             answer::<method::AgentsList, _>(raw, |_| async { Ok(core.agents_list()) }).await
@@ -89,6 +96,7 @@ pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<V
         method::AgentsTestMessage::NAME => {
             answer::<method::AgentsTestMessage, _>(raw, |request| async move {
                 action(core, UsageEvent::started(Op::MessageTest), async {
+                    admit_person_send(core, context).await?;
                     core.test_message(&request.name, request.text.as_deref())
                         .await
                         .map(|message_id| TestMessageSent { message_id })
@@ -237,7 +245,7 @@ pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<V
         }
         method::MessagesSend::NAME => {
             answer::<method::MessagesSend, _>(raw, |request| async move {
-                usage::send(core, request).await
+                usage::send(core, context, request).await
             })
             .await
         }

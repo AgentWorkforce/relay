@@ -58,7 +58,7 @@ pub(super) fn caller(
             session
                 .filter(|_| same)
                 .map(|id| Target::new(SessionKind::CursorCli, id))
-                .ok_or(CallerMiss::NotASession),
+                .ok_or(CallerMiss::Unattributed),
         );
     }
     if let Some(droid) = crate::relay::droid::caller(
@@ -71,7 +71,7 @@ pub(super) fn caller(
             if same && crate::relay::harness::droid::unavailable_reason().is_none() {
                 Ok(Target::new(SessionKind::Droid, id))
             } else {
-                Err(CallerMiss::NotASession)
+                Err(CallerMiss::Unattributed)
             }
         }));
     }
@@ -95,7 +95,7 @@ pub(super) fn caller(
         session
             .filter(|_| same)
             .map(|id| Target::new(kind, id))
-            .ok_or(CallerMiss::NotASession),
+            .ok_or(CallerMiss::Unattributed),
     )
 }
 
@@ -245,7 +245,7 @@ mod droid_hold_tests {
         let process = table.process(41).unwrap();
         assert!(matches!(
             caller(&config, &table, 41, 41, process),
-            Some(Err(CallerMiss::NotASession))
+            Some(Err(CallerMiss::Unattributed))
         ));
         let target = Target::new(SessionKind::Droid, session);
         assert!(!can_reply(&config, &table, &target));

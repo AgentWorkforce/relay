@@ -4583,12 +4583,13 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// manages installs it only when this is turned on. Absent where Pi has
     /// never run.
     public let piExtension: Bool?
-    /// Question escalation, `off` or `on`; off unless set. On, a question a
-    /// Claude Code session or a spawned Codex session asks its user is sent
-    /// over Agent Relay to `question_escalation_inbox` instead, the session
-    /// keeps working, and the reply (`answer <ref> <n|text>`) is delivered to
-    /// it; an unanswered question expires after 30 minutes. Absent in older
-    /// cores.
+    /// Question escalation, `off` or `on`; on unless turned off. On, a
+    /// question a Claude Code session or a spawned Codex session asks its
+    /// user is sent over Agent Relay to `question_escalation_inbox` instead,
+    /// the session keeps working, and the reply (`answer <ref> <n|text>`) is
+    /// delivered to it; an unanswered question expires after 30 minutes. A
+    /// question that cannot be sent is asked in the session as usual. Absent
+    /// in older cores.
     public let questionEscalation: String?
     /// The agent escalated questions go to, by name; empty means the
     /// owner's person identity. Absent in older cores.
@@ -4626,6 +4627,9 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// it is released.
     public let spawnMaxAgents: Int?
     /// Allow verified spawning agents to send native input; on by default.
+    /// Once this computer's ownership is verified, the agent that spawned
+    /// a session then directs it with the person's authority, changes to
+    /// permissions, instructions and configuration included.
     public let spawnNativeInput: Bool?
     /// Owner/name keys of the repositories this computer offers spawned
     /// agents for, advertised as the node's `repo_keys`.

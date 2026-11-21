@@ -42,8 +42,9 @@
 //! submitting a prompt and Cursor running its `beforeSubmitPrompt` hooks is
 //! Cursor's own and cannot be closed from a hook.
 
-use super::inbox::{drain, hook_answer, pending, unclaim};
+use super::inbox::{drain, pending, unclaim};
 use super::{editor, payload_session, CursorConfig};
+use crate::relay::daemon::TurnEndAdvisory;
 use crate::relay::existing_session::platform;
 use crate::relay::process::ProcessTable;
 use serde::{Deserialize, Serialize};
@@ -325,6 +326,17 @@ pub fn waits_after(payload: &Value) -> bool {
         && generation(payload).is_some()
 }
 
+/// A stop naming a turn different from the recorded current one must not
+/// consume that turn's advisory. Missing generation evidence is supported.
+pub(super) fn stale_stop(config: &CursorConfig, payload: &Value) -> bool {
+    payload["hook_event_name"] == "stop"
+        && payload_session(payload)
+            .zip(generation(payload))
+            .is_some_and(|(session, generation)| {
+                current_turn(config, session).is_some_and(|current| current != generation)
+            })
+}
+
 /// What a waiting hook checks besides its conversation's inbox.
 pub struct Watch<'a> {
     /// The waiting hook's own pid.
@@ -394,14 +406,45 @@ impl Holder {
 /// written in full. It answers at once when messages are pending,
 /// otherwise as soon as one is staged while this hook may still take it
 /// (module docs).
+///
+/// `advisory` (the build's turn-end advisory) goes only with the answer
+/// given at once as the turn ends, never with one the wait gives later; it
+/// is taken out of the option once that answer is written.
 pub fn wait(
     config: &CursorConfig,
     table: &dyn ProcessTable,
     holder: Holder,
     payload: &Value,
     watch: &Watch<'_>,
+    advisory: &mut Option<TurnEndAdvisory>,
     write: &mut dyn FnMut(&Value) -> bool,
 ) -> Ended {
+    wait_with_take(
+        config,
+        table,
+        holder,
+        payload,
+        watch,
+        (advisory, &mut || None),
+        write,
+    )
+}
+
+/// The core hook's lazy take: called only inside the guarded initial claim,
+/// never by the poll loop or a hook that was stopped, retired or removed.
+pub(super) fn wait_with_take(
+    config: &CursorConfig,
+    table: &dyn ProcessTable,
+    holder: Holder,
+    payload: &Value,
+    watch: &Watch<'_>,
+    initial: (
+        &mut Option<TurnEndAdvisory>,
+        &mut dyn FnMut() -> Option<TurnEndAdvisory>,
+    ),
+    write: &mut dyn FnMut(&Value) -> bool,
+) -> Ended {
+    let (advisory, take) = initial;
     let waiting = match Waiting::new(config, table, holder, payload, watch.pid) {
         Ok(waiting) => waiting,
         Err(ended) => return ended,
@@ -419,7 +462,14 @@ pub fn wait(
                 (watch.claiming)(&mut || {
                     (!store(config, waiting.session, &waiting.me))
                         .then_some(Ended::Failed)
-                        .or_else(|| answer(config, payload, write))
+                        .or_else(|| {
+                            if advisory.is_none() {
+                                *advisory = take();
+                            }
+                            // A socket take can block while shutdown or
+                            // cancellation asks this hook to stop.
+                            interrupted(watch).or_else(|| answer(config, payload, advisory, write))
+                        })
                 })
             })
     });
@@ -442,11 +492,14 @@ pub fn wait(
 fn answer(
     config: &CursorConfig,
     payload: &Value,
+    advisory: &mut Option<TurnEndAdvisory>,
     write: &mut dyn FnMut(&Value) -> bool,
 ) -> Option<Ended> {
-    let answer = hook_answer(config, payload)?;
+    let text = advisory.as_ref().map(|advisory| advisory.text.as_str());
+    let answer = super::inbox::hook_answer_with(config, payload, text)?;
     Some(if write(&answer.output) {
         drain(&answer.claimed);
+        advisory.take();
         Ended::Answered
     } else {
         unclaim(config, &answer.claimed);
@@ -526,9 +579,9 @@ impl<'a> Waiting<'a> {
             }
             if !pending(self.config, self.session).is_empty() {
                 let taken = locked(self.config, self.session, || {
-                    self.gone()
-                        .or_else(|| self.shared())
-                        .or_else(|| (watch.claiming)(&mut || answer(self.config, payload, write)))
+                    self.gone().or_else(|| self.shared()).or_else(|| {
+                        (watch.claiming)(&mut || answer(self.config, payload, &mut None, write))
+                    })
                 });
                 match taken {
                     None => return Ended::Failed,

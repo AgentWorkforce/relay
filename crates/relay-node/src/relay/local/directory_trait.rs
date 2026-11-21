@@ -4,6 +4,12 @@ mod mobile_claude_roots;
 mod session_activity;
 
 impl SessionDirectory for LocalSessions {
+    fn cursor_hook_matches(&self, pid: i32, conversation: &str) -> bool {
+        self.openclaw_caller(pid).is_none()
+            && cursor_cli::hook_caller(&self.config.cursor, &*self.table, pid, conversation)
+                .is_some()
+    }
+
     fn copilot_context_accepted(&self, sid: &str, context: &str) -> bool {
         crate::relay::copilot::context_accepted(&self.config.copilot, sid, context)
     }
@@ -221,6 +227,33 @@ impl SessionDirectory for LocalSessions {
                 .map(|s| s.target),
         );
         targets
+    }
+
+    /// A hand-registered Codex thread stays present while a trusted Codex of
+    /// this user holds its writer lock: the proof its registration accepted.
+    /// A fleet-owned thread is not, as in `present_targets`.
+    fn registered_present(&self, targets: &[Target]) -> HashSet<Target> {
+        let codex: Vec<&Target> = {
+            let owned = self
+                .fleet_owned
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            targets
+                .iter()
+                .filter(|t| t.kind == SessionKind::Codex && !owned.contains(&fleet_key(t)))
+                .collect()
+        };
+        let live = codex::live_threads(
+            &self.config.codex,
+            &*self.table,
+            self.config.uid,
+            codex.iter().map(|t| t.id.as_str()),
+        );
+        codex
+            .into_iter()
+            .filter(|t| live.contains(&t.id.to_lowercase()))
+            .cloned()
+            .collect()
     }
 
     /// A trusted host ancestry grants only a global discovery nudge.
