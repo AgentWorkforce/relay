@@ -468,6 +468,12 @@ impl Core {
         let Some(approver) = self.approver(registration, delivery, reference).await else {
             return OwnerReply::NotOne;
         };
+        // Choice replies answer a tool's input question, not a permission
+        // prompt. Only the verified machine owner may supply that input; a
+        // requester may still approve or deny where its profile permits it.
+        if matches!(decision, ReplyDecision::Choose(_)) && !matches!(approver, Approver::Owner(_)) {
+            return OwnerReply::NotOne;
+        }
         if self
             .store
             .remember(|store| store.record_injected(&delivery.id))

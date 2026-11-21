@@ -170,6 +170,39 @@ async fn the_spawning_agent_answers_its_codexs_request() {
 }
 
 #[tokio::test]
+async fn the_spawning_agent_cannot_choose_an_answer_to_an_owner_only_question() {
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bdabb";
+    let home = tempfile::tempdir().unwrap();
+    let core = core_with_account(home.path(), Arc::new(FakeSpawner::default()));
+    set(&core, Some(true), Some(true));
+    let registration = spawned("codex", THREAD);
+    let notice = codex_drive::open_request(
+        THREAD,
+        json!({"id": 191, "method": "item/tool/requestUserInput", "params": {
+            "threadId": THREAD,
+            "questions": [{"id": "decision", "header": "Confirm", "question": "Install?",
+                "options": [{"label": "Install", "description": "Proceed"},
+                    {"label": "Cancel", "description": "Stop"}]}]
+        }}),
+    );
+    let choice = dm(
+        "grokbot",
+        "agent_grokbot",
+        &format!("choose {} 1", notice.reference),
+    );
+
+    assert!(matches!(
+        core.owner_reply(&registration, &choice).await,
+        OwnerReply::NotOne
+    ));
+    assert!(codex_drive::has_pending(THREAD, &notice.reference));
+    assert_eq!(codex_drive::recorded_answer(&notice.reference), None);
+    assert!(!core
+        .store
+        .read(|store| store.injected_delivery_ids.contains(&choice.id)));
+}
+
+#[tokio::test]
 async fn only_the_spawning_agents_own_direct_message_with_both_settings_on_answers() {
     const SESSION: &str = "a1d0c2e4-0000-4000-8000-00000000c1a2";
     let home = tempfile::tempdir().unwrap();
