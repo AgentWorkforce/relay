@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Minor]
 
+### Changed
+
+- `agent-relay-node`: question escalation is on by default. `question_escalation` now reads `on` unless it was turned off; only an explicit `off` keeps a session's questions in its own dialog, and that choice is kept across restarts, store merges and writes of other settings. An organization's policy still locks or defaults it either way. A question that cannot be delivered (no question, an unregistered session, signed out or no workspace, an inbox that cannot be found, a failed or uncertain send, or no answer within 20 s) is still shown in the session exactly as with escalation off. A spawned Codex session's question is now also given at most 20 s to be sent before it is forwarded as any other request.
+
 ### Added
 
 - `agent-relay-node`: a `TurnEndAdvisories` plugin can hand a session a short advisory as its turn ends, once, through the core's stop hooks for Codex, Copilot, Devin, Cursor CLI and Claude Code (a new `claude-stop-hook`, installed with the Claude Code SessionStart hook). Hooks that run outside the core ask the new `POST /turn-end/take` and `POST /turn-end/shown` session routes.

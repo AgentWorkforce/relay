@@ -4583,12 +4583,13 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// manages installs it only when this is turned on. Absent where Pi has
     /// never run.
     public let piExtension: Bool?
-    /// Question escalation, `off` or `on`; off unless set. On, a question a
-    /// Claude Code session or a spawned Codex session asks its user is sent
-    /// over Agent Relay to `question_escalation_inbox` instead, the session
-    /// keeps working, and the reply (`answer <ref> <n|text>`) is delivered to
-    /// it; an unanswered question expires after 30 minutes. Absent in older
-    /// cores.
+    /// Question escalation, `off` or `on`; on unless turned off. On, a
+    /// question a Claude Code session or a spawned Codex session asks its
+    /// user is sent over Agent Relay to `question_escalation_inbox` instead,
+    /// the session keeps working, and the reply (`answer <ref> <n|text>`) is
+    /// delivered to it; an unanswered question expires after 30 minutes. A
+    /// question that cannot be sent is asked in the session as usual. Absent
+    /// in older cores.
     public let questionEscalation: String?
     /// The agent escalated questions go to, by name; empty means the
     /// owner's person identity. Absent in older cores.
