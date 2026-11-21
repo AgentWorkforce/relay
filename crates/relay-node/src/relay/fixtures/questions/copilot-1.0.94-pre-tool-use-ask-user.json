@@ -1,0 +1,14 @@
+{
+  "_source": "Copilot runtime 1.0.94 (the Copilot CLI and VS Code's Copilot agent host share it). preToolUse input fields (sessionId, timestamp, cwd, toolName, toolArgs) and the deny output (permissionDecision, permissionDecisionReason) from docs.github.com/en/copilot/reference/hooks-configuration and code.visualstudio.com/docs/copilot/customization/hooks (read 2026-11-21). The tool name ask_user from microsoft/vscode at eed41ffe (src/vs/platform/agentHost/node/copilot/copilotBuiltinToolAllowlist.ts); its arguments {question, choices, allowFreeform} from the SDK's user-input handler there (copilotAgentSession.ts), with choices a list of strings per the installed runtime's own validation strings (runtime.node) and question read by the installed cli-main.js. The arguments are not verified against the runtime's hook payload itself. Values are synthetic.",
+  "input": {
+    "sessionId": "019a0000-0000-7000-8000-00000000c011",
+    "timestamp": 1795000000000,
+    "cwd": "/work/project",
+    "toolName": "ask_user",
+    "toolArgs": {
+      "question": "Should the migration run before or after the deploy?",
+      "choices": ["Before the deploy", "After the deploy"],
+      "allowFreeform": true
+    }
+  }
+}

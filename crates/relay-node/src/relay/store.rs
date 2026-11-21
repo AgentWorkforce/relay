@@ -1863,6 +1863,7 @@ impl Store {
         }
         store.drop_legacy_thread_replies();
         store.ensure_desktop_sync_source_id();
+        crate::relay::settings_policy::keep_question_escalation_off(&mut store);
         if let Some(clears) = store.desktop_identity_clears_pending.as_mut() {
             *clears = clears
                 .iter()

@@ -1,0 +1,27 @@
+{
+  "_source": "openai/codex tag rust-v0.154.0 (commit 6b9826e3): codex-rs/hooks/src/schema.rs PreToolUseCommandInput (the hook's stdin) and codex-rs/core/src/tools/handlers/request_user_input_spec.rs (the tool's arguments, which are tool_input). Values are synthetic.",
+  "input": {
+    "session_id": "019a0000-0000-7000-8000-00000000a5c1",
+    "turn_id": "019a0000-0000-7000-8000-00000000a5c2",
+    "transcript_path": null,
+    "cwd": "/work/project",
+    "hook_event_name": "PreToolUse",
+    "model": "gpt-test",
+    "permission_mode": "plan",
+    "tool_name": "request_user_input",
+    "tool_input": {
+      "questions": [
+        {
+          "id": "database",
+          "header": "Database",
+          "question": "Which database should the service use?",
+          "options": [
+            {"label": "Postgres", "description": "Shared server"},
+            {"label": "SQLite", "description": "One file"}
+          ]
+        }
+      ]
+    },
+    "tool_use_id": "call_question_1"
+  }
+}

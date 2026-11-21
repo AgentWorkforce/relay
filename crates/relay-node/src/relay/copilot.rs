@@ -3,6 +3,11 @@
 use crate::relay::codex::turn_hook::TurnInbox;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+/// Copilot's ask-the-user tool, as its hooks name it (`ask_user`, Copilot
+/// runtime 1.0.94): its `preToolUse` hands the question to question
+/// escalation (`relay::question`).
+pub const QUESTION_TOOL: &str = "ask_user";
+
 mod desktop;
 pub mod proof;
 mod settings;

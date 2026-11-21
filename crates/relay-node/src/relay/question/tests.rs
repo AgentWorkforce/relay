@@ -250,7 +250,7 @@ fn record(registration: &Registration, base_key: &str) -> Record {
         expires: Instant::now() + TTL,
         state: State::Open,
         questions: vec![pick(false)],
-        via: Via::Claude,
+        via: Via::Session,
         sending: false,
         notified: false,
     }
@@ -369,7 +369,7 @@ const BROKEN: u8 = 4;
 
 /// A Relaycast that knows the agent `triage` and takes DMs (refusing them
 /// when `refuse`), keeping each request's line and body.
-fn relaycast(refuse: bool) -> (String, Arc<Mutex<Vec<String>>>) {
+pub(crate) fn relaycast(refuse: bool) -> (String, Arc<Mutex<Vec<String>>>) {
     let mode = Arc::new(std::sync::atomic::AtomicU8::new(if refuse {
         REFUSE
     } else {
@@ -551,7 +551,7 @@ fn asked(input: &Value) -> Asked<'_> {
         questions: text::claude_questions(input),
         input,
         cwd: "",
-        via: Via::Claude,
+        via: Via::Session,
     }
 }
 
@@ -1478,7 +1478,7 @@ async fn an_undelivered_question_is_asked_in_the_session() {
                 questions: Vec::new(),
                 input: &empty,
                 cwd: "",
-                via: Via::Claude,
+                via: Via::Session,
             },
         )
         .await;
@@ -1616,4 +1616,564 @@ async fn a_codex_question_not_sent_in_time_is_forwarded() {
     assert!(!core.escalate_codex_question(&asker, &notice).await);
     assert_eq!(drive::unforwarded(thread).len(), 1);
     assert!(CODEX_LIMIT < Duration::from_secs(300));
+}
+
+/// The question hook's input as Codex 0.154 gives it
+/// (`fixtures/questions/codex-0.154-pre-tool-use-request-user-input.json`).
+fn codex_hook_fixture() -> Value {
+    serde_json::from_str(include_str!(
+        "../fixtures/questions/codex-0.154-pre-tool-use-request-user-input.json"
+    ))
+    .unwrap()
+}
+
+/// The `requestUserInput` a spawned Codex raises for the fixture's question
+/// when its tool runs (`app-server-protocol` v2 `ToolRequestUserInputParams`).
+fn codex_request_for(thread: &str, id: u64) -> Value {
+    json!({"id": id, "method": "item/tool/requestUserInput", "params": {
+        "threadId": thread, "turnId": "t", "itemId": "call_question_1",
+        "questions": [{"id": "database", "header": "Database",
+            "question": "Which database should the service use?",
+            "isOther": true, "isSecret": false,
+            "options": [{"label": "Postgres", "description": "Shared server"},
+                        {"label": "SQLite", "description": "One file"}]}],
+    }})
+}
+
+/// How many questions were sent: DMs by idempotency key, since the SDK
+/// retries a server error under the same key.
+fn dm_count(hits: &Arc<Mutex<Vec<String>>>) -> usize {
+    hits.lock()
+        .unwrap()
+        .iter()
+        .filter(|hit| hit.starts_with("POST /v1/dm"))
+        .filter_map(|hit| {
+            hit.split(" key=")
+                .nth(1)?
+                .split(' ')
+                .next()
+                .map(str::to_string)
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+}
+
+/// Codex's question hook, with escalation on by default: the question goes
+/// to the inbox once, the tool call is refused with the reason, and the
+/// inbox's answer is typed into the session.
+#[tokio::test]
+async fn a_codex_hook_question_goes_to_the_inbox() {
+    let (base, hits) = relaycast(false);
+    let fixture = codex_hook_fixture();
+    let thread = fixture["input"]["session_id"].as_str().unwrap();
+    let asker = registration(
+        "asker-codex-hook",
+        Target::new(SessionKind::Codex, thread),
+        &base,
+    );
+    let (core, _temp) = core(&base, &asker, true);
+    core.store
+        .remember(|store| store.extras.question_escalation = None)
+        .unwrap();
+    let input = &fixture["input"]["tool_input"];
+    let reason = core
+        .escalate_codex_hook_question(&asker, input, "/work/project")
+        .await
+        .expect("sent");
+    assert!(
+        reason.starts_with("Sent to @triage over Agent Relay as question q"),
+        "{reason}"
+    );
+    assert_eq!(dm_count(&hits), 1);
+    let sent = hits
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|hit| hit.starts_with("POST /v1/dm"))
+        .cloned()
+        .unwrap();
+    assert!(
+        sent.contains("Which database should the service use?"),
+        "{sent}"
+    );
+    // Asked again by the same turn: the open question, not a second DM.
+    let again = core
+        .escalate_codex_hook_question(&asker, input, "/work/project")
+        .await;
+    assert_eq!(again.as_deref(), Some(reason.as_str()));
+    assert_eq!(dm_count(&hits), 1);
+    let (reference, via) = records()
+        .iter()
+        .find(|(_, record)| record.target.id == thread)
+        .map(|(reference, record)| (reference.clone(), record.via.clone()))
+        .unwrap();
+    assert_eq!(via, Via::Session, "the answer is typed into the session");
+    assert!(reason.contains(&reference));
+    // Codex lets the person type their own answer: free text is taken.
+    let questions = text::codex_tool_questions(input).unwrap();
+    assert!(questions.iter().all(|question| question.free));
+}
+
+/// A question the hook cannot send is asked as usual: the hook answers no
+/// reason (Codex runs the tool and shows its dialog), and a spawned Codex's
+/// `requestUserInput` that follows goes to the session's owner as any other
+/// request, without a second inbox attempt or wait. Off, nothing is sent.
+#[tokio::test]
+async fn a_codex_hook_question_that_cannot_be_sent_is_asked_once_as_usual() {
+    let mode = Arc::new(std::sync::atomic::AtomicU8::new(REFUSE));
+    let (base, hits) = relaycast_in(mode.clone());
+    let fixture = codex_hook_fixture();
+    let input = fixture["input"]["tool_input"].clone();
+    for (n, failing) in [REFUSE, BROKEN, HANG].into_iter().enumerate() {
+        mode.store(failing, std::sync::atomic::Ordering::SeqCst);
+        let thread = format!("019a0000-0000-7000-8000-0000000071{n:02}");
+        let asker = registration(
+            &format!("asker-codex-hook-{n}"),
+            Target::new(SessionKind::Codex, &thread),
+            &base,
+        );
+        let (core, _temp) = core(&base, &asker, true);
+        let before = dm_count(&hits);
+        let reason = core
+            .escalate_codex_hook_question_within(&asker, &input, "", Duration::from_millis(300))
+            .await;
+        assert_eq!(reason, None, "mode {failing}");
+        let attempted = dm_count(&hits);
+        assert!(attempted <= before + 1, "one attempt");
+        // The tool runs: a spawned Codex raises requestUserInput, which is
+        // forwarded, not escalated again.
+        let notice = drive::open_request(&thread, codex_request_for(&thread, 40 + n as u64));
+        assert!(!core.escalate_codex_question(&asker, &notice).await);
+        assert_eq!(dm_count(&hits), attempted, "no second inbox attempt");
+        assert_eq!(drive::unforwarded(&thread).len(), 1, "forwarded as usual");
+        assert_eq!(
+            escalated(&thread, &input),
+            None,
+            "nothing is left open for the question"
+        );
+    }
+    // Off: the hook answers nothing and sends nothing.
+    mode.store(ACCEPT, std::sync::atomic::Ordering::SeqCst);
+    let asker = registration(
+        "asker-codex-hook-off",
+        Target::new(SessionKind::Codex, "019a0000-0000-7000-8000-00000000710f"),
+        &base,
+    );
+    let (core, _temp) = core(&base, &asker, false);
+    let before = dm_count(&hits);
+    assert_eq!(
+        core.escalate_codex_hook_question(&asker, &input, "").await,
+        None
+    );
+    assert_eq!(dm_count(&hits), before);
+}
+
+/// Input that is not `request_user_input`'s, or that names no question,
+/// is never escalated: Codex shows whatever it is as usual.
+#[tokio::test]
+async fn a_codex_hook_input_that_does_not_parse_is_asked_as_usual() {
+    let (base, hits) = relaycast(false);
+    let asker = registration(
+        "asker-codex-hook-bad",
+        Target::new(SessionKind::Codex, "019a0000-0000-7000-8000-0000000071bb"),
+        &base,
+    );
+    let (core, _temp) = core(&base, &asker, true);
+    for bad in [
+        json!({}),
+        json!({"questions": []}),
+        json!({"questions": "Which?"}),
+        json!({"questions": [{"question": "No id"}]}),
+        json!({"command": "ls"}),
+    ] {
+        assert_eq!(
+            core.escalate_codex_hook_question(&asker, &bad, "").await,
+            None,
+            "{bad}"
+        );
+    }
+    // A session that is not on the relay is not asked for either.
+    let stranger = registration(
+        "stranger-codex-hook",
+        Target::new(SessionKind::Codex, "019a0000-0000-7000-8000-0000000071cc"),
+        &base,
+    );
+    let input = codex_hook_fixture()["input"]["tool_input"].clone();
+    assert_eq!(
+        core.escalate_codex_hook_question(&stranger, &input, "")
+            .await,
+        None
+    );
+    assert_eq!(dm_count(&hits), 0);
+}
+
+/// A spawner whose agents still run.
+struct Running;
+
+impl crate::relay::spawn::launch::Spawner for Running {
+    fn available(&self) -> Vec<crate::relay::harness::HarnessId> {
+        Vec::new()
+    }
+    fn launch(
+        &self,
+        _: &crate::relay::spawn::launch::Launch,
+        _: crate::relay::spawn::launch::Started,
+    ) -> Result<crate::relay::spawn::launch::Launched, crate::relay::spawn::launch::LaunchError>
+    {
+        Err(crate::relay::spawn::launch::LaunchError::Unavailable(
+            "a test spawner".into(),
+        ))
+    }
+    fn alive(&self, _: &Target, _: Option<&crate::relay::spawn::launch::SpawnedProcess>) -> bool {
+        true
+    }
+    fn stop(&self, _: &Target, _: Option<&crate::relay::spawn::launch::SpawnedProcess>) {}
+}
+
+/// `name` spawned here with a process of its own, as a spawned Devin or
+/// Claude has.
+fn spawned_with_process(name: &str, target: Target, base: &str) -> Registration {
+    let mut registration = registration(name, target, base);
+    registration.spawn = Some(
+        serde_json::from_value(json!({"nodeID": "node-1", "nodeName": "desk",
+            "invocationID": format!("inv-{name}"), "harness": "devin",
+            "process": {"pid": 4242, "start": 7}}))
+        .unwrap(),
+    );
+    registration
+}
+
+/// A spawned agent whose process ended is not told its question expired,
+/// whatever its harness, and the inbox's late answer is refused with the
+/// question closed; one whose process runs is told.
+#[tokio::test]
+async fn an_ended_spawned_agent_is_not_told_and_its_late_answer_is_refused() {
+    let (base, hits) = relaycast(false);
+    let ended = spawned_with_process(
+        "asker-ended",
+        Target::new(SessionKind::Devin, "spawned-ended"),
+        &base,
+    );
+    let injector = Scripted::new([]);
+    // The default spawner answers that nothing it started still runs.
+    let (core, _temp) = scripted_core(&base, &ended, &injector);
+    let input = input();
+    let Escalation::Sent { reference, .. } = core.escalate_question(&ended, asked(&input)).await
+    else {
+        panic!("sent");
+    };
+    assert!(core.tell_expired(&ended.target, &reference).await);
+    assert!(injector.typed().is_empty(), "an ended agent is not told");
+    let token = Secret::new("at_live_asker");
+    let answer = reply("d-ended", "agent-triage", &format!("answer {reference} 1"));
+    let OwnerReply::Settled(detail) = core
+        .question_reply(&ended, &answer, (base.as_str(), &token))
+        .await
+    else {
+        panic!("refused");
+    };
+    assert!(detail.contains("is closed"), "{detail}");
+    assert!(injector.typed().is_empty(), "nothing is typed into it");
+    assert_eq!(state_of(&reference), Some(State::Expired));
+    assert!(replies_to_inbox(&hits)
+        .iter()
+        .any(|reply| reply.contains("has ended")));
+
+    let running = spawned_with_process(
+        "asker-running",
+        Target::new(SessionKind::Devin, "spawned-running"),
+        &base,
+    );
+    let typed = Scripted::new([]);
+    let (core, _temp) = core_with(
+        &base,
+        &running,
+        true,
+        crate::relay::daemon::Plugins {
+            injector: typed.clone(),
+            spawner: Arc::new(Running),
+            ..crate::relay::daemon::Plugins::default()
+        },
+    );
+    let Escalation::Sent { reference, .. } = core.escalate_question(&running, asked(&input)).await
+    else {
+        panic!("sent");
+    };
+    assert!(core.tell_expired(&running.target, &reference).await);
+    assert_eq!(typed.typed().len(), 1, "a running agent is told");
+}
+
+/// Cases 3 and 4 with a Codex target, through the hook's own entry:
+/// signed out (no workspace for a named inbox, no account for the owner's)
+/// and an inbox that cannot be found each answer no reason, so Codex shows
+/// the question.
+#[tokio::test]
+async fn a_codex_hook_question_is_asked_as_usual_when_signed_out_or_unresolved() {
+    let (base, hits) = relaycast(false);
+    let input = codex_hook_fixture()["input"]["tool_input"].clone();
+    let asker = registration(
+        "asker-codex-hook-34",
+        Target::new(SessionKind::Codex, "019a0000-0000-7000-8000-0000000071ee"),
+        &base,
+    );
+    let (core, _temp) = core(&base, &asker, true);
+    let workspace = core.workspace.lock().unwrap().take();
+    assert_eq!(
+        core.escalate_codex_hook_question(&asker, &input, "").await,
+        None
+    );
+    core.store
+        .remember(|store| store.extras.question_escalation_inbox = None)
+        .unwrap();
+    assert_eq!(
+        core.escalate_codex_hook_question(&asker, &input, "").await,
+        None
+    );
+    *core.workspace.lock().unwrap() = workspace;
+    core.store
+        .remember(|store| store.extras.question_escalation_inbox = Some("nobody".into()))
+        .unwrap();
+    assert_eq!(
+        core.escalate_codex_hook_question(&asker, &input, "").await,
+        None
+    );
+    assert_eq!(dm_count(&hits), 0);
+}
+
+/// Devin's question hook, through the route's shared path: the question in
+/// Devin's shape goes to the inbox once, and its answer is typed into the
+/// session; refused, it is asked in Devin as usual.
+#[tokio::test]
+async fn a_devin_question_goes_to_the_inbox() {
+    let mode = Arc::new(std::sync::atomic::AtomicU8::new(ACCEPT));
+    let (base, hits) = relaycast_in(mode.clone());
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../fixtures/questions/devin-3000.12.57-pre-tool-use-ask-user-question.json"
+    ))
+    .unwrap();
+    let input = fixture["input"]["tool_input"].clone();
+    let asker = registration(
+        "asker-devin",
+        Target::new(SessionKind::Devin, "real-gallium"),
+        &base,
+    );
+    let (core, _temp) = core(&base, &asker, true);
+    let devin = |input: &Value| Asked {
+        questions: text::hook_questions(input),
+        input: &fixture["input"]["tool_input"],
+        cwd: "",
+        via: Via::Session,
+    };
+    let sent = core.escalate_question(&asker, devin(&input)).await;
+    assert!(
+        matches!(&sent, Escalation::Sent { inbox, .. } if inbox == "triage"),
+        "{sent:?}"
+    );
+    assert_eq!(dm_count(&hits), 1);
+    let dm = hits
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|hit| hit.starts_with("POST /v1/dm"))
+        .cloned()
+        .unwrap();
+    assert!(dm.contains("Which auth method should the API use?"), "{dm}");
+    // Another session's question, refused by Relaycast: no reason, so
+    // Devin's hook prints nothing and Devin shows it.
+    mode.store(REFUSE, std::sync::atomic::Ordering::SeqCst);
+    let other = registration(
+        "asker-devin-2",
+        Target::new(SessionKind::Devin, "real-argon"),
+        &base,
+    );
+    let (second, _second_temp) = self::core(&base, &other, true);
+    let refused = second.escalate_question(&other, devin(&input)).await;
+    let body = json!({"ok": true, "data": refused.response()});
+    assert_eq!(
+        crate::relay::devin::question_hook_output(200, body.to_string().as_bytes()),
+        None
+    );
+}
+
+/// Copilot's `ask_user` (`fixtures/questions/copilot-1.0.94-...`): sent once
+/// to the inbox with its choices; refused, or of another shape, Copilot
+/// asks as usual.
+#[tokio::test]
+async fn a_copilot_question_goes_to_the_inbox() {
+    let mode = Arc::new(std::sync::atomic::AtomicU8::new(ACCEPT));
+    let (base, hits) = relaycast_in(mode.clone());
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../fixtures/questions/copilot-1.0.94-pre-tool-use-ask-user.json"
+    ))
+    .unwrap();
+    let args = fixture["input"]["toolArgs"].clone();
+    let sid = fixture["input"]["sessionId"].as_str().unwrap();
+    let asker = registration(
+        "asker-copilot",
+        Target::new(SessionKind::Copilot, sid),
+        &base,
+    );
+    let (core, _temp) = core(&base, &asker, true);
+    let reason = core
+        .escalate_copilot_question(&asker, &args, "")
+        .await
+        .expect("sent");
+    assert!(reason.starts_with("Sent to @triage"), "{reason}");
+    assert_eq!(dm_count(&hits), 1);
+    let dm = hits
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|hit| hit.starts_with("POST /v1/dm"))
+        .cloned()
+        .unwrap();
+    assert!(dm.contains("After the deploy"), "{dm}");
+    for bad in [
+        json!({}),
+        json!({"question": ""}),
+        json!({"question": "Which?", "choices": [1]}),
+        json!({"question": "Which?", "choices": "A"}),
+        json!({"question": "Which?", "allowFreeform": "yes"}),
+        json!({"message": "Which?"}),
+    ] {
+        assert_eq!(
+            core.escalate_copilot_question(&asker, &bad, "").await,
+            None,
+            "{bad}"
+        );
+    }
+    assert_eq!(dm_count(&hits), 1);
+    mode.store(REFUSE, std::sync::atomic::Ordering::SeqCst);
+    let other = registration(
+        "asker-copilot-2",
+        Target::new(SessionKind::Copilot, "019a0000-0000-7000-8000-00000000c012"),
+        &base,
+    );
+    let (second, _second_temp) = self::core(&base, &other, true);
+    assert_eq!(
+        second
+            .escalate_copilot_question_within(&other, &args, "", Duration::from_millis(300))
+            .await,
+        None
+    );
+    let questions = text::copilot_questions(&args).unwrap();
+    assert_eq!(questions[0].options.len(), 2);
+    assert!(questions[0].free);
+}
+
+/// A hook's question in the shared shape.
+fn hook_asked(input: &Value) -> Asked<'_> {
+    Asked {
+        questions: text::hook_questions(input),
+        input,
+        cwd: "",
+        via: Via::Session,
+    }
+}
+
+/// The Devin hooks' setting, turned off since the hook was installed.
+struct DevinHooksOff;
+
+impl crate::relay::agents::SettingsExtension for DevinHooksOff {
+    fn get(&self) -> Map<String, Value> {
+        Map::from_iter([(crate::relay::devin::SETTING.to_string(), json!(false))])
+    }
+    fn set(&self, _: &str, _: &Value) -> Option<Result<(), String>> {
+        None
+    }
+}
+
+/// A question whose answer could never reach its session is not sent: a
+/// Devin session whose hooks were turned off, an already-open Grok session
+/// Grok no longer lists. It is asked in the session as usual.
+#[tokio::test]
+async fn a_question_whose_answer_cannot_reach_the_session_is_asked_as_usual() {
+    let (base, hits) = relaycast(false);
+    let input = json!({"questions": [{"question": "Which?", "options": ["A", "B"]}]});
+    let devin = registration(
+        "asker-devin-off",
+        Target::new(SessionKind::Devin, "real-off"),
+        &base,
+    );
+    let (core, _temp) = core_with(
+        &base,
+        &devin,
+        true,
+        crate::relay::daemon::Plugins {
+            settings: vec![Arc::new(DevinHooksOff)],
+            ..crate::relay::daemon::Plugins::default()
+        },
+    );
+    assert_eq!(
+        core.escalate_question(&devin, hook_asked(&input)).await,
+        Escalation::Off
+    );
+    let grok = registration(
+        "asker-grok-gone",
+        Target::new(
+            SessionKind::GrokOpen,
+            "019a0000-0000-7000-8000-00000000c0d0",
+        ),
+        &base,
+    );
+    let (core, _temp) = self::core(&base, &grok, true);
+    assert_eq!(
+        core.escalate_question(&grok, hook_asked(&input)).await,
+        Escalation::Off
+    );
+    assert_eq!(dm_count(&hits), 0);
+}
+
+/// An answer the session only queued (a Devin session whose hooks drain it
+/// at its next turn) is not reported delivered: the inbox is told it waits
+/// for the session's next turn.
+#[tokio::test]
+async fn a_queued_answer_is_not_reported_delivered() {
+    let (base, hits) = relaycast(false);
+    let asker = registration(
+        "asker-queued",
+        Target::new(SessionKind::Devin, "real-queued"),
+        &base,
+    );
+    let (reference, _) = reserved(&asker, "question-real-queued-1");
+    let injector = Scripted::new([InjectOutcome::Accepted(
+        "in the session's inbox; its next lifecycle hook boundary drains it".into(),
+    )]);
+    let (core, _temp) = scripted_core(&base, &asker, &injector);
+    let token = Secret::new("at_live_asker");
+    let answer = reply("d-queued", "agent-triage", &format!("answer {reference} 1"));
+    let OwnerReply::Settled(_) = core
+        .question_reply(&asker, &answer, (base.as_str(), &token))
+        .await
+    else {
+        panic!("settled");
+    };
+    let replies = replies_to_inbox(&hits);
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    assert!(!replies[0].contains("delivered to"), "{}", replies[0]);
+    assert!(replies[0].contains("next turn"), "{}", replies[0]);
+    assert_eq!(
+        state_of(&reference),
+        Some(State::Answered),
+        "not typed again"
+    );
+}
+
+/// The caps hold on every question shape: Codex's (hook and spawned
+/// request) and Copilot's.
+#[test]
+fn every_question_shape_keeps_the_caps() {
+    let codex = |questions: usize, options: usize| {
+        json!({"questions": (0..questions).map(|i| json!({"id": format!("q{i}"), "header": "H",
+            "question": format!("Q{i}?"),
+            "options": (0..options).map(|j| json!({"label": format!("o{j}"), "description": ""}))
+                .collect::<Vec<_>>()})).collect::<Vec<_>>()})
+    };
+    assert!(text::codex_questions(&codex(text::MAX_QUESTIONS, text::MAX_OPTIONS)).is_some());
+    assert!(text::codex_questions(&codex(text::MAX_QUESTIONS + 1, 2)).is_none());
+    assert!(text::codex_questions(&codex(1, text::MAX_OPTIONS + 1)).is_none());
+    assert!(text::codex_tool_questions(&codex(text::MAX_QUESTIONS + 1, 2)).is_none());
+    let copilot = |choices: usize| json!({"question": "Which?", "choices": (0..choices).map(|j| format!("c{j}")).collect::<Vec<_>>()});
+    assert!(text::copilot_questions(&copilot(text::MAX_OPTIONS)).is_some());
+    assert!(text::copilot_questions(&copilot(text::MAX_OPTIONS + 1)).is_none());
 }

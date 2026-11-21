@@ -5,9 +5,10 @@
 //! keeps working. The inbox answers with `answer <ref> <n|text>`; only the
 //! inbox, by its immutable agent id, may. The answer reaches the session as
 //! one line of native input. A question not answered within 30 minutes
-//! expires: a Claude session still running is told to continue without it,
-//! and a Codex question is answered with no answers, as an unanswered
-//! request always is.
+//! expires: a session still running whose question a hook refused (Claude
+//! Code, Codex, Devin, Grok, Copilot) is told to continue without it, and a
+//! spawned Codex's `requestUserInput` is answered with no answers, as an
+//! unanswered request always is.
 //!
 //! Unlike the spawn approval requests (`harness::claude::requests`), the
 //! question's text and options are copied into the message: that is what
@@ -39,9 +40,10 @@
 //! again on a later pass. An answer that may have arrived is never typed
 //! again, and the inbox is told it may not have.
 //!
-//! A question past its expiry tells its Claude session so once, whichever
+//! A question past its expiry tells its session so once, whichever
 //! of the timer and a late reply closes it first (`Record::notified`).
 
+pub mod coverage;
 pub mod settings;
 pub mod text;
 
@@ -109,9 +111,10 @@ impl State {
 /// Which harness asked, and how its answer goes back.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Via {
-    /// Claude's `AskUserQuestion`, through the PreToolUse hook: the answer
-    /// is native input.
-    Claude,
+    /// A question a hook refused before it was shown (Claude's
+    /// `AskUserQuestion`, Codex's `request_user_input`): the answer is
+    /// typed into the session as native input.
+    Session,
     /// A spawned Codex's `item/tool/requestUserInput`: the answer is the
     /// request's result, by the drive's reference.
     Codex { request: String },
@@ -163,6 +166,56 @@ fn new_reference() -> Option<String> {
         "q{}",
         bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
     ))
+}
+
+/// How long a Codex hook's attempt that did not send a question is
+/// remembered, so the `requestUserInput` the tool raises next for a spawned
+/// Codex is forwarded as it would be without escalation, not tried again.
+const HOOK_TRIED_FOR: Duration = Duration::from_secs(120);
+
+/// What is remembered of each thread's last question a hook could not send:
+/// its questions' ids and texts, and when.
+fn hook_tried() -> MutexGuard<'static, HashMap<String, (String, Instant)>> {
+    static TRIED: OnceLock<Mutex<HashMap<String, (String, Instant)>>> = OnceLock::new();
+    let mut tried = TRIED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let now = Instant::now();
+    tried.retain(|_, (_, at)| now < *at + HOOK_TRIED_FOR);
+    tried
+}
+
+/// The same questions, as the hook's tool input and the app-server request
+/// both give them.
+fn signature(questions: &[Question]) -> String {
+    questions
+        .iter()
+        .map(|question| format!("{}\u{1f}{}", question.id, question.text))
+        .collect::<Vec<_>>()
+        .join("\u{1e}")
+}
+
+/// Notes that the hook tried `questions` for `thread` and did not send them.
+fn note_hook_attempt(thread: &str, questions: &[Question]) {
+    hook_tried().insert(
+        thread.to_ascii_lowercase(),
+        (signature(questions), Instant::now()),
+    );
+}
+
+/// Whether the hook already tried `questions` for `thread`: once only.
+fn take_hook_attempt(thread: &str, questions: &[Question]) -> bool {
+    let mut tried = hook_tried();
+    let key = thread.to_ascii_lowercase();
+    if tried
+        .get(&key)
+        .is_some_and(|(tried, _)| *tried == signature(questions))
+    {
+        tried.remove(&key);
+        return true;
+    }
+    false
 }
 
 /// The first 16 hex digits of the sha256 of what was asked.
@@ -344,7 +397,7 @@ pub fn escalated(session: &str, input: &Value) -> Option<String> {
     records()
         .iter()
         .find(|(_, record)| {
-            record.via == Via::Claude
+            record.via == Via::Session
                 && record.target.id.eq_ignore_ascii_case(session)
                 && record.input_hash == hash
                 && record.state.pending()
@@ -558,6 +611,11 @@ impl Core {
         if !self.store.read(settings::on) || asked.questions.is_empty() {
             return Escalation::Off;
         }
+        // An answer the session could never take strands the question: it
+        // is asked in the session instead.
+        if asked.via == Via::Session && !self.answer_reaches(registration).await {
+            return Escalation::Off;
+        }
         let input_hash = input_hash(asked.input);
         let session = &registration.target.id;
         let base_key = format!("question-{session}-{input_hash}");
@@ -747,6 +805,11 @@ impl Core {
         let Some(questions) = text::codex_questions(&params) else {
             return false;
         };
+        // The question hook already tried it, and could not send it: it is
+        // asked as it would be without escalation, with no second wait.
+        if take_hook_attempt(&registration.target.id, &questions) {
+            return false;
+        }
         let cwd = registration
             .spawn
             .as_ref()
@@ -775,6 +838,98 @@ impl Core {
                     registration.name
                 ));
                 false
+            }
+        }
+    }
+
+    /// Codex's question hook: `input` is `request_user_input`'s arguments,
+    /// from `registration`'s session. The reason its tool call is refused
+    /// with when the question went to the inbox; `None` when it did not, and
+    /// Codex shows it as it would without escalation. A spawned Codex's
+    /// `requestUserInput` for a question the hook could not send is not
+    /// tried again (`escalate_codex_question`).
+    pub(crate) async fn escalate_codex_hook_question(
+        &self,
+        registration: &Registration,
+        input: &Value,
+        cwd: &str,
+    ) -> Option<String> {
+        self.escalate_codex_hook_question_within(registration, input, cwd, ROUTE_LIMIT)
+            .await
+    }
+
+    /// `escalate_codex_hook_question` within `limit`.
+    pub(crate) async fn escalate_codex_hook_question_within(
+        &self,
+        registration: &Registration,
+        input: &Value,
+        cwd: &str,
+        limit: Duration,
+    ) -> Option<String> {
+        let questions = text::codex_tool_questions(input)?;
+        let asked = Asked {
+            questions: questions.clone(),
+            input,
+            cwd,
+            via: Via::Session,
+        };
+        match self
+            .escalate_question_within(registration, asked, limit)
+            .await
+        {
+            Escalation::Sent { reference, inbox } => Some(reason(&inbox, &reference)),
+            Escalation::Off => None,
+            Escalation::Failed(error) | Escalation::TimedOut(error) => {
+                note_hook_attempt(&registration.target.id, &questions);
+                crate::relay::diagnostics::write(format_args!(
+                    "question from @{} not escalated: {error}",
+                    registration.name
+                ));
+                None
+            }
+        }
+    }
+
+    /// Copilot's `ask_user` (`args`), from `registration`'s session: the
+    /// reason its tool call is denied with once the question went to the
+    /// inbox; `None` otherwise, and Copilot asks as usual.
+    pub(crate) async fn escalate_copilot_question(
+        &self,
+        registration: &Registration,
+        args: &Value,
+        cwd: &str,
+    ) -> Option<String> {
+        self.escalate_copilot_question_within(registration, args, cwd, ROUTE_LIMIT)
+            .await
+    }
+
+    /// `escalate_copilot_question` within `limit`.
+    pub(crate) async fn escalate_copilot_question_within(
+        &self,
+        registration: &Registration,
+        args: &Value,
+        cwd: &str,
+        limit: Duration,
+    ) -> Option<String> {
+        let questions = text::copilot_questions(args)?;
+        let asked = Asked {
+            questions,
+            input: args,
+            cwd,
+            via: Via::Session,
+        };
+        match self
+            .escalate_question_within(registration, asked, limit)
+            .await
+        {
+            Escalation::Sent { reference, inbox } => Some(reason(&inbox, &reference)),
+            Escalation::Off => None,
+            Escalation::Failed(error) | Escalation::TimedOut(error) => {
+                crate::relay::diagnostics::write(format_args!(
+                    "question from @{} not escalated: {error}",
+                    registration.name
+                ));
+                None
             }
         }
     }
@@ -827,7 +982,20 @@ impl Core {
             checked.agent
         );
         match &checked.via {
-            Via::Claude => {
+            // A spawned agent whose process ended cannot take it: the
+            // question closes, and the inbox is told.
+            Via::Session if self.spawned_process_alive(registration).await == Some(false) => {
+                if let Some(record) = records().get_mut(&reference) {
+                    record.state = State::Expired;
+                    record.notified = true;
+                }
+                let refusal = format!(
+                    "Question {reference} is closed: @{} has ended.",
+                    checked.agent
+                );
+                self.refuse_reply(delivery, token, &refusal).await
+            }
+            Via::Session => {
                 let line = text::answer_line(&reference, &checked.questions, &checked.answers);
                 match self
                     .deliver_session_text(registration, delivery, line, InputSource::Requester)
@@ -858,8 +1026,19 @@ It is not sent again.",
                         );
                         self.answered(&reference, delivery, token, &unsure).await
                     }
-                    InjectOutcome::Delivered | InjectOutcome::Accepted(_) => {
+                    InjectOutcome::Delivered => {
                         self.answered(&reference, delivery, token, &delivered).await
+                    }
+                    // Queued in the session (a Devin session's hooks drain
+                    // it at its next turn): it is kept, never typed again,
+                    // and the inbox is not told it arrived.
+                    InjectOutcome::Accepted(_) => {
+                        let queued = format!(
+                            "Answer to question {reference} is queued for @{}: it reaches the \
+session at its next turn.",
+                            checked.agent
+                        );
+                        self.answered(&reference, delivery, token, &queued).await
                     }
                 }
             }
@@ -959,19 +1138,20 @@ It is not sent again.",
         .await;
     }
 
-    /// Closes `reference` when it is still open past its expiry; a Claude
-    /// session still running is told to continue without it. A Codex
-    /// request expires in the drive, to no answers.
+    /// Closes `reference` when it is still open past its expiry; a session
+    /// still running whose question a hook refused (`Via::Session`) is told
+    /// to continue without it. A spawned Codex's request expires in the
+    /// drive, to no answers.
     pub(crate) async fn expire_question(&self, reference: &str) {
         let Some((target, via)) = expire(reference) else {
             return;
         };
         crate::relay::diagnostics::write(format_args!("question {reference} expired"));
-        if via != Via::Claude {
+        if via != Via::Session {
             return;
         }
         match self.arc() {
-            // A session that cannot take it yet (a spawned Claude in its
+            // A session that cannot take it yet (a spawned agent in its
             // turn) is told once it can, for as long as it is remembered.
             Some(core) => {
                 let reference = reference.to_string();
@@ -988,8 +1168,10 @@ It is not sent again.",
         }
     }
 
-    /// Tells `target`'s Claude session that `reference` expired: false only
-    /// when the session is running and could not take it yet.
+    /// Tells `target`'s session that `reference` expired: false only when
+    /// the session is running and could not take it yet. A session that has
+    /// ended (a spawned agent's process gone, or one the directory no longer
+    /// finds) is not told.
     async fn tell_expired(&self, target: &Target, reference: &str) -> bool {
         let Some(registration) = self
             .store
@@ -1020,19 +1202,54 @@ It is not sent again.",
     }
 
     /// Whether `registration`'s session is still running: a spawned
-    /// Claude's process, or a session the directory still finds.
+    /// agent's own process, whatever its harness, or else a session the
+    /// directory still finds.
     async fn question_session_running(&self, registration: &Registration) -> bool {
-        if registration
-            .spawn
-            .as_ref()
-            .is_some_and(|spawn| spawn.process.is_some())
-        {
-            return !self.claude_ended(registration).await;
+        if let Some(alive) = self.spawned_process_alive(registration).await {
+            return alive;
         }
         let (sessions, target) = (self.plugins.sessions.clone(), registration.target.clone());
         tokio::task::spawn_blocking(move || sessions.find_session(&target).is_some())
             .await
             .unwrap_or(false)
+    }
+}
+
+impl Core {
+    /// Whether an answer typed into `registration`'s session can reach it:
+    /// a Devin session only while Agent Relay's Devin hooks are on (they
+    /// carry it in), an already-open Grok session only while Grok lists it.
+    /// Every other session takes its answer as it takes any message.
+    async fn answer_reaches(&self, registration: &Registration) -> bool {
+        match registration.target.kind {
+            crate::relay::store::SessionKind::Devin => {
+                self.settings().get(crate::relay::devin::SETTING) != Some(&Value::Bool(false))
+            }
+            crate::relay::store::SessionKind::GrokOpen => {
+                let (sessions, target) =
+                    (self.plugins.sessions.clone(), registration.target.clone());
+                tokio::task::spawn_blocking(move || sessions.find_session(&target).is_some())
+                    .await
+                    .unwrap_or(false)
+            }
+            _ => true,
+        }
+    }
+
+    /// Whether a spawned agent's own process still runs, by the spawner
+    /// that started it; `None` for a session with no process of its own (a
+    /// person's session, or a spawned Codex thread in Codex's daemon).
+    async fn spawned_process_alive(&self, registration: &Registration) -> Option<bool> {
+        let process = registration
+            .spawn
+            .as_ref()
+            .and_then(|spawn| spawn.process)?;
+        let (spawner, target) = (self.plugins.spawner.clone(), registration.target.clone());
+        Some(
+            tokio::task::spawn_blocking(move || spawner.alive(&target, Some(&process)))
+                .await
+                .unwrap_or(true),
+        )
     }
 }
 

@@ -301,9 +301,21 @@ pub(crate) fn relock(store: &mut crate::relay::store::Store) {
     };
     let mut current = crate::relay::spawn::settings::values(store, false);
     current.insert(GENERAL.into(), Value::Bool(store.auto_joins_general()));
+    current.insert(
+        ESCALATION.into(),
+        Value::from(if crate::relay::question::settings::on(store) {
+            "on"
+        } else {
+            "off"
+        }),
+    );
     let mut changes = Map::new();
     for (key, value) in &policy.locked {
-        let held = crate::relay::spawn::settings::KEYS.contains(&key.as_str()) || key == GENERAL;
+        // Question escalation is store-held too, and read by the spawn
+        // settings' `Change` (`question::settings::Change`).
+        let held = crate::relay::spawn::settings::KEYS.contains(&key.as_str())
+            || key == GENERAL
+            || key == ESCALATION;
         if held && current.get(key) != Some(value) && policy.may_apply(key, value, current.get(key))
         {
             changes.insert(key.clone(), value.clone());
@@ -334,6 +346,39 @@ pub(crate) fn relock(store: &mut crate::relay::store::Store) {
 
 /// The store-held `auto_join_general` setting.
 const GENERAL: &str = "auto_join_general";
+
+/// The store-held `question_escalation` setting.
+const ESCALATION: &str = crate::relay::question::settings::ESCALATION;
+
+/// Question escalation reads on unless turned off, where an unset flag once
+/// read off. A store from before that keeps what its organization decided:
+/// an unset flag under a stored lock of off, or under a stored default of
+/// off the person still has (`appliedDefaults` records off as applied), is
+/// written off as it is read. Whether the change is written back is the
+/// decoder's (`Store::decode`). Nothing else changes: the person's own
+/// choice, no policy or a lifted one, and a default of on.
+pub(crate) fn keep_question_escalation_off(store: &mut crate::relay::store::Store) {
+    if store.extras.question_escalation.is_some() {
+        return;
+    }
+    let Some(stored) = store.organization_policy.as_ref() else {
+        return;
+    };
+    let Some(policy) = stored.policy.as_ref() else {
+        return;
+    };
+    let off = Value::from("off");
+    let locked = policy.locked.get(ESCALATION) == Some(&off);
+    let defaulted = !policy.locked.contains_key(ESCALATION)
+        && policy.defaults.get(ESCALATION) == Some(&off)
+        && stored
+            .applied_defaults
+            .get(ESCALATION)
+            .is_some_and(|applied| applied.applied == off);
+    if locked || defaulted {
+        store.extras.question_escalation = Some(false);
+    }
+}
 
 impl Core {
     /// The organization's policy over settings, when one applies.
@@ -845,6 +890,29 @@ mod tests {
         assert_eq!(
             Store::merged(&base, &base, &newer).spawn_max_agents,
             Some(2)
+        );
+    }
+
+    /// A lock on question escalation holds through a merge with a save
+    /// made before the lock arrived, as the store-held spawn settings do.
+    #[test]
+    fn a_question_escalation_lock_holds_through_a_merge() {
+        use crate::relay::store::Store;
+        let mut base = Store {
+            organization_policy: Some(Stored {
+                policy: Some(policy(json!({"locked": {"question_escalation": "off"}}))),
+                applied_defaults: BTreeMap::new(),
+            }),
+            ..Store::default()
+        };
+        base.extras.question_escalation = Some(false);
+        let mut stale = Store::default();
+        stale.extras.question_escalation = Some(true);
+        assert_eq!(
+            Store::merged(&Store::default(), &stale, &base)
+                .extras
+                .question_escalation,
+            Some(false)
         );
     }
 

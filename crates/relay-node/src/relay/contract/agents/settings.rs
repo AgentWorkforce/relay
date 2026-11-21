@@ -109,8 +109,9 @@ pub struct SettingsValues {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_harnesses: Option<BTreeMap<String, SpawnHarnessSettings>>,
     /// Question escalation, `off` or `on`; on unless turned off. On, a
-    /// question a Claude Code session or a spawned Codex session asks its
-    /// user is sent over Agent Relay to `question_escalation_inbox` instead,
+    /// question a covered session asks its user (Claude Code, Codex, Devin,
+    /// Copilot: see `question_escalation_coverage`) is sent over Agent Relay to
+    /// `question_escalation_inbox` instead,
     /// the session keeps working, and the reply (`answer <ref> <n|text>`) is
     /// delivered to it; an unanswered question expires after 30 minutes. A
     /// question that cannot be sent is asked in the session as usual. Absent
@@ -121,11 +122,16 @@ pub struct SettingsValues {
     /// owner's person identity. Absent in older cores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question_escalation_inbox: Option<String>,
-    /// Where question escalation works: the sessions it covers and those
-    /// it cannot, which have no hook before a question is shown. Read-only;
-    /// absent in older cores.
+    /// Where question escalation works, in words: written from
+    /// `question_escalation_coverage`. Read-only; absent in older cores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question_escalation_status: Option<String>,
+    /// How far question escalation reaches each kind of session, by its
+    /// kind (`claude-terminal`, `codex`, `cursor-cli`, ...): a state the
+    /// apps switch on and a short reason they may show. One entry per kind
+    /// this core knows. Read-only; absent in older cores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question_escalation_coverage: Option<BTreeMap<String, QuestionCoverage>>,
     /// Whether Agent Relay's Claude Code SessionStart hook is installed in
     /// each known Claude login's `settings.json`. Off unless turned on.
     /// Absent when no Claude login directory exists. The hook never
@@ -275,6 +281,29 @@ pub struct SettingsValues {
     /// applies. A record, not a setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub organization_policy: Option<OrganizationPolicyState>,
+}
+
+/// Whether question escalation reaches one kind of session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum QuestionCoverageState {
+    /// Its questions go to the question inbox.
+    Covered,
+    /// Some of its sessions or questions do; `reason` says which.
+    Partial,
+    /// It can ask its person, but Agent Relay cannot take the question
+    /// over yet; `reason` says why. Its questions are asked as usual.
+    NotCovered,
+    /// It has no question for its person to take over.
+    NotApplicable,
+}
+
+/// Question escalation's reach for one kind of session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct QuestionCoverage {
+    pub state: QuestionCoverageState,
+    /// Why, in words the apps may show as they are.
+    pub reason: String,
 }
 
 /// What the organization's workspace policy does to this computer's
@@ -494,8 +523,8 @@ pub struct SettingsChange {
     )]
     #[schemars(with = "BTreeMap<String, SpawnHarnessSettings>")]
     pub spawn_harnesses: Option<BTreeMap<String, SpawnHarnessSettings>>,
-    /// Turns question escalation `on` or `off`: questions a Claude Code
-    /// session or a spawned Codex session asks go over Agent Relay to
+    /// Turns question escalation `on` or `off`: questions a covered session
+    /// asks (`question_escalation_coverage`) go over Agent Relay to
     /// `question_escalation_inbox` instead of a dialog, and expire after 30
     /// minutes. An agent may turn it on or off; only the person (or fleet
     /// policy) sets `question_escalation_inbox`.

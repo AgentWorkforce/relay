@@ -55,6 +55,43 @@ fn registration_context(socket: &std::path::Path) -> Option<Value> {
     }}))
 }
 
+/// How long the question hook may take in all, from the request's
+/// arrival: the hook client's own wait (`cli::QUESTION_HOOK_WAIT`).
+const QUESTION_BUDGET: std::time::Duration = crate::relay::cli::QUESTION_HOOK_WAIT;
+
+/// Time kept back for answering once the question was sent.
+const QUESTION_MARGIN: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Codex's PreToolUse answer for the question hook: refused with `reason`
+/// once the question went to the inbox, so Codex tells the model instead
+/// of showing the dialog; otherwise `{}`, which lets the tool run and the
+/// dialog show (Codex 0.154, `hooks/src/events/pre_tool_use.rs`).
+fn question_hook_answer(reason: Option<&str>) -> Value {
+    match reason {
+        Some(reason) => json!({"hookSpecificOutput": {
+            "hookEventName": crate::relay::codex::stop_hook::QUESTION_EVENT,
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }}),
+        None => json!({}),
+    }
+}
+
+#[cfg(test)]
+mod question_hook_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_sent_question_refuses_the_tool() {
+        assert_eq!(question_hook_answer(None), json!({}));
+        assert_eq!(
+            question_hook_answer(Some("Sent to @triage.")),
+            json!({"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                "permissionDecision": "deny", "permissionDecisionReason": "Sent to @triage."}})
+        );
+    }
+}
+
 impl Outbound {
     /// Agent Relay's Codex hook (`codex::stop_hook`), from a Codex turn after
     /// a tool call (PostToolUse) or as it ends (Stop): the next relayed
@@ -108,6 +145,9 @@ impl Outbound {
                 .filter(|cwd| std::path::Path::new(cwd).is_absolute())
                 .map(str::to_string);
             return self.codex_session_start(pid, thread, cwd).await;
+        }
+        if event_name == Some(crate::relay::codex::stop_hook::QUESTION_EVENT) {
+            return self.codex_question_hook(pid, thread, fields).await;
         }
         let Some(event) = HookEvent::named(event_name) else {
             return Ok(json!({}));
@@ -249,6 +289,87 @@ impl Outbound {
         })
         .await
         .unwrap_or_else(|_| Ok(json!({})))
+    }
+
+    /// Agent Relay's Codex hook at PreToolUse, which `hooks.json` runs for
+    /// `request_user_input` alone: with question escalation on, the question
+    /// goes to the question inbox and the tool call is refused with the
+    /// reason, so the session keeps working and the answer arrives as a
+    /// message. Only the thread's running turn, held by the trusted Codex
+    /// writer that called, is answered. Anything else (another tool, a
+    /// session not on the relay, escalation off, input that does not parse,
+    /// a question not sent within `question::ROUTE_LIMIT`) answers `{}`, and
+    /// Codex shows the question as usual.
+    async fn codex_question_hook(
+        &self,
+        pid: i32,
+        thread: String,
+        fields: &Map<String, Value>,
+    ) -> Result<Value, OutboundError> {
+        self.codex_question_hook_within(pid, thread, fields, QUESTION_BUDGET)
+            .await
+    }
+
+    /// `codex_question_hook`, where the question may take `budget` in all
+    /// from the request's arrival.
+    async fn codex_question_hook_within(
+        &self,
+        pid: i32,
+        thread: String,
+        fields: &Map<String, Value>,
+        budget: std::time::Duration,
+    ) -> Result<Value, OutboundError> {
+        let arrived = std::time::Instant::now();
+        use crate::relay::codex::stop_hook::QUESTION_TOOL;
+        if fields.get("tool_name").and_then(Value::as_str) != Some(QUESTION_TOOL) {
+            return Ok(json!({}));
+        }
+        let Some(input) = fields.get("tool_input").filter(|input| input.is_object()) else {
+            return Ok(json!({}));
+        };
+        // Off costs nothing: no caller check, no lookup, nothing sent.
+        if !self.core.store.read(crate::relay::question::settings::on) {
+            return Ok(json!({}));
+        }
+        let turn = fields
+            .get("turn_id")
+            .and_then(Value::as_str)
+            .filter(|turn| !turn.is_empty())
+            .ok_or_else(OutboundError::not_a_session)?
+            .to_string();
+        let directory = self.core.plugins.sessions.clone();
+        let caller = thread.clone();
+        let matches = tokio::task::spawn_blocking(move || {
+            directory.codex_hook_turn_matches(pid, &caller, &turn)
+        })
+        .await
+        .unwrap_or(false);
+        if !matches {
+            return Err(OutboundError::not_a_session());
+        }
+        let target = Target::new(SessionKind::Codex, thread);
+        let Some(registration) = self
+            .core
+            .store
+            .read(|store| store.registration_for(&target).cloned())
+        else {
+            return Ok(json!({}));
+        };
+        // The caller check took part of the time the hook client waits: a
+        // question that might not be sent before it gives up is not sent,
+        // so Codex never shows a dialog for a question the core also sends.
+        if arrived.elapsed() + crate::relay::question::ROUTE_LIMIT + QUESTION_MARGIN > budget {
+            return Ok(json!({}));
+        }
+        let cwd = fields
+            .get("cwd")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let reason = self
+            .core
+            .escalate_codex_hook_question(&registration, input, cwd)
+            .await;
+        Ok(question_hook_answer(reason.as_deref()))
     }
 
     /// Agent Relay's Codex hook at SessionStart: the session's Agent Relay
@@ -410,9 +531,20 @@ mod tests {
             pid == 42 && thread == THREAD
         }
         fn codex_hook_turn_matches(&self, pid: i32, thread: &str, turn: &str) -> bool {
+            if turn == "question-turn-slow" {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                return self.holds_codex_thread(pid, thread);
+            }
+            if turn.starts_with("question-turn") {
+                QUESTION_CHECKS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return self.holds_codex_thread(pid, thread) && turn == "question-turn";
+            }
             self.holds_codex_thread(pid, thread) && turn == "fixture-turn"
         }
     }
+
+    /// How many times the question hook asked the directory about a turn.
+    static QUESTION_CHECKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     struct Direct;
     impl DirectDelivery for Direct {
         fn delivers_directly(&self) -> bool {
@@ -787,5 +919,198 @@ mod tests {
                 .unwrap(),
             json!({})
         );
+    }
+
+    /// The question hook's input for `tool`, `input` and `turn`, as Codex
+    /// 0.154 gives it (`fixtures/questions/codex-0.154-...`), from THREAD.
+    fn question(tool: &str, input: Value, turn: Option<&str>) -> Map<String, Value> {
+        let mut fields = json!({"session_id": THREAD, "hook_event_name": "PreToolUse",
+            "tool_name": tool, "tool_input": input, "cwd": "/work"})
+        .as_object()
+        .unwrap()
+        .clone();
+        if let Some(turn) = turn {
+            fields.insert("turn_id".into(), json!(turn));
+        }
+        fields
+    }
+
+    fn asked() -> Value {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../fixtures/questions/codex-0.154-pre-tool-use-request-user-input.json"
+        ))
+        .unwrap();
+        fixture["input"]["tool_input"].clone()
+    }
+
+    /// Puts THREAD on the relay in a workspace at `base`, with escalation
+    /// on and the inbox `triage`.
+    fn register(outbound: &Outbound, base: &str) {
+        let asker = crate::relay::question::tests::registration(
+            "asker-route",
+            Target::new(SessionKind::Codex, THREAD),
+            base,
+        );
+        outbound
+            .core
+            .workspace
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .base_url = base.into();
+        outbound
+            .core
+            .workspace
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .key = Secret::new("rk_live_test");
+        outbound
+            .core
+            .store
+            .remember(|store| {
+                store
+                    .tokens
+                    .insert(asker.name.clone(), Secret::new("at_live_asker"));
+                store.registrations.push(asker);
+                store.extras.question_escalation_inbox = Some("triage".into());
+            })
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_question_hook_answers_only_its_own_turns_question() {
+        let (base, hits) = crate::relay::question::tests::relaycast(false);
+        let (_temp, outbound, _) = fixture();
+        let ask = |fields: Map<String, Value>| {
+            let outbound = &outbound;
+            async move { outbound.codex_stop_hook(42, outbound.uid, &fields).await }
+        };
+        // Another tool, or input that is not an object: allowed at once.
+        assert_eq!(
+            ask(question("shell", asked(), Some("question-turn")))
+                .await
+                .unwrap(),
+            json!({})
+        );
+        assert_eq!(
+            ask(question(
+                "request_user_input",
+                json!("Which?"),
+                Some("question-turn")
+            ))
+            .await
+            .unwrap(),
+            json!({})
+        );
+        // No turn, an empty one, or one the caller does not hold.
+        for turn in [None, Some(""), Some("question-turn-other")] {
+            let error = ask(question("request_user_input", asked(), turn))
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, OutboundError::not_a_session().code, "{turn:?}");
+        }
+        let other_caller = outbound
+            .codex_stop_hook(
+                7,
+                outbound.uid,
+                &question("request_user_input", asked(), Some("question-turn")),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(other_caller.code, OutboundError::not_a_session().code);
+        // Not on the relay: allowed.
+        assert_eq!(
+            ask(question(
+                "request_user_input",
+                asked(),
+                Some("question-turn")
+            ))
+            .await
+            .unwrap(),
+            json!({})
+        );
+        // On the relay: sent, and the tool is refused with the reason.
+        register(&outbound, &base);
+        let answer = ask(question(
+            "request_user_input",
+            asked(),
+            Some("question-turn"),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(answer["hookSpecificOutput"]["hookEventName"], "PreToolUse");
+        assert_eq!(answer["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert!(answer["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .unwrap()
+            .starts_with("Sent to @triage over Agent Relay as question q"));
+        assert!(hits
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|hit| hit.starts_with("POST /v1/dm")));
+        // Off: allowed, with no directory check and nothing sent.
+        outbound
+            .core
+            .store
+            .remember(|store| store.extras.question_escalation = Some(false))
+            .unwrap();
+        let before = QUESTION_CHECKS.load(std::sync::atomic::Ordering::SeqCst);
+        let sent = hits.lock().unwrap().len();
+        assert_eq!(
+            ask(question(
+                "request_user_input",
+                asked(),
+                Some("question-turn-off")
+            ))
+            .await
+            .unwrap(),
+            json!({})
+        );
+        assert_eq!(
+            QUESTION_CHECKS.load(std::sync::atomic::Ordering::SeqCst),
+            before
+        );
+        assert_eq!(hits.lock().unwrap().len(), sent);
+    }
+
+    /// A caller check that leaves no room for a full send leaves the
+    /// question to Codex's dialog, with nothing sent; a quick one sends.
+    #[tokio::test]
+    async fn a_slow_caller_check_leaves_the_question_to_codex() {
+        let (base, hits) = crate::relay::question::tests::relaycast(false);
+        let (_temp, outbound, _) = fixture();
+        register(&outbound, &base);
+        let budget = crate::relay::question::ROUTE_LIMIT
+            + QUESTION_MARGIN
+            + std::time::Duration::from_millis(200);
+        let dms = || {
+            hits.lock()
+                .unwrap()
+                .iter()
+                .filter(|hit| hit.starts_with("POST /v1/dm"))
+                .count()
+        };
+        let slow = question("request_user_input", asked(), Some("question-turn-slow"));
+        let answer = outbound
+            .codex_question_hook_within(42, THREAD.into(), &slow, budget)
+            .await
+            .unwrap();
+        assert_eq!(answer, json!({}));
+        assert_eq!(dms(), 0, "nothing sent");
+        // A question of its own: another test may have this thread's
+        // fixture question open already.
+        let mut own = asked();
+        own["questions"][0]["question"] = json!("Which cache should the service use?");
+        let quick = question("request_user_input", own, Some("question-turn"));
+        let answer = outbound
+            .codex_question_hook_within(42, THREAD.into(), &quick, budget)
+            .await
+            .unwrap();
+        assert_eq!(answer["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(dms(), 1);
     }
 }
