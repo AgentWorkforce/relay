@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Rejected Copilot and Cursor stops leave cached advisories untaken. Socket hooks require the caller's exact session, and malformed advisory ID batches are withheld. Claude's Stop hook stays quiet in automated runs and preserves profile/socket markers. Cursor editor hooks use their payload-aware process proof; stale generations and hooks cancelled during an advisory request leave notes unacknowledged.
 - `agent-relay-node`: an in-process coordination plugin can deliver a bounded, escaped automated notice to an exact local registration through its peer route. Notices carry no human authority or reply route; stale registrations are refused, and cancellation keeps the delivery lock until the handoff ends. Provider keys use a separate namespace. OpenClaw and Hermes are refused because their routes create sender conversations. Codex queue and Copilot native receipts recognize the service notice reference without changing peer-pointer routing or granting native input authority. The caller retains durable delivery receipts.
 
+### Fixed
+
+- `agent-relay-node`: spawned Codex MCP tool approvals now reach the verified spawning agent with the server, tool and argument names, remain visibly `waiting_for_approval` for 15 minutes, and accept authenticated Relay approval replies instead of silently timing out after five minutes. Spawn actions also accept an `approval_profile` (`interactive`, `requester`, or machine-owner-enabled `full_access`) so hosted launchers can declare the prompt policy up front.
+
 ## [18.11.0] - 2026-11-19
 
 ### Added

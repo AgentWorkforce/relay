@@ -31,6 +31,13 @@ pub struct Intent {
     pub invocation_id: String,
     pub name: String,
     pub harness: HarnessId,
+    /// The per-spawn approval policy, kept across a core restart.
+    #[serde(
+        rename = "approvalProfile",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub approval_profile: Option<super::wire::ApprovalProfile>,
     #[serde(rename = "nodeID")]
     pub node_id: String,
     #[serde(rename = "nodeName")]
@@ -168,6 +175,7 @@ impl Intent {
                 node_name: node_name.to_string(),
                 invocation_id: self.invocation_id.clone(),
                 harness: self.harness.name().to_string(),
+                approval_profile: self.approval_profile,
                 requester: self.requester.clone(),
                 launcher: self.launcher.clone(),
                 process,
@@ -491,6 +499,7 @@ pub(super) mod tests {
             gate_launch: false,
             name: name.into(),
             harness: claude::ID,
+            approval_profile: None,
             node_id: "node_desktop_1".into(),
             node_name: "test-desk-desktop".into(),
             title: "Fix CI".into(),

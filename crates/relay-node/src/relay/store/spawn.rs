@@ -27,6 +27,14 @@ pub struct SpawnOrigin {
     pub invocation_id: String,
     /// The harness's id (`relay::harness`), such as `codex`.
     pub harness: String,
+    /// The approval policy selected for this spawn. Absent on spawns from
+    /// older callers, which continue to use the machine's configured default.
+    #[serde(
+        rename = "approvalProfile",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub approval_profile: Option<crate::relay::spawn::wire::ApprovalProfile>,
     /// The agent that asked for the spawn, as Relaycast recorded it: its
     /// name and immutable id (`spawn::report_back`). A name alone is not
     /// enough, as another agent can take it later. When Cloud invokes the

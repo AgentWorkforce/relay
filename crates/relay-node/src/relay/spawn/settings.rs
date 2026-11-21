@@ -224,14 +224,11 @@ impl ConfiguredChange {
     }
 }
 
-/// Whether **Approvals from the spawning agent** is on as set: on in Agent
-/// Relay Dev (`development`) and off in the release build, unless the person
-/// set it.
-pub fn requester_approvals_setting(store: &Store, development: bool) -> bool {
-    store
-        .extras
-        .spawn_requester_approvals
-        .unwrap_or(development)
+/// Whether **Approvals from the spawning agent** is on as set. It is on by
+/// default so a headless spawn always has a reachable approver; the machine
+/// owner can turn it off explicitly.
+pub fn requester_approvals_setting(store: &Store, _development: bool) -> bool {
+    store.extras.spawn_requester_approvals.unwrap_or(true)
 }
 
 /// Whether the agent that spawned a session may answer its permission and
@@ -614,12 +611,12 @@ mod requester_approvals_tests {
     }
 
     #[test]
-    fn approvals_from_the_spawning_agent_are_on_in_dev_and_off_in_release_until_set() {
+    fn approvals_from_the_spawning_agent_are_on_by_default_until_the_owner_turns_them_off() {
         let mut store = Store::default();
         assert_eq!(values(&store, true)["spawn_requester_approvals"], true);
-        assert_eq!(values(&store, false)["spawn_requester_approvals"], false);
+        assert_eq!(values(&store, false)["spawn_requester_approvals"], true);
         assert!(requester_approvals(&store, true));
-        assert!(!requester_approvals(&store, false));
+        assert!(requester_approvals(&store, false));
 
         set(&mut store, json!({"spawn_requester_approvals": true}));
         assert!(
@@ -658,8 +655,8 @@ mod requester_approvals_tests {
         assert!(requester_approvals(&store, false));
     }
 
-    // A `settings.set` batch whose other write fails is put back: approvals
-    // from the spawning agent must not stay on after the failed change.
+    // A `settings.set` batch whose other write fails is put back to the
+    // default: approvals from the spawning agent remain on.
     #[test]
     fn a_failed_change_puts_approvals_from_the_spawning_agent_back() {
         let previous = Store::default();
@@ -677,7 +674,7 @@ mod requester_approvals_tests {
         };
         let mut store = written;
         assert!(change.restore(&mut store, &write));
-        assert!(!requester_approvals(&store, false));
+        assert!(requester_approvals(&store, false));
         assert_eq!(store.extras.spawn_requester_approvals, None);
     }
 }

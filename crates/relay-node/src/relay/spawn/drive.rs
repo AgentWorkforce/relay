@@ -161,17 +161,17 @@ pub(crate) fn who_may_answer(requester: Option<&str>) -> String {
 pub(crate) fn approval_text(agent: &str, notice: &Notice, requester: Option<&str>) -> String {
     let reference = &notice.reference;
     let response = if notice.approvable {
-        format!("Reply `approve {reference}` or `deny {reference}` within five minutes.")
+        format!("Reply `approve {reference}` or `deny {reference}` within 15 minutes.")
     } else if notice.options.is_empty() {
-        format!("Reply `deny {reference}` within five minutes. This question cannot be answered through a Relay DM.")
+        format!("Reply `deny {reference}` within 15 minutes. This question cannot be approved through a Relay DM because it requires input or local verification.")
     } else {
         format!(
-            "Options: {}. Reply `choose {reference} <number>` or `deny {reference}` within five minutes.",
+            "Options: {}. Reply `choose {reference} <number>` or `deny {reference}` within 15 minutes.",
             notice.options.join(", ")
         )
     };
     format!(
-        "[Codex approval {reference} for @{agent}]\n{}\n{response} {}",
+        "[Codex approval {reference} for @{agent}]\nStatus: `waiting_for_approval`. Unanswered requests expire as an explicit denial after 15 minutes.\n{}\n{response} {}",
         notice.description,
         who_may_answer(requester)
     )
@@ -305,8 +305,9 @@ impl Core {
     }
 
     /// The agent that spawned `registration`, when it may answer the
-    /// session's requests: native input and approvals from the spawning
-    /// agent are both on, the session is not taken over, and its requester's
+    /// session's requests: the machine owner's native-input and requester-
+    /// approval settings permit it, the explicit profile does not restrict
+    /// it to the owner, the session is not taken over, and its requester's
     /// immutable id is known. Teammates and other agents never may.
     pub(crate) fn approving_requester(
         &self,
@@ -326,7 +327,16 @@ impl Core {
         registration
             .spawn
             .as_ref()
-            .filter(|spawn| spawn.taken_over_at.is_none())
+            .filter(|spawn| {
+                spawn.taken_over_at.is_none()
+                    && !matches!(
+                        spawn.approval_profile,
+                        Some(
+                            super::wire::ApprovalProfile::Interactive
+                                | super::wire::ApprovalProfile::FullAccess
+                        )
+                    )
+            })
             .and_then(|spawn| spawn.requester.clone())
             .filter(|requester| !requester.agent_id.is_empty())
     }
@@ -478,6 +488,12 @@ impl Core {
         let Some(approver) = self.approver(registration, delivery, reference).await else {
             return OwnerReply::NotOne;
         };
+        // Choice replies answer a tool's input question, not a permission
+        // prompt. Only the verified machine owner may supply that input; a
+        // requester may still approve or deny where its profile permits it.
+        if matches!(decision, ReplyDecision::Choose(_)) && !matches!(approver, Approver::Owner(_)) {
+            return OwnerReply::NotOne;
+        }
         if self
             .store
             .remember(|store| store.record_injected(&delivery.id))

@@ -321,6 +321,7 @@ impl Core {
             task: String::new(),
             directory: None,
             fork_from: None,
+            approval_profile: intent.approval_profile,
             launch_credential: None,
         };
         let error = super::invoke::SpawnError::from(

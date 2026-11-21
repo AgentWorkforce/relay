@@ -32,6 +32,7 @@ use super::lifecycle::WorkCounts;
 use super::resources::Resources;
 use crate::relay::state::{ProcessEvidence, SpawnSlots, UnfinishedWork, WorkEvidence};
 use crate::relay::workspace::Secret;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -57,6 +58,32 @@ pub const WIRE_VERSION: u64 = 1;
 /// A harness a spawn node offers, by the id Relaycast routes it by
 /// (`spawn:<id>`): one of the harnesses this core knows (`relay::harness`).
 pub use crate::relay::harness::HarnessId;
+
+/// How one spawn handles harness permission prompts. An absent profile keeps
+/// the node owner's existing per-harness setting for older callers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalProfile {
+    /// Keep prompts local to the signed-in machine owner.
+    Interactive,
+    /// Also let the immutable agent that requested the spawn answer over its
+    /// authenticated Relay DM.
+    Requester,
+    /// Launch without prompts, but only when the machine owner already
+    /// enabled full access for this harness.
+    FullAccess,
+}
+
+impl ApprovalProfile {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "interactive" => Some(Self::Interactive),
+            "requester" => Some(Self::Requester),
+            "full_access" => Some(Self::FullAccess),
+            _ => None,
+        }
+    }
+}
 
 /// `POST /v1/nodes`: enrolls (or re-enrolls) this computer's spawn node.
 /// No `machine_id`: Relaycast could match it to a broker node this computer
@@ -539,6 +566,9 @@ pub struct SpawnRequest {
     /// The agent on this computer whose session the new agent starts as a
     /// copy of (`fork_from`), continuing its conversation.
     pub fork_from: Option<String>,
+    /// Per-spawn approval policy. `None` preserves the machine's configured
+    /// default for callers from before this field existed.
+    pub approval_profile: Option<ApprovalProfile>,
     /// The one-time `sh_lt_` credential Control added for this launch on a
     /// gate-only install (`input.launch_credential`), for the agent's
     /// relaygate registration. Read once from the frame, taken out of the
@@ -629,6 +659,22 @@ pub fn invoke(frame: &Value) -> Option<Result<Invoke, (String, String)>> {
         },
         _ => return fail("spawn_invalid_input: fork_from must name another agent"),
     };
+    let approval_profile = match &input["approval_profile"] {
+        Value::Null => None,
+        Value::String(profile) => match ApprovalProfile::from_name(profile) {
+            Some(profile) => Some(profile),
+            None => {
+                return fail(
+                    "spawn_invalid_input: approval_profile must be interactive, requester or full_access",
+                )
+            }
+        },
+        _ => {
+            return fail(
+                "spawn_invalid_input: approval_profile must be interactive, requester or full_access",
+            )
+        }
+    };
     // Absent is a spawn as before. A value that is not a launch credential
     // is refused rather than handed to the agent or dropped: the agent
     // could not register at the gate with it.
@@ -649,6 +695,7 @@ pub fn invoke(frame: &Value) -> Option<Result<Invoke, (String, String)>> {
         task,
         directory,
         fork_from,
+        approval_profile,
         launch_credential,
     })))
 }
@@ -1007,7 +1054,8 @@ mod tests {
         };
         let frame = json!({"v": 1, "type": "action.invoke", "invocation_id": "inv_1",
             "action": "spawn:codex", "input": {"name": "w1", "cli": "codex", "task": " fix CI ",
-            "target_node": "mac-desktop", "worker_cwd": repo, "verify_ready": true}});
+            "target_node": "mac-desktop", "worker_cwd": repo, "verify_ready": true,
+            "approval_profile": "requester"}});
         let Some(Ok(Invoke::Spawn(request))) = invoke(&frame) else {
             panic!("not a spawn")
         };
@@ -1016,8 +1064,21 @@ mod tests {
         assert_eq!(request.task, "fix CI");
         assert_eq!(request.directory, Some(PathBuf::from(repo)));
         assert_eq!(request.fork_from, None);
+        assert_eq!(request.approval_profile, Some(ApprovalProfile::Requester));
         // No launch credential sent: none read, a spawn as before.
         assert_eq!(request.launch_credential, None);
+    }
+
+    #[test]
+    fn an_invalid_approval_profile_is_refused_instead_of_silently_dropped() {
+        for profile in [json!("always"), json!(true), json!({"mode": "requester"})] {
+            assert!(matches!(
+                invoke(&json!({"type": "action.invoke", "invocation_id": "inv_1",
+                    "action": "spawn:codex", "input": {"name": "w1", "task": "go",
+                    "approval_profile": profile}})),
+                Some(Err((_, error))) if error.contains("approval_profile")
+            ));
+        }
     }
 
     /// Control's launch credential is read from the spawn's input, and a
