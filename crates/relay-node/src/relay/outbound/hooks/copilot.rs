@@ -12,6 +12,7 @@ impl Outbound {
         if uid != self.uid {
             return Err(OutboundError::not_this_user());
         }
+        let arrived = std::time::Instant::now();
         let workspace = self.core.workspace();
         let generation = self.core.plugins.cloud.identity_sync_generation();
         let directory = self.core.plugins.sessions.clone();
@@ -98,6 +99,12 @@ impl Outbound {
                 if fields.get("toolName").and_then(Value::as_str)
                     == Some(crate::relay::copilot::QUESTION_TOOL) =>
             {
+                // The native proof above took part of the time Copilot
+                // waits for this hook: a question that might not be sent
+                // before Copilot gives up is not sent at all.
+                if !question_time_left(arrived.elapsed()) {
+                    return Ok(json!({}));
+                }
                 return Ok(self.copilot_question(&target, fields).await);
             }
             _ => return Ok(answer),
@@ -264,6 +271,23 @@ impl Outbound {
     }
 }
 
+/// How long a Copilot `preToolUse` for `ask_user` may take in all, from the
+/// request's arrival: inside the hook client's own wait (58 s,
+/// `cli::copilot_hook`) and Copilot's hook timeout (60 s,
+/// `copilot::settings`).
+const QUESTION_BUDGET: std::time::Duration = std::time::Duration::from_secs(55);
+
+/// Time kept back for answering once the question was sent.
+const QUESTION_MARGIN: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Whether a full `question::ROUTE_LIMIT` (and the margin) still fits in
+/// the budget after `elapsed` was spent proving the caller. Otherwise the
+/// question is not sent, so Copilot never shows a dialog for a question the
+/// core also sends.
+fn question_time_left(elapsed: std::time::Duration) -> bool {
+    elapsed + crate::relay::question::ROUTE_LIMIT + QUESTION_MARGIN <= QUESTION_BUDGET
+}
+
 /// Copilot's `preToolUse` answer for `ask_user`: denied with `reason` once
 /// the question went to the inbox (`permissionDecision`, as VS Code's and
 /// GitHub's hook references give it), otherwise `{}`.
@@ -277,6 +301,21 @@ fn copilot_question_answer(reason: Option<&str>) -> Value {
 #[cfg(test)]
 mod question_tests {
     use super::*;
+
+    /// A slow native proof leaves no time to send the question: it is
+    /// asked in Copilot as usual instead of both.
+    #[test]
+    fn a_slow_proof_leaves_the_question_to_copilot() {
+        use std::time::Duration;
+        assert!(question_time_left(Duration::ZERO));
+        assert!(question_time_left(Duration::from_secs(32)));
+        assert!(!question_time_left(Duration::from_secs(33)));
+        assert!(!question_time_left(Duration::from_secs(50)));
+        assert!(
+            QUESTION_BUDGET < Duration::from_secs(58),
+            "inside the client's wait"
+        );
+    }
 
     #[test]
     fn only_a_sent_question_denies_ask_user() {

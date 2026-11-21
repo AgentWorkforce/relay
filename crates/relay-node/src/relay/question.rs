@@ -611,6 +611,11 @@ impl Core {
         if !self.store.read(settings::on) || asked.questions.is_empty() {
             return Escalation::Off;
         }
+        // An answer the session could never take strands the question: it
+        // is asked in the session instead.
+        if asked.via == Via::Session && !self.answer_reaches(registration).await {
+            return Escalation::Off;
+        }
         let input_hash = input_hash(asked.input);
         let session = &registration.target.id;
         let base_key = format!("question-{session}-{input_hash}");
@@ -1200,6 +1205,26 @@ It is not sent again.",
 }
 
 impl Core {
+    /// Whether an answer typed into `registration`'s session can reach it:
+    /// a Devin session only while Agent Relay's Devin hooks are on (they
+    /// carry it in), an already-open Grok session only while Grok lists it.
+    /// Every other session takes its answer as it takes any message.
+    async fn answer_reaches(&self, registration: &Registration) -> bool {
+        match registration.target.kind {
+            crate::relay::store::SessionKind::Devin => {
+                self.settings().get(crate::relay::devin::SETTING) != Some(&Value::Bool(false))
+            }
+            crate::relay::store::SessionKind::GrokOpen => {
+                let (sessions, target) =
+                    (self.plugins.sessions.clone(), registration.target.clone());
+                tokio::task::spawn_blocking(move || sessions.find_session(&target).is_some())
+                    .await
+                    .unwrap_or(false)
+            }
+            _ => true,
+        }
+    }
+
     /// Whether a spawned agent's own process still runs, by the spawner
     /// that started it; `None` for a session with no process of its own (a
     /// person's session, or a spawned Codex thread in Codex's daemon).

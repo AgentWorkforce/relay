@@ -39,7 +39,7 @@ impl Outbound {
                 .read(|store| store.registration_for(target).cloned())
         })?;
         let input = &fields["tool_input"];
-        let questions = text::hook_questions(input);
+        let questions = route_questions(&fields);
         if questions.is_empty() {
             return Err(OutboundError::new(
                 400,
@@ -59,6 +59,18 @@ impl Outbound {
             .await
             .response())
     }
+}
+
+/// The questions in a hook's `fields`. A hook that cut the input short
+/// (Grok's `toolInputTruncated`) does not hand over the whole question, so
+/// it asks nothing and the harness shows it.
+fn route_questions(fields: &Map<String, Value>) -> Vec<text::Question> {
+    let truncated = fields.get("toolInputTruncated") == Some(&Value::Bool(true))
+        || fields.get("tool_input_truncated") == Some(&Value::Bool(true));
+    if truncated {
+        return Vec::new();
+    }
+    text::hook_questions(&fields["tool_input"])
 }
 
 /// Grok's ask-the-user tool, as its hooks name it (Grok 1.0.77).
@@ -95,7 +107,7 @@ fn question_registration(
         OutboundError::new(
             404,
             "question_session_unknown",
-            "this Claude Code session is not registered with Agent Relay",
+            "this session is not registered with Agent Relay",
         )
     };
     let covered = matches!(
@@ -239,6 +251,43 @@ mod tests {
     /// The hook's questions are read strictly: options may be labelled
     /// objects or plain labels; any other shape asks nothing, so the route
     /// refuses it and the harness shows its question.
+    /// Claude's "Other" choice is its own free text, never a numbered
+    /// choice; a question set over the caps asks nothing.
+    #[test]
+    fn claudes_other_choice_is_not_numbered_and_large_sets_are_not_read() {
+        let claude = json!({"questions": [{"question": "Which?", "header": "Pick",
+            "options": [{"label": "A", "description": ""},
+                        {"label": "Other", "description": "", "isOther": true}],
+            "multiSelect": false}]});
+        let questions = text::hook_questions(&claude);
+        assert_eq!(questions[0].options.len(), 1);
+        assert_eq!(questions[0].options[0].label, "A");
+        assert!(questions[0].free);
+        let many = json!({"questions": (0..=text::MAX_QUESTIONS)
+            .map(|i| json!({"question": format!("Q{i}?")}))
+            .collect::<Vec<_>>()});
+        assert!(text::hook_questions(&many).is_empty());
+        let wide = json!({"questions": [{"question": "Which?",
+            "options": (0..=text::MAX_OPTIONS).map(|i| format!("o{i}")).collect::<Vec<_>>()}]});
+        assert!(text::hook_questions(&wide).is_empty());
+        let at_caps = json!({"questions": (0..text::MAX_QUESTIONS)
+            .map(|i| json!({"question": format!("Q{i}?"),
+                "options": (0..text::MAX_OPTIONS).map(|j| format!("o{j}")).collect::<Vec<_>>()}))
+            .collect::<Vec<_>>()});
+        assert_eq!(text::hook_questions(&at_caps).len(), text::MAX_QUESTIONS);
+    }
+
+    #[test]
+    fn a_truncated_input_asks_nothing() {
+        let mut fields = json!({"tool_input": {"questions": [{"question": "Which?"}]}})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert_eq!(route_questions(&fields).len(), 1);
+        fields.insert("toolInputTruncated".into(), json!(true));
+        assert!(route_questions(&fields).is_empty());
+    }
+
     #[test]
     fn only_a_known_question_shape_is_read() {
         let plain = json!({"questions": [{"question": "Which?", "options": ["A", "B"]}]});

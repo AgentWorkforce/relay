@@ -2060,3 +2060,66 @@ async fn a_copilot_question_goes_to_the_inbox() {
     assert_eq!(questions[0].options.len(), 2);
     assert!(questions[0].free);
 }
+
+/// A hook's question in the shared shape.
+fn hook_asked(input: &Value) -> Asked<'_> {
+    Asked {
+        questions: text::hook_questions(input),
+        input,
+        cwd: "",
+        via: Via::Session,
+    }
+}
+
+/// The Devin hooks' setting, turned off since the hook was installed.
+struct DevinHooksOff;
+
+impl crate::relay::agents::SettingsExtension for DevinHooksOff {
+    fn get(&self) -> Map<String, Value> {
+        Map::from_iter([(crate::relay::devin::SETTING.to_string(), json!(false))])
+    }
+    fn set(&self, _: &str, _: &Value) -> Option<Result<(), String>> {
+        None
+    }
+}
+
+/// A question whose answer could never reach its session is not sent: a
+/// Devin session whose hooks were turned off, an already-open Grok session
+/// Grok no longer lists. It is asked in the session as usual.
+#[tokio::test]
+async fn a_question_whose_answer_cannot_reach_the_session_is_asked_as_usual() {
+    let (base, hits) = relaycast(false);
+    let input = json!({"questions": [{"question": "Which?", "options": ["A", "B"]}]});
+    let devin = registration(
+        "asker-devin-off",
+        Target::new(SessionKind::Devin, "real-off"),
+        &base,
+    );
+    let (core, _temp) = core_with(
+        &base,
+        &devin,
+        true,
+        crate::relay::daemon::Plugins {
+            settings: vec![Arc::new(DevinHooksOff)],
+            ..crate::relay::daemon::Plugins::default()
+        },
+    );
+    assert_eq!(
+        core.escalate_question(&devin, hook_asked(&input)).await,
+        Escalation::Off
+    );
+    let grok = registration(
+        "asker-grok-gone",
+        Target::new(
+            SessionKind::GrokOpen,
+            "019a0000-0000-7000-8000-00000000c0d0",
+        ),
+        &base,
+    );
+    let (core, _temp) = self::core(&base, &grok, true);
+    assert_eq!(
+        core.escalate_question(&grok, hook_asked(&input)).await,
+        Escalation::Off
+    );
+    assert_eq!(dm_count(&hits), 0);
+}

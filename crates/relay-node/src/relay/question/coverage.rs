@@ -95,17 +95,16 @@ runs.",
         ),
         SessionKind::Grok | SessionKind::GrokOpen => row(
             "Grok",
-            Partial,
-            "ask_user_question, through Agent Relay's Claude Code hook (claude_session_hook), \
-which Grok runs from ~/.claude/settings.json. Its argument names are read from the Grok CLI \
-itself; not yet proven in a live session.",
+            NotCovered,
+            "Not yet: Agent Relay's Claude Code hook may reach Grok's ask_user_question, but that \
+Grok runs it for that tool and honours its refusal is not yet proven, so Grok asks as usual.",
         ),
         SessionKind::Devin => row(
             "Devin",
             Partial,
             "ask_user_question, through Agent Relay's Devin hooks (devin_direct_delivery), which \
-are off until turned on. Its argument names are read from the Devin CLI itself; not yet proven \
-in a live session.",
+are off until turned on; not where Devin's config holds a PreToolUse value that is not a list. \
+Its argument names are read from the Devin CLI itself; not yet proven in a live session.",
         ),
         SessionKind::Droid => row(
             "Droid",
@@ -268,7 +267,7 @@ mod tests {
         let text = status_text();
         assert!(text.starts_with("Available for Claude Code."), "{text}");
         assert!(
-            text.contains("Partly available for Codex, Copilot, Grok, Devin."),
+            text.contains("Partly available for Codex, Copilot, Devin."),
             "{text}"
         );
         assert!(
