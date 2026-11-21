@@ -87,7 +87,8 @@ live session.",
             Partial,
             "Questions OpenCode's question tool asks in a session on a server Agent Relay runs, \
 read from that server: the question shows in OpenCode's dialog and in the inbox, and the \
-first answer wins. Not yet proven in a live session.",
+first answer wins. Such a server may have no window a person watches, so a question that \
+cannot be sent stays there unseen. Not yet proven in a live session.",
         ),
         SessionKind::OpenCodeOpen => row(
             "OpenCode in a terminal",
@@ -116,17 +117,17 @@ Its argument names are read from the Devin CLI itself; not yet proven in a live 
         SessionKind::Pi => row(
             "Pi",
             Partial,
-            "Pi has no built-in ask tool: the question tool of Pi's example extension, through \\
-Agent Relay's Pi extension (pi_extension). Not on Windows, and not where only a profile build \\
-runs (profile builds do not install the extension); an older build that rewrites the \\
+            "Pi has no built-in ask tool: the question tool of Pi's example extension, through \
+Agent Relay's Pi extension (pi_extension). Not on Windows, and not where only a profile build \
+runs (profile builds do not install the extension); an older build that rewrites the \
 extension drops it until a newer build starts. Not yet proven in a live session.",
         ),
         SessionKind::Omp => row(
             "Oh My Pi",
             Partial,
-            "omp's ask tool, through Agent Relay's Oh My Pi extension (pi_extension). Not on \\
-Windows, and not where only a profile build runs (profile builds do not install the \\
-extension); an older build that rewrites the extension drops it until a newer build starts. \\
+            "omp's ask tool, through Agent Relay's Oh My Pi extension (pi_extension). Not on \
+Windows, and not where only a profile build runs (profile builds do not install the \
+extension); an older build that rewrites the extension drops it until a newer build starts. \
 Not yet proven in a live session.",
         ),
         SessionKind::MuseOpen => row(
@@ -235,6 +236,14 @@ mod tests {
             assert_eq!(place(*kind), i, "{kind:?}");
             let row = row(*kind);
             assert!(!row.label.is_empty() && !row.reason.is_empty());
+            // Text a person reads: no stray continuation or line break.
+            for text in [row.label, row.reason] {
+                assert!(
+                    !text.contains('\\') && !text.contains('\n'),
+                    "{kind:?}: {text}"
+                );
+                assert!(!text.contains("  "), "{kind:?}: {text}");
+            }
         }
         let value = value();
         let map = value.as_object().unwrap();

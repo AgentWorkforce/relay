@@ -1935,20 +1935,16 @@ impl Injector for LocalInjector {
         registration: &crate::relay::store::Registration,
         request_id: &str,
         answers: &serde_json::Value,
-    ) -> Result<(), String> {
+    ) -> opencode_existing::ReplyOutcome {
         let binding = (registration.target.kind == SessionKind::OpenCode)
             .then(|| self.managed.as_ref()?.binding(&registration.target))
             .flatten();
-        let Some(ManagedBinding::OpenCode(binding)) = binding else {
-            return Err("the OpenCode session is no longer bound".into());
+        let (Some(ManagedBinding::OpenCode(binding)), Some(injector)) =
+            (binding, self.opencode.as_ref())
+        else {
+            return opencode_existing::ReplyOutcome::Unavailable;
         };
-        let injector = self
-            .opencode
-            .as_ref()
-            .ok_or("OpenCode delivery is unavailable")?;
-        injector
-            .reply_question(&binding, request_id, answers)
-            .map_err(|failure| format!("OpenCode did not take the answer ({failure:?})"))
+        injector.reply_question(&binding, request_id, answers)
     }
 }
 

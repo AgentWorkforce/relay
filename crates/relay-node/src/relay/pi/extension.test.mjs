@@ -377,3 +377,39 @@ test('other tools, no core, and any answer but escalated let the tool run, and n
   assert.equal(await tool(questionEvent('omp-18.12.6-tool-call-ask.json'), f.ctx), undefined);
   assert.equal(await tool(null, f.ctx), undefined);
 });
+
+test('a core that took the request ends it, whatever it answered: the next core is never asked', async t => {
+  for (const data of [{ escalated: false }, { escalated: false, error: 'the question may not have reached @triage' },
+    { escalated: false, reason: 'the question was not sent within 20s' }, { escalated: true, reason: '  ' }]) {
+    const f = await fixture(t, { harness: 'omp' });
+    const first = await core(t, f.root, 'relay-socket', res => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, data }));
+    });
+    const second = await core(t, f.root, 'relay-socket.dev', escalated);
+    const result = await f.handlers.get('tool_call')(questionEvent('omp-18.12.6-tool-call-ask.json'), f.ctx);
+    assert.equal(result, undefined, JSON.stringify(data));
+    assert.equal(first.length, 1);
+    assert.equal(second.length, 0, `never sent again: ${JSON.stringify(data)}`);
+  }
+});
+
+test('a second ask on the same core is written, not refused, even when its answer is slow', async t => {
+  const f = await fixture(t, { harness: 'omp', questionLimitMs: 6000 });
+  let calls = 0;
+  const first = await core(t, f.root, 'relay-socket', res => {
+    calls += 1;
+    if (calls === 1) return unknownSession(res);
+    setTimeout(() => escalated(res), 2000);
+  });
+  const second = await core(t, f.root, 'relay-socket.dev', escalated);
+  const tool = f.handlers.get('tool_call');
+  // The first ask passes on to the second core; the second ask is slow.
+  assert.deepEqual(await tool(questionEvent('omp-18.12.6-tool-call-ask.json'), f.ctx),
+    { block: true, reason: 'Sent to @triage as q1.' });
+  const before = second.length;
+  assert.deepEqual(await tool(questionEvent('omp-18.12.6-tool-call-ask.json'), f.ctx),
+    { block: true, reason: 'Sent to @triage as q1.' });
+  assert.equal(first.length, 2);
+  assert.equal(second.length, before, 'the next core is not asked');
+});

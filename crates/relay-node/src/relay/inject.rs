@@ -361,8 +361,8 @@ pub trait Injector: Send + Sync + 'static {
         _registration: &Registration,
         _request_id: &str,
         _answers: &serde_json::Value,
-    ) -> Result<(), String> {
-        Err("this session takes no OpenCode answer".into())
+    ) -> crate::relay::opencode_existing::ReplyOutcome {
+        crate::relay::opencode_existing::ReplyOutcome::Unavailable
     }
 
     /// The last `max` bytes of a terminal Claude Code session's transcript,
