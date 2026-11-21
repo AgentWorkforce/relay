@@ -1,0 +1,15 @@
+{
+  "_source": "Pi 1.2.0 (@earendil-works/pi-coding-agent): the tool_call event {type, toolName, toolCallId, input} and the {block, reason} return, reason reaching the model as the tool's error (docs/extensions.md, the installed package's own docs, and its _beforeToolCall). Pi has no built-in ask tool; this is the `question` tool of Pi's shipped example extension, examples/extensions/question.ts: {question, options: [{label, description?}]}. Values are synthetic.",
+  "event": {
+    "type": "tool_call",
+    "toolName": "question",
+    "toolCallId": "call_question_1",
+    "input": {
+      "question": "Which test runner should I set up?",
+      "options": [
+        {"label": "Vitest", "description": "Fast"},
+        {"label": "Jest"}
+      ]
+    }
+  }
+}

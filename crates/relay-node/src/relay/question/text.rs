@@ -56,9 +56,16 @@ pub const MAX_OPTIONS: usize = 50;
 /// header, options: [{label, description}] or [label]}]}`. Each always takes
 /// an answer in the user's own words. Empty for any other shape.
 pub fn hook_questions(input: &Value) -> Vec<Question> {
-    // Strict: a shape none of them gives asks nothing, and the tool runs.
-    let Some(asked) = input["questions"].as_array() else {
-        return Vec::new();
+    // Pi's example `question` tool asks one, at the top level.
+    let single;
+    let asked = match input["questions"].as_array() {
+        Some(asked) => asked,
+        None if input["question"].is_string() => {
+            single = vec![input.clone()];
+            &single
+        }
+        // Strict: a shape none of them gives asks nothing, and the tool runs.
+        None => return Vec::new(),
     };
     if asked.len() > MAX_QUESTIONS {
         return Vec::new();
@@ -103,7 +110,9 @@ pub fn hook_questions(input: &Value) -> Vec<Question> {
                 })
                 .filter(|choice| !choice.label.is_empty())
                 .collect(),
-            multi: question["multiSelect"] == true || question["multi_select"] == true,
+            multi: question["multiSelect"] == true
+                || question["multi_select"] == true
+                || question["multi"] == true,
             free: true,
         })
         .collect()

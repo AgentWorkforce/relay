@@ -115,13 +115,19 @@ Its argument names are read from the Devin CLI itself; not yet proven in a live 
         ),
         SessionKind::Pi => row(
             "Pi",
-            NotCovered,
-            "Not yet. Pi has no built-in ask tool; a question tool comes from an extension.",
+            Partial,
+            "Pi has no built-in ask tool: the question tool of Pi's example extension, through \\
+Agent Relay's Pi extension (pi_extension). Not on Windows, and not where only a profile build \\
+runs (profile builds do not install the extension); an older build that rewrites the \\
+extension drops it until a newer build starts. Not yet proven in a live session.",
         ),
         SessionKind::Omp => row(
             "Oh My Pi",
-            NotCovered,
-            "Not yet: Agent Relay's extension does not hand omp's ask tool over.",
+            Partial,
+            "omp's ask tool, through Agent Relay's Oh My Pi extension (pi_extension). Not on \\
+Windows, and not where only a profile build runs (profile builds do not install the \\
+extension); an older build that rewrites the extension drops it until a newer build starts. \\
+Not yet proven in a live session.",
         ),
         SessionKind::MuseOpen => row(
             "Muse",
@@ -270,7 +276,7 @@ mod tests {
         assert!(text.starts_with("Available for Claude Code."), "{text}");
         assert!(
             text.contains(
-                "Partly available for Codex, Copilot, OpenCode sessions Agent Relay serves, Devin."
+                "Partly available for Codex, Copilot, OpenCode sessions Agent Relay serves, Devin, Pi, Oh My Pi."
             ),
             "{text}"
         );

@@ -38,6 +38,23 @@ impl Outbound {
                 .store
                 .read(|store| store.registration_for(target).cloned())
         })?;
+        // A Pi or omp session asks through the extension, whose process is
+        // the caller: its registration must be pinned to that exact live
+        // binding (pid, start time and instance), or it is not this one.
+        if matches!(session.target.kind, SessionKind::Pi | SessionKind::Omp) {
+            let (sessions, target) = (self.core.plugins.sessions.clone(), session.target.clone());
+            let live = tokio::task::spawn_blocking(move || sessions.route_binding(&target))
+                .await
+                .ok()
+                .flatten();
+            if !pinned_to(&registration, live.as_deref()) {
+                return Err(OutboundError::new(
+                    404,
+                    "question_session_unknown",
+                    "this session is not registered with Agent Relay",
+                ));
+            }
+        }
         let input = &fields["tool_input"];
         let questions = route_questions(&fields);
         if questions.is_empty() {
@@ -59,6 +76,12 @@ impl Outbound {
             .await
             .response())
     }
+}
+
+/// Whether `registration` is pinned to the session's `live` route binding
+/// (a Pi or omp session's pid, start time and instance).
+fn pinned_to(registration: &crate::relay::store::Registration, live: Option<&str>) -> bool {
+    live.is_some() && registration.route_binding.as_deref() == live
 }
 
 /// The questions in a hook's `fields`. A hook that cut the input short
@@ -94,6 +117,10 @@ fn question_registration(
         // matches `AskUserQuestion` to its own `ask_user_question`, which
         // is the name it gives the hook.
         SessionKind::Grok | SessionKind::GrokOpen => GROK_QUESTION_TOOL,
+        // omp's built-in ask; Pi has none, and its shipped example's is
+        // `question`. Agent Relay's extension hands either over.
+        SessionKind::Pi => "question",
+        SessionKind::Omp => "ask",
         _ => "AskUserQuestion",
     };
     if fields.get("tool_name").and_then(Value::as_str) != Some(tool) {
@@ -117,6 +144,8 @@ fn question_registration(
             | SessionKind::Devin
             | SessionKind::Grok
             | SessionKind::GrokOpen
+            | SessionKind::Pi
+            | SessionKind::Omp
     );
     let same = fields
         .get("session_id")
@@ -277,6 +306,70 @@ mod tests {
         assert_eq!(text::hook_questions(&at_caps).len(), text::MAX_QUESTIONS);
     }
 
+    /// Pi's and omp's own tool names from their own sessions, in the shapes
+    /// their extension hands over (`fixtures/questions/pi-1.2.0-...`,
+    /// `omp-18.12.6-...`), and only pinned to the live binding.
+    #[test]
+    fn pi_and_omp_ask_with_their_own_tools_from_their_pinned_session() {
+        let read = |name: &str| -> Value {
+            serde_json::from_str(
+                &std::fs::read_to_string(
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("src/relay/fixtures/questions")
+                        .join(name),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let session = "12345678-1234-4234-8234-123456789abc";
+        for (kind, name, other) in [
+            (SessionKind::Pi, "pi-1.2.0-tool-call-question.json", "ask"),
+            (
+                SessionKind::Omp,
+                "omp-18.12.6-tool-call-ask.json",
+                "question",
+            ),
+        ] {
+            let event = read(name)["event"].clone();
+            let fields = json!({"hook_event_name": "PreToolUse", "session_id": session,
+                "tool_name": event["toolName"], "tool_input": event["input"], "cwd": "/work"})
+            .as_object()
+            .unwrap()
+            .clone();
+            let target = Target::new(kind, session);
+            let mut found = crate::relay::question::tests::registration(
+                "asker",
+                target.clone(),
+                "https://cast.test",
+            );
+            found.route_binding = Some(format!("{}:42:7:abc", kind.as_str()));
+            let registration =
+                question_registration(&fields, &target, |_| Some(found.clone())).unwrap();
+            assert!(pinned_to(
+                &registration,
+                Some(&format!("{}:42:7:abc", kind.as_str()))
+            ));
+            assert!(!pinned_to(
+                &registration,
+                Some(&format!("{}:42:7:new", kind.as_str()))
+            ));
+            assert!(!pinned_to(&registration, None));
+            let mut wrong = fields.clone();
+            wrong.insert("tool_name".into(), json!(other));
+            assert_eq!(
+                question_registration(&wrong, &target, |_| Some(found.clone()))
+                    .unwrap_err()
+                    .status,
+                400
+            );
+            let questions = route_questions(&fields);
+            assert_eq!(questions.len(), 1, "{kind:?}");
+            assert!(questions[0].text.ends_with('?'));
+            assert_eq!(questions[0].options.len(), 2);
+        }
+    }
+
     #[test]
     fn a_truncated_input_asks_nothing() {
         let mut fields = json!({"tool_input": {"questions": [{"question": "Which?"}]}})
@@ -299,7 +392,6 @@ mod tests {
             json!({"questions": [{"question": "Which?", "options": "A, B"}]}),
             json!({"questions": [{"question": ""}]}),
             json!({"questions": [{"question": "Which?"}, {"prompt": "Then?"}]}),
-            json!({"question": "Which?"}),
         ] {
             assert!(text::hook_questions(&bad).is_empty(), "{bad}");
         }

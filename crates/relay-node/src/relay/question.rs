@@ -1413,7 +1413,11 @@ impl Core {
             crate::relay::store::SessionKind::Devin => {
                 self.settings().get(crate::relay::devin::SETTING) != Some(&Value::Bool(false))
             }
-            crate::relay::store::SessionKind::GrokOpen => {
+            // Pi and omp take an answer through the extension's live
+            // binding, which the directory finds only while it holds.
+            crate::relay::store::SessionKind::Pi
+            | crate::relay::store::SessionKind::Omp
+            | crate::relay::store::SessionKind::GrokOpen => {
                 let (sessions, target) =
                     (self.plugins.sessions.clone(), registration.target.clone());
                 tokio::task::spawn_blocking(move || sessions.find_session(&target).is_some())

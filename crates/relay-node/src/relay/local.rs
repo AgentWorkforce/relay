@@ -273,7 +273,26 @@ impl LocalSessions {
     /// runs under such a process, are `CallerMiss::Unattributed`;
     /// `CallerMiss::NotASession` only when no agent process is above the
     /// caller at all.
+    /// The Pi or omp session whose live binding `pid` holds itself.
+    fn pi_caller(&self, pid: i32) -> Option<Target> {
+        [SessionKind::Pi, SessionKind::Omp]
+            .into_iter()
+            .find_map(|kind| {
+                let extension = self.config.extension(kind)?;
+                crate::relay::pi::caller(extension, &*self.table, self.config.uid, pid)
+                    .map(|binding| Target::new(kind, binding.session_id()))
+            })
+    }
+
     fn caller_target(&self, pid: i32) -> Result<Target, CallerMiss> {
+        // Agent Relay's Pi and omp extension runs inside the Pi or omp
+        // process and speaks to the socket itself: the caller is a process
+        // that holds a live session binding (`pi::bindings`: this exact
+        // process, by pid and kernel start time, holding its instance's
+        // session file open).
+        if let Some(target) = self.pi_caller(pid) {
+            return Ok(target);
+        }
         let table = &*self.table;
         let uid = self.config.uid;
         let claude = claude::registry(&self.config.claude, table);
