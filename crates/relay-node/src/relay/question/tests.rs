@@ -364,6 +364,8 @@ const REFUSE: u8 = 1;
 const HANG: u8 = 2;
 /// Takes the DM after a short while: a send still in flight.
 const SLOW: u8 = 3;
+/// Answers the DM with a server error: a send whose outcome is unknown.
+const BROKEN: u8 = 4;
 
 /// A Relaycast that knows the agent `triage` and takes DMs (refusing them
 /// when `refuse`), keeping each request's line and body.
@@ -464,6 +466,11 @@ fn relaycast_with(
                         "404 Not Found",
                         r#"{"ok":false,"error":{"code":"agent_not_found","message":"no"}}"#,
                     )
+                } else if mode == BROKEN && line.starts_with("POST /v1/dm") {
+                    (
+                        "500 Internal Server Error",
+                        r#"{"ok":false,"error":{"code":"internal","message":"boom"}}"#,
+                    )
                 } else if mode == REFUSE {
                     (
                         "403 Forbidden",
@@ -486,6 +493,8 @@ fn relaycast_with(
     (base, hits)
 }
 
+/// A core whose store has `asker` registered, with escalation turned on
+/// (inbox `triage`) or explicitly off.
 fn core(base: &str, asker: &Registration, on: bool) -> (Arc<Core>, tempfile::TempDir) {
     core_with(base, asker, on, crate::relay::daemon::Plugins::default())
 }
@@ -528,6 +537,9 @@ fn core_with(
             if on {
                 store.extras.question_escalation = Some(true);
                 store.extras.question_escalation_inbox = Some("triage".into());
+            } else {
+                // Escalation is on unless turned off: off is explicit.
+                store.extras.question_escalation = Some(false);
             }
         })
         .unwrap();
@@ -1385,4 +1397,223 @@ async fn a_gate_agent_asks_the_named_inbox() {
         .cloned()
         .collect();
     assert_eq!(lookups.len(), 1, "{lookups:?}");
+}
+
+/// Escalation is on unless turned off: a store that never set it sends the
+/// question to the inbox, and only an explicit off asks it in the session.
+#[tokio::test]
+async fn unset_escalation_is_on() {
+    let (base, hits) = relaycast(false);
+    let asker = registration(
+        "asker-unset",
+        Target::new(SessionKind::ClaudeTerminal, "sess-unset"),
+        &base,
+    );
+    let (core, _temp) = core(&base, &asker, true);
+    core.store
+        .remember(|store| store.extras.question_escalation = None)
+        .unwrap();
+    assert!(core.store.read(settings::on));
+    let question = input();
+    let escalation = core.escalate_question(&asker, asked(&question)).await;
+    assert!(
+        matches!(&escalation, Escalation::Sent { inbox, .. } if inbox == "triage"),
+        "{escalation:?}"
+    );
+    assert!(escalated("sess-unset", &question).is_some());
+    let dms = hits
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|hit| hit.starts_with("POST /v1/dm"))
+        .count();
+    assert_eq!(dms, 1);
+}
+
+/// What the question hook prints for `response`, served as the route
+/// serves it: `{"ok":true,"data":…}` with 200.
+fn hook_prints(escalation: &Escalation) -> Value {
+    let body = json!({"ok": true, "data": escalation.response()});
+    crate::relay::claude::session_hook::question_hook_output(200, body.to_string().as_bytes())
+}
+
+/// With escalation on by default, a question that is not delivered is
+/// asked in the session exactly as with escalation off: the route answers
+/// `escalated: false`, the hook prints `{}`, nothing is left open for the
+/// spawned Claude's `can_use_tool` to refuse, and a Codex request is
+/// forwarded as any other.
+#[tokio::test]
+async fn an_undelivered_question_is_asked_in_the_session() {
+    let mode = Arc::new(std::sync::atomic::AtomicU8::new(ACCEPT));
+    let (base, hits) = relaycast_in(mode.clone());
+    let asker = registration(
+        "asker-undelivered",
+        Target::new(SessionKind::ClaudeTerminal, "sess-undelivered"),
+        &base,
+    );
+    let (core, _temp) = core(&base, &asker, true);
+    core.store
+        .remember(|store| store.extras.question_escalation = None)
+        .unwrap();
+    let question = input();
+    let dms = || {
+        hits.lock()
+            .unwrap()
+            .iter()
+            .filter(|hit| hit.starts_with("POST /v1/dm"))
+            .count()
+    };
+    // Explicitly off: the baseline every other case must match.
+    let mut off_store = core.store.read(Clone::clone);
+    off_store.extras.question_escalation = Some(false);
+    assert!(!settings::on(&off_store));
+    assert_eq!(hook_prints(&Escalation::Off), json!({}));
+
+    // 1. No questions in the input.
+    let empty = json!({"questions": []});
+    let none = core
+        .escalate_question(
+            &asker,
+            Asked {
+                questions: Vec::new(),
+                input: &empty,
+                cwd: "",
+                via: Via::Claude,
+            },
+        )
+        .await;
+    assert_eq!(none, Escalation::Off);
+    assert_eq!(hook_prints(&none), json!({}));
+
+    // 2. The agent is not registered (no credential).
+    let stranger = registration(
+        "stranger-undelivered",
+        Target::new(SessionKind::ClaudeTerminal, "sess-stranger-undelivered"),
+        &base,
+    );
+    let unregistered = core.escalate_question(&stranger, asked(&question)).await;
+    assert!(
+        matches!(&unregistered, Escalation::Failed(why) if why.contains("is not registered")),
+        "{unregistered:?}"
+    );
+    assert_eq!(hook_prints(&unregistered), json!({}));
+
+    // 3. No workspace connected (signed out) for a named inbox, and no
+    // signed-in account for the owner's inbox.
+    let workspace = core.workspace.lock().unwrap().take();
+    let signed_out = core.escalate_question(&asker, asked(&question)).await;
+    assert_eq!(
+        signed_out,
+        Escalation::Failed("no workspace is connected".into())
+    );
+    assert_eq!(hook_prints(&signed_out), json!({}));
+    core.store
+        .remember(|store| store.extras.question_escalation_inbox = None)
+        .unwrap();
+    let no_owner = core.escalate_question(&asker, asked(&question)).await;
+    assert!(
+        matches!(&no_owner, Escalation::Failed(why) if why.starts_with("the owner's identity is unavailable")),
+        "{no_owner:?}"
+    );
+    assert_eq!(hook_prints(&no_owner), json!({}));
+    *core.workspace.lock().unwrap() = workspace;
+
+    // 4. The inbox cannot be resolved.
+    core.store
+        .remember(|store| store.extras.question_escalation_inbox = Some("nobody".into()))
+        .unwrap();
+    let unresolved = core.escalate_question(&asker, asked(&question)).await;
+    assert_eq!(
+        unresolved,
+        Escalation::Failed("no agent is named @nobody".into())
+    );
+    assert_eq!(hook_prints(&unresolved), json!({}));
+    core.store
+        .remember(|store| store.extras.question_escalation_inbox = Some("triage".into()))
+        .unwrap();
+    assert_eq!(dms(), 0, "nothing was sent so far");
+
+    // 5. The send is refused.
+    mode.store(REFUSE, std::sync::atomic::Ordering::SeqCst);
+    let refused = core.escalate_question(&asker, asked(&question)).await;
+    assert!(
+        matches!(&refused, Escalation::Failed(why) if why.starts_with("the question was not sent to @triage")),
+        "{refused:?}"
+    );
+    assert_eq!(hook_prints(&refused), json!({}));
+
+    // 6. The send's outcome is unknown (a server error).
+    mode.store(BROKEN, std::sync::atomic::Ordering::SeqCst);
+    let unknown = core.escalate_question(&asker, asked(&question)).await;
+    assert!(
+        matches!(&unknown, Escalation::Failed(why) if why.starts_with("the question may not have reached @triage")),
+        "{unknown:?}"
+    );
+    assert_eq!(hook_prints(&unknown), json!({}));
+
+    // 7. The time limit passes.
+    mode.store(HANG, std::sync::atomic::Ordering::SeqCst);
+    let late = core
+        .escalate_question_within(&asker, asked(&question), Duration::from_millis(300))
+        .await;
+    assert!(matches!(late, Escalation::TimedOut(_)), "{late:?}");
+    assert_eq!(hook_prints(&late), json!({}));
+
+    // None of them left the question open: a spawned Claude's
+    // `can_use_tool` for it is forwarded, not refused.
+    assert_eq!(escalated("sess-undelivered", &question), None);
+}
+
+/// A spawned Codex's question that is not sent within the limit is
+/// forwarded as any other request, as with escalation off; one sent is not.
+#[tokio::test]
+async fn a_codex_question_not_sent_in_time_is_forwarded() {
+    let mode = Arc::new(std::sync::atomic::AtomicU8::new(HANG));
+    let (base, _hits) = relaycast_in(mode.clone());
+    let thread = "019a0000-0000-7000-8000-0000000071e0";
+    let asker = registration(
+        "asker-codex-late",
+        Target::new(SessionKind::Codex, thread),
+        &base,
+    );
+    let (core, _temp) = core(&base, &asker, true);
+    core.store
+        .remember(|store| store.extras.question_escalation = None)
+        .unwrap();
+    let notice = drive::open_request(
+        thread,
+        json!({"id": 9, "method": "item/tool/requestUserInput", "params": {
+            "threadId": thread, "turnId": "t", "itemId": "i",
+            "questions": [{"id": "db", "header": "Database", "question": "Which?",
+                "options": [{"label": "Postgres", "description": ""}]}],
+        }}),
+    );
+    let started = Instant::now();
+    assert!(
+        !core
+            .escalate_codex_question_within(&asker, &notice, Duration::from_millis(300))
+            .await
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "held past the limit"
+    );
+    // Still waiting to be forwarded, as with escalation off.
+    let waiting: Vec<String> = drive::unforwarded(thread)
+        .into_iter()
+        .map(|notice| notice.reference)
+        .collect();
+    assert_eq!(waiting, vec![notice.reference.clone()]);
+    // A refused send, an unknown outcome and an explicit off forward it too.
+    for failing in [REFUSE, BROKEN] {
+        mode.store(failing, std::sync::atomic::Ordering::SeqCst);
+        assert!(!core.escalate_codex_question(&asker, &notice).await);
+        assert_eq!(drive::unforwarded(thread).len(), 1);
+    }
+    core.store
+        .remember(|store| store.extras.question_escalation = Some(false))
+        .unwrap();
+    assert!(!core.escalate_codex_question(&asker, &notice).await);
+    assert_eq!(drive::unforwarded(thread).len(), 1);
+    assert!(CODEX_LIMIT < Duration::from_secs(300));
 }
