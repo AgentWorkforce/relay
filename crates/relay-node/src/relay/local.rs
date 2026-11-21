@@ -1895,6 +1895,42 @@ impl Injector for LocalInjector {
         };
         self.opencode.as_ref()?.final_answer(&binding, message_ref)
     }
+
+    fn opencode_questions(
+        &self,
+        registration: &crate::relay::store::Registration,
+    ) -> Option<Vec<serde_json::Value>> {
+        if registration.target.kind != SessionKind::OpenCode {
+            return None;
+        }
+        let ManagedBinding::OpenCode(binding) =
+            self.managed.as_ref()?.binding(&registration.target)?
+        else {
+            return None;
+        };
+        self.opencode.as_ref()?.pending_questions(&binding).ok()
+    }
+
+    fn opencode_reply(
+        &self,
+        registration: &crate::relay::store::Registration,
+        request_id: &str,
+        answers: &serde_json::Value,
+    ) -> Result<(), String> {
+        let binding = (registration.target.kind == SessionKind::OpenCode)
+            .then(|| self.managed.as_ref()?.binding(&registration.target))
+            .flatten();
+        let Some(ManagedBinding::OpenCode(binding)) = binding else {
+            return Err("the OpenCode session is no longer bound".into());
+        };
+        let injector = self
+            .opencode
+            .as_ref()
+            .ok_or("OpenCode delivery is unavailable")?;
+        injector
+            .reply_question(&binding, request_id, answers)
+            .map_err(|failure| format!("OpenCode did not take the answer ({failure:?})"))
+    }
 }
 
 mod connect_codex;

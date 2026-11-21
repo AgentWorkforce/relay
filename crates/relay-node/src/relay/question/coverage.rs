@@ -83,15 +83,17 @@ are from Copilot's user-input handler, not yet checked against the hook's own pa
 live session.",
         ),
         SessionKind::OpenCode => row(
-            "OpenCode",
-            NotCovered,
-            "Not yet: Agent Relay does not read the question events of the OpenCode server it \
-runs.",
+            "OpenCode sessions Agent Relay serves",
+            Partial,
+            "Questions OpenCode's question tool asks in a session on a server Agent Relay runs, \
+read from that server: the question shows in OpenCode's dialog and in the inbox, and the \
+first answer wins. Not yet proven in a live session.",
         ),
         SessionKind::OpenCodeOpen => row(
-            "OpenCode",
+            "OpenCode in a terminal",
             NotCovered,
-            "Not yet: Agent Relay's OpenCode plugin does not hand questions over.",
+            "Agent Relay reaches it through its OpenCode plugin, whose socket answers delivery \
+only, not OpenCode's questions.",
         ),
         SessionKind::Grok | SessionKind::GrokOpen => row(
             "Grok",
@@ -267,7 +269,9 @@ mod tests {
         let text = status_text();
         assert!(text.starts_with("Available for Claude Code."), "{text}");
         assert!(
-            text.contains("Partly available for Codex, Copilot, Devin."),
+            text.contains(
+                "Partly available for Codex, Copilot, OpenCode sessions Agent Relay serves, Devin."
+            ),
             "{text}"
         );
         assert!(
