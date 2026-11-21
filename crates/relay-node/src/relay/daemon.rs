@@ -908,6 +908,8 @@ async fn run_with(
     let watchers = watchers::start(&core);
 
     tokio::spawn(crate::relay::trusted::keep_members_current(core.clone()));
+    // Questions a managed OpenCode session's question tool asks.
+    tokio::spawn(core.clone().opencode_question_loop());
     let _ = stopping.wait_for(|stop| *stop).await;
 
     if let Some(relay_send) = relay_send {
