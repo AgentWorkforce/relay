@@ -317,6 +317,28 @@ fn the_approval_dm_names_the_spawning_agent_only_when_it_may_answer() {
 }
 
 #[test]
+fn the_requesters_notice_says_only_the_owner_may_choose_tool_input() {
+    let notice = codex_drive::open_request(
+        "thread-requester-choice-text",
+        json!({"id": 192, "method": "item/tool/requestUserInput", "params": {
+            "threadId": "thread-requester-choice-text",
+            "questions": [{"id": "decision", "header": "Confirm", "question": "Install?",
+                "options": [{"label": "Install", "description": "Proceed"},
+                    {"label": "Cancel", "description": "Stop"}]}]
+        }}),
+    );
+    let text = approval_text("w1", &notice, Some("grokbot"));
+    assert!(
+        text.contains("Only the signed-in machine owner may reply `choose"),
+        "{text}"
+    );
+    assert!(
+        text.contains("the owner or @grokbot may reply `deny"),
+        "{text}"
+    );
+}
+
+#[test]
 fn spawn_profiles_cannot_bypass_the_machine_owners_approval_controls() {
     let home = tempfile::tempdir().unwrap();
     let core = core_with_account(home.path(), Arc::new(FakeSpawner::default()));

@@ -165,10 +165,16 @@ pub(crate) fn approval_text(agent: &str, notice: &Notice, requester: Option<&str
     } else if notice.options.is_empty() {
         format!("Reply `deny {reference}` within 15 minutes. This question cannot be approved through a Relay DM because it requires input or local verification.")
     } else {
-        format!(
-            "Options: {}. Reply `choose {reference} <number>` or `deny {reference}` within 15 minutes.",
-            notice.options.join(", ")
-        )
+        match requester {
+            Some(name) => format!(
+                "Options: {}. Only the signed-in machine owner may reply `choose {reference} <number>`; the owner or @{name} may reply `deny {reference}` within 15 minutes.",
+                notice.options.join(", ")
+            ),
+            None => format!(
+                "Options: {}. Reply `choose {reference} <number>` or `deny {reference}` within 15 minutes.",
+                notice.options.join(", ")
+            ),
+        }
     };
     format!(
         "[Codex approval {reference} for @{agent}]\nStatus: `waiting_for_approval`. Unanswered requests expire as an explicit denial after 15 minutes.\n{}\n{response} {}",
