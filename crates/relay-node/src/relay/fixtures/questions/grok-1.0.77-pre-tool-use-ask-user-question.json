@@ -1,0 +1,45 @@
+{
+  "_source": "Grok 1.0.77 (@xai-official/grok, bin/grok-native). The hook envelope (camelCase keys with Claude's snake_case aliases session_id, tool_name, tool_input, tool_use_id; hook_event_name in Claude's PascalCase), the matcher alias AskUserQuestion -> ask_user_question, the global ~/.claude/settings.json hook source and the deny output (hookSpecificOutput.permissionDecision decides, permissionDecisionReason is the message) are from the hooks documentation embedded in the installed binary, read as text. The ask_user_question argument names (questions, question, header, options with label/description, multiSelect) are from strings in the same binary; their exact schema is not legible there. Values are synthetic.",
+  "input": {
+    "hookEventName": "pre_tool_use",
+    "hook_event_name": "PreToolUse",
+    "sessionId": "019a0000-0000-7000-8000-00000000c0c0",
+    "session_id": "019a0000-0000-7000-8000-00000000c0c0",
+    "cwd": "/work/project",
+    "workspaceRoot": "/work/project",
+    "permissionMode": "default",
+    "permission_mode": "default",
+    "toolName": "ask_user_question",
+    "tool_name": "ask_user_question",
+    "toolInput": {
+      "questions": [
+        {
+          "question": "Which test runner should I set up?",
+          "header": "Test runner",
+          "options": [
+            {"label": "Vitest", "description": "Fast, Vite-native"},
+            {"label": "Jest", "description": "Widely used"}
+          ],
+          "multiSelect": false
+        }
+      ]
+    },
+    "tool_input": {
+      "questions": [
+        {
+          "question": "Which test runner should I set up?",
+          "header": "Test runner",
+          "options": [
+            {"label": "Vitest", "description": "Fast, Vite-native"},
+            {"label": "Jest", "description": "Widely used"}
+          ],
+          "multiSelect": false
+        }
+      ]
+    },
+    "toolUseId": "call_ask_1",
+    "tool_use_id": "call_ask_1",
+    "toolInputTruncated": false,
+    "timestamp": "2026-11-21T00:00:00Z"
+  }
+}

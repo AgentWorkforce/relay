@@ -252,6 +252,17 @@ async fn requester_native_source_keeps_spawn_route_for_all_supported_kinds_and_m
             let (source, text) = deliver(&f, &f.requester).await;
             assert_eq!(source, InputSource::Requester);
             assert!(text.starts_with("[Agent Relay native input — from @requester"));
+            // A native turn still says Agent Relay verified who sent it; on
+            // a computer whose ownership is verified, with the person's
+            // authority.
+            assert_eq!(
+                text.lines().nth(1),
+                Some(crate::relay::delivery::policy::OWNER_AUTHORITY_LINE),
+                "{kind:?}: {text}"
+            );
+            assert!(crate::relay::delivery::policy::owner_authority_framed(
+                &text
+            ));
             assert_eq!(
                 crate::relay::delivery::policy::MessageRef::in_text(&text),
                 Some(crate::relay::delivery::policy::MessageRef::of(
@@ -303,6 +314,11 @@ async fn spawned_opencode_owner_is_native_with_or_without_mobile_continuation() 
             assert_eq!(text, f.owner.text.clone().unwrap());
         } else {
             assert!(text.starts_with("[Agent Relay native input — from @owner"));
+            // The person's own message is theirs, not the spawning agent's.
+            assert!(
+                !crate::relay::delivery::policy::owner_framed(&text),
+                "{text}"
+            );
         }
     }
 }
@@ -363,7 +379,12 @@ async fn requester_opt_out_and_different_sender_preserve_peer_source() {
         .unwrap();
     let mut peer = f.requester.clone();
     peer.sender_id = Some("different-agent".into());
-    assert_eq!(deliver(&f, &peer).await.0, InputSource::Peer);
+    let (source, text) = deliver(&f, &peer).await;
+    assert_eq!(source, InputSource::Peer);
+    assert!(
+        !crate::relay::delivery::policy::owner_framed(&text),
+        "{text}"
+    );
     assert_eq!(f.routes.peer.lock().unwrap().len(), 2);
     assert!(f.routes.requester.lock().unwrap().is_empty());
     assert!(f.routes.owner.lock().unwrap().is_empty());
@@ -414,8 +435,14 @@ async fn the_launcher_and_the_desktop_requester_both_count_as_the_requester() {
     };
     let launcher = message("launcher", "launcher-person", "agent_launcher");
     let requester = f.requester.clone();
-    assert_eq!(deliver(&f, &launcher).await.0, InputSource::Requester);
-    assert_eq!(deliver(&f, &requester).await.0, InputSource::Requester);
+    for from in [&launcher, &requester] {
+        let (source, text) = deliver(&f, from).await;
+        assert_eq!(source, InputSource::Requester);
+        assert!(
+            crate::relay::delivery::policy::owner_authority_framed(&text),
+            "{text}"
+        );
+    }
     assert_eq!(f.routes.requester.lock().unwrap().len(), 2);
 
     // Without native input, both carry the owner line as peers.
@@ -771,6 +798,64 @@ async fn the_leaders_list_expires_while_reads_fail_and_a_refusal_drops_it() {
             "{status:?}"
         );
     }
+}
+
+// The spawning agent directs the session with the person's authority only
+// while this computer's ownership is verified and native input from the
+// spawning agent is on. Without either it keeps the limited owner line, and
+// nobody else ever gets the authority line.
+#[tokio::test]
+async fn the_requester_carries_the_persons_authority_only_on_an_owned_computer_with_native_input_on(
+) {
+    use crate::relay::delivery::policy::{owner_authority_framed, owner_framed};
+    let f = fixture(SessionKind::ClaudeTerminal, false).await;
+    let again = |id: &str| Delivery {
+        id: format!("delivery-{id}"),
+        message_id: format!("message-{id}"),
+        ..f.requester.clone()
+    };
+    assert!(f.core.requester_has_owner_authority(&f.registration));
+    let (_, text) = deliver(&f, &again("owned")).await;
+    assert!(owner_authority_framed(&text), "{text}");
+    assert!(!owner_framed(&text), "{text}");
+
+    // Someone else's message never carries either line.
+    let mut peer = again("peer");
+    peer.sender_id = Some("different-agent".into());
+    let (source, text) = deliver(&f, &peer).await;
+    assert_eq!(source, InputSource::Peer);
+    assert!(
+        !owner_authority_framed(&text) && !owner_framed(&text),
+        "{text}"
+    );
+
+    // Native input from the spawning agent turned off: the limited line.
+    f.core
+        .store
+        .update(|store| store.extras.spawn_native_input = Some(false))
+        .unwrap();
+    assert!(!f.core.requester_has_owner_authority(&f.registration));
+    let (source, text) = deliver(&f, &again("off")).await;
+    assert_eq!(source, InputSource::Peer);
+    assert!(owner_framed(&text), "{text}");
+    assert!(!owner_authority_framed(&text), "{text}");
+    f.core
+        .store
+        .update(|store| store.extras.spawn_native_input = None)
+        .unwrap();
+
+    // Ownership not verified: the node is not claimed by the signed-in
+    // person, so the requester's native turn keeps the limited line.
+    f.core.hub.update(|status| {
+        if let Some(claim) = status.spawn.as_mut().and_then(|spawn| spawn.claim.as_mut()) {
+            claim.state = crate::relay::state::SpawnClaimState::OwnedByOther;
+        }
+    });
+    assert!(!f.core.requester_has_owner_authority(&f.registration));
+    let (source, text) = deliver(&f, &again("unclaimed")).await;
+    assert_eq!(source, InputSource::Requester);
+    assert!(owner_framed(&text), "{text}");
+    assert!(!owner_authority_framed(&text), "{text}");
 }
 
 /// A hold that begins after a message was admitted, while it is prepared,

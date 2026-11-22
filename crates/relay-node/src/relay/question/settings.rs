@@ -1,5 +1,5 @@
 //! The question escalation settings: `question_escalation` (`off` or `on`,
-//! off unless set) and `question_escalation_inbox` (the agent questions go
+//! on unless turned off) and `question_escalation_inbox` (the agent questions go
 //! to; empty means the owner's person identity). The store keeps them;
 //! `settings.set` checks them here. An agent may turn escalation on and off.
 //! The inbox decides who can answer as the person, so only the person (and
@@ -20,15 +20,13 @@ pub const STATUS: &str = "question_escalation_status";
 /// The longest inbox name accepted, in characters.
 pub const MAX_INBOX: usize = 128;
 
-/// What `question_escalation_status` says.
-pub const STATUS_TEXT: &str = "Available for Claude Code sessions (interactive and spawned), \
-through Agent Relay's Claude Code hook (claude_session_hook), and spawned Codex sessions. \
-Unavailable for interactive Codex, Cursor, Copilot, Grok and OpenCode \
-sessions: they have no hook before a question is shown.";
+/// Read-only: each kind of session's reach (`super::coverage`).
+pub const COVERAGE: &str = "question_escalation_coverage";
 
-/// Whether questions are escalated.
+/// Whether questions are escalated: on unless turned off. Only an explicit
+/// `off` (`Some(false)`) is off; a store that never set it is on.
 pub fn on(store: &Store) -> bool {
-    store.extras.question_escalation == Some(true)
+    store.extras.question_escalation != Some(false)
 }
 
 /// The agent questions go to, when one other than the owner is set.
@@ -48,7 +46,8 @@ pub fn values(store: &Store) -> Map<String, Value> {
         json!(if on(store) { "on" } else { "off" }),
     );
     values.insert(INBOX.into(), json!(inbox(store).unwrap_or_default()));
-    values.insert(STATUS.into(), json!(STATUS_TEXT));
+    values.insert(STATUS.into(), json!(super::coverage::status_text()));
+    values.insert(COVERAGE.into(), super::coverage::value());
     values
 }
 
@@ -118,13 +117,16 @@ mod tests {
     }
 
     #[test]
-    fn off_and_the_owner_by_default() {
-        let values = values(&Store::default());
-        assert_eq!(values[ESCALATION], "off");
+    fn on_and_the_owner_by_default() {
+        let store = Store::default();
+        assert_eq!(store.extras.question_escalation, None);
+        assert!(on(&store));
+        let values = values(&store);
+        assert_eq!(values[ESCALATION], "on");
         assert_eq!(values[INBOX], "");
-        assert_eq!(values[STATUS], STATUS_TEXT);
-        assert!(STATUS_TEXT
-            .contains("Unavailable for interactive Codex, Cursor, Copilot, Grok and OpenCode"));
+        assert_eq!(values[STATUS], super::super::coverage::status_text());
+        assert_eq!(values[COVERAGE], super::super::coverage::value());
+        assert_eq!(values[COVERAGE]["claude-terminal"]["state"], "covered");
     }
 
     #[test]
@@ -148,6 +150,36 @@ mod tests {
         read(json!({ESCALATION: "off"})).unwrap().apply(&mut off);
         assert_eq!(values(&off)[ESCALATION], "off");
         assert_eq!(values(&off)[INBOX], "lead", "untouched");
+    }
+
+    /// Only an explicit off is off, and it stays off through a reload, a
+    /// change to the inbox alone, and an empty change; an explicit on stays
+    /// on.
+    #[test]
+    fn an_explicit_off_is_kept() {
+        let reload = |store: &Store| -> Store {
+            serde_json::from_str(&serde_json::to_string(store).unwrap()).unwrap()
+        };
+        let mut store = Store::default();
+        read(json!({ESCALATION: "off"})).unwrap().apply(&mut store);
+        assert_eq!(store.extras.question_escalation, Some(false));
+        assert!(!on(&store));
+        let mut store = reload(&store);
+        assert_eq!(store.extras.question_escalation, Some(false));
+        assert_eq!(values(&store)[ESCALATION], "off");
+        read(json!({INBOX: "lead"})).unwrap().apply(&mut store);
+        read(json!({})).unwrap().apply(&mut store);
+        let mut store = reload(&store);
+        assert_eq!(values(&store)[ESCALATION], "off");
+        assert_eq!(values(&store)[INBOX], "lead");
+        read(json!({ESCALATION: "on"})).unwrap().apply(&mut store);
+        let mut store = reload(&store);
+        assert_eq!(store.extras.question_escalation, Some(true));
+        read(json!({INBOX: ""})).unwrap().apply(&mut store);
+        assert_eq!(values(&reload(&store))[ESCALATION], "on");
+        // A store saved before the setting existed reads on.
+        let old: Store = serde_json::from_str("{}").unwrap();
+        assert_eq!(values(&old)[ESCALATION], "on");
     }
 
     #[test]

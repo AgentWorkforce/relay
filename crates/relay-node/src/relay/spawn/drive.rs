@@ -21,7 +21,7 @@ use crate::relay::links::Endpoint;
 use crate::relay::sdk_gaps;
 use crate::relay::state::SpawnClaimState;
 use crate::relay::store::{Registration, SpawnRequester};
-use crate::relay::workspace::Secret;
+use crate::relay::workspace::{Secret, Workspace};
 use std::collections::HashSet;
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
@@ -369,6 +369,21 @@ impl Core {
             .then_some(Approver::Requester(requester))
     }
 
+    /// Whether this computer's ownership is verified for `registration`:
+    /// its node is claimed by the signed-in person and `registration` is in
+    /// their workspace.
+    pub(crate) fn owned_here(&self, registration: &Registration) -> bool {
+        self.workspace()
+            .is_some_and(|workspace| self.owned_in(&workspace, registration))
+    }
+
+    /// [`Self::owned_here`] against one reading of the workspace.
+    fn owned_in(&self, workspace: &Workspace, registration: &Registration) -> bool {
+        claimed_by_signed_in(self)
+            && workspace.base_url == registration.base_url
+            && registration.workspace_key.as_ref() == Some(&workspace.key)
+    }
+
     /// The signed-in person's relay identity, when this computer's node is
     /// claimed by them, `registration` is in their workspace, and Relaycast
     /// still gives the name their immutable id: (name, agent id).
@@ -377,10 +392,7 @@ impl Core {
         registration: &Registration,
     ) -> Option<(String, String)> {
         let workspace = self.workspace()?;
-        if !claimed_by_signed_in(self)
-            || workspace.base_url != registration.base_url
-            || registration.workspace_key.as_ref() != Some(&workspace.key)
-        {
+        if !self.owned_in(&workspace, registration) {
             return None;
         }
         let owner = self.person_identity(false).await.ok()?;
@@ -422,6 +434,14 @@ impl Core {
         if !spawned
             || !direct_from(delivery, delivery.sender_id.as_deref())
             || !self.plugins.spawner.native_input(&registration.target)
+        {
+            return false;
+        }
+        // Someone else's message never waits on Relaycast: the identity
+        // already in memory names the only id the lookup could confirm.
+        if self
+            .current_identity()
+            .is_some_and(|person| delivery.sender_id.as_deref() != Some(person.agent_id.as_str()))
         {
             return false;
         }

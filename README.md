@@ -60,7 +60,8 @@ More in the [getting started guide](https://agentrelay.com/docs/getting-started)
 
 ### Self Hosting
 
-Agent Relay has self hosting options for each primitive; start with the [self-hosting guide](docs/self-hosting/README.md). We're happy to help you set up the whole system on your environment, just reach out to our team hi(at)agentrelay.com and we'll walk you through it.
+Agent Relay has self hosting options for each primitive; start with the [self-hosting guide](https://agentrelay.com/docs/self-hosting). We're happy to help you set up the whole system on your environment, just reach out to our team hi(at)agentrelay.com and we'll walk you through it.
+If you want to jump right into the code (helm charts and terraform) take a look at our [infra repository](https://github.com/AgentWorkforce/infra).
 
 ## License
 

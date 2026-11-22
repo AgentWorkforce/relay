@@ -727,14 +727,17 @@ mod tests {
             )
         );
         let values = core.settings();
-        assert_eq!(values["question_escalation"], "off");
+        // On unless turned off.
+        assert_eq!(values["question_escalation"], "on");
         assert_eq!(values["question_escalation_inbox"], "");
         assert_eq!(values["agent_changes"], json!([]));
-        // An agent may turn escalation on (and off again).
+        // An agent may turn escalation off (and on again).
+        let off = map(json!({"question_escalation": "off"}));
+        assert!(apply(&core, &off, "api").unwrap().1.is_ok());
+        assert_eq!(core.settings()["question_escalation"], "off");
         let on = map(json!({"question_escalation": "on"}));
         assert!(apply(&core, &on, "api").unwrap().1.is_ok());
         assert_eq!(core.settings()["question_escalation"], "on");
-        let off = map(json!({"question_escalation": "off"}));
         assert!(apply(&core, &off, "api").unwrap().1.is_ok());
         assert_eq!(core.settings()["question_escalation"], "off");
         // The person may.
@@ -760,6 +763,204 @@ mod tests {
         let values = core.settings();
         assert_eq!(values["question_escalation"], "off");
         assert_eq!(values["question_escalation_inbox"], "");
+    }
+
+    /// Question escalation is on unless turned off: an explicit off, from
+    /// the person or an agent, stays off through writes of other settings
+    /// and a restart (the store read again from its file); an explicit on
+    /// stays on.
+    #[tokio::test]
+    async fn an_explicit_question_escalation_off_survives_a_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        {
+            let first = core(temp.path());
+            assert_eq!(first.settings()["question_escalation"], "on");
+            first
+                .set_settings(&map(json!({"question_escalation": "off"})))
+                .unwrap();
+            first
+                .set_settings(&map(json!({"auto_join_general": true})))
+                .unwrap();
+            first
+                .set_settings(&map(json!({"question_escalation_inbox": "triage"})))
+                .unwrap();
+            let other = map(json!({"show_relay_messages": true}));
+            assert!(apply(&first, &other, "api").unwrap().1.is_ok());
+            assert_eq!(first.settings()["question_escalation"], "off");
+        }
+        let second = core(temp.path());
+        let values = second.settings();
+        assert_eq!(values["question_escalation"], "off");
+        assert_eq!(values["auto_join_general"], true);
+        assert_eq!(values["question_escalation_inbox"], "triage");
+        // Turned on by an agent, it stays on across a restart too.
+        let on = map(json!({"question_escalation": "on"}));
+        assert!(apply(&second, &on, "api").unwrap().1.is_ok());
+        drop(second);
+        assert_eq!(core(temp.path()).settings()["question_escalation"], "on");
+    }
+
+    /// The organization's policy decides question escalation both ways: a
+    /// lock holds `off` against the default, and `on` against the person's
+    /// own off, and either is refused to the app and to agents; a default
+    /// `off` is written once over the unset default and stays the person's
+    /// to change.
+    #[tokio::test]
+    async fn the_organization_policy_decides_question_escalation_both_ways() {
+        use crate::relay::settings_policy::{SettingsPolicy, LOCKED};
+        let temp = tempfile::tempdir().unwrap();
+        let core = core(temp.path());
+        let given =
+            |value: serde_json::Value| -> SettingsPolicy { serde_json::from_value(value).unwrap() };
+        let (on, off) = (
+            map(json!({"question_escalation": "on"})),
+            map(json!({"question_escalation": "off"})),
+        );
+        // Locked off, over the unset (on) default.
+        core.apply_settings_policy(Some(given(
+            json!({"locked": {"question_escalation": "off"}}),
+        )))
+        .unwrap();
+        assert_eq!(core.settings()["question_escalation"], "off");
+        assert_eq!(
+            core.store.read(|store| store.extras.question_escalation),
+            Some(false)
+        );
+        assert_eq!(core.set_settings(&on).unwrap_err().message, LOCKED);
+        let (_, outcome, _) = apply(&core, &on, "api").unwrap();
+        assert_eq!(outcome.unwrap_err().message, LOCKED);
+        assert_eq!(core.settings()["question_escalation"], "off");
+        assert!(core
+            .store
+            .read(|store| !crate::relay::question::settings::on(store)));
+        // Locked on, over an explicit off.
+        core.apply_settings_policy(Some(given(
+            json!({"locked": {"question_escalation": "on"}}),
+        )))
+        .unwrap();
+        assert_eq!(core.settings()["question_escalation"], "on");
+        assert_eq!(core.set_settings(&off).unwrap_err().message, LOCKED);
+        let (_, outcome, _) = apply(&core, &off, "api").unwrap();
+        assert_eq!(outcome.unwrap_err().message, LOCKED);
+        assert_eq!(core.settings()["question_escalation"], "on");
+        assert_eq!(
+            core.settings()["organization_policy"]["locked"],
+            json!(["question_escalation"])
+        );
+        // Lifted: the value stays, and is the person's again.
+        core.apply_settings_policy(None).unwrap();
+        core.set_settings(&off).unwrap();
+        assert_eq!(core.settings()["question_escalation"], "off");
+
+        // Defaulted off on a computer that never set it.
+        let fresh = tempfile::tempdir().unwrap();
+        let fresh = self::core(fresh.path());
+        fresh
+            .apply_settings_policy(Some(given(
+                json!({"defaults": {"question_escalation": "off"}}),
+            )))
+            .unwrap();
+        assert_eq!(fresh.settings()["question_escalation"], "off");
+        fresh.set_settings(&on).unwrap();
+        fresh
+            .apply_settings_policy(fresh.settings_policy())
+            .unwrap();
+        assert_eq!(
+            fresh.settings()["question_escalation"],
+            "on",
+            "the person's choice is not reversed"
+        );
+    }
+
+    /// A core whose store file, before it starts, is `store` as an older
+    /// build saved it.
+    fn core_from_old_store(temp: &std::path::Path, store: Value) -> std::sync::Arc<Core> {
+        let data = temp.join("app-data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(
+            data.join(crate::relay::app_store::STORE_FILE),
+            serde_json::to_vec(&store).unwrap(),
+        )
+        .unwrap();
+        core(temp)
+    }
+
+    /// Before question escalation was on by default, an unset flag read off,
+    /// so an organization's default of off was recorded as already in place
+    /// and never written. Such a store keeps reading off after the upgrade,
+    /// and applying the same policy again keeps it off.
+    #[tokio::test]
+    async fn an_organization_default_of_off_survives_the_upgrade() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = core_from_old_store(
+            temp.path(),
+            json!({"organizationPolicy": {
+                "policy": {"defaults": {"question_escalation": "off"}},
+                "appliedDefaults": {"question_escalation": {"given": "off", "applied": "off"}},
+            }}),
+        );
+        assert_eq!(core.settings()["question_escalation"], "off");
+        core.apply_settings_policy(core.settings_policy()).unwrap();
+        assert_eq!(core.settings()["question_escalation"], "off");
+        drop(core);
+        assert_eq!(
+            self::core(temp.path()).settings()["question_escalation"],
+            "off"
+        );
+    }
+
+    /// A stored lock of off holds from the start, before the policy is
+    /// applied again.
+    #[tokio::test]
+    async fn a_stored_lock_of_off_holds_from_the_start() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = core_from_old_store(
+            temp.path(),
+            json!({"organizationPolicy": {"policy": {"locked": {"question_escalation": "off"}}}}),
+        );
+        assert_eq!(core.settings()["question_escalation"], "off");
+    }
+
+    /// Only those two stores change: the person's own on stays on under a
+    /// default of off; with no policy, a removed one, or a default of on,
+    /// an unset flag reads on and stays unset.
+    #[tokio::test]
+    async fn the_upgrade_keeps_every_other_question_escalation_as_it_reads() {
+        let default_off = json!({
+            "policy": {"defaults": {"question_escalation": "off"}},
+            "appliedDefaults": {"question_escalation": {"given": "off", "applied": "off"}},
+        });
+        for (store, reads, stored) in [
+            (
+                json!({"questionEscalation": true, "organizationPolicy": default_off}),
+                "on",
+                Some(true),
+            ),
+            (json!({}), "on", None),
+            (
+                json!({"organizationPolicy": {"policy": null, "appliedDefaults":
+                    {"question_escalation": {"given": "off", "applied": "off"}}}}),
+                "on",
+                None,
+            ),
+            (
+                json!({"organizationPolicy": {
+                    "policy": {"defaults": {"question_escalation": "on"}},
+                    "appliedDefaults": {"question_escalation": {"given": "on", "applied": "on"}},
+                }}),
+                "on",
+                None,
+            ),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let core = core_from_old_store(temp.path(), store.clone());
+            assert_eq!(core.settings()["question_escalation"], reads, "{store}");
+            assert_eq!(
+                core.store.read(|store| store.extras.question_escalation),
+                stored,
+                "{store}"
+            );
+        }
     }
 
     /// The organization's locks are written once and refused to the app

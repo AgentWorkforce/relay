@@ -45,6 +45,70 @@ fn choices(question: &Value) -> Vec<Choice> {
         .collect()
 }
 
+/// The most questions, and options in one question, a hook's input may
+/// have; more asks nothing, and the harness shows its question.
+pub const MAX_QUESTIONS: usize = 10;
+pub const MAX_OPTIONS: usize = 50;
+
+/// The questions a hook hands over in its `tool_input`: Claude's
+/// `AskUserQuestion` (`multiSelect`), Devin's `ask_user_question`
+/// (`multi_select`) or Grok's, which share the shape `{questions: [{question,
+/// header, options: [{label, description}] or [label]}]}`. Each always takes
+/// an answer in the user's own words. Empty for any other shape.
+pub fn hook_questions(input: &Value) -> Vec<Question> {
+    // Strict: a shape none of them gives asks nothing, and the tool runs.
+    let Some(asked) = input["questions"].as_array() else {
+        return Vec::new();
+    };
+    if asked.len() > MAX_QUESTIONS {
+        return Vec::new();
+    }
+    let known = asked.iter().all(|question| {
+        question["question"]
+            .as_str()
+            .is_some_and(|text| !text.trim().is_empty())
+            && question.get("options").is_none_or(|options| {
+                options.as_array().is_some_and(|options| {
+                    options.len() <= MAX_OPTIONS
+                        && options
+                            .iter()
+                            .all(|option| option.is_string() || option["label"].is_string())
+                })
+            })
+    });
+    if !known {
+        return Vec::new();
+    }
+    asked
+        .iter()
+        .map(|question| Question {
+            id: String::new(),
+            header: string(&question["header"]),
+            text: string(&question["question"]),
+            options: question["options"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                // Claude's own free-text choice is not a choice to number.
+                .filter(|option| option["isOther"] != true)
+                .map(|option| match option.as_str() {
+                    Some(label) => Choice {
+                        label: label.trim().to_string(),
+                        description: String::new(),
+                    },
+                    None => Choice {
+                        label: string(&option["label"]),
+                        description: string(&option["description"]),
+                    },
+                })
+                .filter(|choice| !choice.label.is_empty())
+                .collect(),
+            multi: question["multiSelect"] == true || question["multi_select"] == true,
+            free: true,
+        })
+        .collect()
+}
+
 /// The questions of Claude's `AskUserQuestion` `tool_input`; empty when it
 /// asks none. Claude always takes an answer in the user's own words.
 pub fn claude_questions(input: &Value) -> Vec<Question> {
@@ -57,7 +121,7 @@ pub fn claude_questions(input: &Value) -> Vec<Question> {
             header: string(&question["header"]),
             text: string(&question["question"]),
             options: choices(question),
-            multi: question["multiSelect"] == true,
+            multi: question["multiSelect"] == true || question["multi_select"] == true,
             free: true,
         })
         .filter(|question| !question.text.is_empty())
@@ -69,7 +133,15 @@ pub fn claude_questions(input: &Value) -> Vec<Question> {
 /// Relaycast).
 pub fn codex_questions(params: &Value) -> Option<Vec<Question>> {
     let asked = params["questions"].as_array()?;
-    if asked.is_empty() || asked.iter().any(|question| question["isSecret"] == true) {
+    if asked.is_empty()
+        || asked.len() > MAX_QUESTIONS
+        || asked.iter().any(|question| {
+            question["isSecret"] == true
+                || question["options"]
+                    .as_array()
+                    .is_some_and(|options| options.len() > MAX_OPTIONS)
+        })
+    {
         return None;
     }
     asked
@@ -91,6 +163,63 @@ pub fn codex_questions(params: &Value) -> Option<Vec<Question>> {
             })
         })
         .collect()
+}
+
+/// The questions in Codex's `request_user_input` arguments, as its
+/// PreToolUse hook gives them (`tool_input`): `{questions: [{id, header,
+/// question, options: [{label, description}]}]}`. Codex adds a free-text
+/// choice to every one itself, so each takes text. `None` for anything
+/// else, so the question is shown as usual.
+pub fn codex_tool_questions(input: &Value) -> Option<Vec<Question>> {
+    let questions = codex_questions(input)?;
+    Some(
+        questions
+            .into_iter()
+            .map(|question| Question {
+                free: true,
+                ..question
+            })
+            .collect(),
+    )
+}
+
+/// The question in Copilot's `ask_user` arguments: `{question, choices?,
+/// allowFreeform?}`, `choices` a list of strings (the Copilot runtime 1.0.94
+/// checks both). `None` for any other shape, so Copilot shows it.
+pub fn copilot_questions(args: &Value) -> Option<Vec<Question>> {
+    let text = args["question"]
+        .as_str()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())?;
+    let options = match args.get("choices") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(choices)) if choices.len() <= MAX_OPTIONS => choices
+            .iter()
+            .map(|choice| {
+                choice.as_str().map(|label| Choice {
+                    label: label.trim().to_string(),
+                    description: String::new(),
+                })
+            })
+            .collect::<Option<Vec<Choice>>>()?
+            .into_iter()
+            .filter(|choice| !choice.label.is_empty())
+            .collect(),
+        Some(_) => return None,
+    };
+    let free = match args.get("allowFreeform") {
+        None | Some(Value::Null) => true,
+        Some(Value::Bool(free)) => *free,
+        Some(_) => return None,
+    };
+    Some(vec![Question {
+        id: String::new(),
+        header: String::new(),
+        text: text.to_string(),
+        free: free || options.is_empty(),
+        options,
+        multi: false,
+    }])
 }
 
 /// Who asked, for the message's first lines.

@@ -68,6 +68,15 @@ Unix socket (on Windows, a named pipe; see **Windows** below):
   served; another user's connection is closed without a reply. This is the
   same trust boundary as the 0600 agent store, and no method returns a key or
   token. `call` likewise speaks only to a daemon run by this user.
+- **Person sends from sessions:** `messages.send` and `agents.test_message`
+  are refused (`refused`) when the peer runs inside an agent session
+  registered on this computer, found by the same process walk the relay-send
+  socket uses; the caller is told to send as its own agent with
+  `agent-relay-probe send`. A peer under an agent process of this user's
+  whose one session cannot be named is refused too. A peer whose pid the
+  platform does not report is served as before. This is a guard, not a boundary: a process of this user
+  outside every session, or one using the stored sign-in directly, is not
+  stopped by it.
 - **Windows:** the socket path is only a key. The pipe is
   `\\.\pipe\agent-relay-<16 hex digits>` (the start of the SHA-256 of the
   path), created with a DACL that grants only the current user, refusing
@@ -1157,7 +1166,22 @@ requester. Records saved before `launcher` existed load unchanged.
 The requester gets the first turn's final answer and is the name in the
 spawned agent's header. A 1:1 direct message whose Relaycast sender id is the
 requester's or the launcher's (`spawn::from_requester`) is the requester's:
-it is native input when that is on and otherwise carries the owner line. Ids
+it is native input when that is on and the session's harness takes native
+input, and otherwise arrives as a peer's (or a teammate's turn). It carries
+an owner line under its attribution on every route, so the session can tell
+the agent Agent Relay verified started it from any other sender.
+
+Which owner line depends on this computer. While its ownership is verified
+(the node is claimed by the signed-in person and the session is in their
+workspace) and `spawn_native_input` is on, as it is unless turned off, the
+line says the person set this computer to give the spawning agent their
+authority over the session: it acts on that agent's requests as on the
+person's own, changes to permissions, instructions and configuration
+included. Otherwise the line keeps its limits: within the task, nothing
+destructive, and no such changes. Either line is only ever written by the
+core, on the second line of the message; a body that copies it is still the
+body. Who may answer the session's permission requests is separate
+(`spawn_requester_approvals`). Ids
 are compared, never names. Release ownership and fork authorization accept
 either id too.
 

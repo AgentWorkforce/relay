@@ -31,7 +31,7 @@ impl LocalSessions {
         Some(
             (!cleared && table.process(process.pid) == Some(process))
                 .then(|| Target::new(SessionKind::ClaudeTerminal, session.session_id.clone()))
-                .ok_or(CallerMiss::NotASession),
+                .ok_or(CallerMiss::Unattributed),
         )
     }
 

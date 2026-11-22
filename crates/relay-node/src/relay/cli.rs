@@ -262,26 +262,40 @@ const STOP_HOOK_TIMEOUT: Duration = Duration::from_secs(5);
 const SESSION_START_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Agent Relay's Codex hook (`codex::stop_hook`), run after each tool call
-/// (PostToolUse), as a turn ends (Stop) and as a session starts
-/// (SessionStart): reads Codex's hook input, asks the core what this
-/// thread's running turn should be given (at SessionStart, its Agent Relay
-/// preamble), and prints Codex's hook output. Only the thread, turn, event,
-/// working folder and whether the turn already continued are sent, so a
-/// long tool output or last message cannot exceed the socket's body limit.
-/// Any failure prints `{}`, so Codex goes on as it would without the hook.
+/// (PostToolUse), as a turn ends (Stop), as a session starts (SessionStart)
+/// and before `request_user_input` (PreToolUse): reads Codex's hook input,
+/// asks the core what this thread's running turn should be given (at
+/// SessionStart, its Agent Relay preamble; at PreToolUse, whether its
+/// question went to the question inbox), and prints Codex's hook output.
+/// Only the thread, turn, event, working folder and whether the turn
+/// already continued are sent, and at PreToolUse the tool's name and its
+/// input too, so a long tool output or last message cannot exceed the
+/// socket's body limit; a question too large for it is refused, and Codex
+/// shows it. Any failure prints `{}`, so Codex goes on as it would without
+/// the hook.
 pub fn codex_stop_hook(socket: Option<&Path>, build: &Build) -> Result<()> {
     let mut input = Vec::new();
     let _ = std::io::stdin().take(4 << 20).read_to_end(&mut input);
     let (answer, receipt) = (|| -> Result<(Value, Option<(std::path::PathBuf, Vec<u8>)>)> {
         let hook: Value = serde_json::from_slice(&input)?;
-        let body = serde_json::to_vec(&json!({
+        let question = hook["hook_event_name"] == crate::relay::codex::stop_hook::QUESTION_EVENT;
+        let mut body = json!({
             "session_id": hook["session_id"],
             "turn_id": hook["turn_id"],
             "hook_event_name": hook["hook_event_name"],
             "stop_hook_active": hook["stop_hook_active"],
             "cwd": hook["cwd"],
-        }))?;
-        let timeout = if hook["hook_event_name"] == "SessionStart" {
+        });
+        // The question hook: the tool and the question, which the core
+        // hands to question escalation.
+        if question {
+            body["tool_name"] = hook["tool_name"].clone();
+            body["tool_input"] = hook["tool_input"].clone();
+        }
+        let body = serde_json::to_vec(&body)?;
+        let timeout = if question {
+            QUESTION_HOOK_WAIT
+        } else if hook["hook_event_name"] == "SessionStart" {
             SESSION_START_TIMEOUT
         } else {
             STOP_HOOK_TIMEOUT
@@ -448,10 +462,12 @@ pub fn claude_stop_hook(socket: Option<&Path>, build: &Build) -> Result<()> {
     Ok(())
 }
 
-/// How long the question hook waits for `POST /claude/question`: past the
-/// route's own limit (`question::ROUTE_LIMIT`), inside the time Claude Code
-/// waits for the hook (`QUESTION_HOOK_TIMEOUT`).
-const QUESTION_HOOK_WAIT: Duration = Duration::from_secs(25);
+/// How long the question hooks wait for the core (`POST /claude/question`,
+/// and Codex's PreToolUse on `POST /codex/stop-hook`): past the route's own
+/// limit (`question::ROUTE_LIMIT`), inside the time Claude Code and Codex
+/// wait for the hook (`QUESTION_HOOK_TIMEOUT`,
+/// `codex::stop_hook::QUESTION_TIMEOUT_SECS`).
+pub(crate) const QUESTION_HOOK_WAIT: Duration = Duration::from_secs(25);
 
 /// Agent Relay's Claude Code PreToolUse hook for `AskUserQuestion`
 /// (`claude::session_hook` installs it beside the SessionStart hook). Hands
@@ -502,6 +518,31 @@ pub fn devin_hook(development: bool) -> Result<()> {
         Ok(home) => home,
         Err(_) => return Ok(()),
     };
+    // The question hook: Devin's ask_user_question goes to question
+    // escalation, and is blocked with the reason once it was sent. Any
+    // failure prints nothing, and Devin shows the question.
+    if payload["hook_event_name"] == crate::relay::devin::QUESTION_EVENT {
+        if payload["tool_name"] != crate::relay::devin::QUESTION_TOOL {
+            return Ok(());
+        }
+        let output = session_hook_socket(None, &hook_build(development)).and_then(|socket| {
+            let (status, body) = socket_response(
+                &socket,
+                "POST",
+                "/claude/question",
+                &input,
+                QUESTION_HOOK_WAIT,
+            )
+            .ok()?;
+            crate::relay::devin::question_hook_output(status, &body)
+        });
+        if let Some(output) = output {
+            let mut stdout = std::io::stdout();
+            stdout.write_all(&serde_json::to_vec(&output)?)?;
+            stdout.write_all(b"\n")?;
+        }
+        return Ok(());
+    }
     let config = crate::relay::devin::DevinConfig::from_env(&|key| std::env::var(key).ok(), &home)
         .development(development);
     let mut answer = crate::relay::devin::hook_answer(&config, &payload);

@@ -1,4 +1,5 @@
 use super::*;
+use crate::relay::codex::app_server::recovery::Recovery;
 use crate::relay::codex::app_server::TurnError;
 use crate::relay::codex::{queue, rollout, CodexConfig, CodexRouter, CodexRoutes, QueueError};
 use crate::relay::delivery::policy::{MessageRef, AUTOMATED_NOTICE_PREFIX};
@@ -9,8 +10,58 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 struct DiskRoutes {
     config: CodexConfig,
     sends: AtomicUsize,
+    /// Every call of a route method that can put text in front of Codex,
+    /// by name, whether the route took it or not.
+    submitted: Mutex<Vec<&'static str>>,
+}
+impl DiskRoutes {
+    fn new(config: CodexConfig) -> DiskRoutes {
+        DiskRoutes {
+            config,
+            sends: AtomicUsize::new(0),
+            submitted: Mutex::default(),
+        }
+    }
+
+    fn submit(&self, route: &'static str) {
+        self.submitted.lock().unwrap().push(route);
+    }
+
+    fn submissions(&self) -> Vec<&'static str> {
+        self.submitted.lock().unwrap().clone()
+    }
 }
 impl CodexRoutes for DiskRoutes {
+    fn native_window(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<bool, TurnError> {
+        self.submit("native_window");
+        Ok(false)
+    }
+    fn recover_stalled(
+        &self,
+        _: &str,
+        _: &str,
+        _: Option<&str>,
+        _: &str,
+        _: bool,
+    ) -> Result<Recovery, TurnError> {
+        self.submit("recover_stalled");
+        Ok(Recovery::Unavailable)
+    }
+    fn app_server_spawned(&self, _: &str, _: &str, _: &str) -> Result<bool, TurnError> {
+        self.submit("app_server_spawned");
+        Ok(false)
+    }
+    fn app_server_hidden(&self, _: &str, _: &str, _: &str) -> Result<bool, TurnError> {
+        self.submit("app_server_hidden");
+        Ok(false)
+    }
     fn recorded(&self, t: &str, r: &str) -> bool {
         rollout::recorded(&self.config, t, r)
     }
@@ -24,9 +75,11 @@ impl CodexRoutes for DiskRoutes {
         false
     }
     fn app_server(&self, _: &str, _: &str, _: &str) -> Result<bool, TurnError> {
+        self.submit("app_server");
         Ok(false)
     }
     fn window(&self, _: &str, _: &str, _: &str) -> Result<bool, TurnError> {
+        self.submit("window");
         Ok(false)
     }
     fn terminal_live(&self, _: &str) -> bool {
@@ -37,6 +90,7 @@ impl CodexRoutes for DiskRoutes {
         let db =
             rusqlite::Connection::open(self.config.sqlite_home.join("queue_1.sqlite")).unwrap();
         db.execute_batch("create table if not exists queued_items(id text, thread_id text, payload_json text, created_at_ms integer)").unwrap();
+        self.submit("queue_send");
         let n = self.sends.fetch_add(1, Ordering::SeqCst);
         db.execute(
             "insert into queued_items values (?1,?2,?3,0)",
@@ -80,10 +134,7 @@ impl Injector for CodexInjector {
 async fn codex_notice_survives_router_restart_in_the_real_queue_and_settles_from_its_rollout() {
     let home = tempfile::tempdir().unwrap();
     let config = CodexConfig::from_env(&|_| None, home.path());
-    let routes = Arc::new(DiskRoutes {
-        config: config.clone(),
-        sends: AtomicUsize::new(0),
-    });
+    let routes = Arc::new(DiskRoutes::new(config.clone()));
     let injector = Arc::new(CodexInjector(Mutex::new(CodexRouter::new(routes.clone()))));
     let (_core_home, core, _probe, mut registration) = fixture_with(Some(injector.clone()));
     let sid = "0852970f-5e6f-4f2e-aef1-c907f16c0844";
@@ -261,3 +312,5 @@ async fn copilot_notice_hook_claim_only_settles_after_its_actual_native_receipt(
         InjectOutcome::Delivered
     );
 }
+
+mod observe;

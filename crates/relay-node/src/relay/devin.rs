@@ -615,6 +615,30 @@ pub const HOOK_SUBCOMMAND: &str = "devin-hook";
 /// the next prompt and `SessionStart` at launch.
 pub const HOOK_EVENTS: [&str; 4] = ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"];
 
+/// The event and tool Agent Relay's Devin hook hands questions over at:
+/// Devin's `ask_user_question`, before it is shown (question escalation,
+/// `relay::question`). Devin documents that `{"decision":"block",
+/// "reason"}` blocks a tool with the reason shown to the agent, and that a
+/// hook that times out, fails or answers what Devin cannot read does not
+/// block (docs.devin.ai/cli/extensibility/hooks).
+pub const QUESTION_EVENT: &str = "PreToolUse";
+pub const QUESTION_TOOL: &str = "ask_user_question";
+/// The question hook's matcher: Devin matches a regular expression against
+/// the tool's name.
+const QUESTION_MATCHER: &str = "^ask_user_question$";
+/// How long Devin waits for the question hook, in seconds: past the hook
+/// client's own wait (`cli::QUESTION_HOOK_WAIT`).
+pub const QUESTION_TIMEOUT_SECS: u64 = 30;
+
+/// Devin's answer for the question hook from `POST /claude/question`'s
+/// answer: a block with the reason once the question went to the inbox,
+/// and nothing otherwise, so Devin shows it.
+pub fn question_hook_output(http_status: u16, body: &[u8]) -> Option<serde_json::Value> {
+    let claude = crate::relay::claude::session_hook::question_hook_output(http_status, body);
+    let reason = claude["hookSpecificOutput"]["permissionDecisionReason"].as_str()?;
+    Some(serde_json::json!({"decision": "block", "reason": reason}))
+}
+
 /// One queued message: its inbox file and its text, read but still in
 /// place until the hook's answer is written.
 struct Pending {
@@ -939,7 +963,54 @@ impl DevinSettings {
                 "hooks": [{"type": "command", "command": self.command, "timeout": 10}],
             }));
         }
+        self.add_question_hook(hooks);
         Ok(())
+    }
+
+    /// Adds the question hook to `hooks`, after the person's own PreToolUse
+    /// groups. Best-effort: a PreToolUse value that is not a list is left
+    /// as it is, the other hooks still go in, and Devin asks its questions
+    /// itself. Whether it was added.
+    fn add_question_hook(&self, hooks: &mut serde_json::Map<String, serde_json::Value>) -> bool {
+        let groups = hooks
+            .entry(QUESTION_EVENT)
+            .or_insert_with(|| serde_json::json!([]));
+        let Some(groups) = groups.as_array_mut() else {
+            crate::relay::diagnostics::write(format_args!(
+                "relay: Devin's {QUESTION_EVENT} hooks are not a list; its questions stay in Devin"
+            ));
+            return false;
+        };
+        groups.push(self.question_entry());
+        true
+    }
+
+    /// The group the question hook is: `ask_user_question` alone, with a
+    /// longer timeout.
+    fn question_entry(&self) -> serde_json::Value {
+        serde_json::json!({
+            "matcher": QUESTION_MATCHER,
+            "hooks": [{"type": "command", "command": self.command,
+                "timeout": QUESTION_TIMEOUT_SECS}],
+        })
+    }
+
+    /// Whether the hooks are in but the question hook is not: an install
+    /// from before it, brought up to date by [`Self::reclaim`].
+    fn missing_question_hook(&self) -> bool {
+        self.read_object().ok().is_some_and(|object| {
+            let Some(hooks) = object.get("hooks").and_then(serde_json::Value::as_object) else {
+                return false;
+            };
+            !self.our_commands(hooks).is_empty()
+                && hooks
+                    .get(QUESTION_EVENT)
+                    .is_none_or(serde_json::Value::is_array)
+                && !hooks
+                    .get(QUESTION_EVENT)
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|groups| groups.contains(&self.question_entry()))
+        })
     }
 
     /// Applies `enable` to `config.json`, atomically through a backup so an
@@ -954,13 +1025,42 @@ impl DevinSettings {
         if enable {
             self.install_into(&mut object)?;
         }
+        self.write_object(&object)
+    }
+
+    /// Adds only the question hook to `config.json`: every other hook, the
+    /// person's own and this build's, stays where it is.
+    fn add_question_hook_to_file(&self) -> Result<(), String> {
+        let _held = self
+            .lock
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let mut object = self.read_object()?;
+        let Some(hooks) = object
+            .get_mut("hooks")
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            return Ok(());
+        };
+        if !self.add_question_hook(hooks) {
+            return Ok(());
+        }
+        self.write_object(&object)
+    }
+
+    /// Writes `object` to `config.json`, atomically through a backup so an
+    /// interrupted write never leaves the file torn.
+    fn write_object(
+        &self,
+        object: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
         let path = self.config.config_file();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|_| "~/.config/devin cannot be created".to_string())?;
         }
         let existing = std::fs::read(&path).ok();
-        let mut bytes = serde_json::to_vec_pretty(&serde_json::Value::Object(object))
+        let mut bytes = serde_json::to_vec_pretty(&serde_json::Value::Object(object.clone()))
             .map_err(|error| error.to_string())?;
         bytes.push(b'\n');
         crate::relay::claude_settings::write_keeping_file(
@@ -1008,6 +1108,18 @@ impl crate::relay::agents::SettingsExtension for DevinSettings {
             return Some(Err(format!("{SETTING} must be true or false.")));
         };
         Some(self.edit(enabled))
+    }
+
+    /// Hooks installed before the question hook gain it: the rest are put
+    /// back as they were, the person's own entries untouched. Hooks turned
+    /// off stay off.
+    fn reclaim(&self) {
+        if self.installed()
+            && platform::unsupported(DEVIN).is_none()
+            && self.missing_question_hook()
+        {
+            let _ = self.add_question_hook_to_file();
+        }
     }
 }
 
@@ -1506,6 +1618,149 @@ mod tests {
         assert!(!output.to_string().contains("production"));
         assert!(config.inbox().join("real-gallium.1.msg").exists());
         assert!(!dev.inbox().join("real-gallium.2.msg").exists());
+    }
+
+    /// The question hook: one `ask_user_question` group with a longer
+    /// timeout beside the person's own PreToolUse hooks; an install from
+    /// before it gains it on reclaim; off takes only ours out.
+    #[test]
+    fn the_question_hook_comes_with_the_hooks_and_with_an_upgrade() {
+        use crate::relay::agents::SettingsExtension;
+        let temp = tempfile::tempdir().unwrap();
+        let config = config(temp.path());
+        std::fs::create_dir_all(&config.data_dir).unwrap();
+        std::fs::create_dir_all(&config.config_dir).unwrap();
+        let theirs = serde_json::json!({"matcher": "exec", "hooks": [{"type": "command",
+            "command": "./scripts/check.sh", "timeout": 5}]});
+        std::fs::write(
+            config.config_file(),
+            serde_json::json!({"hooks": {"PreToolUse": [theirs]}}).to_string(),
+        )
+        .unwrap();
+        let settings = settings(&config);
+        let read = || -> serde_json::Value {
+            serde_json::from_str(&std::fs::read_to_string(config.config_file()).unwrap()).unwrap()
+        };
+        settings
+            .set(SETTING, &serde_json::json!(true))
+            .unwrap()
+            .unwrap();
+        let written = read();
+        assert_eq!(
+            written["hooks"][QUESTION_EVENT],
+            serde_json::json!([theirs, settings.question_entry()])
+        );
+        assert_eq!(settings.question_entry()["matcher"], "^ask_user_question$");
+        assert_eq!(settings.question_entry()["hooks"][0]["timeout"], 30);
+        assert!(!settings.missing_question_hook());
+        // An install from before the question hook: reclaim adds it and
+        // keeps everything else.
+        let mut older = written.clone();
+        older["hooks"][QUESTION_EVENT] = serde_json::json!([theirs]);
+        std::fs::write(config.config_file(), older.to_string()).unwrap();
+        assert!(settings.missing_question_hook());
+        settings.reclaim();
+        let upgraded = read();
+        assert_eq!(
+            upgraded["hooks"][QUESTION_EVENT],
+            written["hooks"][QUESTION_EVENT]
+        );
+        for event in HOOK_EVENTS {
+            assert_eq!(upgraded["hooks"][event], written["hooks"][event], "{event}");
+        }
+        // Off: the person's own hook stays, and reclaim does not add ours back.
+        settings
+            .set(SETTING, &serde_json::json!(false))
+            .unwrap()
+            .unwrap();
+        assert_eq!(read()["hooks"][QUESTION_EVENT], serde_json::json!([theirs]));
+        settings.reclaim();
+        assert_eq!(read()["hooks"][QUESTION_EVENT], serde_json::json!([theirs]));
+    }
+
+    /// Reclaim adds the question hook in place: the person's own hooks and
+    /// this build's keep their order. A PreToolUse value that is not a list
+    /// keeps direct delivery working without the question hook.
+    #[test]
+    fn the_question_hook_is_best_effort_and_keeps_the_order() {
+        use crate::relay::agents::SettingsExtension;
+        let temp = tempfile::tempdir().unwrap();
+        let config = config(temp.path());
+        std::fs::create_dir_all(&config.data_dir).unwrap();
+        std::fs::create_dir_all(&config.config_dir).unwrap();
+        let settings = settings(&config);
+        let ours = serde_json::json!({"matcher": "", "hooks": [{"type": "command",
+            "command": settings.command, "timeout": 10}]});
+        let theirs = serde_json::json!({"matcher": "", "hooks": [{"type": "command",
+            "command": "/usr/bin/echo hi"}]});
+        let before = serde_json::json!({"hooks": {"Stop": [ours, theirs]}});
+        std::fs::write(config.config_file(), before.to_string()).unwrap();
+        settings.reclaim();
+        let after: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(config.config_file()).unwrap()).unwrap();
+        assert_eq!(
+            after["hooks"]["Stop"], before["hooks"]["Stop"],
+            "order kept"
+        );
+        assert_eq!(
+            after["hooks"][QUESTION_EVENT],
+            serde_json::json!([settings.question_entry()])
+        );
+        // Not a list: the hooks still turn on, without the question hook.
+        std::fs::write(
+            config.config_file(),
+            serde_json::json!({"hooks": {"PreToolUse": {"odd": true}}}).to_string(),
+        )
+        .unwrap();
+        settings
+            .set(SETTING, &serde_json::json!(true))
+            .unwrap()
+            .unwrap();
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(config.config_file()).unwrap()).unwrap();
+        assert_eq!(
+            written["hooks"]["PreToolUse"],
+            serde_json::json!({"odd": true})
+        );
+        assert_eq!(settings.get()[SETTING], serde_json::Value::Bool(true));
+        assert!(
+            !settings.missing_question_hook(),
+            "reclaim does not loop on it"
+        );
+    }
+
+    /// Only a question that went to the inbox blocks the tool, in Devin's
+    /// own shape; every other answer lets Devin show it.
+    #[test]
+    fn only_a_sent_question_blocks_devins_tool() {
+        let sent = serde_json::json!({"ok": true, "data": {"escalated": true, "ref": "q1",
+            "inbox": "triage", "reason": "Sent to @triage as q1."}});
+        assert_eq!(
+            question_hook_output(200, sent.to_string().as_bytes()),
+            Some(serde_json::json!({"decision": "block", "reason": "Sent to @triage as q1."}))
+        );
+        for (status, body) in [
+            (
+                200,
+                serde_json::json!({"ok": true, "data": {"escalated": false}}).to_string(),
+            ),
+            (
+                200,
+                serde_json::json!({"ok": true, "data": {"escalated": false, "error": "x"}})
+                    .to_string(),
+            ),
+            (
+                404,
+                serde_json::json!({"ok": false, "error": {"code": "x"}}).to_string(),
+            ),
+            (400, "not json".to_string()),
+        ] {
+            assert_eq!(
+                question_hook_output(status, body.as_bytes()),
+                None,
+                "{body}"
+            );
+        }
     }
 
     #[test]
