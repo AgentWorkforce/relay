@@ -88,6 +88,7 @@ pub(super) fn restorable(
         node_name: node.node_name.clone(),
         invocation_id: invocation.to_owned(),
         harness: codex::ID.name().into(),
+        approval_profile: None,
         requester: None,
         launcher: None,
         process: None,

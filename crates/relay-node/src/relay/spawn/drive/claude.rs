@@ -45,10 +45,16 @@ pub(crate) fn approval_text_for(
     } else if notice.options.is_empty() {
         format!("Reply `deny {reference}` within five minutes. This question cannot be answered through a Relay DM.")
     } else {
-        format!(
-            "Options: {}. Reply `choose {reference} <number>` or `deny {reference}` within five minutes.",
-            notice.options.join(", ")
-        )
+        match requester {
+            Some(name) => format!(
+                "Options: {}. Only the signed-in machine owner may reply `choose {reference} <number>`; the owner or @{name} may reply `deny {reference}` within five minutes.",
+                notice.options.join(", ")
+            ),
+            None => format!(
+                "Options: {}. Reply `choose {reference} <number>` or `deny {reference}` within five minutes.",
+                notice.options.join(", ")
+            ),
+        }
     };
     format!(
         "[Claude approval {reference} for @{agent}]\n{}\n{response} {}",

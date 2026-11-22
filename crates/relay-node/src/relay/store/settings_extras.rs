@@ -19,8 +19,7 @@ pub struct SettingsExtras {
         skip_serializing_if = "Option::is_none"
     )]
     pub spawn_native_input: Option<bool>,
-    /// Missing means on in Agent Relay Dev and off in the release build: the
-    /// spawning agent may answer its session's approvals
+    /// Missing means on: the spawning agent may answer its session's approvals
     /// (`spawn::settings::requester_approvals`).
     #[serde(
         rename = "spawnRequesterApprovals",

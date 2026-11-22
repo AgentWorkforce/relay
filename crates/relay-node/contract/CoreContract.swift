@@ -4716,8 +4716,8 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     public let spawnRepositories: [String]?
     /// The agent that spawned a session may answer its permission and
     /// approval requests by direct message, as the machine owner may; the
-    /// first answer counts. Needs `spawn_native_input`. On in Agent Relay Dev
-    /// and off in the release build unless set. Absent in older cores.
+    /// first answer counts. Needs `spawn_native_input`. On unless the machine
+    /// owner turns it off. Absent in older cores.
     public let spawnRequesterApprovals: Bool?
     /// A teammate's direct message to a Claude Code session with Agent
     /// Relay's plugin starts a user turn, labelled with the sender; on by

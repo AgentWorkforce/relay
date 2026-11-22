@@ -23,6 +23,15 @@ fn a_relayed_request_names_its_reference_who_may_answer_and_how() {
         .ends_with("Reply `deny 0123456789abcdef` within five minutes. This question cannot be answered through a Relay DM. Only the signed-in machine owner may answer."));
     assert!(approval_text("w1", &notice(false, &["1: Yes", "2: No"]))
         .contains("Options: 1: Yes, 2: No. Reply `choose 0123456789abcdef <number>`"));
+    let requester = approval_text_for("w1", &notice(false, &["1: Yes", "2: No"]), Some("lead"));
+    assert!(
+        requester.contains("Only the signed-in machine owner may reply `choose"),
+        "{requester}"
+    );
+    assert!(
+        requester.contains("the owner or @lead may reply `deny"),
+        "{requester}"
+    );
 }
 
 #[test]

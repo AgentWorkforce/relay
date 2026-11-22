@@ -147,6 +147,7 @@ fn restart_finds_only_its_live_host_and_never_adopts_a_reused_pid() {
         gate_launch: false,
         name: "worker".into(),
         harness: ID,
+        approval_profile: None,
         node_id: "test-node".into(),
         node_name: "test-desktop".into(),
         title: "Test".into(),

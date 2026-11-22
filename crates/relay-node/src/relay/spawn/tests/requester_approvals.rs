@@ -170,6 +170,39 @@ async fn the_spawning_agent_answers_its_codexs_request() {
 }
 
 #[tokio::test]
+async fn the_spawning_agent_cannot_choose_an_answer_to_an_owner_only_question() {
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bdabb";
+    let home = tempfile::tempdir().unwrap();
+    let core = core_with_account(home.path(), Arc::new(FakeSpawner::default()));
+    set(&core, Some(true), Some(true));
+    let registration = spawned("codex", THREAD);
+    let notice = codex_drive::open_request(
+        THREAD,
+        json!({"id": 191, "method": "item/tool/requestUserInput", "params": {
+            "threadId": THREAD,
+            "questions": [{"id": "decision", "header": "Confirm", "question": "Install?",
+                "options": [{"label": "Install", "description": "Proceed"},
+                    {"label": "Cancel", "description": "Stop"}]}]
+        }}),
+    );
+    let choice = dm(
+        "grokbot",
+        "agent_grokbot",
+        &format!("choose {} 1", notice.reference),
+    );
+
+    assert!(matches!(
+        core.owner_reply(&registration, &choice).await,
+        OwnerReply::NotOne
+    ));
+    assert!(codex_drive::has_pending(THREAD, &notice.reference));
+    assert_eq!(codex_drive::recorded_answer(&notice.reference), None);
+    assert!(!core
+        .store
+        .read(|store| store.injected_delivery_ids.contains(&choice.id)));
+}
+
+#[tokio::test]
 async fn only_the_spawning_agents_own_direct_message_with_both_settings_on_answers() {
     const SESSION: &str = "a1d0c2e4-0000-4000-8000-00000000c1a2";
     let home = tempfile::tempdir().unwrap();
@@ -179,8 +212,8 @@ async fn only_the_spawning_agents_own_direct_message_with_both_settings_on_answe
     let approve = format!("approve {}", notice.reference);
     let not_one = |reply: OwnerReply| matches!(reply, OwnerReply::NotOne);
 
-    // Off in the release build until turned on (tests use a release data dir).
-    set(&core, None, None);
+    // The machine owner can turn requester approvals off explicitly.
+    set(&core, None, Some(false));
     assert!(core.approving_requester(&registration).is_none());
     assert!(not_one(
         core.owner_reply(&registration, &dm("grokbot", "agent_grokbot", &approve))
@@ -281,6 +314,52 @@ fn the_approval_dm_names_the_spawning_agent_only_when_it_may_answer() {
         "{both}"
     );
     assert!(!both.contains("Only the signed-in"));
+}
+
+#[test]
+fn the_requesters_notice_says_only_the_owner_may_choose_tool_input() {
+    let notice = codex_drive::open_request(
+        "thread-requester-choice-text",
+        json!({"id": 192, "method": "item/tool/requestUserInput", "params": {
+            "threadId": "thread-requester-choice-text",
+            "questions": [{"id": "decision", "header": "Confirm", "question": "Install?",
+                "options": [{"label": "Install", "description": "Proceed"},
+                    {"label": "Cancel", "description": "Stop"}]}]
+        }}),
+    );
+    let text = approval_text("w1", &notice, Some("grokbot"));
+    assert!(
+        text.contains("Only the signed-in machine owner may reply `choose"),
+        "{text}"
+    );
+    assert!(
+        text.contains("the owner or @grokbot may reply `deny"),
+        "{text}"
+    );
+}
+
+#[test]
+fn spawn_profiles_cannot_bypass_the_machine_owners_approval_controls() {
+    let home = tempfile::tempdir().unwrap();
+    let core = core_with_account(home.path(), Arc::new(FakeSpawner::default()));
+    set(&core, Some(true), Some(true));
+    let mut registration = spawned("codex", "profile-interactive-thread");
+    registration.spawn.as_mut().unwrap().approval_profile =
+        Some(crate::relay::spawn::wire::ApprovalProfile::Interactive);
+    assert!(core.approving_requester(&registration).is_none());
+
+    registration.spawn.as_mut().unwrap().approval_profile =
+        Some(crate::relay::spawn::wire::ApprovalProfile::Requester);
+    set(&core, Some(false), Some(true));
+    assert!(core.approving_requester(&registration).is_none());
+    set(&core, Some(true), Some(false));
+    assert!(core.approving_requester(&registration).is_none());
+    set(&core, Some(true), Some(true));
+    assert_eq!(
+        core.approving_requester(&registration)
+            .map(|requester| requester.agent_id),
+        Some("agent_grokbot".into())
+    );
 }
 
 #[test]

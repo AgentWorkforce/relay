@@ -229,6 +229,9 @@ impl CodexAdapter {
     }
 
     fn work(&self, thread: &str) -> (WorkState, bool) {
+        if app_server::drive::awaiting_input(thread) {
+            return (WorkState::Waiting, true);
+        }
         match rollout_path(&self.codex, thread).map(|path| RolloutSummary::load(&path)) {
             Some(Ok(summary)) if summary.active_turn.is_some() => (WorkState::Working, true),
             Some(Ok(_)) => (WorkState::Idle, false),

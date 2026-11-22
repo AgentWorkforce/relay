@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Fixed
+
+- `agent-relay-node`: spawned Codex MCP tool approvals now reach the verified spawning agent with the server, tool and argument names, remain visibly `waiting_for_approval` for 15 minutes, and accept authenticated Relay approval replies instead of silently timing out after five minutes. Spawn actions also accept an `approval_profile` (`interactive`, `requester`, or machine-owner-enabled `full_access`) so hosted launchers can declare the prompt policy up front.
 
 ## [18.12.0] - 2026-11-21
 

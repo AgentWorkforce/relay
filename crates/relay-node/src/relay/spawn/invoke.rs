@@ -237,6 +237,14 @@ impl Core {
         if !settings.accept {
             return Err("spawn_disabled: spawning is turned off on this computer".into());
         }
+        if request.approval_profile == Some(wire::ApprovalProfile::FullAccess)
+            && !settings.full_access(request.harness)
+        {
+            return Err(
+                "spawn_full_access_disabled: the machine owner has not enabled full access for this harness"
+                    .into(),
+            );
+        }
         if self.spawns_blocked() {
             let message = super::claim::OWNED_BY_OTHER.to_string();
             return Err(refusal(
@@ -304,6 +312,11 @@ impl Core {
         settings: &SpawnSettings,
         left: &mut Option<(Intent, Unanswered)>,
     ) -> Result<Value, SpawnError> {
+        let full_access = match request.approval_profile {
+            Some(wire::ApprovalProfile::Interactive | wire::ApprovalProfile::Requester) => false,
+            Some(wire::ApprovalProfile::FullAccess) => true,
+            None => settings.full_access(request.harness),
+        };
         let workspace = self
             .workspace()
             .ok_or("spawn_failed: this computer has no Agent Relay workspace")?;
@@ -357,6 +370,7 @@ impl Core {
                 gate_launch: launch_credential.is_some() && workspace.gate_url.is_some(),
                 name: request.name.clone(),
                 harness: request.harness,
+                approval_profile: request.approval_profile,
                 node_id: link.node.node_id.clone(),
                 node_name: link.node.node_name.clone(),
                 title: intents::title(&request.task, &request.name),
@@ -457,7 +471,7 @@ impl Core {
                 .relay_send
                 .as_ref()
                 .and_then(|relay_send| relay_send.serving.get()),
-            settings.full_access(request.harness),
+            full_access,
         );
         let task = match &request.fork_from {
             Some(source) => super::fork::first_task(source, &request.task),
@@ -468,7 +482,7 @@ impl Core {
             name: request.name.clone(),
             text: first_text(&request.name, &address, &task, &report),
             directory: directory.clone(),
-            full_access: settings.full_access(request.harness),
+            full_access,
             message_id: in_flight.intent.message_id.clone(),
             session_id: in_flight.intent.session_id.clone(),
             fork: fork.map(|fork| fork.session_id),

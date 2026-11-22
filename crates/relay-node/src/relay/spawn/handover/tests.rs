@@ -166,6 +166,7 @@ fn spawned(core: &Core, name: &str, kind: SessionKind, harness: HarnessId) {
         gate_launch: false,
         name: name.into(),
         harness,
+        approval_profile: None,
         node_id: "node_desktop_1".into(),
         node_name: "test-desk-desktop".into(),
         title: "Fix CI".into(),

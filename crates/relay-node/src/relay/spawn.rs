@@ -696,6 +696,7 @@ mod tests {
             task: "Fix CI".into(),
             directory: None,
             fork_from: None,
+            approval_profile: None,
             launch_credential: None,
         }
     }
@@ -1226,6 +1227,41 @@ mod tests {
         );
         assert!(core.store.read(|store| store.registrations.is_empty()));
         assert_eq!(spawner.stopped.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_spawn_profile_can_keep_prompts_on_but_cannot_elevate_past_the_owner_setting() {
+        let home = tempfile::tempdir().unwrap();
+        let spawner = Arc::new(FakeSpawner::default());
+        let core = core(home.path(), spawner.clone());
+
+        let (link, sent) = NodeLink::detached(node());
+        let frames = relaycast(link.clone(), sent);
+        let mut interactive = request("interactive");
+        interactive.approval_profile = Some(wire::ApprovalProfile::Interactive);
+        let answer = core.clone().answer_spawn(link, interactive).await;
+        assert_eq!(answer["output"]["ready"], true);
+        let _ = frames.await.unwrap();
+        assert!(!spawner.launched.lock().unwrap()[0].full_access);
+        assert_eq!(
+            core.store.read(|store| store.registrations[0]
+                .spawn
+                .as_ref()
+                .and_then(|spawn| spawn.approval_profile)),
+            Some(wire::ApprovalProfile::Interactive)
+        );
+
+        core.store
+            .update(|store| store.spawn_full_access_codex = Some(false))
+            .unwrap();
+        let (link, _sent) = NodeLink::detached(node());
+        let mut elevated = request("elevated");
+        elevated.approval_profile = Some(wire::ApprovalProfile::FullAccess);
+        let refused = core.clone().answer_spawn(link, elevated).await;
+        assert!(refused["error"]
+            .as_str()
+            .is_some_and(|error| error.starts_with("spawn_full_access_disabled")));
+        assert_eq!(spawner.launched.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -1818,6 +1854,7 @@ mod tests {
             gate_launch: false,
             name: name.into(),
             harness: codex::ID,
+            approval_profile: None,
             node_id: node().node_id,
             node_name: node().node_name,
             title: "Fix CI".into(),
