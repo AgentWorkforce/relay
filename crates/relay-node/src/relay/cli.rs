@@ -92,14 +92,18 @@ pub fn call(
 /// session commands (`session_cli`), the session is told from this process,
 /// so it reads only its own messages.
 pub fn read_message(socket: &Path, message_ref: &str) -> Result<()> {
-    let text = read_text(socket, message_ref)?;
-    let note = crate::relay::message_pointer::read_note(&text);
+    let (text, framing) = read_text(socket, message_ref)?;
+    let note = crate::relay::message_pointer::read_note(framing);
     std::io::stdout().write_all(format!("{text}\n\n{note}\n").as_bytes())?;
     Ok(())
 }
 
-/// The text of message `message_ref` kept for the calling session.
-fn read_text(socket: &Path, message_ref: &str) -> Result<String> {
+/// The text of message `message_ref` kept for the calling session, and the
+/// framing the core proved for it (a peer's when the core names none).
+fn read_text(
+    socket: &Path,
+    message_ref: &str,
+) -> Result<(String, crate::relay::message_pointer::Framing)> {
     let request = crate::relay::session_cli::SessionCommand::Read {
         message_ref: message_ref.to_string(),
     }
@@ -108,7 +112,10 @@ fn read_text(socket: &Path, message_ref: &str) -> Result<String> {
         socket_response(socket, request.method, &request.path, b"", SOCKET_TIMEOUT)?;
     let answer: Value = serde_json::from_slice(&body).unwrap_or_default();
     match answer["data"]["text"].as_str() {
-        Some(text) if (200..300).contains(&status) => Ok(text.to_string()),
+        Some(text) if (200..300).contains(&status) => Ok((
+            text.to_string(),
+            crate::relay::message_pointer::Framing::parse(answer["data"]["framing"].as_str()),
+        )),
         _ => Err(SafeError(match answer["error"]["message"].as_str() {
             Some(message) => format!("Agent Relay could not read message {message_ref}: {message}"),
             None => format!("Agent Relay could not read message {message_ref} ({status})."),
@@ -1149,11 +1156,26 @@ mod tests {
         let ok =
             json!({"ok": true, "data": {"message_id": "m1", "ref": "0123456789ab", "text": text}});
         let (_dir, socket, served) = answer_once(200, &ok.to_string());
-        assert_eq!(read_text(&socket, "0123456789ab").unwrap(), text);
+        // A core that names no framing gives a peer's.
+        assert_eq!(
+            read_text(&socket, "0123456789ab").unwrap(),
+            (
+                text.to_string(),
+                crate::relay::message_pointer::Framing::Peer
+            )
+        );
         assert!(served
             .join()
             .unwrap()
             .starts_with("GET /messages?ref=0123456789ab "));
+        let owner = json!({"ok": true, "data": {"message_id": "m1", "ref": "0123456789ab",
+            "text": text, "framing": "owner"}});
+        let (_dir, socket, served) = answer_once(200, &owner.to_string());
+        assert_eq!(
+            read_text(&socket, "0123456789ab").unwrap().1,
+            crate::relay::message_pointer::Framing::Owner
+        );
+        served.join().unwrap();
 
         let missing = json!({"ok": false, "error": {"code": "message_not_found",
             "message": "No message 0123456789ab was kept for this session, or it expired."}});
