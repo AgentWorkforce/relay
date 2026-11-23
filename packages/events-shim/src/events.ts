@@ -294,8 +294,9 @@ function parseSubscription(
       cursorUnusable: cursor !== null && after === undefined,
       // SEP-3415: maxAgeMs is ignored when cursor is null (null already means "now").
       ...(maxAgeMs !== undefined && cursor !== null ? { maxAgeMs: maxAgeMs as number } : {}),
+      // Only a poll pages; a stream sends everything waiting, so it ignores maxEvents.
       maxEvents: Math.min(
-        (maxEvents as number | undefined) ?? EVENTS_SHIM_LIMITS.feedSize,
+        (poll ? (maxEvents as number | undefined) : undefined) ?? EVENTS_SHIM_LIMITS.feedSize,
         EVENTS_SHIM_LIMITS.feedSize
       ),
       ...(typeof args.event_type === 'string' ? { eventType: args.event_type } : {}),
@@ -383,7 +384,17 @@ async function readPage(
       }
     }
   }
-  const candidates = feed.filter((event) => event.seq > after && matches(event, sub));
+  // Seq order is append order, not strictly receivedAt order, so an older post can follow a recent
+  // one: keep the age floor on every candidate, and report a skipped one as a gap.
+  const since = sub.maxAgeMs !== undefined ? clock(deps).getTime() - sub.maxAgeMs : undefined;
+  const candidates = feed.filter((event) => {
+    if (event.seq <= after || !matches(event, sub)) return false;
+    if (since !== undefined && Date.parse(event.receivedAt) < since) {
+      truncated = true;
+      return false;
+    }
+    return true;
+  });
   const events = candidates.slice(0, sub.maxEvents);
   const hasMore = candidates.length > events.length;
   const head = hasMore ? events.at(-1)!.seq : Math.max(newest, after);

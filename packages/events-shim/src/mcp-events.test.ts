@@ -339,6 +339,33 @@ describe('MCP Events server (events/*)', () => {
     expect(wide.truncated).toBe(false);
   });
 
+  it('keeps the maxAgeMs floor on a post appended after a newer one', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const { cursor } = await h.poll(shim.mcp_url);
+    const token = /\/t\/([^/]+)\/mcp$/.exec(shim.mcp_url)![1]!;
+    const record = (await h.store.findByMcpTokenHash(await sha256Hex(token)))!;
+    const now = Date.parse('2026-11-23T12:00:00.000Z');
+    const append = (n: string, agoMs: number) =>
+      h.store.appendEvent(
+        record.id,
+        {
+          receivedAt: new Date(now - agoMs).toISOString(),
+          mode: 'open',
+          contentType: 'application/json',
+          body: JSON.stringify({ n }),
+          headers: {},
+        },
+        { feedSize: EVENTS_SHIM_LIMITS.feedSize, dedupeSince: new Date(0).toISOString() }
+      );
+    await append('recent', 60_000);
+    await append('late-but-old', 10 * 60_000);
+
+    const page = await h.poll(shim.mcp_url, { cursor, maxAgeMs: 5 * 60_000 });
+    expect(page.events.map((event) => JSON.parse(event.data.body).n)).toEqual(['recent']);
+    expect(page.truncated).toBe(true);
+  });
+
   it('refuses unknown event types, bad arguments, webhook delivery and a mismatched Mcp-Name', async () => {
     const h = createHarness();
     const shim = await h.create();
@@ -379,7 +406,8 @@ describe('MCP Events server (events/*)', () => {
         jsonrpc: '2.0',
         id: 41,
         method: 'events/stream',
-        params: { name: WEBHOOK_RECEIVED_EVENT, cursor, heartbeatMs: 1 },
+        // maxEvents is a poll page size; a stream must ignore it (0 once crashed the replay).
+        params: { name: WEBHOOK_RECEIVED_EVENT, cursor, heartbeatMs: 1, maxEvents: 0 },
       }),
       signal: controller.signal,
     });
