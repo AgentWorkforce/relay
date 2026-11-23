@@ -91,6 +91,25 @@ pub(crate) fn direct_from(delivery: &Delivery, id: Option<&str>) -> bool {
     id.is_some() && delivery.sender_id.as_deref() == id && direct
 }
 
+/// What Relaycast says of the 1:1 conversation between a session and a peer
+/// (`Core::pair_conversation`). Relaycast lets a participant add a third
+/// agent to a 1:1 conversation (`POST /v1/dm/{id}/participants`), keeping
+/// its type and `dmch_` channel, so neither proves a message private.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PairConversation {
+    /// It exists, with exactly the session and the peer as participants.
+    Private,
+    /// None exists yet: a DM to the peer starts one of two.
+    Absent,
+    /// One has (or had) another participant.
+    Shared,
+    /// Relaycast could not be asked.
+    Unknown,
+}
+
+/// How long the conversation lookup may take.
+const PAIR_LOOKUP_WAIT: Duration = Duration::from_secs(3);
+
 pub(crate) enum ReplyDecision {
     Approve,
     Deny,
@@ -522,7 +541,7 @@ impl Core {
                     if send > 0 {
                         tokio::time::sleep(LEADER_RESEND_AFTER).await;
                     }
-                    let name = match core.leader_try(registration, reference, id).await {
+                    let name = match core.leader_try(registration, token, reference, id).await {
                         LeaderTry::Send(name) => name,
                         LeaderTry::Skip => continue,
                         LeaderTry::Stop => return,
@@ -547,6 +566,7 @@ impl Core {
     async fn leader_try(
         &self,
         registration: &Registration,
+        token: &Secret,
         reference: &str,
         id: &str,
     ) -> LeaderTry {
@@ -567,6 +587,12 @@ impl Core {
             Some(false) => return LeaderTry::Stop,
             None => return LeaderTry::Skip,
         }
+        // Never into a conversation someone else was added to.
+        match self.pair_conversation(registration, token, id).await {
+            PairConversation::Private | PairConversation::Absent => {}
+            PairConversation::Shared => return LeaderTry::Stop,
+            PairConversation::Unknown => return LeaderTry::Skip,
+        }
         if self.open_request(registration, reference).await != Some(true)
             || !self.leaders_may_answer_now(registration)
         {
@@ -579,6 +605,66 @@ impl Core {
             return LeaderTry::Skip;
         }
         LeaderTry::Send(leader.name)
+    }
+
+    /// The 1:1 conversation between `registration` and `peer_id`, as
+    /// Relaycast lists `registration`'s conversations (`GET
+    /// /v1/dm/conversations`, with its own `token`): every 1:1 conversation
+    /// that includes the peer must have exactly the two of them as
+    /// participants, a participant who left included. Used wherever a
+    /// leader's or delegate's message counts as a 1:1 direct message, and
+    /// before a notice is sent to one, never on the conversation type alone.
+    pub(crate) async fn pair_conversation(
+        &self,
+        registration: &Registration,
+        token: &Secret,
+        peer_id: &str,
+    ) -> PairConversation {
+        let Ok(http) = sdk_gaps::http(&registration.base_url, token) else {
+            return PairConversation::Unknown;
+        };
+        let list = tokio::time::timeout(PAIR_LOOKUP_WAIT, sdk_gaps::dm_conversations(&http)).await;
+        let Ok(Ok(list)) = list else {
+            return PairConversation::Unknown;
+        };
+        let pair: HashSet<&str> = [registration.agent_id.as_str(), peer_id].into();
+        let mut found = false;
+        for conversation in list.iter().filter(|c| c["type"].as_str() == Some("1:1")) {
+            let ids: HashSet<&str> = conversation["participants"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|p| p["agent_id"].as_str())
+                .collect();
+            if !ids.contains(peer_id) {
+                continue;
+            }
+            let others = conversation["participants"]
+                .as_array()
+                .map_or(0, |p| p.len());
+            if ids != pair || others != 2 {
+                return PairConversation::Shared;
+            }
+            found = true;
+        }
+        match found {
+            true => PairConversation::Private,
+            false => PairConversation::Absent,
+        }
+    }
+
+    /// Whether the reply `delivery` from `sender_id` came in the private
+    /// 1:1 conversation of `registration` and the sender.
+    async fn in_private_pair(&self, registration: &Registration, sender_id: &str) -> bool {
+        let Some((_, token)) = self
+            .agent_credential(&registration.name)
+            .filter(|(current, _)| current.agent_id == registration.agent_id)
+        else {
+            return false;
+        };
+        self.pair_conversation(registration, &token, sender_id)
+            .await
+            == PairConversation::Private
     }
 
     /// Whether Relaycast still gives the saved `name` (a requester's or a
@@ -746,6 +832,7 @@ impl Core {
             || !self.leaders_may_answer(registration)
             || !self.organization_admits(registration, delivery)
             || self.open_request(registration, reference).await != Some(true)
+            || !self.in_private_pair(registration, sender_id).await
         {
             return None;
         }

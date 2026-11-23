@@ -133,6 +133,7 @@ impl Core {
             || !self.delegates_may_answer(registration)
             || !self.organization_admits(registration, delivery)
             || !self.delegate_request(registration, reference).await
+            || !self.in_private_pair(registration, sender_id).await
         {
             return None;
         }
@@ -318,6 +319,12 @@ impl Core {
         let Some(name) = name else {
             return DelegateTry::Stop;
         };
+        // Never into a conversation someone else was added to.
+        match self.pair_conversation(registration, token, id).await {
+            PairConversation::Private | PairConversation::Absent => {}
+            PairConversation::Shared => return DelegateTry::Stop,
+            PairConversation::Unknown => return DelegateTry::Skip,
+        }
         if !self.delegate_request(registration, reference).await
             || !self.delegates_may_answer_now(registration)
         {

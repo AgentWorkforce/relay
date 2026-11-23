@@ -103,6 +103,8 @@ async fn fixture() -> Fixture {
     let requester = server.seed_agent("spawner", "agent", json!({}));
     let delegate = server.seed_agent("assistant", "agent", json!({}));
     let child = server.seed_agent("c1", "agent", json!({}));
+    // Their 1:1 conversation, with just the two of them.
+    server.seed_conversation("assistant", "c1");
     let home = tempfile::tempdir().unwrap();
     let spawner = Arc::new(FakeSpawner {
         native: true,
@@ -866,4 +868,36 @@ async fn a_revoked_delegate_gets_no_retried_copy() {
         .filter(|call| call.body["to"] == "assistant")
         .count();
     assert_eq!(copies, 3, "no copy after the grant went away");
+}
+
+/// A reply in a 1:1 conversation that gained a third participant is not a
+/// 1:1 direct message: Cloud is not even asked, and no notice goes there.
+#[tokio::test]
+async fn a_conversation_with_a_third_participant_is_not_one_to_one() {
+    let f = fixture().await;
+    f.server.seed_agent("outsider", "agent", json!({}));
+    f.server.add_dm_participant("assistant", "c1", "outsider");
+    *f.cloud.delegates.lock().unwrap() =
+        json!({"delegates": [{"agent_id": f.delegate.id, "grant_id": "grt_1"}]});
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3be014";
+    let registration = f.spawned("codex", THREAD);
+    let notice = codex_request(THREAD, 999);
+    f.attests(&format!("{}:{}", f.child.id, notice.reference));
+    let reply = approval_dm(
+        "shared",
+        &f.delegate,
+        &format!("approve {}", notice.reference),
+    );
+    assert!(not_one(f.core.owner_reply(&registration, &reply).await));
+    assert_eq!(f.attestation_calls(), 0);
+    assert!(codex_drive::has_pending(THREAD, &notice.reference));
+    f.core
+        .forward_to_owner(&registration, &f.token(), &notice)
+        .await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(!f
+        .server
+        .calls("POST", "/v1/dm")
+        .iter()
+        .any(|call| call.body["to"] == "assistant"));
 }

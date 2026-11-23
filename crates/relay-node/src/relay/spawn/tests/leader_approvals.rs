@@ -81,6 +81,8 @@ async fn fixture_with(dead: bool, account: bool) -> Fixture {
     let requester = server.seed_agent("grokbot", "agent", json!({}));
     let lead = server.seed_agent("lead", "agent", json!({}));
     let child = server.seed_agent("c1", "agent", json!({}));
+    // Their 1:1 conversation, with just the two of them.
+    server.seed_conversation("lead", "c1");
     server.set_leaders(Some(json!({
         "leaders": [{"name": "lead", "agent_id": lead.id}],
         "patterns": []
@@ -1950,4 +1952,44 @@ async fn on_a_gate_only_install_leader_approvals_are_unavailable_and_say_why() {
         .all(|(_, text, _)| !text.contains("workspace leader")));
     assert_eq!(f.server.calls("GET", "/v1/workspace/leaders").len(), reads);
     assert!(codex_drive::has_pending(THREAD, &notice.reference));
+}
+
+/// Relaycast lets a participant add a third agent to a 1:1 conversation
+/// without changing its type: a leader's reply there is not a 1:1 direct
+/// message, and no notice is sent into it.
+#[tokio::test]
+async fn a_conversation_with_a_third_participant_is_not_one_to_one() {
+    let f = fixture().await;
+    f.set(Some(true), Some(false), None);
+    unclaimed(&f);
+    f.server.seed_agent("outsider", "agent", json!({}));
+    f.server.add_dm_participant("lead", "c1", "outsider");
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bd201";
+    let registration = f.spawned("codex", THREAD);
+    let notice = codex_request(THREAD, 1201);
+    let reply = dm("shared", &f.lead, &format!("approve {}", notice.reference));
+    assert!(not_one(f.core.owner_reply(&registration, &reply).await));
+    assert!(codex_drive::has_pending(THREAD, &notice.reference));
+    f.core
+        .forward_to_owner(&registration, &f.token(), &notice)
+        .await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(copies_to(&f, "lead").is_empty(), "{:?}", f.approval_dms());
+
+    // A leader added to another agent's conversation with the session is
+    // not in a 1:1 conversation with it either.
+    let f = fixture().await;
+    f.set(Some(true), None, None);
+    f.server.seed_agent("other", "agent", json!({}));
+    f.server.seed_conversation("other", "c1");
+    f.server.add_dm_participant("other", "c1", "lead");
+    const THREAD2: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bd202";
+    let registration = f.spawned("codex", THREAD2);
+    let notice = codex_request(THREAD2, 1202);
+    let reply = dm(
+        "elsewhere",
+        &f.lead,
+        &format!("approve {}", notice.reference),
+    );
+    assert!(not_one(f.core.owner_reply(&registration, &reply).await));
 }

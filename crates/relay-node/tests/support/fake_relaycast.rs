@@ -192,6 +192,9 @@ struct World {
     webhooks: BTreeMap<String, Value>,
     subscriptions: BTreeMap<String, Value>,
     messages: Vec<StoredMessage>,
+    /// 1:1 conversation id → agents added to it besides the pair
+    /// (`POST /v1/dm/{id}/participants`), as (name, id).
+    added_participants: BTreeMap<String, Vec<(String, String)>>,
     /// relayfile-cloud subscriptions by id.
     relayfile: BTreeMap<String, Value>,
     files: BTreeMap<String, FakeFile>,
@@ -438,6 +441,31 @@ impl FakeRelaycast {
 
     /// Queues a DM from `sender` to `recipient` as Relaycast would,
     /// returning `(delivery id, message id)`.
+    /// Records a 1:1 conversation between `a` and `b`, as if they had
+    /// messaged, without queueing anything.
+    pub fn seed_conversation(&self, a: &str, b: &str) {
+        let mut shared = self.shared.lock().unwrap();
+        store_message(&mut shared.world, a, b, "(earlier)", None);
+    }
+
+    /// Adds `third` to the 1:1 conversation of `a` and `b`, as Relaycast's
+    /// `POST /v1/dm/{id}/participants` does without checking its type.
+    pub fn add_dm_participant(&self, a: &str, b: &str, third: &str) {
+        let mut shared = self.shared.lock().unwrap();
+        let id = shared
+            .world
+            .agents
+            .get(third)
+            .map(|agent| agent.id.clone())
+            .unwrap_or_default();
+        shared
+            .world
+            .added_participants
+            .entry(conversation_id(a, b))
+            .or_default()
+            .push((third.to_string(), id));
+    }
+
     pub fn send_dm(&self, sender: &str, recipient: &str, text: &str) -> (String, String) {
         self.queue(recipient, "dm", None, sender, text)
     }
@@ -1707,14 +1735,37 @@ fn route(
                 .collect();
             peers.sort();
             peers.dedup();
+            // A conversation `me` was added to is listed to it too.
+            let mut listed: Vec<Value> = Vec::new();
+            for (conversation, added) in &world.added_participants {
+                if added.iter().any(|(name, _)| *name == me.name) {
+                    if let Some((a, b)) = conversation
+                        .strip_prefix("dm_")
+                        .and_then(|rest| rest.split_once('_'))
+                    {
+                        let mut participants: Vec<Value> = [a, b]
+                            .iter()
+                            .map(|name| json!({"agent_id": world.agents.get(*name).map(|x| x.id.clone()), "agent_name": name}))
+                            .collect();
+                        participants.extend(added.iter().map(|(name, id)| json!({"agent_id": id, "agent_name": name})));
+                        listed.push(json!({"id": conversation, "type": "1:1", "unread_count": 0, "participants": participants}));
+                    }
+                }
+            }
             let list: Vec<Value> = peers
                 .iter()
                 .map(|peer| {
                     let peer_id = world.agents.get(peer).map(|a| a.id.clone());
-                    json!({"id": conversation_id(&me.name, peer), "type": "1:1", "unread_count": 0,
-                        "participants": [{"agent_id": me.id, "agent_name": me.name},
-                                         {"agent_id": peer_id, "agent_name": peer}]})
+                    let conversation = conversation_id(&me.name, peer);
+                    let mut participants = vec![json!({"agent_id": me.id, "agent_name": me.name}),
+                                                json!({"agent_id": peer_id, "agent_name": peer})];
+                    for (name, id) in world.added_participants.get(&conversation).into_iter().flatten() {
+                        participants.push(json!({"agent_id": id, "agent_name": name}));
+                    }
+                    json!({"id": conversation, "type": "1:1", "unread_count": 0,
+                        "participants": participants})
                 })
+                .chain(listed)
                 .collect();
             ok(json!(list))
         }
