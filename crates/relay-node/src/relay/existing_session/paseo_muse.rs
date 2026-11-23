@@ -22,10 +22,13 @@
 //! daemon offers an outside caller no way to close it, and this route does
 //! not pose as one of Paseo's agents to get a queue.
 //!
-//! A refusal, or a failure before the connection exists, deletes the journal
-//! claim so a later attempt can send. A timeout, a reset, or a body that
-//! cannot be read may already have queued the prompt: the claim stays, the
-//! log can still confirm it, and the attempt is never sent again. A `401`
+//! A JSON-RPC error on the prompt call, or a failure before the connection
+//! exists, deletes the journal claim so a later attempt can send. A
+//! timeout, a reset, a body that cannot be read, or a tool-level error
+//! (`isError`, `success: false`) may already have queued the prompt: Paseo
+//! reports a run that did not start in time, or a provider that failed to
+//! start it, as a tool error after dispatching the prompt. The claim stays,
+//! the log can still confirm it, and the attempt is never sent again. A `401`
 //! on either call means the daemon has a password and Agent Relay holds
 //! none: the delivery is refused with that reason, and no credential is
 //! looked for.
@@ -55,8 +58,10 @@ const STATUS_TIMEOUT: Duration = Duration::from_secs(5);
 /// started the turn, and Paseo waits up to 60 s for that
 /// (`AGENT_RUN_START_TIMEOUT_MS` in its `agent-prompt.ts`, v0.11.4 through
 /// v0.17.3; v0.11.4 waits the same way with `background: true`). 75 s lets
-/// Paseo answer, or report its own run-start timeout, before this side
-/// gives up and leaves the attempt in doubt.
+/// Paseo answer before this side gives up. Its own run-start timeout comes
+/// back as a tool error after the prompt was dispatched, so that answer, as
+/// well as this timeout, leaves the attempt to the session log: delivered
+/// if the command appears, otherwise in doubt and never sent again.
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(75);
 
 /// What a person reads when the daemon answers `401`.
@@ -483,13 +488,28 @@ fn taken(posted: &Posted) -> Taken {
         // 401 is the daemon asking for a password. The prompt was not taken.
         Posted::Answered { status: 401, .. } => Taken::Locked,
         Posted::Answered { body, .. } => {
-            if matches!(body.as_deref().map(verdict), Some(Verdict::Rejected)) {
+            if body.as_deref().is_some_and(handler_never_ran) {
                 Taken::No
             } else {
                 Taken::Maybe
             }
         }
     }
+}
+
+/// Whether a `send_agent_prompt` answer proves the tool handler never ran:
+/// a JSON-RPC `error` member. A tool-level failure (`isError: true`, or
+/// `success: false`) does not. The MCP SDK Paseo uses turns every throw
+/// inside `tools/call` into an `isError` result, and Paseo's handler
+/// throws after it has dispatched the prompt when the run does not start
+/// within its 60 s (`waitForAgentRunStartWithTimeout`), or when the
+/// provider fails to start it. Only the error text tells those apart from
+/// a refusal before dispatch, so every tool-level failure may have queued
+/// the prompt and is left to the session log.
+fn handler_never_ran(body: &str) -> bool {
+    mcp_messages(body)
+        .iter()
+        .any(|message| message.get("error").is_some())
 }
 
 /// The `send_agent_prompt` call. Paseo through v0.11.4 reads `background`:
@@ -515,8 +535,9 @@ pub fn prompt_request(agent_id: &str, prompt: &str) -> String {
 }
 
 /// Whether `body` is an MCP result that reports the prompt was queued.
-/// A JSON-RPC error, `isError`, or `success: false` did not. A result
-/// without a success flag may have: the session log is what confirms it.
+/// A JSON-RPC error, `isError`, or `success: false` does not report it. A
+/// result without a success flag may have. This reads the answer only: the
+/// resend decision is `handler_never_ran`, and the session log confirms.
 pub fn prompt_accepted(body: &str) -> bool {
     matches!(verdict(body), Verdict::Accepted)
 }
@@ -1744,5 +1765,142 @@ mod tests {
         // The second attempt posts nothing at all, not even the status.
         assert_eq!(calls.lock().unwrap().len(), calls_after_first);
         assert_eq!(prompts(&calls), 1);
+    }
+
+    /// Paseo's answer when the run did not start within its 60 s: the MCP
+    /// SDK wraps the handler's throw, after the prompt was dispatched.
+    fn tool_error() -> Posted {
+        Posted::Answered {
+            status: 200,
+            body: Some(format!(
+                "event: message\ndata: {}\n\n",
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "content": [{"type": "text", "text": "run did not start in time"}],
+                        "isError": true
+                    }
+                })
+            )),
+        }
+    }
+
+    fn unsuccessful() -> Posted {
+        Posted::Answered {
+            status: 200,
+            body: Some(
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {"structuredContent": {"success": false, "status": "error"}}
+                })
+                .to_string(),
+            ),
+        }
+    }
+
+    fn rpc_error() -> Posted {
+        Posted::Answered {
+            status: 200,
+            body: Some(
+                serde_json::json!({"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"no"}})
+                    .to_string(),
+            ),
+        }
+    }
+
+    #[test]
+    fn a_tool_error_after_an_idle_status_may_have_queued_the_prompt() {
+        for (index, failed) in [tool_error(), unsuccessful()].into_iter().enumerate() {
+            // The forward reports it sent, so the log decides.
+            let tmp = tempfile::tempdir().unwrap();
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let (courier, _) = PaseoCourier::new(
+                AGENT.into(),
+                "http://127.0.0.1:6767/mcp/agents".into(),
+                script(failed.clone(), calls.clone()),
+                store_of(tmp.path()),
+            );
+            assert_eq!(
+                courier.forward(tmp.path(), SESSION, "please ack"),
+                Forwarded::Sent {
+                    courier_session: AGENT.into()
+                }
+            );
+
+            // Paseo queued it anyway: the new command id delivers it.
+            let tmp = tempfile::tempdir().unwrap();
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let delivered = deliver_after(
+                tmp.path(),
+                idle(),
+                failed.clone(),
+                calls.clone(),
+                Some(intake("please ack", "please ack", COMMAND)),
+                &format!("relay-9-{index}"),
+                Duration::from_secs(2),
+            );
+            assert_eq!(
+                delivered,
+                Outcome::Delivered {
+                    receipt_id: COMMAND.into()
+                }
+            );
+            assert_eq!(prompts(&calls), 1);
+
+            // No command id: in doubt, and never posted again.
+            let tmp = tempfile::tempdir().unwrap();
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let delivery = format!("relay-10-{index}");
+            let first = deliver_after(
+                tmp.path(),
+                idle(),
+                failed,
+                calls.clone(),
+                None,
+                &delivery,
+                Duration::from_secs(1),
+            );
+            assert!(matches!(first, Outcome::InDoubt(_)), "{first:?}");
+            let second = deliver_after(
+                tmp.path(),
+                status("error"),
+                accepted(),
+                calls.clone(),
+                None,
+                &delivery,
+                Duration::from_secs(1),
+            );
+            assert!(matches!(second, Outcome::InDoubt(_)), "{second:?}");
+            assert_eq!(prompts(&calls), 1);
+        }
+    }
+
+    #[test]
+    fn a_json_rpc_error_on_the_prompt_was_not_taken_and_can_be_retried() {
+        let tmp = tempfile::tempdir().unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let failed = deliver_after(
+            tmp.path(),
+            idle(),
+            rpc_error(),
+            calls.clone(),
+            None,
+            "relay-11",
+            Duration::from_secs(1),
+        );
+        assert!(matches!(failed, Outcome::Retry(_)), "{failed:?}");
+        let retried = deliver_after(
+            tmp.path(),
+            idle(),
+            accepted(),
+            calls.clone(),
+            Some(intake("please ack", "please ack", COMMAND)),
+            "relay-11",
+            Duration::from_secs(2),
+        );
+        assert!(matches!(retried, Outcome::Delivered { .. }), "{retried:?}");
+        assert_eq!(prompts(&calls), 2);
     }
 }
