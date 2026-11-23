@@ -45,6 +45,7 @@ mod inbox_watch;
 mod integration_routing;
 mod person_alert;
 pub mod policy;
+mod recheck;
 pub(crate) mod session_text;
 mod stuck;
 mod timing;

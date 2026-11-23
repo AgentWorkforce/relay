@@ -549,6 +549,42 @@ pub fn answer(
     query: &[(String, String)],
     now_ms: i64,
 ) -> Result<Value, (u16, &'static str, String)> {
+    lookup(kept, owner, query, now_ms).map(|kept| render(&kept, None))
+}
+
+/// Whether `kept` claims a framing its seal cannot prove: its text is framed
+/// as an owner's, owner-authority or leader's, but the seal does not verify
+/// (it was kept before this core started, or written by anything else). Such
+/// a message may be checked again against Relaycast (`rechecked`).
+pub fn needs_recheck(kept: &Kept) -> bool {
+    kept.verified_framing() == Framing::Peer && Framing::of(&kept.text) != Framing::Peer
+}
+
+/// The framing a re-check against Relaycast proves for `kept`: `server` is
+/// the message as Relaycast answers it for the session's own agent, and
+/// `framed` the text delivery builds from it now. The framing counts only
+/// when the server's message is this one, its text is the kept message's
+/// body, and the framing delivery computes from the server's sender is the
+/// one the kept text shows; anything else is a peer's.
+pub fn rechecked(kept: &Kept, server: &Value, framed: &str) -> Framing {
+    let same_message = server["id"].as_str() == Some(kept.message_id.as_str());
+    let body = server["text"].as_str().unwrap_or_default();
+    let same_body = !body.trim().is_empty() && kept.text.contains(body);
+    let framing = Framing::of(framed);
+    if same_message && same_body && framing == Framing::of(&kept.text) {
+        framing
+    } else {
+        Framing::Peer
+    }
+}
+
+/// The kept message `query` names for `owner`, or the answer's error.
+pub fn lookup(
+    kept: &DeliveredTexts,
+    owner: &str,
+    query: &[(String, String)],
+    now_ms: i64,
+) -> Result<Kept, (u16, &'static str, String)> {
     let message_ref = query
         .iter()
         .rev()
@@ -560,17 +596,27 @@ pub fn answer(
             "invalid_ref",
             "Name the message: ?ref=<12 hex> from its attribution line.".to_string(),
         ))?;
-    let kept = kept.read(owner, message_ref, now_ms).ok_or((
+    kept.read(owner, message_ref, now_ms).ok_or((
         404,
         "message_not_found",
         format!("No message {message_ref} was kept for this session, or it expired."),
-    ))?;
-    Ok(json!({
+    ))
+}
+
+/// The answer for `kept`: its verified framing, or `rechecked` when a
+/// re-check against Relaycast proved one; the text as kept when the framing
+/// is proven, else as a peer's (`Kept::shown_text`).
+pub fn render(kept: &Kept, rechecked: Option<Framing>) -> Value {
+    let (text, framing) = match rechecked.filter(|framing| *framing != Framing::Peer) {
+        Some(framing) => (kept.text.clone(), framing),
+        None => (kept.shown_text(), kept.verified_framing()),
+    };
+    json!({
         "message_id": kept.message_id,
         "ref": kept.message_ref,
-        "text": kept.shown_text(),
-        "framing": kept.verified_framing().as_str(),
-    }))
+        "text": text,
+        "framing": framing.as_str(),
+    })
 }
 
 #[cfg(test)]

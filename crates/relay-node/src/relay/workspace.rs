@@ -560,6 +560,15 @@ fn is_loopback_origin(origin: &str) -> bool {
     }
 }
 
+/// `base_url` as the origin requests for a registration may go to: a valid
+/// bare origin (`validated_base_url`) that is exactly what was recorded, and,
+/// in a release build, not a loopback one. `None` otherwise.
+pub(crate) fn pinned_origin(base_url: &str) -> Option<String> {
+    let origin = validated_base_url(base_url)?;
+    let recorded = base_url.trim().trim_end_matches('/');
+    (origin == recorded && (LOOPBACK_ALLOWED || !is_loopback_origin(&origin))).then_some(origin)
+}
+
 /// Logs `message` once per process (resolution runs on every refresh).
 fn warn_once(message: &str) {
     static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
