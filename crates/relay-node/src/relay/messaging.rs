@@ -51,6 +51,7 @@ use crate::relay::contract::directory::Recipient;
 use crate::relay::contract::directory::{Conversation, ConversationPeer, Conversations, History};
 use crate::relay::daemon::Core;
 use crate::relay::delivery::policy::Attachment;
+use crate::relay::files::{LocalFile, UploadError};
 use crate::relay::links::Endpoint;
 use crate::relay::protocol::{ErrorKind, RpcError};
 use crate::relay::push::PushTarget;
@@ -807,22 +808,57 @@ impl Core {
         endpoint: &Endpoint,
         text_: &str,
         reply_to: Option<&str>,
+        files: &[LocalFile],
     ) -> Result<Sent, RpcError> {
         let body = text_.trim();
         if body.is_empty() {
             return Err(RpcError::invalid_params("Type a message first."));
         }
+        if reply_to.is_some() && !files.is_empty() {
+            // Relaycast thread replies carry no attachments; the files would
+            // upload and then silently not arrive.
+            return Err(RpcError::invalid_params(
+                "Files cannot be attached to a reply; send them in a new message instead.",
+            ));
+        }
+        let identity = self.person_identity(false).await?;
+        // Every file is uploaded, as you, before the message is sent: a file
+        // that cannot be leaves no half-sent message behind.
+        let (identity, attachments) = match upload_as_person(&identity, files).await {
+            Err((_, error)) if error.status == 401 => {
+                let fresh = self.person_identity_refused(&identity.token).await?;
+                let attachments = upload_as_person(&fresh, files)
+                    .await
+                    .map_err(|(name, error)| person_upload_error(&name, &error))?;
+                (fresh, attachments)
+            }
+            other => (
+                identity,
+                other.map_err(|(name, error)| person_upload_error(&name, &error))?,
+            ),
+        };
+        let attachments = &attachments;
         let send = |identity: PersonIdentity| async move {
             match reply_to {
                 Some(parent) => {
                     client::reply(&identity.base_url, &identity.token, parent, body, None).await
                 }
-                None => {
+                None if attachments.is_empty() => {
                     client::send_dm(&identity.base_url, &identity.token, endpoint, body, None).await
+                }
+                None => {
+                    client::send_dm_with_attachments(
+                        &identity.base_url,
+                        &identity.token,
+                        endpoint,
+                        body,
+                        attachments,
+                        None,
+                    )
+                    .await
                 }
             }
         };
-        let identity = self.person_identity(false).await?;
         let (identity, sent) = match send(identity.clone()).await {
             Err(error) if error.is_auth_rejection() => {
                 let fresh = self.person_identity_refused(&identity.token).await?;
@@ -1285,6 +1321,39 @@ impl Core {
             conversations,
         })
     }
+}
+
+/// Uploads each file, in order, as `identity`; their Relaycast ids, or the
+/// name of the file that failed and why.
+async fn upload_as_person(
+    identity: &PersonIdentity,
+    files: &[LocalFile],
+) -> Result<Vec<String>, (String, UploadError)> {
+    let mut ids = Vec::with_capacity(files.len());
+    for file in files {
+        let id = crate::relay::files::upload(&identity.base_url, &identity.token, file)
+            .await
+            .map_err(|error| (file.filename.clone(), error))?;
+        ids.push(id);
+    }
+    Ok(ids)
+}
+
+/// A failed upload of the person's file `name`: nothing was sent.
+fn person_upload_error(name: &str, error: &UploadError) -> RpcError {
+    let kind = match error.status {
+        401 => ErrorKind::Unauthorized,
+        429 => ErrorKind::RateLimited,
+        400..=499 => ErrorKind::RelaycastRefused,
+        _ => ErrorKind::RelaycastUnreachable,
+    };
+    RpcError::new(
+        kind,
+        format!(
+            "Could not upload {name}: {}. Nothing was sent.",
+            error.reason
+        ),
+    )
 }
 
 #[cfg(test)]

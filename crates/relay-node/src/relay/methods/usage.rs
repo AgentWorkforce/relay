@@ -2,8 +2,9 @@
 use super::recipient_endpoint;
 use crate::relay::contract::directory::SentMessage;
 use crate::relay::daemon::{CallContext, Core};
+use crate::relay::files;
 use crate::relay::person_guard::admit_person_send;
-use crate::relay::protocol::RpcError;
+use crate::relay::protocol::{ErrorKind, RpcError};
 use crate::relay::usage::{self, UsageEvent, UsageOperation as Op};
 use std::sync::Arc;
 
@@ -40,8 +41,9 @@ pub(super) async fn send(
         // A session sends as its own agent, through the relay-send socket.
         admit_person_send(core, context).await?;
         let target = recipient_endpoint(request.to.as_deref(), request.address.as_deref())?;
+        let files = read_person_files(core, request.files).await?;
         let sent = core
-            .send_as_person(&target, &request.text, request.reply_to.as_deref())
+            .send_as_person(&target, &request.text, request.reply_to.as_deref(), &files)
             .await?;
         let recipient = core.recipient_after_send(&target, &sent).await;
         Ok(SentMessage {
@@ -52,6 +54,39 @@ pub(super) async fn send(
         })
     })
     .await
+}
+
+/// Reads the files a person's send attaches ([`files::PersonFiles`]): at
+/// most [`files::MAX_SEND_FILES`], each at most 25 MB.
+async fn read_person_files(
+    core: &Arc<Core>,
+    paths: Vec<String>,
+) -> Result<Vec<files::LocalFile>, RpcError> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    if paths.len() > files::MAX_SEND_FILES {
+        return Err(RpcError::invalid_params(format!(
+            "A message can carry at most {} files; this one names {}.",
+            files::MAX_SEND_FILES,
+            paths.len()
+        )));
+    }
+    let policy = files::PersonFiles::new(&core.config.home, &core.config.app_data_dir);
+    let read = tokio::task::spawn_blocking(move || {
+        paths
+            .iter()
+            .map(|path| files::read_person_file(path, &policy))
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .await
+    .map_err(|_| RpcError::new(ErrorKind::Internal, "The files could not be read."))?;
+    read.map_err(|error| match error {
+        files::LocalFileError::NotAllowed(message) => RpcError::new(ErrorKind::Refused, message),
+        files::LocalFileError::TooLarge(message) | files::LocalFileError::Invalid(message) => {
+            RpcError::invalid_params(message)
+        }
+    })
 }
 
 pub(super) async fn remove(

@@ -3,7 +3,8 @@
 //! folder, and nothing hidden in them, nor anything under the places that
 //! hold credentials or Agent Relay's own data. It keeps a prompt-injected
 //! agent from mailing out what its harness would not otherwise show anyone.
-//! A file the person sends is not confined.
+//! A file the person sends is not confined to a project: [`PersonFiles`]
+//! refuses only Agent Relay's own data.
 
 use super::{read_opened_file, LocalFile, LocalFileError};
 use std::path::{Component, Path, PathBuf};
@@ -185,19 +186,78 @@ impl AgentFiles {
 /// Reads `path` for an agent's send: [`super::read_local_file`], from where
 /// `confine` allows only.
 pub fn read_agent_file(path: &str, confine: &AgentFiles) -> Result<LocalFile, LocalFileError> {
+    read_checked(path, |given| confine.check(given))
+}
+
+/// Where the person's own sends (`messages.send`) may read from: anywhere
+/// but Agent Relay's own data, which holds the sign-in and agent tokens the
+/// bridge sends with. The person picked each file in a file chooser, so
+/// neither the project rule nor hidden files apply. Files received on
+/// messages (`<app data>/attachments`) may be sent on.
+#[derive(Clone, Debug)]
+pub struct PersonFiles {
+    refused: Vec<PathBuf>,
+    received: PathBuf,
+}
+
+impl PersonFiles {
+    /// On a computer whose home folder is `home` and whose app data is
+    /// `app_data_dir`.
+    pub fn new(home: &Path, app_data_dir: &Path) -> PersonFiles {
+        let mut refused = vec![real(&home.join(".agentworkforce")), real(app_data_dir)];
+        refused.dedup();
+        PersonFiles {
+            refused,
+            received: real(&app_data_dir.join(super::ATTACHMENTS_DIR)),
+        }
+    }
+
+    /// The real file `given` names (links resolved), if the person may
+    /// attach it; else a sentence saying why not.
+    pub fn check(&self, given: &Path) -> Result<PathBuf, LocalFileError> {
+        let path = std::fs::canonicalize(given).map_err(|_| {
+            LocalFileError::Invalid(format!(
+                "{} is not a readable regular file.",
+                given.display()
+            ))
+        })?;
+        let refused = self.refused.iter().any(|dir| path.starts_with(dir))
+            && !path.starts_with(&self.received);
+        if refused {
+            return Err(LocalFileError::NotAllowed(format!(
+                "{} is in Agent Relay's own data folder, which holds its sign-in; it cannot be attached.",
+                given.display()
+            )));
+        }
+        Ok(path)
+    }
+}
+
+/// Reads `path` for the person's send: [`super::read_local_file`], with
+/// links resolved and judged by where they lead ([`PersonFiles`]).
+pub fn read_person_file(path: &str, files: &PersonFiles) -> Result<LocalFile, LocalFileError> {
+    read_checked(path, |given| files.check(given))
+}
+
+/// Reads the absolute `path` once `check` has resolved it to the real file
+/// it may send, checking again once the file is open.
+fn read_checked(
+    path: &str,
+    check: impl Fn(&Path) -> Result<PathBuf, LocalFileError>,
+) -> Result<LocalFile, LocalFileError> {
     let given = Path::new(path);
     if !given.is_absolute() {
         return Err(LocalFileError::Invalid(format!(
             "{path} is not an absolute path."
         )));
     }
-    let real = confine.check(given)?;
+    let real = check(given)?;
     // Checked again once open: a file or folder swapped for a link since
     // leads elsewhere now, or no longer to the file that was opened.
     read_opened_file(&real.to_string_lossy(), |file| {
         let opened = file.try_clone().and_then(same_file::Handle::from_file);
         let checked = same_file::Handle::from_path(&real);
-        match (confine.check(given)?, opened, checked) {
+        match (check(given)?, opened, checked) {
             (again, Ok(opened), Ok(checked)) if again == real && opened == checked => Ok(()),
             _ => Err(LocalFileError::Invalid(format!(
                 "{} changed while Agent Relay was reading it; send it again.",
@@ -348,6 +408,36 @@ mod tests {
         std::fs::write(config.join("hosts.yml"), b"token").unwrap();
         let files = c.files(config.to_str());
         assert!(not_allowed(files.check(&config.join("hosts.yml"))).contains("credentials"));
+    }
+
+    #[test]
+    fn the_person_sends_from_anywhere_but_agent_relays_own_data() {
+        let c = computer();
+        let person = PersonFiles::new(&c.home, &c.app_data);
+        // What an agent may not send, the person picked and may.
+        for file in [
+            c.home.join("notes.txt"),
+            c.repo.join("src/.env"),
+            c.home.join(".ssh/id_ed25519"),
+        ] {
+            assert!(person.check(&file).is_ok(), "{}", file.display());
+        }
+        std::fs::write(c.app_data.join("state.json"), b"{}").unwrap();
+        let message = not_allowed(person.check(&c.app_data.join("state.json")));
+        assert!(message.contains("Agent Relay's own data"), "{message}");
+        let desktop = c.home.join(".agentworkforce/desktop");
+        std::fs::create_dir_all(&desktop).unwrap();
+        std::fs::write(desktop.join("token"), b"x").unwrap();
+        not_allowed(person.check(&desktop.join("token")));
+        // A file received on a message may be sent on.
+        let received = c
+            .app_data
+            .join(super::super::ATTACHMENTS_DIR)
+            .join("file-1");
+        std::fs::create_dir_all(&received).unwrap();
+        std::fs::write(received.join("shot.png"), b"png").unwrap();
+        let person = PersonFiles::new(&c.home, &c.app_data);
+        assert!(person.check(&received.join("shot.png")).is_ok());
     }
 
     #[test]

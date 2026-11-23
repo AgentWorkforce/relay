@@ -1229,7 +1229,7 @@ impl Core {
             .to_string();
         let endpoint = Endpoint::Address(registration.current_address(&self.machine_prefix));
         if self.plugins.cloud.account().is_some() {
-            let sent = self.send_as_person(&endpoint, &body, None).await?;
+            let sent = self.send_as_person(&endpoint, &body, None, &[]).await?;
             return Ok(sent.message_id);
         }
         let key = self.key_for(&registration).ok_or_else(|| key_gone(name))?;

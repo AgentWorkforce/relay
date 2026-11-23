@@ -3784,6 +3784,206 @@ async fn an_exact_address_history_needs_immutable_proof() {
     h.stop().await;
 }
 
+#[test]
+fn a_send_that_names_no_files_reads_and_writes_as_before() {
+    use agent_relay_node::relay::contract::directory::SendParams;
+    let params: SendParams =
+        serde_json::from_value(json!({"to": "reviewer", "text": "hi", "reply_to": null})).unwrap();
+    assert!(params.files.is_empty());
+    // An older reader never sees the field.
+    assert_eq!(
+        serde_json::to_value(&params).unwrap(),
+        json!({"to": "reviewer", "address": null, "text": "hi", "reply_to": null})
+    );
+    let params: SendParams =
+        serde_json::from_value(json!({"to": "reviewer", "text": "hi", "files": ["/tmp/a.png"]}))
+            .unwrap();
+    assert_eq!(params.files, vec!["/tmp/a.png".to_string()]);
+}
+
+#[tokio::test]
+async fn your_files_upload_as_you_and_ride_on_the_message() {
+    let h = Harness::signed_in().await;
+    let mut client = h.client().await;
+    h.fake.seed_agent("reviewer", "agent", json!({}));
+
+    // Without files, the DM is as it was.
+    client
+        .ok("messages.send", json!({"to": "reviewer", "text": "plain"}))
+        .await;
+    let dm = h.fake.calls("POST", "/v1/dm").pop().unwrap();
+    assert_eq!(dm.body["text"], "plain");
+    assert!(dm.body.get("attachments").is_none(), "{}", dm.body);
+    assert!(h.fake.calls("POST", "/v1/files/upload").is_empty());
+
+    // Anywhere you picked them, hidden folders included: you chose them.
+    let pictures = h.home.join("Pictures");
+    let hidden = h.home.join(".notes");
+    std::fs::create_dir_all(&pictures).unwrap();
+    std::fs::create_dir_all(&hidden).unwrap();
+    let shot = pictures.join("shot.png");
+    let notes = hidden.join("plan.md");
+    std::fs::write(&shot, b"PNG bytes").unwrap();
+    std::fs::write(&notes, b"# plan").unwrap();
+    client
+        .ok(
+            "messages.send",
+            json!({"to": "reviewer", "text": "The failing screen.",
+                "files": [shot.to_str().unwrap(), notes.to_str().unwrap()]}),
+        )
+        .await;
+    let person = h.fake.agent(PERSON).unwrap();
+    let uploads = h.fake.calls("POST", "/v1/files/upload");
+    assert_eq!(uploads.len(), 2);
+    for upload in &uploads {
+        assert_eq!(
+            upload.authorization.as_deref(),
+            Some(format!("Bearer {}", person.token).as_str())
+        );
+    }
+    assert_eq!(
+        uploads[0].body,
+        json!({"filename": "shot.png", "content_type": "image/png", "size_bytes": 9})
+    );
+    assert_eq!(uploads[1].body["content_type"], "text/markdown");
+    let dm = h.fake.calls("POST", "/v1/dm").pop().unwrap();
+    assert_eq!(dm.body["to"], "reviewer");
+    assert_eq!(dm.body["text"], "The failing screen.");
+    assert_eq!(
+        dm.authorization.as_deref(),
+        Some(format!("Bearer {}", person.token).as_str())
+    );
+    let ids: Vec<String> = dm.body["attachments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(ids.len(), 2);
+    let stored = h.fake.file(&ids[0]).unwrap();
+    assert_eq!(stored.status, "complete");
+    assert_eq!(stored.bytes.as_deref(), Some(&b"PNG bytes"[..]));
+    assert_eq!(h.fake.messages().pop().unwrap().attachments.len(), 2);
+
+    // A link is followed to the file it leads to.
+    #[cfg(unix)]
+    {
+        let link = pictures.join("latest.png");
+        std::os::unix::fs::symlink(&shot, &link).unwrap();
+        client
+            .ok(
+                "messages.send",
+                json!({"to": "reviewer", "text": "again", "files": [link.to_str().unwrap()]}),
+            )
+            .await;
+        assert_eq!(h.fake.calls("POST", "/v1/files/upload").len(), 3);
+    }
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn your_files_are_refused_past_the_limits_and_nothing_is_sent() {
+    let h = Harness::signed_in().await;
+    let mut client = h.client().await;
+    h.fake.seed_agent("reviewer", "agent", json!({}));
+    let folder = h.home.join("Desktop");
+    std::fs::create_dir_all(&folder).unwrap();
+    let ok = folder.join("a.txt");
+    std::fs::write(&ok, b"a").unwrap();
+    let ok = ok.to_str().unwrap().to_string();
+    let big = folder.join("big.bin");
+    std::fs::File::create(&big)
+        .unwrap()
+        .set_len(agent_relay_node::relay::files::MAX_FILE_BYTES + 1)
+        .unwrap();
+    let app_data = h.home.join("app-data");
+    std::fs::create_dir_all(&app_data).unwrap();
+    let state = app_data.join("state.json");
+    std::fs::write(&state, b"{}").unwrap();
+
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut cases: Vec<(Value, &str, &str)> = vec![
+        (
+            json!(vec![ok.clone(); 6]),
+            "invalid_params",
+            "at most 5 files",
+        ),
+        (
+            json!([big.to_str().unwrap()]),
+            "invalid_params",
+            "larger than 25 MB",
+        ),
+        (
+            json!([folder.to_str().unwrap()]),
+            "invalid_params",
+            "not a readable regular file",
+        ),
+        (
+            json!([folder.join("missing").to_str().unwrap()]),
+            "invalid_params",
+            "not a readable regular file",
+        ),
+        (json!(["a.txt"]), "invalid_params", "not an absolute path"),
+        (
+            json!([ok.clone(), state.to_str().unwrap()]),
+            "refused",
+            "Agent Relay's own data",
+        ),
+    ];
+    #[cfg(unix)]
+    {
+        // A link is judged by where it leads.
+        let link = folder.join("state.txt");
+        std::os::unix::fs::symlink(&state, &link).unwrap();
+        cases.push((
+            json!([link.to_str().unwrap()]),
+            "refused",
+            "Agent Relay's own data",
+        ));
+        let into_folder = folder.join("folder");
+        std::os::unix::fs::symlink(&app_data, &into_folder).unwrap();
+        cases.push((
+            json!([into_folder.to_str().unwrap()]),
+            "refused",
+            "Agent Relay's own data",
+        ));
+    }
+    for (files, kind, says) in cases {
+        let (got, message) = client
+            .error(
+                "messages.send",
+                json!({"to": "reviewer", "text": "x", "files": files}),
+            )
+            .await;
+        assert_eq!(got, kind, "{files}: {message}");
+        assert!(message.contains(says), "{files}: {message}");
+    }
+    // A reply carries no files.
+    let (kind, message) = client
+        .error(
+            "messages.send",
+            json!({"to": "reviewer", "text": "x", "reply_to": "msg-1", "files": [ok.clone()]}),
+        )
+        .await;
+    assert_eq!(kind, "invalid_params");
+    assert!(message.contains("reply"), "{message}");
+    assert!(h.fake.calls("POST", "/v1/files/upload").is_empty());
+
+    // A failed upload sends nothing and says which file.
+    h.fake.set_failing(&["POST /v1/files/upload"]);
+    let (_, message) = client
+        .error(
+            "messages.send",
+            json!({"to": "reviewer", "text": "x", "files": [ok]}),
+        )
+        .await;
+    assert!(message.contains("a.txt"), "{message}");
+    assert!(message.contains("Nothing was sent"), "{message}");
+    assert!(h.fake.calls("POST", "/v1/dm").is_empty());
+    assert!(h.fake.messages().is_empty());
+    h.stop().await;
+}
+
 #[tokio::test]
 async fn a_send_reports_what_relaycast_holds_for_the_message() {
     let h = Harness::signed_in().await;

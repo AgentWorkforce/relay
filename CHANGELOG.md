@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Minor]
 
+### Added
+
+- `agent-relay-node`: the bridge's `messages.send` accepts an optional `files` list (absolute local paths, at most 5, each at most 25 MB) and uploads them as you before sending, so the desktop Chat page can attach screenshots and files to a direct message. Links are followed and judged by where they lead; directories and anything in Agent Relay's own data are refused, and files cannot ride on a reply. Clients that omit `files` send as before.
+
 ### Fixed
 
 - `agent-relay-node`: spawned Codex MCP tool approvals now reach the verified spawning agent with the server, tool and argument names, remain visibly `waiting_for_approval` for 15 minutes, and accept authenticated Relay approval replies instead of silently timing out after five minutes. Spawn actions also accept an `approval_profile` (`interactive`, `requester`, or machine-owner-enabled `full_access`) so hosted launchers can declare the prompt policy up front.

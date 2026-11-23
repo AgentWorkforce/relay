@@ -26,7 +26,7 @@ use std::time::Duration;
 pub mod confine;
 pub mod store;
 
-pub use confine::{read_agent_file, AgentFiles};
+pub use confine::{read_agent_file, read_person_file, AgentFiles, PersonFiles};
 pub use store::Sender;
 
 /// The largest file saved for a session or sent by one.
