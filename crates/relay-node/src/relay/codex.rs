@@ -436,6 +436,18 @@ pub struct RunningSignals {
     pub live: usize,
 }
 
+/// A router failure as a fixed category: the router's own refusal text and
+/// I/O messages can carry paths or thread ids, which the log never holds.
+fn router_failure(error: &ipc::IpcError) -> &'static str {
+    match error {
+        ipc::IpcError::NotRunning => "the Codex app is not running",
+        ipc::IpcError::TimedOut => "the Codex app did not answer in time",
+        ipc::IpcError::Rejected(_) => "the Codex app refused the connection",
+        ipc::IpcError::Io(_) => "the connection failed",
+        ipc::IpcError::InvalidFrameLength(_) => "the Codex app sent an invalid message",
+    }
+}
+
 impl RunningSignals {
     pub fn line(&self) -> String {
         let app_server = match &self.app_server {
@@ -453,7 +465,7 @@ impl RunningSignals {
             Probe::Answered { owned, unanswered } => {
                 format!("{owned} owned by an app window, {unanswered} unanswered in time")
             }
-            Probe::Failed(error) => format!("could not check ({error})"),
+            Probe::Failed(error) => format!("could not check ({})", router_failure(error)),
         };
         format!(
             "codex discovery: {live} of {threads} recent chats running; \
@@ -649,10 +661,10 @@ fn try_loaded_threads(
         .ok_or_else(|| "no trusted Codex is running".to_string())?;
     let mut stream = runner
         .proxy_in_home(&executable, &config.home, &config.sqlite_home)
-        .map_err(|error| format!("its proxy did not start: {error}"))?;
+        .map_err(|error| format!("its proxy did not start: {:?}", error.kind()))?;
     app_server::try_loaded_threads(stream.as_mut(), app_server::LOADED_TIMEOUT)
         .map(|loaded| loaded.into_iter().map(|id| id.to_lowercase()).collect())
-        .map_err(|error| format!("it did not answer: {error}"))
+        .map_err(|error| format!("it did not answer: {:?}", error.kind()))
 }
 
 /// Whether a reply command could work for this thread now: a command it
@@ -1632,8 +1644,15 @@ mod tests {
         assert!(line.contains("(1) trusted Codex process holds the chat: 1 (1 running its turns)"));
         assert!(line.contains("(2) app-server: 0 loaded"));
         assert!(
-            line.contains("(3) Codex app router: could not check (The Codex app is not running.)")
+            line.contains("(3) Codex app router: could not check (the Codex app is not running)")
         );
+        let refused = RunningSignals {
+            app_router: Probe::Failed(ipc::IpcError::Rejected(format!("no {THREAD} at C:\\x"))),
+            ..signals.clone()
+        };
+        let line = refused.line();
+        assert!(line.contains("could not check (the Codex app refused the connection)"));
+        assert!(!line.contains(THREAD) && !line.contains("C:"), "{line}");
         assert!(!line.contains(THREAD) && !line.contains(SECOND));
         // Every chat answered by a process: the others are not asked.
         let all = RunningSignals {
