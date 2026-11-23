@@ -163,14 +163,22 @@ async fn serve(script: Arc<Mutex<Script>>) -> String {
     base
 }
 
-/// Signed in as `owner`, whose Relaycast is at the given base URL.
-struct SignedIn(String);
+/// Signed in as `user` (`owner` at first; `None` when signed out), whose
+/// Relaycast is at the given base URL. Every user is issued the same
+/// identity name and token.
+struct SignedIn {
+    base: String,
+    user: User,
+}
+
+type User = Arc<Mutex<Option<String>>>;
+
 impl CloudAccess for SignedIn {
     fn account(&self) -> Option<CloudAccount> {
         Some(CloudAccount {
             site_url: "https://agentrelay.example".into(),
             workspace_id: "cloud-workspace".into(),
-            user_id: Some("owner".into()),
+            user_id: Some(self.user.lock().unwrap().clone()?),
         })
     }
     fn agent_owner(&self) -> Option<AgentOwner> {
@@ -182,7 +190,7 @@ impl CloudAccess for SignedIn {
         path: String,
         _: Option<Value>,
     ) -> BoxFuture<'_, Result<Value, CloudError>> {
-        let base = self.0.clone();
+        let base = self.base.clone();
         Box::pin(async move {
             Ok(if path.ends_with("/messaging/identity/credential") {
                 json!({"identity": {"name": "owner", "agentId": "ag_owner",
@@ -208,6 +216,13 @@ async fn core_with(
 
 /// A core signed in to the Relaycast at `base`.
 fn core_at(base: String) -> (tempfile::TempDir, Arc<Core>) {
+    let (temp, core, _) = core_as(base);
+    (temp, core)
+}
+
+/// A core signed in to the Relaycast at `base`, and who is signed in.
+fn core_as(base: String) -> (tempfile::TempDir, Arc<Core>, User) {
+    let user: User = Arc::new(Mutex::new(Some("owner".into())));
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path();
     let config = Config {
@@ -222,11 +237,14 @@ fn core_at(base: String) -> (tempfile::TempDir, Arc<Core>) {
         delivery_timing: DeliveryTiming::default(),
     };
     let plugins = Plugins {
-        cloud: Arc::new(SignedIn(base)),
+        cloud: Arc::new(SignedIn {
+            base,
+            user: user.clone(),
+        }),
         ..Plugins::default()
     };
     let core = Core::with_plugins(config, plugins).0;
-    (temp, core)
+    (temp, core, user)
 }
 
 fn peer() -> Endpoint {
@@ -513,6 +531,16 @@ fn calls(deliveries: usize, acks: usize, listings: usize, pages: usize, details:
 
 /// The Relaycast requests each kind of history call makes. A change that
 /// adds a round trip fails here.
+/// Makes the kept listing `by` older, as the time between two calls would.
+fn age(core: &Core, by: Duration) {
+    if let Some(kept) = core.messaging.lock().unwrap().listing.as_mut() {
+        kept.at = kept.at.checked_sub(by).unwrap();
+    }
+}
+
+/// How often the apps re-read an open conversation.
+const FOLLOW: Duration = Duration::from_secs(9);
+
 #[tokio::test]
 async fn request_counts_per_history_call() {
     if ran_without_file_roots("request_counts_per_history_call") {
@@ -540,6 +568,18 @@ async fn request_counts_per_history_call() {
         call(&core, &script, &named).await,
         calls(1, 0, 0, 1, 0),
     );
+    age(&core, FOLLOW);
+    row(
+        "name, following at 9 s",
+        call(&core, &script, &named).await,
+        calls(1, 0, 0, 1, 0),
+    );
+    age(&core, LISTING_TTL);
+    row(
+        "name, after the kept time",
+        call(&core, &script, &named).await,
+        calls(1, 0, 1, 1, 0),
+    );
 
     let (_home, core, script) = core_with(three()).await;
     script.lock().unwrap().delay = rtt;
@@ -554,6 +594,20 @@ async fn request_counts_per_history_call() {
         "address, remembered",
         call(&core, &script, &address).await,
         calls(1, 0, 0, 1, 0),
+    );
+    age(&core, FOLLOW);
+    row(
+        "address, following at 9 s",
+        call(&core, &script, &address).await,
+        calls(1, 0, 0, 1, 0),
+    );
+    // Read again, the listing shows c2 first (remembered): its newest page
+    // is the proof and the answer, and c1 is not read.
+    age(&core, LISTING_TTL);
+    row(
+        "address, after the kept time",
+        call(&core, &script, &address).await,
+        calls(1, 0, 1, 1, 0),
     );
     // After the listing is read again, c1 is not: it did not change.
     core.person_woke();
@@ -705,4 +759,139 @@ async fn a_send_or_a_wake_reads_the_listing_again() {
         .messages
         .is_empty());
     assert_eq!(listings(), 3);
+}
+
+/// A 1:1 conversation of `owner` with `peers` (agent id, name).
+fn listed_with(id: &str, peers: &[(&str, &str)]) -> Value {
+    let mut participants = vec![json!({"agent_id": "ag_owner", "agent_name": "owner"})];
+    participants.extend(
+        peers
+            .iter()
+            .map(|(agent_id, name)| json!({"agent_id": agent_id, "agent_name": name})),
+    );
+    json!({"id": id, "type": "1:1", "participants": participants,
+        "last_message": {"id": "m7", "text": "hello"}})
+}
+
+#[tokio::test]
+async fn an_address_with_the_peers_agent_id_is_proved_without_reading_a_page() {
+    if ran_without_file_roots("an_address_with_the_peers_agent_id_is_proved_without_reading_a_page")
+    {
+        return;
+    }
+    let (_home, core, script) = core_with(vec![listed_with("c7", &[("4242", "peer-c7")])]).await;
+    let address = Endpoint::Address("peer-c7@host-4242".into());
+    let history = core.history(&address, None).await.unwrap();
+    assert_eq!(history.messages.len(), 1);
+    // The one page read is the answer.
+    assert_eq!(script.lock().unwrap().count("/v1/dm/c7/messages"), 1);
+    // Paging back reads only the older page: no page for the proof.
+    core.history(&address, Some("msg_c7")).await.unwrap();
+    assert_eq!(script.lock().unwrap().count("/v1/dm/c7/messages"), 2);
+}
+
+/// What a case is, the peers its conversation lists, and the address.
+type Case = (
+    &'static str,
+    &'static [(&'static str, &'static str)],
+    &'static str,
+);
+
+#[tokio::test]
+async fn participants_that_do_not_prove_the_address_fall_back_to_the_messages() {
+    if ran_without_file_roots(
+        "participants_that_do_not_prove_the_address_fall_back_to_the_messages",
+    ) {
+        return;
+    }
+    let cases: [Case; 4] = [
+        ("another id", &[("4242", "peer-c7")], "peer-c7@host-9999"),
+        (
+            "another name",
+            &[("4242", "someone-else")],
+            "peer-c7@host-4242",
+        ),
+        (
+            "three participants",
+            &[("4242", "peer-c7"), ("ag_third", "third")],
+            "peer-c7@host-4242",
+        ),
+        ("your own name", &[("4242", "owner")], "owner@host-4242"),
+    ];
+    for (case, peers, address) in cases {
+        let (_home, core, script) = core_with(vec![listed_with("c7", peers)]).await;
+        let history = core
+            .history(&Endpoint::Address(address.into()), None)
+            .await
+            .unwrap();
+        // Not selected: the page is read for a message proof, which the
+        // address does not have.
+        assert!(history.messages.is_empty(), "{case}");
+        assert_eq!(
+            script.lock().unwrap().count("/v1/dm/c7/messages"),
+            1,
+            "{case}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_sign_out_or_another_account_reads_the_listing_again() {
+    if ran_without_file_roots("a_sign_out_or_another_account_reads_the_listing_again") {
+        return;
+    }
+    let script = Arc::new(Mutex::new(Script {
+        conversations: three(),
+        ..Script::default()
+    }));
+    let (_home, core, user) = core_as(serve(script.clone()).await);
+    let named = Endpoint::Name("peer-c2".into());
+    let listings = || script.lock().unwrap().count("/v1/dm/conversations");
+    core.history(&named, None).await.unwrap();
+    core.history(&named, None).await.unwrap();
+    assert_eq!(listings(), 1);
+
+    // Another account, issued the same identity name and token.
+    *user.lock().unwrap() = Some("second".into());
+    core.history(&named, None).await.unwrap();
+    assert_eq!(listings(), 2);
+    core.history(&named, None).await.unwrap();
+    assert_eq!(listings(), 2);
+
+    // Signed out, then in again as the same account.
+    *user.lock().unwrap() = None;
+    assert!(core.history(&named, None).await.is_err());
+    assert!(core.messaging.lock().unwrap().listing.is_none());
+    *user.lock().unwrap() = Some("second".into());
+    core.history(&named, None).await.unwrap();
+    assert_eq!(listings(), 3);
+}
+
+#[tokio::test]
+async fn a_listing_kept_for_another_identity_or_token_is_not_served() {
+    if ran_without_file_roots("a_listing_kept_for_another_identity_or_token_is_not_served") {
+        return;
+    }
+    let (_home, core, script) = core_with(three()).await;
+    let named = Endpoint::Name("peer-c2".into());
+    let listings = || script.lock().unwrap().count("/v1/dm/conversations");
+    core.history(&named, None).await.unwrap();
+    for (n, kept_for) in ["another identity", "another token"]
+        .into_iter()
+        .enumerate()
+    {
+        {
+            // A listing that shows nothing, kept for someone else.
+            let mut state = core.messaging.lock().unwrap();
+            let kept = state.listing.as_mut().unwrap();
+            match n {
+                0 => kept.key.1 = "someone-else".into(),
+                _ => kept.key.3 = Secret::new("at_other"),
+            }
+            kept.conversations.clear();
+        }
+        let history = core.history(&named, None).await.unwrap();
+        assert_eq!(history.messages.len(), 1, "{kept_for}");
+        assert_eq!(listings(), 2 + n, "{kept_for}");
+    }
 }

@@ -40,9 +40,14 @@
 //! minute, sooner when a reply arrives, and then only in the conversations
 //! that changed since they were read.
 //!
-//! The conversation listing is kept for [`LISTING_TTL`] for the identity
-//! and token that read it, without its last messages, and read again
-//! sooner when a delivery or push wake arrives or you send.
+//! The conversation listing is kept for [`LISTING_TTL`] for the account,
+//! identity and token that read it, without its last messages, so following
+//! an open conversation reads only its newest page. It is read again sooner
+//! when a delivery is acknowledged here, a push wake arrives, you send, the
+//! token is refused, or you sign out or change account. A conversation
+//! removed, re-bound or given other participants meanwhile (by another of
+//! your machines, say, whose deliveries are not seen here) is noticed
+//! within [`LISTING_TTL`].
 //!
 //! Every read as you is paced by the workspace's Relaycast pause
 //! ([`crate::relay::backoff`]): while it lasts, a read is refused with the
@@ -75,8 +80,10 @@ pub const HISTORY_LIMIT: u32 = 50;
 /// How long an exact-address lookup without proof is not repeated.
 pub const EXACT_MISS_TTL: Duration = Duration::from_secs(60);
 const DETAILS_KEPT: usize = 2_000;
-/// How long a conversation listing is used again without reading it.
-pub const LISTING_TTL: Duration = Duration::from_secs(5);
+/// How long a conversation listing is used again without reading it:
+/// longer than the apps' follow interval (9 s), so following reads only
+/// the conversation's page, and half the [`EXACT_MISS_TTL`].
+pub const LISTING_TTL: Duration = Duration::from_secs(30);
 /// A listing longer than this is not kept.
 const LISTING_KEPT: usize = 1_000;
 
@@ -570,7 +577,11 @@ impl Core {
         refresh: bool,
         refused: Option<Secret>,
     ) -> Result<PersonIdentity, RpcError> {
-        let account = self.plugins.cloud.account().ok_or_else(sign_in_required)?;
+        let Some(account) = self.plugins.cloud.account() else {
+            // Signed out: forget what was read for the last account.
+            self.current_identity();
+            return Err(sign_in_required());
+        };
         let gate_url = self.person_gate_url();
         if let Some(identity) = self.current_identity().filter(|identity| {
             !refresh
@@ -1139,6 +1150,11 @@ impl Core {
                     // A conversation read without proof is read again only
                     // once the listing shows it changed. What was read before
                     // an error stays read, so a retry goes on from there.
+                    // A kept listing can be up to LISTING_TTL old, so a
+                    // change it does not show yet is read once it is
+                    // listed again: at most LISTING_TTL after the miss's
+                    // EXACT_MISS_TTL, and sooner on anything that forgets
+                    // misses, which also drops the kept listing.
                     let listed = Checked::of(listed);
                     let unchanged = self
                         .messaging
