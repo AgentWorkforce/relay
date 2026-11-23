@@ -824,7 +824,9 @@ These details came out of review and are part of the contract:
   `refs/heads/<the repository's default branch>`. The default branch is read
   at registration and stored on the gate (`default_branch`). If the
   repository's default branch changes later, the gate must be registered
-  again.
+  again. On every redeem where the opt-out would apply, Cloud also
+  re-reads the default branch live. If the branch can't be resolved, no gate
+  serves; if GitHub is down, the answer is `unavailable`.
 - **`same_run`** compares the repository id as well as the run id.
 - **Signing keys.** Only `sig` (or unspecified-use) keys from GitHub's JWKS
   are used. An unknown `kid` when the cached JWKS is stale answers
@@ -834,7 +836,8 @@ These details came out of review and are part of the contract:
   `job_workflow_ref`, event, `target_prefix`). The `workflow_ref` includes
   the ref. Only the repository name is compared case-insensitively; workflow
   paths and refs are case-sensitive. A SHA-pinned `job_workflow_ref` is not
-  required for a top-level workflow.
+  required for a top-level workflow. A `job_workflow_ref` pointing at a
+  workflow in another repository must be pinned to a commit SHA.
 - **Status codes.** A dry run always answers 200, whether it passes or
   not; the body carries `ok`, `reason` and `dry_run`. A passing redeem
   answers 200. A refused redeem that is not a dry run answers 401 for
