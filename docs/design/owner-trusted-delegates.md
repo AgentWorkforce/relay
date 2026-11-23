@@ -797,7 +797,8 @@ These details came out of review and are part of the contract:
   - relay-control only: for a self-hosted issuer (GitHub Enterprise Server),
     Control can't resolve the repository on github.com. There, the owner
     supplies `repository_id` and `repository_owner_id` in the registration
-    body. These are optional, and refused for GitHub Actions gates.
+    body, together with `default_branch`, for every such gate. These are
+    refused for GitHub Actions gates.
   - Redeem never pins. A token whose repository name matches but whose ids
     differ is refused with `repository_mismatch`, audited for the owner and
     logged.
