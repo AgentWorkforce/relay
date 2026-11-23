@@ -49,6 +49,55 @@ export async function hmacSha256Hex(secret: string, message: string | Uint8Array
 }
 
 /**
+ * Base64 HMAC-SHA256 of `message` keyed by raw bytes (Standard Webhooks signatures).
+ *
+ * @param key - The decoded secret bytes.
+ * @param message - The signed content.
+ * @returns The signature in standard base64.
+ */
+export async function hmacSha256Base64(key: Uint8Array, message: string): Promise<string> {
+  const imported = await crypto.subtle.importKey(
+    'raw',
+    key as BufferSource,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const signature = await crypto.subtle.sign('HMAC', imported, ENCODER.encode(message));
+  return bytesToBase64(new Uint8Array(signature));
+}
+
+/**
+ * Decodes standard base64, or returns `null` when `value` is not base64.
+ *
+ * @param value - Base64 text.
+ * @returns The bytes, or `null`.
+ */
+export function base64ToBytes(value: string): Uint8Array | null {
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(value) || value.length % 4 !== 0) return null;
+  try {
+    const binary = atob(value);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Encodes bytes as standard base64.
+ *
+ * @param bytes - The bytes.
+ * @returns Base64 text with padding.
+ */
+export function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+/**
  * Compares two strings without an early exit on the first difference.
  *
  * @param a - One string.

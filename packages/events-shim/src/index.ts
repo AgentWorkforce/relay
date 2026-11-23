@@ -6,7 +6,15 @@
  * and mount `handleEventsShimRequest`; everything else lives here.
  */
 export { EVENTS_SHIM_LIMITS, type EventsShimLimits } from './limits.js';
-export { mintToken, sha256Hex, hmacSha256Hex, timingSafeEqual } from './crypto.js';
+export {
+  mintToken,
+  sha256Hex,
+  hmacSha256Hex,
+  hmacSha256Base64,
+  base64ToBytes,
+  bytesToBase64,
+  timingSafeEqual,
+} from './crypto.js';
 export {
   VERIFICATION_MODES,
   type DeliveryState,
@@ -25,6 +33,8 @@ export {
   idempotencyKeyFor,
   eventTypeFor,
   keptHeaders,
+  mcpWebhookKey,
+  MCP_WEBHOOK_SECRET_PATTERN,
   type HeaderReader,
   type VerifyResult,
 } from './verify.js';
@@ -47,6 +57,7 @@ export {
   createShim,
   feedFor,
   findShimByManageToken,
+  mintMcpWebhookSecret,
   findShimByMcpToken,
   publicEvent,
   drainStalledWakes,
@@ -76,3 +87,14 @@ export {
 } from './delivery.js';
 export { handleEventsShimRequest, type EventsShimHttpOptions } from './http.js';
 export { MemoryEventsShimStore } from './memory-store.js';
+export {
+  MCP_EVENTS_ERRORS,
+  MCP_EVENTS_EXTENSION,
+  MCP_EVENTS_LIMITS,
+  WEBHOOK_RECEIVED_EVENT,
+  advertiseEventsExtension,
+  handleEventsRequest,
+  isEventsRequest,
+  webhookReceivedEventType,
+  type McpEventsContext,
+} from './events.js';
