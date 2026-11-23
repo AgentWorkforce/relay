@@ -112,18 +112,24 @@ impl Framing {
 
 /// The key kept messages are sealed with: random per core process and never
 /// written anywhere, so no other process can seal a file. A message kept
-/// before the core restarted reads as a peer's.
-fn seal_key() -> &'static [u8; 32] {
-    static KEY: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
+/// before the core restarted reads as a peer's. `None` when the system gave
+/// no randomness: then nothing is sealed and every kept message reads as a
+/// peer's, since any fixed key would let anyone compute a valid seal.
+fn seal_key() -> Option<&'static [u8; 32]> {
+    static KEY: std::sync::OnceLock<Option<[u8; 32]>> = std::sync::OnceLock::new();
     KEY.get_or_init(|| {
         let mut key = [0u8; 32];
-        // Without randomness there is no key a forger could not guess:
-        // seals then never verify, and every message reads as a peer's.
-        if getrandom::getrandom(&mut key).is_err() {
-            key = [0u8; 32];
+        match getrandom::getrandom(&mut key) {
+            Ok(()) => Some(key),
+            Err(error) => {
+                crate::relay::diagnostics::write(format_args!(
+                    "relay: no randomness for the kept-message seal ({error}); kept messages are not sealed and read as peer messages"
+                ));
+                None
+            }
         }
-        key
     })
+    .as_ref()
 }
 
 /// HMAC-SHA256 of `message` under `key` (RFC 2104).
@@ -173,11 +179,11 @@ impl Kept {
     /// the record as it is, else a peer's (an older file, a file from before
     /// the core restarted, or one written by anything but this core).
     pub fn verified_framing(&self) -> Framing {
-        self.verified_framing_with(seal_key())
+        self.verified_framing_with(seal_key().map(|key| key.as_slice()))
     }
 
-    fn verified_framing_with(&self, key: &[u8]) -> Framing {
-        let (Some(framing), Some(seal)) = (&self.framing, &self.seal) else {
+    fn verified_framing_with(&self, key: Option<&[u8]>) -> Framing {
+        let (Some(key), Some(framing), Some(seal)) = (key, &self.framing, &self.seal) else {
             return Framing::Peer;
         };
         let expected = self.seal_with(key);
@@ -199,7 +205,11 @@ impl Kept {
     /// else with any framing line under the attribution taken out, so an
     /// unproven owner's or leader's line reads as a peer's message.
     pub fn shown_text(&self) -> String {
-        let framing = self.verified_framing();
+        self.shown_text_with(seal_key().map(|key| key.as_slice()))
+    }
+
+    fn shown_text_with(&self, key: Option<&[u8]>) -> String {
+        let framing = self.verified_framing_with(key);
         if framing != Framing::Peer || Framing::of(&self.text) == Framing::Peer {
             return self.text.clone();
         }
@@ -315,7 +325,8 @@ impl DeliveredTexts {
             framing: Some(Framing::of(text).as_str().to_string()),
             seal: None,
         };
-        kept.seal = Some(kept.seal_with(seal_key()));
+        // Without a random key nothing is sealed (`seal_key`).
+        kept.seal = seal_key().map(|key| kept.seal_with(key));
         let path = self.path(owner, &message_ref);
         let partial = path.with_extension("partial");
         let mut file = crate::platform::fs::private(
@@ -977,6 +988,32 @@ mod tests {
         assert!(!as_peer(&leader).contains(&leader_line("gtmgrok")));
         assert!(as_peer(&leader).starts_with(PEER_HEADER));
         assert_eq!(as_peer(&with_owner_line(&relayed("m8"))), relayed("m8"));
+    }
+
+    // With no random key, nothing verifies: not a record sealed under the
+    // all-zero key, nor under any other.
+    #[test]
+    fn without_a_random_key_every_kept_message_reads_as_a_peers() {
+        use crate::relay::delivery::policy::{with_owner_authority_line, OWNER_AUTHORITY_LINE};
+        let mut record = Kept {
+            owner: "claude-a".into(),
+            message_id: "m1".into(),
+            message_ref: MessageRef::of("m1"),
+            text: with_owner_authority_line(&relayed("m1")),
+            kept_at_ms: NOW,
+            framing: Some(Framing::OwnerAuthority.as_str().into()),
+            seal: None,
+        };
+        record.seal = Some(record.seal_with(&[0u8; 32]));
+        assert_eq!(
+            record.verified_framing_with(Some(&[0u8; 32])),
+            Framing::OwnerAuthority,
+            "the same key verifies its own seal"
+        );
+        assert_eq!(record.verified_framing_with(None), Framing::Peer);
+        assert!(!record.shown_text_with(None).contains(OWNER_AUTHORITY_LINE));
+        // This core's own key never verifies a zero-key seal.
+        assert_eq!(record.verified_framing(), Framing::Peer);
     }
 
     #[test]
