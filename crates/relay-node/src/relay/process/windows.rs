@@ -734,23 +734,29 @@ mod tests {
         let table = SystemProcesses::default();
         let uid = crate::relay::peer::current_uid();
         let thread = FAKE_CODEX_THREAD.to_lowercase();
+        // The kernel reports final long paths; a temp folder can be handed
+        // out in its 8.3 short form (`RUNNER~1`), so compare final paths.
+        let fin = |path: &Path| {
+            without_verbatim_prefix(lossy(std::fs::canonicalize(path).unwrap().as_os_str()))
+        };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let executable = table.executable(pid).expect("image path");
             assert!(
                 !executable.to_string_lossy().starts_with(r"\\?\"),
                 "{executable:?}"
             );
-            assert!(executable
+            assert!(fin(&executable)
                 .to_string_lossy()
-                .eq_ignore_ascii_case(&image.to_string_lossy()));
+                .eq_ignore_ascii_case(&fin(&image).to_string_lossy()));
             assert!(table.is_trusted_codex(&executable));
             assert_eq!(table.process(pid).map(|info| info.uid), Some(uid));
             let open = table.open_files(pid);
+            let expected = fin(&lock);
             assert!(
                 open.iter().any(|path| path
                     .to_string_lossy()
-                    .eq_ignore_ascii_case(&lock.to_string_lossy())),
-                "{open:?}"
+                    .eq_ignore_ascii_case(&expected.to_string_lossy())),
+                "{open:?} has no {expected:?}"
             );
             assert_eq!(
                 crate::relay::process::codex_locked_threads(&table, pid),
