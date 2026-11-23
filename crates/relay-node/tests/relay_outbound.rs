@@ -6214,6 +6214,21 @@ async fn a_delegate_sends_its_owner_approval_through_unchanged() {
     let dm = h.fake.calls("POST", "/v1/dm").pop().unwrap();
     assert!(dm.body.get("owner_approval").is_none(), "{}", dm.body);
 
+    // One leading `#` is the channel's mark; a second is not stripped.
+    let error = h
+        .call(
+            IN_CODEX,
+            "POST",
+            "/send",
+            json!({"channel": "##screens", "text": "x", "owner_approval": approval}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (error.status, error.code.as_str()),
+        (400, "invalid_recipient")
+    );
+
     // Not an object, too large, or on a reply: refused before anything is sent.
     let sent_before = h.fake.calls("POST", "/v1/dm").len();
     for bad in [

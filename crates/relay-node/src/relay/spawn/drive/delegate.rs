@@ -181,30 +181,28 @@ impl Core {
             ));
             return None;
         }
-        (self.delegates_may_answer_now(registration)
-            && self.organization_admits(registration, delivery)
-            && self.delegate_request(registration, reference).await)
-            .then(|| DelegateApprover {
-                name: delivery.sender.clone().unwrap_or_default(),
-                agent_id: sender_id.to_string(),
-                owner: crate::relay::delivery::policy::owner_display(
-                    claims.owner_display.as_deref(),
-                ),
-                grant_id: claims.grant_id.clone(),
-            })
+        // The awaited check first, the synchronous ones last: nothing can
+        // change between them and the answer.
+        (self.delegate_request(registration, reference).await
+            && self.delegates_may_answer_now(registration)
+            && self.organization_admits(registration, delivery))
+        .then(|| DelegateApprover {
+            name: delivery.sender.clone().unwrap_or_default(),
+            agent_id: sender_id.to_string(),
+            owner: crate::relay::delivery::policy::owner_display(claims.owner_display.as_deref()),
+            grant_id: claims.grant_id.clone(),
+        })
     }
 
     /// The delegates Cloud names for `registration` (`prompt-delegates`):
     /// the machine owner's delegates whose `prompt_approval` targets cover
-    /// the session, by agent id. Empty when Cloud cannot be asked.
+    /// the session, by agent id. `None` when Cloud cannot be asked.
     pub(crate) async fn prompt_delegates(
         &self,
         registration: &Registration,
         token: &Secret,
-    ) -> Vec<String> {
-        let Some(account) = self.plugins.cloud.account() else {
-            return Vec::new();
-        };
+    ) -> Option<Vec<String>> {
+        let account = self.plugins.cloud.account()?;
         let path = format!(
             "/workspaces/{}/messaging/delegation/prompt-delegates",
             crate::relay::cloud_session::segment(&account.workspace_id)
@@ -213,9 +211,13 @@ impl Core {
             "session_agent_id": registration.agent_id,
             "session_token": token.expose(),
         });
-        let Ok(answer) = self.plugins.cloud.request("POST", path, Some(body)).await else {
-            return Vec::new();
-        };
+        let answer = self
+            .plugins
+            .cloud
+            .request("POST", path, Some(body))
+            .await
+            .ok()?;
+        answer["delegates"].as_array()?;
         let mut ids: Vec<String> = answer["delegates"]
             .as_array()
             .into_iter()
@@ -226,7 +228,7 @@ impl Core {
             .collect();
         ids.sort();
         ids.dedup();
-        ids
+        Some(ids)
     }
 
     /// Sends `text`, the approval DM about `reference`, with
@@ -254,6 +256,7 @@ impl Core {
             let delegates = core
                 .prompt_delegates(&registration, &token)
                 .await
+                .unwrap_or_default()
                 .into_iter()
                 .filter(|id| Some(id) != person.as_ref())
                 .filter(|id| Self::delegate_may_be(&registration, id));
@@ -264,7 +267,10 @@ impl Core {
                     if send > 0 {
                         tokio::time::sleep(LEADER_RESEND_AFTER).await;
                     }
-                    let name = match core.delegate_try(registration, reference, &id).await {
+                    let name = match core
+                        .delegate_try(registration, token, reference, &id, send > 0)
+                        .await
+                    {
                         DelegateTry::Send(name) => name,
                         DelegateTry::Skip => continue,
                         DelegateTry::Stop => return,
@@ -287,13 +293,24 @@ impl Core {
     async fn delegate_try(
         &self,
         registration: &Registration,
+        token: &Secret,
         reference: &str,
         id: &str,
+        again: bool,
     ) -> DelegateTry {
         if !self.delegate_request(registration, reference).await
             || !self.delegates_may_answer_now(registration)
         {
             return DelegateTry::Stop;
+        }
+        // A try after the first asks Cloud again whether the delegate's grant
+        // still covers the session: a revoked delegate is never sent it.
+        if again {
+            match self.prompt_delegates(registration, token).await {
+                None => return DelegateTry::Skip,
+                Some(ids) if !ids.iter().any(|listed| listed == id) => return DelegateTry::Stop,
+                Some(_) => {}
+            }
         }
         let Some(name) = self.name_of(registration, id).await else {
             return DelegateTry::Skip;

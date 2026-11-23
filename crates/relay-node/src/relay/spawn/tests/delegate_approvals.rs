@@ -830,3 +830,40 @@ async fn only_a_delegate_of_this_computers_signed_in_owner_answers() {
     )
     .ends_with("Answered"));
 }
+
+/// A copy whose first send failed is not sent again once Cloud no longer
+/// lists the delegate (its grant was revoked).
+#[tokio::test]
+async fn a_revoked_delegate_gets_no_retried_copy() {
+    let f = fixture().await;
+    *f.cloud.delegates.lock().unwrap() =
+        json!({"delegates": [{"agent_id": f.delegate.id, "grant_id": "grt_1"}]});
+    f.server
+        .set_api_error("POST /v1/dm to=assistant", Some((500, "unavailable")));
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3be013";
+    let registration = f.spawned("codex", THREAD);
+    let notice = codex_request(THREAD, 998);
+    f.core
+        .forward_to_owner(&registration, &f.token(), &notice)
+        .await;
+    // One send is three POSTs: the client retries a 5xx itself.
+    f.server
+        .wait_for("the first send of the delegate's copy", |server| {
+            server
+                .calls("POST", "/v1/dm")
+                .iter()
+                .filter(|call| call.body["to"] == "assistant")
+                .count()
+                >= 3
+        })
+        .await;
+    *f.cloud.delegates.lock().unwrap() = json!({"delegates": []});
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let copies = f
+        .server
+        .calls("POST", "/v1/dm")
+        .iter()
+        .filter(|call| call.body["to"] == "assistant")
+        .count();
+    assert_eq!(copies, 3, "no copy after the grant went away");
+}

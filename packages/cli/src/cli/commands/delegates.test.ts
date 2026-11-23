@@ -8,11 +8,11 @@ import {
   type DelegatesDependencies,
 } from './delegates.js';
 
-vi.mock('@agent-relay/cloud', () => ({
-  defaultApiUrl: () => 'https://cloud.test',
-  ensureCloudSession: vi.fn(),
-  authorizedApiFetch: vi.fn(),
-}));
+class ExitSignal extends Error {
+  constructor(public readonly code: number) {
+    super(`exit:${code}`);
+  }
+}
 
 const auth = {
   apiUrl: 'https://cloud.test',
@@ -26,7 +26,7 @@ function harness(answer: unknown = { ok: true }, status = 200) {
     log: vi.fn(),
     error: vi.fn(),
     exit: vi.fn((code: number) => {
-      throw new Error(`exit:${code}`);
+      throw new ExitSignal(code);
     }) as unknown as DelegatesDependencies['exit'],
     ensureCloudSession: vi.fn(async () => ({
       auth,
@@ -125,6 +125,13 @@ describe('agent-relay delegates', () => {
     expect(() => parseScope('approve_all=*')).toThrow();
     expect(() => parseScope('merge=')).toThrow();
     expect(parseScope('config_change=*')).toEqual([{ class: 'config_change', targets: ['*'] }]);
+    // A target keeps every `=` after the first.
+    expect(parseScope('external_comms=https://example.com/send?team=ops')).toEqual([
+      { class: 'external_comms', targets: ['https://example.com/send?team=ops'] },
+    ]);
+    expect(parseScope('deploy=api:staging=canary')).toEqual([
+      { class: 'deploy', targets: ['api:staging=canary'] },
+    ]);
     expect(parseScope('deploy=api:staging,web:staging')).toEqual([
       { class: 'deploy', targets: ['api:staging', 'web:staging'] },
     ]);
@@ -133,5 +140,25 @@ describe('agent-relay delegates', () => {
     const h = harness();
     await expect(h.run('list', '--workspace', 'not a workspace')).rejects.toThrow('exit:1');
     expect(h.calls()).toEqual([]);
+  });
+  it('refuses an --api-url other than the host the login is for', async () => {
+    const h = harness();
+    await expect(
+      h.run('revoke', 'grt_1', '--workspace', WS, '--api-url', 'https://other.example/')
+    ).rejects.toThrow('exit:1');
+    expect(h.calls()).toEqual([]);
+    expect(h.deps.error).toHaveBeenCalledWith(
+      'Your Cloud login is for https://cloud.test, not https://other.example. Run `agent-relay cloud login --api-url https://other.example --force` first.'
+    );
+    // The same host, any case or trailing slash, goes ahead.
+    await h.run('revoke', 'grt_1', '--workspace', WS, '--api-url', 'HTTPS://cloud.test/');
+    expect(h.calls()).toHaveLength(1);
+  });
+
+  it('exits through ExitSignal, distinct from other errors', async () => {
+    const h = harness({ error: 'not_enabled' }, 403);
+    const error = await h.run('claim', '--workspace', WS).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ExitSignal);
+    expect((error as ExitSignal).code).toBe(1);
   });
 });

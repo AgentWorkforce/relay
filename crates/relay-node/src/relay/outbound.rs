@@ -1119,6 +1119,7 @@ impl Outbound {
                 .map(|value| value.strip_prefix('#').unwrap_or(value))
                 .filter(|value| {
                     !value.is_empty()
+                        && !value.starts_with('#')
                         && value.chars().count() <= 200
                         && !value
                             .chars()

@@ -10,7 +10,7 @@
  * surfaced, so agent code cannot branch on one by mistake.
  */
 
-import { createPublicKey, verify as verifySignature } from 'node:crypto';
+import { createHash, createPublicKey, verify as verifySignature } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 
 import type {
@@ -41,7 +41,11 @@ export const RELAY_DELEGATION_PROTECTED_SETTINGS: readonly string[] = [
   'spawn_delegate_approvals',
 ];
 
-/** A `config_change` target as its parts, or `undefined` when malformed. */
+/**
+ * A `config_change` target as its parts.
+ * @param target - `<agent id>:<setting>=<value>`
+ * @returns The parts, or `undefined` when malformed or a wildcard
+ */
 export function parseConfigChangeTarget(
   target: string
 ): { agentId: string; setting: string; value: string } | undefined {
@@ -131,6 +135,10 @@ function validAction(action: unknown): action is RelayDelegationAction {
  * when it does not verify: a bad signature, an unknown key id, another
  * workspace, message, recipient or sender, an expired or over-long
  * attestation, or claims that are not v1.
+ * @param jws - Cloud's compact JWS attestation
+ * @param jwks - Cloud's published keys (`/.well-known/relay-delegation-keys.json`)
+ * @param expected - The delivery it must be for, and the time to check expiry at
+ * @returns The verified delegation, or `undefined`
  */
 export function verifyDelegationAttestation(
   jws: string,
@@ -230,7 +238,14 @@ export function verifyDelegationAttestation(
   };
 }
 
-/** `message` with `delegation` set when `jws` verifies for it; otherwise without one. */
+/**
+ * `message` with `delegation` set when `jws` verifies for it; otherwise without one.
+ * @param message - The received message; any `delegation` it carries is dropped first
+ * @param jws - Cloud's compact JWS attestation for it
+ * @param jwks - Cloud's published keys
+ * @param expected - The workspace, recipient and time; message and sender come from `message`
+ * @returns A copy of the message, with `delegation` only when verified
+ */
 export function withVerifiedDelegation(
   message: RelayMessage,
   jws: string,
@@ -246,20 +261,33 @@ export function withVerifiedDelegation(
   return delegation ? { ...rest, delegation } : rest;
 }
 
-/** Whether a verified delegation covers exactly this class and target. */
+/**
+ * Whether a verified, unexpired delegation covers exactly this class and
+ * target. Matching does not redeem the approval: when `redeemFirst` is set,
+ * call {@link redeemOwnerApproval} right before acting.
+ * @param message - A message whose `delegation` was set by {@link withVerifiedDelegation}
+ * @param action - The exact class and target about to be acted on
+ * @param now - Milliseconds since the epoch; defaults to `Date.now()`
+ * @returns `true` only for a verified delegation, not yet expired, listing this action
+ */
 export function delegationCovers(
   message: Pick<RelayMessage, 'delegation'>,
-  action: { class: RelayDelegationActionClass; target: string }
+  action: { class: RelayDelegationActionClass; target: string },
+  now: number = Date.now()
 ): boolean {
+  const delegation = message.delegation;
   return (
-    message.delegation?.verified === true &&
-    message.delegation.actions.some(
-      (covered) => covered.class === action.class && covered.target === action.target
-    )
+    delegation?.verified === true &&
+    Date.parse(delegation.expiresAt) > now &&
+    delegation.actions.some((covered) => covered.class === action.class && covered.target === action.target)
   );
 }
 
-/** The wire shape of an owner approval (`owner_approval`, v1). */
+/**
+ * The wire shape of an owner approval (`owner_approval`, v1).
+ * @param input - The approval as the SDK takes it
+ * @returns The snake_case object Relaycast stores
+ */
 export function toWireOwnerApproval(input: RelayOwnerApprovalInput): Record<string, unknown> {
   return {
     v: 1,
@@ -276,6 +304,25 @@ export function toWireOwnerApproval(input: RelayOwnerApprovalInput): Record<stri
     ...(input.expiresAt !== undefined ? { expires_at: input.expiresAt } : {}),
     ...(input.approvalRef !== undefined ? { approval_ref: input.approvalRef } : {}),
   };
+}
+
+/**
+ * Where to connect for the node's session socket at `path`: the path itself,
+ * or on Windows the named pipe the core derives from it (the core's
+ * `transport::pipe_name`: the path lowercased with backslash separators,
+ * without a `\\?\` prefix or trailing separator, hashed with SHA-256, the
+ * first 8 bytes in hex).
+ * @param path - The session socket path, as the probe is given it
+ * @param platform - Defaults to `process.platform`
+ * @returns The path to connect to
+ */
+export function sessionSocketEndpoint(path: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform !== 'win32') return path;
+  let key = path.replace(/\//g, '\\').toLowerCase();
+  if (key.startsWith('\\\\?\\')) key = key.slice(4);
+  while (key.length > 1 && key.endsWith('\\')) key = key.slice(0, -1);
+  const hex = createHash('sha256').update(key, 'utf8').digest().subarray(0, 8).toString('hex');
+  return `\\\\.\\pipe\\agent-relay-${hex}`;
 }
 
 /** What redeeming an approval came to. */
@@ -296,6 +343,10 @@ export interface RelayRedeemOptions {
  * session's own agent (`POST /delegation/redeem` on the node's session
  * socket). `condition_unmet` (with `unmet`) leaves the approval unconsumed:
  * wait and redeem again before it expires.
+ * @param approvalId - The approval id from the delegate line (`apv_…`)
+ * @param action - The exact class and target about to be acted on
+ * @param options - Where the node's session socket is
+ * @returns `{ok: true, consumed}` or `{ok: false, reason, unmet?}`
  */
 export async function redeemOwnerApproval(
   approvalId: string,
@@ -310,7 +361,7 @@ export async function redeemOwnerApproval(
   const body = await new Promise<string>((resolve, reject) => {
     const req = httpRequest(
       {
-        socketPath,
+        socketPath: sessionSocketEndpoint(socketPath),
         method: 'POST',
         path: `/delegation/redeem?${query.toString()}`,
         headers: { 'content-length': 0 },
@@ -332,7 +383,14 @@ export async function redeemOwnerApproval(
     req.on('error', reject);
     req.end();
   });
-  const answer = JSON.parse(body) as Record<string, unknown>;
+  // The socket wraps every answer as `{"ok": true, "data": …}`; the redeem's
+  // own `ok` is inside `data`.
+  const envelope = JSON.parse(body) as Record<string, unknown>;
+  const data = envelope.data;
+  if (envelope.ok !== true || !data || typeof data !== 'object') {
+    throw new Error(`redeem answered without a result: ${body}`);
+  }
+  const answer = data as Record<string, unknown>;
   if (answer.ok === true) return { ok: true, consumed: answer.consumed === true };
   return {
     ok: false,

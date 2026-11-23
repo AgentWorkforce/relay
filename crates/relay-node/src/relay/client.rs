@@ -576,7 +576,8 @@ pub async fn send_with_owner_approval(
         }
         ApprovalDestination::Channel(channel) => format!(
             "/v1/channels/{}/messages",
-            sdk_gaps::segment(channel.strip_prefix('#').unwrap_or(channel))
+            // Already normalized by the caller (one leading `#` removed).
+            sdk_gaps::segment(channel)
         ),
     };
     let http = sdk_gaps::http(base_url, token)?;

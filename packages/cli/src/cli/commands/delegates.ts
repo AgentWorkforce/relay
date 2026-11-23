@@ -12,10 +12,12 @@ import { authorizedApiFetch, defaultApiUrl, ensureCloudSession } from '@agent-re
 
 import { describeError } from '../lib/describe-error.js';
 
+type ExitFn = (code: number) => never;
+
 export interface DelegatesDependencies {
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
-  exit: (code: number) => never;
+  exit: ExitFn;
   ensureCloudSession: typeof ensureCloudSession;
   authorizedApiFetch: typeof authorizedApiFetch;
 }
@@ -62,7 +64,11 @@ export function parseScope(
   value: string,
   previous: Array<{ class: string; targets: string[] }> = []
 ): Array<{ class: string; targets: string[] }> {
-  const [cls, targets] = value.split('=', 2);
+  // Split at the first `=`: a target may itself hold `=` (a config_change
+  // value, a URL query), and is kept whole.
+  const separator = value.indexOf('=');
+  const cls = separator < 0 ? value : value.slice(0, separator);
+  const targets = separator < 0 ? '' : value.slice(separator + 1);
   if (!cls || !(DELEGATION_CLASSES as readonly string[]).includes(cls) || !targets) {
     throw new InvalidArgumentError(
       `Use class=target[,target…] with a class of ${DELEGATION_CLASSES.join(', ')}.`
@@ -87,6 +93,15 @@ export function expiryFromDays(value: string, now = Date.now()): string {
   return new Date(now + days * 24 * 60 * 60 * 1000).toISOString();
 }
 
+function canonicalHost(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.protocol}//${parsed.host}`.toLowerCase();
+  } catch {
+    return url.trim().replace(/\/+$/, '').toLowerCase();
+  }
+}
+
 async function request(
   deps: DelegatesDependencies,
   path: string,
@@ -94,6 +109,14 @@ async function request(
   apiUrl?: string
 ): Promise<unknown> {
   const { auth } = await deps.ensureCloudSession({ apiUrl: apiUrl ?? defaultApiUrl(), interactive: false });
+  // An explicit --api-url must be the host the stored login is for: a grant
+  // is never changed on another host than the one named.
+  if (apiUrl && canonicalHost(auth.apiUrl) !== canonicalHost(apiUrl)) {
+    throw new Error(
+      `Your Cloud login is for ${canonicalHost(auth.apiUrl)}, not ${canonicalHost(apiUrl)}. ` +
+        `Run \`agent-relay cloud login --api-url ${canonicalHost(apiUrl)} --force\` first.`
+    );
+  }
   const result = await deps.authorizedApiFetch(auth, path, init, { interactive: false });
   const payload = (await result.response.json().catch(() => null)) as unknown;
   if (!result.response.ok) {

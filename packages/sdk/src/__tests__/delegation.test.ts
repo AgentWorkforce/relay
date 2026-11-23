@@ -10,6 +10,7 @@ import {
   RelaycastMessagingClient,
   delegationCovers,
   parseConfigChangeTarget,
+  sessionSocketEndpoint,
   redeemOwnerApproval,
   verifyDelegationAttestation,
   withVerifiedDelegation,
@@ -145,8 +146,17 @@ describe('delegate approvals', () => {
     const base = { workspaceId: 'ws_1', recipientAgentId: 'agent_relay', now: NOW + 10 };
     const verified = withVerifiedDelegation(message, signJws(claims()), jwks, base);
     expect(verified.delegation?.approvalId).toBe('apv_7Q2abcdEF');
-    expect(delegationCovers(verified, { class: 'merge', target: 'AgentWorkforce/relay#2250' })).toBe(true);
-    expect(delegationCovers(verified, { class: 'merge', target: 'AgentWorkforce/relay#2251' })).toBe(false);
+    const at = (NOW + 10) * 1000;
+    expect(delegationCovers(verified, { class: 'merge', target: 'AgentWorkforce/relay#2250' }, at)).toBe(
+      true
+    );
+    // Not once the attestation expired.
+    expect(
+      delegationCovers(verified, { class: 'merge', target: 'AgentWorkforce/relay#2250' }, (NOW + 300) * 1000)
+    ).toBe(false);
+    expect(delegationCovers(verified, { class: 'merge', target: 'AgentWorkforce/relay#2251' }, at)).toBe(
+      false
+    );
     const forged = withVerifiedDelegation(message, signer().signJws(claims()), jwks, base);
     expect(forged.delegation).toBeUndefined();
   });
@@ -216,7 +226,8 @@ describe('delegate approvals', () => {
       server = createServer((req, res) => {
         seen.push(`${req.method} ${req.url}`);
         res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify(answer));
+        // As the core answers every route: `{"ok": true, "data": …}`.
+        res.end(JSON.stringify({ ok: true, data: answer }));
       });
       await new Promise<void>((resolve) => server!.listen(path, resolve));
       return path;
@@ -245,5 +256,16 @@ describe('delegate approvals', () => {
         redeemOwnerApproval('apv_7Q2abcdEF', { class: 'release', target: 'pkg' }, { socketPath })
       ).resolves.toEqual({ ok: true, consumed: true });
     });
+  });
+
+  it('derives the Windows named pipe as the core does', () => {
+    // The core's own vector (transport::pipe_name).
+    expect(sessionSocketEndpoint('C:\\Users\\A\\.agentworkforce\\desktop\\core.sock', 'win32')).toBe(
+      '\\\\.\\pipe\\agent-relay-367ccf5106272db6'
+    );
+    expect(sessionSocketEndpoint('c:/users/a/.agentworkforce/desktop/core.sock', 'win32')).toBe(
+      '\\\\.\\pipe\\agent-relay-367ccf5106272db6'
+    );
+    expect(sessionSocketEndpoint('/run/agent-relay/relay.sock', 'linux')).toBe('/run/agent-relay/relay.sock');
   });
 });

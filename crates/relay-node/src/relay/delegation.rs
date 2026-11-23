@@ -153,6 +153,16 @@ impl Accept {
             .ok_or_else(|| format!("{SETTING} must be \"off\", \"own_owner\" or \"code_owners\"."))
     }
 
+    /// Whether this choice accepts an approval with `standing` (`own_owner`
+    /// or `code_owner`): `off` none, `own_owner` the own owner's only.
+    pub fn permits(self, standing: &str) -> bool {
+        match self {
+            Accept::Off => false,
+            Accept::OwnOwner => standing == "own_owner",
+            Accept::CodeOwners => matches!(standing, "own_owner" | "code_owner"),
+        }
+    }
+
     /// Whether `asked` is a wider choice than `current` (the default when
     /// unset or unreadable): only the person makes one.
     pub fn widens(asked: &str, current: Option<&Value>) -> bool {
@@ -258,7 +268,15 @@ impl Action {
         }
         let (agent, change) = self.target.split_once(':')?;
         let (setting, value) = change.split_once('=')?;
-        (!agent.is_empty() && !setting.is_empty() && !value.is_empty())
+        // Canonical parts only: no whitespace, control or format character
+        // that the line would show differently from what is checked.
+        let canonical = |part: &str| {
+            !part.is_empty()
+                && !part.chars().any(|c| {
+                    c.is_whitespace() || crate::relay::delivery::policy::is_control_or_newline(c)
+                })
+        };
+        (canonical(agent) && canonical(setting) && canonical(value))
             .then_some((agent, setting, value))
     }
 
@@ -529,6 +547,8 @@ pub struct Keys {
     unknown_read: Mutex<Option<Instant>>,
     /// Replaces the read of this build's site, in tests.
     fetch: Mutex<Option<Fetch>>,
+    /// Held while the keys are read, so reads never overlap.
+    reading: tokio::sync::Mutex<()>,
 }
 
 impl Keys {
@@ -555,20 +575,30 @@ impl Keys {
         Some(keys)
     }
 
-    /// The keys to check a JWS with key id `kid` against: those last read
-    /// within [`KEYS_FOR`], read again when older or when they lack `kid`
-    /// (at most once per [`UNKNOWN_KID_EVERY`]).
-    pub async fn for_kid(&self, kid: &str) -> Option<KeySet> {
-        let cached = self
-            .cached
+    /// The keys last read, while within [`KEYS_FOR`].
+    fn fresh(&self) -> Option<KeySet> {
+        self.cached
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        match cached {
-            Some((at, keys)) if at.elapsed() < KEYS_FOR => {
-                if keys.get(kid).is_some() {
-                    return Some(keys);
-                }
+            .clone()
+            .filter(|(at, _)| at.elapsed() < KEYS_FOR)
+            .map(|(_, keys)| keys)
+    }
+
+    /// The keys to check a JWS with key id `kid` against: those last read
+    /// within [`KEYS_FOR`], read again when older or when they lack `kid`
+    /// (at most once per [`UNKNOWN_KID_EVERY`]). Reads are one at a time:
+    /// a lookup that arrives while one is in flight waits for it and uses
+    /// its result, and an older read can never replace a newer one.
+    pub async fn for_kid(&self, kid: &str) -> Option<KeySet> {
+        if let Some(keys) = self.fresh().filter(|keys| keys.get(kid).is_some()) {
+            return Some(keys);
+        }
+        let _reading = self.reading.lock().await;
+        // A read that finished while this one waited may have brought it.
+        match self.fresh() {
+            Some(keys) if keys.get(kid).is_some() => Some(keys),
+            Some(keys) => {
                 {
                     let mut last = self
                         .unknown_read
@@ -581,7 +611,7 @@ impl Keys {
                 }
                 Some(self.read().await.unwrap_or(keys))
             }
-            _ => self.read().await,
+            None => self.read().await,
         }
     }
 }
@@ -749,6 +779,18 @@ impl Core {
             now: crate::relay::state::now_ms() / 1000,
         };
         match verify(&jws, &keys, expected) {
+            // The person may have turned delegation off or narrowed it, or
+            // the install become gate-only, while Cloud and the keys were
+            // asked: the choice in force now decides.
+            Ok(claims)
+                if self.delegation_unavailable().is_some()
+                    || !self.store.read(self::accept).permits(&claims.standing) =>
+            {
+                log(format_args!(
+                    "message {id}: {SETTING} no longer accepts this approval"
+                ));
+                None
+            }
             Ok(claims) => {
                 log(format_args!(
                     "message {id}: verified approval {} (grant {}, jti {})",

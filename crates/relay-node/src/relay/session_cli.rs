@@ -109,6 +109,10 @@ pub const ALLOWED_SUBCOMMANDS: [&str; 8] = [
 /// The longest name, address, channel or id accepted.
 const MAX_FIELD: usize = 200;
 
+/// The longest `--owner-approval` accepted once percent-encoded, well
+/// inside the session socket's 64 KiB header limit.
+const MAX_ENCODED_OWNER_APPROVAL: usize = 48 * 1024;
+
 /// The longest channel topic accepted, in characters.
 const MAX_TOPIC: usize = 500;
 
@@ -468,8 +472,16 @@ fn send_request(
         }
         crate::relay::delegation::owner_approval_json(approval)
             .map_err(|reason| refuse(&reason))?;
-        // Sent exactly as given: the core and Relaycast never alter it.
-        query.push_str(&format!("&owner_approval={}", query_encode(approval)));
+        // Sent exactly as given: the core and Relaycast never alter it. It
+        // rides in the request line, so its encoded form must fit the
+        // socket's header limit with room to spare.
+        let encoded = query_encode(approval);
+        if encoded.len() > MAX_ENCODED_OWNER_APPROVAL {
+            return Err(refuse(
+                "--owner-approval is too large once encoded; send it compact (no extra whitespace).",
+            ));
+        }
+        query.push_str(&format!("&owner_approval={encoded}"));
     }
     Ok(SessionRequest {
         method: "POST",
@@ -902,6 +914,12 @@ mod owner_approval_tests {
         }
         let large = format!(r#"{{"quote":"{}"}}"#, "q".repeat(40 * 1024));
         assert!(send(Recipient::To("alice".into()), &large)
+            .request()
+            .is_err());
+        // Under 32 KiB, but whitespace that encodes past the header limit.
+        let padded = format!("{{{}\"v\":1}}", " ".repeat(20 * 1024));
+        assert!(padded.len() < 32 * 1024);
+        assert!(send(Recipient::To("alice".into()), &padded)
             .request()
             .is_err());
         let reply = SessionCommand::Send {
