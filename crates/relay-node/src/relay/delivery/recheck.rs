@@ -51,6 +51,16 @@ impl Core {
                 .await
                 .ok()?;
             let mut delivery = delivery_of(kept, &server)?;
+            // Relaycast's single-message read carries no `has_owner_approval`.
+            // While the delivery is still pending, its by-message proof does
+            // (`owner_approval`); once it is acknowledged it reads 404, and a
+            // delegate's message then reads as a peer's.
+            if !delivery.has_owner_approval {
+                delivery.has_owner_approval =
+                    crate::relay::sdk_gaps::delivery_by_message(&http, &kept.message_id)
+                        .await
+                        .is_ok_and(|proof| proof["owner_approval"].is_object());
+            }
             // The files it carried come back with the commands that fetch
             // them, as a delivery whose files were not saved in time shows
             // them.

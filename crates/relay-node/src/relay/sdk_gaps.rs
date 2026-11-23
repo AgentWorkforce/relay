@@ -516,6 +516,20 @@ pub async fn inbox(agent: &HttpClient) -> relaycast::Result<Value> {
     }
 }
 
+/// `GET /v1/deliveries/by-message/{id}` with an agent token: the calling
+/// agent's own queued or delivered, unacknowledged delivery of one message,
+/// with its `owner_approval` (or `null`). `404 delivery_not_found` once it is
+/// acknowledged or expired, or for anyone else's.
+pub async fn delivery_by_message(agent: &HttpClient, id: &str) -> relaycast::Result<Value> {
+    agent
+        .get(
+            &format!("/v1/deliveries/by-message/{}", segment(id)),
+            None,
+            None,
+        )
+        .await
+}
+
 fn array(data: Value, what: &str) -> relaycast::Result<Vec<Value>> {
     match data {
         Value::Array(items) => Ok(items),
