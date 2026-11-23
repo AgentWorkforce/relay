@@ -492,8 +492,13 @@ sent to the org's SIEM through webhooks:
   route. After that the by-message route never returns the quote. Cloud
   redacts in Relaycast at the end of the org's retention window, and when the
   owner redacts a quote.
-- The node keeps a local record of every delegate line it wrote, with the
-  JWS, for disputes and the desktop UI.
+- The node may keep a local record of every delegate line it wrote, for
+  disputes and the desktop UI. That record holds the claims WITHOUT the
+  `quote` and the SHA-256 of the full JWS as a receipt. It never holds the
+  full JWS or the quote, so redacting a quote (§16.2) leaves no private copy
+  behind on the node. The quote also sits in the delegate's message text,
+  which harness transcripts keep outside Relay's control; Relay's redaction
+  covers only the copies Relay holds.
 
 ## 9. How this fits with existing work
 
@@ -970,7 +975,10 @@ to this document first.
 characters, no `*`). A `prompt_approval` target is
 `<agent id>:<request ref>:approve` or `:deny` in an approval, and
 `<agent id>:*` or `*` in a grant. A `pr_ops` target in an approval is
-`owner/repo#N:<op>` (§5.1). A target is a string of at most 256 characters, and
+`owner/repo#N:<op>` (§5.1), so it covers operations on an existing PR only.
+Opening a new PR needs no delegated approval in v1: it changes nothing that
+can't be undone, and the PR has no number yet. A target for opening PRs (for
+example `owner/repo:open:<head branch>`) is a follow-up. A target is a string of at most 256 characters, and
 `*` is a wildcard for one path segment or a whole segment of `owner/repo`,
 `service:env` and similar targets. `owner/*` covers `owner/x` and `owner/x#12`.
 An exact target covers only itself plus, for `owner/repo`, `owner/repo#N`.
