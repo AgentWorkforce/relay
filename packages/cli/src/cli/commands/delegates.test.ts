@@ -150,6 +150,13 @@ describe('agent-relay delegates', () => {
     expect(h.deps.error).toHaveBeenCalledWith(
       'Your Cloud login is for https://cloud.test, not https://other.example. Run `agent-relay cloud login --api-url https://other.example --force` first.'
     );
+    // A path-prefixed base is kept, in the comparison and the instruction.
+    await expect(
+      h.run('revoke', 'grt_1', '--workspace', WS, '--api-url', 'https://cloud.test/cloud')
+    ).rejects.toThrow('exit:1');
+    expect(h.deps.error).toHaveBeenLastCalledWith(
+      'Your Cloud login is for https://cloud.test, not https://cloud.test/cloud. Run `agent-relay cloud login --api-url https://cloud.test/cloud --force` first.'
+    );
     // The same host, any case or trailing slash, goes ahead.
     await h.run('revoke', 'grt_1', '--workspace', WS, '--api-url', 'HTTPS://cloud.test/');
     expect(h.calls()).toHaveLength(1);

@@ -1067,3 +1067,29 @@ async fn a_redeem_passes_on_the_commit_cloud_checked_and_a_delegate_withdraws() 
         json!({"ok": false, "reason": "not_sender"})
     );
 }
+
+/// A failed read of the keys is shared with the lookups waiting on it and
+/// with those for a while after, so an outage costs one timeout.
+#[tokio::test]
+async fn a_failed_key_read_is_shared_not_repeated() {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let keys = Arc::new(Keys::default());
+    let counted = reads.clone();
+    keys.set_fetch(Arc::new(move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            None
+        })
+    }));
+    let lookups = (0..4).map(|_| {
+        let keys = keys.clone();
+        tokio::spawn(async move { keys.for_kid(KID).await })
+    });
+    for lookup in futures_util::future::join_all(lookups).await {
+        assert!(lookup.unwrap().is_none());
+    }
+    assert_eq!(reads.load(Ordering::SeqCst), 1, "one read for all four");
+    assert!(keys.for_kid(KID).await.is_none());
+    assert_eq!(reads.load(Ordering::SeqCst), 1, "still shared just after");
+}

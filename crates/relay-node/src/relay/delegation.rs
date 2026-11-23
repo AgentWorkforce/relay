@@ -587,7 +587,14 @@ pub struct Keys {
     fetch: Mutex<Option<Fetch>>,
     /// Held while the keys are read, so reads never overlap.
     reading: tokio::sync::Mutex<()>,
+    /// When a read last failed: lookups within [`FAILED_READ_FOR`] after it
+    /// share that failure rather than each reading again.
+    failed_at: Mutex<Option<Instant>>,
 }
+
+/// How long a failed read of the keys is shared with later lookups, so an
+/// outage costs one timeout, not one per waiting delivery.
+pub const FAILED_READ_FOR: Duration = Duration::from_secs(30);
 
 impl Keys {
     /// Reads the keys with `fetch` from now on, in place of this build's
@@ -595,6 +602,10 @@ impl Keys {
     pub fn set_fetch(&self, fetch: Fetch) {
         *self.fetch.lock().unwrap_or_else(PoisonError::into_inner) = Some(fetch);
         *self.cached.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        *self
+            .failed_at
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
     }
 
     async fn read(&self) -> Option<KeySet> {
@@ -606,7 +617,12 @@ impl Keys {
         let jwks = match fetch {
             Some(fetch) => fetch().await,
             None => fetch_site_keys().await,
-        }?;
+        };
+        *self
+            .failed_at
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = jwks.is_none().then(Instant::now);
+        let jwks = jwks?;
         let keys = KeySet::parse(&jwks);
         *self.cached.lock().unwrap_or_else(PoisonError::into_inner) =
             Some((Instant::now(), keys.clone()));
@@ -633,6 +649,13 @@ impl Keys {
             return Some(keys);
         }
         let _reading = self.reading.lock().await;
+        // A read that failed just now (perhaps while this one waited) is
+        // shared, not repeated.
+        let failed_recently = self
+            .failed_at
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some_and(|at| at.elapsed() < FAILED_READ_FOR);
         // A read that finished while this one waited may have brought it.
         match self.fresh() {
             Some(keys) if keys.get(kid).is_some() => Some(keys),
@@ -649,6 +672,7 @@ impl Keys {
                 }
                 Some(self.read().await.unwrap_or(keys))
             }
+            None if failed_recently => None,
             None => self.read().await,
         }
     }

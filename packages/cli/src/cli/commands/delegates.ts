@@ -93,12 +93,14 @@ export function expiryFromDays(value: string, now = Date.now()): string {
   return new Date(now + days * 24 * 60 * 60 * 1000).toISOString();
 }
 
-function canonicalHost(url: string): string {
+/** The API base as compared and shown: origin and path, no trailing slash. */
+function canonicalBase(url: string): string {
   try {
     const parsed = new URL(url);
-    return `${parsed.protocol}//${parsed.host}`.toLowerCase();
+    const path = parsed.pathname.replace(/\/+$/, '');
+    return `${parsed.protocol}//${parsed.host}`.toLowerCase() + path;
   } catch {
-    return url.trim().replace(/\/+$/, '').toLowerCase();
+    return url.trim().replace(/\/+$/, '');
   }
 }
 
@@ -109,12 +111,12 @@ async function request(
   apiUrl?: string
 ): Promise<unknown> {
   const { auth } = await deps.ensureCloudSession({ apiUrl: apiUrl ?? defaultApiUrl(), interactive: false });
-  // An explicit --api-url must be the host the stored login is for: a grant
-  // is never changed on another host than the one named.
-  if (apiUrl && canonicalHost(auth.apiUrl) !== canonicalHost(apiUrl)) {
+  // An explicit --api-url must be the API base the stored login is for: a
+  // grant is never changed on another deployment than the one named.
+  if (apiUrl && canonicalBase(auth.apiUrl) !== canonicalBase(apiUrl)) {
     throw new Error(
-      `Your Cloud login is for ${canonicalHost(auth.apiUrl)}, not ${canonicalHost(apiUrl)}. ` +
-        `Run \`agent-relay cloud login --api-url ${canonicalHost(apiUrl)} --force\` first.`
+      `Your Cloud login is for ${canonicalBase(auth.apiUrl)}, not ${canonicalBase(apiUrl)}. ` +
+        `Run \`agent-relay cloud login --api-url ${canonicalBase(apiUrl)} --force\` first.`
     );
   }
   const result = await deps.authorizedApiFetch(auth, path, init, { interactive: false });

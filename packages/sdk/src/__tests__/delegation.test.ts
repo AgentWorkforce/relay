@@ -230,7 +230,8 @@ describe('delegate approvals', () => {
         // As the core answers every route: `{"ok": true, "data": …}`.
         res.end(JSON.stringify({ ok: true, data: answer }));
       });
-      await new Promise<void>((resolve) => server!.listen(path, resolve));
+      // Where the SDK connects: the path itself, or on Windows the core's pipe.
+      await new Promise<void>((resolve) => server!.listen(sessionSocketEndpoint(path), resolve));
       return path;
     }
 
@@ -315,7 +316,7 @@ describe('delegate approvals', () => {
         : { ok: true, consumed: false, checked: { head_sha: sha } };
       res.end(JSON.stringify({ ok: true, data }));
     });
-    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+    await new Promise<void>((resolve) => server.listen(sessionSocketEndpoint(socketPath), resolve));
     try {
       await expect(
         redeemOwnerApproval('apv_7Q2abcdEF', { class: 'merge', target: 'acme/api#12' }, { socketPath })
