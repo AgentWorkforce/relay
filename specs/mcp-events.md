@@ -86,17 +86,20 @@ The inbox's MCP endpoint (`/t/<token>/mcp`) is now an Events server:
 - **One event type, `webhook.received`.** It has optional `event_type` (exact, or a prefix ending in `*`) and
   `mode` arguments.
 - **`events/poll`:**
-  - The cursor is `seq_<n>` over the inbox feed.
-  - `truncated: true` when posts after the cursor were pruned, or the cursor is not one the inbox issued.
+  - The cursor is `seq_<n>_<scope>` over the inbox feed; the scope ties it to one inbox, so a cursor from a
+    replaced inbox is refused (`truncated`) even when its seq exists in the new one.
+  - `truncated: true` when posts after the cursor were pruned, the `maxAgeMs` floor skipped matching posts, or
+    the cursor is not one the inbox issued.
   - `maxEvents`, `hasMore` and `nextPollMs` are supported.
-  - `maxAgeMs` with a `null` cursor reads back that far.
+  - `maxAgeMs` bounds a cursor replay and is ignored with a `null` cursor, as SEP-3415 requires.
 - **`events/stream`:**
   - An SSE response that replays the backlog, then follows the feed.
-  - `active`, `event`, `heartbeat` and `terminated` notifications carry `_meta.subscriptionId`.
+  - `active`, `event`, `heartbeat`, `error` and `terminated` notifications carry `_meta.subscriptionId`.
+  - `active` carries the position before the replay, never past posts not yet sent.
   - The heartbeat is clamped to 5–60 s.
   - The stream closes with a final result after `maxStreamMs` (5 min by default; hosts tune it with
-    `eventsStream`). It also closes when posts left the feed between reads, so the client resumes and is told
-    `truncated`.
+    `eventsStream`). When posts left the feed between reads it sends a fresh `active` with `truncated: true`
+    and continues. A failed store read is a recoverable `error`; `terminated` is only for an inbox that is gone.
 - **`events/subscribe` / `events/unsubscribe`** answer `Unsupported` (`-32026`), because the type offers poll
   and push only.
 - **Events reads are observer reads.** They never change a post's delivery state, so they never compete with

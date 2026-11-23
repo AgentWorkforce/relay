@@ -9,11 +9,13 @@
  * from a relay wake link or a hook listener nor hide posts from them. A
  * session should use one or the other, or it sees each post twice.
  *
- * The cursor is the post's `seq` (`seq_<n>`). The feed keeps the newest
- * `feedSize` posts, so a cursor older than the oldest kept post answers
- * `truncated: true` with a fresh cursor, as the extension requires.
+ * The cursor is the post's `seq` scoped to the inbox (`seq_<n>_<scope>`). The
+ * feed keeps the newest `feedSize` posts, so a cursor older than the oldest
+ * kept post answers `truncated: true` with a fresh cursor, as the extension
+ * requires.
  */
 import { EVENTS_SHIM_LIMITS } from './limits.js';
+import { sha256Hex } from './crypto.js';
 import { findShimByMcpToken, type EventsShimDeps } from './service.js';
 import type { ShimEvent, ShimRecord } from './types.js';
 import { VERIFICATION_MODES, type VerificationMode } from './types.js';
@@ -184,10 +186,11 @@ export async function handleEventsRequest(message: JsonRpcMessage, ctx: McpEvent
     case 'events/list':
       return rpcResult(id, { resultType: 'complete', events: [webhookReceivedEventType()] });
     case 'events/poll': {
-      const parsed = parseSubscription(params, ctx.headers, true);
+      const scope = await cursorScope(ctx.shim.id);
+      const parsed = parseSubscription(params, ctx.headers, true, scope);
       if (!parsed.ok) return rpcErrorResponse(id, parsed.code, parsed.message, parsed.data);
       await ctx.deps.store.touch(ctx.shim.id, clock(ctx.deps).toISOString(), true);
-      const page = await readPage(ctx.deps, ctx.shim.id, parsed.subscription);
+      const page = await readPage(ctx.deps, ctx.shim.id, scope, parsed.subscription);
       return rpcResult(id, {
         resultType: 'complete',
         events: page.events.map(occurrence),
@@ -198,9 +201,10 @@ export async function handleEventsRequest(message: JsonRpcMessage, ctx: McpEvent
       });
     }
     case 'events/stream': {
-      const parsed = parseSubscription(params, ctx.headers, false);
+      const scope = await cursorScope(ctx.shim.id);
+      const parsed = parseSubscription(params, ctx.headers, false, scope);
       if (!parsed.ok) return rpcErrorResponse(id, parsed.code, parsed.message, parsed.data);
-      return openStream(id, parsed.subscription, params.heartbeatMs, ctx);
+      return openStream(id, parsed.subscription, scope, params.heartbeatMs, ctx);
     }
     case 'events/subscribe':
     case 'events/unsubscribe':
@@ -224,6 +228,7 @@ interface Subscription {
   after: number | null;
   /** Set when the client's cursor could not be used: answer `truncated: true`. */
   cursorUnusable: boolean;
+  /** Replay floor: with a cursor, start no earlier than now minus this. Ignored without a cursor. */
   maxAgeMs?: number;
   maxEvents: number;
   eventType?: string;
@@ -237,7 +242,8 @@ type Parsed =
 function parseSubscription(
   params: Record<string, unknown>,
   headers: Pick<Headers, 'get'>,
-  poll: boolean
+  poll: boolean,
+  scope: string
 ): Parsed {
   if (params.name !== WEBHOOK_RECEIVED_EVENT) {
     return {
@@ -280,13 +286,14 @@ function parseSubscription(
   }
   const cursor = params.cursor ?? null;
   if (cursor !== null && typeof cursor !== 'string') return invalid('cursor must be a string or null.');
-  const after = cursor === null ? null : parseCursor(cursor);
+  const after = cursor === null ? null : parseCursor(cursor, scope);
   return {
     ok: true,
     subscription: {
       after: after ?? null,
       cursorUnusable: cursor !== null && after === undefined,
-      ...(maxAgeMs !== undefined ? { maxAgeMs: maxAgeMs as number } : {}),
+      // SEP-3415: maxAgeMs is ignored when cursor is null (null already means "now").
+      ...(maxAgeMs !== undefined && cursor !== null ? { maxAgeMs: maxAgeMs as number } : {}),
       maxEvents: Math.min(
         (maxEvents as number | undefined) ?? EVENTS_SHIM_LIMITS.feedSize,
         EVENTS_SHIM_LIMITS.feedSize
@@ -301,21 +308,33 @@ function invalid(message: string): Parsed {
   return { ok: false, code: MCP_EVENTS_ERRORS.INVALID_PARAMS, message };
 }
 
-/** `seq_<n>` → n; `undefined` when it is not one of this inbox's cursors. */
-function parseCursor(cursor: string): number | undefined {
-  const match = /^seq_(\d{1,15})$/.exec(cursor);
-  return match ? Number(match[1]) : undefined;
+/**
+ * A short tag that ties a cursor to one inbox. Seqs restart at 1 in every
+ * inbox, so a bare seq from a replaced inbox would look like a valid
+ * position in the new one and silently skip its posts.
+ */
+async function cursorScope(shimId: string): Promise<string> {
+  return (await sha256Hex(`mcp-events-cursor:${shimId}`)).slice(0, 12);
 }
 
-function cursorFor(seq: number): string {
-  return `seq_${seq}`;
+/** `seq_<n>_<scope>` → n; `undefined` when it is not one of this inbox's cursors. */
+function parseCursor(cursor: string, scope: string): number | undefined {
+  const match = /^seq_(\d{1,15})_([0-9a-f]{12})$/.exec(cursor);
+  return match && match[2] === scope ? Number(match[1]) : undefined;
+}
+
+function cursorFor(scope: string, seq: number): string {
+  return `seq_${seq}_${scope}`;
 }
 
 interface Page {
   events: ShimEvent[];
+  /** The position after this page: safe to persist once its events are handled. */
   cursor: string;
   /** The seq the cursor stands for. */
   head: number;
+  /** The seq delivery starts after (the position before this page's events). */
+  start: number;
   truncated: boolean;
   hasMore: boolean;
 }
@@ -323,13 +342,18 @@ interface Page {
 /**
  * Reads the posts after a subscription's position.
  *
- * Position: the client's cursor; `null` is "now", except that `maxAgeMs`
- * with a `null` cursor reads back that far. With both, the later wins.
- * `truncated` is set when posts after the cursor already left the feed, or
- * the cursor is not one this inbox issued (or is ahead of it, e.g. a cursor
- * from an inbox that was replaced).
+ * Position: the client's cursor, or "now" for a `null` cursor. With a cursor,
+ * `maxAgeMs` moves the start up to the first post no older than the floor.
+ * `truncated` is set when delivery starts later than the cursor: posts after
+ * it already left the feed, the `maxAgeMs` floor skipped matching posts, or
+ * the cursor is not one this inbox issued (or is ahead of it).
  */
-async function readPage(deps: EventsShimDeps, shimId: string, sub: Subscription): Promise<Page> {
+async function readPage(
+  deps: EventsShimDeps,
+  shimId: string,
+  scope: string,
+  sub: Subscription
+): Promise<Page> {
   const feed = (await deps.store.listRecent(shimId, EVENTS_SHIM_LIMITS.feedSize)).sort(
     (a, b) => a.seq - b.seq
   );
@@ -344,19 +368,26 @@ async function readPage(deps: EventsShimDeps, shimId: string, sub: Subscription)
     after = newest;
     truncated = true;
   } else if (sub.after === null) {
-    after = sub.maxAgeMs !== undefined ? 0 : newest;
+    after = newest;
   } else {
     after = sub.after;
     truncated = oldest !== undefined && oldest > after + 1;
+    if (sub.maxAgeMs !== undefined) {
+      const since = clock(deps).getTime() - sub.maxAgeMs;
+      for (const event of feed) {
+        if (event.seq <= after) continue;
+        if (Date.parse(event.receivedAt) >= since) break;
+        // The floor advanced past this post.
+        if (matches(event, sub)) truncated = true;
+        after = event.seq;
+      }
+    }
   }
-  const since = sub.maxAgeMs !== undefined ? clock(deps).getTime() - sub.maxAgeMs : Number.NEGATIVE_INFINITY;
-  const candidates = feed.filter(
-    (event) => event.seq > after && Date.parse(event.receivedAt) >= since && matches(event, sub)
-  );
+  const candidates = feed.filter((event) => event.seq > after && matches(event, sub));
   const events = candidates.slice(0, sub.maxEvents);
   const hasMore = candidates.length > events.length;
   const head = hasMore ? events.at(-1)!.seq : Math.max(newest, after);
-  return { events, cursor: cursorFor(head), head, truncated, hasMore };
+  return { events, cursor: cursorFor(scope, head), head, start: after, truncated, hasMore };
 }
 
 function matches(event: ShimEvent, sub: Subscription): boolean {
@@ -383,9 +414,13 @@ function occurrence(event: ShimEvent): Record<string, unknown> {
   };
 }
 
+/** Consecutive failed store reads after which an open stream closes so the client reconnects. */
+const STREAM_MAX_READ_FAILURES = 5;
+
 function openStream(
   id: string | number,
   sub: Subscription,
+  scope: string,
   heartbeatSuggestion: unknown,
   ctx: McpEventsContext
 ): Response {
@@ -402,7 +437,9 @@ function openStream(
   const encoder = new TextEncoder();
   const stop = new AbortController();
   const onAbort = () => stop.abort();
-  ctx.signal?.addEventListener('abort', onAbort, { once: true });
+  // The client may have gone while the request was being authenticated.
+  if (ctx.signal?.aborted) stop.abort();
+  else ctx.signal?.addEventListener('abort', onAbort, { once: true });
 
   const body = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -414,81 +451,103 @@ function openStream(
       };
       const notify = (method: string, params: Record<string, unknown>) =>
         send({ method, params: { ...params, _meta: meta } });
-      try {
-        // Everything already waiting is replayed like a poll, then the stream follows the feed.
-        const first = await readPage(ctx.deps, ctx.shim.id, sub);
-        let head = first.head;
-        notify('notifications/events/active', {
-          cursor: cursorFor(head),
-          truncated: first.truncated,
-          heartbeatMs,
-        });
-        let backlog = first;
-        for (;;) {
-          for (const event of backlog.events) {
-            notify('notifications/events/event', { ...occurrence(event), cursor: cursorFor(event.seq) });
-          }
-          head = backlog.head;
-          if (!backlog.hasMore) break;
-          backlog = await readPage(ctx.deps, ctx.shim.id, {
-            ...sub,
-            after: head,
-            cursorUnusable: false,
-            maxAgeMs: undefined,
-          });
-        }
-        const openedAt = Date.now();
-        let lastBeat = openedAt;
-        while (!stop.signal.aborted) {
-          await sleep(pollMs, stop.signal);
-          if (stop.signal.aborted) break;
-          const shim = await findShimByMcpToken(ctx.deps, ctx.mcpToken);
-          if (!shim) {
-            notify('notifications/events/terminated', {
-              error: {
-                code: MCP_EVENTS_ERRORS.NOT_FOUND,
-                message: 'Not found',
-                data: { reason: 'This inbox expired or its MCP URL was replaced.' },
-              },
-            });
-            break;
-          }
-          const page = await readPage(ctx.deps, ctx.shim.id, {
-            ...sub,
-            after: head,
-            cursorUnusable: false,
-            maxAgeMs: undefined,
-          });
-          if (page.truncated) {
-            // Posts left the feed between reads. Close; the client resumes with its
-            // last cursor and the new stream's `active` reports `truncated: true`.
-            send({ id, result: { resultType: 'complete', _meta: meta } });
-            break;
-          }
-          for (const event of page.events) {
-            notify('notifications/events/event', { ...occurrence(event), cursor: cursorFor(event.seq) });
-          }
-          if (page.events.length) head = page.events.at(-1)!.seq;
-          if (!page.hasMore) head = page.head;
-          const nowMs = Date.now();
-          if (nowMs - lastBeat >= heartbeatMs) {
-            notify('notifications/events/heartbeat', { cursor: cursorFor(head) });
-            await ctx.deps.store.touch(ctx.shim.id, clock(ctx.deps).toISOString(), true);
-            lastBeat = nowMs;
-          }
-          if (nowMs - openedAt >= maxStreamMs) {
-            send({ id, result: { resultType: 'complete', _meta: meta } });
-            break;
-          }
-        }
-      } catch (error) {
-        notify('notifications/events/terminated', {
+      const reportError = (error: unknown) =>
+        notify('notifications/events/error', {
           error: {
             code: -32603,
             message: 'Internal error',
             data: { reason: error instanceof Error ? error.message.slice(0, 200) : 'error' },
           },
         });
+      const complete = () => send({ id, result: { resultType: 'complete', _meta: meta } });
+      const deliver = (events: ShimEvent[]) => {
+        for (const event of events) {
+          notify('notifications/events/event', { ...occurrence(event), cursor: cursorFor(scope, event.seq) });
+        }
+      };
+      const resumeFrom = (head: number): Subscription => ({
+        ...sub,
+        after: head,
+        cursorUnusable: false,
+        maxAgeMs: undefined,
+      });
+      try {
+        if (stop.signal.aborted) return;
+        // Everything already waiting is replayed like a poll, then the stream follows the feed.
+        const first = await readPage(ctx.deps, ctx.shim.id, scope, sub);
+        // Announce the position before the replay, never past posts not yet sent: a client
+        // that keeps this cursor and drops before the replay arrives must get it again.
+        notify('notifications/events/active', {
+          cursor: cursorFor(scope, first.start),
+          truncated: first.truncated,
+          heartbeatMs,
+        });
+        let backlog = first;
+        let head: number;
+        for (;;) {
+          deliver(backlog.events);
+          head = backlog.head;
+          if (!backlog.hasMore) break;
+          backlog = await readPage(ctx.deps, ctx.shim.id, scope, resumeFrom(head));
+        }
+        const openedAt = Date.now();
+        let lastBeat = openedAt;
+        let failures = 0;
+        while (!stop.signal.aborted) {
+          await sleep(pollMs, stop.signal);
+          if (stop.signal.aborted) break;
+          let page: Page;
+          try {
+            const shim = await findShimByMcpToken(ctx.deps, ctx.mcpToken);
+            if (!shim) {
+              notify('notifications/events/terminated', {
+                error: {
+                  code: MCP_EVENTS_ERRORS.NOT_FOUND,
+                  message: 'Not found',
+                  data: { reason: 'This inbox expired or its MCP URL was replaced.' },
+                },
+              });
+              break;
+            }
+            page = await readPage(ctx.deps, ctx.shim.id, scope, resumeFrom(head));
+            failures = 0;
+          } catch (error) {
+            // A failed read is recoverable: the cursor does not move and the next read retries.
+            reportError(error);
+            failures += 1;
+            if (failures >= STREAM_MAX_READ_FAILURES) {
+              complete();
+              break;
+            }
+            continue;
+          }
+          if (page.truncated) {
+            // Posts left the feed between reads: say so with a fresh `active`, then carry on.
+            notify('notifications/events/active', {
+              cursor: cursorFor(scope, page.start),
+              truncated: true,
+              heartbeatMs,
+            });
+          }
+          deliver(page.events);
+          head = page.head;
+          const nowMs = Date.now();
+          if (nowMs - lastBeat >= heartbeatMs) {
+            notify('notifications/events/heartbeat', { cursor: cursorFor(scope, head) });
+            await ctx.deps.store
+              .touch(ctx.shim.id, clock(ctx.deps).toISOString(), true)
+              .catch(() => undefined);
+            lastBeat = nowMs;
+          }
+          if (nowMs - openedAt >= maxStreamMs) {
+            complete();
+            break;
+          }
+        }
+      } catch (error) {
+        // The opening read failed: report it and close, so the client reconnects with its cursor.
+        reportError(error);
+        complete();
       } finally {
         ctx.signal?.removeEventListener('abort', onAbort);
         try {

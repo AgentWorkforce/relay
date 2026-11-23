@@ -35,6 +35,13 @@ interface PollResult {
   nextPollMs: number;
 }
 
+/** The seq a cursor stands for; cursors are `seq_<n>_<inbox scope>`. */
+function seqOf(cursor: unknown): number {
+  const match = /^seq_(\d+)_[0-9a-f]{12}$/.exec(String(cursor));
+  if (!match) throw new Error(`not an inbox cursor: ${String(cursor)}`);
+  return Number(match[1]);
+}
+
 function createHarness(overrides: Partial<EventsShimHttpOptions> = {}) {
   const store = new MemoryEventsShimStore();
   let clock = new Date('2026-11-23T12:00:00.000Z');
@@ -129,6 +136,23 @@ function createHarness(overrides: Partial<EventsShimHttpOptions> = {}) {
 }
 
 /** Reads SSE frames from a stream until `until` accepts the frames read so far. */
+async function openTestStream(
+  h: ReturnType<typeof createHarness>,
+  mcpUrl: string,
+  id: string
+): Promise<Response> {
+  return h.app(mcpUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id,
+      method: 'events/stream',
+      params: { name: WEBHOOK_RECEIVED_EVENT, cursor: (await h.poll(mcpUrl)).cursor },
+    }),
+  });
+}
+
 async function readFrames(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   until: (frames: Array<Record<string, unknown>>) => boolean
@@ -201,7 +225,7 @@ describe('MCP Events server (events/*)', () => {
       name: WEBHOOK_RECEIVED_EVENT,
       data: { mode: 'open', verified: false, event_type: 'build.done' },
     });
-    expect(page.cursor).toBe('seq_2');
+    expect(seqOf(page.cursor)).toBe(2);
     expect(page.nextPollMs).toBeGreaterThan(0);
 
     const again = await h.poll(shim.mcp_url, { cursor: page.cursor });
@@ -227,17 +251,20 @@ describe('MCP Events server (events/*)', () => {
       arguments: { event_type: 'pull_request.*' },
     });
     expect(first.events.map((event) => event.data.event_type)).toEqual(['pull_request.opened']);
-    expect(first).toMatchObject({ hasMore: true, cursor: 'seq_1', nextPollMs: 0 });
+    expect(first).toMatchObject({ hasMore: true, nextPollMs: 0 });
+    expect(seqOf(first.cursor)).toBe(1);
     const second = await h.poll(shim.mcp_url, {
       cursor: first.cursor,
       maxEvents: 1,
       arguments: { event_type: 'pull_request.*' },
     });
     expect(second.events.map((event) => event.data.event_type)).toEqual(['pull_request.closed']);
-    expect(second).toMatchObject({ hasMore: false, cursor: 'seq_3' });
+    expect(second).toMatchObject({ hasMore: false });
+    expect(seqOf(second.cursor)).toBe(3);
 
     const verifiedOnly = await h.poll(shim.mcp_url, { cursor, arguments: { mode: 'bearer' } });
-    expect(verifiedOnly).toMatchObject({ events: [], cursor: 'seq_3', hasMore: false });
+    expect(verifiedOnly).toMatchObject({ events: [], hasMore: false });
+    expect(seqOf(verifiedOnly.cursor)).toBe(3);
   });
 
   it('reports truncated when posts after the cursor left the feed, or the cursor is not one it issued', async () => {
@@ -251,19 +278,34 @@ describe('MCP Events server (events/*)', () => {
     expect(late.events[0]!.data.seq).toBe(2);
 
     const foreign = await h.poll(shim.mcp_url, { cursor: 'historyId_99842' });
-    expect(foreign).toMatchObject({
-      truncated: true,
-      events: [],
-      cursor: `seq_${EVENTS_SHIM_LIMITS.feedSize + 1}`,
-    });
+    expect(foreign).toMatchObject({ truncated: true, events: [] });
+    expect(seqOf(foreign.cursor)).toBe(EVENTS_SHIM_LIMITS.feedSize + 1);
+  });
+
+  it('refuses a cursor from another inbox even when its seq exists here', async () => {
+    const h = createHarness();
+    const a = await h.create();
+    const b = await h.create();
+    const fromA = await h.poll(a.mcp_url);
+    await h.post(a.webhook_url, { n: 'a1' });
+    const aCursor = (await h.poll(a.mcp_url, { cursor: fromA.cursor })).cursor;
+    expect(seqOf(aCursor)).toBe(1);
+
+    await h.post(b.webhook_url, { n: 'b1' });
+    await h.post(b.webhook_url, { n: 'b2' });
+    const crossed = await h.poll(b.mcp_url, { cursor: aCursor });
+    expect(crossed).toMatchObject({ truncated: true, events: [] });
+    expect(seqOf(crossed.cursor)).toBe(2);
   });
 
   it('treats a cursor ahead of a new, empty inbox as foreign and still returns its first posts', async () => {
     const h = createHarness();
     const shim = await h.create();
 
-    const ahead = await h.poll(shim.mcp_url, { cursor: 'seq_50' });
-    expect(ahead).toMatchObject({ truncated: true, events: [], cursor: 'seq_0' });
+    const start = await h.poll(shim.mcp_url);
+    const ahead = await h.poll(shim.mcp_url, { cursor: start.cursor.replace(/^seq_\d+_/, 'seq_50_') });
+    expect(ahead).toMatchObject({ truncated: true, events: [] });
+    expect(seqOf(ahead.cursor)).toBe(0);
 
     await h.post(shim.webhook_url, { n: 1 });
     const next = await h.poll(shim.mcp_url, { cursor: ahead.cursor });
@@ -271,14 +313,30 @@ describe('MCP Events server (events/*)', () => {
     expect(next.truncated).toBe(false);
   });
 
-  it('reads back maxAgeMs from a null cursor', async () => {
+  it('ignores maxAgeMs with a null cursor (start from now), as SEP-3415 requires', async () => {
     const h = createHarness();
     const shim = await h.create();
+    await h.post(shim.webhook_url, { n: 'recent' });
+    const page = await h.poll(shim.mcp_url, { maxAgeMs: 5 * 60 * 1000 });
+    expect(page).toMatchObject({ events: [], truncated: false });
+    expect(seqOf(page.cursor)).toBe(1);
+  });
+
+  it('starts a cursor replay at the maxAgeMs floor and reports the skipped posts as truncated', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const { cursor } = await h.poll(shim.mcp_url);
     await h.post(shim.webhook_url, { n: 'old' });
     h.advance(10 * 60 * 1000);
     await h.post(shim.webhook_url, { n: 'recent' });
-    const page = await h.poll(shim.mcp_url, { maxAgeMs: 5 * 60 * 1000 });
+
+    const page = await h.poll(shim.mcp_url, { cursor, maxAgeMs: 5 * 60 * 1000 });
     expect(page.events.map((event) => JSON.parse(event.data.body).n)).toEqual(['recent']);
+    expect(page.truncated).toBe(true);
+
+    const wide = await h.poll(shim.mcp_url, { cursor, maxAgeMs: 60 * 60 * 1000 });
+    expect(wide.events.map((event) => JSON.parse(event.data.body).n)).toEqual(['old', 'recent']);
+    expect(wide.truncated).toBe(false);
   });
 
   it('refuses unknown event types, bad arguments, webhook delivery and a mismatched Mcp-Name', async () => {
@@ -331,24 +389,87 @@ describe('MCP Events server (events/*)', () => {
     expect(opened[0]).toMatchObject({
       method: 'notifications/events/active',
       params: {
-        cursor: 'seq_1',
         truncated: false,
         heartbeatMs: 5_000,
         _meta: { 'io.modelcontextprotocol/subscriptionId': 41 },
       },
     });
+    // `active` carries the position before the replay, so a client that drops now gets the backlog again.
+    expect(seqOf(opened[0]!.params?.cursor)).toBe(0);
     expect(opened[1]).toMatchObject({
       method: 'notifications/events/event',
-      params: { name: WEBHOOK_RECEIVED_EVENT, cursor: 'seq_1', data: { event_type: 'first' } },
+      params: { name: WEBHOOK_RECEIVED_EVENT, data: { event_type: 'first' } },
     });
+    expect(seqOf(opened[1]!.params?.cursor)).toBe(1);
 
     await h.post(shim.webhook_url, { type: 'second' });
     const next = await readFrames(reader, (frames) =>
       frames.some((frame) => frame.method === 'notifications/events/event')
     );
     const event = next.find((frame) => frame.method === 'notifications/events/event')!;
-    expect(event.params).toMatchObject({ cursor: 'seq_2', data: { event_type: 'second' } });
+    expect(event.params).toMatchObject({ data: { event_type: 'second' } });
+    expect(seqOf(event.params?.cursor)).toBe(2);
     controller.abort();
+    await reader.cancel().catch(() => undefined);
+  });
+
+  it('reports a failed store read mid-stream as a recoverable events/error and keeps delivering', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const reader = (await openTestStream(h, shim.mcp_url, 'sub-err')).body!.getReader();
+    await readFrames(reader, (frames) => frames.length >= 1);
+
+    const listRecent = h.store.listRecent.bind(h.store);
+    let failOnce = true;
+    h.store.listRecent = async (...args) => {
+      if (failOnce) {
+        failOnce = false;
+        throw new Error('connection reset');
+      }
+      return listRecent(...args);
+    };
+    const failed = await readFrames(reader, (frames) =>
+      frames.some((frame) => frame.method === 'notifications/events/error')
+    );
+    expect(failed.some((frame) => frame.method === 'notifications/events/terminated')).toBe(false);
+
+    await h.post(shim.webhook_url, { type: 'after-error' });
+    const next = await readFrames(reader, (frames) =>
+      frames.some((frame) => frame.method === 'notifications/events/event')
+    );
+    const event = next.find((frame) => frame.method === 'notifications/events/event')!;
+    expect(event.params).toMatchObject({ data: { event_type: 'after-error' } });
+    await reader.cancel().catch(() => undefined);
+  });
+
+  it('sends a fresh truncated active mid-stream when posts left the feed between reads, then carries on', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+    const reader = (await openTestStream(h, shim.mcp_url, 'sub-gap')).body!.getReader();
+    await readFrames(reader, (frames) => frames.length >= 1);
+
+    // Hold the stream's reads while more posts than the feed keeps arrive.
+    const listRecent = h.store.listRecent.bind(h.store);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let holding = true;
+    h.store.listRecent = async (...args) => {
+      if (holding) await gate;
+      return listRecent(...args);
+    };
+    const posting = (async () => {
+      for (let i = 0; i < EVENTS_SHIM_LIMITS.feedSize + 2; i += 1) await h.post(shim.webhook_url, { n: i });
+    })();
+    await posting;
+    holding = false;
+    release();
+
+    const frames = await readFrames(reader, (all) =>
+      all.some((frame) => frame.method === 'notifications/events/event')
+    );
+    const gap = frames.find((frame) => frame.method === 'notifications/events/active');
+    expect(gap?.params).toMatchObject({ truncated: true });
+    expect(frames.some((frame) => 'result' in frame)).toBe(false);
     await reader.cancel().catch(() => undefined);
   });
 

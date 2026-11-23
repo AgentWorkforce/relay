@@ -183,12 +183,15 @@ The MCP URL also speaks the MCP Events extension (`io.modelcontextprotocol/event
 
 - **`events/list`** offers one type, `webhook.received`. Its optional arguments are `event_type` (exact, or a prefix
   ending in `*`, such as `pull_request.*`) and `mode` (`open`, `github`, …).
-- **`events/poll`** takes a cursor (`null` means from now). It answers `events`, a `seq_<n>` cursor, `truncated`,
-  `hasMore` and `nextPollMs`. `truncated: true` means posts after your cursor already left the 50-post feed, or the
-  cursor was not issued by this inbox. `maxAgeMs` with a `null` cursor reads back that far.
+- **`events/poll`** takes a cursor (`null` means from now). It answers `events`, a cursor scoped to this inbox,
+  `truncated`, `hasMore` and `nextPollMs`. `truncated: true` means delivery starts later than your cursor: posts
+  after it already left the 50-post feed, the `maxAgeMs` floor skipped some, or the cursor was not issued by this
+  inbox. `maxAgeMs` bounds a cursor replay and is ignored with a `null` cursor.
 - **`events/stream`** answers with an SSE stream:
-  - It opens with `notifications/events/active`, replays posts after the cursor, then sends each new post as
-    `notifications/events/event`, plus heartbeats (5–60 s).
+  - It opens with `notifications/events/active` (whose cursor is the position before the replay), replays posts
+    after the cursor, then sends each new post as `notifications/events/event`, plus heartbeats (5–60 s).
+  - If posts leave the feed between reads it sends a fresh `active` with `truncated: true` and carries on. A
+    failed store read is a recoverable `notifications/events/error`.
   - After `eventsStream.maxStreamMs` (5 minutes by default) it ends with a final result. Send `events/stream` again
     with the last cursor.
 - **`events/subscribe`** answers `Unsupported`: this type is offered by poll and push only.
