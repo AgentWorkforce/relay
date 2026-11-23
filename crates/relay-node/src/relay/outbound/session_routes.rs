@@ -17,6 +17,7 @@ pub const SESSION_ROUTES: &[(&str, &str)] = &[
     ("GET", "/messages"),
     ("POST", "/send"),
     ("POST", "/delegation/redeem"),
+    ("POST", "/delegation/withdraw"),
     ("POST", "/register"),
     ("POST", "/channels"),
     ("POST", "/channels/subscribe"),

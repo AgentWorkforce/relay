@@ -6,7 +6,8 @@
 //! `off`, a delegate's 1:1 direct message `approve <ref>` or `deny <ref>`
 //! answers a spawned session's open request when Agent Relay Cloud attests
 //! its owner approval (`relay::delegation`) as exactly one action
-//! `{class: "prompt_approval", target: "<session agent id>:<ref>"}`, with
+//! `{class: "prompt_approval", target: "<session agent id>:<ref>:approve"}`
+//! (or `:deny`, matching the reply's verb; no conditions), with
 //! the owner's own standing (never a code owner's), from the sender itself,
 //! for an owner who is this computer's signed-in person (by Cloud human id).
 //! It answers what a leader may (`Approver::Leader`), Codex's requests for
@@ -48,8 +49,9 @@ pub(crate) fn delegate_note(registration: &Registration, reference: &str) -> Str
     format!(
         "As a delegate of the machine owner you may answer: send `approve {reference}` or \
          `deny {reference}` with an owner_approval whose one action is \
-         {{\"class\":\"prompt_approval\",\"target\":\"{}:{reference}\"}}.",
-        registration.agent_id
+         {{\"class\":\"prompt_approval\",\"target\":\"{id}:{reference}:approve\"}} \
+         (`{id}:{reference}:deny` to deny), with no conditions.",
+        id = registration.agent_id
     )
 }
 
@@ -144,20 +146,17 @@ impl Core {
             .attest_delegation(registration, delivery, &token)
             .await?;
         let claims = &attestation.claims;
-        let target = format!("{}:{reference}", registration.agent_id);
+        // The decision is bound in the target: `…:approve` answers only an
+        // `approve <ref>` reply, `…:deny` only a `deny <ref>` one.
+        let verb = match parse_reply(delivery.text.as_deref().unwrap_or_default()) {
+            Some((ReplyDecision::Approve, _)) => "approve",
+            Some((ReplyDecision::Deny, _)) => "deny",
+            _ => return None,
+        };
+        let target = format!("{}:{reference}:{verb}", registration.agent_id);
         let [action] = claims.actions.as_slice() else {
             return None;
         };
-        let now = crate::relay::state::now_ms() / 1000;
-        // Only `not_before` is valid on a prompt approval; it must have passed.
-        let conditions_hold = action.conditions.iter().all(|condition| {
-            condition.kind == "not_before"
-                && condition
-                    .at
-                    .as_deref()
-                    .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
-                    .is_some_and(|at| at.timestamp() <= now)
-        });
         // Only a delegate of the person who owns this computer answers its
         // prompts (§9.3): the owner Cloud attests must be the signed-in
         // machine owner, by Cloud human id, with their own standing. An
@@ -173,7 +172,8 @@ impl Core {
             || claims.standing != "own_owner"
             || machine_owner.as_deref() != Some(claims.owner_id.as_str())
             || claims.delegate_agent_id != sender_id
-            || !conditions_hold
+            // A prompt approval takes no conditions.
+            || !action.conditions.is_empty()
         {
             crate::relay::diagnostics::write(format_args!(
                 "relay: delegate approval: message {}: not a prompt approval of {target} \

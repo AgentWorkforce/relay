@@ -485,6 +485,10 @@ impl Outbound {
             ("POST", "/attachments/fetch") => self.fetch_attachment(pid, uid, &request.query).await,
             ("GET", "/messages") => self.read_message(pid, uid, &request.query).await,
             ("POST", "/send") => self.send_route(pid, uid, request).await,
+            ("POST", "/delegation/withdraw") => {
+                self.withdraw_delegation_route(pid, uid, &request.query)
+                    .await
+            }
             ("POST", "/delegation/redeem") => {
                 self.redeem_delegation_route(pid, uid, &request.query).await
             }

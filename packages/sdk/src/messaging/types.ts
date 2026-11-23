@@ -255,6 +255,7 @@ export type RelayMessageTarget =
 /** Action classes a delegate's owner approval may name (wire contract v1). */
 export type RelayDelegationActionClass =
   | 'merge'
+  /** Pull request operations: target `owner/repo#N:<op>` (`open`, `close`, `reopen`, `label=<name>`, `unlabel=<name>`, `request_review=<login>`, `rerun_ci`, `comment`). */
   | 'pr_ops'
   | 'deploy'
   | 'release'
@@ -262,6 +263,7 @@ export type RelayDelegationActionClass =
   | 'destructive'
   | 'spend'
   | 'external_comms'
+  /** Approve or deny one pending core request: target `<session agent id>:<ref>:approve` or `:deny`; no conditions. */
   | 'prompt_approval'
   /**
    * Change one setting of the recipient session: target
@@ -316,8 +318,8 @@ export interface RelayMessageDelegation {
   approvalId: string;
   actions: RelayDelegationAction[];
   singleUse: boolean;
-  /** Whether the agent must redeem right before acting. */
-  redeemFirst: boolean;
+  /** The owner's words as the delegate quoted them (signed); absent once redacted. */
+  quote?: string;
   /** When the attestation expires (ISO 8601). */
   expiresAt: string;
   jws: string;

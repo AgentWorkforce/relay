@@ -336,7 +336,7 @@ async fn a_delegate_approves_and_denies_codex_and_claude_by_default() {
     const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3be001";
     let codex = f.spawned("codex", THREAD);
     let first = codex_request(THREAD, 901);
-    f.attests(&format!("{}:{}", f.child.id, first.reference));
+    f.attests(&format!("{}:{}:approve", f.child.id, first.reference));
     let approve = approval_dm(
         "approve",
         &f.delegate,
@@ -356,7 +356,7 @@ async fn a_delegate_approves_and_denies_codex_and_claude_by_default() {
     assert_eq!(body["accept"], "code_owners");
 
     let second = codex_request(THREAD, 902);
-    f.attests(&format!("{}:{}", f.child.id, second.reference));
+    f.attests(&format!("{}:{}:deny", f.child.id, second.reference));
     let deny = approval_dm("deny", &f.delegate, &format!("deny {}", second.reference));
     assert!(settled(f.core.owner_reply(&codex, &deny).await).ends_with("Answered"));
     let answer = codex_drive::recorded_answer(&second.reference).unwrap();
@@ -365,7 +365,7 @@ async fn a_delegate_approves_and_denies_codex_and_claude_by_default() {
     const SESSION: &str = "a1d0c2e4-0000-4000-8000-00000000e001";
     let claude = f.spawned("claude", SESSION);
     let notice = claude_request(SESSION, "d1");
-    f.attests(&format!("{}:{}", f.child.id, notice.reference));
+    f.attests(&format!("{}:{}:approve", f.child.id, notice.reference));
     let approve = approval_dm(
         "claude",
         &f.delegate,
@@ -389,11 +389,11 @@ async fn an_attestation_for_anything_else_answers_nothing() {
     let notice = codex_request(THREAD, 911);
     let other = codex_request(THREAD, 912);
     let text = format!("approve {}", notice.reference);
-    let exact = format!("{}:{}", f.child.id, notice.reference);
+    let exact = format!("{}:{}:approve", f.child.id, notice.reference);
     let mut cases = vec![
         // Another request, another session, a wildcard.
-        f.claims(&format!("{}:{}", f.child.id, other.reference)),
-        f.claims(&format!("agent_other:{}", notice.reference)),
+        f.claims(&format!("{}:{}:approve", f.child.id, other.reference)),
+        f.claims(&format!("agent_other:{}:approve", notice.reference)),
         f.claims(&format!("{}:*", f.child.id)),
     ];
     // A code owner's standing never answers a prompt.
@@ -406,7 +406,7 @@ async fn an_attestation_for_anything_else_answers_nothing() {
     cases.push(merge);
     let mut two = f.claims(&exact);
     two["actions"] = json!([{"class": "prompt_approval", "target": exact},
-        {"class": "prompt_approval", "target": format!("{}:{}", f.child.id, other.reference)}]);
+        {"class": "prompt_approval", "target": format!("{}:{}:approve", f.child.id, other.reference)}]);
     cases.push(two);
     // A not_before that has not passed.
     let mut later = f.claims(&exact);
@@ -426,13 +426,36 @@ async fn an_attestation_for_anything_else_answers_nothing() {
     let reply = approval_dm("none", &f.delegate, &text);
     assert!(not_one(f.core.owner_reply(&registration, &reply).await));
     assert!(codex_drive::has_pending(THREAD, &notice.reference));
-    // A not_before that has passed answers.
+    // A prompt approval takes no conditions, not even one that has passed.
     let mut passed = f.claims(&exact);
     passed["actions"] = json!([{"class": "prompt_approval", "target": exact,
         "conditions": [{"type": "not_before", "at": "2020-01-01T00:00:00Z"}]}]);
     f.attests_claims(passed);
     let reply = approval_dm("passed", &f.delegate, &text);
-    assert!(settled(f.core.owner_reply(&registration, &reply).await).ends_with("Answered"));
+    assert!(not_one(f.core.owner_reply(&registration, &reply).await));
+    // The decision is bound in the target: an `approve` reply under a
+    // `:deny` target answers nothing, and the reverse.
+    f.attests(&format!("{}:{}:deny", f.child.id, notice.reference));
+    let reply = approval_dm("mismatch", &f.delegate, &text);
+    assert!(not_one(f.core.owner_reply(&registration, &reply).await));
+    let deny = approval_dm(
+        "mismatch-deny",
+        &f.delegate,
+        &format!("deny {}", notice.reference),
+    );
+    f.attests(&exact);
+    assert!(not_one(f.core.owner_reply(&registration, &deny).await));
+    // The bare `<agent>:<ref>` form of the earlier contract answers nothing.
+    f.attests(&format!("{}:{}", f.child.id, notice.reference));
+    assert!(not_one(
+        f.core
+            .owner_reply(&registration, &approval_dm("bare", &f.delegate, &text))
+            .await
+    ));
+    assert!(codex_drive::has_pending(THREAD, &notice.reference));
+    // The matching verb answers.
+    f.attests(&format!("{}:{}:deny", f.child.id, notice.reference));
+    assert!(settled(f.core.owner_reply(&registration, &deny).await).ends_with("Answered"));
 }
 
 #[tokio::test]
@@ -442,7 +465,7 @@ async fn without_an_owner_approval_or_with_a_setting_off_cloud_is_never_asked() 
     let registration = f.spawned("codex", THREAD);
     let notice = codex_request(THREAD, 921);
     let text = format!("approve {}", notice.reference);
-    f.attests(&format!("{}:{}", f.child.id, notice.reference));
+    f.attests(&format!("{}:{}:approve", f.child.id, notice.reference));
     let mut plain = approval_dm("plain", &f.delegate, &text);
     plain.has_owner_approval = false;
     assert!(not_one(f.core.owner_reply(&registration, &plain).await));
@@ -479,7 +502,7 @@ async fn a_delegate_answers_extra_permissions_but_choices_and_dialogs_stay_with_
             "params": {"threadId": THREAD, "permissions": {"network": true}}}),
     );
     assert!(permissions.approvable);
-    f.attests(&format!("{}:{}", f.child.id, permissions.reference));
+    f.attests(&format!("{}:{}:approve", f.child.id, permissions.reference));
     let reply = approval_dm(
         "perm",
         &f.delegate,
@@ -502,7 +525,7 @@ async fn a_delegate_answers_extra_permissions_but_choices_and_dialogs_stay_with_
                     {"label": "Cancel", "description": "Stop"}]}]
         }}),
     );
-    f.attests(&format!("{}:{}", f.child.id, question.reference));
+    f.attests(&format!("{}:{}:approve", f.child.id, question.reference));
     for (id, text) in [
         ("choose", format!("choose {} 1", question.reference)),
         ("approve-q", format!("approve {}", question.reference)),
@@ -523,7 +546,7 @@ async fn never_the_session_its_spawner_or_a_session_taken_over() {
     let registration = f.spawned("codex", THREAD);
     let notice = codex_request(THREAD, 941);
     let text = format!("approve {}", notice.reference);
-    let mut own = f.claims(&format!("{}:{}", f.child.id, notice.reference));
+    let mut own = f.claims(&format!("{}:{}:approve", f.child.id, notice.reference));
     own["delegate_agent_id"] = json!(f.child.id);
     f.attests_claims(own);
     assert!(not_one(
@@ -531,7 +554,7 @@ async fn never_the_session_its_spawner_or_a_session_taken_over() {
             .owner_reply(&registration, &approval_dm("self", &f.child, &text))
             .await
     ));
-    let mut spawner = f.claims(&format!("{}:{}", f.child.id, notice.reference));
+    let mut spawner = f.claims(&format!("{}:{}:approve", f.child.id, notice.reference));
     spawner["delegate_agent_id"] = json!(f.requester.id);
     f.attests_claims(spawner);
     f.core
@@ -543,7 +566,7 @@ async fn never_the_session_its_spawner_or_a_session_taken_over() {
             .owner_reply(&registration, &approval_dm("spawner", &f.requester, &text))
             .await
     ));
-    f.attests(&format!("{}:{}", f.child.id, notice.reference));
+    f.attests(&format!("{}:{}:approve", f.child.id, notice.reference));
     let mut taken_over = registration.clone();
     taken_over.spawn.as_mut().unwrap().taken_over_at = Some("2026-10-28T01:00:00Z".into());
     assert!(not_one(
@@ -561,7 +584,7 @@ async fn the_first_answer_counts_between_owner_and_delegate() {
     let registration = f.spawned("codex", THREAD);
     let notice = codex_request(THREAD, 951);
     let text = format!("approve {}", notice.reference);
-    f.attests(&format!("{}:{}", f.child.id, notice.reference));
+    f.attests(&format!("{}:{}:approve", f.child.id, notice.reference));
     assert!(settled(
         f.core
             .owner_reply(&registration, &approval_dm("first", &f.delegate, &text))
@@ -621,7 +644,8 @@ async fn the_delegates_cloud_names_get_the_notice_with_how_to_answer() {
     let text = copy.body["text"].as_str().unwrap();
     assert!(
         text.ends_with(&format!(
-            "{{\"class\":\"prompt_approval\",\"target\":\"{}:{}\"}}.",
+            "{{\"class\":\"prompt_approval\",\"target\":\"{0}:{1}:approve\"}} \
+             (`{0}:{1}:deny` to deny), with no conditions.",
             f.child.id, notice.reference
         )),
         "{text}"
@@ -725,7 +749,7 @@ async fn under_an_organization_hold_only_an_admin_delegate_answers() {
     let registration = f.spawned("codex", THREAD);
     let notice = codex_request(THREAD, 991);
     let text = format!("approve {}", notice.reference);
-    f.attests(&format!("{}:{}", f.child.id, notice.reference));
+    f.attests(&format!("{}:{}:approve", f.child.id, notice.reference));
     let addressed = |id: &str| Delivery {
         sender_address: Some("assistant@desk".into()),
         ..approval_dm(id, &f.delegate, &text)
@@ -752,7 +776,7 @@ async fn a_gate_only_install_never_lets_a_delegate_answer() {
     const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3be011";
     let registration = f.spawned("codex", THREAD);
     let notice = codex_request(THREAD, 995);
-    f.attests(&format!("{}:{}", f.child.id, notice.reference));
+    f.attests(&format!("{}:{}:approve", f.child.id, notice.reference));
     let mut workspace = f.core.workspace().unwrap();
     workspace.gate_url = Some(workspace.base_url.clone());
     *f.core.workspace.lock().unwrap() = Some(workspace);
@@ -772,7 +796,7 @@ async fn only_a_delegate_of_this_computers_signed_in_owner_answers() {
     let registration = f.spawned("codex", THREAD);
     let notice = codex_request(THREAD, 997);
     let text = format!("approve {}", notice.reference);
-    let exact = format!("{}:{}", f.child.id, notice.reference);
+    let exact = format!("{}:{}:approve", f.child.id, notice.reference);
 
     // A code owner's standing, though the owner is this computer's.
     let mut code_owner = f.claims(&exact);
@@ -882,7 +906,7 @@ async fn a_conversation_with_a_third_participant_is_not_one_to_one() {
     const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3be014";
     let registration = f.spawned("codex", THREAD);
     let notice = codex_request(THREAD, 999);
-    f.attests(&format!("{}:{}", f.child.id, notice.reference));
+    f.attests(&format!("{}:{}:approve", f.child.id, notice.reference));
     let reply = approval_dm(
         "shared",
         &f.delegate,

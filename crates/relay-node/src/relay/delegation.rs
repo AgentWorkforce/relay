@@ -70,6 +70,10 @@ pub const CLASSES: [&str; 10] = [
     CONFIG_CHANGE,
 ];
 
+/// The class of operations on a pull request, targeting
+/// `owner/repo#N:<op>`.
+pub const PR_OPS: &str = "pr_ops";
+
 /// The class whose one action changes one setting of the recipient session
 /// (`<agent id>:<setting>=<value>`, exact): single use, redeemed right
 /// before the agent makes the change itself. The node never applies it.
@@ -280,6 +284,39 @@ impl Action {
             .then_some((agent, setting, value))
     }
 
+    /// A `pr_ops` action's target as (pull request, operation in words):
+    /// `owner/repo#N:<op>`, `<op>` one of `open`, `close`, `reopen`,
+    /// `label=<name>`, `unlabel=<name>`, `request_review=<login>`,
+    /// `rerun_ci` or `comment`. `None` for another class or a malformed
+    /// target.
+    pub fn pr_op(&self) -> Option<(&str, String)> {
+        if self.class != PR_OPS {
+            return None;
+        }
+        let (pull, op) = self.target.rsplit_once(':')?;
+        let (repo, number) = pull.split_once('#')?;
+        if !repo.contains('/') || number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let named = |value: &str| {
+            !value.is_empty() && !value.chars().any(|c| c.is_whitespace() || c.is_control())
+        };
+        let words = match op.split_once('=') {
+            None => match op {
+                "open" | "close" | "reopen" | "comment" => op.to_string(),
+                "rerun_ci" => "re-run CI".to_string(),
+                _ => return None,
+            },
+            Some(("label", name)) if named(name) => format!("label {name}"),
+            Some(("unlabel", name)) if named(name) => format!("unlabel {name}"),
+            Some(("request_review", login)) if named(login) => {
+                format!("request review from {login}")
+            }
+            Some(_) => return None,
+        };
+        Some((pull, words))
+    }
+
     /// The action in words, as the delegate line lists it: `merge X if CI
     /// is green and head is 3f2a1c9e`, or for a `config_change`, `change
     /// <setting> to <value> on @<agent id>`.
@@ -292,7 +329,10 @@ impl Action {
                 one_line(value),
                 one_line(agent)
             ),
-            None => format!("{} {}", one_line(&self.class), one_line(&self.target)),
+            None => match self.pr_op() {
+                Some((pull, op)) => format!("{} on {}", one_line(&op), one_line(pull)),
+                None => format!("{} {}", one_line(&self.class), one_line(&self.target)),
+            },
         };
         let conditions: Vec<String> = self
             .conditions
@@ -327,6 +367,11 @@ pub struct Claims {
     #[serde(default = "own_owner")]
     pub standing: String,
     pub single_use: bool,
+    /// The owner's words as the delegate quoted them, or `None` once
+    /// redacted. Signed, but never printed in the delegate line: the
+    /// message's own text carries it.
+    #[serde(default)]
+    pub quote: Option<String>,
     pub iat: i64,
     pub exp: i64,
     pub jti: String,
@@ -337,17 +382,6 @@ fn own_owner() -> String {
 }
 
 impl Claims {
-    /// Whether the agent must redeem before acting: a single-use approval,
-    /// or an action with conditions.
-    pub fn redeem_first(&self) -> bool {
-        self.single_use
-            || self.changes_config()
-            || self
-                .actions
-                .iter()
-                .any(|action| !action.conditions.is_empty())
-    }
-
     /// Whether any action is a `config_change` (always single use).
     pub fn changes_config(&self) -> bool {
         self.actions
@@ -488,6 +522,10 @@ pub fn verify(jws: &str, keys: &KeySet, expected: Expected<'_>) -> Result<Claims
                 && action.conditions.len() <= MAX_CONDITIONS
                 && action.conditions.iter().all(Condition::is_valid)
                 && (action.class != CONFIG_CHANGE || action.config_change().is_some())
+                && (action.class != PR_OPS || action.pr_op().is_some())
+                && (action.class != PROMPT_APPROVAL || action.conditions.is_empty())
+                && (action.class != CONFIG_CHANGE
+                    || action.conditions.iter().all(|c| c.kind == "not_before"))
         });
     if claims.v != 1
         || !matches!(claims.tier.as_str(), "D" | "O")
@@ -656,8 +694,13 @@ pub fn owner_approval_json(raw: &str) -> Result<serde_json::Map<String, Value>, 
 /// What a redeem came to, as the session socket answers it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Redeemed {
-    /// Met: `consumed` when a single-use approval was used up by it.
-    Ok { consumed: bool },
+    /// Met: `consumed` when a single-use approval was used up by it;
+    /// `checked`, for a pull request, the commit Cloud checked
+    /// (`{head_sha}`), to pin the merge to.
+    Ok {
+        consumed: bool,
+        checked: Option<Value>,
+    },
     /// Cloud's reason code, or `unavailable`; with `condition_unmet`, the
     /// conditions that do not hold yet (the approval is not consumed).
     Refused { reason: String, unmet: Vec<Value> },
@@ -673,7 +716,11 @@ impl Redeemed {
 
     pub fn to_value(&self) -> Value {
         match self {
-            Redeemed::Ok { consumed } => json!({"ok": true, "consumed": consumed}),
+            Redeemed::Ok {
+                consumed,
+                checked: Some(checked),
+            } => json!({"ok": true, "consumed": consumed, "checked": checked}),
+            Redeemed::Ok { consumed, .. } => json!({"ok": true, "consumed": consumed}),
             Redeemed::Refused { reason, unmet } if unmet.is_empty() => {
                 json!({"ok": false, "reason": reason})
             }
@@ -883,8 +930,17 @@ impl Core {
         match self.plugins.cloud.request("POST", path, Some(body)).await {
             Ok(answer) if answer["ok"].as_bool() == Some(true) => {
                 log(format_args!("redeemed approval {approval_id}"));
+                // Only a full commit id is passed on as what was checked.
+                let checked = answer["checked"]["head_sha"]
+                    .as_str()
+                    .filter(|sha| {
+                        sha.len() == 40
+                            && sha.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+                    })
+                    .map(|sha| json!({"head_sha": sha}));
                 Redeemed::Ok {
                     consumed: answer["consumed"].as_bool() == Some(true),
+                    checked,
                 }
             }
             Ok(answer) => {
@@ -923,6 +979,54 @@ impl Core {
                 Redeemed::refused("refused")
             }
             Err(_) => unavailable(),
+        }
+    }
+
+    /// Withdraws approval `approval_id`, which `registration`'s own agent
+    /// sent as a delegate (`POST /messaging/delegation/withdraw`): narrowing
+    /// only, for a later "no" from the owner. `{"ok":true}` or
+    /// `{"ok":false,"reason":…}`, `unavailable` when Cloud cannot be asked.
+    pub(crate) async fn withdraw_delegation(
+        &self,
+        registration: &Registration,
+        token: &Secret,
+        approval_id: &str,
+    ) -> Value {
+        let refused = |reason: &str| json!({"ok": false, "reason": reason});
+        if self.delegation_unavailable().is_some() {
+            return refused("unavailable");
+        }
+        let Some(account) = self.plugins.cloud.account() else {
+            return refused("unavailable");
+        };
+        let path = format!(
+            "/workspaces/{}/messaging/delegation/withdraw",
+            segment(&account.workspace_id)
+        );
+        let body = json!({
+            "delegate_agent_id": registration.agent_id,
+            "delegate_token": token.expose(),
+            "approval_id": approval_id,
+        });
+        match self.plugins.cloud.request("POST", path, Some(body)).await {
+            Ok(answer) if answer["ok"].as_bool() == Some(true) => {
+                log(format_args!("withdrew approval {approval_id}"));
+                json!({"ok": true})
+            }
+            Ok(answer) => refused(
+                answer["reason"]
+                    .as_str()
+                    .filter(|reason| {
+                        !reason.is_empty()
+                            && reason.len() <= 64
+                            && reason.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+                    })
+                    .unwrap_or("refused"),
+            ),
+            Err(CloudError::Status { status, .. }) if (400..500).contains(&status) => {
+                refused("refused")
+            }
+            Err(_) => refused("unavailable"),
         }
     }
 }

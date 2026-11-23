@@ -126,8 +126,32 @@ function validAction(action: unknown): action is RelayDelegationAction {
     Array.isArray(conditions) &&
     conditions.length <= 5 &&
     conditions.every(validCondition) &&
-    (a.class !== 'config_change' || parseConfigChangeTarget(a.target) !== undefined)
+    (a.class !== 'config_change' || parseConfigChangeTarget(a.target) !== undefined) &&
+    (a.class !== 'config_change' ||
+      conditions.every((c) => (c as Record<string, unknown>).type === 'not_before')) &&
+    (a.class !== 'prompt_approval' || (conditions.length === 0 && PROMPT_TARGET.test(a.target))) &&
+    (a.class !== 'pr_ops' || parsePrOpsTarget(a.target) !== undefined)
   );
+}
+
+const PROMPT_TARGET = /^[^:\s]+:[0-9a-f]{16}:(approve|deny)$/;
+
+/**
+ * A `pr_ops` target as its parts.
+ * @param target - `owner/repo#N:<op>`, `<op>` one of `open`, `close`, `reopen`,
+ *   `label=<name>`, `unlabel=<name>`, `request_review=<login>`, `rerun_ci`, `comment`
+ * @returns The pull request and operation, or `undefined` when malformed
+ */
+export function parsePrOpsTarget(target: string): { pull: string; op: string } | undefined {
+  const colon = target.lastIndexOf(':');
+  if (colon < 0) return undefined;
+  const pull = target.slice(0, colon);
+  const op = target.slice(colon + 1);
+  if (!/^[^\s/#]+\/[^\s/#]+#\d+$/.test(pull)) return undefined;
+  const ok =
+    ['open', 'close', 'reopen', 'rerun_ci', 'comment'].includes(op) ||
+    /^(label|unlabel|request_review)=[^\s]+$/.test(op);
+  return ok ? { pull, op } : undefined;
 }
 
 /**
@@ -230,9 +254,7 @@ export function verifyDelegationAttestation(
     approvalId: claims.approval_id,
     actions,
     singleUse,
-    redeemFirst:
-      singleUse ||
-      actions.some((action) => action.class === 'config_change' || (action.conditions?.length ?? 0) > 0),
+    ...(typeof claims.quote === 'string' ? { quote: claims.quote } : {}),
     expiresAt: new Date(exp * 1000).toISOString(),
     jws,
   };
@@ -263,8 +285,8 @@ export function withVerifiedDelegation(
 
 /**
  * Whether a verified, unexpired delegation covers exactly this class and
- * target. Matching does not redeem the approval: when `redeemFirst` is set,
- * call {@link redeemOwnerApproval} right before acting.
+ * target. Matching does not redeem the approval: call
+ * {@link redeemOwnerApproval} right before every action.
  * @param message - A message whose `delegation` was set by {@link withVerifiedDelegation}
  * @param action - The exact class and target about to be acted on
  * @param now - Milliseconds since the epoch; defaults to `Date.now()`
@@ -327,7 +349,8 @@ export function sessionSocketEndpoint(path: string, platform: NodeJS.Platform = 
 
 /** What redeeming an approval came to. */
 export type RelayRedeemResult =
-  { ok: true; consumed: boolean } | { ok: false; reason: string; unmet?: unknown[] };
+  | { ok: true; consumed: boolean; checked?: { head_sha: string } }
+  | { ok: false; reason: string; unmet?: unknown[] };
 
 export interface RelayRedeemOptions {
   /**
@@ -358,12 +381,37 @@ export async function redeemOwnerApproval(
     throw new Error('redeemOwnerApproval needs socketPath or AGENT_RELAY_SOCKET: the node session socket.');
   }
   const query = new URLSearchParams({ approval: approvalId, class: action.class, target: action.target });
+  const answer = await postSessionSocket(socketPath, `/delegation/redeem?${query.toString()}`);
+  if (answer.ok === true) {
+    const checked = answer.checked as Record<string, unknown> | undefined;
+    const sha = checked && typeof checked.head_sha === 'string' ? checked.head_sha : undefined;
+    return {
+      ok: true,
+      consumed: answer.consumed === true,
+      ...(sha && /^[0-9a-f]{40}$/.test(sha) ? { checked: { head_sha: sha } } : {}),
+    };
+  }
+  return {
+    ok: false,
+    reason: typeof answer.reason === 'string' ? answer.reason : 'refused',
+    ...(Array.isArray(answer.unmet) ? { unmet: answer.unmet } : {}),
+  };
+}
+
+/**
+ * POSTs to the node's session socket and unwraps its `{"ok": true, "data": …}` envelope.
+ * @param socketPath - The session socket path
+ * @param path - The route and query
+ * @returns The route's answer (`data`)
+ */
+async function postSessionSocket(socketPath: string, path: string): Promise<Record<string, unknown>> {
+  const route = path.split('?')[0];
   const body = await new Promise<string>((resolve, reject) => {
     const req = httpRequest(
       {
         socketPath: sessionSocketEndpoint(socketPath),
         method: 'POST',
-        path: `/delegation/redeem?${query.toString()}`,
+        path,
         headers: { 'content-length': 0 },
       },
       (res) => {
@@ -372,7 +420,7 @@ export async function redeemOwnerApproval(
         res.on('end', () => {
           const text = Buffer.concat(chunks).toString('utf8');
           if ((res.statusCode ?? 500) >= 400) {
-            reject(new Error(`redeem refused (${res.statusCode}): ${text}`));
+            reject(new Error(`${route} refused (${res.statusCode}): ${text}`));
           } else {
             resolve(text);
           }
@@ -383,18 +431,34 @@ export async function redeemOwnerApproval(
     req.on('error', reject);
     req.end();
   });
-  // The socket wraps every answer as `{"ok": true, "data": …}`; the redeem's
+  // The socket wraps every answer as `{"ok": true, "data": …}`; the route's
   // own `ok` is inside `data`.
   const envelope = JSON.parse(body) as Record<string, unknown>;
   const data = envelope.data;
   if (envelope.ok !== true || !data || typeof data !== 'object') {
-    throw new Error(`redeem answered without a result: ${body}`);
+    throw new Error(`${route} answered without a result: ${body}`);
   }
-  const answer = data as Record<string, unknown>;
-  if (answer.ok === true) return { ok: true, consumed: answer.consumed === true };
-  return {
-    ok: false,
-    reason: typeof answer.reason === 'string' ? answer.reason : 'refused',
-    ...(Array.isArray(answer.unmet) ? { unmet: answer.unmet } : {}),
-  };
+  return data as Record<string, unknown>;
+}
+
+/**
+ * Withdraws an approval this session's own agent sent as a delegate (narrowing
+ * only, for a later "no" from the owner): `POST /delegation/withdraw` on the
+ * node's session socket, which asks Cloud's `/messaging/delegation/withdraw`.
+ * @param approvalId - The approval id (`apv_…`)
+ * @param options - Where the node's session socket is
+ * @returns `{ok: true}` or `{ok: false, reason}`
+ */
+export async function withdrawOwnerApproval(
+  approvalId: string,
+  options: RelayRedeemOptions = {}
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const socketPath = options.socketPath ?? process.env.AGENT_RELAY_SOCKET;
+  if (!socketPath) {
+    throw new Error('withdrawOwnerApproval needs socketPath or AGENT_RELAY_SOCKET: the node session socket.');
+  }
+  const query = new URLSearchParams({ approval: approvalId });
+  const answer = await postSessionSocket(socketPath, `/delegation/withdraw?${query.toString()}`);
+  if (answer.ok === true) return { ok: true };
+  return { ok: false, reason: typeof answer.reason === 'string' ? answer.reason : 'refused' };
 }

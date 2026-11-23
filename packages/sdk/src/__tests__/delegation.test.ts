@@ -10,6 +10,8 @@ import {
   RelaycastMessagingClient,
   delegationCovers,
   parseConfigChangeTarget,
+  parsePrOpsTarget,
+  withdrawOwnerApproval,
   sessionSocketEndpoint,
   redeemOwnerApproval,
   verifyDelegationAttestation,
@@ -83,7 +85,6 @@ describe('delegate approvals', () => {
       standing: 'code_owner',
       ownerDisplay: 'Ada Owner',
       approvalId: 'apv_7Q2abcdEF',
-      redeemFirst: true,
       singleUse: false,
     });
     expect(delegation?.expiresAt).toBe(new Date((NOW + 300) * 1000).toISOString());
@@ -116,7 +117,7 @@ describe('delegate approvals', () => {
     const change = (target: string) =>
       signJws(claims({ single_use: false, actions: [{ class: 'config_change', target }] }));
     const ok = verifyDelegationAttestation(change('agent_relay:spawn_native_input=false'), jwks, expected);
-    expect(ok?.redeemFirst).toBe(true);
+    expect(ok?.singleUse).toBe(false);
     expect(parseConfigChangeTarget('agent_relay:spawn_native_input=false')).toEqual({
       agentId: 'agent_relay',
       setting: 'spawn_native_input',
@@ -267,5 +268,63 @@ describe('delegate approvals', () => {
       '\\\\.\\pipe\\agent-relay-367ccf5106272db6'
     );
     expect(sessionSocketEndpoint('/run/agent-relay/relay.sock', 'linux')).toBe('/run/agent-relay/relay.sock');
+  });
+
+  it('checks prompt_approval, pr_ops and config_change shapes, and carries the signed quote', () => {
+    const { jwks, signJws } = signer();
+    const one = (action: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+      verifyDelegationAttestation(signJws(claims({ actions: [action], ...extra })), jwks, expected);
+    expect(one({ class: 'prompt_approval', target: 'agent_relay:0123456789abcdef:approve' })).toBeDefined();
+    expect(one({ class: 'prompt_approval', target: 'agent_relay:0123456789abcdef' })).toBeUndefined();
+    expect(
+      one({
+        class: 'prompt_approval',
+        target: 'agent_relay:0123456789abcdef:deny',
+        conditions: [{ type: 'not_before', at: '2020-01-01T00:00:00Z' }],
+      })
+    ).toBeUndefined();
+    expect(one({ class: 'pr_ops', target: 'acme/api#12:label=bug' })).toBeDefined();
+    expect(one({ class: 'pr_ops', target: 'acme/api#12' })).toBeUndefined();
+    expect(parsePrOpsTarget('acme/api#12:request_review=ada')).toEqual({
+      pull: 'acme/api#12',
+      op: 'request_review=ada',
+    });
+    expect(
+      one({
+        class: 'config_change',
+        target: 'agent_relay:spawn_native_input=false',
+        conditions: [{ type: 'ci_green' }],
+      })
+    ).toBeUndefined();
+    expect(one({ class: 'merge', target: 'acme/api#12' }, { quote: 'yes merge 12' })?.quote).toBe(
+      'yes merge 12'
+    );
+  });
+
+  it('passes on the commit Cloud checked and withdraws through the socket', async () => {
+    const { createServer } = await import('node:http');
+    const { mkdtempSync, rmSync } = await import('node:fs');
+    const dir = mkdtempSync(join(tmpdir(), 'relay-withdraw-'));
+    const socketPath = join(dir, 'relay.sock');
+    const seen: string[] = [];
+    const sha = 'a'.repeat(40);
+    const server = createServer((req, res) => {
+      seen.push(`${req.method} ${req.url}`);
+      const data = req.url?.startsWith('/delegation/withdraw')
+        ? { ok: true }
+        : { ok: true, consumed: false, checked: { head_sha: sha } };
+      res.end(JSON.stringify({ ok: true, data }));
+    });
+    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+    try {
+      await expect(
+        redeemOwnerApproval('apv_7Q2abcdEF', { class: 'merge', target: 'acme/api#12' }, { socketPath })
+      ).resolves.toEqual({ ok: true, consumed: false, checked: { head_sha: sha } });
+      await expect(withdrawOwnerApproval('apv_7Q2abcdEF', { socketPath })).resolves.toEqual({ ok: true });
+      expect(seen[1]).toBe('POST /delegation/withdraw?approval=apv_7Q2abcdEF');
+    } finally {
+      server.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

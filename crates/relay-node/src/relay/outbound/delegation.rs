@@ -1,4 +1,6 @@
 //! `POST /send` with `owner_approval` (see [`requested_owner_approval`]),
+//! `POST /delegation/withdraw?approval=<id>` (a delegate withdraws an
+//! approval it sent),
 //! and `POST /delegation/redeem?approval=<id>&class=<class>&target=<target>`:
 //! the calling session redeems a single-use delegate approval, as its own
 //! agent, right before it acts on it (`relay::delegation`). The answer is
@@ -80,6 +82,32 @@ pub(super) fn requested_owner_approval(
 }
 
 impl Outbound {
+    /// `POST /delegation/withdraw?approval=<id>`: withdraws an approval the
+    /// calling session's own agent sent as a delegate.
+    pub async fn withdraw_delegation_route(
+        &self,
+        pid: i32,
+        uid: u32,
+        query: &[(String, String)],
+    ) -> Result<Value, OutboundError> {
+        let approval = last(query, "approval")
+            .filter(|id| is_approval_id(id))
+            .ok_or_else(|| {
+                OutboundError::new(
+                    400,
+                    "invalid_withdraw",
+                    "Name the approval: ?approval=apv_… that this session sent.",
+                )
+            })?
+            .to_string();
+        let (session, registration, token) = self.authorize(pid, uid).await?;
+        self.admit(&session.target.key())?;
+        Ok(self
+            .core
+            .withdraw_delegation(&registration, &token, &approval)
+            .await)
+    }
+
     /// `POST /delegation/redeem`: redeems as the calling session's own agent.
     pub async fn redeem_delegation_route(
         &self,
