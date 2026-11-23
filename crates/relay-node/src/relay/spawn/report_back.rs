@@ -110,6 +110,7 @@ impl ReportBack {
                 recipient: Recipient::To(name),
                 reply_to: None,
                 thread: None,
+                owner_approval: None,
             };
             (
                 probe_session_command(socket, &send, Some("your report"))?,

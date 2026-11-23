@@ -1,4 +1,5 @@
-//! `POST /delegation/redeem?approval=<id>&class=<class>&target=<target>`:
+//! `POST /send` with `owner_approval` (see [`requested_owner_approval`]),
+//! and `POST /delegation/redeem?approval=<id>&class=<class>&target=<target>`:
 //! the calling session redeems a single-use delegate approval, as its own
 //! agent, right before it acts on it (`relay::delegation`). The answer is
 //! `{"ok":true,"consumed":…}` or `{"ok":false,"reason":…}` with Cloud's
@@ -54,6 +55,28 @@ pub(super) fn redeem_query(query: &[(String, String)]) -> Result<(String, Action
             note: None,
         },
     ))
+}
+
+/// The `owner_approval` a send carries, as given: a JSON object in a JSON
+/// body, or one JSON object as the `owner_approval` query value (the probe's
+/// `send --owner-approval`). Never altered here; Relaycast validates it.
+pub(super) fn requested_owner_approval(
+    request: &serde_json::Map<String, Value>,
+) -> Result<Option<serde_json::Map<String, Value>>, OutboundError> {
+    let invalid = |message: String| OutboundError::new(400, "invalid_owner_approval", message);
+    match request.get("owner_approval") {
+        None => Ok(None),
+        Some(Value::String(raw)) => crate::relay::delegation::owner_approval_json(raw)
+            .map(Some)
+            .map_err(invalid),
+        Some(Value::Object(object)) => {
+            let raw = serde_json::to_string(object).unwrap_or_default();
+            crate::relay::delegation::owner_approval_json(&raw)
+                .map(|_| Some(object.clone()))
+                .map_err(invalid)
+        }
+        Some(_) => Err(invalid("owner_approval must be a JSON object.".into())),
+    }
 }
 
 impl Outbound {

@@ -39,6 +39,9 @@ pub enum SessionCommand {
         recipient: Recipient,
         reply_to: Option<String>,
         thread: Option<String>,
+        /// A delegate's structured owner approval (`--owner-approval`), a
+        /// JSON object passed through to Relaycast as given.
+        owner_approval: Option<String>,
     },
     /// `agents`: `GET /agents`.
     Agents,
@@ -178,7 +181,13 @@ impl SessionCommand {
                 recipient,
                 reply_to,
                 thread,
-            } => send_request(recipient, reply_to.as_deref(), thread.as_deref()),
+                owner_approval,
+            } => send_request(
+                recipient,
+                reply_to.as_deref(),
+                thread.as_deref(),
+                owner_approval.as_deref(),
+            ),
             SessionCommand::Agents => Ok(SessionRequest {
                 method: "GET",
                 path: "/agents".into(),
@@ -309,6 +318,7 @@ impl SessionCommand {
                 recipient,
                 reply_to,
                 thread,
+                owner_approval,
             } => {
                 let mut parts = match recipient {
                     Recipient::To(name) => vec!["--to", name.as_str()],
@@ -320,6 +330,9 @@ impl SessionCommand {
                 }
                 if let Some(thread) = thread {
                     parts.extend(["--thread", thread.as_str()]);
+                }
+                if let Some(approval) = owner_approval {
+                    parts.extend(["--owner-approval", approval.as_str()]);
                 }
                 parts
             }
@@ -408,6 +421,7 @@ fn send_request(
     recipient: &Recipient,
     reply_to: Option<&str>,
     thread: Option<&str>,
+    owner_approval: Option<&str>,
 ) -> Result<SessionRequest> {
     let mut query = match recipient {
         Recipient::To(name) if valid_name(name) => format!("to={}", query_encode(name)),
@@ -445,6 +459,17 @@ fn send_request(
             return Err(refuse("--thread takes the id of the thread to answer in."));
         }
         query.push_str(&format!("&thread_id={}", query_encode(thread)));
+    }
+    if let Some(approval) = owner_approval {
+        if reply_to.is_some() || thread.is_some() {
+            return Err(refuse(
+                "--owner-approval goes on a direct message or channel post, not a reply.",
+            ));
+        }
+        crate::relay::delegation::owner_approval_json(approval)
+            .map_err(|reason| refuse(&reason))?;
+        // Sent exactly as given: the core and Relaycast never alter it.
+        query.push_str(&format!("&owner_approval={}", query_encode(approval)));
     }
     Ok(SessionRequest {
         method: "POST",
@@ -488,6 +513,7 @@ mod tests {
             recipient,
             reply_to: None,
             thread: None,
+            owner_approval: None,
         }
     }
 
@@ -587,6 +613,7 @@ mod tests {
                     recipient: Recipient::To("alice".into()),
                     reply_to: Some("m1".into()),
                     thread: None,
+                    owner_approval: None,
                 },
                 "POST",
                 "/send?to=alice&reply_to=m1",
@@ -596,6 +623,7 @@ mod tests {
                     recipient: Recipient::Channel("#swarm".into()),
                     reply_to: None,
                     thread: Some("123".into()),
+                    owner_approval: None,
                 },
                 "POST",
                 "/send?channel=%23swarm&thread_id=123",
@@ -737,12 +765,14 @@ mod tests {
                 recipient: Recipient::To("alice".into()),
                 reply_to: Some(bad.into()),
                 thread: None,
+                owner_approval: None,
             };
             assert!(reply.request().is_err(), "reply_to {bad:?}");
             let thread = SessionCommand::Send {
                 recipient: Recipient::Channel("swarm".into()),
                 reply_to: None,
                 thread: Some(bad.into()),
+                owner_approval: None,
             };
             assert!(thread.request().is_err(), "thread {bad:?}");
             let fetch = SessionCommand::FetchAttachment {
@@ -756,12 +786,14 @@ mod tests {
             recipient: Recipient::Channel("swarm".into()),
             reply_to: Some("m1".into()),
             thread: None,
+            owner_approval: None,
         };
         assert!(channel_reply.request().is_err());
         let dm_thread = SessionCommand::Send {
             recipient: Recipient::To("alice".into()),
             reply_to: None,
             thread: Some("1".into()),
+            owner_approval: None,
         };
         assert!(dm_thread.request().is_err());
         for bad in [
@@ -784,6 +816,7 @@ mod tests {
             recipient: Recipient::To("alice".into()),
             reply_to: Some("m1".into()),
             thread: None,
+            owner_approval: None,
         }
         .command_line(
             Path::new("/opt/relay/probe"),
@@ -813,5 +846,77 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("--to takes"));
+    }
+}
+
+#[cfg(test)]
+mod owner_approval_tests {
+    use super::*;
+
+    fn send(recipient: Recipient, approval: &str) -> SessionCommand {
+        SessionCommand::Send {
+            recipient,
+            reply_to: None,
+            thread: None,
+            owner_approval: Some(approval.into()),
+        }
+    }
+
+    #[test]
+    fn send_passes_an_owner_approval_through_as_given() {
+        let approval = r#"{"v":1,"owner_id":"hum_owner","actions":[{"class":"merge","target":"acme/api#12"}]}"#;
+        let request = send(Recipient::To("alice".into()), approval)
+            .request()
+            .unwrap();
+        assert_eq!(request.route(), "/send");
+        let query = request.path.split_once('?').unwrap().1;
+        let pairs: Vec<(String, String)> = url::form_urlencoded::parse(query.as_bytes())
+            .into_owned()
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("to".into(), "alice".into()),
+                ("owner_approval".into(), approval.into())
+            ]
+        );
+        let channel = send(Recipient::Channel("screens".into()), approval)
+            .request()
+            .unwrap();
+        assert!(channel
+            .path
+            .starts_with("/send?channel=screens&owner_approval="));
+        assert_eq!(
+            send(Recipient::To("alice".into()), approval).arguments(),
+            vec!["--to", "alice", "--owner-approval", approval]
+        );
+    }
+
+    #[test]
+    fn send_refuses_an_owner_approval_that_is_not_an_object_or_on_a_reply() {
+        for bad in ["not json", "[1]", "\"text\"", ""] {
+            assert!(
+                send(Recipient::To("alice".into()), bad).request().is_err(),
+                "{bad}"
+            );
+        }
+        let large = format!(r#"{{"quote":"{}"}}"#, "q".repeat(40 * 1024));
+        assert!(send(Recipient::To("alice".into()), &large)
+            .request()
+            .is_err());
+        let reply = SessionCommand::Send {
+            recipient: Recipient::To("alice".into()),
+            reply_to: Some("m_1".into()),
+            thread: None,
+            owner_approval: Some("{}".into()),
+        };
+        assert!(reply.request().is_err());
+        let thread = SessionCommand::Send {
+            recipient: Recipient::Channel("screens".into()),
+            reply_to: None,
+            thread: Some("m_1".into()),
+            owner_approval: Some("{}".into()),
+        };
+        assert!(thread.request().is_err());
     }
 }

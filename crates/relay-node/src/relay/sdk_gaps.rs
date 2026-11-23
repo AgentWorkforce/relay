@@ -394,6 +394,24 @@ pub async fn dm_address(
         .await
 }
 
+/// `POST path` with `body` exactly as given: a direct message (`/v1/dm`) or
+/// channel post (`/v1/channels/{name}/messages`) carrying a delegate's
+/// `owner_approval`, which the SDK's typed sends do not take.
+pub async fn post_message(
+    agent: &HttpClient,
+    path: &str,
+    body: Value,
+    idempotency_key: Option<String>,
+) -> relaycast::Result<Value> {
+    agent
+        .post(
+            path,
+            Some(body),
+            idempotency_key.map(RequestOptions::with_idempotency_key),
+        )
+        .await
+}
+
 /// `POST /v1/dm` by name or exact address, carrying uploaded files.
 pub async fn dm_with_attachments(
     agent: &HttpClient,

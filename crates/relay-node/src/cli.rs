@@ -220,7 +220,14 @@ mod sandbox_rule_reach_tests {
         match subcommand {
             "send" => (
                 &[("POST", "/send")],
-                &["to", "address", "channel", "reply_to", "thread_id"],
+                &[
+                    "to",
+                    "address",
+                    "channel",
+                    "reply_to",
+                    "thread_id",
+                    "owner_approval",
+                ],
             ),
             "agents" => (&[("GET", "/agents")], &[]),
             "whoami" => (&[("GET", "/whoami")], &[]),

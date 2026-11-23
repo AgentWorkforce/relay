@@ -562,6 +562,26 @@ async fn fetch_site_keys() -> Option<Value> {
     None
 }
 
+/// The longest owner approval the session socket takes, in bytes: far more
+/// than the wire contract allows (20 actions, a 2000-character quote).
+pub const MAX_OWNER_APPROVAL: usize = 32 * 1024;
+
+/// `raw`, a delegate's `owner_approval` as sent to the session socket, read
+/// as a JSON object, unchanged, or why it is refused. Its content is
+/// Relaycast's to validate (`400 invalid_owner_approval`); the core never
+/// invents, fills in or alters it.
+pub fn owner_approval_json(raw: &str) -> Result<serde_json::Map<String, Value>, String> {
+    if raw.len() > MAX_OWNER_APPROVAL {
+        return Err(format!(
+            "owner_approval is at most {MAX_OWNER_APPROVAL} bytes."
+        ));
+    }
+    match serde_json::from_str::<Value>(raw) {
+        Ok(Value::Object(object)) => Ok(object),
+        _ => Err("owner_approval must be a JSON object.".into()),
+    }
+}
+
 /// What a redeem came to, as the session socket answers it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Redeemed {

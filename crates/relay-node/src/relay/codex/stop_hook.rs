@@ -1336,6 +1336,7 @@ mod tests {
             recipient: crate::relay::session_cli::Recipient::To("alice".into()),
             reply_to: Some("m1".into()),
             thread: None,
+            owner_approval: None,
         }
         .command_line(&link, Path::new(socket), Some("your reply"))
         .unwrap();

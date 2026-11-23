@@ -1479,6 +1479,16 @@ person-only); an agent may narrow it. On a gate-only install it is absent
 from `settings.get` and listed unavailable with the reason, and only `off`
 is taken.
 
+A delegate sends its owner approval through the session socket too: `POST
+/send` takes `owner_approval`, a JSON object in a JSON body or one JSON
+object as the `owner_approval` query value (the probe's `send
+--owner-approval <json>`), on a direct message or channel post (never a
+reply or thread reply). It goes to Relaycast beside the text exactly as
+given (`client::send_with_owner_approval`); the core never invents, fills in
+or alters it, and Relaycast validates it. Anything that is not a JSON
+object, or is larger than 32 KiB, is `400 invalid_owner_approval` before
+anything is sent.
+
 A session redeems an approval as its own agent, right before it acts, when
 its line says "redeem before acting", on the session socket:
 
