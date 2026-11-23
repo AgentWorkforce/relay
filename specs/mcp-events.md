@@ -36,6 +36,25 @@ What it leaves out (from the SEP's own scope section and open questions):
 The spec's own diagram for clients without a callback endpoint is
 `Upstream → MCP Server → webhook → Forward Proxy ← Client (poll/push)`.
 
+### SEP-2495 (Event-Driven Tool Invocation): the "event → model" step
+
+SEP-2495 ("Server-Push to LLM Re-entry", Heiko Friedrich, created 2026-03-29) is the proposal that would
+standardize how an event re-enters the model. As of 2026-11-23 it is not on track:
+
+- PR #2495 is an open draft with no sponsor. The SEP file holds only Abstract, Motivation and a workarounds
+  table. There is no specification, wire format, security section or implementation.
+- On 2026-11-06 a maintainer moved it back to draft with `wg-support-needed`: it needs the Tasks & Events WG
+  to take it on.
+- On 2026-11-17 a WG lead asked whether SEP-3415 already covers it, and called the only gap (delivery back to
+  the model) host behaviour, and therefore non-normative.
+- SEP-3415 lists it only as complementary related work.
+
+Implication: the step from event to model (waking an idle session, starting a turn, choosing which session)
+is likely to stay host behaviour without a normative spec. Each host will do it differently, which keeps a
+cross-harness wake layer valuable, and it makes non-normative client guidance (section 7) the place to
+influence. Watch for the WG adopting SEP-2495 or publishing SDK guidance for SEP-3415's open question 1. That
+would be the signal that native wake behaviour is converging.
+
 ## 2. Exposure
 
 | Asset                                                                                    | Exposure                | Why                                                                                                                             |
@@ -145,6 +164,11 @@ that expands to several types, which avoids changing `name`'s type on the wire.
 **On push reconnect backlog.** Leased batches (claim, then ack or release, with the lease expiring back to
 pending) bounded our reconnect bursts. An optional `maxEvents` on `events/stream`, limiting the replay before
 live events, would mirror poll's paging.
+
+**On SEP-2495 (PR #2495, `wg-support-needed`).** Comment there: the remaining gap is delivery to the
+model. We propose non-normative host guidance under SEP-3415 (wake when idle, queue when busy, one owning session
+per subscription, payloads framed as untrusted data), drawn from the findings above, rather than new wire
+protocol.
 
 **Offer.** Agent Relay can contribute conformance scenarios for a forward-proxy receiver: verification echo,
 `gap` and `terminated` forwarding, and `webhook-id` deduplication.
