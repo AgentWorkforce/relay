@@ -28,15 +28,8 @@
 //! POST <gate>/v1/register {name, recovery}  (device token) ─▶ agent_id, rg_ token
 //! ```
 //! Relaycast queues every reply to you as a delivery; they are acknowledged
-//! when your conversations are read, in the background, so the read does
-//! not wait for them, and the identity's push socket wakes an open
-//! conversation the moment one arrives. A delivery left unacknowledged (the
-//! core stopped, the workspace paused, an ack failed) stays queued and is
-//! acknowledged by a later read.
-//!
-//! The conversation listing is kept for [`LISTING_TTL`] for the identity
-//! and token that read it, without its last messages, and read again
-//! sooner when a delivery or push wake arrives or you send.
+//! when your conversations are read, and the identity's push socket wakes an
+//! open conversation the moment one arrives.
 //!
 //! An exact `agent@machine` history is shown only with proof from server
 //! history: the conversation must list exactly two participants with
@@ -46,6 +39,10 @@
 //! history. A conversation without proof is looked for again at most once a
 //! minute, sooner when a reply arrives, and then only in the conversations
 //! that changed since they were read.
+//!
+//! The conversation listing is kept for [`LISTING_TTL`] for the identity
+//! and token that read it, without its last messages, and read again
+//! sooner when a delivery or push wake arrives or you send.
 //!
 //! Every read as you is paced by the workspace's Relaycast pause
 //! ([`crate::relay::backoff`]): while it lasts, a read is refused with the
@@ -57,7 +54,7 @@ use crate::relay::cloud_session::{segment, CloudAccount, CloudError};
 use crate::relay::contract::directory::Recipient;
 use crate::relay::contract::directory::{Conversation, ConversationPeer, Conversations, History};
 use crate::relay::daemon::Core;
-use crate::relay::delivery::policy::{Attachment, Delivery};
+use crate::relay::delivery::policy::Attachment;
 use crate::relay::links::Endpoint;
 use crate::relay::protocol::{ErrorKind, RpcError};
 use crate::relay::push::PushTarget;
@@ -160,6 +157,8 @@ pub struct MessagingState {
     refused: Option<Secret>,
     /// Conversation ids by `(identity name, endpoint key)`: search hints only.
     conversations: HashMap<(String, String), String>,
+    /// The last conversation listing, for [`LISTING_TTL`].
+    listing: Option<KeptListing>,
     /// Exact-address lookups that found no proof, by `(workspace, identity, endpoint key)`.
     misses: HashMap<(String, String, String), Instant>,
     /// The conversations an exact-address lookup read without finding
@@ -167,55 +166,6 @@ pub struct MessagingState {
     checked: HashMap<(String, String, String), HashMap<String, Checked>>,
     /// `GET /v1/messages/{id}` answers, scoped to the credential that read them.
     details: HashMap<(String, Secret, String), Value>,
-    /// The last conversation listing, for [`LISTING_TTL`].
-    listing: Option<KeptListing>,
-    /// Deliveries a background ack is acknowledging now.
-    acking: HashSet<String>,
-}
-
-/// Whose conversation listing it is: the account (site, Cloud workspace,
-/// user), the identity name, and the Relaycast origin and token it was read
-/// with. A refused and replaced token reads its own.
-type ListingKey = (String, String, String, Secret);
-
-/// A conversation listing as read, for [`LISTING_TTL`].
-struct KeptListing {
-    key: ListingKey,
-    at: Instant,
-    conversations: Vec<Listed>,
-}
-
-/// One 1:1 conversation of the listing, without its last message: its id,
-/// type and participants, and a digest of how it was listed ([`Checked`]).
-#[derive(Clone)]
-struct Listed {
-    conversation: Value,
-    listing: String,
-    marked: bool,
-}
-
-impl Listed {
-    fn of(conversation: &Value) -> Listed {
-        let participants = match conversation["participants"].as_array() {
-            Some(list) => list
-                .iter()
-                .map(|p| json!({"agent_id": p["agent_id"], "agent_name": p["agent_name"]}))
-                .collect(),
-            None => Value::Null,
-        };
-        Listed {
-            conversation: json!({
-                "id": conversation["id"],
-                "type": conversation["type"],
-                "participants": participants,
-                "participant_names": conversation["participant_names"],
-            }),
-            listing: format!("{:x}", Sha256::digest(conversation.to_string())),
-            marked: conversation
-                .get("last_message")
-                .is_some_and(|last| !last.is_null()),
-        }
-    }
 }
 
 impl MessagingState {
@@ -285,6 +235,51 @@ impl Checked {
     /// read what this check already read.
     fn covers(&self, now: &Checked) -> bool {
         self.listing == now.listing && (self.marked || self.at.elapsed() < EXACT_MISS_TTL)
+    }
+}
+
+/// Whose conversation listing it is: the account (site, Cloud workspace,
+/// user), the identity name, and the Relaycast origin and token it was read
+/// with. A refused and replaced token reads its own.
+type ListingKey = (String, String, String, Secret);
+
+/// A conversation listing as read, for [`LISTING_TTL`].
+struct KeptListing {
+    key: ListingKey,
+    at: Instant,
+    conversations: Vec<Listed>,
+}
+
+/// One 1:1 conversation of the listing, without its last message: its id,
+/// type and participants, and a digest of how it was listed ([`Checked`]).
+#[derive(Clone)]
+struct Listed {
+    conversation: Value,
+    listing: String,
+    marked: bool,
+}
+
+impl Listed {
+    fn of(conversation: &Value) -> Listed {
+        let participants = match conversation["participants"].as_array() {
+            Some(list) => list
+                .iter()
+                .map(|p| json!({"agent_id": p["agent_id"], "agent_name": p["agent_name"]}))
+                .collect(),
+            None => Value::Null,
+        };
+        Listed {
+            conversation: json!({
+                "id": conversation["id"],
+                "type": conversation["type"],
+                "participants": participants,
+                "participant_names": conversation["participant_names"],
+            }),
+            listing: format!("{:x}", Sha256::digest(conversation.to_string())),
+            marked: conversation
+                .get("last_message")
+                .is_some_and(|last| !last.is_null()),
+        }
     }
 }
 
@@ -1026,117 +1021,27 @@ impl Core {
             })
     }
 
-    /// Lists the replies Relaycast queued for you and acknowledges them in
-    /// the background ([`Core::acknowledge_in_background`]). History is
-    /// durable; this only stops redrive. Returns whether the queue held a
-    /// delivery not already being acknowledged: a reply that may be the
-    /// proof an earlier lookup lacked.
+    /// Acknowledges the replies Relaycast queued for you. History is
+    /// durable; this only stops redrive. Returns how many.
     async fn acknowledge_person_deliveries(
         &self,
-        http: &crate::relay::diagnostic_http::HttpClient,
         identity: &PersonIdentity,
         scope: &WorkspaceScope,
-    ) -> bool {
-        let pending = sdk_gaps::deliveries(http, client::QUEUE_PAGE);
+    ) -> usize {
+        let pending = client::deliveries(&identity.base_url, &identity.token);
         let Ok(pending) = self.person_read(scope, pending).await else {
-            return false;
+            return 0;
         };
-        let pending = Delivery::list(&Value::Array(pending));
-        let fresh: Vec<String> = {
-            let mut state = self.messaging.lock().unwrap();
-            pending
-                .into_iter()
-                .filter(|delivery| state.acking.insert(delivery.id.clone()))
-                .map(|delivery| delivery.id)
-                .collect()
-        };
-        if fresh.is_empty() {
-            return false;
-        }
-        self.acknowledge_in_background(identity, scope, fresh);
-        true
-    }
-
-    /// Acknowledges `deliveries` one after another without holding the
-    /// core: it stops at shutdown, when the core is gone, or while the
-    /// workspace's Relaycast pause lasts. What it did not acknowledge stays
-    /// queued for the next read.
-    fn acknowledge_in_background(
-        &self,
-        identity: &PersonIdentity,
-        scope: &WorkspaceScope,
-        deliveries: Vec<String>,
-    ) {
-        let core = self.me.clone();
-        let mut stopping = self.shutdown_requested();
-        let (base_url, token, scope) = (
-            identity.base_url.clone(),
-            identity.token.clone(),
-            scope.clone(),
-        );
-        let release = move |deliveries: &[String]| {
-            if let Some(core) = core.upgrade() {
-                let mut state = core.messaging.lock().unwrap();
-                for id in deliveries {
-                    state.acking.remove(id);
-                }
+        let mut acknowledged = 0;
+        for delivery in pending {
+            if client::ack(&identity.base_url, &identity.token, &delivery.id)
+                .await
+                .is_ok()
+            {
+                acknowledged += 1;
             }
-        };
-        if self.stopping() {
-            return release(&deliveries);
         }
-        let core = self.me.clone();
-        tokio::spawn(async move {
-            let acks = async {
-                for id in &deliveries {
-                    let paused = core
-                        .upgrade()
-                        .is_none_or(|core| core.relaycast_backoff.pause_left(&scope).is_some());
-                    if paused {
-                        return;
-                    }
-                    let _ = client::ack(&base_url, &token, id).await;
-                }
-            };
-            tokio::select! {
-                () = acks => {}
-                _ = stopping.wait_for(|stop| *stop) => {}
-            }
-            release(&deliveries);
-        });
-    }
-
-    /// Your 1:1 conversations as listed, from the listing kept for this
-    /// identity and token, or from Relaycast.
-    #[allow(clippy::result_large_err)] // the SDK's own error type
-    async fn listed_conversations(
-        &self,
-        http: &crate::relay::diagnostic_http::HttpClient,
-        identity: &PersonIdentity,
-        scope: &WorkspaceScope,
-    ) -> relaycast::Result<Vec<Listed>> {
-        let key: ListingKey = (
-            self.plugins
-                .cloud
-                .account()
-                .map(|a| account_key(&a))
-                .unwrap_or_default(),
-            identity.name.clone(),
-            identity.base_url.clone(),
-            identity.token.clone(),
-        );
-        if let Some(kept) = self.messaging.lock().unwrap().kept_listing(&key) {
-            return Ok(kept);
-        }
-        let listing = self
-            .person_read(scope, sdk_gaps::dm_conversations(http))
-            .await?;
-        let listed: Vec<Listed> = direct_conversations(&listing, &identity.name)
-            .iter()
-            .map(Listed::of)
-            .collect();
-        self.messaging.lock().unwrap().keep_listing(key, &listed);
-        Ok(listed)
+        acknowledged
     }
 
     /// Your conversation with `endpoint`, in reading order; empty before the
@@ -1176,12 +1081,8 @@ impl Core {
     ) -> relaycast::Result<Vec<DirectMessage>> {
         let http = sdk_gaps::http(&identity.base_url, &identity.token)?;
         let scope = self.person_scope(identity);
-        if self
-            .acknowledge_person_deliveries(&http, identity, &scope)
-            .await
-        {
-            // Any incoming DM can be the proof an earlier lookup lacked, and
-            // can start a conversation the kept listing lacks.
+        if self.acknowledge_person_deliveries(identity, &scope).await > 0 {
+            // Any incoming DM can be the proof an earlier lookup lacked.
             self.messaging.lock().unwrap().forget_misses(None);
         }
         let workspace = self
@@ -1422,6 +1323,39 @@ impl Core {
         }
         state.details.insert(key, value.clone());
         Ok(value)
+    }
+
+    /// Your 1:1 conversations as listed, from the listing kept for this
+    /// identity and token, or from Relaycast.
+    #[allow(clippy::result_large_err)] // the SDK's own error type
+    async fn listed_conversations(
+        &self,
+        http: &crate::relay::diagnostic_http::HttpClient,
+        identity: &PersonIdentity,
+        scope: &WorkspaceScope,
+    ) -> relaycast::Result<Vec<Listed>> {
+        let key: ListingKey = (
+            self.plugins
+                .cloud
+                .account()
+                .map(|a| account_key(&a))
+                .unwrap_or_default(),
+            identity.name.clone(),
+            identity.base_url.clone(),
+            identity.token.clone(),
+        );
+        if let Some(kept) = self.messaging.lock().unwrap().kept_listing(&key) {
+            return Ok(kept);
+        }
+        let listing = self
+            .person_read(scope, sdk_gaps::dm_conversations(http))
+            .await?;
+        let listed: Vec<Listed> = direct_conversations(&listing, &identity.name)
+            .iter()
+            .map(Listed::of)
+            .collect();
+        self.messaging.lock().unwrap().keep_listing(key, &listed);
+        Ok(listed)
     }
 
     /// Your 1:1 conversations, as Relaycast lists them.

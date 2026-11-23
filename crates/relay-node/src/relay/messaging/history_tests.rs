@@ -493,18 +493,6 @@ async fn call(core: &Core, script: &Mutex<Script>, endpoint: &Endpoint) -> (Call
     (Calls::of(&requests), took)
 }
 
-/// Waits until every queued delivery is acknowledged.
-async fn drained(script: &Mutex<Script>) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !script.lock().unwrap().deliveries.is_empty() {
-        assert!(
-            Instant::now() < deadline,
-            "deliveries were not acknowledged"
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-}
-
 fn three() -> Vec<Value> {
     vec![
         conversation("c1", "m1"),
@@ -513,10 +501,10 @@ fn three() -> Vec<Value> {
     ]
 }
 
-fn calls(deliveries: usize, listings: usize, pages: usize, details: usize) -> Calls {
+fn calls(deliveries: usize, acks: usize, listings: usize, pages: usize, details: usize) -> Calls {
     Calls {
         deliveries,
-        acks: 0,
+        acks,
         listings,
         pages,
         details,
@@ -524,8 +512,7 @@ fn calls(deliveries: usize, listings: usize, pages: usize, details: usize) -> Ca
 }
 
 /// The Relaycast requests each kind of history call makes. A change that
-/// adds a round trip fails here. Acks are counted apart: they run in the
-/// background, off the read.
+/// adds a round trip fails here.
 #[tokio::test]
 async fn request_counts_per_history_call() {
     if ran_without_file_roots("request_counts_per_history_call") {
@@ -536,8 +523,7 @@ async fn request_counts_per_history_call() {
     // A distant Relaycast: the times printed show the serial waits.
     let rtt = Duration::from_millis(40);
     let mut rows = Vec::new();
-    let mut row = |case: &'static str, (mut got, took): (Calls, Duration), want: Calls| {
-        got.acks = 0;
+    let mut row = |case: &'static str, (got, took): (Calls, Duration), want: Calls| {
         rows.push((case, got.total(), took));
         assert_eq!(got, want, "{case}");
     };
@@ -547,12 +533,12 @@ async fn request_counts_per_history_call() {
     row(
         "name, first",
         call(&core, &script, &named).await,
-        calls(1, 1, 1, 1),
+        calls(1, 0, 1, 1, 1),
     );
     row(
         "name, following",
         call(&core, &script, &named).await,
-        calls(1, 0, 1, 0),
+        calls(1, 0, 0, 1, 0),
     );
 
     let (_home, core, script) = core_with(three()).await;
@@ -562,38 +548,37 @@ async fn request_counts_per_history_call() {
     row(
         "address, first",
         call(&core, &script, &address).await,
-        calls(1, 1, 2, 1),
+        calls(1, 0, 1, 2, 1),
     );
     row(
         "address, remembered",
         call(&core, &script, &address).await,
-        calls(1, 0, 1, 0),
+        calls(1, 0, 0, 1, 0),
     );
     // After the listing is read again, c1 is not: it did not change.
     core.person_woke();
     row(
         "address, after a wake",
         call(&core, &script, &address).await,
-        calls(1, 1, 1, 0),
+        calls(1, 0, 1, 1, 0),
     );
 
     let (_home, core, script) = core_with(three()).await;
     script.lock().unwrap().delay = rtt;
     call(&core, &script, &named).await;
     script.lock().unwrap().deliveries = (1..=5).map(|n| format!("del_{n}")).collect();
-    // New deliveries: the listing is read again; the acks do not wait.
+    // Acknowledged one after another, as on main; acknowledging any reads
+    // the listing again.
     row(
         "name, 5 queued",
         call(&core, &script, &named).await,
-        calls(1, 1, 1, 0),
+        calls(1, 5, 1, 1, 0),
     );
     row(
-        "name, while acking",
+        "name, after queued",
         call(&core, &script, &named).await,
-        calls(1, 0, 1, 0),
+        calls(1, 0, 0, 1, 0),
     );
-    drained(&script).await;
-    assert_eq!(Calls::of(&script.lock().unwrap().requests).acks, 5);
 
     let (_home, core, script) = core_with(three()).await;
     {
@@ -604,12 +589,12 @@ async fn request_counts_per_history_call() {
     row(
         "name, 50 incomplete",
         call(&core, &script, &named).await,
-        calls(1, 1, 1, 50),
+        calls(1, 0, 1, 1, 50),
     );
     row(
         "name, 50 following",
         call(&core, &script, &named).await,
-        calls(1, 0, 1, 0),
+        calls(1, 0, 0, 1, 0),
     );
 
     for (case, total, took) in &rows {
@@ -618,61 +603,25 @@ async fn request_counts_per_history_call() {
 }
 
 #[tokio::test]
-async fn a_failed_history_call_still_acknowledges_its_deliveries() {
-    if ran_without_file_roots("a_failed_history_call_still_acknowledges_its_deliveries") {
+async fn each_call_still_acknowledges_the_queued_deliveries_once() {
+    if ran_without_file_roots("each_call_still_acknowledges_the_queued_deliveries_once") {
         return;
     }
     let (_home, core, script) = core_with(three()).await;
-    {
-        let mut script = script.lock().unwrap();
-        script.deliveries = vec!["del_1".into(), "del_2".into()];
-        script.failures.insert(
-            "/v1/dm/conversations".into(),
-            std::iter::repeat_n((500, "internal_error", None), 3).collect(),
-        );
-    }
-    assert!(core.history(&peer(), None).await.is_err());
-    drained(&script).await;
-    assert_eq!(Calls::of(&script.lock().unwrap().requests).acks, 2);
-}
-
-#[tokio::test]
-async fn background_acks_stop_at_shutdown_and_a_later_read_acknowledges_the_rest() {
-    if ran_without_file_roots(
-        "background_acks_stop_at_shutdown_and_a_later_read_acknowledges_the_rest",
-    ) {
-        return;
-    }
-    let script = Arc::new(Mutex::new(Script {
-        conversations: three(),
-        deliveries: (1..=20).map(|n| format!("del_{n}")).collect(),
-        delay: Duration::from_millis(100),
-        ..Script::default()
-    }));
-    let base = serve(script.clone()).await;
-    let acks = || Calls::of(&script.lock().unwrap().requests).acks;
-    let (_home, core) = core_at(base.clone());
-    core.history(&Endpoint::Name("peer-c2".into()), None)
-        .await
-        .unwrap();
-    core.request_shutdown();
-    // An ack already sent may still land; nothing is sent after.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let stopped = acks();
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(acks(), stopped);
-    assert!(stopped < 20, "{stopped}");
-    assert_eq!(script.lock().unwrap().deliveries.len(), 20 - stopped);
-    drop(core);
-
-    // Nothing was lost: the queue still holds the rest, and the next read
-    // acknowledges them.
-    let (_home, core) = core_at(base);
-    core.history(&Endpoint::Name("peer-c2".into()), None)
-        .await
-        .unwrap();
-    drained(&script).await;
-    assert_eq!(acks(), 20);
+    let named = Endpoint::Name("peer-c2".into());
+    let acks = || {
+        let script = script.lock().unwrap();
+        (Calls::of(&script.requests).acks, script.deliveries.len())
+    };
+    script.lock().unwrap().deliveries = vec!["del_1".into(), "del_2".into()];
+    core.history(&named, None).await.unwrap();
+    assert_eq!(acks(), (2, 0));
+    // Nothing queued: nothing acknowledged.
+    core.history(&named, None).await.unwrap();
+    assert_eq!(acks(), (2, 0));
+    script.lock().unwrap().deliveries = vec!["del_3".into()];
+    core.history(&named, None).await.unwrap();
+    assert_eq!(acks(), (3, 0));
 }
 
 #[tokio::test]
@@ -703,8 +652,8 @@ async fn a_reply_lets_a_missed_address_find_its_proof_on_the_same_call() {
         .messages
         .is_empty());
 
-    // A reply is queued: the call that sees it forgets the miss and the
-    // kept listing, and finds the proof.
+    // A reply is queued: the call that acknowledges it forgets the miss
+    // and the kept listing, and finds the proof.
     script.lock().unwrap().deliveries = vec!["del_9".into()];
     let found = core.history(&address, None).await.unwrap();
     assert_eq!(found.messages.len(), 1);
