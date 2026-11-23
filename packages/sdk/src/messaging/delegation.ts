@@ -150,7 +150,10 @@ export function parsePrOpsTarget(target: string): { pull: string; op: string } |
   const [, pull, op] = match;
   const ok =
     ['open', 'close', 'reopen', 'rerun_ci', 'comment'].includes(op) ||
-    /^(label|unlabel|request_review)=[^\s]+$/.test(op);
+    /^request_review=[^\s]+$/.test(op) ||
+    // A label may hold single spaces (`help wanted`), never at its ends,
+    // repeated, or a control character.
+    (/^(label|unlabel)=[^\s](?:[^\s]| (?! ))*$/.test(op) && !/\p{Cc}/u.test(op) && !op.endsWith(' '));
   return ok ? { pull, op } : undefined;
 }
 

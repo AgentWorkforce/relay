@@ -317,6 +317,9 @@ impl Action {
         {
             return None;
         }
+        let label = |value: &str| {
+            !value.is_empty() && value.trim() == value && !value.chars().any(char::is_control)
+        };
         let named = |value: &str| {
             !value.is_empty() && !value.chars().any(|c| c.is_whitespace() || c.is_control())
         };
@@ -326,8 +329,10 @@ impl Action {
                 "rerun_ci" => "re-run CI".to_string(),
                 _ => return None,
             },
-            Some(("label", name)) if named(name) => format!("label {name}"),
-            Some(("unlabel", name)) if named(name) => format!("unlabel {name}"),
+            // A label may hold single spaces (`help wanted`); the target's
+            // exactness check refuses leading, trailing or repeated ones.
+            Some(("label", name)) if label(name) => format!("label {name}"),
+            Some(("unlabel", name)) if label(name) => format!("unlabel {name}"),
             Some(("request_review", login)) if named(login) => {
                 format!("request review from {login}")
             }

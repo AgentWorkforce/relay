@@ -325,6 +325,12 @@ describe('delegate approvals', () => {
       )
     ).toBeUndefined();
     expect(parsePrOpsTarget('acme//api#12:close')).toBeUndefined();
+    expect(parsePrOpsTarget('acme/api#12:label=help wanted')).toEqual({
+      pull: 'acme/api#12',
+      op: 'label=help wanted',
+    });
+    expect(parsePrOpsTarget('acme/api#12:label=help  wanted')).toBeUndefined();
+    expect(parsePrOpsTarget('acme/api#12:request_review=a b')).toBeUndefined();
     expect(one({ class: 'merge', target: 'acme/api#12' }, { quote: 'yes merge 12' })?.quote).toBe(
       'yes merge 12'
     );

@@ -975,6 +975,10 @@ fn pr_ops_name_the_operation_and_the_pull_request() {
             "acme/api#12:label=area:api",
             "label area:api on acme/api#12",
         ),
+        (
+            "acme/api#12:label=help wanted",
+            "label help wanted on acme/api#12",
+        ),
     ] {
         let line = line_for(target);
         assert!(
@@ -990,7 +994,8 @@ fn pr_ops_name_the_operation_and_the_pull_request() {
         "acme/api#x:close",
         "acme/api#12:merge",
         "acme/api#12:label=",
-        "acme/api#12:label=a b",
+        "acme/api#12:request_review=a b",
+        "acme/api#12:label= help",
     ] {
         let bad = with(
             claims(),
