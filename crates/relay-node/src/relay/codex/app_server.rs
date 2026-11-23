@@ -191,10 +191,16 @@ impl<'a> Client<'a> {
 /// The threads the app-server has loaded; none when it cannot say by
 /// `timeout` (no daemon, an older one, a slow one).
 pub fn loaded_threads(stream: &mut dyn ProxyStream, timeout: Duration) -> BTreeSet<String> {
+    try_loaded_threads(stream, timeout).unwrap_or_default()
+}
+
+/// `loaded_threads`, or why the app-server could not say.
+pub fn try_loaded_threads(
+    stream: &mut dyn ProxyStream,
+    timeout: Duration,
+) -> io::Result<BTreeSet<String>> {
     let deadline = Instant::now() + timeout;
-    Client::open(stream, deadline)
-        .and_then(|mut client| client.loaded(deadline))
-        .unwrap_or_default()
+    Client::open(stream, deadline).and_then(|mut client| client.loaded(deadline))
 }
 
 /// Change provider metadata for a stored or loaded thread without resuming it

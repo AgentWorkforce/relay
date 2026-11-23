@@ -34,10 +34,18 @@ thread_local! {
 
 #[cfg(windows)]
 fn windows_pipe() -> String {
+    // Tests never reach a real Codex app: without a pipe of their own they
+    // get a private one nothing listens on.
     #[cfg(test)]
-    if let Some(name) = TEST_ROUTER_PIPE.with(|name| name.borrow().clone()) {
-        return name;
-    }
+    return TEST_ROUTER_PIPE
+        .with(|name| name.borrow().clone())
+        .unwrap_or_else(|| {
+            format!(
+                r"\\.\pipe\relay-test-absent-codex-ipc-{}",
+                std::process::id()
+            )
+        });
+    #[cfg(not(test))]
     WINDOWS_ROUTER_PIPE.to_string()
 }
 
@@ -372,6 +380,15 @@ impl Session {
     }
 
     pub fn owners(&mut self, threads: &[String]) -> Result<BTreeMap<String, String>, IpcError> {
+        self.owners_answered(threads).map(|(owners, _)| owners)
+    }
+
+    /// `owners`, and how many of `threads` the router left unanswered by
+    /// its deadline.
+    pub fn owners_answered(
+        &mut self,
+        threads: &[String],
+    ) -> Result<(BTreeMap<String, String>, usize), IpcError> {
         let mut by_request: HashMap<String, String> = HashMap::new();
         for thread in threads {
             let id = crate::relay::store::random_uuid();
@@ -409,7 +426,7 @@ impl Session {
                 owners.insert(thread, owner);
             }
         }
-        Ok(owners)
+        Ok((owners, by_request.len()))
     }
 
     /// Asks `owner` to start a turn with `text` (and `hidden` model-only
@@ -525,18 +542,21 @@ impl Session {
 /// Which of `threads` a Codex app window owns now; none when the app is
 /// not running or does not answer.
 pub fn open_threads(socket: &Path, threads: &[String]) -> BTreeMap<String, String> {
-    try_open_threads(socket, threads).unwrap_or_default()
+    try_open_threads(socket, threads)
+        .map(|(owners, _)| owners)
+        .unwrap_or_default()
 }
 
-/// `open_threads`, or why the router could not be asked.
+/// `open_threads` and how many threads went unanswered, or why the router
+/// could not be asked.
 pub fn try_open_threads(
     socket: &Path,
     threads: &[String],
-) -> Result<BTreeMap<String, String>, IpcError> {
+) -> Result<(BTreeMap<String, String>, usize), IpcError> {
     if threads.is_empty() {
-        return Ok(BTreeMap::new());
+        return Ok((BTreeMap::new(), 0));
     }
-    Session::connect(socket).and_then(|mut session| session.owners(threads))
+    Session::connect(socket).and_then(|mut session| session.owners_answered(threads))
 }
 
 #[cfg(test)]

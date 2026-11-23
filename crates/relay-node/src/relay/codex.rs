@@ -397,10 +397,25 @@ impl LoadedThreads {
 pub enum Probe {
     /// Every listed thread was already known to be running.
     NotAsked,
-    /// How many of the asked threads a Codex app window owns.
-    Answered(usize),
+    /// How many of the asked threads a Codex app window owns, and how many
+    /// the router left unanswered by its deadline.
+    Answered { owned: usize, unanswered: usize },
     /// Why it could not be asked (`NotRunning`: no app is listening).
     Failed(ipc::IpcError),
+}
+
+/// Whether the shared app-server was asked which threads it has loaded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AppServerProbe {
+    /// Every listed thread was already known to be running.
+    NotAsked,
+    /// It answered this pass: how many listed threads it has loaded.
+    Answered(usize),
+    /// An earlier complete answer still holds (the writer locks are
+    /// unchanged): how many listed threads it named.
+    Kept(usize),
+    /// Why it could not say.
+    Failed(String),
 }
 
 /// What discovery's three "running" signals said in one pass, as counts
@@ -416,22 +431,29 @@ pub struct RunningSignals {
     pub threads: usize,
     pub process_held: usize,
     pub process_live: usize,
-    /// `None` when the process signal already answered every thread.
-    pub app_server_loaded: Option<usize>,
+    pub app_server: AppServerProbe,
     pub app_router: Probe,
     pub live: usize,
 }
 
 impl RunningSignals {
     pub fn line(&self) -> String {
-        let app_server = match self.app_server_loaded {
-            Some(count) => format!("{count} loaded"),
-            None => "not asked".into(),
+        let app_server = match &self.app_server {
+            AppServerProbe::NotAsked => "not asked".to_string(),
+            AppServerProbe::Answered(count) => format!("{count} loaded"),
+            AppServerProbe::Kept(count) => format!("{count} loaded (earlier answer)"),
+            AppServerProbe::Failed(reason) => format!("could not check ({reason})"),
         };
         let router = match &self.app_router {
             Probe::NotAsked => "not asked".to_string(),
-            Probe::Answered(count) => format!("{count} owned by an app window"),
-            Probe::Failed(error) => format!("unavailable ({error})"),
+            Probe::Answered {
+                owned,
+                unanswered: 0,
+            } => format!("{owned} owned by an app window"),
+            Probe::Answered { owned, unanswered } => {
+                format!("{owned} owned by an app window, {unanswered} unanswered in time")
+            }
+            Probe::Failed(error) => format!("could not check ({error})"),
         };
         format!(
             "codex discovery: {live} of {threads} recent chats running; \
@@ -507,7 +529,7 @@ fn discover_with_signals(
             .collect::<BTreeSet<_>>()
             .len(),
         process_live: live.len(),
-        app_server_loaded: None,
+        app_server: AppServerProbe::NotAsked,
         app_router: Probe::NotAsked,
         live: 0,
     };
@@ -525,13 +547,21 @@ fn discover_with_signals(
             .filter(|session| processes::is_proxied_app_server(table, session.pid))
             .map(|session| session.thread.clone())
             .collect();
+        let mut asked = None;
         let from_app_server = loaded.under(locks, &served, || {
-            loaded_threads(config, table, uid, runner)
-                .intersection(&ids)
-                .cloned()
-                .collect()
+            let answer = try_loaded_threads(config, table, uid, runner);
+            let loaded: BTreeSet<String> = answer
+                .as_ref()
+                .map(|loaded| loaded.intersection(&ids).cloned().collect())
+                .unwrap_or_default();
+            asked = Some(answer.map(|_| loaded.len()));
+            loaded
         });
-        signals.app_server_loaded = Some(from_app_server.len());
+        signals.app_server = match asked {
+            None => AppServerProbe::Kept(from_app_server.len()),
+            Some(Ok(count)) => AppServerProbe::Answered(count),
+            Some(Err(reason)) => AppServerProbe::Failed(reason),
+        };
         live.extend(from_app_server);
     }
     let unknown: Vec<String> = threads
@@ -541,8 +571,11 @@ fn discover_with_signals(
         .collect();
     if !unknown.is_empty() {
         match ipc::try_open_threads(&config.ipc_socket, &unknown) {
-            Ok(owned) => {
-                signals.app_router = Probe::Answered(owned.len());
+            Ok((owned, unanswered)) => {
+                signals.app_router = Probe::Answered {
+                    owned: owned.len(),
+                    unanswered,
+                };
                 live.extend(owned.into_keys().map(|id| id.to_lowercase()));
             }
             Err(error) => signals.app_router = Probe::Failed(error),
@@ -602,17 +635,24 @@ fn loaded_threads(
     uid: u32,
     runner: &dyn CodexRunner,
 ) -> BTreeSet<String> {
-    let Some(executable) = processes::running_executable(table, uid) else {
-        return BTreeSet::new();
-    };
-    let Ok(mut stream) = runner.proxy_in_home(&executable, &config.home, &config.sqlite_home)
-    else {
-        return BTreeSet::new();
-    };
-    app_server::loaded_threads(stream.as_mut(), app_server::LOADED_TIMEOUT)
-        .into_iter()
-        .map(|id| id.to_lowercase())
-        .collect()
+    try_loaded_threads(config, table, uid, runner).unwrap_or_default()
+}
+
+/// `loaded_threads`, or why the app-server could not be asked.
+fn try_loaded_threads(
+    config: &CodexConfig,
+    table: &dyn ProcessTable,
+    uid: u32,
+    runner: &dyn CodexRunner,
+) -> Result<BTreeSet<String>, String> {
+    let executable = processes::running_executable(table, uid)
+        .ok_or_else(|| "no trusted Codex is running".to_string())?;
+    let mut stream = runner
+        .proxy_in_home(&executable, &config.home, &config.sqlite_home)
+        .map_err(|error| format!("its proxy did not start: {error}"))?;
+    app_server::try_loaded_threads(stream.as_mut(), app_server::LOADED_TIMEOUT)
+        .map(|loaded| loaded.into_iter().map(|id| id.to_lowercase()).collect())
+        .map_err(|error| format!("it did not answer: {error}"))
 }
 
 /// Whether a reply command could work for this thread now: a command it
@@ -1582,7 +1622,7 @@ mod tests {
                 threads: 2,
                 process_held: 1,
                 process_live: 1,
-                app_server_loaded: Some(0),
+                app_server: AppServerProbe::Answered(0),
                 app_router: Probe::Failed(ipc::IpcError::NotRunning),
                 live: 1,
             }
@@ -1591,17 +1631,46 @@ mod tests {
         assert!(line.contains("1 of 2 recent chats running"), "{line}");
         assert!(line.contains("(1) trusted Codex process holds the chat: 1 (1 running its turns)"));
         assert!(line.contains("(2) app-server: 0 loaded"));
-        assert!(line.contains("(3) Codex app router: unavailable (The Codex app is not running.)"));
+        assert!(
+            line.contains("(3) Codex app router: could not check (The Codex app is not running.)")
+        );
         assert!(!line.contains(THREAD) && !line.contains(SECOND));
         // Every chat answered by a process: the others are not asked.
         let all = RunningSignals {
-            app_server_loaded: None,
+            app_server: AppServerProbe::NotAsked,
             app_router: Probe::NotAsked,
-            ..signals
+            ..signals.clone()
         };
         assert!(all
             .line()
             .contains("(2) app-server: not asked; (3) Codex app router: not asked"));
+        // A check that could not be made is never reported as an empty answer.
+        let failed = RunningSignals {
+            app_server: AppServerProbe::Failed("no trusted Codex is running".into()),
+            app_router: Probe::Answered {
+                owned: 1,
+                unanswered: 2,
+            },
+            ..signals.clone()
+        };
+        let line = failed.line();
+        assert!(line.contains("(2) app-server: could not check (no trusted Codex is running)"));
+        assert!(
+            line.contains("(3) Codex app router: 1 owned by an app window, 2 unanswered in time")
+        );
+        // Nothing runs: the app-server is not reachable, which is said so.
+        let (_, idle) = discover_with_signals(
+            &config,
+            &trusted_table(),
+            UID,
+            &LoadedThreads::default(),
+            &runner_hosting(&[]),
+        )
+        .unwrap();
+        assert_eq!(
+            idle.app_server,
+            AppServerProbe::Failed("no trusted Codex is running".into())
+        );
     }
 
     /// A Codex app router on a Windows named pipe of the test's own, owning
@@ -1704,7 +1773,13 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(live_ids(&found), [THREAD]);
-        assert_eq!(signals.app_router, Probe::Answered(1));
+        assert_eq!(
+            signals.app_router,
+            Probe::Answered {
+                owned: 1,
+                unanswered: 0
+            }
+        );
         assert_eq!(signals.process_held, 0);
         server.await.unwrap();
     }
@@ -1723,7 +1798,8 @@ mod tests {
         assert!(ipc::router_may_listen(&home.path().join("ipc/ipc.sock")));
         let started = std::time::Instant::now();
         assert_eq!(
-            ipc::try_open_threads(&home.path().join("ipc/ipc.sock"), &[THREAD.into()]),
+            ipc::try_open_threads(&home.path().join("ipc/ipc.sock"), &[THREAD.into()])
+                .map(|(owned, _)| owned),
             Err(ipc::IpcError::NotRunning)
         );
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
