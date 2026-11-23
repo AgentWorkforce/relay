@@ -790,8 +790,10 @@ These details came out of review and are part of the contract:
   resolved to GitHub's numeric repository and owner ids, through the GitHub
   App installation or else the public API, and pinned (audited as
   `gate.pinned`).
-  - A renamed or missing repository is refused with 422
-    `repository_unresolved`, and an outage with 503.
+  - A renamed, redirected or missing repository is refused with 422
+    `repository_unresolved`. A GitHub failure on the installation side is a
+    retryable 503. The public API is used only when no installation covers
+    the repository.
   - relay-control only: for a self-hosted issuer (GitHub Enterprise Server),
     Control can't resolve the repository on github.com. There, the owner
     supplies `repository_id` and `repository_owner_id` in the registration
@@ -817,10 +819,14 @@ These details came out of review and are part of the contract:
   `job_workflow_ref` matches only a token whose `job_workflow_ref` is null or
   equal to its `workflow_ref`. A reusable workflow called from elsewhere
   never matches by accident.
-- **The source-sha opt-out** is accepted only on gates with an exact
-  `refs/heads/*` ref.
+- **The source-sha opt-out** is accepted only when the gate's exact `ref` is
+  `refs/heads/<the repository's default branch>`. The default branch is read
+  at registration and stored on the gate (`default_branch`). If the
+  repository's default branch changes later, the gate must be registered
+  again.
 - **`same_run`** compares the repository id as well as the run id.
-- **Signing keys.** An unknown `kid` when the cached JWKS is stale answers
+- **Signing keys.** Only `sig` (or unspecified-use) keys from GitHub's JWKS
+  are used. An unknown `kid` when the cached JWKS is stale answers
   `unavailable` (503).
 - **Matching rules.** A gate's `target_prefix` must end with `:`. Live gates
   are unique per workspace and owner on (repository, `workflow_ref`,
