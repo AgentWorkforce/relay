@@ -808,6 +808,18 @@ These details came out of review and are part of the contract:
     derives after its verify step.
   - The opt-out is refused on `ref_pattern` (tag) gates, both at
     registration and at redeem.
+- **Release only.** Gate redeem accepts only `release` actions. Any other
+  class answers `out_of_scope`, so landing a branch is not gated through
+  this route. Merges stay agent-redeemed through §6.3.
+- **`job_workflow_ref` default.** A gate registered without a
+  `job_workflow_ref` matches only a token whose `job_workflow_ref` is null or
+  equal to its `workflow_ref`. A reusable workflow called from elsewhere
+  never matches by accident.
+- **The source-sha opt-out** is accepted only on gates with an exact
+  `refs/heads/*` ref.
+- **`same_run`** compares the repository id as well as the run id.
+- **Signing keys.** An unknown `kid` when the cached JWKS is stale answers
+  `unavailable` (503).
 - **Matching rules.** A gate's `target_prefix` must end with `:`. Live gates
   are unique per workspace and owner on (repository, `workflow_ref`,
   `job_workflow_ref`, event, `target_prefix`). The `workflow_ref` includes
