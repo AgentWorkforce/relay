@@ -371,13 +371,23 @@ impl LocalSessions {
         // The process the walk came up from: the session's own child once
         // the walk reaches a session.
         let mut below = None;
+        // A process of this user's running an executable named `codex` that
+        // is not trusted names no session, and the walk goes on past it; but
+        // a caller under one is never outside every agent: it is
+        // unattributed, not `NotASession` (`person_guard` would serve it as
+        // the person).
+        let mut under_codex = false;
+        let outside = |under_codex: bool| match under_codex {
+            true => CallerMiss::Unattributed,
+            false => CallerMiss::NotASession,
+        };
         for _ in 0..MAX_ANCESTRY {
             if current <= 1 {
-                return Err(CallerMiss::NotASession);
+                return Err(outside(under_codex));
             }
             // An intermediate of another user (a `sudo`, say) is walked
             // past; only a session of this user's can be the caller's.
-            let process = table.process(current).ok_or(CallerMiss::NotASession)?;
+            let process = table.process(current).ok_or_else(|| outside(under_codex))?;
             let own = process.uid == uid;
             if let Some(found) = own
                 .then(|| self.claude_caller(claude, process, below.as_ref()))
@@ -442,10 +452,14 @@ impl LocalSessions {
                     .map(|id| Target::new(SessionKind::Codex, id))
                     .ok_or(CallerMiss::Unattributed);
             }
+            under_codex |= own
+                && table
+                    .executable(current)
+                    .is_some_and(|exe| exe.file_stem().is_some_and(|name| name == "codex"));
             current = process.parent;
             below = Some(process);
         }
-        Err(CallerMiss::NotASession)
+        Err(outside(under_codex))
     }
 }
 
@@ -3532,6 +3546,31 @@ mod tests {
             target_of(&world, 410),
             Some(Target::new(SessionKind::ClaudeTerminal, CLAUDE))
         );
+        // Outside every other agent, its tools are still under an agent:
+        // unattributed, never served as the person.
+        world.table.insert(
+            400,
+            FakeProcess {
+                executable: Some(codex_exe()),
+                arguments: vec!["codex".into()],
+                ..process(1, 130)
+            },
+        );
+        assert!(matches!(
+            world.sessions.caller(410),
+            Err(CallerMiss::Unattributed)
+        ));
+        world.table.insert(
+            400,
+            FakeProcess {
+                executable: Some("/usr/bin/bash".into()),
+                ..process(1, 130)
+            },
+        );
+        assert!(matches!(
+            world.sessions.caller(410),
+            Err(CallerMiss::NotASession)
+        ));
     }
 
     // OutboundTests.testCallerResolutionStaysUnderOneHundredMillisecondsWithLargeFakeTable,

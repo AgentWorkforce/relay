@@ -2340,6 +2340,10 @@ async fn accept_loop(
 mod tests {
     use super::*;
 
+    // curl carries the token in the query; the probe, which Windows always
+    // uses and which needs an installed helper, carries `--session-token`
+    // (`session_cli`'s own test).
+    #[cfg(unix)]
     #[test]
     fn a_reply_hint_carries_a_session_token_only_when_one_is_given() {
         let socket = Path::new("/run/user/1000/agent-relay/relay.sock");
