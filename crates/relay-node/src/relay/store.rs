@@ -2413,6 +2413,7 @@ impl HandleState {
     fn saved(&mut self, saved: Store) {
         // A save adopts what other processes wrote, this setting included.
         crate::relay::codex::compact::set_enabled(saved.hides_relay_messages());
+        crate::relay::session_tokens::set_enabled(saved.session_send_tokens_on());
         // The launch registrations are never saved: they stay as they are.
         let launch_gates = std::mem::take(&mut self.store.launch_gates);
         self.store = saved;

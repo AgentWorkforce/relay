@@ -62,9 +62,12 @@ impl ProcessTable for SystemProcesses {
 
     fn is_trusted_codex(&self, executable: &Path) -> bool {
         let uid = crate::relay::peer::current_uid();
-        let home = crate::relay::paths::home().ok();
         executable.file_name().is_some_and(|name| name == "codex")
-            && in_codex_install(executable, home.as_deref())
+            && codex_location_trusted(
+                executable,
+                crate::relay::paths::home().ok(),
+                std::env::var_os("CODEX_HOME").map(PathBuf::from),
+            )
             && fs::metadata(executable)
                 .is_ok_and(|m| (m.uid() == 0 || m.uid() == uid) && m.mode() & 0o022 == 0)
     }
@@ -251,7 +254,7 @@ pub fn in_cursor_install(executable: &Path, mountinfo: &str) -> bool {
 /// copied `codex` out rather than proving the binary's origin; a caller's
 /// thread is also proven by the writer lock that Codex holds
 /// (`codex_process_vouches_for_thread`).
-pub fn in_codex_install(executable: &Path, home: Option<&Path>) -> bool {
+pub fn in_codex_install(executable: &Path, home: Option<&Path>, codex_home: Option<&Path>) -> bool {
     const SYSTEM: [&str; 9] = [
         "/usr/bin/codex",
         "/usr/local/bin/codex",
@@ -305,6 +308,16 @@ pub fn in_codex_install(executable: &Path, home: Option<&Path>) -> bool {
     if SYSTEM.iter().any(|root| under(root)) {
         return true;
     }
+    // A custom `CODEX_HOME`: Codex's own managed packages and binary there.
+    if let Some(codex_home) = codex_home
+        .and_then(Path::to_str)
+        .filter(|path| path.starts_with('/'))
+    {
+        let codex_home = codex_home.trim_end_matches('/');
+        if under(&format!("{codex_home}/packages/")) || under(&format!("{codex_home}/bin/codex")) {
+            return true;
+        }
+    }
     let Some(home) = home
         .and_then(Path::to_str)
         .filter(|home| home.starts_with('/'))
@@ -313,6 +326,20 @@ pub fn in_codex_install(executable: &Path, home: Option<&Path>) -> bool {
     };
     let home = home.trim_end_matches('/');
     HOME.iter().any(|root| under(&format!("{home}/{root}")))
+}
+
+/// [`in_codex_install`] with `home` and `codex_home` canonicalised, as the
+/// kernel's executable path is, so a home reached through a symlink still
+/// matches. A relative `CODEX_HOME` names nothing.
+fn codex_location_trusted(
+    executable: &Path,
+    home: Option<PathBuf>,
+    codex_home: Option<PathBuf>,
+) -> bool {
+    let canonical = |path: PathBuf| fs::canonicalize(&path).unwrap_or(path);
+    let home = home.map(canonical);
+    let codex_home = codex_home.filter(|path| path.is_absolute()).map(canonical);
+    in_codex_install(executable, home.as_deref(), codex_home.as_deref())
 }
 
 /// `mountinfo` writes a space, tab, newline and backslash as octal escapes.
@@ -329,6 +356,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_home_or_codex_home_reached_through_a_symlink_still_matches() {
+        let root = tempfile::tempdir().unwrap();
+        let real = fs::canonicalize(root.path()).unwrap().join("real");
+        let bin = real.join(".cargo/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let codex = bin.join("codex");
+        fs::write(&codex, "").unwrap();
+        let link = root.path().join("home-link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(!in_codex_install(&codex, Some(&link), None));
+        assert!(codex_location_trusted(&codex, Some(link.clone()), None));
+        let packaged = real.join("custom/packages/standalone/bin");
+        fs::create_dir_all(&packaged).unwrap();
+        let managed = packaged.join("codex");
+        fs::write(&managed, "").unwrap();
+        let custom_link = root.path().join("codex-home-link");
+        std::os::unix::fs::symlink(real.join("custom"), &custom_link).unwrap();
+        assert!(codex_location_trusted(&managed, None, Some(custom_link)));
+        assert!(!codex_location_trusted(
+            &managed,
+            None,
+            Some(PathBuf::from("custom"))
+        ));
+    }
+
+    #[test]
     fn codex_is_trusted_only_where_its_installers_put_it() {
         let home = Some(Path::new("/home/me"));
         for trusted in [
@@ -343,7 +396,7 @@ mod tests {
             "/home/me/.cargo/bin/codex",
             "/home/me/.local/bin/codex",
         ] {
-            assert!(in_codex_install(Path::new(trusted), home), "{trusted}");
+            assert!(in_codex_install(Path::new(trusted), home, None), "{trusted}");
         }
         for untrusted in [
             "/tmp/codex",
@@ -358,16 +411,48 @@ mod tests {
             "/usr/bin/../../tmp/codex",
             "codex",
         ] {
-            assert!(!in_codex_install(Path::new(untrusted), home), "{untrusted}");
+            assert!(
+                !in_codex_install(Path::new(untrusted), home, None),
+                "{untrusted}"
+            );
         }
         // Without a home, only the system folders.
-        assert!(in_codex_install(Path::new("/usr/local/bin/codex"), None));
-        assert!(!in_codex_install(
-            Path::new("/home/me/.cargo/bin/codex"),
+        assert!(in_codex_install(
+            Path::new("/usr/local/bin/codex"),
+            None,
             None
         ));
         assert!(!in_codex_install(
             Path::new("/home/me/.cargo/bin/codex"),
+            None,
+            None
+        ));
+        assert!(!in_codex_install(
+            Path::new("/home/me/.cargo/bin/codex"),
+            Some(Path::new("relative")),
+            None
+        ));
+        // A custom CODEX_HOME's own packages and binary, and nothing else
+        // there.
+        let custom = Some(Path::new("/srv/codex-home"));
+        assert!(in_codex_install(
+            Path::new("/srv/codex-home/packages/app-server-daemon/releases/1/bin/codex"),
+            None,
+            custom
+        ));
+        assert!(in_codex_install(
+            Path::new("/srv/codex-home/bin/codex"),
+            None,
+            custom
+        ));
+        assert!(!in_codex_install(
+            Path::new("/srv/codex-home/sessions/codex"),
+            None,
+            custom
+        ));
+        assert!(!in_codex_install(
+            Path::new("/srv/codex-home/packages/app-server-daemon/releases/1/bin/codex"),
+            None,
             Some(Path::new("relative"))
         ));
     }

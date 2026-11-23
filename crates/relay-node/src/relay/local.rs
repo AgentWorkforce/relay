@@ -29,8 +29,7 @@ use crate::relay::opencode::{OpenCodeConfig, OpenCodeSettings};
 use crate::relay::opencode_existing;
 use crate::relay::outbound::{self, RelaySend, ServingPath};
 use crate::relay::process::{
-    claude_start_matches, codex_caller_thread, codex_locked_threads,
-    codex_process_vouches_for_thread, codex_selection_is_ambiguous, resume_argument,
+    claude_start_matches, codex_locked_threads, codex_process_vouches_for_thread, resume_argument,
     ProcessSnapshot, ProcessTable, SystemProcesses, MAX_ANCESTRY,
 };
 use crate::relay::sessions::{
@@ -295,12 +294,15 @@ impl LocalSessions {
             // nobody, as under a Grok leader below. One chat per app-server
             // (or a CLI) is unaffected. The cost is that tools of a Codex
             // app with several chats open cannot send until the others close.
-            if codex_selection_is_ambiguous(table, pid, uid) {
-                return Err(CallerMiss::Unattributed);
-            }
-            return codex_caller_thread(table, pid, uid)
-                .map(|id| Target::new(SessionKind::Codex, id))
-                .ok_or_else(|| self.tag_miss(pid, &claude));
+            // The gate and the thread's voucher read the app-server's
+            // locks once, together (`codex_tagged_caller`).
+            return match crate::relay::process::codex_tagged_caller(table, pid, uid) {
+                crate::relay::process::CodexTag::Named(id) => {
+                    Ok(Target::new(SessionKind::Codex, id))
+                }
+                crate::relay::process::CodexTag::Ambiguous => Err(CallerMiss::Unattributed),
+                crate::relay::process::CodexTag::Nobody => Err(self.tag_miss(pid, &claude)),
+            };
         }
         // Grok gives each tool process its session's id as
         // `GROK_SESSION_ID`, the way Codex gives `CODEX_THREAD_ID`. It
@@ -1202,7 +1204,10 @@ impl LocalInjector {
                     .is_some()
             }
             // Agent Relay's plugin tags each of the session's shells, so a
-            // session one live plugin process holds can answer on the socket.
+            // session one live plugin process holds can answer on the socket,
+            // when that process holds no other session (the socket refuses a
+            // tag that could name either) or the session's send token picks
+            // it (`session_send_tokens`).
             SessionKind::OpenCodeOpen => {
                 self.config.opencode_open
                     && crate::relay::opencode::holder(
@@ -1211,7 +1216,9 @@ impl LocalInjector {
                         self.config.uid,
                         &target.id,
                     )
-                    .is_ok()
+                    .is_ok_and(|(process, _)| {
+                        process.sessions.len() == 1 || crate::relay::session_tokens::enabled()
+                    })
             }
             SessionKind::Droid | SessionKind::Devin | SessionKind::CursorCli => {
                 lock_held::can_reply(&self.config, &*self.table, target)
@@ -6359,6 +6366,15 @@ printf '{{"jsonrpc":"2.0","id":"%s","result":{{"stopReason":"end_turn","outputTo
             two.caller_target(610),
             Err(CallerMiss::Unattributed)
         ));
+        // And no reply command is offered for either while the send-token
+        // setting is off: the socket would refuse it.
+        let injector = LocalInjector::new(
+            config.clone(),
+            world.table.clone(),
+            CodexRouter::new(Arc::new(UnusedCodexRoutes)),
+            ServingPath::default(),
+        );
+        assert!(!injector.can_reply(&Target::new(SessionKind::OpenCodeOpen, held)));
         // Nor does a tag naming the other session.
         world.table.insert(680, shell(680, Some(other)));
         assert!(matches!(

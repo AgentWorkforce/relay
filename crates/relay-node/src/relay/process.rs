@@ -690,18 +690,91 @@ pub(crate) fn codex_process_vouches_for_thread(
 ) -> bool {
     let thread = thread.to_lowercase();
     let files = table.opened_files(pid);
+    let app_server = table.arguments(pid).iter().any(|arg| arg == "app-server");
+    vouches_from(&files, app_server, &thread)
+}
+
+/// [`codex_process_vouches_for_thread`] from one observation of the
+/// process's open files.
+fn vouches_from(files: &[OpenedFile], app_server: bool, thread: &str) -> bool {
     let locked = files
         .iter()
         .filter_map(|file| codex_thread_of_lock(&file.path))
         .collect::<BTreeSet<_>>();
-    let app_server = table.arguments(pid).iter().any(|arg| arg == "app-server");
-    if app_server {
-        locked.contains(&thread)
-    } else if locked.len() == 1 {
-        locked.contains(&thread)
+    if app_server || locked.len() == 1 {
+        locked.contains(thread)
     } else {
-        cli_multilock_vouches(&locked, &thread, &files)
+        cli_multilock_vouches(&locked, thread, files)
     }
+}
+
+/// What a caller's `CODEX_THREAD_ID` names on the relay-send socket.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CodexTag {
+    /// The nearest trusted Codex vouches for the thread.
+    Named(String),
+    /// The nearest trusted Codex is an app-server holding several chats'
+    /// locks: the tag cannot pick among them.
+    Ambiguous,
+    /// No thread: a missing or invalid tag, no trusted Codex above the
+    /// caller, or one that does not vouch for the tag.
+    Nobody,
+}
+
+/// [`codex_caller_thread`] for a caller carrying `CODEX_THREAD_ID`, with the
+/// ambiguity of [`codex_selection_is_ambiguous`] decided from the same single
+/// read of the nearest trusted Codex's open files as the thread's voucher,
+/// so a chat opened between two reads can neither pass the gate nor be
+/// picked.
+pub fn codex_tagged_caller(table: &dyn ProcessTable, pid: i32, uid: u32) -> CodexTag {
+    let Some(caller) = table.process(pid).filter(|p| p.uid == uid) else {
+        return CodexTag::Nobody;
+    };
+    let Some(thread) = table
+        .environment_var(pid, "CODEX_THREAD_ID")
+        .map(|thread| thread.to_lowercase())
+        .filter(|thread| crate::relay::store::is_uuid(thread))
+    else {
+        return CodexTag::Nobody;
+    };
+    let mut current = pid;
+    for _ in 0..MAX_ANCESTRY {
+        if current <= 1 {
+            return CodexTag::Nobody;
+        }
+        let Some(process) = table.process(current).filter(|p| p.uid == uid) else {
+            return CodexTag::Nobody;
+        };
+        if table
+            .executable(current)
+            .is_some_and(|exe| table.is_trusted_codex(&exe))
+        {
+            let files = table.opened_files(current);
+            let app_server = table
+                .arguments(current)
+                .iter()
+                .any(|arg| arg == "app-server");
+            let locks = files
+                .iter()
+                .filter_map(|file| codex_thread_of_lock(&file.path))
+                .collect::<BTreeSet<_>>();
+            let same =
+                table.process(current) == Some(process) && table.process(pid) == Some(caller);
+            if !same {
+                return CodexTag::Nobody;
+            }
+            if app_server && locks.len() > 1 {
+                return CodexTag::Ambiguous;
+            }
+            return if vouches_from(&files, app_server, &thread) {
+                CodexTag::Named(thread)
+            } else {
+                CodexTag::Nobody
+            };
+        }
+        current = process.parent;
+    }
+    CodexTag::Nobody
 }
 
 fn subagent_chain_reaches(
@@ -1452,6 +1525,103 @@ mod tests {
         assert_eq!(codex_caller_thread(&table, 200, UID), None);
         table.insert(100, resumed(vec![lock(OTHER)]));
         assert_eq!(codex_caller_thread(&table, 200, UID), None);
+    }
+
+    /// A table whose Codex lock list grows after its first read, as when a
+    /// chat opens while a caller is being identified.
+    struct GrowingLocks {
+        inner: FakeProcesses,
+        reads: std::sync::atomic::AtomicUsize,
+        first: Vec<PathBuf>,
+        later: Vec<PathBuf>,
+    }
+
+    impl ProcessTable for GrowingLocks {
+        fn process(&self, pid: i32) -> Option<ProcessInfo> {
+            self.inner.process(pid)
+        }
+        fn all_pids(&self) -> Vec<i32> {
+            self.inner.all_pids()
+        }
+        fn executable(&self, pid: i32) -> Option<PathBuf> {
+            self.inner.executable(pid)
+        }
+        fn is_trusted_codex(&self, executable: &Path) -> bool {
+            self.inner.is_trusted_codex(executable)
+        }
+        fn command_line(&self, pid: i32) -> CommandLine {
+            self.inner.command_line(pid)
+        }
+        fn open_files(&self, pid: i32) -> Vec<PathBuf> {
+            if pid != 100 {
+                return self.inner.open_files(pid);
+            }
+            let read = self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if read == 0 {
+                self.first.clone()
+            } else {
+                self.later.clone()
+            }
+        }
+        fn opened_files(&self, pid: i32) -> Vec<OpenedFile> {
+            self.open_files(pid)
+                .into_iter()
+                .map(|path| OpenedFile {
+                    path,
+                    birth_ns: None,
+                })
+                .collect()
+        }
+        fn cwd(&self, pid: i32) -> Option<PathBuf> {
+            self.inner.cwd(pid)
+        }
+        fn start_clock(&self) -> StartClock {
+            self.inner.start_clock()
+        }
+    }
+
+    #[test]
+    fn the_ambiguity_gate_and_the_voucher_read_one_lock_observation() {
+        let inner = table();
+        inner.insert(
+            100,
+            FakeProcess {
+                parent: 1,
+                uid: UID,
+                start: 10,
+                executable: Some(codex()),
+                arguments: vec!["codex".into(), "app-server".into()],
+                ..FakeProcess::default()
+            },
+        );
+        // The tool names the chat that opens only after the first read.
+        inner.insert(
+            200,
+            FakeProcess {
+                parent: 100,
+                uid: UID,
+                start: 20,
+                executable: Some("/bin/zsh".into()),
+                environment: [("CODEX_THREAD_ID".to_string(), OTHER.to_string())].into(),
+                ..FakeProcess::default()
+            },
+        );
+        let growing = GrowingLocks {
+            inner,
+            reads: Default::default(),
+            first: vec![lock(THREAD)],
+            later: vec![lock(THREAD), lock(OTHER)],
+        };
+        assert_eq!(codex_tagged_caller(&growing, 200, UID), CodexTag::Nobody);
+        assert_eq!(growing.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // Read again, both chats are held: ambiguous, never the new one.
+        assert_eq!(codex_tagged_caller(&growing, 200, UID), CodexTag::Ambiguous);
+        // A single chat named by its own tag.
+        let one = table();
+        assert_eq!(
+            codex_tagged_caller(&one, 200, UID),
+            CodexTag::Named(THREAD.to_string())
+        );
     }
 
     #[test]

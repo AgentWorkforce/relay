@@ -79,9 +79,36 @@ pub fn can_reply(
         return false;
     }
     match managed.binding(target) {
-        Some(ManagedBinding::OpenCode(binding)) => tagging_ready(config, table, &binding),
+        Some(ManagedBinding::OpenCode(binding)) => {
+            tagging_ready(config, table, &binding)
+                && (served_by(managed, table, binding.server_pid).len() == 1
+                    || crate::relay::session_tokens::enabled())
+        }
         _ => false,
     }
+}
+
+/// The managed sessions the live server `server_pid` serves: records naming
+/// that pid only while that very process (its start time and user) runs, so
+/// a record a dead server left, its pid since reused, counts for nothing.
+pub(crate) fn served_by(
+    managed: &ManagedSessions,
+    table: &dyn ProcessTable,
+    server_pid: i32,
+) -> Vec<Binding> {
+    let Some(process) = table.process(server_pid) else {
+        return Vec::new();
+    };
+    managed
+        .opencode_claims()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|b| {
+            b.server_pid == server_pid
+                && b.server_start == process.start
+                && b.server_uid == process.uid
+        })
+        .collect()
 }
 
 pub fn caller(
@@ -92,26 +119,19 @@ pub fn caller(
     claim: Option<&str>,
 ) -> Option<Target> {
     // The server can host several sessions or subagents. Its PID alone must
-    // never lend a shell the identity of the one registration we know.
-    let claim = claim.filter(|id| is_session_id(id))?;
-    let served: Vec<_> = managed
-        .opencode_claims()
-        .ok()?
-        .into_iter()
-        .filter(|b| b.server_pid == server_pid)
-        .collect();
-    // The claim is the shell's environment, which any process under the
-    // server can set to another session it serves. With more than one
+    // never lend a shell the identity of the one registration we know, and
+    // the claim is the shell's environment, which any process under the
+    // server can set to another session it serves: with more than one live
     // managed session on this server nothing proves which one started the
     // caller, so it names none.
-    let matches: Vec<_> = served.iter().filter(|b| b.session_id == claim).collect();
-    if served.len() != 1 {
-        return None;
-    }
-    let [binding] = matches.as_slice() else {
+    let claim = claim.filter(|id| is_session_id(id))?;
+    let served = served_by(managed, table, server_pid);
+    let [binding] = served.as_slice() else {
         return None;
     };
-    let binding = *binding;
+    if binding.session_id != claim {
+        return None;
+    }
     let target = Target::new(SessionKind::OpenCode, claim);
     if !tagging_ready(config, table, binding) {
         return None;

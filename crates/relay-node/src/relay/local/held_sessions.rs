@@ -95,10 +95,9 @@ impl LocalSessions {
             return self
                 .managed
                 .as_deref()
-                .and_then(|managed| managed.opencode_claims().ok())
+                .map(|managed| crate::relay::opencode::managed::served_by(managed, table, holder))
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|binding| binding.server_pid == holder)
                 .map(|binding| Target::new(SessionKind::OpenCode, binding.session_id))
                 .collect();
         }

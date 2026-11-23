@@ -126,6 +126,7 @@ impl StoreHandle {
     pub fn open_agent_store(path: PathBuf, machine_prefix: &str) -> StoreHandle {
         let store = StoreHandle::open(path, machine_prefix);
         crate::relay::codex::compact::set_enabled(store.read(Store::hides_relay_messages));
+        crate::relay::session_tokens::set_enabled(store.read(Store::session_send_tokens_on));
         store
     }
 }

@@ -24,6 +24,21 @@ pub const HEADER: &str = "x-relay-session-token";
 /// The query field a token travels in.
 pub const QUERY: &str = "session_token";
 
+/// Whether `session_send_tokens` is on, as the agent store last loaded or
+/// saved it: what decides, where no store is at hand, whether a session on a
+/// host holding several sessions can answer on the socket (with its token).
+static ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Records the store's `session_send_tokens` (load and every save).
+pub fn set_enabled(enabled: bool) {
+    ENABLED.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether `session_send_tokens` is on (`set_enabled`).
+pub fn enabled() -> bool {
+    ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The tokens this core has handed out, by session.
 #[derive(Default)]
 pub struct SessionTokens {
