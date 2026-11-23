@@ -200,7 +200,7 @@ fn peer() -> Endpoint {
 }
 
 /// Whether the history with [`PEER`] is empty, as it is without proof.
-async fn found_nothing(core: &Core) -> bool {
+async fn found_nothing(core: &Arc<Core>) -> bool {
     core.history(&peer(), None)
         .await
         .unwrap()

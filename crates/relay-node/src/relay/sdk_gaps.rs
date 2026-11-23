@@ -34,6 +34,9 @@
 //!   the immutable `agent_id` exact-address proof needs.
 //! - `GET /v1/dm/{id}/messages` and `GET /v1/messages/{id}`:
 //!   `MessageWithMeta` has no `agent_address` or `thread_id`.
+//! - `GET /v1/inbox`: `UnreadDm.last_message` is a string where Relaycast
+//!   sends `{id, text, created_at}`, so the SDK cannot read an inbox with an
+//!   unread DM in it.
 //! - `RelayCast` and `AgentClient` cannot set the origin client and version;
 //!   the clients here send `relay-desktop` and the desktop's version.
 //!
@@ -482,6 +485,17 @@ pub async fn message(agent: &HttpClient, id: &str) -> relaycast::Result<Value> {
     agent
         .get(&format!("/v1/messages/{}", segment(id)), None, None)
         .await
+}
+
+/// `GET /v1/inbox` with an agent token, raw: what Relaycast counts as
+/// unread for the caller (`unread_dms`, `unread_channels`, `mentions`).
+pub async fn inbox(agent: &HttpClient) -> relaycast::Result<Value> {
+    let data: Value = agent.get("/v1/inbox", None, None).await?;
+    if data.is_object() {
+        Ok(data)
+    } else {
+        Err(RelayError::InvalidResponse("unreadable inbox".into()))
+    }
 }
 
 fn array(data: Value, what: &str) -> relaycast::Result<Vec<Value>> {

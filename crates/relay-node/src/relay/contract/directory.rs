@@ -109,6 +109,56 @@ pub struct History {
     pub messages: Vec<DirectMessage>,
 }
 
+/// `messages.inbox`'s result: what Relaycast counts as unread for you.
+/// The count is Relaycast's own read state, shared by every device you
+/// read on (the desktop, the iOS app and the dashboard).
+#[derive(Clone, Debug, Serialize, JsonSchema, Deserialize)]
+pub struct MessageInbox {
+    /// Your relay identity's name.
+    pub identity: String,
+    /// Direct conversations with messages from the other side you have not
+    /// read; none when everything is read.
+    pub unread: Vec<UnreadConversation>,
+    /// Channels you are a member of with top-level messages you have not
+    /// read.
+    pub unread_channels: Vec<UnreadChannel>,
+}
+
+/// A direct conversation with unread messages.
+#[derive(Clone, Debug, Serialize, JsonSchema, Deserialize)]
+pub struct UnreadConversation {
+    /// The conversation's id, as `messages.conversations` lists it.
+    pub conversation_id: String,
+    /// The name of who you talk to (for a group conversation, one of them).
+    pub peer: String,
+    /// Messages from the other side after the last one you read.
+    pub unread_count: u64,
+    /// The conversation's newest message, which may be your own;
+    /// `messages.mark_read` with its id reads everything before it.
+    pub last_message: Option<InboxMessage>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema, Deserialize)]
+pub struct InboxMessage {
+    pub id: String,
+    pub text: String,
+    pub created_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema, Deserialize)]
+pub struct UnreadChannel {
+    /// The channel's name, without `#`.
+    pub channel: String,
+    pub unread_count: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub struct MarkReadParams {
+    /// A message in one of your conversations: it and everything before it
+    /// there are read.
+    pub message_id: String,
+}
+
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct SendParams {
     /// A name or address; give exactly one of `to` and `address`.
