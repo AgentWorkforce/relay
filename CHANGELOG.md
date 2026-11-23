@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `agent-relay-node`: `messages.history` answers sooner. Your direct conversation listing is kept for 30 seconds, so following an open conversation reads only that conversation's newest page, and an address lookup answers with the page it already read. The listing is read again at once when you send, a new delivery or a push wake arrives, Relaycast refuses the token or pauses the read, you sign out or change account, or the conversation asked for is not in it. A listing of more than 1,000 conversations is not kept.
+
 ## [18.13.0] - 2026-11-23
 
 ### Added
