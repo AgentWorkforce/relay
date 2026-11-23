@@ -681,13 +681,27 @@ The default limits in §5.1 apply to everything else.
 - **What Cloud checks on the approval:** it re-checks the grant, standing,
   conditions, revocation and expiry, and requires that the target starts with
   the gate's `target_prefix`.
-- **Single use across reruns.** The first redeem consumes the approval and
-  binds it to the GitHub `run_id` in the token. A later attempt of the same
-  run (`run_attempt` > 1, for example a rerun after a notary stall) gets
-  `{ok:true, consumed:true, rerun:true}`. Any other run gets `consumed`.
+- **Single use, per run.** The first redeem consumes the approval and
+  binds it to the GitHub `run_id` in the token. Any later redeem from the same
+  run gets `{ok:true, consumed:true, same_run:true}`. That covers a second
+  publishing job in the same workflow (for example a promote job and a
+  bridge job) and a later attempt of the run (for example a rerun after a
+  notary stall). Any other run gets `consumed`.
+- **Dry run.** `dry_run: true` runs every check and never consumes. The
+  answer is audited as a dry run. Workflows start in report-only mode this
+  way, and enforce only after a real release has passed through.
+- **Tag-triggered runs.** A gate may set `ref_pattern` instead of `ref`. The
+  pattern is limited to `refs/tags/<literal prefix>*` (only a single trailing
+  `*`), so that workflows started by a release tag are gated too.
+  `event_name` must still match exactly.
+- **Every publishing path needs a gate.** Each workflow that can publish
+  needs its own registered gate and its own redeem step. Otherwise that
+  workflow is a way around the gate.
 - **The job's own check.** The job compares the approved target with its own
   inputs, and with the candidate's recorded source, before it publishes.
-  Any mismatch fails closed.
+  Where the job derives the source commit itself, the redeem comes after
+  that step and compares the approved sha with what the step derived. Any
+  mismatch fails closed.
 - **Tier O still works.** The owner's own answer is an owner-minted
   approval, redeemed the same way.
 - **The Cloud flow.** A flow's stable park resolves when Cloud itself
@@ -927,7 +941,8 @@ Agent routes are proven with the agent's own Relaycast token, as in
   owner-only (a browser session or a desktop-verified bearer, §4.1).
   `POST /delegates/gates/redeem` takes `Authorization: Bearer <GitHub OIDC
 token>` and `{approval_id, action}`. It returns
-  `{ok:true, consumed, rerun?}` or `{ok:false, reason}`. Its extra reasons
+  `{ok:true, consumed, same_run?, dry_run?}` or `{ok:false, reason}`. It also
+  takes `dry_run`, and a gate may use `ref_pattern` (§11a.3). Its extra reasons
   are `gate_unknown`, `oidc_invalid`, `gate_mismatch` and `target_prefix`.
 - Keys: `GET /.well-known/relay-delegation-keys.json` returns a JWKS of OKP
   Ed25519 keys with `kid`.
