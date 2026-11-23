@@ -710,8 +710,8 @@ Each one is open to Khaliq's override.
    Cloud checks them at redeem.
 9. **Khaliq's decision (2026-11-23, 6:36 AM PT): "Org setting, default 90
    days".**
-   - **The setting:** quote retention is the org policy field
-     `quote_retention_days`, from 1 to 3650, default 90. Admins change it.
+   - **The setting:** quote retention is the org-level field
+     `quote_retention_days` (`PUT /api/v1/orgs/{org}/delegation-policy`, §16.3), from 1 to 3650, default 90. Admins change it.
    - **What happens at the end:** when a quote is older than its org's
      window, the quote text is redacted to its SHA-256 hash. A shorter
      window applies to existing quotes at the next sweep. A longer one
@@ -797,18 +797,18 @@ Human-only routes take a browser session or a desktop-verified bearer, never
 an agent token or a plain CLI token. They are refused while the workspace's
 `delegation_enabled` is off, except `GET` and revocation:
 
-| Method & path (under `/api/v1/workspaces/{ws}`) | Purpose                                                                                                                                                                      |
-| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /delegates`                                | the caller's grants (admins: `?all=1`)                                                                                                                                       |
-| `POST /delegates`                               | create a grant: `{delegate_agent_id, scopes:[{class, targets[]}], expires_at, require_tier_o?:[class]}`                                                                      |
-| `PATCH /delegates/{grant_id}`                   | narrow scopes or expiry (widening = new grant)                                                                                                                               |
-| `DELETE /delegates/{grant_id}`                  | revoke                                                                                                                                                                       |
-| `POST /delegates/revoke-all`                    | revoke every grant of the caller (admins: `{all:true}` for the workspace)                                                                                                    |
-| `POST /delegates/claims`                        | start a claim, returns `{claim_id, code, expires_at}` (10 min, single use)                                                                                                   |
-| `POST /delegates/approvals`                     | Tier O: mint `{actions, expires_at, single_use?}` returns `{approval_id}`                                                                                                    |
-| `GET /delegates/audit`                          | audit events, `?since=&grant_id=&format=jsonl`                                                                                                                               |
-| `PUT /delegates/policy`                         | admin only: `{delegation_enabled, max_expiry_days, allowed_classes, require_tier_o, code_owner_match: "any_path" \| "all_paths", quote_retention_days (1–3650, default 90)}` |
-| `GET`/`PUT /delegates/target-owners`            | admin only: `[{pattern, repo?, owner_ids?}]` for targets that are not repos (§5.4)                                                                                           |
+| Method & path (under `/api/v1/workspaces/{ws}`) | Purpose                                                                                                                           |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /delegates`                                | the caller's grants (admins: `?all=1`)                                                                                            |
+| `POST /delegates`                               | create a grant: `{delegate_agent_id, scopes:[{class, targets[]}], expires_at, require_tier_o?:[class]}`                           |
+| `PATCH /delegates/{grant_id}`                   | narrow scopes or expiry (widening = new grant)                                                                                    |
+| `DELETE /delegates/{grant_id}`                  | revoke                                                                                                                            |
+| `POST /delegates/revoke-all`                    | revoke every grant of the caller (admins: `{all:true}` for the workspace)                                                         |
+| `POST /delegates/claims`                        | start a claim, returns `{claim_id, code, expires_at}` (10 min, single use)                                                        |
+| `POST /delegates/approvals`                     | Tier O: mint `{actions, expires_at, single_use?}` returns `{approval_id}`                                                         |
+| `GET /delegates/audit`                          | audit events, `?since=&grant_id=&format=jsonl`                                                                                    |
+| `PUT /delegates/policy`                         | admin only: `{delegation_enabled, max_expiry_days, allowed_classes, require_tier_o, code_owner_match: "any_path" \| "all_paths"}` |
+| `GET`/`PUT /delegates/target-owners`            | admin only: `[{pattern, repo?, owner_ids?}]` for targets that are not repos (§5.4)                                                |
 
 Agent routes are proven with the agent's own Relaycast token, as in
 `native-authority`, with the same bearer rules:
@@ -820,6 +820,10 @@ Agent routes are proven with the agent's own Relaycast token, as in
 | `POST /messaging/delegation/redeem`           | `{recipient_agent_id, recipient_token, approval_id, action:{class, target}}`              | `{ok:true, consumed}` or `{ok:false, reason, unmet?:[condition]}`                                                     |
 | `POST /messaging/delegation/prompt-delegates` | `{session_agent_id, session_token}`                                                       | `{delegates:[{agent_id, grant_id}]}`: the machine owner's delegates whose `prompt_approval` targets cover the session |
 
+- Org-level setting: `GET`/`PUT /api/v1/orgs/{org}/delegation-policy`
+  takes `{quote_retention_days}` (1 to 3650, default 90). Only org owners and
+  admins can call it. It applies to every workspace in the org, and a
+  workspace policy cannot override it.
 - Keys: `GET /.well-known/relay-delegation-keys.json` returns a JWKS of OKP
   Ed25519 keys with `kid`.
 - Reason codes: `not_enabled`, `not_delegate`, `no_approval`, `out_of_scope`,
