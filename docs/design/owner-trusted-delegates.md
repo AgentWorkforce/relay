@@ -1,8 +1,10 @@
 # Owner-named trusted delegates
 
-Status: design, not implemented. Product design approved by Khaliq Gant on
-2026-11-22 (relayed through `sessionspipelinegrok` and `kjgrok`). This
-document is the engineering design. Every decision below is open to review.
+Status: being built. Product design approved by Khaliq Gant on 2026-11-22.
+On 2026-11-23 he asked for it to ship ("Why is this docs only? I want this
+shipped"); both were relayed through `kjgrok`. §15 sets the defaults chosen for
+the open questions, and §16 is the wire contract the implementing PRs share.
+Every decision below is open to Khaliq's override.
 
 ## 1. Problem
 
@@ -527,3 +529,136 @@ carve-out:
 
 Every phase is additive and fails closed. If Cloud or Relaycast cannot attest,
 the recipient sees today's peer framing and nothing more.
+
+## 15. Defaults chosen for the open questions
+
+Each one is open to Khaliq's override.
+
+1. **Merge on Tier D: yes.** `merge` is Tier D by default. An org can require
+   Tier O for any class through `require_tier_o`.
+2. **Display identity: display name only.** The delegate line names the
+   owner by their Cloud display name, put on one line and capped at 80
+   characters, or "the owner" when no display name is set. It never shows an
+   email or a handle.
+3. **Recipient default: `own_owner`.** This takes effect only where the
+   workspace has turned delegation on. That workspace switch
+   (`delegation_enabled`) is **off by default**, so nothing changes anywhere
+   until an owner or admin turns it on.
+4. **Key custody: Ed25519 key from the environment, KMS before GA.** The
+   signing key is held in an environment secret, and every key has a `kid`.
+   Each `jti` is recorded in the audit log. There is no transparency log.
+5. **Third-party bots: the claim flow is enough.** There is no OAuth-style
+   connect flow.
+6. **Core prompts: delegates do not answer them.** There is no
+   `prompt_approval` class.
+7. **Not plan-gated.** Audit export is available on every plan.
+8. **Conditions such as "when CI is green" are left to the receiving
+   agent.** There is no structured condition.
+9. **Quote retention: 90 days.** After that, the quote text is redacted to
+   its SHA-256 hash, and the owner can redact any quote at any time.
+
+## 16. Wire contract (v1)
+
+Every implementing PR builds against this section. A change to it is a change
+to this document first.
+
+### 16.1 Action classes
+
+`merge`, `pr_ops`, `deploy`, `release`, `secret_change`, `destructive`,
+`spend`, `external_comms`. A target is a string of at most 256 characters, and
+`*` is a wildcard for one path segment or a whole segment of `owner/repo`,
+`service:env` and similar targets. `owner/*` covers `owner/x` and `owner/x#12`.
+An exact target covers only itself plus, for `owner/repo`, `owner/repo#N`.
+High-risk, always `single_use`: `release`, `secret_change`, `destructive`,
+`spend`, and `deploy` whose target ends in `:prod` or `:production`. A class
+that needs Tier O by default: `secret_change`, `destructive`, `spend`.
+
+### 16.2 Relaycast
+
+- `POST` message (DM and channel) accepts an optional `owner_approval`.
+  Validation at send:
+  - `v` is `1`, and `actions` has 1 to 20 entries of `{class, target, note?}`.
+  - `class` is one of the classes in §16.1. `target` is at most 256
+    characters and `note` at most 280.
+  - `quote` is at most 2000 characters, `quote_source` at most 64, and
+    `quoted_at` and `expires_at` are RFC 3339.
+  - `approval_ref` is optional and matches `apv_[A-Za-z0-9]{8,64}`.
+  - `owner_id` is required and at most 128 characters.
+  - Anything else is refused with `400 invalid_owner_approval`.
+- The approval is stored immutably with the message, server-side, in its own
+  column. It is never merged into caller-editable `metadata`, and a message
+  edit cannot change it.
+- `GET /v1/deliveries/by-message/:messageId` (#543) adds `owner_approval`
+  (the stored object or `null`) to its response.
+- The recipient's delivery payload (websocket event and inbox read) carries
+  `has_owner_approval: true` only. This tells the node to ask Cloud for an
+  attestation. The node never acts on approval content it reads from
+  Relaycast.
+
+### 16.3 Cloud and relay-control
+
+Both expose the same HTTP surface. relay-control is the self-hosted twin.
+
+Human-only routes take a browser session or a desktop-verified bearer, never
+an agent token or a plain CLI token. They are refused while the workspace's
+`delegation_enabled` is off, except `GET` and revocation:
+
+| Method & path (under `/api/v1/workspaces/{ws}`) | Purpose                                                                                                 |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `GET /delegates`                                | the caller's grants (admins: `?all=1`)                                                                  |
+| `POST /delegates`                               | create a grant: `{delegate_agent_id, scopes:[{class, targets[]}], expires_at, require_tier_o?:[class]}` |
+| `PATCH /delegates/{grant_id}`                   | narrow scopes or expiry (widening = new grant)                                                          |
+| `DELETE /delegates/{grant_id}`                  | revoke                                                                                                  |
+| `POST /delegates/revoke-all`                    | revoke every grant of the caller (admins: `{all:true}` for the workspace)                               |
+| `POST /delegates/claims`                        | start a claim, returns `{claim_id, code, expires_at}` (10 min, single use)                              |
+| `POST /delegates/approvals`                     | Tier O: mint `{actions, expires_at, single_use?}` returns `{approval_id}`                               |
+| `GET /delegates/audit`                          | audit events, `?since=&grant_id=&format=jsonl`                                                          |
+| `PUT /delegates/policy`                         | admin only: `{delegation_enabled, max_expiry_days, allowed_classes, require_tier_o}`                    |
+
+Agent routes are proven with the agent's own Relaycast token, as in
+`native-authority`, with the same bearer rules:
+
+| Method & path                       | Body                                                                                     | Result                                                                                        |
+| ----------------------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `POST /delegates/claims/complete`   | `{code, agent_id, agent_token}`                                                          | binds that agent id to the claim's owner                                                      |
+| `POST /messaging/delegation`        | `{recipient_agent_id, recipient_token, message_id, accept: "own_owner" \| "org_admins"}` | `{verdict:"delegate", attestation:"<compact JWS>", claims:{…}}` or `{verdict:"none", reason}` |
+| `POST /messaging/delegation/redeem` | `{recipient_agent_id, recipient_token, approval_id, action:{class, target}}`             | `{ok:true}` or `{ok:false, reason}`                                                           |
+
+- Keys: `GET /.well-known/relay-delegation-keys.json` returns a JWKS of OKP
+  Ed25519 keys with `kid`.
+- Reason codes: `not_enabled`, `not_delegate`, `no_approval`, `out_of_scope`,
+  `expired`, `revoked`, `recipient_policy`, `tier_o_required`, `consumed`,
+  `not_pending`, `unavailable`.
+- Defaults: a grant expires after 30 days and may last at most 90. An
+  approval expires after 1 hour and may last at most 24 hours, never past its
+  grant. An attestation lasts 300 seconds.
+
+### 16.4 Attestation JWS
+
+The header is `{"alg":"EdDSA","typ":"relay-delegation+jws","kid":"…"}`. The
+claims are the ones in §6.2:
+
+`v, ws, owner_id, owner_display, delegate_agent_id, grant_id, message_id,
+recipient_agent_id, approval_id, tier, actions, single_use, iat, exp, jti`.
+
+`approval_id` is Cloud's id for this approval: the minted id in Tier O, and
+one derived for the message in Tier D (`apv_` followed by base62 of
+SHA-256(ws|message_id)[0..16]). Redeem and audit use it.
+
+### 16.5 relay-node
+
+- It asks Cloud for an attestation only when a delivery has
+  `has_owner_approval`, and only with its desktop-verified Cloud session. On
+  a gate-only install, or one with no Cloud session, the message goes on as
+  peer text.
+- It verifies the JWS against its build-time Cloud origin's JWKS. The JWKS is
+  cached for an hour and fetched again when a `kid` is unknown. The node then
+  checks that `message_id` and `recipient_agent_id` match this delivery and
+  that `exp` has not passed.
+- It writes the delegate line (`with_delegate_line`, `delegate_framed`,
+  `without_delegate_line` in `delivery/policy.rs`), in the format shown in
+  §6.3.
+- Setting: `delegated_approvals_from` = `off` | `own_owner` | `org_admins`.
+  The default is `own_owner`, and only a person can change it.
+- Local socket: `POST /delegation/redeem?approval=<id>&class=<c>&target=<t>`
+  redeems as the calling session's own agent.
