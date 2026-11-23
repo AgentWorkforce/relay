@@ -85,7 +85,7 @@ pub(crate) fn is_listed(metadata: &Value) -> bool {
 
 impl Core {
     /// Compute after acquiring the name's roster lock and reloading its row.
-    pub(super) fn roster_status(&self, registration: &Registration, name: &str) -> &'static str {
+    pub(crate) fn roster_status(&self, registration: &Registration, name: &str) -> &'static str {
         let present = registration.archived_at.is_none()
             && registration.missing_since.is_none()
             && registration.display_name() == name

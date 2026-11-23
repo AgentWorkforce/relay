@@ -4,7 +4,7 @@ use super::*;
 
 /// Settling a registration's rejected saved workspace key.
 #[path = "rejected_keys.rs"]
-pub(super) mod rejected_keys;
+pub(crate) mod rejected_keys;
 
 #[cfg(test)]
 #[path = "session_end_tests.rs"]

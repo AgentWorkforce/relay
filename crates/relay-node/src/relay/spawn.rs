@@ -40,6 +40,7 @@ mod actions;
 mod claim;
 mod completions;
 pub(crate) mod control;
+mod credit;
 pub(crate) mod drive;
 mod failed;
 pub mod fork;
@@ -440,6 +441,7 @@ mod tests {
     mod launch_gate;
     mod lifecycle_failures;
     mod native_sender;
+    mod owner_credit;
     mod owner_framing;
     mod owner_turns;
     mod release_inventory;
