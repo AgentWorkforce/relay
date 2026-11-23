@@ -143,11 +143,11 @@ const PROMPT_TARGET = /^[^:\s]+:[0-9a-f]{16}:(approve|deny)$/;
  * @returns The pull request and operation, or `undefined` when malformed
  */
 export function parsePrOpsTarget(target: string): { pull: string; op: string } | undefined {
-  const colon = target.lastIndexOf(':');
-  if (colon < 0) return undefined;
-  const pull = target.slice(0, colon);
-  const op = target.slice(colon + 1);
-  if (!/^[^\s/#]+\/[^\s/#]+#\d+$/.test(pull)) return undefined;
+  // The pull request ends at its number; the operation is everything after
+  // the colon that follows it (a label may hold colons).
+  const match = /^([^\s/#:]+\/[^\s/#:]+#\d+):(.+)$/.exec(target);
+  if (!match) return undefined;
+  const [, pull, op] = match;
   const ok =
     ['open', 'close', 'reopen', 'rerun_ci', 'comment'].includes(op) ||
     /^(label|unlabel|request_review)=[^\s]+$/.test(op);

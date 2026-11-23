@@ -293,9 +293,18 @@ impl Action {
         if self.class != PR_OPS {
             return None;
         }
-        let (pull, op) = self.target.rsplit_once(':')?;
-        let (repo, number) = pull.split_once('#')?;
-        if !repo.contains('/') || number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
+        // The pull request ends at its number; the operation is everything
+        // after the colon that follows it (a label may hold colons).
+        let hash = self.target.find('#')?;
+        let digits = self.target[hash + 1..]
+            .bytes()
+            .take_while(u8::is_ascii_digit)
+            .count();
+        let end = hash + 1 + digits;
+        let (pull, rest) = self.target.split_at(end);
+        let op = rest.strip_prefix(':')?;
+        let repo = &pull[..hash];
+        if digits == 0 || !repo.contains('/') || repo.contains(['#', ':']) {
             return None;
         }
         let named = |value: &str| {

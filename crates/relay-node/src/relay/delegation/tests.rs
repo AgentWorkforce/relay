@@ -934,6 +934,10 @@ fn pr_ops_name_the_operation_and_the_pull_request() {
             "request review from ada on acme/api#12",
         ),
         ("acme/api#12:rerun_ci", "re-run CI on acme/api#12"),
+        (
+            "acme/api#12:label=area:api",
+            "label area:api on acme/api#12",
+        ),
     ] {
         let line = line_for(target);
         assert!(

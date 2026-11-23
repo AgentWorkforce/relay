@@ -286,6 +286,10 @@ describe('delegate approvals', () => {
     ).toBeUndefined();
     expect(one({ class: 'pr_ops', target: 'acme/api#12:label=bug' })).toBeDefined();
     expect(one({ class: 'pr_ops', target: 'acme/api#12' })).toBeUndefined();
+    expect(parsePrOpsTarget('acme/api#12:label=area:api')).toEqual({
+      pull: 'acme/api#12',
+      op: 'label=area:api',
+    });
     expect(parsePrOpsTarget('acme/api#12:request_review=ada')).toEqual({
       pull: 'acme/api#12',
       op: 'request_review=ada',
