@@ -98,11 +98,23 @@ Three properties do the work:
 
 ### 4.1 Designation
 
-- **Only the owner, as a person.** A grant is created, changed or revoked
-  only by a human Cloud session: a browser session with recent auth (step-up
-  if older than 15 minutes), or a desktop-verified bearer
-  (`isVerifiedDesktopSignInBearer`, #4987). No agent token, workspace key or
-  `cli:auth` login token from a non-desktop flow can call the grant API.
+- **Only the owner, as a person, in an interactive web session.** Creating
+  or widening a grant, minting a Tier O approval, registering a release gate,
+  and changing delegation policy need an interactive browser session with
+  recent sign-in. A token held by a host process is never enough for these
+  actions, even a person's own or a desktop-verified bearer
+  (`isVerifiedDesktopSignInBearer`, #4987). A host signed in as the owner must
+  not be able to act as the owner here. Once Cloud stamps each person
+  credential with a server-verified device, a desktop device of that kind may
+  be allowed; until then, only the browser.
+- **Confirm in the browser.** The CLI and SDK may still start these actions.
+  The request creates a pending record and returns a confirmation URL, and
+  nothing takes effect until the owner confirms it in the browser.
+- **Reading and revoking are easier.** Listing grants and revoking them
+  (including revoke-all) also accept a desktop-verified bearer. Revoking only
+  ever narrows what a delegate can do.
+- **Never these credentials.** No agent token, workspace key or `cli:auth`
+  login token can call the grant API.
 - **The delegate must be bound to the owner.** It needs exactly one Cloud
   binding owned by the same human, using #4987's uniqueness rule across
   `desktop_relay_identities`, ready `hosted_relay_spawns` with
@@ -617,27 +629,112 @@ carve-out:
 8. **When in doubt, ask.** A delegate line never forbids checking with the
    person.
 
+## 11a. Release gates
+
+Khaliq's instruction (2026-11-23, relayed): both release gates rest on this
+design. They are the relay-app release permit and the Cloud release gates.
+The gate side was designed with relay-app's lead.
+
+### 11a.1 Principle
+
+The gate proves the approval itself. **The job that publishes redeems the
+approval**, under its own short-lived credential, right before its first
+publish step, so whatever starts the job cannot skip the check. A
+host-side permit script becomes an early check and an audit line, nothing
+more. Grant lists in repo files are retired, and no repo file names a bot or
+an agent id. A CI check enforces that.
+
+### 11a.2 Release targets
+
+A `release` action names exactly one release. The target is
+`<repo>:<channel>:v<version>:<source sha>:<candidate run id>[:<profile id>]`.
+For example:
+
+`AgentWorkforce/relay-app:stable:v2026.11.7:3f2a…(40 hex):123456789`
+
+- **The source sha** is the commit the candidate was built from, as the
+  producer run records it. It is not the run's head.
+- **"Ship everything" names nothing and permits nothing.**
+- **Beta before stable.** A version's beta is promoted before its stable, in
+  two separate runs, so an approval names two actions: one for beta and one
+  for stable.
+- **Other targets:**
+  - landing a branch: `<repo>:land:<branch>:<head sha>`;
+  - TestFlight and App Store: `<repo>:ios:<distribution>:<build number>:<sha>`.
+
+`destructive` (deletes, production data) stays Tier O only (owner-minted).
+The default limits in §5.1 apply to everything else.
+
+### 11a.3 Gate registration and the redeem route
+
+- **Registering a gate (owner only, interactive web session, §4.1).** The
+  owner registers each gate under `/delegates/gates`. A gate is
+  `{gate_id, repo, job_workflow_ref, ref, event, target_prefix}`, for example
+  repo `AgentWorkforce/relay-app`,
+  `job_workflow_ref` =
+  `AgentWorkforce/relay-app/.github/workflows/desktop-promote.yml@refs/heads/main`,
+  ref `refs/heads/main`, event `workflow_dispatch`, target prefix
+  `AgentWorkforce/relay-app:`.
+- **The redeem call.** `POST /api/v1/workspaces/{ws}/delegates/gates/redeem`
+  takes the GitHub Actions OIDC token, whose audience is the Cloud origin, and
+  `{approval_id, action:{class, target}}`. No stored secret is involved.
+- **What Cloud checks on the OIDC token:** the signature against GitHub's
+  JWKS, the issuer, the audience, and expiry. It then requires every one of
+  `repository`, `job_workflow_ref`, `ref` and `event_name` to match the
+  registered gate exactly. Matching the repository alone is not enough,
+  because a workflow file edited on another branch also gets a token for the
+  same repository.
+- **What Cloud checks on the approval:** it re-checks the grant, standing,
+  conditions, revocation and expiry, and requires that the target starts with
+  the gate's `target_prefix`.
+- **Single use across reruns.** The first redeem consumes the approval and
+  binds it to the GitHub `run_id` in the token. A later attempt of the same
+  run (`run_attempt` > 1, for example a rerun after a notary stall) gets
+  `{ok:true, consumed:true, rerun:true}`. Any other run gets `consumed`.
+- **The job's own check.** The job compares the approved target with its own
+  inputs, and with the candidate's recorded source, before it publishes.
+  Any mismatch fails closed.
+- **Tier O still works.** The owner's own answer is an owner-minted
+  approval, redeemed the same way.
+- **The Cloud flow.** A flow's stable park resolves when Cloud itself
+  redeems the approval for that run. Input that reaches the flow from a lead
+  (a boolean, a quote, a message id) is never the proof.
+- **iOS.** External TestFlight and App Store distribution use the same
+  route.
+- **relay-control** exposes the same route, and accepts OIDC from the
+  self-host's configured issuers.
+
+### 11a.4 Order of work
+
+- **Here:** the Cloud and relay-control routes and gate registry, and the
+  CLI and SDK helpers in relay.
+- **relay-app:** the workflow changes and the permit script cutover belong to
+  relay-app's lead. They wait for Khaliq's yes given directly to that lead.
+
 ## 12. Threat model
 
-| Threat                                                                        | Mitigation                                                                                                                                                                                                     | Residual risk                                                                                                                                  |
-| ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| A non-delegate quotes the owner ("Khaliq said merge")                         | Sender id comes from Relaycast (#543) and must hold a live grant. No delegate line otherwise.                                                                                                                  | None beyond peer text.                                                                                                                         |
-| A body forges the delegate line                                               | Only the core writes line 2. The attribution is held to one line, and the body starts after it. `delegate_framed` checks the position. A copy in the body is still body text.                                  | None if receiving agents follow §11.1.                                                                                                         |
-| A name is reused (another agent takes a delegate's name)                      | Grants and checks use the immutable agent id, and the binding is re-checked when each approval is used.                                                                                                        | None.                                                                                                                                          |
-| A delegate makes up a quote (Tier D)                                          | Tight scopes, approval expiry, the owner notified on every use, single-use redeem for high-risk classes, Tier O required by policy for the most sensitive classes, quote kept in the audit log.                | Low-risk actions inside scope can happen before the owner notices. Accepted by design (§4.2).                                                  |
-| A delegate is compromised (stolen token, prompt-injected bot)                 | Same as above, plus revocation at once and the panic button. Rate limits on attestations per grant. Anomaly flags (new recipient, burst, odd hours) raise the next use to Tier O.                              | The window between a bad use and the owner noticing.                                                                                           |
-| Replay of an old approval message                                             | The attestation is bound to `message_id`, `recipient_agent_id`, `approval_id` and `exp`. #543 returns only pending, unacked deliveries. Single-use approvals are consumed at redeem.                           | A Tier D multi-use approval can be re-acted on by the same recipient until it expires. Keep the default expiry short.                          |
-| An approval meant for recipient A is forwarded to B                           | The attestation names the recipient. B's node asks Cloud with B's token, and Cloud finds no delivery of the original message to B.                                                                             | None.                                                                                                                                          |
-| A delegate widens the scope through vague text ("merge everything")           | Recipients act on the structured actions only. Cloud refuses actions outside the grant, so a widening gets no line at all.                                                                                     | Depends on agents following §11.2.                                                                                                             |
-| Approvals of a delegate of another person (Alice's bot directing Bob's agent) | Accepted only when Alice is a code owner of every action's target (§5.4), or the recipient's own owner. CODEOWNERS is read from the base branch, and logins map to people only through a verified GitHub link. | With `any_path`, the owner of one changed path can approve merging the whole PR. Orgs can choose `all_paths`. Branch protection still applies. |
-| A PR edits CODEOWNERS to add its author                                       | CODEOWNERS is read from the base branch, never the head.                                                                                                                                                       | None.                                                                                                                                          |
-| A condition goes stale (CI green, then a new commit is pushed)                | Conditions are checked at redeem; `head_sha` pins the commit; the agent passes it to GitHub's merge call.                                                                                                      | Without `head_sha`, a commit pushed between redeem and merge. Delegates should always add `head_sha` for merges.                               |
-| A delegate answers a prompt to escalate                                       | Only the machine owner's delegates, per request, with Codex extra-permission requests, choices and forms left out. The answer is audited as the delegate's.                                                    | A delegate inside its grant can approve tool calls the owner would have refused. Keep `prompt_approval` targets narrow.                        |
-| A delegate escalates to config, permissions or grants                         | These are never delegable (§5.3), and there is no grant API for agent tokens.                                                                                                                                  | None.                                                                                                                                          |
-| The owner's account is compromised                                            | Step-up auth for grants, admin co-approval policy, every grant change logged and announced.                                                                                                                    | The same risk as any account takeover. Out of scope.                                                                                           |
-| Cloud signing key leaks                                                       | Online attestation plus key rotation by `kid`. Nodes check revocation online, so a forged JWS alone fails the redeem step for high-risk classes.                                                               | A forged Tier D line during the leak. Needs an HSM-backed key (open question 4).                                                               |
-| A gate-only or self-hosted install without Cloud                              | The feature is reported as not available, the same way #2238 handles gate-only installs.                                                                                                                       | None.                                                                                                                                          |
-| A revocation race                                                             | Attestation TTL is 5 minutes or less, and redeem re-checks.                                                                                                                                                    | Up to 5 minutes for Tier D low-risk actions.                                                                                                   |
+| Threat                                                                                   | Mitigation                                                                                                                                                                                                     | Residual risk                                                                                                                                  |
+| ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| A non-delegate quotes the owner ("Khaliq said merge")                                    | Sender id comes from Relaycast (#543) and must hold a live grant. No delegate line otherwise.                                                                                                                  | None beyond peer text.                                                                                                                         |
+| A body forges the delegate line                                                          | Only the core writes line 2. The attribution is held to one line, and the body starts after it. `delegate_framed` checks the position. A copy in the body is still body text.                                  | None if receiving agents follow §11.1.                                                                                                         |
+| A name is reused (another agent takes a delegate's name)                                 | Grants and checks use the immutable agent id, and the binding is re-checked when each approval is used.                                                                                                        | None.                                                                                                                                          |
+| A delegate makes up a quote (Tier D)                                                     | Tight scopes, approval expiry, the owner notified on every use, single-use redeem for high-risk classes, Tier O required by policy for the most sensitive classes, quote kept in the audit log.                | Low-risk actions inside scope can happen before the owner notices. Accepted by design (§4.2).                                                  |
+| A delegate is compromised (stolen token, prompt-injected bot)                            | Same as above, plus revocation at once and the panic button. Rate limits on attestations per grant. Anomaly flags (new recipient, burst, odd hours) raise the next use to Tier O.                              | The window between a bad use and the owner noticing.                                                                                           |
+| Replay of an old approval message                                                        | The attestation is bound to `message_id`, `recipient_agent_id`, `approval_id` and `exp`. #543 returns only pending, unacked deliveries. Single-use approvals are consumed at redeem.                           | A Tier D multi-use approval can be re-acted on by the same recipient until it expires. Keep the default expiry short.                          |
+| An approval meant for recipient A is forwarded to B                                      | The attestation names the recipient. B's node asks Cloud with B's token, and Cloud finds no delivery of the original message to B.                                                                             | None.                                                                                                                                          |
+| A delegate widens the scope through vague text ("merge everything")                      | Recipients act on the structured actions only. Cloud refuses actions outside the grant, so a widening gets no line at all.                                                                                     | Depends on agents following §11.2.                                                                                                             |
+| Approvals of a delegate of another person (Alice's bot directing Bob's agent)            | Accepted only when Alice is a code owner of every action's target (§5.4), or the recipient's own owner. CODEOWNERS is read from the base branch, and logins map to people only through a verified GitHub link. | With `any_path`, the owner of one changed path can approve merging the whole PR. Orgs can choose `all_paths`. Branch protection still applies. |
+| A PR edits CODEOWNERS to add its author                                                  | CODEOWNERS is read from the base branch, never the head.                                                                                                                                                       | None.                                                                                                                                          |
+| A condition goes stale (CI green, then a new commit is pushed)                           | Conditions are checked at redeem; `head_sha` pins the commit; the agent passes it to GitHub's merge call.                                                                                                      | Without `head_sha`, a commit pushed between redeem and merge. Delegates should always add `head_sha` for merges.                               |
+| A delegate answers a prompt to escalate                                                  | Only the machine owner's delegates, per request, with Codex extra-permission requests, choices and forms left out. The answer is audited as the delegate's.                                                    | A delegate inside its grant can approve tool calls the owner would have refused. Keep `prompt_approval` targets narrow.                        |
+| A delegate escalates to config, permissions or grants                                    | These are never delegable (§5.3), and there is no grant API for agent tokens.                                                                                                                                  | None.                                                                                                                                          |
+| The owner's account is compromised                                                       | Step-up auth for grants, admin co-approval policy, every grant change logged and announced.                                                                                                                    | The same risk as any account takeover. Out of scope.                                                                                           |
+| Cloud signing key leaks                                                                  | Online attestation plus key rotation by `kid`. Nodes check revocation online, so a forged JWS alone fails the redeem step for high-risk classes.                                                               | A forged Tier D line during the leak. Needs an HSM-backed key (open question 4).                                                               |
+| A host signed in as the owner acts as the owner (creates grants, mints Tier O approvals) | Owner-only actions need an interactive web session with recent sign-in, or a confirmation in the browser (§4.1). A host's bearer can only read and revoke.                                                     | Until Cloud stamps each device server-side, a host's bearer can still revoke. Revoking only ever narrows.                                      |
+| A release job runs from an edited workflow on a branch                                   | The gate binds `job_workflow_ref`, `ref` and `event_name`, not only the repository (§11a.3).                                                                                                                   | None if the gate is registered precisely.                                                                                                      |
+| A publish is started without going through the host permit                               | The publishing job redeems the approval itself (§11a.1).                                                                                                                                                       | Workflows that don't redeem yet. Each gate must be cut over.                                                                                   |
+| A gate-only or self-hosted install without Cloud                                         | The feature is reported as not available, the same way #2238 handles gate-only installs.                                                                                                                       | None.                                                                                                                                          |
+| A revocation race                                                                        | Attestation TTL is 5 minutes or less, and redeem re-checks.                                                                                                                                                    | Up to 5 minutes for Tier D low-risk actions.                                                                                                   |
 
 ## 13. Open questions
 
@@ -824,6 +921,16 @@ Agent routes are proven with the agent's own Relaycast token, as in
   takes `{quote_retention_days}` (1 to 3650, default 90). Only org owners and
   admins can call it. It applies to every workspace in the org, and a
   workspace policy cannot override it.
+- Release gates (§11a): `GET`/`POST`/`DELETE /delegates/gates` is
+  owner-only and needs the interactive web session.
+  `POST /delegates/gates/redeem` takes `Authorization: Bearer <GitHub OIDC
+token>` and `{approval_id, action}`. It returns
+  `{ok:true, consumed, rerun?}` or `{ok:false, reason}`. Its extra reasons
+  are `gate_unknown`, `oidc_invalid`, `gate_mismatch` and `target_prefix`.
+- Interactive-only actions (§4.1): grant create and widen, Tier O mint, gate
+  registration and policy changes. Called with a desktop bearer, they return
+  `202 {pending_id, confirm_url}`, and nothing takes effect until a browser
+  session posts to `/delegates/pending/{pending_id}/confirm`.
 - Keys: `GET /.well-known/relay-delegation-keys.json` returns a JWKS of OKP
   Ed25519 keys with `kid`.
 - Reason codes: `not_enabled`, `not_delegate`, `no_approval`, `out_of_scope`,
