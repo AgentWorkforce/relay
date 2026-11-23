@@ -1489,12 +1489,17 @@ fn route(
                     denied.error = Some("relaygate_denied".into());
                 }
             }
+            // The oldest `limit` queued, as Relaycast pages them.
+            let limit: usize = query_value(query, "limit")
+                .and_then(|l| l.parse().ok())
+                .unwrap_or(usize::MAX);
             let items: Vec<Value> = world
                 .deliveries
                 .get(&agent.name)
                 .into_iter()
                 .flatten()
                 .filter(|d| d.state == "queued")
+                .take(limit)
                 .map(|d| d.item.clone())
                 .collect();
             ok(json!(items))

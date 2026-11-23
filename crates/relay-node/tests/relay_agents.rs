@@ -1213,6 +1213,93 @@ async fn an_expired_claude_approval_is_removed_after_a_successful_queue_read() {
     h.stop().await;
 }
 
+/// A queue read lists only the oldest page of deliveries, so one held beyond
+/// a full page is still queued though no read lists it: its approval request
+/// stays, and once approved it is delivered once the queue reaches it.
+#[tokio::test]
+async fn a_claude_approval_beyond_a_full_queue_page_is_kept() {
+    let h = Harness::start(|_| {}).await;
+    let mut client = h.client().await;
+    h.register(&mut client, "claude-terminal", CLAUDE, Some("claude-api"))
+        .await;
+    h.core.set_claude_session_delivery(CLAUDE, false).unwrap();
+    h.fake.seed_agent("alice", "agent", json!({}));
+    let page = agent_relay_node::relay::client::QUEUE_PAGE as usize;
+    let texts: Vec<String> = (0..page).map(|n| format!("earlier {n}")).collect();
+    let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let earlier = h.fake.send_dms("alice", "claude-api", &texts);
+    h.core.request_drain("claude-api");
+    eventually("a full page held for approval", || {
+        h.core.claude_delivery_status().held.len() == page
+    })
+    .await;
+
+    // The newest is pushed; no queue read lists it while the page is full.
+    // Reads fail until it is held, so none can end its request first.
+    h.fake
+        .set_api_error("GET /v1/deliveries", Some((503, "unavailable")));
+    let (newest, message) = h.fake.send_dm("alice", "claude-api", "approve me");
+    let pushed = h.fake.delivery_state(&newest).unwrap().item["message"].clone();
+    h.core.wake(
+        "claude-api".into(),
+        Some(
+            json!({"type": "deliver", "delivery_id": newest, "msg_id": message,
+            "payload": {"type": "dm.received", "data": {"message": pushed}}}),
+        ),
+    );
+    eventually("pushed delivery held", || {
+        h.core
+            .claude_delivery_status()
+            .held
+            .iter()
+            .any(|held| held.id == newest)
+    })
+    .await;
+    h.fake.set_api_error("GET /v1/deliveries", None);
+    // Two reads in turn: the first has finished by the time the second is
+    // made, since one agent's reads never overlap.
+    for _ in 0..2 {
+        let reads = h.fake.calls("GET", "/v1/deliveries").len();
+        h.core.request_drain("claude-api");
+        eventually("a full queue page read", || {
+            h.fake.calls("GET", "/v1/deliveries").len() > reads
+        })
+        .await;
+    }
+    let held = h.core.claude_delivery_status().held;
+    assert!(
+        held.iter().any(|held| held.id == newest),
+        "a full queue page removed the approval request it did not list"
+    );
+    assert_eq!(held.len(), page + 1);
+    assert!(h.injector.injected().is_empty());
+
+    assert!(h.core.approve_claude_delivery(&newest).unwrap());
+    for (delivery, _) in &earlier {
+        assert!(h.fake.expire_delivery(delivery));
+    }
+    h.core.request_drain("claude-api");
+    eventually("approved delivery acknowledged", || {
+        delivered(&h.fake, &newest).as_deref() == Some("acked")
+    })
+    .await;
+    // The short read shows the earlier ones left the queue.
+    eventually("expired approval requests removed", || {
+        h.core.claude_delivery_status().held.is_empty()
+    })
+    .await;
+    let reads = h.fake.calls("GET", "/v1/deliveries").len();
+    h.core.request_drain("claude-api");
+    eventually("another queue read", || {
+        h.fake.calls("GET", "/v1/deliveries").len() > reads
+    })
+    .await;
+    let injected = h.injector.injected();
+    assert_eq!(injected.len(), 1);
+    assert_eq!(injected[0].message_id, message);
+    h.stop().await;
+}
+
 #[tokio::test]
 async fn an_addressless_thread_push_waits_for_the_queues_canonical_sender() {
     let h = Harness::start(|_| {}).await;
