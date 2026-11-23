@@ -808,9 +808,11 @@ These details came out of review and are part of the contract:
     derives after its verify step.
   - The opt-out is refused on `ref_pattern` (tag) gates, both at
     registration and at redeem.
-- **Release only.** Gate redeem accepts only `release` actions. Any other
-  class answers `out_of_scope`, so landing a branch is not gated through
-  this route. Merges stay agent-redeemed through §6.3.
+- **Release only.** Gate redeem accepts only `release` actions; any other
+  class answers `out_of_scope`. A land, `<repo>:land:<branch>:<40-hex sha>`,
+  is a `release` target, so it IS gateable. It is commit-bound to the token's
+  `sha`, and the source-sha opt-out never applies to it. Agent-performed
+  merges (class `merge`) stay agent-redeemed through §6.3.
 - **`job_workflow_ref` default.** A gate registered without a
   `job_workflow_ref` matches only a token whose `job_workflow_ref` is null or
   equal to its `workflow_ref`. A reusable workflow called from elsewhere
