@@ -5,7 +5,15 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- Owner-named trusted delegates (relay side). `agent-relay-node`: a message whose Relaycast delivery says `has_owner_approval` is attested by Agent Relay Cloud with the desktop's session before it is acknowledged; when the Ed25519 attestation verifies against the keys of the build's site and names this message, recipient and sender, the message carries a `[delegate approval: …]` line as its second line naming the owner (with "(code owner)" when that is their standing), exactly the approved actions with their conditions in words (a `config_change` reads "change <setting> to <value> on @<agent>", which the agent makes itself after redeeming; never `delegated_approvals_from` or `spawn_delegate_approvals`), and always "redeem before acting": agents redeem every action right before taking it (a `pr_ops` action reads "<op> on owner/repo#N"; the signed quote is never printed). Any failure delivers it as an ordinary peer message, never dropped. New person-only settings: `delegated_approvals_from` (`off`, `own_owner`, `code_owners` by default) says whose delegates count, and `spawn_delegate_approvals` (on by default) lets the machine owner's delegates approve or deny spawned sessions' requests with an attested `prompt_approval` whose target binds the verb (`<agent>:<ref>:approve` or `:deny`, no conditions; Codex extra-permission requests included, never choices, forms or dialogs), and only in a 1:1 conversation that has exactly the two of them; approval notices also go to those delegates. Both are unavailable on gate-only installs. Delegates send an approval through the session socket with `owner_approval` on `POST /send` (probe: `send --owner-approval <json>`), passed to Relaycast unchanged. Sessions redeem approvals with `POST /delegation/redeem` on the session socket, which passes on `consumed`, `checked.head_sha` and, for `condition_unmet`, the unmet conditions; a delegate withdraws an approval it sent with `POST /delegation/withdraw`. SDK: `messages.direct` passes `ownerApproval` through, `verifyDelegationAttestation` and `message.delegation` expose a verified attestation, `approvals.redeem` redeems and `approvals.withdraw` withdraws through the session socket. CLI: `agent-relay delegates list|add|revoke|revoke-all|claim` manage grants with your login. Needs the matching Cloud, relay-control and Relaycast releases; until then every message stays peer text.
+
+### Fixed
+
+- `agent-relay-node`: a workspace leader's approve/deny reply (`spawn_leader_approvals`) now answers only in a 1:1 conversation that has exactly the session and the leader as participants, and approval notices are never sent into a 1:1 conversation that gained another participant. Relaycast lets a participant add a third agent to a 1:1 conversation without changing its type, so the conversation type alone no longer counts.
 
 ### Changed
 

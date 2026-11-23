@@ -16,7 +16,11 @@
 //! is sent the requests it may approve or deny and may approve or deny them
 //! as the machine owner could, whatever the spawn's approval profile
 //! (`Approver::Leader`, `relay::leaders`); choices, forms, input and local
-//! verification stay with the owner.
+//! verification stay with the owner. With **Approvals from the owner's
+//! delegates** on (`spawn_delegate_approvals`, on unless turned off), a
+//! delegate of the machine owner whose reply carries an owner approval that
+//! Agent Relay Cloud attests as a `prompt_approval` of exactly that request
+//! may approve or deny it too (`Approver::Delegate`, `delegate`).
 
 use crate::relay::claude_delivery_policy::Decision as ClaudeConsent;
 use crate::relay::client;
@@ -35,6 +39,8 @@ use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 pub(crate) mod claude;
+mod delegate;
+pub(crate) use delegate::DelegateApprover;
 
 fn watching() -> MutexGuard<'static, HashSet<String>> {
     static WATCHING: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
@@ -134,6 +140,11 @@ pub(crate) enum Approver {
     /// request as the machine owner could; never a choice, form, input or
     /// local verification. Never recorded as the owner.
     Leader(WorkspaceLeader),
+    /// A delegate of the machine owner, approving or denying one approvable
+    /// request named by an attested `prompt_approval` (`delegate`); never a
+    /// Codex extra-permission request, choice, form, input or local
+    /// verification. Never recorded as the owner.
+    Delegate(DelegateApprover),
 }
 
 impl Approver {
@@ -143,6 +154,7 @@ impl Approver {
             Approver::Owner(id) => id,
             Approver::Requester(requester) => &requester.agent_id,
             Approver::Leader(leader) => &leader.agent_id,
+            Approver::Delegate(delegate) => &delegate.agent_id,
         }
     }
 
@@ -158,6 +170,7 @@ impl Approver {
                 "the workspace leader @{} ({})",
                 leader.name, leader.agent_id
             ),
+            Approver::Delegate(delegate) => delegate.describe(),
         }
     }
 }
@@ -422,6 +435,11 @@ impl Core {
         };
         if leaders != Leaders::Not {
             self.notify_leaders(registration, token, reference, &text);
+        }
+        // The machine owner's delegates Cloud names get a copy too, once,
+        // in the background (`delegate::notify_delegates`).
+        if approvable && self.delegates_may_answer(registration) {
+            self.notify_delegates(registration, token, reference, &text);
         }
         text
     }
@@ -766,6 +784,12 @@ impl Core {
             .await
         {
             return Some(Approver::Leader(leader));
+        }
+        if let Some(delegate) = self
+            .approving_delegate(registration, delivery, reference)
+            .await
+        {
+            return Some(Approver::Delegate(delegate));
         }
         let requester = self.approving_requester(registration)?;
         let open = self.open_request(registration, reference).await.is_some();

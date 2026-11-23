@@ -35,6 +35,23 @@ pub struct SettingsExtras {
         skip_serializing_if = "Option::is_none"
     )]
     pub spawn_leader_approvals: Option<bool>,
+    /// Missing means `code_owners`: whose delegates' approvals this computer
+    /// accepts (`delegation::accept`), as `off`, `own_owner` or `code_owners`.
+    #[serde(
+        rename = "delegatedApprovalsFrom",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub delegated_approvals_from: Option<String>,
+    /// Missing means on: the machine owner's delegates may approve or deny
+    /// spawned sessions' requests with an attested `prompt_approval`
+    /// (`delegation::spawn_delegate_approvals`).
+    #[serde(
+        rename = "spawnDelegateApprovals",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub spawn_delegate_approvals: Option<bool>,
     /// Missing means true: a teammate's direct message to a Claude Code
     /// session with Agent Relay's plugin starts a user turn.
     #[serde(
@@ -158,6 +175,16 @@ impl SettingsExtras {
                 &base.spawn_leader_approvals,
                 &ours.spawn_leader_approvals,
                 &theirs.spawn_leader_approvals,
+            ),
+            spawn_delegate_approvals: changed(
+                &base.spawn_delegate_approvals,
+                &ours.spawn_delegate_approvals,
+                &theirs.spawn_delegate_approvals,
+            ),
+            delegated_approvals_from: changed(
+                &base.delegated_approvals_from,
+                &ours.delegated_approvals_from,
+                &theirs.delegated_approvals_from,
             ),
             teammate_native_input: changed(
                 &base.teammate_native_input,
@@ -357,5 +384,20 @@ mod tests {
         assert_eq!(read.spawn_leader_approvals, Some(true));
         let unset = serde_json::to_value(SettingsExtras::default()).unwrap();
         assert!(unset.get("spawnLeaderApprovals").is_none());
+    }
+
+    #[test]
+    fn delegated_approvals_from_merges_and_round_trips_under_its_key() {
+        let base = SettingsExtras::default();
+        let theirs = SettingsExtras {
+            delegated_approvals_from: Some("off".into()),
+            ..SettingsExtras::default()
+        };
+        let merged = SettingsExtras::merged(&base, &base, &theirs);
+        assert_eq!(merged.delegated_approvals_from.as_deref(), Some("off"));
+        let value = serde_json::to_value(&merged).unwrap();
+        assert_eq!(value["delegatedApprovalsFrom"], "off");
+        let unset = serde_json::to_value(SettingsExtras::default()).unwrap();
+        assert!(unset.get("delegatedApprovalsFrom").is_none());
     }
 }

@@ -74,8 +74,9 @@ impl SpawnSettings {
 }
 
 /// Every spawn setting the store keeps, as `settings.get` and
-/// `settings.set` name them.
-pub const KEYS: [&str; 12] = [
+/// `settings.set` name them, with `delegated_approvals_from` and
+/// `spawn_delegate_approvals` (`relay::delegation`), saved in the same write.
+pub const KEYS: [&str; 14] = [
     "accept_spawns",
     "spawn_full_access_codex",
     "spawn_full_access_claude",
@@ -83,6 +84,8 @@ pub const KEYS: [&str; 12] = [
     "spawn_native_input",
     "spawn_requester_approvals",
     "spawn_leader_approvals",
+    crate::relay::delegation::SETTING,
+    crate::relay::delegation::SPAWN_SETTING,
     "spawn_max_agents",
     "spawn_billing_codex",
     "spawn_billing_claude",
@@ -285,6 +288,14 @@ pub fn values(store: &Store, development: bool) -> Map<String, Value> {
         "spawn_leader_approvals".into(),
         json!(leader_approvals_setting(store)),
     );
+    values.insert(
+        crate::relay::delegation::SETTING.into(),
+        json!(crate::relay::delegation::accept(store).name()),
+    );
+    values.insert(
+        crate::relay::delegation::SPAWN_SETTING.into(),
+        json!(crate::relay::delegation::spawn_delegate_approvals(store)),
+    );
     values.extend(configured_values(store));
     values.insert(harnesses::KEY.into(), harnesses::value(&settings.harnesses));
     values
@@ -299,6 +310,10 @@ pub struct Change {
     native_input: Option<bool>,
     requester_approvals: Option<bool>,
     leader_approvals: Option<bool>,
+    /// `delegated_approvals_from` (`relay::delegation`).
+    delegated_approvals_from: Option<crate::relay::delegation::Accept>,
+    /// `spawn_delegate_approvals` (`relay::delegation`).
+    delegate_approvals: Option<bool>,
     configured: ConfiguredChange,
     /// Question escalation's settings, saved in the same write.
     question: crate::relay::question::settings::Change,
@@ -338,6 +353,17 @@ impl Change {
                         .ok_or("spawn_leader_approvals must be a boolean.")
                 })
                 .transpose()?,
+            delegated_approvals_from: changes
+                .get(crate::relay::delegation::SETTING)
+                .map(crate::relay::delegation::Accept::read)
+                .transpose()?,
+            delegate_approvals: changes
+                .get(crate::relay::delegation::SPAWN_SETTING)
+                .map(|v| {
+                    v.as_bool()
+                        .ok_or("spawn_delegate_approvals must be a boolean.")
+                })
+                .transpose()?,
             configured,
             question,
         })
@@ -366,6 +392,12 @@ impl Change {
         }
         if self.leader_approvals.is_some() {
             store.extras.spawn_leader_approvals = self.leader_approvals;
+        }
+        if let Some(accept) = self.delegated_approvals_from {
+            store.extras.delegated_approvals_from = Some(accept.name().to_string());
+        }
+        if self.delegate_approvals.is_some() {
+            store.extras.spawn_delegate_approvals = self.delegate_approvals;
         }
         if self.allow_teammates.is_some() {
             store.spawn_allow_teammates = self.allow_teammates;
@@ -397,6 +429,12 @@ impl Change {
         }
         if self.leader_approvals.is_some() {
             restored |= put_back!(store, write, extras.spawn_leader_approvals);
+        }
+        if self.delegated_approvals_from.is_some() {
+            restored |= put_back!(store, write, extras.delegated_approvals_from);
+        }
+        if self.delegate_approvals.is_some() {
+            restored |= put_back!(store, write, extras.spawn_delegate_approvals);
         }
         if self.allow_teammates.is_some() {
             restored |= put_back!(store, write, spawn_allow_teammates);
@@ -785,5 +823,88 @@ mod leader_approvals_tests {
         assert!(change.restore(&mut store, &write));
         assert!(!leader_approvals(&store));
         assert_eq!(store.extras.spawn_leader_approvals, None);
+    }
+}
+
+#[cfg(test)]
+mod delegated_approvals_tests {
+    use super::*;
+    use crate::relay::delegation::{accept, Accept, SETTING};
+
+    fn set(store: &mut Store, change: Value) {
+        Change::read(change.as_object().unwrap())
+            .unwrap()
+            .apply(store);
+        *store = serde_json::from_value(serde_json::to_value(&*store).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn delegated_approvals_come_from_code_owners_until_the_person_changes_it() {
+        let mut store = Store::default();
+        assert_eq!(accept(&store), Accept::CodeOwners);
+        assert_eq!(values(&store, false)[SETTING], "code_owners");
+        for (value, expected) in [
+            ("off", Accept::Off),
+            ("own_owner", Accept::OwnOwner),
+            ("code_owners", Accept::CodeOwners),
+        ] {
+            set(&mut store, json!({SETTING: value}));
+            assert_eq!(accept(&store), expected);
+            assert_eq!(values(&store, false)[SETTING], value);
+        }
+        for invalid in [
+            json!("on"),
+            json!(true),
+            json!(null),
+            json!("OFF"),
+            json!("org_admins"),
+        ] {
+            assert_eq!(
+                Change::read(json!({SETTING: invalid}).as_object().unwrap()),
+                Err(format!(
+                    "{SETTING} must be \"off\", \"own_owner\" or \"code_owners\"."
+                ))
+            );
+        }
+        // An unknown stored value reads as the default.
+        store.extras.delegated_approvals_from = Some("everyone".into());
+        assert_eq!(accept(&store), Accept::CodeOwners);
+    }
+
+    #[test]
+    fn delegates_answer_spawned_sessions_requests_until_the_person_turns_it_off() {
+        use crate::relay::delegation::{spawn_delegate_approvals, SPAWN_SETTING};
+        let mut store = Store::default();
+        assert!(spawn_delegate_approvals(&store));
+        assert_eq!(values(&store, false)[SPAWN_SETTING], true);
+        set(&mut store, json!({SPAWN_SETTING: false}));
+        assert!(!spawn_delegate_approvals(&store));
+        // Independent of leader approvals and native input.
+        set(
+            &mut store,
+            json!({SPAWN_SETTING: true, "spawn_native_input": false}),
+        );
+        assert!(spawn_delegate_approvals(&store));
+        assert!(!leader_approvals(&store));
+        assert_eq!(
+            Change::read(json!({SPAWN_SETTING: "on"}).as_object().unwrap()),
+            Err("spawn_delegate_approvals must be a boolean.".to_string())
+        );
+    }
+
+    #[test]
+    fn a_failed_change_puts_delegated_approvals_back() {
+        let previous = Store::default();
+        let change = Change::read(json!({SETTING: "off"}).as_object().unwrap()).unwrap();
+        let mut written = previous.clone();
+        change.apply(&mut written);
+        assert_eq!(accept(&written), Accept::Off);
+        let write = StoreWrite {
+            previous: previous.clone(),
+            written: written.clone(),
+        };
+        let mut store = written;
+        assert!(change.restore(&mut store, &write));
+        assert_eq!(store.extras.delegated_approvals_from, None);
     }
 }

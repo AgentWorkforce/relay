@@ -41,10 +41,10 @@ pub const RECORDS: [&str; 3] = [
 /// run; mobile continuation permits native owner input; approvals from the
 /// spawning agent let it answer its session's permission prompts, and
 /// approvals from workspace leaders let them answer those of any session
-/// spawned here; `connect_detected_tools` turns on the routes into the tools found here).
+/// spawned here, as approvals from the owner's delegates let theirs; `connect_detected_tools` turns on the routes into the tools found here).
 /// An agent may turn them off. A setting whose
 /// value is `"on"`/`"off"` rather than a boolean counts `"on"` as on.
-pub const PERSON_TURNS_ON: [&str; 28] = [
+pub const PERSON_TURNS_ON: [&str; 29] = [
     "accept_spawns",
     "allow_self_registration",
     "auto_activate",
@@ -66,6 +66,7 @@ pub const PERSON_TURNS_ON: [&str; 28] = [
     "pi_auto_activate",
     "pi_extension",
     "spawn_allow_teammates",
+    crate::relay::delegation::SPAWN_SETTING,
     "spawn_full_access_claude",
     "spawn_full_access_codex",
     "spawn_leader_approvals",
@@ -91,6 +92,12 @@ pub const PERSON_ADDS: [&str; 3] = [
 /// with the inbox unset, questions go to the person.)
 pub const PERSON_SETS: [&str; 1] = ["question_escalation_inbox"];
 
+/// Settings whose choices run from narrow to wide, of which only the person
+/// picks a wider one, in Settings: whose delegates' approvals this computer
+/// accepts (`off` < `own_owner` < `code_owners`, `relay::delegation`). An
+/// agent may narrow it.
+pub const PERSON_WIDENS: [&str; 1] = [crate::relay::delegation::SETTING];
+
 /// Settings with a part only the person turns on: a watched folder's
 /// sharing, a spawned harness's full access.
 pub const PERSON_TURNS_ON_PART: [(&str, &str); 2] = [
@@ -114,6 +121,11 @@ pub fn person_only(key: &str) -> Option<String> {
     if PERSON_SETS.contains(&key) {
         return Some(format!(
             "Only the person can set {key}, in Agent Relay's Settings. An agent may clear it."
+        ));
+    }
+    if PERSON_WIDENS.contains(&key) {
+        return Some(format!(
+            "Only the person can widen {key}, in Agent Relay's Settings. An agent may narrow it."
         ));
     }
     PERSON_TURNS_ON_PART
@@ -203,6 +215,9 @@ fn unavailable(key: &str) -> String {
     // Absent only where it cannot work: a gate-only install.
     if key == crate::relay::leaders::SETTING {
         return crate::relay::leaders::GATE_ONLY.to_string();
+    }
+    if key == crate::relay::delegation::SETTING || key == crate::relay::delegation::SPAWN_SETTING {
+        return crate::relay::delegation::GATE_ONLY.to_string();
     }
     let harness = match key {
         "grok_leader" => Some("Grok"),
@@ -314,6 +329,10 @@ fn allowed(key: &str) -> Option<Value> {
             crate::relay::contract::agents::history_retention::CHOICES
         )),
         crate::relay::question::settings::ESCALATION => Some(json!(["off", "on"])),
+        crate::relay::delegation::SETTING => Some(json!(crate::relay::delegation::Accept::ALL
+            .iter()
+            .map(|accept| accept.name())
+            .collect::<Vec<_>>())),
         _ => None,
     }
 }

@@ -47,9 +47,11 @@ pub const DEFAULTED: &str = "Managed by your organization.";
 /// The person-only settings the workspace policy names (its allowlist's
 /// person-only column): an operator value that widens one needs the
 /// computer's enrollment consent and a `consent` entry.
-pub const PERSON_ONLY: [&str; 8] = [
+pub const PERSON_ONLY: [&str; 10] = [
     "accept_spawns",
+    crate::relay::delegation::SETTING,
     "spawn_allow_teammates",
+    crate::relay::delegation::SPAWN_SETTING,
     "spawn_full_access_claude",
     "spawn_full_access_codex",
     "spawn_leader_approvals",
@@ -153,6 +155,8 @@ const FLAT_HARNESSES: [&str; 2] = ["claude", "codex"];
 fn widens(value: &Value, current: Option<&Value>) -> bool {
     match value {
         Value::Bool(on) => *on,
+        // `delegated_approvals_from`: a wider choice than the one held now.
+        Value::String(asked) => crate::relay::delegation::Accept::widens(asked, current),
         Value::Array(entries) => {
             let held: Vec<&Value> = match current {
                 Some(Value::Array(held)) => held.iter().collect(),
@@ -634,10 +638,12 @@ mod tests {
     /// for the person to turn on or add to.
     #[test]
     fn the_policy_person_only_settings_are_the_cores() {
-        use crate::relay::settings_registry::{PERSON_ADDS, PERSON_TURNS_ON};
+        use crate::relay::settings_registry::{PERSON_ADDS, PERSON_TURNS_ON, PERSON_WIDENS};
         for key in PERSON_ONLY {
             assert!(
-                PERSON_TURNS_ON.contains(&key) || PERSON_ADDS.contains(&key),
+                PERSON_TURNS_ON.contains(&key)
+                    || PERSON_ADDS.contains(&key)
+                    || PERSON_WIDENS.contains(&key),
                 "{key}"
             );
         }

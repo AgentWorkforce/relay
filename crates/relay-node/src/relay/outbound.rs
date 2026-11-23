@@ -59,6 +59,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub mod channels;
 mod connect_send;
+mod delegation;
 pub(crate) mod fetch;
 mod hints;
 mod hooks;
@@ -484,6 +485,9 @@ impl Outbound {
             ("POST", "/attachments/fetch") => self.fetch_attachment(pid, uid, &request.query).await,
             ("GET", "/messages") => self.read_message(pid, uid, &request.query).await,
             ("POST", "/send") => self.send_route(pid, uid, request).await,
+            ("POST", "/delegation/redeem") => {
+                self.redeem_delegation_route(pid, uid, &request.query).await
+            }
             ("POST", "/register") => self.register_route(pid, uid, request).await,
             ("POST", "/channels") => self.create_channel_route(pid, uid, request).await,
             ("POST" | "DELETE", "/channels/subscribe") => {

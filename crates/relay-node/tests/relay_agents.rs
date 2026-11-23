@@ -5,6 +5,9 @@
 //! roster, settings and links. No broker, PTY runtime or agent harness is
 //! ever started.
 
+// The settings round trip names every setting in one `json!`.
+#![recursion_limit = "256"]
+
 mod support {
     pub mod bridge;
     pub mod fake_relaycast;
@@ -2942,7 +2945,7 @@ async fn settings_round_trip_and_refuse_unknown_keys() {
             "question_escalation_coverage": agent_relay_node::relay::question::coverage::value(),
             "accept_spawns": true, "spawn_max_agents": 0,
             "spawn_full_access_codex": true, "spawn_full_access_claude": true,
-            "spawn_allow_teammates": false, "spawn_native_input": true, "spawn_requester_approvals": true, "spawn_leader_approvals": false,
+            "spawn_allow_teammates": false, "spawn_native_input": true, "spawn_requester_approvals": true, "spawn_leader_approvals": false, "delegated_approvals_from": "code_owners", "spawn_delegate_approvals": true,
             "spawn_billing_codex": "unspecified", "spawn_billing_claude": "unspecified",
             "spawn_repositories": [],
             "spawn_harnesses": {
