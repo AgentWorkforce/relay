@@ -509,6 +509,11 @@ async fn an_attested_approval_writes_the_delegate_line_as_line_two() {
         second.contains("@assistant as a delegate of Ada Owner for these actions only: merge AgentWorkforce/relay#2250."),
         "{second}"
     );
+    // The receiving identity is remembered for the redeem.
+    assert_eq!(
+        f.core.delegation_recipients.of("apv_7Q2abcdEF").as_deref(),
+        Some(RECIPIENT)
+    );
     let calls = f.calls();
     assert_eq!(calls.len(), 1);
     let (path, body) = &calls[0];

@@ -619,6 +619,43 @@ pub fn keys_urls(site: &str) -> [String; 2] {
 /// Reads Cloud's JWKS; `None` when it could not be read.
 pub type Fetch = Arc<dyn Fn() -> BoxFuture<'static, Option<Value>> + Send + Sync>;
 
+/// How long the core remembers which of a session's identities received an
+/// approval (for its redeem): longer than any approval lives (24 hours).
+pub const RECIPIENTS_FOR: Duration = Duration::from_secs(25 * 60 * 60);
+
+/// Which agent id received each verified approval, by approval id: a renamed
+/// session has several (the registered one and its aliases), and a redeem
+/// must go to Cloud as the one the attestation names.
+#[derive(Default)]
+pub struct Recipients {
+    by_approval: Mutex<std::collections::HashMap<String, (String, Instant)>>,
+}
+
+impl Recipients {
+    /// Remembers that `agent_id` received `approval_id`.
+    pub fn remember(&self, approval_id: &str, agent_id: &str) {
+        let mut map = self
+            .by_approval
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        map.retain(|_, (_, at)| at.elapsed() < RECIPIENTS_FOR);
+        map.insert(
+            approval_id.to_string(),
+            (agent_id.to_string(), Instant::now()),
+        );
+    }
+
+    /// The agent id that received `approval_id`, when the core saw it.
+    pub fn of(&self, approval_id: &str) -> Option<String> {
+        self.by_approval
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(approval_id)
+            .filter(|(_, at)| at.elapsed() < RECIPIENTS_FOR)
+            .map(|(id, _)| id.clone())
+    }
+}
+
 /// Cloud's delegation keys as last read, kept for [`KEYS_FOR`].
 #[derive(Default)]
 pub struct Keys {
@@ -958,6 +995,10 @@ impl Core {
                 text
             }
             Some(attestation) => {
+                self.delegation_recipients.remember(
+                    &attestation.claims.approval_id,
+                    &attestation.claims.recipient_agent_id,
+                );
                 let delegate = delivery.sender.as_deref().unwrap_or("a teammate");
                 with_delegate_line(&text, delegate, &attestation.claims)
             }

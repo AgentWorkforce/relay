@@ -13,6 +13,8 @@
 
 use super::{Outbound, OutboundError};
 use crate::relay::delegation::{is_approval_id, Action, CLASSES, MAX_TARGET, PROMPT_APPROVAL};
+use crate::relay::store::Registration;
+use crate::relay::workspace::Secret;
 use serde_json::Value;
 
 /// The last value of `key` in `query`.
@@ -81,6 +83,30 @@ pub(super) fn requested_owner_approval(
     }
 }
 
+/// The session's identity with `agent_id` (its registered agent, its current
+/// alias or a replaced alias still held), with its token; without one, or
+/// when none matches, the identity the session now sends as.
+pub(super) fn identity(
+    registration: Registration,
+    token: Secret,
+    agent_id: Option<&str>,
+) -> (Registration, Secret) {
+    let current = registration.alias_credential();
+    let matching = match agent_id {
+        Some(id) if registration.agent_id == id => Some((registration.clone(), token.clone())),
+        Some(id) => current
+            .clone()
+            .filter(|(alias, _)| alias.agent_id == id)
+            .or_else(|| {
+                registration
+                    .retired_credentials()
+                    .find(|(retired, _)| retired.agent_id == id)
+            }),
+        None => None,
+    };
+    matching.or(current).unwrap_or((registration, token))
+}
+
 impl Outbound {
     /// `POST /delegation/withdraw?approval=<id>`: withdraws an approval the
     /// calling session's own agent sent as a delegate.
@@ -100,7 +126,8 @@ impl Outbound {
                 )
             })?
             .to_string();
-        let (session, registration, token) = self.authorize(pid, uid).await?;
+        // As the identity the session sends with (`/send`): its current name.
+        let (session, registration, token) = self.authorize_sender(pid, uid).await?;
         self.admit(&session.target.key())?;
         Ok(self
             .core
@@ -118,6 +145,10 @@ impl Outbound {
         let (approval, action) = redeem_query(query)?;
         let (session, registration, token) = self.authorize(pid, uid).await?;
         self.admit(&session.target.key())?;
+        // As the identity the approval was delivered to: a renamed session
+        // has its registered agent and its aliases, each with its own id.
+        let received_by = self.core.delegation_recipients.of(&approval);
+        let (registration, token) = identity(registration, token, received_by.as_deref());
         Ok(self
             .core
             .redeem_delegation(&registration, &token, &approval, &action)
@@ -129,6 +160,57 @@ impl Outbound {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A renamed session redeems as the identity the approval was delivered
+    /// to: its registered agent, its current alias or a replaced alias.
+    #[test]
+    fn a_renamed_session_redeems_as_the_identity_that_received_it() {
+        let registration: Registration = serde_json::from_value(serde_json::json!({
+            "name": "relay", "agentID": "agent_registered",
+            "target": {"kind": "codex", "id": "thread"},
+            "title": "relay", "baseURL": "https://api.relaycast.dev", "registeredAt": "now",
+            "alias": {"name": "relay-new", "agentID": "agent_alias", "token": "at_alias",
+                "registeredAt": "2026-11-23T00:00:00Z"},
+            "retiredAliases": [{"alias": {"name": "relay-old", "agentID": "agent_retired",
+                "token": "at_retired", "registeredAt": "2026-11-22T00:00:00Z"},
+                "retiredAt": "2026-11-23T00:00:00Z"}]
+        }))
+        .unwrap();
+        let token = Secret::new("at_registered");
+        let pick = |id: Option<&str>| {
+            let (who, token) = identity(registration.clone(), token.clone(), id);
+            (who.agent_id, token.expose().to_string())
+        };
+        assert_eq!(
+            pick(Some("agent_registered")),
+            ("agent_registered".into(), "at_registered".into())
+        );
+        assert_eq!(
+            pick(Some("agent_alias")),
+            ("agent_alias".into(), "at_alias".into())
+        );
+        assert_eq!(
+            pick(Some("agent_retired")),
+            ("agent_retired".into(), "at_retired".into())
+        );
+        // Unknown or unseen: the name the session now sends as.
+        assert_eq!(pick(None), ("agent_alias".into(), "at_alias".into()));
+        assert_eq!(
+            pick(Some("agent_other")),
+            ("agent_alias".into(), "at_alias".into())
+        );
+    }
+
+    #[test]
+    fn recipients_are_remembered_by_approval() {
+        let recipients = crate::relay::delegation::Recipients::default();
+        assert_eq!(recipients.of("apv_7Q2abcdEF"), None);
+        recipients.remember("apv_7Q2abcdEF", "agent_alias");
+        assert_eq!(
+            recipients.of("apv_7Q2abcdEF").as_deref(),
+            Some("agent_alias")
+        );
+    }
 
     fn query(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         pairs

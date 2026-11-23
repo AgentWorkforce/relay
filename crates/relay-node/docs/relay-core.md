@@ -1522,7 +1522,10 @@ POST /delegation/redeem?approval=<apv_…>&class=<class>&target=<target>
 ```
 
 The core sends `{recipient_agent_id, recipient_token, approval_id,
-action:{class, target}}` to Cloud's `POST /messaging/delegation/redeem` and
+action:{class, target}}` to Cloud's `POST /messaging/delegation/redeem`, as
+the session identity the approval was delivered to (a renamed session's
+registered agent, current alias or replaced alias, remembered per approval
+for 25 hours; else its current name), and
 answers `{"ok":true,"consumed":<bool>}` (with `"checked":{"head_sha":…}`,
 the full commit Cloud checked for a pull request: a merge passes exactly
 that commit to GitHub, and does not merge when the redeem names none) or `{"ok":false,"reason":<Cloud's reason code>}`; with `condition_unmet` it adds `unmet`, the conditions that
@@ -1533,7 +1536,7 @@ malformed request, or a `prompt_approval`, is `400 invalid_redeem`.
 A delegate withdraws an approval it sent (narrowing only, for a later "no"
 from the owner) with `POST /delegation/withdraw?approval=<apv_…>`: the core
 sends `{delegate_agent_id, delegate_token, approval_id}` as the calling
-session's own agent to Cloud's `POST /messaging/delegation/withdraw` and
+session's own agent (the name it sends as) to Cloud's `POST /messaging/delegation/withdraw` and
 answers `{"ok":true}` or `{"ok":false,"reason":…}`. `socket-request` allows
 both routes; no Codex sandbox rule or probe subcommand reaches them yet.
 
