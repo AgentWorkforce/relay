@@ -1270,3 +1270,89 @@ fn out_of_range_times_are_refused_not_wrapped() {
         );
     }
 }
+
+/// A Relaycast that answers `GET /v1/messages/<id>` with `message`.
+async fn relaycast_with(message: Value) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let message = message.clone();
+            tokio::spawn(async move {
+                let mut request = Vec::new();
+                let mut buf = [0u8; 4096];
+                while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match socket.read(&mut buf).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => request.extend_from_slice(&buf[..n]),
+                    }
+                }
+                let body = json!({"ok": true, "data": message}).to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    base
+}
+
+// After a restart, a kept delegate-framed message is attested again by
+// Cloud through the same path as at delivery: an attested approval keeps the
+// delegate's note; any failure reads as a peer's.
+#[tokio::test]
+async fn a_rechecked_delegate_message_is_attested_again() {
+    use crate::relay::message_pointer::{self, Framing, Kept};
+    let mut f = fixture_with(true);
+    let kept_text = f.framed(&delivery(true)).await;
+    assert!(delegate_framed(&kept_text));
+    let kept = Kept {
+        owner: "codex:thread".into(),
+        message_id: MESSAGE.into(),
+        message_ref: crate::relay::delivery::policy::MessageRef::of(MESSAGE),
+        text: kept_text,
+        kept_at_ms: 0,
+        framing: None,
+        seal: None,
+    };
+    assert!(message_pointer::needs_recheck(&kept));
+    let server = |approval: bool| {
+        json!({"id": MESSAGE, "agent_id": DELEGATE, "agent_name": "assistant",
+            "text": "The owner approved: merge #2250 once CI is green.",
+            "has_owner_approval": approval})
+    };
+    f.registration.base_url = relaycast_with(server(true)).await;
+    let token = Secret::new("at_relay");
+    let rechecked = f
+        .core
+        .recheck_kept_framing(&f.registration, &token, &kept)
+        .await
+        .unwrap();
+    assert_eq!(rechecked.framing, Framing::Delegate, "{}", rechecked.text);
+    assert!(f
+        .calls()
+        .iter()
+        .any(|(path, _)| path.ends_with("/messaging/delegation")));
+    // Cloud does not attest it now: a peer's, with no delegate line.
+    *f.cloud.answer.lock().unwrap() = Value::Null;
+    let rechecked = f
+        .core
+        .recheck_kept_framing(&f.registration, &token, &kept)
+        .await
+        .unwrap();
+    assert_eq!(rechecked.framing, Framing::Peer);
+    assert!(!delegate_framed(&rechecked.text));
+    // Nor when the server's copy carries no owner approval at all.
+    f.answer(claims());
+    f.registration.base_url = relaycast_with(server(false)).await;
+    let rechecked = f
+        .core
+        .recheck_kept_framing(&f.registration, &token, &kept)
+        .await
+        .unwrap();
+    assert_eq!(rechecked.framing, Framing::Peer);
+}

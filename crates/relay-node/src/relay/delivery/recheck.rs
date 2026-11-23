@@ -56,9 +56,20 @@ impl Core {
             // them.
             self.add_fetch_hints(&registration.target, &mut delivery.attachments)
                 .await;
-            let (framed, _, _) = self
+            let (framed, _, source) = self
                 .session_text(registration, (&delivery, None), false, false)
                 .await;
+            // A delegate's approval is attested again by Agent Relay Cloud,
+            // for the same sources as at delivery (`Core::with_delegation`);
+            // without that there is no delegate line, and the message reads
+            // as a peer's.
+            let framed = match source {
+                crate::relay::delivery::session_text::InputSource::Owner => framed,
+                _ => {
+                    self.with_delegation(registration, &delivery, token, framed)
+                        .await
+                }
+            };
             message_pointer::rechecked(kept, &server, framed)
         };
         tokio::time::timeout(limit, recheck).await.ok().flatten()
@@ -99,6 +110,7 @@ fn delivery_of(kept: &Kept, server: &Value) -> Option<Delivery> {
         text: server["text"].as_str().map(str::to_string),
         thread_id,
         attachments: crate::relay::delivery::policy::Attachment::list(&[server]),
+        has_owner_approval: server["has_owner_approval"].as_bool() == Some(true),
         ..Delivery::default()
     })
 }

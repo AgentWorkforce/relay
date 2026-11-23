@@ -474,7 +474,7 @@ the bridge socket is for UIs, the relay-send socket for sessions
   its verified executable.
 - **Kept messages.** `GET /messages?ref=…` (the probe's `read`) answers
   the kept text and its `framing` (`peer`, `owner`, `owner_authority`,
-  `leader`); `read` prints the matching note. The framing is proven by an
+  `leader`, `delegate`); `read` prints the matching note. The framing is proven by an
   HMAC seal under a key this core holds only in memory. A kept message
   whose text claims a framing its seal cannot prove (kept before the core
   restarted) is read again from Relaycast (`GET /v1/messages/{id}`) as the
@@ -482,8 +482,9 @@ the bridge socket is for UIs, the relay-send socket for sessions
   origin exactly as recorded; never loopback in a release build). The text
   shown is then rebuilt from the server's copy (a one-to-one `dmch_`
   channel keeps DM semantics) exactly as delivery builds it, with the
-  framing its sender gives; nothing of the kept file but the message id is
-  used. A failed read, a timeout (10 s) or another message id answers a
+  framing its sender gives; a delegate's approval is attested again by
+  Agent Relay Cloud as at delivery, and reads as a peer's when it is not;
+  nothing of the kept file but the message id is used. A failed read, a timeout (10 s) or another message id answers a
   peer's framing, with the framing line taken out of the kept text.
 - **Send tokens.** With the person-only setting `session_send_tokens` on
   (off by default), the core mints a random 256-bit token per registered
