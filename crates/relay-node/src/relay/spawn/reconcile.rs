@@ -112,8 +112,11 @@ impl Core {
         let registrations = self.spawned_registrations();
         // A core that started again takes up a spawned Claude's pending
         // requests, which its own output still holds.
+        // And credits to the node's owner any agent not credited yet: one
+        // spawned before, or before the claim settled.
         for registration in &registrations {
             self.watch_spawned_claude(registration);
+            self.credit_spawned_soon(registration);
         }
         let spawner = self.plugins.spawner.clone();
         let observer = self.observer();

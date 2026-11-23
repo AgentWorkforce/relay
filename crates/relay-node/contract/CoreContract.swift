@@ -4435,6 +4435,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
     /// Changes the spawn settings of the harnesses named, each by id; a
     /// value left out is unchanged.
     public let spawnHarnesses: [String: SpawnHarnessSettings]?
+    public let spawnLeaderApprovals: Bool?
     public let spawnMaxAgents: Int?
     public let spawnNativeInput: Bool?
     public let spawnRepositories: [String]?
@@ -4445,7 +4446,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
     /// Replaces the relay senders trusted like the person.
     public let trustedRelaySenders: [String]?
 
-    public init(acceptSpawns: Bool? = nil, allowSelfRegistration: Bool? = nil, analyticsEnabled: Bool? = nil, autoActivate: Bool? = nil, autoJoinGeneral: Bool? = nil, autoJoinRepositories: [String]? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDir: ClaudeConfigDirChange? = nil, claudeConfigDirs: [String]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, connectDetectedTools: Bool? = nil, contractorAccess: Bool? = nil, cursorDirectDelivery: Bool? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryDefault: Bool? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileNativeContinuation: Bool? = nil, openclawGateway: Bool? = nil, opencodeAutoActivate: Bool? = nil, opencodePlugin: Bool? = nil, piAutoActivate: Bool? = nil, piExtension: Bool? = nil, questionEscalation: String? = nil, questionEscalationInbox: String? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnMaxAgents: Int? = nil, spawnNativeInput: Bool? = nil, spawnRepositories: [String]? = nil, spawnRequesterApprovals: Bool? = nil, teammateNativeInput: Bool? = nil, trustWorkspaceMembers: Bool? = nil, trustedRelaySenders: [String]? = nil) {
+    public init(acceptSpawns: Bool? = nil, allowSelfRegistration: Bool? = nil, analyticsEnabled: Bool? = nil, autoActivate: Bool? = nil, autoJoinGeneral: Bool? = nil, autoJoinRepositories: [String]? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDir: ClaudeConfigDirChange? = nil, claudeConfigDirs: [String]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, connectDetectedTools: Bool? = nil, contractorAccess: Bool? = nil, cursorDirectDelivery: Bool? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryDefault: Bool? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileNativeContinuation: Bool? = nil, openclawGateway: Bool? = nil, opencodeAutoActivate: Bool? = nil, opencodePlugin: Bool? = nil, piAutoActivate: Bool? = nil, piExtension: Bool? = nil, questionEscalation: String? = nil, questionEscalationInbox: String? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnLeaderApprovals: Bool? = nil, spawnMaxAgents: Int? = nil, spawnNativeInput: Bool? = nil, spawnRepositories: [String]? = nil, spawnRequesterApprovals: Bool? = nil, teammateNativeInput: Bool? = nil, trustWorkspaceMembers: Bool? = nil, trustedRelaySenders: [String]? = nil) {
         self.acceptSpawns = acceptSpawns
         self.allowSelfRegistration = allowSelfRegistration
         self.analyticsEnabled = analyticsEnabled
@@ -4482,6 +4483,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         self.spawnFullAccessClaude = spawnFullAccessClaude
         self.spawnFullAccessCodex = spawnFullAccessCodex
         self.spawnHarnesses = spawnHarnesses
+        self.spawnLeaderApprovals = spawnLeaderApprovals
         self.spawnMaxAgents = spawnMaxAgents
         self.spawnNativeInput = spawnNativeInput
         self.spawnRepositories = spawnRepositories
@@ -4528,6 +4530,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         case spawnFullAccessClaude = "spawn_full_access_claude"
         case spawnFullAccessCodex = "spawn_full_access_codex"
         case spawnHarnesses = "spawn_harnesses"
+        case spawnLeaderApprovals = "spawn_leader_approvals"
         case spawnMaxAgents = "spawn_max_agents"
         case spawnNativeInput = "spawn_native_input"
         case spawnRepositories = "spawn_repositories"
@@ -4575,6 +4578,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         self.spawnFullAccessClaude = try c.decodeIfPresent(Bool.self, forKey: .spawnFullAccessClaude)
         self.spawnFullAccessCodex = try c.decodeIfPresent(Bool.self, forKey: .spawnFullAccessCodex)
         self.spawnHarnesses = try c.decodeIfPresent([String: SpawnHarnessSettings].self, forKey: .spawnHarnesses)
+        self.spawnLeaderApprovals = try c.decodeIfPresent(Bool.self, forKey: .spawnLeaderApprovals)
         self.spawnMaxAgents = try c.decodeIfPresent(Int.self, forKey: .spawnMaxAgents)
         self.spawnNativeInput = try c.decodeIfPresent(Bool.self, forKey: .spawnNativeInput)
         self.spawnRepositories = try c.decodeIfPresent([String].self, forKey: .spawnRepositories)
@@ -4622,6 +4626,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         try c.encodeIfPresent(self.spawnFullAccessClaude, forKey: .spawnFullAccessClaude)
         try c.encodeIfPresent(self.spawnFullAccessCodex, forKey: .spawnFullAccessCodex)
         try c.encodeIfPresent(self.spawnHarnesses, forKey: .spawnHarnesses)
+        try c.encodeIfPresent(self.spawnLeaderApprovals, forKey: .spawnLeaderApprovals)
         try c.encodeIfPresent(self.spawnMaxAgents, forKey: .spawnMaxAgents)
         try c.encodeIfPresent(self.spawnNativeInput, forKey: .spawnNativeInput)
         try c.encodeIfPresent(self.spawnRepositories, forKey: .spawnRepositories)
@@ -4800,6 +4805,16 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// offers (`SpawnStatus.harness_descriptors`). Codex and Claude have
     /// the flat keys above as well. Absent in older cores.
     public let spawnHarnesses: [String: SpawnHarnessSettings]?
+    /// Whether workspace leaders may approve or deny permission requests of
+    /// agents spawned on this computer. A listed leader's direct message
+    /// may approve or deny an open approvable request, as the machine owner
+    /// could; choices, forms, input and local verification stay with the
+    /// owner. Neither `spawn_requester_approvals` nor the spawn's approval
+    /// profile limits it: an `interactive` spawn's approve/deny requests go
+    /// to the leaders too. Needs `spawn_native_input`. Off unless the
+    /// machine owner turns it on. Absent in older cores, and on a gate-only
+    /// install, where it cannot work and turning it on is refused.
+    public let spawnLeaderApprovals: Bool?
     /// The most spawned agents this computer runs at once: 0 to 32, where 0
     /// (or no setting) means no limit. An idle agent keeps its place until
     /// it is released.
@@ -4833,8 +4848,9 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// The workspace's leaders as Relaycast last listed them
     /// (`GET /v1/workspace/leaders`): a leader's direct message to a
     /// spawned agent (with `spawn_native_input` on) or to a Claude Code
-    /// session with `teammate_native_input` on is native input, though never
-    /// an approval. Read only;
+    /// session with `teammate_native_input` on is native input, and with
+    /// `spawn_leader_approvals` on its approve/deny reply to a spawned
+    /// session's open request is an answer. Read only;
     /// absent until the list has been read for the current workspace, and
     /// in older cores.
     public let workspaceLeaders: WorkspaceLeaders?
@@ -4843,7 +4859,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// off, signed out, or Cloud's list has not been read lately.
     public let workspaceMembers: [TrustedWorkspaceMember]?
 
-    public init(acceptSpawns: Bool? = nil, agentChanges: [AgentSettingsChange]? = nil, allowSelfRegistration: Bool, analyticsEnabled: Bool? = nil, autoActivate: Bool, autoJoinGeneral: Bool? = nil, autoJoinRepositories: [String]? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDirs: [ClaudeConfigDir]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, connectDetectedTools: Bool? = nil, contractorAccess: Bool? = nil, cursorDirectDelivery: Bool? = nil, detectedTools: [String]? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryManaged: String? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileClaudeHandoffSupported: Bool? = nil, mobileNativeContinuation: Bool? = nil, mobileNativeContinuationSupported: Bool? = nil, openclawGateway: Bool? = nil, openclawUnlimitedVersion: String? = nil, opencodeAutoActivate: Bool? = nil, opencodePlugin: Bool? = nil, organizationPolicy: OrganizationPolicyState? = nil, piAutoActivate: Bool? = nil, piExtension: Bool? = nil, questionEscalation: String? = nil, questionEscalationCoverage: [String: QuestionCoverage]? = nil, questionEscalationInbox: String? = nil, questionEscalationStatus: String? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnMaxAgents: Int? = nil, spawnNativeInput: Bool? = nil, spawnRepositories: [String]? = nil, spawnRequesterApprovals: Bool? = nil, teammateNativeInput: Bool? = nil, trustWorkspaceMembers: Bool? = nil, trustedRelaySenders: [String]? = nil, workspaceLeaders: WorkspaceLeaders? = nil, workspaceMembers: [TrustedWorkspaceMember]? = nil) {
+    public init(acceptSpawns: Bool? = nil, agentChanges: [AgentSettingsChange]? = nil, allowSelfRegistration: Bool, analyticsEnabled: Bool? = nil, autoActivate: Bool, autoJoinGeneral: Bool? = nil, autoJoinRepositories: [String]? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDirs: [ClaudeConfigDir]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, connectDetectedTools: Bool? = nil, contractorAccess: Bool? = nil, cursorDirectDelivery: Bool? = nil, detectedTools: [String]? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryManaged: String? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileClaudeHandoffSupported: Bool? = nil, mobileNativeContinuation: Bool? = nil, mobileNativeContinuationSupported: Bool? = nil, openclawGateway: Bool? = nil, openclawUnlimitedVersion: String? = nil, opencodeAutoActivate: Bool? = nil, opencodePlugin: Bool? = nil, organizationPolicy: OrganizationPolicyState? = nil, piAutoActivate: Bool? = nil, piExtension: Bool? = nil, questionEscalation: String? = nil, questionEscalationCoverage: [String: QuestionCoverage]? = nil, questionEscalationInbox: String? = nil, questionEscalationStatus: String? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnLeaderApprovals: Bool? = nil, spawnMaxAgents: Int? = nil, spawnNativeInput: Bool? = nil, spawnRepositories: [String]? = nil, spawnRequesterApprovals: Bool? = nil, teammateNativeInput: Bool? = nil, trustWorkspaceMembers: Bool? = nil, trustedRelaySenders: [String]? = nil, workspaceLeaders: WorkspaceLeaders? = nil, workspaceMembers: [TrustedWorkspaceMember]? = nil) {
         self.acceptSpawns = acceptSpawns
         self.agentChanges = agentChanges
         self.allowSelfRegistration = allowSelfRegistration
@@ -4887,6 +4903,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         self.spawnFullAccessClaude = spawnFullAccessClaude
         self.spawnFullAccessCodex = spawnFullAccessCodex
         self.spawnHarnesses = spawnHarnesses
+        self.spawnLeaderApprovals = spawnLeaderApprovals
         self.spawnMaxAgents = spawnMaxAgents
         self.spawnNativeInput = spawnNativeInput
         self.spawnRepositories = spawnRepositories
@@ -4942,6 +4959,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         case spawnFullAccessClaude = "spawn_full_access_claude"
         case spawnFullAccessCodex = "spawn_full_access_codex"
         case spawnHarnesses = "spawn_harnesses"
+        case spawnLeaderApprovals = "spawn_leader_approvals"
         case spawnMaxAgents = "spawn_max_agents"
         case spawnNativeInput = "spawn_native_input"
         case spawnRepositories = "spawn_repositories"
@@ -4998,6 +5016,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         self.spawnFullAccessClaude = try c.decodeIfPresent(Bool.self, forKey: .spawnFullAccessClaude)
         self.spawnFullAccessCodex = try c.decodeIfPresent(Bool.self, forKey: .spawnFullAccessCodex)
         self.spawnHarnesses = try c.decodeIfPresent([String: SpawnHarnessSettings].self, forKey: .spawnHarnesses)
+        self.spawnLeaderApprovals = try c.decodeIfPresent(Bool.self, forKey: .spawnLeaderApprovals)
         self.spawnMaxAgents = try c.decodeIfPresent(Int.self, forKey: .spawnMaxAgents)
         self.spawnNativeInput = try c.decodeIfPresent(Bool.self, forKey: .spawnNativeInput)
         self.spawnRepositories = try c.decodeIfPresent([String].self, forKey: .spawnRepositories)
@@ -5054,6 +5073,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         try c.encodeIfPresent(self.spawnFullAccessClaude, forKey: .spawnFullAccessClaude)
         try c.encodeIfPresent(self.spawnFullAccessCodex, forKey: .spawnFullAccessCodex)
         try c.encodeIfPresent(self.spawnHarnesses, forKey: .spawnHarnesses)
+        try c.encodeIfPresent(self.spawnLeaderApprovals, forKey: .spawnLeaderApprovals)
         try c.encodeIfPresent(self.spawnMaxAgents, forKey: .spawnMaxAgents)
         try c.encodeIfPresent(self.spawnNativeInput, forKey: .spawnNativeInput)
         try c.encodeIfPresent(self.spawnRepositories, forKey: .spawnRepositories)

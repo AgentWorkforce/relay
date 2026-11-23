@@ -131,6 +131,31 @@ fn without_verbatim_prefix(path: String) -> PathBuf {
     )
 }
 
+/// `codex.exe` in any case: the CLI (npm's native binary, the standalone
+/// install) and the desktop app's bundled copy all have that name.
+fn is_codex_image_name(executable: &Path) -> bool {
+    executable
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| name.eq_ignore_ascii_case("codex.exe"))
+}
+
+/// Whether `path` is inside a packaged app's install folder,
+/// `<drive>:\Program Files\WindowsApps\<package>\…`, in any case.
+fn in_windows_apps(path: &Path) -> bool {
+    use std::path::Component;
+    let mut parts = path.components().filter_map(|part| match part {
+        Component::Normal(name) => name.to_str(),
+        _ => None,
+    });
+    matches!(
+        (parts.next(), parts.next(), parts.next()),
+        (Some(program), Some(apps), Some(_package))
+            if program.eq_ignore_ascii_case("Program Files")
+                && apps.eq_ignore_ascii_case("WindowsApps")
+    ) && path.is_absolute()
+}
+
 /// The path a disk-file handle names now.
 fn final_path(handle: HANDLE) -> Option<PathBuf> {
     let mut buffer = vec![0u16; 1024];
@@ -457,12 +482,20 @@ impl ProcessTable for SystemProcesses {
     /// a regular file. Unlike Linux, ownership and modes are not checked:
     /// Windows has no mode bits, and a binary inside this person's profile
     /// or Program Files is writable only by them or an administrator.
+    ///
+    /// A Microsoft Store (MSIX) install runs from
+    /// `Program Files\WindowsApps`, whose folders a person may be refused a
+    /// look into; a running image there that cannot be read is still the
+    /// installed package's (only the system writes that folder).
     fn is_trusted_codex(&self, executable: &Path) -> bool {
-        executable
-            .file_name()
-            .and_then(OsStr::to_str)
-            .is_some_and(|name| name.eq_ignore_ascii_case("codex.exe"))
-            && std::fs::metadata(executable).is_ok_and(|metadata| metadata.is_file())
+        is_codex_image_name(executable)
+            && match std::fs::metadata(executable) {
+                Ok(metadata) => metadata.is_file(),
+                Err(error) => {
+                    error.kind() == std::io::ErrorKind::PermissionDenied
+                        && in_windows_apps(executable)
+                }
+            }
     }
 
     fn command_line(&self, pid: i32) -> CommandLine {
@@ -610,6 +643,135 @@ mod tests {
             without_verbatim_prefix(r"C:\plain".into()),
             PathBuf::from(r"C:\plain")
         );
+    }
+
+    #[test]
+    fn windows_codex_images_are_named_codex_exe_in_any_case() {
+        assert!(is_codex_image_name(Path::new(r"C:\a\codex.exe")));
+        assert!(is_codex_image_name(Path::new(r"C:\a\Codex.EXE")));
+        assert!(!is_codex_image_name(Path::new(r"C:\a\codex.cmd")));
+        assert!(!is_codex_image_name(Path::new(r"C:\a\codex")));
+        assert!(!is_codex_image_name(Path::new(r"C:\a\not-codex.exe")));
+    }
+
+    #[test]
+    fn windows_store_install_folders_are_recognized() {
+        for path in [
+            r"C:\Program Files\WindowsApps\OpenAI.Codex_1.0.0.0_x64__abc\app\resources\codex.exe",
+            r"D:\program files\windowsapps\OpenAI.Codex_1\codex.exe",
+        ] {
+            assert!(in_windows_apps(Path::new(path)), "{path}");
+        }
+        for path in [
+            r"C:\Program Files\OpenAI\codex.exe",
+            r"C:\Users\a\AppData\Local\Program Files\WindowsApps\x\codex.exe",
+            r"Program Files\WindowsApps\x\codex.exe",
+            r"C:\Program Files\WindowsApps",
+        ] {
+            assert!(!in_windows_apps(Path::new(path)), "{path}");
+        }
+        // A missing file outside the store folder is never trusted.
+        let table = SystemProcesses::default();
+        assert!(!table.is_trusted_codex(Path::new(r"C:\nowhere\codex.exe")));
+    }
+
+    const FAKE_CODEX_LOCK: &str = "RELAY_TEST_FAKE_CODEX_LOCK";
+    const FAKE_CODEX_THREAD: &str = "01A0E91E-DA81-7632-8367-789D27AF58BD";
+
+    /// relay#2239: a real process image named `codex.exe` (this test binary,
+    /// copied under a mixed-case folder with a space) holding a Codex writer
+    /// lock is found by the handle scan, trusted, owned by this person, and
+    /// its thread reported open and live.
+    #[test]
+    fn windows_a_codex_exe_holding_a_writer_lock_is_seen() {
+        if let Some(lock) = std::env::var_os(FAKE_CODEX_LOCK) {
+            // The child: hold the lock until told to stop.
+            let lock = PathBuf::from(lock);
+            let _held = std::fs::File::options()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&lock)
+                .unwrap();
+            let folder = lock.parent().unwrap();
+            std::fs::write(folder.join("ready"), b"").unwrap();
+            let stop = folder.join("stop");
+            let deadline = std::time::Instant::now() + Duration::from_secs(120);
+            while !stop.exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            return;
+        }
+        let scratch = tempfile::tempdir().unwrap();
+        let bin = scratch.path().join(r"Fake Codex\Bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let image = bin.join("CODEX.EXE");
+        std::fs::copy(std::env::current_exe().unwrap(), &image).unwrap();
+        let locks = scratch.path().join(r".codex\Thread-Writer-Locks");
+        std::fs::create_dir_all(&locks).unwrap();
+        let lock = locks.join(format!("{FAKE_CODEX_THREAD}.Lock"));
+        let mut child = std::process::Command::new(&image)
+            .args([
+                "--exact",
+                "relay::process::windows::tests::windows_a_codex_exe_holding_a_writer_lock_is_seen",
+                "--test-threads=1",
+            ])
+            .env(FAKE_CODEX_LOCK, &lock)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while !locks.join("ready").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fake codex never started"
+            );
+            assert!(child.try_wait().unwrap().is_none(), "fake codex exited");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let pid = child.id() as i32;
+        let table = SystemProcesses::default();
+        let uid = crate::relay::peer::current_uid();
+        let thread = FAKE_CODEX_THREAD.to_lowercase();
+        // The kernel reports final long paths; a temp folder can be handed
+        // out in its 8.3 short form (`RUNNER~1`), so compare final paths.
+        let fin = |path: &Path| {
+            without_verbatim_prefix(lossy(std::fs::canonicalize(path).unwrap().as_os_str()))
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let executable = table.executable(pid).expect("image path");
+            assert!(
+                !executable.to_string_lossy().starts_with(r"\\?\"),
+                "{executable:?}"
+            );
+            assert!(fin(&executable)
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&fin(&image).to_string_lossy()));
+            assert!(table.is_trusted_codex(&executable));
+            assert_eq!(table.process(pid).map(|info| info.uid), Some(uid));
+            let open = table.open_files(pid);
+            let expected = fin(&lock);
+            assert!(
+                open.iter().any(|path| path
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&expected.to_string_lossy())),
+                "{open:?} has no {expected:?}"
+            );
+            assert_eq!(
+                crate::relay::process::codex_locked_threads(&table, pid),
+                std::collections::BTreeSet::from([thread.clone()])
+            );
+            assert!(crate::relay::codex::processes::open_threads(&table, uid).contains(&thread));
+            assert!(crate::relay::codex::processes::thread_is_live(
+                &table, uid, &thread
+            ));
+        }));
+        std::fs::write(locks.join("stop"), b"").unwrap();
+        let _ = child.wait();
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
     }
 
     #[test]

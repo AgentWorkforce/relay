@@ -258,9 +258,21 @@ pub fn claude_start_seconds(text: &str) -> Option<u64> {
 }
 
 /// The Codex thread a writer-lock path names:
-/// `…/thread-writer-locks/<uuid>.lock`, lowercased.
+/// `…/thread-writer-locks/<uuid>.lock`, lowercased. Windows file names are
+/// case-insensitive, and the handle scan reports each as the volume stores
+/// it, so there the folder and extension match in any case.
 pub fn codex_thread_of_lock(path: &Path) -> Option<String> {
-    if path.extension()? != "lock" || path.parent()?.file_name()? != "thread-writer-locks" {
+    let same = |found: &std::ffi::OsStr, expected: &str| {
+        if cfg!(windows) {
+            found
+                .to_str()
+                .is_some_and(|found| found.eq_ignore_ascii_case(expected))
+        } else {
+            found == expected
+        }
+    };
+    if !same(path.extension()?, "lock") || !same(path.parent()?.file_name()?, "thread-writer-locks")
+    {
         return None;
     }
     let id = path.file_stem()?.to_str()?.to_lowercase();
@@ -1718,6 +1730,23 @@ mod tests {
         assert_eq!(
             codex_thread_of_lock(Path::new("/x/thread-writer-locks/not-a-uuid.lock")),
             None
+        );
+    }
+
+    // relay#2239: Windows names are case-insensitive, and the handle scan
+    // reports them as the volume stores them.
+    #[test]
+    fn writer_lock_names_match_case_as_their_platform_does() {
+        let shouted = format!("/x/Thread-Writer-Locks/{}.LOCK", THREAD.to_uppercase());
+        let expected = cfg!(windows).then(|| THREAD.to_string());
+        assert_eq!(codex_thread_of_lock(Path::new(&shouted)), expected);
+        #[cfg(windows)]
+        assert_eq!(
+            codex_thread_of_lock(Path::new(&format!(
+                r"C:\Users\a\.codex\thread-writer-locks\{THREAD}.lock"
+            )))
+            .as_deref(),
+            Some(THREAD)
         );
     }
 

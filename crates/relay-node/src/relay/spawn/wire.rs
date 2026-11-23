@@ -60,11 +60,18 @@ pub const WIRE_VERSION: u64 = 1;
 pub use crate::relay::harness::HarnessId;
 
 /// How one spawn handles harness permission prompts. An absent profile keeps
-/// the node owner's existing per-harness setting for older callers.
+/// the node owner's existing per-harness setting for older callers. A
+/// profile limits only the spawning agent: with **Approvals from workspace
+/// leaders** (`spawn_leader_approvals`) on, listed workspace leaders may
+/// approve or deny the session's approvable requests whatever the profile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalProfile {
-    /// Keep prompts local to the signed-in machine owner.
+    /// Keep prompts with the signed-in machine owner: the spawning agent may
+    /// not answer them. With `spawn_leader_approvals` on, the session's
+    /// approve/deny requests also go to the workspace leaders, who may
+    /// approve or deny them; choices, forms, input and local verification
+    /// stay with the owner.
     Interactive,
     /// Also let the immutable agent that requested the spawn answer over its
     /// authenticated Relay DM.
@@ -567,7 +574,10 @@ pub struct SpawnRequest {
     /// copy of (`fork_from`), continuing its conversation.
     pub fork_from: Option<String>,
     /// Per-spawn approval policy. `None` preserves the machine's configured
-    /// default for callers from before this field existed.
+    /// default for callers from before this field existed. It limits only
+    /// the spawning agent: with `spawn_leader_approvals` on, workspace
+    /// leaders may approve or deny under any profile, `interactive`
+    /// included.
     pub approval_profile: Option<ApprovalProfile>,
     /// The one-time `sh_lt_` credential Control added for this launch on a
     /// gate-only install (`input.launch_credential`), for the agent's

@@ -24,7 +24,7 @@
 //! that is off is no spawn target anyway.
 
 use super::node::NodeInfo;
-use crate::relay::cloud_session::{self, CloudAccess, CloudAccount, CloudError};
+use crate::relay::cloud_session::{self, AgentOwner, CloudAccess, CloudAccount, CloudError};
 use crate::relay::daemon::Core;
 use crate::relay::state::{now_ms, SpawnClaim, SpawnClaimState, SpawnState, SpawnStatus};
 use crate::relay::workspace::Secret;
@@ -407,6 +407,30 @@ impl Core {
         let ledger = self.ledger();
         ledger.memory().forget_tries();
         ledger.claim_now.notify_one();
+    }
+
+    /// The person this computer's spawn node `node_id` belongs to, as its
+    /// spawned agents' owner: the attached install's person
+    /// (`CloudAccess::agent_owner`), only while Cloud's last answer to the
+    /// claim recorded the node as that same person's, in their workspace.
+    /// `None` while the claim is unanswered or another account's, or when
+    /// the person attached now is not the one it was claimed for.
+    pub(super) fn node_owner(&self, node_id: &str) -> Option<AgentOwner> {
+        let owner = self.agent_owner()?;
+        let record = self
+            .ledger()
+            .memory()
+            .last
+            .clone()
+            .or_else(|| load(&self.config.app_data_dir))?;
+        let mine = record.owner == Owner::Me
+            && record.ask.node_id == node_id
+            && record.ask.user_id == owner.user_id
+            && owner
+                .workspace_id
+                .as_deref()
+                .is_none_or(|workspace| workspace == record.ask.workspace_id);
+        mine.then_some(owner)
     }
 
     /// Whether another account owns the node, so it takes no spawns.

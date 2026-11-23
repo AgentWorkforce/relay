@@ -98,6 +98,12 @@ pub(super) struct LedgerState {
     /// Agents being taken over (`handover`), each with whether it is to
     /// be stopped at once, in the middle of a turn, and its answer.
     pub(super) taking_over: HashMap<String, super::handover::TakingOver>,
+    /// Spawned agents whose owner metadata is being published (`credit`).
+    pub(super) crediting: BTreeSet<String>,
+    /// Spawned agents left uncredited for good this run, by agent id: gone
+    /// from Relaycast, credited to someone else there, or with no key to
+    /// write with (`credit`). Asked again after a restart.
+    pub(super) uncredited: BTreeSet<String>,
 }
 
 impl LedgerState {

@@ -39,11 +39,12 @@ pub const RECORDS: [&str; 3] = [
 /// something (Claude Code cloud sessions raise macOS's prompt to read
 /// Claude Code's Keychain login; mobile handoff changes where sessions
 /// run; mobile continuation permits native owner input; approvals from the
-/// spawning agent let it answer its session's permission prompts;
-/// `connect_detected_tools` turns on the routes into the tools found here).
+/// spawning agent let it answer its session's permission prompts, and
+/// approvals from workspace leaders let them answer those of any session
+/// spawned here; `connect_detected_tools` turns on the routes into the tools found here).
 /// An agent may turn them off. A setting whose
 /// value is `"on"`/`"off"` rather than a boolean counts `"on"` as on.
-pub const PERSON_TURNS_ON: [&str; 27] = [
+pub const PERSON_TURNS_ON: [&str; 28] = [
     "accept_spawns",
     "allow_self_registration",
     "auto_activate",
@@ -67,6 +68,7 @@ pub const PERSON_TURNS_ON: [&str; 27] = [
     "spawn_allow_teammates",
     "spawn_full_access_claude",
     "spawn_full_access_codex",
+    "spawn_leader_approvals",
     "spawn_native_input",
     "spawn_requester_approvals",
     "teammate_native_input",
@@ -194,8 +196,14 @@ pub fn describe(values: &Map<String, Value>) -> Vec<Value> {
 
 /// Why a setting is absent from `settings.get`: on Windows, a setting of a
 /// harness whose local tools are Unix-only says so, as its adapter does
-/// (`existing_session::platform::unavailable`), since it never appears there.
+/// (`existing_session::platform::unavailable`), since it never appears there;
+/// approvals from workspace leaders say they cannot work on a gate-only
+/// install (`leaders::GATE_ONLY`), the one place they are absent.
 fn unavailable(key: &str) -> String {
+    // Absent only where it cannot work: a gate-only install.
+    if key == crate::relay::leaders::SETTING {
+        return crate::relay::leaders::GATE_ONLY.to_string();
+    }
     let harness = match key {
         "grok_leader" => Some("Grok"),
         "opencode_plugin" => Some("OpenCode"),

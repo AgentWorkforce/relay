@@ -615,6 +615,8 @@ impl Core {
             self.delete_recorded_cleanup(cleanup).await;
         }
         self.watch_spawned(&registration);
+        // Named as the node owner's on the roster, as sessions are.
+        self.credit_spawned_soon(&registration);
         in_flight.settled();
         self.hub.update(|status| {
             if status.spawn.as_ref().map(|spawn| spawn.state) == Some(SpawnState::Live) {

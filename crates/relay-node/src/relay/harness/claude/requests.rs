@@ -7,8 +7,10 @@
 //! credential. Only the verified machine owner may answer, by Relaycast's
 //! immutable id for the signed-in person, and the agent that asked for the
 //! spawn only when **Approvals from the spawning agent** lets it
-//! (`spawn::drive::Core::approving_requester`): never any other. The first
-//! answer counts. One not answered within five minutes is denied; when Claude's
+//! (`spawn::drive::Core::approving_requester`), and a listed workspace
+//! leader's approve or deny of an approvable one only when **Approvals from
+//! workspace leaders** lets it (`spawn::drive::Core::approving_leader`):
+//! never any other. The first answer counts. One not answered within five minutes is denied; when Claude's
 //! input goes, so do its references, and a later reply finds nothing.
 
 use crate::relay::codex::app_server::drive::ReplyResult;
@@ -261,6 +263,12 @@ pub fn waiting(session: &str) -> bool {
 /// Whether this namespace owns a live, unanswered reference.
 pub fn has_pending(session: &str, reference: &str) -> bool {
     live(&mut pending(), session, reference).is_some()
+}
+
+/// Whether `session`'s live `reference` may be approved (not a question or
+/// a dialog); `None` when it is not live, as [`has_pending`].
+pub fn pending_approvable(session: &str, reference: &str) -> Option<bool> {
+    live(&mut pending(), session, reference).map(|entry| entry.notice.approvable)
 }
 
 /// Notices not yet relayed. Each is marked only once Relaycast took it.

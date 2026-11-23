@@ -251,3 +251,16 @@ jobs:
       - name: Test native session transport deadlines
         shell: bash
         run: 'cargo test --locked --lib relay::transport::windows::deadline_tests::expired_deadline_does_not_poll_ready_work -- --exact'
+      # Codex discovery on real Windows (relay#2239): the bundled desktop-app
+      # executable, the app router's named pipe, the handle scan of a real
+      # codex.exe holding a writer lock, and the path forms it reports.
+      - name: Test Windows Codex discovery
+        shell: bash
+        run: >-
+          cargo test --locked --lib --
+          relay::codex::tests::windows_
+          relay::codex::tests::discovery_reports_each_running_signal
+          relay::codex::tests::recent_and_open_threads
+          relay::codex::ipc::
+          relay::process::windows::
+          relay::process::tests::writer_lock

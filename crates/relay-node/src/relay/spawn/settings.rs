@@ -75,13 +75,14 @@ impl SpawnSettings {
 
 /// Every spawn setting the store keeps, as `settings.get` and
 /// `settings.set` name them.
-pub const KEYS: [&str; 11] = [
+pub const KEYS: [&str; 12] = [
     "accept_spawns",
     "spawn_full_access_codex",
     "spawn_full_access_claude",
     "spawn_allow_teammates",
     "spawn_native_input",
     "spawn_requester_approvals",
+    "spawn_leader_approvals",
     "spawn_max_agents",
     "spawn_billing_codex",
     "spawn_billing_claude",
@@ -239,6 +240,21 @@ pub fn requester_approvals(store: &Store, development: bool) -> bool {
         && requester_approvals_setting(store, development)
 }
 
+/// Whether **Approvals from workspace leaders** is on as set: off unless the
+/// machine owner turns it on.
+pub fn leader_approvals_setting(store: &Store) -> bool {
+    store.extras.spawn_leader_approvals.unwrap_or(false)
+}
+
+/// Whether workspace leaders may approve or deny permission requests of
+/// agents spawned on this computer: approvals from workspace leaders on, and
+/// native input from spawning agents too, which they never outlive. Unlike
+/// the spawning agent's, a leader's answer is not limited by
+/// `spawn_requester_approvals` or the spawn's approval profile.
+pub fn leader_approvals(store: &Store) -> bool {
+    store.extras.spawn_native_input != Some(false) && leader_approvals_setting(store)
+}
+
 /// `settings.get`'s spawn values: whether spawns are accepted, each
 /// harness's settings, whether teammates may spawn, and the rest of
 /// `CONFIGURED_KEYS`. `development` gives approvals from the spawning agent
@@ -265,6 +281,10 @@ pub fn values(store: &Store, development: bool) -> Map<String, Value> {
         "spawn_requester_approvals".into(),
         json!(requester_approvals_setting(store, development)),
     );
+    values.insert(
+        "spawn_leader_approvals".into(),
+        json!(leader_approvals_setting(store)),
+    );
     values.extend(configured_values(store));
     values.insert(harnesses::KEY.into(), harnesses::value(&settings.harnesses));
     values
@@ -278,6 +298,7 @@ pub struct Change {
     allow_teammates: Option<bool>,
     native_input: Option<bool>,
     requester_approvals: Option<bool>,
+    leader_approvals: Option<bool>,
     configured: ConfiguredChange,
     /// Question escalation's settings, saved in the same write.
     question: crate::relay::question::settings::Change,
@@ -310,6 +331,13 @@ impl Change {
                         .ok_or("spawn_requester_approvals must be a boolean.")
                 })
                 .transpose()?,
+            leader_approvals: changes
+                .get("spawn_leader_approvals")
+                .map(|v| {
+                    v.as_bool()
+                        .ok_or("spawn_leader_approvals must be a boolean.")
+                })
+                .transpose()?,
             configured,
             question,
         })
@@ -335,6 +363,9 @@ impl Change {
         }
         if self.requester_approvals.is_some() {
             store.extras.spawn_requester_approvals = self.requester_approvals;
+        }
+        if self.leader_approvals.is_some() {
+            store.extras.spawn_leader_approvals = self.leader_approvals;
         }
         if self.allow_teammates.is_some() {
             store.spawn_allow_teammates = self.allow_teammates;
@@ -363,6 +394,9 @@ impl Change {
         }
         if self.requester_approvals.is_some() {
             restored |= put_back!(store, write, extras.spawn_requester_approvals);
+        }
+        if self.leader_approvals.is_some() {
+            restored |= put_back!(store, write, extras.spawn_leader_approvals);
         }
         if self.allow_teammates.is_some() {
             restored |= put_back!(store, write, spawn_allow_teammates);
@@ -676,5 +710,80 @@ mod requester_approvals_tests {
         assert!(change.restore(&mut store, &write));
         assert!(requester_approvals(&store, false));
         assert_eq!(store.extras.spawn_requester_approvals, None);
+    }
+}
+
+#[cfg(test)]
+mod leader_approvals_tests {
+    use super::*;
+
+    fn set(store: &mut Store, change: Value) {
+        Change::read(change.as_object().unwrap())
+            .unwrap()
+            .apply(store);
+        *store = serde_json::from_value(serde_json::to_value(&*store).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn approvals_from_workspace_leaders_are_off_until_the_owner_turns_them_on() {
+        let mut store = Store::default();
+        assert_eq!(values(&store, true)["spawn_leader_approvals"], false);
+        assert_eq!(values(&store, false)["spawn_leader_approvals"], false);
+        assert!(!leader_approvals(&store));
+
+        set(&mut store, json!({"spawn_leader_approvals": true}));
+        assert!(leader_approvals(&store), "the person turned it on");
+        assert_eq!(values(&store, false)["spawn_leader_approvals"], true);
+        assert_eq!(store.extras.spawn_leader_approvals, Some(true));
+        // Approvals from the spawning agent are another setting.
+        set(&mut store, json!({"spawn_requester_approvals": false}));
+        assert!(leader_approvals(&store));
+        set(&mut store, json!({"spawn_leader_approvals": false}));
+        assert!(!leader_approvals(&store), "the person turned it off");
+        assert_eq!(values(&store, false)["spawn_leader_approvals"], false);
+
+        for invalid in [json!("true"), json!(null), json!(1)] {
+            assert_eq!(
+                Change::read(
+                    json!({"spawn_leader_approvals": invalid})
+                        .as_object()
+                        .unwrap()
+                ),
+                Err("spawn_leader_approvals must be a boolean.".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn leader_approvals_never_outlive_native_input_from_spawning_agents() {
+        let mut store = Store::default();
+        set(
+            &mut store,
+            json!({"spawn_leader_approvals": true, "spawn_native_input": false}),
+        );
+        assert!(!leader_approvals(&store));
+        assert_eq!(values(&store, false)["spawn_leader_approvals"], true);
+        set(&mut store, json!({"spawn_native_input": true}));
+        assert!(leader_approvals(&store));
+    }
+
+    // A `settings.set` batch whose other write fails is put back to the
+    // default: approvals from workspace leaders stay off.
+    #[test]
+    fn a_failed_change_puts_approvals_from_workspace_leaders_back() {
+        let previous = Store::default();
+        let change =
+            Change::read(json!({"spawn_leader_approvals": true}).as_object().unwrap()).unwrap();
+        let mut written = previous.clone();
+        change.apply(&mut written);
+        assert!(leader_approvals(&written));
+        let write = StoreWrite {
+            previous: previous.clone(),
+            written: written.clone(),
+        };
+        let mut store = written;
+        assert!(change.restore(&mut store, &write));
+        assert!(!leader_approvals(&store));
+        assert_eq!(store.extras.spawn_leader_approvals, None);
     }
 }

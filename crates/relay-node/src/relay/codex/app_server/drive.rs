@@ -3,8 +3,9 @@
 //! the connection drops its pending refs; a reply cannot approve a new one.
 //! Every request is answered by the verified machine owner (`spawn::drive`),
 //! or by the spawning agent when approvals from it are on
-//! (`spawn_requester_approvals`, with native input from it); no other agent
-//! can.
+//! (`spawn_requester_approvals`, with native input from it), and an
+//! approvable one by a listed workspace leader when approvals from leaders
+//! are on (`spawn_leader_approvals`); no other agent can.
 
 use super::{Client, ClientState};
 use crate::relay::codex::runner::ProxyStream;
@@ -377,6 +378,20 @@ pub fn has_pending(thread: &str, reference: &str) -> bool {
     })
 }
 
+/// Whether `thread`'s open `reference` may be approved (not a choice,
+/// form, input or local verification); `None` when it is not open, as
+/// [`has_pending`].
+pub fn pending_approvable(thread: &str, reference: &str) -> Option<bool> {
+    pending()
+        .get(reference)
+        .filter(|entry| {
+            entry.notice.thread == thread
+                && entry.answer.is_none()
+                && Instant::now() < entry.deadline
+        })
+        .map(|entry| entry.notice.approvable)
+}
+
 pub fn mark_forwarded(reference: &str) {
     if let Some(entry) = pending().get_mut(reference) {
         entry.forwarded = true;
@@ -440,7 +455,7 @@ pub(crate) fn recorded_answer(reference: &str) -> Option<Value> {
 }
 
 #[cfg(test)]
-pub(super) fn expire(reference: &str) {
+pub(crate) fn expire(reference: &str) {
     if let Some(entry) = pending().get_mut(reference) {
         entry.deadline = Instant::now();
     }

@@ -27,6 +27,14 @@ pub struct SettingsExtras {
         skip_serializing_if = "Option::is_none"
     )]
     pub spawn_requester_approvals: Option<bool>,
+    /// Missing means off: workspace leaders may not answer the approvals of
+    /// sessions spawned here (`spawn::settings::leader_approvals`).
+    #[serde(
+        rename = "spawnLeaderApprovals",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub spawn_leader_approvals: Option<bool>,
     /// Missing means true: a teammate's direct message to a Claude Code
     /// session with Agent Relay's plugin starts a user turn.
     #[serde(
@@ -145,6 +153,11 @@ impl SettingsExtras {
                 &base.spawn_requester_approvals,
                 &ours.spawn_requester_approvals,
                 &theirs.spawn_requester_approvals,
+            ),
+            spawn_leader_approvals: changed(
+                &base.spawn_leader_approvals,
+                &ours.spawn_leader_approvals,
+                &theirs.spawn_leader_approvals,
             ),
             teammate_native_input: changed(
                 &base.teammate_native_input,
@@ -327,5 +340,22 @@ mod tests {
         assert_eq!(value["agentSettingsChanges"][0]["by"], "api");
         let back: Store = serde_json::from_value(value).unwrap();
         assert_eq!(back.extras, store.extras);
+    }
+
+    #[test]
+    fn approvals_from_workspace_leaders_merge_and_round_trip_under_their_key() {
+        let base = SettingsExtras::default();
+        let theirs = SettingsExtras {
+            spawn_leader_approvals: Some(true),
+            ..SettingsExtras::default()
+        };
+        let merged = SettingsExtras::merged(&base, &base, &theirs);
+        assert_eq!(merged.spawn_leader_approvals, Some(true));
+        let value = serde_json::to_value(&merged).unwrap();
+        assert_eq!(value["spawnLeaderApprovals"], true);
+        let read: SettingsExtras = serde_json::from_value(value).unwrap();
+        assert_eq!(read.spawn_leader_approvals, Some(true));
+        let unset = serde_json::to_value(SettingsExtras::default()).unwrap();
+        assert!(unset.get("spawnLeaderApprovals").is_none());
     }
 }

@@ -1,5 +1,6 @@
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 
+import { advertiseEventsExtension, handleEventsRequest, isEventsRequest } from './events.js';
 import { EVENTS_SHIM_LIMITS } from './limits.js';
 import { buildEventsShimMcpServer } from './mcp.js';
 import {
@@ -24,6 +25,16 @@ export interface EventsShimHttpOptions {
   beforeCreate?: (request: Request) => Promise<Response | undefined>;
   pollIntervalMs?: number;
   version?: string;
+  /** Tunes `events/stream` (MCP Events push): store re-read interval and longest open stream. */
+  eventsStream?: { pollMs?: number; maxStreamMs?: number };
+  /**
+   * Path prefixes (under the host's origin) to list in
+   * `/.well-known/mcp-webhook-receiver.json`, e.g. `['/api/v1/events-shim/h/']`.
+   * Publishing it lets an MCP Events server deliver to this host's `/h/<token>/mcp`
+   * URLs without a challenge round trip. The route answers only when this is set
+   * and the host routes `/.well-known/mcp-webhook-receiver.json` here.
+   */
+  mcpWebhookReceivers?: readonly string[];
 }
 
 /**
@@ -34,8 +45,9 @@ export interface EventsShimHttpOptions {
  * - `POST /shims/current/rotate` replaces the webhook URL
  * - `PUT /shims/current/secrets/<mode>` sets a verification secret
  * - `POST /h/<hook token>[/<mode>]` receives a webhook post
- * - `POST /t/<mcp token>/mcp` is the MCP endpoint (Streamable HTTP, stateless)
- *
+ * - `POST /t/<mcp token>/mcp` is the MCP endpoint (Streamable HTTP, stateless), which
+ *   also answers the MCP Events extension (`events/list`, `events/poll`, `events/stream`)
+ * - `GET /.well-known/mcp-webhook-receiver.json`, when `mcpWebhookReceivers` is set
  *
  * @param request - The incoming request.
  * @param path - The request path after the host's mount point, e.g. `/h/<token>`.
@@ -48,6 +60,16 @@ export async function handleEventsShimRequest(
   options: EventsShimHttpOptions
 ): Promise<Response | null> {
   const method = request.method.toUpperCase();
+
+  if (path === '/.well-known/mcp-webhook-receiver.json' && options.mcpWebhookReceivers?.length) {
+    if (method !== 'GET')
+      return json(405, { error: 'method_not_allowed', message: 'GET this document.' }, { allow: 'GET' });
+    return json(
+      200,
+      { receivers: [...options.mcpWebhookReceivers] },
+      { 'cache-control': 'public, max-age=3600' }
+    );
+  }
 
   const hook = /^\/h\/([A-Za-z0-9_-]{1,100})(?:\/([a-z]+))?\/?$/.exec(path);
   if (hook) {
@@ -128,7 +150,7 @@ export async function handleEventsShimRequest(
     if (!VERIFICATION_MODES.includes(mode) || (mode as VerificationMode) === 'open') {
       return json(404, {
         error: 'not_found',
-        message: 'Secrets exist for github, stripe, linear and bearer.',
+        message: 'Secrets exist for github, stripe, linear, bearer and mcp.',
       });
     }
     if (method !== 'PUT')
@@ -175,6 +197,19 @@ async function handleMcp(request: Request, token: string, options: EventsShimHtt
   } catch {
     return rpcError(400, 'Body must be JSON-RPC.');
   }
+  if (isEventsRequest(parsed)) {
+    return handleEventsRequest(parsed, {
+      deps: options.deps,
+      shim,
+      mcpToken: token,
+      headers: request.headers,
+      signal: request.signal,
+      streamPollMs: options.eventsStream?.pollMs,
+      maxStreamMs: options.eventsStream?.maxStreamMs,
+    });
+  }
+  const initializing =
+    Boolean(parsed) && typeof parsed === 'object' && (parsed as { method?: unknown }).method === 'initialize';
   const server = buildEventsShimMcpServer({
     deps: options.deps,
     shim,
@@ -201,7 +236,11 @@ async function handleMcp(request: Request, token: string, options: EventsShimHtt
     );
     const out = new Headers(response.headers);
     out.set('cache-control', 'no-store');
-    return new Response(await response.text(), { status: response.status, headers: out });
+    const text = await response.text();
+    return new Response(initializing && response.ok ? advertiseEventsExtension(text) : text, {
+      status: response.status,
+      headers: out,
+    });
   } finally {
     await server.close().catch(() => undefined);
   }
