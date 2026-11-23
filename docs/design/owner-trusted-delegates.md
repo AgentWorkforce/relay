@@ -148,16 +148,16 @@ extra friction.
 
 A grant lists classes. Each class can be narrowed by a target pattern.
 
-| Class             | Examples                                        | Target pattern               | Default limit                               |
-| ----------------- | ----------------------------------------------- | ---------------------------- | ------------------------------------------- |
-| `merge`           | merge a PR, enable auto-merge                   | `owner/repo`, `owner/repo#N` | Tier D                                      |
-| `pr_ops`          | open/close PR, label, request review, re-run CI | `owner/repo`                 | Tier D                                      |
-| `deploy`          | deploy to a named environment                   | `service:env` (`*:staging`)  | Tier D for non-prod; prod needs single-use  |
-| `release`         | publish npm/crate/GitHub release, cut a tag     | package or repo              | single-use                                  |
-| `secret_change`   | rotate, set or delete a secret                  | secret store path            | Tier O + single-use                         |
-| `destructive`     | delete branches/data, force-push, drop tables   | resource                     | Tier O + single-use                         |
-| `spend`           | buy, scale up paid resources                    | amount cap                   | Tier O                                      |
-| `external_comms`  | post publicly, email customers                  | channel                      | Tier D                                      |
+| Class            | Examples                                        | Target pattern               | Default limit                              |
+| ---------------- | ----------------------------------------------- | ---------------------------- | ------------------------------------------ |
+| `merge`          | merge a PR, enable auto-merge                   | `owner/repo`, `owner/repo#N` | Tier D                                     |
+| `pr_ops`         | open/close PR, label, request review, re-run CI | `owner/repo`                 | Tier D                                     |
+| `deploy`         | deploy to a named environment                   | `service:env` (`*:staging`)  | Tier D for non-prod; prod needs single-use |
+| `release`        | publish npm/crate/GitHub release, cut a tag     | package or repo              | single-use                                 |
+| `secret_change`  | rotate, set or delete a secret                  | secret store path            | Tier O + single-use                        |
+| `destructive`    | delete branches/data, force-push, drop tables   | resource                     | Tier O + single-use                        |
+| `spend`          | buy, scale up paid resources                    | amount cap                   | Tier O                                     |
+| `external_comms` | post publicly, email customers                  | channel                      | Tier D                                     |
 
 The classes are a closed enum, versioned with the protocol, so no free-form
 classes. `owner_approval.actions[]` entries are `{class, target, note?}`. Cloud
@@ -253,14 +253,22 @@ with the same strict body and the same bearer and recipient-token checks as
 
 ```json
 {
-  "typ": "relay-delegation+jws", "v": 1,
-  "ws": "…", "owner_id": "hum_…", "owner_display": "Khaliq Gant",
-  "delegate_agent_id": "…", "grant_id": "grt_…",
-  "message_id": "…", "recipient_agent_id": "…",
-  "approval_id": "apv_…", "tier": "D",
+  "typ": "relay-delegation+jws",
+  "v": 1,
+  "ws": "…",
+  "owner_id": "hum_…",
+  "owner_display": "Khaliq Gant",
+  "delegate_agent_id": "…",
+  "grant_id": "grt_…",
+  "message_id": "…",
+  "recipient_agent_id": "…",
+  "approval_id": "apv_…",
+  "tier": "D",
   "actions": [{ "class": "merge", "target": "AgentWorkforce/relay#2250" }],
   "single_use": false,
-  "iat": 0, "exp": 0, "jti": "…"
+  "iat": 0,
+  "exp": 0,
+  "jti": "…"
 }
 ```
 
@@ -321,13 +329,13 @@ Cloud keeps an append-only, per-workspace log. The owner can see their own
 entries, admins can see all of them, and the log can be exported (JSONL) and
 sent to the org's SIEM through webhooks:
 
-| Event                  | Fields                                                                  |
-| ---------------------- | ----------------------------------------------------------------------- |
-| `grant.created/updated/revoked/expired` | actor human id, auth method, scope diff, reason            |
-| `delegate.claimed`     | agent id, claim method                                                  |
-| `approval.attested`    | grant, message id, recipient, actions, tier, quote hash, `jti`          |
-| `approval.refused`     | message id, recipient, reason code (`not_delegate`, `out_of_scope`, `expired`, `revoked`, `recipient_policy`, …) |
-| `approval.redeemed` / `redeem.refused` | approval id, action, recipient                          |
+| Event                                   | Fields                                                                                                           |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `grant.created/updated/revoked/expired` | actor human id, auth method, scope diff, reason                                                                  |
+| `delegate.claimed`                      | agent id, claim method                                                                                           |
+| `approval.attested`                     | grant, message id, recipient, actions, tier, quote hash, `jti`                                                   |
+| `approval.refused`                      | message id, recipient, reason code (`not_delegate`, `out_of_scope`, `expired`, `revoked`, `recipient_policy`, …) |
+| `approval.redeemed` / `redeem.refused`  | approval id, action, recipient                                                                                   |
 
 - **The owner hears about every use.** Each `approval.attested` and
   `approval.redeemed` sends the owner a digest by default, and a real-time
@@ -364,8 +372,7 @@ actions, and the owner frame keeps its in-task limits.
 ### 9.2 Relaycast #543: delivery by message (open, unmerged)
 
 This design depends on #543. It is the only server-sourced proof of the sender
-for a given message and recipient. **#543 must merge and deploy before phase
-2.** This design also needs a new Relaycast change: store `owner_approval` as
+for a given message and recipient. **#543 must merge and deploy before phase 2.** This design also needs a new Relaycast change: store `owner_approval` as
 immutable, server-side message data that a sender cannot edit after sending.
 Return it on the by-message lookup (or a sibling route that only Cloud can
 call), and validate its schema when the message is sent.
@@ -374,13 +381,13 @@ call), and validate its schema when the message is sent.
 
 Leaders and delegates are different axes:
 
-|                    | Leader (#2213, #2238)                            | Delegate (this doc)                              |
-| ------------------ | ------------------------------------------------ | ------------------------------------------------ |
-| Source             | workspace leader list (Relaycast)                | owner's personal grant (Cloud)                   |
-| Speaks for         | the work (structural role)                       | one named person                                 |
-| Scope              | in-task requests; approve/deny core prompts      | named action classes and targets only            |
-| Turned on by       | machine owner (`spawn_leader_approvals`)         | owner designates; recipient owner accepts (§5.4) |
-| Framing            | `leader_line`                                    | delegate line                                    |
+|              | Leader (#2213, #2238)                       | Delegate (this doc)                              |
+| ------------ | ------------------------------------------- | ------------------------------------------------ |
+| Source       | workspace leader list (Relaycast)           | owner's personal grant (Cloud)                   |
+| Speaks for   | the work (structural role)                  | one named person                                 |
+| Scope        | in-task requests; approve/deny core prompts | named action classes and targets only            |
+| Turned on by | machine owner (`spawn_leader_approvals`)    | owner designates; recipient owner accepts (§5.4) |
+| Framing      | `leader_line`                               | delegate line                                    |
 
 v1 does **not** let a delegate answer core permission prompts. A delegate's
 message about a pending prompt is ordinary text, just as #2238 treats any
@@ -463,22 +470,22 @@ carve-out:
 
 ## 12. Threat model
 
-| Threat | Mitigation | Residual risk |
-| --- | --- | --- |
-| A non-delegate quotes the owner ("Khaliq said merge") | Sender id comes from Relaycast (#543) and must hold a live grant. No delegate line otherwise. | None beyond peer text. |
-| A body forges the delegate line | Only the core writes line 2. The attribution is held to one line, and the body starts after it. `delegate_framed` checks the position. A copy in the body is still body text. | None if receiving agents follow §11.1. |
-| A name is reused (another agent takes `kjgrok`) | Grants and checks use the immutable agent id, and the binding is re-checked when each approval is used. | None. |
-| A delegate makes up a quote (Tier D) | Tight scopes, approval expiry, the owner notified on every use, single-use redeem for high-risk classes, Tier O required by policy for the most sensitive classes, quote kept in the audit log. | Low-risk actions inside scope can happen before the owner notices. Accepted by design (§4.2). |
-| A delegate is compromised (stolen token, prompt-injected bot) | Same as above, plus revocation at once and the panic button. Rate limits on attestations per grant. Anomaly flags (new recipient, burst, odd hours) raise the next use to Tier O. | The window between a bad use and the owner noticing. |
-| Replay of an old approval message | The attestation is bound to `message_id`, `recipient_agent_id`, `approval_id` and `exp`. #543 returns only pending, unacked deliveries. Single-use approvals are consumed at redeem. | A Tier D multi-use approval can be re-acted on by the same recipient until it expires. Keep the default expiry short. |
-| An approval meant for recipient A is forwarded to B | The attestation names the recipient. B's node asks Cloud with B's token, and Cloud finds no delivery of the original message to B. | None. |
-| A delegate widens the scope through vague text ("merge everything") | Recipients act on the structured actions only. Cloud refuses actions outside the grant, so a widening gets no line at all. | Depends on agents following §11.2. |
-| Approvals of a delegate of another person (Alice's bot directing Bob's agent) | The recipient's `delegated_approvals_from` defaults to `own_owner`. | None by default. |
-| A delegate escalates to config, permissions or grants | These are never delegable (§5.3), and there is no grant API for agent tokens. | None. |
-| The owner's account is compromised | Step-up auth for grants, admin co-approval policy, every grant change logged and announced. | The same risk as any account takeover. Out of scope. |
-| Cloud signing key leaks | Online attestation plus key rotation by `kid`. Nodes check revocation online, so a forged JWS alone fails the redeem step for high-risk classes. | A forged Tier D line during the leak. Needs an HSM-backed key (open question 4). |
-| A gate-only or self-hosted install without Cloud | The feature is reported as not available, the same way #2238 handles gate-only installs. | None. |
-| A revocation race | Attestation TTL is 5 minutes or less, and redeem re-checks. | Up to 5 minutes for Tier D low-risk actions. |
+| Threat                                                                        | Mitigation                                                                                                                                                                                      | Residual risk                                                                                                         |
+| ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| A non-delegate quotes the owner ("Khaliq said merge")                         | Sender id comes from Relaycast (#543) and must hold a live grant. No delegate line otherwise.                                                                                                   | None beyond peer text.                                                                                                |
+| A body forges the delegate line                                               | Only the core writes line 2. The attribution is held to one line, and the body starts after it. `delegate_framed` checks the position. A copy in the body is still body text.                   | None if receiving agents follow §11.1.                                                                                |
+| A name is reused (another agent takes `kjgrok`)                               | Grants and checks use the immutable agent id, and the binding is re-checked when each approval is used.                                                                                         | None.                                                                                                                 |
+| A delegate makes up a quote (Tier D)                                          | Tight scopes, approval expiry, the owner notified on every use, single-use redeem for high-risk classes, Tier O required by policy for the most sensitive classes, quote kept in the audit log. | Low-risk actions inside scope can happen before the owner notices. Accepted by design (§4.2).                         |
+| A delegate is compromised (stolen token, prompt-injected bot)                 | Same as above, plus revocation at once and the panic button. Rate limits on attestations per grant. Anomaly flags (new recipient, burst, odd hours) raise the next use to Tier O.               | The window between a bad use and the owner noticing.                                                                  |
+| Replay of an old approval message                                             | The attestation is bound to `message_id`, `recipient_agent_id`, `approval_id` and `exp`. #543 returns only pending, unacked deliveries. Single-use approvals are consumed at redeem.            | A Tier D multi-use approval can be re-acted on by the same recipient until it expires. Keep the default expiry short. |
+| An approval meant for recipient A is forwarded to B                           | The attestation names the recipient. B's node asks Cloud with B's token, and Cloud finds no delivery of the original message to B.                                                              | None.                                                                                                                 |
+| A delegate widens the scope through vague text ("merge everything")           | Recipients act on the structured actions only. Cloud refuses actions outside the grant, so a widening gets no line at all.                                                                      | Depends on agents following §11.2.                                                                                    |
+| Approvals of a delegate of another person (Alice's bot directing Bob's agent) | The recipient's `delegated_approvals_from` defaults to `own_owner`.                                                                                                                             | None by default.                                                                                                      |
+| A delegate escalates to config, permissions or grants                         | These are never delegable (§5.3), and there is no grant API for agent tokens.                                                                                                                   | None.                                                                                                                 |
+| The owner's account is compromised                                            | Step-up auth for grants, admin co-approval policy, every grant change logged and announced.                                                                                                     | The same risk as any account takeover. Out of scope.                                                                  |
+| Cloud signing key leaks                                                       | Online attestation plus key rotation by `kid`. Nodes check revocation online, so a forged JWS alone fails the redeem step for high-risk classes.                                                | A forged Tier D line during the leak. Needs an HSM-backed key (open question 4).                                      |
+| A gate-only or self-hosted install without Cloud                              | The feature is reported as not available, the same way #2238 handles gate-only installs.                                                                                                        | None.                                                                                                                 |
+| A revocation race                                                             | Attestation TTL is 5 minutes or less, and redeem re-checks.                                                                                                                                     | Up to 5 minutes for Tier D low-risk actions.                                                                          |
 
 ## 13. Open questions
 
@@ -509,14 +516,14 @@ carve-out:
 
 ## 14. Phased rollout
 
-| Phase | Scope | Gate to next |
-| --- | --- | --- |
-| **0** | This doc. skills#217 stays the interim rule for the AgentWorkforce workspace only. | Design approved. |
-| **1: grants and audit** | Cloud grant model, claim flow, org policy, grant API and dashboard UI (human-only), audit log, owner notices. Relaycast #543 merged and deployed, plus immutable `owner_approval` storage and validation. Nothing reaches recipients yet. | Grants are created, revoked and audited end-to-end in staging. |
-| **2: Tier D, low-risk** | Cloud `messaging/delegation` attestation. relay-node verifies it and writes the delegate line (`with_delegate_line`, `delegate_framed`, `without_delegate_line`, tests on the model of `leader_approvals.rs`). Classes `merge`, `pr_ops`, `external_comms`, `deploy` to non-prod. Workspace setting off by default. Dogfood in AgentWorkforce: Khaliq's Grok bots claimed as delegates, skill section §11 shipped, #217 carve-out deleted. | Two weeks of dogfood with no false-positive line, and refusal reasons look right in the audit log. |
-| **3: high-risk and Tier O** | Single-use redeem. `release`, prod `deploy`, `secret_change`, `destructive`, `spend`. Owner-minted approvals and delegate-requested one-tap approvals. Anomaly-triggered move to Tier O. Panic button in every surface. | Security review sign-off, plus a red-team pass on the §12 table. |
-| **4: GA** | SDK (TS, then Python), MCP fields and the `redeem_owner_approval` tool, CLI, customer docs, SIEM export, pricing decision. | n/a |
-| **Later** | `prompt_approval` mapping onto #2238 (open question 6). Offline attestation verification for air-gapped nodes. | Separate design. |
+| Phase                       | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                      | Gate to next                                                                                       |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| **0**                       | This doc. skills#217 stays the interim rule for the AgentWorkforce workspace only.                                                                                                                                                                                                                                                                                                                                                         | Design approved.                                                                                   |
+| **1: grants and audit**     | Cloud grant model, claim flow, org policy, grant API and dashboard UI (human-only), audit log, owner notices. Relaycast #543 merged and deployed, plus immutable `owner_approval` storage and validation. Nothing reaches recipients yet.                                                                                                                                                                                                  | Grants are created, revoked and audited end-to-end in staging.                                     |
+| **2: Tier D, low-risk**     | Cloud `messaging/delegation` attestation. relay-node verifies it and writes the delegate line (`with_delegate_line`, `delegate_framed`, `without_delegate_line`, tests on the model of `leader_approvals.rs`). Classes `merge`, `pr_ops`, `external_comms`, `deploy` to non-prod. Workspace setting off by default. Dogfood in AgentWorkforce: Khaliq's Grok bots claimed as delegates, skill section §11 shipped, #217 carve-out deleted. | Two weeks of dogfood with no false-positive line, and refusal reasons look right in the audit log. |
+| **3: high-risk and Tier O** | Single-use redeem. `release`, prod `deploy`, `secret_change`, `destructive`, `spend`. Owner-minted approvals and delegate-requested one-tap approvals. Anomaly-triggered move to Tier O. Panic button in every surface.                                                                                                                                                                                                                    | Security review sign-off, plus a red-team pass on the §12 table.                                   |
+| **4: GA**                   | SDK (TS, then Python), MCP fields and the `redeem_owner_approval` tool, CLI, customer docs, SIEM export, pricing decision.                                                                                                                                                                                                                                                                                                                 | n/a                                                                                                |
+| **Later**                   | `prompt_approval` mapping onto #2238 (open question 6). Offline attestation verification for air-gapped nodes.                                                                                                                                                                                                                                                                                                                             | Separate design.                                                                                   |
 
 Every phase is additive and fails closed. If Cloud or Relaycast cannot attest,
 the recipient sees today's peer framing and nothing more.
