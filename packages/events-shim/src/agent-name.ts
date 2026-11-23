@@ -12,6 +12,7 @@ export const WAKE_AGENT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/u;
  * package also applies it to every name it reads back, so a bad stored value is never shown.
  *
  * @param value - The name given to `link_relay_wake`, or a stored `WakeTarget.agent`.
+ * @returns The cleaned agent name, or `undefined` when the value is not a valid agent name.
  */
 export function wakeAgentName(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
