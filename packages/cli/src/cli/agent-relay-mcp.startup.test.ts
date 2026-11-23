@@ -2333,32 +2333,86 @@ describe('resolveStdioBootstrapOptions registration failures', () => {
   }
 
   it('names the agent, phase, code and status of a typed Relaycast failure', async () => {
-    const error = await bootstrapFailure(
-      ({ RelayError }) => new RelayError('transport_error', 'Internal server error', { statusCode: 500 })
+    // relayErrorFromApi is how the SDK client turns an error response into a RelayError.
+    const error = await bootstrapFailure(({ relayErrorFromApi }) =>
+      relayErrorFromApi('internal_error', 'Internal server error', 500)
     );
 
+    // The SDK normalizes this code to `transport_error`; Relaycast's own code is reported.
     expect(error.message).toBe(
-      'Relaycast MCP bootstrap registration for "WorkerA" failed: transport_error (HTTP 500): Internal server error'
+      'Relaycast MCP bootstrap registration for "WorkerA" failed: internal_error (HTTP 500): Internal server error'
     );
     expect(error.cause).toBeUndefined();
   });
 
-  it('collapses database diagnostics in a typed failure', async () => {
-    const error = await bootstrapFailure(
-      ({ RelayError }) =>
-        new RelayError(
-          'transport_error',
-          'Failed query: select id from agents where name = $1 params: WorkerA',
-          {
-            statusCode: 500,
-          }
-        )
+  it.each([
+    ['agent_already_exists', 409],
+    ['agent_name_reserved', 409],
+    ['workspace_mismatch', 403],
+    ['Rate_Limit_Exceeded', 429],
+  ])('reports the Relaycast code %s (HTTP %i) as sent', async (rawCode, statusCode) => {
+    const error = await bootstrapFailure(({ relayErrorFromApi }) =>
+      relayErrorFromApi(rawCode, 'Registration refused', statusCode)
     );
 
     expect(error.message).toBe(
-      'Relaycast MCP bootstrap registration for "WorkerA" failed: transport_error (HTTP 500): ' +
+      `Relaycast MCP bootstrap registration for "WorkerA" failed: ${rawCode} (HTTP ${statusCode}): Registration refused`
+    );
+  });
+
+  it.each([
+    ['no Relaycast code', undefined, 502],
+    ["the SDK's stand-in for an unreadable error body", 'unknown_error', 502],
+    ['an empty code', '', 502],
+    ['a code with spaces', 'internal error', 502],
+    ['a code with a line break', 'internal_error\nnext', 502],
+    ['a code with a terminal escape', 'internal_error\u001b[2J', 502],
+    ['a code with markup', '<b>internal_error</b>', 502],
+    ['a code with shell syntax', '$(id)', 502],
+    ['a code longer than 64 characters', `e${'x'.repeat(64)}`, 502],
+    ['a malformed 409 code', 'name conflict!', 409],
+  ])('falls back to the SDK code for %s', async (_case, rawCode, statusCode) => {
+    const error = await bootstrapFailure(
+      ({ RelayError, normalizeRelayErrorCode }) =>
+        new RelayError(normalizeRelayErrorCode(rawCode, statusCode), 'Upstream failure', {
+          statusCode,
+          rawCode,
+        })
+    );
+    const code = statusCode === 409 ? 'name_conflict' : 'transport_error';
+
+    expect(error.message).toBe(
+      `Relaycast MCP bootstrap registration for "WorkerA" failed: ${code} (HTTP ${statusCode}): Upstream failure`
+    );
+  });
+
+  it('collapses database diagnostics in a typed failure', async () => {
+    const error = await bootstrapFailure(({ relayErrorFromApi }) =>
+      relayErrorFromApi(
+        'internal_error',
+        'Failed query: select id from agents where name = $1 params: WorkerA',
+        500
+      )
+    );
+
+    expect(error.message).toBe(
+      'Relaycast MCP bootstrap registration for "WorkerA" failed: internal_error (HTTP 500): ' +
         'Relay service could not complete the request. Retry, or contact the workspace operator if the problem persists.'
     );
+  });
+
+  it.each([
+    ['the workspace key', workspaceKey, 'rk_live_…wxyz'],
+    ['a GitHub token', `ghp_${'a1B2'.repeat(9)}`, '…a1B2'],
+  ])('masks %s returned as the Relaycast code', async (_case, rawCode, masked) => {
+    const error = await bootstrapFailure(({ relayErrorFromApi }) =>
+      relayErrorFromApi(rawCode, 'Registration refused', 400)
+    );
+
+    expect(error.message).toBe(
+      `Relaycast MCP bootstrap registration for "WorkerA" failed: ${masked} (HTTP 400): Registration refused`
+    );
+    expect(`${error.stack}`).not.toContain(rawCode);
   });
 
   it('masks a credential that an upstream message echoes back', async () => {

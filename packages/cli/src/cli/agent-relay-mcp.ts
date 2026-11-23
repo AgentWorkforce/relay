@@ -2133,6 +2133,21 @@ function isRelaycastAgentToken(token: string | undefined): token is string {
   return typeof token === 'string' && (token.startsWith('at_live_') || token.startsWith('ar_ag_'));
 }
 
+/** A short, plain identifier: safe to print whoever chose it. */
+const PLAIN_IDENTIFIER = /^[A-Za-z]\w{0,63}$/;
+
+/**
+ * Relaycast's own error code, which RelayError keeps as `rawCode` beside the
+ * SDK's coarser `code` (an unmapped `internal_error` normalizes to
+ * `transport_error`). The server chooses it, so anything but a plain
+ * identifier falls back to `code`. `unknown_error` is what the SDK substitutes
+ * for an error body it could not read, so it is not reported as Relaycast's.
+ */
+function relaycastErrorCode(error: RelayError): string {
+  const raw = error.rawCode;
+  return typeof raw === 'string' && raw !== 'unknown_error' && PLAIN_IDENTIFIER.test(raw) ? raw : error.code;
+}
+
 /**
  * What to say about a failed bootstrap registration. A typed RelayError has a
  * code, status and API message to report; the deadline's own message carries
@@ -2143,9 +2158,9 @@ function bootstrapRegistrationDetail(error: unknown): string {
   if (error instanceof AgentRegistrationTimeoutError) return error.message;
   if (error instanceof RelayError) {
     const status = typeof error.statusCode === 'number' ? ` (HTTP ${error.statusCode})` : '';
-    return `${error.code}${status}: ${safeRelayErrorMessage(error)}`;
+    return `${relaycastErrorCode(error)}${status}: ${safeRelayErrorMessage(error)}`;
   }
-  const name = error instanceof Error && /^[A-Za-z]\w{0,63}$/.test(error.name) ? error.name : 'unknown error';
+  const name = error instanceof Error && PLAIN_IDENTIFIER.test(error.name) ? error.name : 'unknown error';
   return `${name} (details withheld; they may include request credentials)`;
 }
 
