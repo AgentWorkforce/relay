@@ -120,7 +120,8 @@ Three properties do the work:
   accepted.
 - **Org admins set the limits.** An org policy can turn the feature off,
   cap which action classes may be delegated, cap the expiry, require Tier O
-  for some classes, and require admin co-approval for grants on given classes.
+  for some classes, and set how code owners are matched. (Admin co-approval of
+  grants was dropped: Khaliq wants no approval prompts, §15.)
   A grant outside the policy is refused when it is created and re-checked
   every time it is used.
 - **No chains.** A delegate cannot create grants. A message from a
@@ -158,25 +159,33 @@ owner.
 
 A grant lists classes. Each class can be narrowed by a target pattern.
 
-| Class             | Examples                                                                                                                 | Target pattern                                                                                                | Default limit                              |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| `merge`           | merge a PR, enable auto-merge                                                                                            | `owner/repo`, `owner/repo#N`                                                                                  | Tier D                                     |
-| `pr_ops`          | open/close PR, label, request review, re-run CI                                                                          | `owner/repo`                                                                                                  | Tier D                                     |
-| `deploy`          | deploy to a named environment                                                                                            | `service:env` (`*:staging`)                                                                                   | Tier D for non-prod; prod needs single-use |
-| `release`         | publish npm/crate/GitHub release, cut a tag                                                                              | package or repo                                                                                               | single-use                                 |
-| `secret_change`   | rotate, set or delete a secret                                                                                           | secret store path                                                                                             | single-use                                 |
-| `destructive`     | delete branches/data, force-push, drop tables                                                                            | resource                                                                                                      | single-use                                 |
-| `spend`           | buy, scale up paid resources                                                                                             | amount cap                                                                                                    | single-use                                 |
-| `external_comms`  | post publicly, email customers                                                                                           | channel                                                                                                       | Tier D                                     |
-| `config_change`   | change the recipient session's own permissions, sandbox, approval profile, instructions, skills, hooks or Relay settings | `<agent id>:<setting>=<value>`, exact, never a wildcard; grants list agent ids or `*` for the agent part only | single-use                                 |
-| `prompt_approval` | approve or deny one pending core permission request (#2238's set, §9.3)                                                  | `<session agent id>:<request ref>`; grants use `<agent id>:*` or `*`                                          | Tier D; answers one request                |
+| Class             | Examples                                                                                                                 | Target pattern                                                                                                                                                                                                                  | Default limit                              |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| `merge`           | merge a PR, enable auto-merge                                                                                            | `owner/repo`, `owner/repo#N`                                                                                                                                                                                                    | Tier D                                     |
+| `pr_ops`          | open/close PR, label, request review, re-run CI                                                                          | `owner/repo#N:<op>` with `<op>` one of `open`, `close`, `reopen`, `label=<name>`, `unlabel=<name>`, `request_review=<login>`, `rerun_ci`, `comment`; grants use `owner/repo`, `owner/repo#N` or `owner/*`, which cover every op | Tier D                                     |
+| `deploy`          | deploy to a named environment                                                                                            | `service:env` (`*:staging`)                                                                                                                                                                                                     | single-use (every environment)             |
+| `release`         | publish npm/crate/GitHub release, cut a tag                                                                              | package or repo                                                                                                                                                                                                                 | single-use                                 |
+| `secret_change`   | rotate, set or delete a secret                                                                                           | secret store path                                                                                                                                                                                                               | single-use                                 |
+| `destructive`     | delete branches/data, force-push, drop tables                                                                            | resource                                                                                                                                                                                                                        | single-use                                 |
+| `spend`           | buy, scale up paid resources                                                                                             | amount cap                                                                                                                                                                                                                      | single-use                                 |
+| `external_comms`  | post publicly, email customers                                                                                           | channel                                                                                                                                                                                                                         | Tier D                                     |
+| `config_change`   | change the recipient session's own permissions, sandbox, approval profile, instructions, skills, hooks or Relay settings | `<agent id>:<setting>=<value>`, exact, never a wildcard; grants list agent ids or `*` for the agent part only                                                                                                                   | single-use                                 |
+| `prompt_approval` | approve or deny one pending core permission request (#2238's set, §9.3)                                                  | `<session agent id>:<request ref>:approve` or `:deny`; grants use `<agent id>:*` or `*`                                                                                                                                         | Tier D; answers one request; no conditions |
 
 The classes are a closed enum, versioned with the protocol, so no free-form
 classes. `owner_approval.actions[]` entries are `{class, target, conditions?, note?}`
-(conditions: §5.5). Cloud
-refuses an approval that has an action whose class or target the grant does
-not cover. **The whole approval is refused, not trimmed down to the covered
-part**, so an approval is never partly accepted without anyone noticing.
+(conditions: §5.5). Every action names one specific operation on one
+resource: the class plus an exact target. A class that covers several
+operations (`pr_ops`) puts the operation in the target, so closing a PR and
+re-running its CI are different actions. Cloud refuses an approval that has
+an action whose class or target the grant does not cover. **The whole
+approval is refused, not trimmed down to the covered part**, so an approval
+is never partly accepted without anyone noticing.
+
+**Single use is per action.** When a single-use approval lists several
+actions (for example a release and a production deploy), each action can be
+redeemed once. A second redeem of the same action is refused atomically, and
+redeeming one action never consumes another.
 
 ### 5.2 Expiry
 
@@ -229,12 +238,15 @@ Each recipient node has a setting, `delegated_approvals_from`:
 **Who counts as a code owner of a target.** Cloud resolves this, and every
 step fails closed:
 
-- **A PR (`owner/repo#N`):** a person named by a rule in the CODEOWNERS file
-  that matches at least one path the PR changes. The CODEOWNERS file is read
+- **Effective owners first.** For each path, Cloud takes the owners of the
+  **last** matching CODEOWNERS rule, as GitHub does. An owner named only by
+  an earlier rule that a later rule overrides is not an owner of that path.
+- **A PR (`owner/repo#N`):** a person who is an effective owner of at least
+  one path the PR changes. The CODEOWNERS file is read
   from the PR's **base** branch, never its head, so a PR cannot add its author
   as an owner. An org can make this stricter with the policy
-  `code_owner_match: all_paths`, which needs a rule naming the person for
-  every changed path. The default is `any_path`, which follows "any code
+  `code_owner_match: all_paths`, which needs the person to be an effective
+  owner of every changed path. The default is `any_path`, which follows "any code
   owner" literally.
 - **A repo (`owner/repo`, `owner/*`):** a person named by any rule in the
   default branch's CODEOWNERS. A wildcard target needs this to hold for every
@@ -268,8 +280,8 @@ Khaliq's decision (2026-11-23): conditions such as "when CI is green" are
 - **Format:** an action can carry up to 5 `conditions`. The set of condition
   types is closed: Relaycast refuses unknown types at send.
 - **Where they are checked:** Cloud checks conditions when the approval is
-  redeemed. That means **every action with conditions must be redeemed right
-  before the agent acts**, not only single-use actions.
+  redeemed. **Every action is redeemed right before the agent acts** (§6.3),
+  so conditions are always checked at the moment of use.
 - **Unmet conditions:** the redeem returns `condition_unmet` with the list of
   unmet conditions, and does not consume the approval. The agent can wait and
   redeem again until the approval expires.
@@ -289,8 +301,10 @@ Khaliq's decision (2026-11-23): conditions such as "when CI is green" are
 - **Delegates encode conditions.** A delegate turns a quoted condition ("when
   green") into its structured form. A condition that is in the quote but not
   in the structure is still the receiving agent's job (§11).
-- **Pin the commit when merging.** When it merges, the receiving agent passes
-  the `head_sha` it redeemed against as the commit for GitHub's merge call.
+- **Pin the commit when merging.** For a PR target, the redeem answer
+  returns `checked.head_sha`, the commit Cloud checked. When it merges, the
+  receiving agent passes that sha as the commit for GitHub's merge call,
+  whether or not the approval named a `head_sha`.
   Then a push made after the redeem makes the merge fail instead of merging
   code the owner never saw.
 
@@ -345,8 +359,9 @@ with the same strict body and the same bearer and recipient-token checks as
    not revoked or expired, that it is within org policy, that every action is
    in scope, that the approval has not expired, and that the owner has standing over every
    action's target under the recipient's `accept` mode (§5.4). In Tier O it also checks
-   that the approval object exists, is not consumed, and has actions equal to
-   the message's.
+   that the approval object exists, belongs to the same owner as the grant
+   (its `owner_id` equals the grant's and the attestation's owner), is not
+   consumed, and has actions equal to the message's.
 4. Re-checks membership and the bearer, then signs:
 
 ```json
@@ -404,15 +419,21 @@ revocation hold.
 
 - If verification fails, the message is delivered as an ordinary peer message
   with no delegate line. It is never dropped, and the node logs the refusal.
-- **Redemption.** The receiving agent must call `redeem(approval_id, action)`
-  right before it acts when the approval is `single_use` (high-risk classes)
-  or when the action has conditions.
-  - Cloud checks revocation, standing and conditions again.
-  - For `single_use`, it consumes the approval atomically, and a second
-    redeem is refused. That makes replay and "do it again" harmless.
-  - If a condition is unmet, the approval is not consumed (§5.5).
-  - The delegate line ends with "redeem before acting" whenever a redeem is
-    required.
+- **Redemption, before every action.** The receiving agent calls
+  `redeem(approval_id, action)` right before it acts, for every action.
+  - Cloud checks revocation, standing, expiry and conditions again at that
+    moment, so a revocation stops the next action at once. The line's
+    "valid until" is never trusted on its own.
+  - Every redeem is recorded (`approval.redeemed`), so each use is audited
+    and reaches the owner's notices, multi-use approvals included.
+  - For `single_use`, the action is consumed atomically, and a second redeem
+    of the same action is refused. Other actions in the same approval are
+    unaffected (§5.1). That makes replay and "do it again" harmless.
+  - A multi-use approval is not consumed. It can be redeemed again until it
+    expires.
+  - If a condition is unmet, nothing is consumed (§5.5).
+  - For PR targets, the answer includes `checked.head_sha` (§5.5).
+  - The delegate line always ends with "redeem before acting".
 - `prompt_approval` actions are not redeemed by agents. The node itself
   applies them to the pending request (§9.3).
 
@@ -424,10 +445,15 @@ revocation hold.
   re-bound, when its binding changes owner, when the owner leaves the
   workspace or is suspended, when the org policy changes so the grant no
   longer fits, or when the grant expires.
-- **How fast:** a new attestation is refused at once. An attestation already
-  issued stays valid for up to 5 minutes (its TTL), but single-use approvals
-  are re-checked at redeem, so high-risk actions see revocation at once. The
-  remaining window covers Tier D low-risk actions only.
+- **How fast:** a new attestation is refused at once. Every action is
+  redeemed right before it is taken (§6.3), and the redeem re-checks
+  revocation, so revocation stops the next action at once for every class.
+- **One approval at a time:** the owner can revoke a single approval
+  (`DELETE /delegates/approvals/{approval_id}`). A delegate can withdraw an
+  approval it sent (`POST /messaging/delegation/withdraw`). Withdrawing only
+  ever narrows. When the owner later says no to something he approved, his
+  delegate withdraws that approval, and the next redeem is refused as
+  `revoked`.
 - **Pending approvals:** revoking a grant invalidates every unredeemed
   approval under it. The node shows any later delivery of those messages as
   peer text.
@@ -454,8 +480,18 @@ sent to the org's SIEM through webhooks:
   relay#2250 → @relay". This is the main defense against a delegate that
   makes up quotes or has been compromised. The owner sees each use as it
   happens.
-- The quote text goes in the log, with a hash in the attestation, so a
-  disputed approval can be checked against the delegate's own chat history.
+- The quote text goes in the log, with a keyed digest in the attestation, so
+  a disputed approval can be checked against the delegate's own chat history.
+  The digest is an HMAC-SHA256 under a Cloud-held key (per workspace, never
+  exported), not a plain hash. A reader of the log therefore cannot test
+  guessed quotes against it. Cloud checks a produced quote on request.
+- **Quote redaction reaches Relaycast too.** Relaycast stores the quote inside
+  the immutable `owner_approval`. The one change allowed to it is a
+  redaction that replaces `quote` with `null` and records `quote_redacted_at`.
+  Only Cloud's service credential can make that change, through an internal
+  route. After that the by-message route never returns the quote. Cloud
+  redacts in Relaycast at the end of the org's retention window, and when the
+  owner redacts a quote.
 - The node keeps a local record of every delegate line it wrote, with the
   JWS, for disputes and the desktop UI.
 
@@ -507,12 +543,22 @@ requester and leaders.
 
 - **How a delegate answers.** It sends #2238's usual `approve <ref>` or
   `deny <ref>` as a 1:1 direct message, with an `owner_approval` whose single
-  action is `{class: "prompt_approval", target: "<session agent id>:<ref>"}`.
+  action is `{class: "prompt_approval", target: "<session agent id>:<ref>:approve"}`
+  (or `:deny`).
   The node gets this message attested like any other. The attestation must
   name this exact session and request, and come from a grant whose
   `prompt_approval` targets cover it (`<agent id>:*` or `*`).
 - **Whose delegates.** Only delegates of the person who owns the computer the
   session runs on. Code owners do not apply here (§5.4).
+- **Decision bound in the target.** The target ends in `:approve` or
+  `:deny`, and the node answers only when that matches the word in the
+  message. An approval minted to deny a request cannot approve it.
+- **No conditions.** `prompt_approval` takes no conditions. The node applies
+  it directly, without a redeem.
+- **Never the delegation settings.** A file change or tool call whose target
+  is the core's own settings or store (where `delegated_approvals_from`,
+  `spawn_delegate_approvals` and the registrations live) is never answered
+  by a delegate. It stays with the person.
 - **What it answers.** #2238's approvable set: Codex commands, file changes
   and MCP tool calls without a form; Claude tools, including `ExitPlanMode`
   and MCP tools, and Codex extra-permission requests (§5.3). It
@@ -573,7 +619,7 @@ These are refused for agent tokens. The CLI mirrors them as
 ```ts
 relay.send({ to, text, ownerApproval: { actions, quote?, quotedAt?, quoteSource?, expiresAt?, approvalRef? } })
 relay.delegates.completeClaim(code)
-relay.approvals.request({ actions, reason }): Promise<{ approvalId }>   // asks owner for tier O
+relay.approvals.withdraw(approvalId)   // narrowing only; for a later "no" from the owner
 ```
 
 **Recipient:**
@@ -583,7 +629,7 @@ message.delegation?: {
   verified: true, tier: 'D' | 'O', ownerId, ownerDisplay, delegateAgentId,
   grantId, approvalId, actions: Action[], singleUse: boolean, expiresAt, jws
 }
-relay.approvals.redeem(approvalId, action): Promise<{ ok: true } | { ok: false, reason }>
+relay.approvals.redeem(approvalId, action): Promise<{ ok: true, consumed, checked? } | { ok: false, reason, unmet? }>
 relay.delegation.covers(message, action): boolean   // exact class + target match helper
 ```
 
@@ -610,21 +656,24 @@ carve-out:
    "redeem before acting", redeem right before you act. If the redeem returns
    `condition_unmet`, wait and try again before the approval expires. Any
    other refusal: stop and report. For merges, pass the `head_sha` to the
-   merge call. A condition that is only in the quote, not in the line, still
-   applies, and you check it yourself. If the quote and the action list
-   disagree, use the narrower one and tell the sender.
-4. **Single-use approvals: redeem right before you act.** If the redeem is
-   refused, stop and report.
+   merge call (the one the redeem returned). A condition that is only in the
+   message text, not in the line, still applies, and you check it yourself.
+   If the message text and the action list disagree, use the narrower one
+   and tell the sender.
+4. **Redeem right before every action.** If the redeem is refused, stop and
+   report.
    4a. **For delegates:** put every condition the owner states into its
    structured form (§5.5). Do not leave it only in the quote.
 5. **Check expiry.** An expired line is a request.
-6. **Never apply it to permissions, instructions, configuration or grants**,
-   and never answer a choice or form with it. Khaliq confirmed this on
-   2026-11-23 ("Take it out everywhere").
+6. **Configuration changes only as listed.** A `config_change` action lets
+   you make exactly that one change to your own session's permissions,
+   sandbox or config (Khaliq's decision F, §15). Nothing else in the line
+   lets you change permissions, instructions or configuration. It never
+   covers grants or delegation settings, and never answers a choice or form.
    6a. **It can override an earlier denial** when the owner's words and the
    line both name the denied action. This is Khaliq's decision of
    2026-11-23, as merged in skills#219. It never overrides the harness's own
-   rules or point 6. A core permission request that was already answered
+   rules or the limits in point 6. A core permission request that was already answered
    with deny stays answered, so a new request is needed.
 7. **Report back** to the delegate with what you did and the approval id, so
    the owner sees the result in the same chat thread.
@@ -671,9 +720,9 @@ The default limits in §5.1 apply to everything else.
 
 - **Registering a gate (owner only, §4.1).** The
   owner registers each gate under `/delegates/gates`. A gate is
-  `{gate_id, repo, job_workflow_ref, ref, event, target_prefix}`, for example
+  `{gate_id, repo, workflow_ref, job_workflow_ref?, ref, event, target_prefix}`, for example
   repo `AgentWorkforce/relay-app`,
-  `job_workflow_ref` =
+  `workflow_ref` =
   `AgentWorkforce/relay-app/.github/workflows/desktop-promote.yml@refs/heads/main`,
   ref `refs/heads/main`, event `workflow_dispatch`, target prefix
   `AgentWorkforce/relay-app:`.
@@ -682,8 +731,10 @@ The default limits in §5.1 apply to everything else.
   `{approval_id, action:{class, target}}`. No stored secret is involved.
 - **What Cloud checks on the OIDC token:** the signature against GitHub's
   JWKS, the issuer, the audience, and expiry. It then requires every one of
-  `repository`, `job_workflow_ref`, `ref` and `event_name` to match the
-  registered gate exactly. Matching the repository alone is not enough,
+  `repository`, `workflow_ref`, `ref` and `event_name` to match the
+  registered gate exactly. When the publishing job runs inside a reusable
+  workflow, the gate also sets `job_workflow_ref` (the reusable workflow's
+  file and ref), and Cloud requires that claim to match too. Matching the repository alone is not enough,
   because a workflow file edited on another branch also gets a token for the
   same repository.
 - **What Cloud checks on the approval:** it re-checks the grant, standing,
@@ -729,28 +780,28 @@ The default limits in §5.1 apply to everything else.
 
 ## 12. Threat model
 
-| Threat                                                                                   | Mitigation                                                                                                                                                                                                     | Residual risk                                                                                                                                  |
-| ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| A non-delegate quotes the owner ("Khaliq said merge")                                    | Sender id comes from Relaycast (#543) and must hold a live grant. No delegate line otherwise.                                                                                                                  | None beyond peer text.                                                                                                                         |
-| A body forges the delegate line                                                          | Only the core writes line 2. The attribution is held to one line, and the body starts after it. `delegate_framed` checks the position. A copy in the body is still body text.                                  | None if receiving agents follow §11.1.                                                                                                         |
-| A name is reused (another agent takes a delegate's name)                                 | Grants and checks use the immutable agent id, and the binding is re-checked when each approval is used.                                                                                                        | None.                                                                                                                                          |
-| A delegate makes up a quote (Tier D)                                                     | Tight scopes, approval expiry, the owner notified on every use, single-use redeem for high-risk classes, Tier O required by policy for the most sensitive classes, quote kept in the audit log.                | Low-risk actions inside scope can happen before the owner notices. Accepted by design (§4.2).                                                  |
-| A delegate is compromised (stolen token, prompt-injected bot)                            | Same as above, plus revocation at once and the panic button. Rate limits on attestations per grant. Anomaly flags (new recipient, burst, odd hours) raise the next use to Tier O.                              | The window between a bad use and the owner noticing.                                                                                           |
-| Replay of an old approval message                                                        | The attestation is bound to `message_id`, `recipient_agent_id`, `approval_id` and `exp`. #543 returns only pending, unacked deliveries. Single-use approvals are consumed at redeem.                           | A Tier D multi-use approval can be re-acted on by the same recipient until it expires. Keep the default expiry short.                          |
-| An approval meant for recipient A is forwarded to B                                      | The attestation names the recipient. B's node asks Cloud with B's token, and Cloud finds no delivery of the original message to B.                                                                             | None.                                                                                                                                          |
-| A delegate widens the scope through vague text ("merge everything")                      | Recipients act on the structured actions only. Cloud refuses actions outside the grant, so a widening gets no line at all.                                                                                     | Depends on agents following §11.2.                                                                                                             |
-| Approvals of a delegate of another person (Alice's bot directing Bob's agent)            | Accepted only when Alice is a code owner of every action's target (§5.4), or the recipient's own owner. CODEOWNERS is read from the base branch, and logins map to people only through a verified GitHub link. | With `any_path`, the owner of one changed path can approve merging the whole PR. Orgs can choose `all_paths`. Branch protection still applies. |
-| A PR edits CODEOWNERS to add its author                                                  | CODEOWNERS is read from the base branch, never the head.                                                                                                                                                       | None.                                                                                                                                          |
-| A condition goes stale (CI green, then a new commit is pushed)                           | Conditions are checked at redeem; `head_sha` pins the commit; the agent passes it to GitHub's merge call.                                                                                                      | Without `head_sha`, a commit pushed between redeem and merge. Delegates should always add `head_sha` for merges.                               |
-| A delegate answers a prompt to escalate                                                  | Only the machine owner's delegates, per request, with choices and forms left out. The answer is audited as the delegate's.                                                                                     | A delegate inside its grant can approve tool calls the owner would have refused. Keep `prompt_approval` targets narrow.                        |
-| A delegate escalates to config, permissions or grants                                    | These are never delegable (§5.3), and there is no grant API for agent tokens.                                                                                                                                  | None.                                                                                                                                          |
-| The owner's account is compromised                                                       | Admin co-approval policy, every grant change logged and announced (no step-up, §4.1).                                                                                                                          | The same risk as any account takeover. Out of scope.                                                                                           |
-| Cloud signing key leaks                                                                  | Online attestation plus key rotation by `kid`. Nodes check revocation online, so a forged JWS alone fails the redeem step for high-risk classes.                                                               | A forged Tier D line during the leak. Needs an HSM-backed key (open question 4).                                                               |
-| A host signed in as the owner acts as the owner (creates grants, mints Tier O approvals) | Accepted by Khaliq's decision (§4.1: trust the machine). Every owner action is audited and announced. Per-device credentials, once deployed, show which machine acted.                                         | A compromised host signed in as the owner can create grants until revoked.                                                                     |
-| A release job runs from an edited workflow on a branch                                   | The gate binds `job_workflow_ref`, `ref` and `event_name`, not only the repository (§11a.3).                                                                                                                   | None if the gate is registered precisely.                                                                                                      |
-| A publish is started without going through the host permit                               | The publishing job redeems the approval itself (§11a.1).                                                                                                                                                       | Workflows that don't redeem yet. Each gate must be cut over.                                                                                   |
-| A gate-only or self-hosted install without Cloud                                         | The feature is reported as not available, the same way #2238 handles gate-only installs.                                                                                                                       | None.                                                                                                                                          |
-| A revocation race                                                                        | Attestation TTL is 5 minutes or less, and redeem re-checks.                                                                                                                                                    | Up to 5 minutes for Tier D low-risk actions.                                                                                                   |
+| Threat                                                                                   | Mitigation                                                                                                                                                                                                     | Residual risk                                                                                                                                       |
+| ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A non-delegate quotes the owner ("Khaliq said merge")                                    | Sender id comes from Relaycast (#543) and must hold a live grant. No delegate line otherwise.                                                                                                                  | None beyond peer text.                                                                                                                              |
+| A body forges the delegate line                                                          | Only the core writes line 2. The attribution is held to one line, and the body starts after it. `delegate_framed` checks the position. A copy in the body is still body text.                                  | None if receiving agents follow §11.1.                                                                                                              |
+| A name is reused (another agent takes a delegate's name)                                 | Grants and checks use the immutable agent id, and the binding is re-checked when each approval is used.                                                                                                        | None.                                                                                                                                               |
+| A delegate makes up a quote (Tier D)                                                     | Tight scopes, approval expiry, the owner notified on every use, single-use redeem for high-risk classes, Tier O required by policy for the most sensitive classes, quote kept in the audit log.                | Low-risk actions inside scope can happen before the owner notices. Accepted by design (§4.2).                                                       |
+| A delegate is compromised (stolen token, prompt-injected bot)                            | Same as above, plus revocation at once and the panic button. Rate limits on attestations per grant. Anomaly flags (new recipient, burst, odd hours) raise the next use to Tier O.                              | The window between a bad use and the owner noticing.                                                                                                |
+| Replay of an old approval message                                                        | The attestation is bound to `message_id`, `recipient_agent_id`, `approval_id` and `exp`. #543 returns only pending, unacked deliveries. Single-use approvals are consumed at redeem.                           | A multi-use approval can be used again by the same recipient until it expires, but each use is redeemed and audited. Keep the default expiry short. |
+| An approval meant for recipient A is forwarded to B                                      | The attestation names the recipient. B's node asks Cloud with B's token, and Cloud finds no delivery of the original message to B.                                                                             | None.                                                                                                                                               |
+| A delegate widens the scope through vague text ("merge everything")                      | Recipients act on the structured actions only. Cloud refuses actions outside the grant, so a widening gets no line at all.                                                                                     | Depends on agents following §11.2.                                                                                                                  |
+| Approvals of a delegate of another person (Alice's bot directing Bob's agent)            | Accepted only when Alice is a code owner of every action's target (§5.4), or the recipient's own owner. CODEOWNERS is read from the base branch, and logins map to people only through a verified GitHub link. | With `any_path`, the owner of one changed path can approve merging the whole PR. Orgs can choose `all_paths`. Branch protection still applies.      |
+| A PR edits CODEOWNERS to add its author                                                  | CODEOWNERS is read from the base branch, never the head.                                                                                                                                                       | None.                                                                                                                                               |
+| A condition goes stale (CI green, then a new commit is pushed)                           | Conditions are checked at redeem; `head_sha` pins the commit; the agent passes it to GitHub's merge call.                                                                                                      | Without `head_sha`, a commit pushed between redeem and merge. Delegates should always add `head_sha` for merges.                                    |
+| A delegate answers a prompt to escalate                                                  | Only the machine owner's delegates, per request, with choices and forms left out. The answer is audited as the delegate's.                                                                                     | A delegate inside its grant can approve tool calls the owner would have refused. Keep `prompt_approval` targets narrow.                             |
+| A delegate escalates to config, permissions or grants                                    | These are never delegable (§5.3), and there is no grant API for agent tokens.                                                                                                                                  | None.                                                                                                                                               |
+| The owner's account is compromised                                                       | Every grant change logged and announced (no step-up and no co-approval, §4.1 and §15).                                                                                                                         | The same risk as any account takeover. Out of scope.                                                                                                |
+| Cloud signing key leaks                                                                  | Online attestation plus key rotation by `kid`. Nodes check revocation online, so a forged JWS alone fails the redeem step for high-risk classes.                                                               | A forged Tier D line during the leak. Needs an HSM-backed key (open question 4).                                                                    |
+| A host signed in as the owner acts as the owner (creates grants, mints Tier O approvals) | Accepted by Khaliq's decision (§4.1: trust the machine). Every owner action is audited and announced. Per-device credentials, once deployed, show which machine acted.                                         | A compromised host signed in as the owner can create grants until revoked.                                                                          |
+| A release job runs from an edited workflow on a branch                                   | The gate binds `workflow_ref` (and `job_workflow_ref` for reusable workflows), `ref` and `event_name`, not only the repository (§11a.3).                                                                       | None if the gate is registered precisely.                                                                                                           |
+| A publish is started without going through the host permit                               | The publishing job redeems the approval itself (§11a.1).                                                                                                                                                       | Workflows that don't redeem yet. Each gate must be cut over.                                                                                        |
+| A gate-only or self-hosted install without Cloud                                         | The feature is reported as not available, the same way #2238 handles gate-only installs.                                                                                                                       | None.                                                                                                                                               |
+| A revocation race                                                                        | Every action is redeemed first, and the redeem re-checks revocation.                                                                                                                                           | None beyond the time between a redeem and the action itself.                                                                                        |
 
 ## 13. Open questions
 
@@ -793,6 +844,12 @@ were asked.
 | **4: GA**                   | SDK (TS, then Python), MCP fields and the `redeem_owner_approval` tool, CLI, customer docs, SIEM export, pricing decision.                                                                                                                                                                                                                                                                                                                     | n/a                                                                                                |
 | **Later**                   | Offline attestation verification for air-gapped nodes. More condition types (deploy health, a successful staging deploy).                                                                                                                                                                                                                                                                                                                      | Separate design.                                                                                   |
 
+**As built, phases 1 to 3 ship together** (Khaliq asked for the whole design
+to ship). If they are ever deployed in stages, Cloud's attestation refuses
+(`unavailable`) any approval with conditions or a single-use class until
+redeem is live, so no agent is told to redeem against a route that does not
+exist.
+
 Every phase is additive and fails closed. If Cloud or Relaycast cannot attest,
 the recipient sees today's peer framing and nothing more.
 
@@ -826,11 +883,11 @@ Each one is open to Khaliq's override.
    - **The setting:** quote retention is the org-level field
      `quote_retention_days` (`PUT /api/v1/orgs/{org}/delegation-policy`, §16.3), from 1 to 3650, default 90. Admins change it.
    - **What happens at the end:** when a quote is older than its org's
-     window, the quote text is redacted to its SHA-256 hash. A shorter
+     window, the quote text is redacted to its keyed digest (§8). A shorter
      window applies to existing quotes at the next sweep. A longer one
      cannot bring back quotes already redacted.
    - **What is kept:** the owner can redact any quote at any time, and the
-     audit events themselves (who, what, when, the hash) are kept.
+     audit events themselves (who, what, when, the keyed digest) are kept.
    - **Why 90 is the default:**
      - **It matches the longest a grant can last.** The quote behind any use
        of a grant is still on hand for the whole time that grant could be
@@ -841,8 +898,9 @@ Each one is open to Khaliq's override.
      - **The quote is the owner's private chat text**, copied from another
        product. Keeping less of it limits the damage of a breach and fits
        data-minimisation rules such as GDPR's.
-     - **The SHA-256 hash is kept for good**, so a quote produced later from
-       the delegate's own chat history can still be checked against it.
+     - **The keyed digest is kept for good**, so a quote produced later from
+       the delegate's own chat history can still be checked against it by
+       Cloud, while a reader of the log cannot test guesses (§8).
    - **Why a setting:** orgs differ. Some must keep audit evidence for a
      year or more, and others want less private text kept.
 
@@ -910,22 +968,22 @@ to this document first.
 `spend`, `external_comms`, `prompt_approval`, `config_change`. A
 `config_change` target is `<agent id>:<setting>=<value>` (exact, at most 256
 characters, no `*`). A `prompt_approval` target is
-`<agent id>:<request ref>` in an approval, and `<agent id>:*` or `*` in a
-grant. A target is a string of at most 256 characters, and
+`<agent id>:<request ref>:approve` or `:deny` in an approval, and
+`<agent id>:*` or `*` in a grant. A `pr_ops` target in an approval is
+`owner/repo#N:<op>` (§5.1). A target is a string of at most 256 characters, and
 `*` is a wildcard for one path segment or a whole segment of `owner/repo`,
 `service:env` and similar targets. `owner/*` covers `owner/x` and `owner/x#12`.
 An exact target covers only itself plus, for `owner/repo`, `owner/repo#N`.
-High-risk, always `single_use`: `release`, `secret_change`, `destructive`,
-`spend`, `config_change`, and `deploy` whose target ends in `:prod` or
-`:production`. No class needs Tier O by default (§15, items A, B and G). An org can still require it for any class with
+Always `single_use` (per action, §5.1): `release`, `deploy` (every
+environment), `secret_change`, `destructive`, `spend`, `config_change`. No class needs Tier O by default (§15, items A, B and G). An org can still require it for any class with
 `require_tier_o`.
 
 Conditions (§5.5) are `{type, …}` with `type` in `ci_green`, `head_sha`
 (`sha`: 40 lowercase hex characters), `reviews_approved` (`min`: 1 to 10),
 `mergeable` and `not_before` (`at`: RFC 3339). An action has at most 5. The
 `ci_green`, `head_sha`, `reviews_approved` and `mergeable` types are valid
-only on `owner/repo#N` targets, and only `not_before` is valid on
-`prompt_approval`.
+only on `owner/repo#N` targets. `prompt_approval` takes no conditions, and
+`config_change` takes only `not_before`.
 
 ### 16.2 Relaycast
 
@@ -942,7 +1000,10 @@ only on `owner/repo#N` targets, and only `not_before` is valid on
   - Anything else is refused with `400 invalid_owner_approval`.
 - The approval is stored immutably with the message, server-side, in its own
   column. It is never merged into caller-editable `metadata`, and a message
-  edit cannot change it.
+  edit cannot change it. The one exception is quote redaction (§8): an
+  internal route callable only by Cloud's service credential sets `quote` to
+  `null` and records `quote_redacted_at`. Nothing else in the approval can
+  change.
 - `GET /v1/deliveries/by-message/:messageId` (#543) adds `owner_approval`
   (the stored object or `null`) to its response.
 - The recipient's delivery payload (websocket event and inbox read) carries
@@ -956,7 +1017,8 @@ Both expose the same HTTP surface. relay-control is the self-hosted twin.
 
 Human-only routes take a browser session or a desktop-verified bearer, never
 an agent token or a plain CLI token. They are refused while the workspace's
-`delegation_enabled` is off, except `GET` and revocation:
+`delegation_enabled` is off, except `GET`, revocation, and `PUT
+/delegates/policy` (the route that turns the feature on):
 
 | Method & path (under `/api/v1/workspaces/{ws}`) | Purpose                                                                                                                           |
 | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
@@ -967,6 +1029,7 @@ an agent token or a plain CLI token. They are refused while the workspace's
 | `POST /delegates/revoke-all`                    | revoke every grant of the caller (admins: `{all:true}` for the workspace)                                                         |
 | `POST /delegates/claims`                        | start a claim, returns `{claim_id, code, expires_at}` (10 min, single use)                                                        |
 | `POST /delegates/approvals`                     | Tier O: mint `{actions, expires_at, single_use?}` returns `{approval_id}`                                                         |
+| `DELETE /delegates/approvals/{approval_id}`     | revoke one approval (Tier D or Tier O)                                                                                            |
 | `GET /delegates/audit`                          | audit events, `?since=&grant_id=&format=jsonl`                                                                                    |
 | `PUT /delegates/policy`                         | admin only: `{delegation_enabled, max_expiry_days, allowed_classes, require_tier_o, code_owner_match: "any_path" \| "all_paths"}` |
 | `GET`/`PUT /delegates/target-owners`            | admin only: `[{pattern, repo?, owner_ids?}]` for targets that are not repos (§5.4)                                                |
@@ -978,7 +1041,8 @@ Agent routes are proven with the agent's own Relaycast token, as in
 | --------------------------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `POST /delegates/claims/complete`             | `{code, agent_id, agent_token}`                                                           | binds that agent id to the claim's owner                                                                              |
 | `POST /messaging/delegation`                  | `{recipient_agent_id, recipient_token, message_id, accept: "code_owners" \| "own_owner"}` | `{verdict:"delegate", attestation:"<compact JWS>", claims:{…}}` or `{verdict:"none", reason}`                         |
-| `POST /messaging/delegation/redeem`           | `{recipient_agent_id, recipient_token, approval_id, action:{class, target}}`              | `{ok:true, consumed}` or `{ok:false, reason, unmet?:[condition]}`                                                     |
+| `POST /messaging/delegation/redeem`           | `{recipient_agent_id, recipient_token, approval_id, action:{class, target}}`              | `{ok:true, consumed, checked?:{head_sha}}` or `{ok:false, reason, unmet?:[condition]}`                                |
+| `POST /messaging/delegation/withdraw`         | `{delegate_agent_id, delegate_token, approval_id}`                                        | `{ok:true}`: the delegate that sent the approval withdraws it (narrowing only)                                        |
 | `POST /messaging/delegation/prompt-delegates` | `{session_agent_id, session_token}`                                                       | `{delegates:[{agent_id, grant_id}]}`: the machine owner's delegates whose `prompt_approval` targets cover the session |
 
 - Org-level setting: `GET`/`PUT /api/v1/orgs/{org}/delegation-policy`
@@ -1008,7 +1072,8 @@ claims are the ones in §6.2:
 
 `v, ws, owner_id, owner_display, delegate_agent_id, grant_id, message_id,
 recipient_agent_id, approval_id, tier, actions (with conditions), standing
-("own_owner" | "code_owner"), single_use, iat, exp, jti`.
+("own_owner" | "code_owner"), single_use, quote (the stored quote, or null
+once redacted), iat, exp, jti`.
 
 `approval_id` is Cloud's id for this approval: the minted id in Tier O, and
 one derived for the message in Tier D (`apv_` followed by base62 of
@@ -1030,11 +1095,11 @@ SHA-256(ws|message_id)[0..16]). Redeem and audit use it.
 - Setting: `delegated_approvals_from` = `off` | `own_owner` | `code_owners`.
   The default is `code_owners`, and only a person can change it.
 - Setting: `spawn_delegate_approvals`, on by default, person-only. With it
-  on, an attested `prompt_approval` reply (`approve <ref>` or `deny <ref>`)
-  answers that request as `Approver::Delegate` (§9.3). The approval DM is also
+  on, an attested `prompt_approval` reply (`approve <ref>` or `deny <ref>`,
+  matching the target's `:approve` or `:deny`) answers that request as `Approver::Delegate` (§9.3). The approval DM is also
   sent to the delegates that `prompt-delegates` returns.
 - The delegate line names the standing ("code owner" when `standing` is
-  `code_owner`), lists each action's conditions, and ends with "redeem
-  before acting" when the approval is single-use or has conditions.
+  `code_owner`), lists each action's conditions, and always ends with
+  "redeem before acting" (§6.3).
 - Local socket: `POST /delegation/redeem?approval=<id>&class=<c>&target=<t>`
   redeems as the calling session's own agent.
