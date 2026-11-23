@@ -146,6 +146,7 @@ pub mod session_cli;
 pub mod session_socket;
 pub mod session_sources;
 pub mod session_titles;
+pub mod session_tokens;
 pub mod sessions;
 pub mod settings_cli;
 pub mod settings_policy;

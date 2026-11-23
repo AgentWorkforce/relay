@@ -500,7 +500,7 @@ impl Core {
         let spawn = Change::read(changes).map_err(RpcError::invalid_params)?;
         let change = |key: &str| changes.get(key).and_then(Value::as_bool);
         let flags = crate::relay::store_settings::STORE_SETTINGS.map(change);
-        let [allow, auto, show, general, mobile_handoff, native_continuation, teammate_input, connect, pi_auto, opencode_auto] =
+        let [allow, auto, show, general, mobile_handoff, native_continuation, teammate_input, connect, pi_auto, opencode_auto, send_tokens] =
             flags;
         if native_continuation == Some(true) {
             self.require_native_continuation_claim()
@@ -545,6 +545,8 @@ impl Core {
                     store.extras.pi_auto_activate = pi_auto.or(store.extras.pi_auto_activate);
                     store.extras.opencode_auto_activate =
                         opencode_auto.or(store.extras.opencode_auto_activate);
+                    store.extras.session_send_tokens =
+                        send_tokens.or(store.extras.session_send_tokens);
                     spawn.apply(store);
                     Some(StoreWrite {
                         previous,
@@ -598,7 +600,7 @@ impl Core {
             return Ok(());
         };
         let changed = |key: &str| changes.get(key).and_then(Value::as_bool).is_some();
-        let [allow, auto, show, general, mobile_handoff, native_continuation, teammate_input, connect, pi_auto, opencode_auto] =
+        let [allow, auto, show, general, mobile_handoff, native_continuation, teammate_input, connect, pi_auto, opencode_auto, send_tokens] =
             crate::relay::store_settings::STORE_SETTINGS.map(changed);
         let (handoff, continuation, spawning) = self
             .store
@@ -626,6 +628,9 @@ impl Core {
                 }
                 if opencode_auto {
                     put_back!(store, write, extras.opencode_auto_activate);
+                }
+                if send_tokens {
+                    put_back!(store, write, extras.session_send_tokens);
                 }
                 (
                     mobile_handoff && put_back!(store, write, mobile_claude_handoff),

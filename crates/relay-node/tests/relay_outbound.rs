@@ -6253,3 +6253,129 @@ async fn a_delegate_sends_its_owner_approval_through_unchanged() {
     assert_eq!(h.fake.calls("POST", "/v1/dm").len(), sent_before);
     h.stop().await;
 }
+
+// `session_send_tokens`: under a host holding several sessions, the token a
+// session's own reply command carries names that session, and only one the
+// caller's own host holds; a wrong token, or the setting off, names nobody.
+#[tokio::test]
+async fn a_send_token_names_only_a_session_its_callers_host_holds() {
+    const SECOND: &str = "01a0c221-6806-7210-af25-97e104b15050";
+    const THIRD: &str = "01a0c221-6806-7210-af25-97e104b15051";
+    let h = Harness::start().await;
+    h.register(IN_CODEX, json!({"name": "codex-api"})).await;
+    let second_pid = 4198;
+    h.sessions
+        .call_from(second_pid, session(SessionKind::Codex, SECOND, "/y"));
+    h.register(second_pid, json!({"name": "codex-web"})).await;
+    h.fake.seed_agent("alice", "agent", json!({}));
+    let registration = |id: &str| {
+        h.core
+            .store
+            .read(|store| {
+                store
+                    .registration_for(&Target::new(SessionKind::Codex, id))
+                    .cloned()
+            })
+            .unwrap()
+    };
+    // Off: no token is handed out at all.
+    assert_eq!(h.core.session_send_token(&registration(CODEX)), None);
+    h.core
+        .store
+        .update(|store| store.extras.session_send_tokens = Some(true))
+        .unwrap();
+    let first = h.core.session_send_token(&registration(CODEX)).unwrap();
+    let second = h.core.session_send_token(&registration(SECOND)).unwrap();
+    assert_ne!(first, second);
+    assert_eq!(
+        h.core.session_send_token(&registration(CODEX)).as_deref(),
+        Some(first.as_str()),
+        "stable while the core runs and the registration stands"
+    );
+
+    // A tool under host X, which holds both sessions.
+    let under_x = 4300;
+    h.sessions.call_from_host(
+        under_x,
+        vec![
+            session(SessionKind::Codex, CODEX, "/x"),
+            session(SessionKind::Codex, SECOND, "/y"),
+        ],
+    );
+    let harness = &h;
+    let send = |pid: i32, token: Option<String>| {
+        let path = match token {
+            Some(token) => format!("/send?to=alice&session_token={token}"),
+            None => "/send?to=alice".to_string(),
+        };
+        async move { harness.call_text(pid, "POST", &path, "hello").await }
+    };
+    // Without a token, or with a wrong one, the tool is nobody.
+    assert_eq!(
+        send(under_x, None).await.unwrap_err().code,
+        "not_a_relay_session"
+    );
+    assert_eq!(
+        send(under_x, Some("0".repeat(64))).await.unwrap_err().code,
+        "not_a_relay_session"
+    );
+    assert_eq!(
+        send(under_x, Some("not-a-token".into()))
+            .await
+            .unwrap_err()
+            .code,
+        "not_a_relay_session"
+    );
+    // Each session's own token sends as that session.
+    let sent = send(under_x, Some(first.clone())).await.unwrap();
+    assert_eq!(sent["from"], "codex-api");
+    let sent = send(under_x, Some(second.clone())).await.unwrap();
+    assert_eq!(sent["from"], "codex-web");
+
+    // A tool under host Y, which holds the second session and another one,
+    // but not the first: the first session's token names nobody there.
+    let under_y = 4301;
+    h.sessions.call_from_host(
+        under_y,
+        vec![
+            session(SessionKind::Codex, SECOND, "/y"),
+            session(SessionKind::Codex, THIRD, "/z"),
+        ],
+    );
+    assert_eq!(
+        send(under_y, Some(first.clone())).await.unwrap_err().code,
+        "not_a_relay_session"
+    );
+    assert_eq!(
+        send(under_y, Some(second.clone())).await.unwrap()["from"],
+        "codex-web"
+    );
+    // In a header, as a curl command may send it.
+    h.sessions.call_from_host(
+        std::process::id() as i32,
+        vec![
+            session(SessionKind::Codex, CODEX, "/x"),
+            session(SessionKind::Codex, SECOND, "/y"),
+        ],
+    );
+    let raw = format!(
+        "POST /send?to=alice HTTP/1.1\r\nHost: relay\r\nX-Relay-Session-Token: {second}\r\nContent-Length: 2\r\n\r\nhi"
+    );
+    let (status, body) = http(&h.relay_socket, raw.as_bytes()).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["data"]["from"], "codex-web");
+    // A caller the kernel already names is never renamed by a token.
+    let sent = send(second_pid, Some(first.clone())).await.unwrap();
+    assert_eq!(sent["from"], "codex-web");
+
+    // Turned off, the token is ignored.
+    h.core
+        .store
+        .update(|store| store.extras.session_send_tokens = Some(false))
+        .unwrap();
+    assert_eq!(
+        send(under_x, Some(first)).await.unwrap_err().code,
+        "not_a_relay_session"
+    );
+    h.stop().await;
+}

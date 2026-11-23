@@ -1918,6 +1918,7 @@ impl Injector for LocalInjector {
 mod connect_codex;
 mod gateways;
 mod grok_caller;
+mod held_sessions;
 mod lock_held;
 mod nearest;
 mod notice_observe;
@@ -2770,6 +2771,85 @@ mod tests {
             target_of(&world, 320),
             Some(Target::new(SessionKind::ClaudeTerminal, CLAUDE))
         );
+    }
+
+    #[test]
+    fn a_send_token_may_pick_only_among_its_app_servers_own_chats() {
+        let world = world();
+        let second = "019a0000-0000-7000-8000-0000000000b2";
+        let lock = |thread: &str| {
+            PathBuf::from(format!(
+                "/Users/me/.codex/thread-writer-locks/{thread}.lock"
+            ))
+        };
+        world.table.insert(
+            400,
+            FakeProcess {
+                executable: Some(codex_exe()),
+                arguments: vec!["codex".into(), "app-server".into()],
+                open_files: vec![lock(THREAD), lock(second)],
+                ..process(1, 130)
+            },
+        );
+        world.table.insert(410, process(400, 140));
+        let held = |id: &str| Target::new(SessionKind::Codex, id);
+        assert!(matches!(
+            world.sessions.caller(410),
+            Err(CallerMiss::Unattributed)
+        ));
+        assert_eq!(
+            world
+                .sessions
+                .caller_among_held(410, &held(THREAD))
+                .map(|row| row.target),
+            Some(held(THREAD))
+        );
+        assert_eq!(
+            world
+                .sessions
+                .caller_among_held(410, &held(second))
+                .map(|row| row.target),
+            Some(held(second))
+        );
+        // A chat this app-server does not hold, or a session of another kind.
+        let elsewhere = "019a0000-0000-7000-8000-0000000000b3";
+        assert!(world
+            .sessions
+            .caller_among_held(410, &held(elsewhere))
+            .is_none());
+        assert!(world
+            .sessions
+            .caller_among_held(410, &Target::new(SessionKind::ClaudeTerminal, CLAUDE))
+            .is_none());
+        // One chat: not a host of several sessions, so a token picks
+        // nothing (its tools carry `CODEX_THREAD_ID`, which the lock proves).
+        world.table.insert(
+            400,
+            FakeProcess {
+                executable: Some(codex_exe()),
+                arguments: vec!["codex".into(), "app-server".into()],
+                open_files: vec![lock(THREAD)],
+                ..process(1, 130)
+            },
+        );
+        assert!(world
+            .sessions
+            .caller_among_held(410, &held(THREAD))
+            .is_none());
+        // A CLI Codex is not a multi-session host.
+        world.table.insert(
+            400,
+            FakeProcess {
+                executable: Some(codex_exe()),
+                arguments: vec!["codex".into()],
+                open_files: vec![lock(THREAD), lock(second)],
+                ..process(1, 130)
+            },
+        );
+        assert!(world
+            .sessions
+            .caller_among_held(410, &held(second))
+            .is_none());
     }
 
     /// A `devin` process (pid 400) holding its session lock open, with a
@@ -6285,6 +6365,21 @@ printf '{{"jsonrpc":"2.0","id":"%s","result":{{"stopReason":"end_turn","outputTo
             two.caller_target(680),
             Err(CallerMiss::Unattributed)
         ));
+        // A send token may still pick either of the sessions that OpenCode
+        // holds, and nothing else.
+        for id in [held, other] {
+            assert_eq!(
+                two.caller_among_held(680, &Target::new(SessionKind::OpenCodeOpen, id))
+                    .map(|row| row.target),
+                Some(Target::new(SessionKind::OpenCodeOpen, id))
+            );
+        }
+        assert!(two
+            .caller_among_held(
+                680,
+                &Target::new(SessionKind::OpenCodeOpen, "ses_notheld00000000")
+            )
+            .is_none());
         // Without one, the shell names neither, but it is under OpenCode:
         // never outside every agent, so nothing sends for it as the person.
         assert!(matches!(

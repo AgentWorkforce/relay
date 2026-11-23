@@ -358,6 +358,7 @@ impl SocketCommands {
             reply_to: None,
             thread: None,
             owner_approval: None,
+            session_token: None,
         };
         let subscribe = SessionCommand::SubscribeChannel {
             channel: "<name>".into(),
@@ -470,6 +471,7 @@ impl CodexSocketCommands {
             reply_to: None,
             thread: None,
             owner_approval: None,
+            session_token: None,
         };
         Some(CodexSocketCommands {
             agents: SessionCommand::Agents.command_line(executable, socket, None)?,
@@ -713,6 +715,7 @@ mod tests {
             reply_to: Some("42".into()),
             thread: None,
             owner_approval: None,
+            session_token: None,
         }
         .command_line(probe, socket, Some("ok"))
         .unwrap();

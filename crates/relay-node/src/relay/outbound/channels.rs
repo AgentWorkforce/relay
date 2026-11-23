@@ -177,19 +177,31 @@ impl Outbound {
         uid: u32,
         request: &Request,
     ) -> Result<Value, OutboundError> {
-        let fields = payload(request, Purpose::Send)?;
+        let mut fields = payload(request, Purpose::Send)?;
         let key = request.header("idempotency-key").map(str::to_string);
-        if fields.contains_key("channel") && fields.contains_key("thread_id") {
-            if fields.contains_key("owner_approval") {
-                return Err(OutboundError::new(
-                    400,
-                    "invalid_owner_approval",
-                    "An owner approval goes on a direct message or channel post, not a reply.",
-                ));
+        // A send token (`relay::session_tokens`) is the request's, never a
+        // message field: in a header or the query.
+        let from_query = fields
+            .remove(crate::relay::session_tokens::QUERY)
+            .and_then(|value| value.as_str().map(str::to_string));
+        let token = request
+            .header(crate::relay::session_tokens::HEADER)
+            .map(str::to_string)
+            .or(from_query);
+        super::with_send_token(token, async {
+            if fields.contains_key("channel") && fields.contains_key("thread_id") {
+                if fields.contains_key("owner_approval") {
+                    return Err(OutboundError::new(
+                        400,
+                        "invalid_owner_approval",
+                        "An owner approval goes on a direct message or channel post, not a reply.",
+                    ));
+                }
+                return self.send_thread_reply(pid, uid, &fields, key).await;
             }
-            return self.send_thread_reply(pid, uid, &fields, key).await;
-        }
-        self.send(pid, uid, &fields, key).await
+            self.send(pid, uid, &fields, key).await
+        })
+        .await
     }
 
     async fn send_thread_reply(
@@ -483,16 +495,35 @@ pub fn channel_reply_command(
     kind: SessionKind,
     needs_probe: bool,
 ) -> Option<String> {
-    let request_path = format!(
+    channel_reply_command_with_token(socket, channel, thread_id, kind, needs_probe, None)
+}
+
+/// [`channel_reply_command`] carrying the session's send token, when one is
+/// given (`relay::session_tokens`).
+pub fn channel_reply_command_with_token(
+    socket: &Path,
+    channel: &str,
+    thread_id: &str,
+    kind: SessionKind,
+    needs_probe: bool,
+    session_token: Option<&str>,
+) -> Option<String> {
+    let session_token =
+        session_token.filter(|token| crate::relay::session_tokens::well_formed(token));
+    let mut request_path = format!(
         "/send?channel={}&thread_id={}",
         query_encode(channel),
         query_encode(thread_id)
     );
+    if let Some(token) = session_token {
+        request_path.push_str(&format!("&{}={token}", crate::relay::session_tokens::QUERY));
+    }
     let reply = SessionCommand::Send {
         recipient: Recipient::Channel(channel.to_string()),
         reply_to: None,
         thread: Some(thread_id.to_string()),
         owner_approval: None,
+        session_token: session_token.map(str::to_string),
     };
     socket_command(
         socket,

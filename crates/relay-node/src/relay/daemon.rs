@@ -217,6 +217,8 @@ pub struct Core {
     /// Accountless Connect credentials are isolated from workspace registrations.
     pub(crate) connect: Mutex<ConnectState>,
     pub(crate) connect_lifetime: super::connect_lifetime::ConnectLifetime,
+    /// Per-session send tokens handed out while `session_send_tokens` is on.
+    pub(crate) session_tokens: super::session_tokens::SessionTokens,
     #[doc(hidden)]
     pub messaging: Mutex<MessagingState>,
     /// One relayfile subscription change at a time: they share workspace
@@ -345,6 +347,7 @@ impl Core {
             relaycast_backoff,
             connect: Mutex::new(connect),
             connect_lifetime: Default::default(),
+            session_tokens: Default::default(),
             messaging: Mutex::default(),
             integration_lock: tokio::sync::Mutex::new(()),
             integration_defaults: std::sync::atomic::AtomicBool::new(true),

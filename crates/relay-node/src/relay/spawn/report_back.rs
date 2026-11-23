@@ -111,6 +111,7 @@ impl ReportBack {
                 reply_to: None,
                 thread: None,
                 owner_approval: None,
+                session_token: None,
             };
             (
                 probe_session_command(socket, &send, Some("your report"))?,

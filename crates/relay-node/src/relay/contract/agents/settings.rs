@@ -229,6 +229,15 @@ pub struct SettingsValues {
     /// joins only when added. Absent in older cores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opencode_auto_activate: Option<bool>,
+    /// Whether each registered session gets a send token, carried in the
+    /// reply commands handed to that session, that names it on the session
+    /// socket when its tool runs under a host process holding several
+    /// sessions (a Codex app-server, an OpenCode, a Cursor window). Off
+    /// unless the person turns it on; tokens are kept in memory and change
+    /// when the core restarts or the session registers again. Absent in
+    /// older cores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_send_tokens: Option<bool>,
     /// Whether Agent Relay lists the agents of the local OpenClaw Gateway
     /// and delivers to them, each relay sender in a session of its own.
     /// Absent where OpenClaw is not set up.
@@ -720,6 +729,14 @@ pub struct SettingsChange {
     )]
     #[schemars(with = "bool")]
     pub opencode_auto_activate: Option<bool>,
+    /// Turns per-session send tokens on or off. Only the person turns it on.
+    #[serde(
+        default,
+        deserialize_with = "given",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "bool")]
+    pub session_send_tokens: Option<bool>,
     /// Turns the OpenClaw Gateway route on or off.
     #[serde(
         default,

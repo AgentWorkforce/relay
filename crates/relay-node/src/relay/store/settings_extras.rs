@@ -91,6 +91,15 @@ pub struct SettingsExtras {
         skip_serializing_if = "Option::is_none"
     )]
     pub opencode_auto_activate: Option<bool>,
+    /// Missing means false: a tool under a host process holding several
+    /// sessions names none on the session socket. On, the core gives each
+    /// session a send token that names it there (`session_send_tokens`).
+    #[serde(
+        rename = "sessionSendTokens",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub session_send_tokens: Option<bool>,
     /// Missing means true: a Claude Code session's `AskUserQuestion` goes to
     /// `question_escalation_inbox` over Agent Relay instead of its dialog
     /// (`relay::question`). Only an explicit false (`off`) shows the dialog;
@@ -200,6 +209,11 @@ impl SettingsExtras {
                 &base.opencode_auto_activate,
                 &ours.opencode_auto_activate,
                 &theirs.opencode_auto_activate,
+            ),
+            session_send_tokens: changed(
+                &base.session_send_tokens,
+                &ours.session_send_tokens,
+                &theirs.session_send_tokens,
             ),
             question_escalation: changed(
                 &base.question_escalation,
