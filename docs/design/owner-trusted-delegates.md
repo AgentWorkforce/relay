@@ -98,23 +98,17 @@ Three properties do the work:
 
 ### 4.1 Designation
 
-- **Only the owner, as a person, in an interactive web session.** Creating
-  or widening a grant, minting a Tier O approval, registering a release gate,
-  and changing delegation policy need an interactive browser session with
-  recent sign-in. A token held by a host process is never enough for these
-  actions, even a person's own or a desktop-verified bearer
-  (`isVerifiedDesktopSignInBearer`, #4987). A host signed in as the owner must
-  not be able to act as the owner here. Once Cloud stamps each person
-  credential with a server-verified device, a desktop device of that kind may
-  be allowed; until then, only the browser.
-- **Confirm in the browser.** The CLI and SDK may still start these actions.
-  The request creates a pending record and returns a confirmation URL, and
-  nothing takes effect until the owner confirms it in the browser.
-- **Reading and revoking are easier.** Listing grants and revoking them
-  (including revoke-all) also accept a desktop-verified bearer. Revoking only
-  ever narrows what a delegate can do.
-- **Never these credentials.** No agent token, workspace key or `cli:auth`
-  login token can call the grant API.
+- **Only the owner, as a person.** Grants are created, changed and revoked,
+  Tier O approvals minted, release gates registered and policy changed only
+  by a human Cloud session: a browser session or a desktop-verified bearer
+  (`isVerifiedDesktopSignInBearer`, #4987). No agent token, workspace key or
+  `cli:auth` login token from a non-desktop flow can call the grant API.
+- **No step-up re-authentication.** Khaliq's decision (2026-11-23, 7:41 AM
+  PT, relayed): "trust the machine", meaning a session or the
+  desktop-verified bearer is enough. There is no recent-sign-in requirement
+  and no browser confirmation step. The accepted risk: a host signed in as
+  the owner can act as the owner for these actions. Every one of them is
+  audited and the owner is told about it (§8).
 - **The delegate must be bound to the owner.** It needs exactly one Cloud
   binding owned by the same human, using #4987's uniqueness rule across
   `desktop_relay_identities`, ready `hosted_relay_spawns` with
@@ -667,7 +661,7 @@ The default limits in §5.1 apply to everything else.
 
 ### 11a.3 Gate registration and the redeem route
 
-- **Registering a gate (owner only, interactive web session, §4.1).** The
+- **Registering a gate (owner only, §4.1).** The
   owner registers each gate under `/delegates/gates`. A gate is
   `{gate_id, repo, job_workflow_ref, ref, event, target_prefix}`, for example
   repo `AgentWorkforce/relay-app`,
@@ -728,9 +722,9 @@ The default limits in §5.1 apply to everything else.
 | A condition goes stale (CI green, then a new commit is pushed)                           | Conditions are checked at redeem; `head_sha` pins the commit; the agent passes it to GitHub's merge call.                                                                                                      | Without `head_sha`, a commit pushed between redeem and merge. Delegates should always add `head_sha` for merges.                               |
 | A delegate answers a prompt to escalate                                                  | Only the machine owner's delegates, per request, with Codex extra-permission requests, choices and forms left out. The answer is audited as the delegate's.                                                    | A delegate inside its grant can approve tool calls the owner would have refused. Keep `prompt_approval` targets narrow.                        |
 | A delegate escalates to config, permissions or grants                                    | These are never delegable (§5.3), and there is no grant API for agent tokens.                                                                                                                                  | None.                                                                                                                                          |
-| The owner's account is compromised                                                       | Step-up auth for grants, admin co-approval policy, every grant change logged and announced.                                                                                                                    | The same risk as any account takeover. Out of scope.                                                                                           |
+| The owner's account is compromised                                                       | Admin co-approval policy, every grant change logged and announced (no step-up, §4.1).                                                                                                                          | The same risk as any account takeover. Out of scope.                                                                                           |
 | Cloud signing key leaks                                                                  | Online attestation plus key rotation by `kid`. Nodes check revocation online, so a forged JWS alone fails the redeem step for high-risk classes.                                                               | A forged Tier D line during the leak. Needs an HSM-backed key (open question 4).                                                               |
-| A host signed in as the owner acts as the owner (creates grants, mints Tier O approvals) | Owner-only actions need an interactive web session with recent sign-in, or a confirmation in the browser (§4.1). A host's bearer can only read and revoke.                                                     | Until Cloud stamps each device server-side, a host's bearer can still revoke. Revoking only ever narrows.                                      |
+| A host signed in as the owner acts as the owner (creates grants, mints Tier O approvals) | Accepted by Khaliq's decision (§4.1: trust the machine). Every owner action is audited and announced. Per-device credentials, once deployed, show which machine acted.                                         | A compromised host signed in as the owner can create grants until revoked.                                                                     |
 | A release job runs from an edited workflow on a branch                                   | The gate binds `job_workflow_ref`, `ref` and `event_name`, not only the repository (§11a.3).                                                                                                                   | None if the gate is registered precisely.                                                                                                      |
 | A publish is started without going through the host permit                               | The publishing job redeems the approval itself (§11a.1).                                                                                                                                                       | Workflows that don't redeem yet. Each gate must be cut over.                                                                                   |
 | A gate-only or self-hosted install without Cloud                                         | The feature is reported as not available, the same way #2238 handles gate-only installs.                                                                                                                       | None.                                                                                                                                          |
@@ -930,15 +924,11 @@ Agent routes are proven with the agent's own Relaycast token, as in
   admins can call it. It applies to every workspace in the org, and a
   workspace policy cannot override it.
 - Release gates (§11a): `GET`/`POST`/`DELETE /delegates/gates` is
-  owner-only and needs the interactive web session.
+  owner-only (a browser session or a desktop-verified bearer, §4.1).
   `POST /delegates/gates/redeem` takes `Authorization: Bearer <GitHub OIDC
 token>` and `{approval_id, action}`. It returns
   `{ok:true, consumed, rerun?}` or `{ok:false, reason}`. Its extra reasons
   are `gate_unknown`, `oidc_invalid`, `gate_mismatch` and `target_prefix`.
-- Interactive-only actions (§4.1): grant create and widen, Tier O mint, gate
-  registration and policy changes. Called with a desktop bearer, they return
-  `202 {pending_id, confirm_url}`, and nothing takes effect until a browser
-  session posts to `/delegates/pending/{pending_id}/confirm`.
 - Keys: `GET /.well-known/relay-delegation-keys.json` returns a JWKS of OKP
   Ed25519 keys with `kid`.
 - Reason codes: `not_enabled`, `not_delegate`, `no_approval`, `out_of_scope`,
