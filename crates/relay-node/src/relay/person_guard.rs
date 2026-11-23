@@ -2,10 +2,12 @@
 //! the bridge.
 //!
 //! The bridge admits any process of this user, and `messages.send` and
-//! `agents.test_message` send as the signed-in person. A process the session
+//! `agents.test_message` send as the signed-in person, while
+//! `agents.register`, `agents.unregister`, `agents.end`, `agents.rename` and
+//! `agents.webhook.create` change any agent of the person's by name. A process the session
 //! directory places inside a registered agent session (the same peer-process
 //! walk the relay-send socket names its caller with) is refused those
-//! methods and told to send as its own agent instead, and so is a process
+//! methods (and told to send as its own agent instead), and so is a process
 //! under an agent process of this user's whose one session cannot be named
 //! (an OpenCode holding two sessions, say, under an Apple `curl` that hides
 //! its tag): when in doubt, the guard refuses. A process outside every agent,
@@ -52,6 +54,24 @@ async fn caller(core: &Core, context: &CallContext) -> Caller {
         }
         Err(CallerMiss::Unreadable(_) | CallerMiss::Unattributed) => Caller::Session,
         Err(CallerMiss::NotASession) => Caller::Person,
+    }
+}
+
+/// Refuses a call that changes the person's agents (`agents.register`,
+/// `agents.unregister`, `agents.end`, `agents.rename`,
+/// `agents.webhook.create`) when it comes from inside an agent session on
+/// this computer, on the same terms as `admit_person_send`. These take any
+/// agent's name; a session changes only its own registration, through the
+/// relay-send socket, which names it from the kernel.
+pub async fn admit_person_control(core: &Core, context: &CallContext) -> Result<(), RpcError> {
+    match caller(core, context).await {
+        Caller::Person => Ok(()),
+        Caller::Session => Err(RpcError::new(
+            ErrorKind::Refused,
+            "This call changes the person's agents, and it comes from inside an agent \
+             session on this computer. Ask the person to make this change in Agent Relay, \
+             or use `agent-relay-probe` for the session's own registration.",
+        )),
     }
 }
 
@@ -233,6 +253,61 @@ mod tests {
         admit_person_send(&core, &from(Some(OUTSIDE)))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn agent_changes_by_name_are_refused_from_inside_a_session() {
+        let home = tempfile::tempdir().unwrap();
+        let callers = Arc::new(Callers {
+            sessions: HashMap::from([(REGISTERED, session("registered-thread"))]),
+            ..Callers::default()
+        });
+        let core = core(home.path(), callers.clone());
+        let methods = [
+            (
+                "agents.register",
+                json!({"target": {"kind": "codex", "id": "other-thread"}, "name": "taken"}),
+            ),
+            ("agents.unregister", json!({"name": "codex-api"})),
+            ("agents.end", json!({"name": "codex-api"})),
+            (
+                "agents.rename",
+                json!({"name": "codex-api", "new_name": "renamed"}),
+            ),
+            ("agents.webhook.create", json!({"name": "codex-api"})),
+        ];
+        for pid in [REGISTERED, UNATTRIBUTED, UNREADABLE] {
+            let context = from(Some(pid));
+            for (method, params) in &methods {
+                let refused =
+                    crate::relay::server::call_from(&core, &context, method, params.clone())
+                        .await
+                        .unwrap_err();
+                assert_eq!(refused.data.kind, ErrorKind::Refused, "{method} {pid}");
+                assert!(refused.message.contains("person's agents"), "{method}");
+            }
+        }
+        // Nothing changed: the registration is still there under its name.
+        assert!(core
+            .store
+            .read(|store| store.registrations.iter().any(|r| r.name == "codex-api")));
+        // From outside every session the guard lets the call through (it
+        // then fails or succeeds on its own terms, never as `refused` by
+        // the guard).
+        admit_person_control(&core, &from(Some(OUTSIDE)))
+            .await
+            .unwrap();
+        admit_person_control(&core, &from(None)).await.unwrap();
+        let served = crate::relay::server::call_from(
+            &core,
+            &from(Some(OUTSIDE)),
+            "agents.rename",
+            json!({"name": "codex-api", "new_name": "renamed"}),
+        )
+        .await;
+        assert!(served
+            .err()
+            .is_none_or(|error| !error.message.contains("person's agents")));
     }
 
     #[tokio::test]
