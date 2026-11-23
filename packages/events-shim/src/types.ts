@@ -33,7 +33,8 @@ export interface WakeTarget {
   /**
    * The Agent Relay agent name of the session the link wakes, as the linker gave it
    * (`link_relay_wake`'s `agent`). Tools report it so an agent can tell whether the link is its
-   * own. Hosts that do not store it report the link without a name.
+   * own. Hosts that do not store it report the link without a name. Only a valid agent name
+   * (`wakeAgentName`) is ever recorded or shown.
    */
   agent?: string;
   /** Set when the last forward was refused for good (revoked or deleted hook). */

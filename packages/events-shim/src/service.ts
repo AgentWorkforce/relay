@@ -1,4 +1,5 @@
 import { bytesToBase64, mintToken, sha256Hex } from './crypto.js';
+import { wakeAgentName } from './agent-name.js';
 import { EVENTS_SHIM_LIMITS } from './limits.js';
 import type {
   EventsShimStore,
@@ -301,7 +302,7 @@ export async function feedFor(
       wake: shim.wake ? (shim.wake.brokenAt ? 'broken' : 'linked') : 'none',
       wake_error: shim.wake?.brokenReason ?? null,
       /** The Agent Relay agent the wake link delivers to, when the link named one. */
-      wake_agent: shim.wake?.agent ?? null,
+      wake_agent: wakeAgentName(shim.wake?.agent) ?? null,
     },
     expires_at: new Date(Date.parse(shim.lastUsedAt) + EVENTS_SHIM_LIMITS.idleExpiryMs).toISOString(),
     events: events.map(publicEvent),

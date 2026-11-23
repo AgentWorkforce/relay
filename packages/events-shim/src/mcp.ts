@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
 import { EVENTS_SHIM_LIMITS } from './limits.js';
+import { wakeAgentName } from './agent-name.js';
 import { drainStalledWakes, publicEvent, type EventsShimDeps } from './service.js';
 import type { EventsShimStore, ShimEvent, ShimRecord, ShimUrls, WakeTarget } from './types.js';
 import { deliverInBackground, deliverPending } from './delivery.js';
@@ -89,7 +90,7 @@ function wakeState(shim: ShimRecord): 'linked' | 'broken' | 'none' {
  * taking the link for its own.
  */
 function linkedTo(wake: WakeTarget): string[] {
-  const who = wake.agent;
+  const who = wakeAgentName(wake.agent);
   return who
     ? [
         `This inbox is linked to the Agent Relay agent "${who}" (since ${wake.linkedAt}): each post is injected into that agent's session and wakes it. One inbox wakes one session, and while this link works no other session (Claude Code's wake hooks, listen, wait_for_webhook) receives its posts.`,
@@ -206,7 +207,7 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
         wake: state,
         // Which session the link wakes: only that agent's session gets the posts.
         ...(ctx.shim.wake
-          ? { linked_agent: ctx.shim.wake.agent ?? null, linked_at: ctx.shim.wake.linkedAt }
+          ? { linked_agent: wakeAgentName(ctx.shim.wake.agent) ?? null, linked_at: ctx.shim.wake.linkedAt }
           : {}),
         waiting,
         next_steps: nextSteps,
@@ -241,7 +242,11 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
           .string()
           .trim()
           .min(1)
-          .max(100)
+          .max(101)
+          .regex(
+            /^@?[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/u,
+            'agent must be an Agent Relay agent name: letters, digits, dots, dashes and underscores.'
+          )
           .optional()
           .describe(
             "Your own Agent Relay agent name (this session's name on the relay). Recorded so watch_webhooks can say which session the inbox wakes."
@@ -259,7 +264,7 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
         url: checked.url,
         secret: input.secret,
         linkedAt: at,
-        ...(input.agent ? { agent: input.agent } : {}),
+        ...(wakeAgentName(input.agent) ? { agent: wakeAgentName(input.agent) } : {}),
       };
       // Prove the link before storing it: a test post the session will see.
       const probe = await forwardWake({
@@ -302,12 +307,14 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
       const moved =
         before && before.url !== target.url
           ? [
-              `The inbox no longer wakes ${before.agent ? `"${before.agent}"` : 'the session it was linked to before'}: one inbox wakes one session, and that session gets no more posts from it.`,
+              `The inbox no longer wakes ${wakeAgentName(before.agent) ? `"${wakeAgentName(before.agent)}"` : 'the session it was linked to before'}: one inbox wakes one session, and that session gets no more posts from it.`,
             ]
           : [];
       const named = {
-        linked_agent: target.agent ?? null,
-        ...(before && before.url !== target.url ? { replaced_agent: before.agent ?? null } : {}),
+        linked_agent: wakeAgentName(target.agent) ?? null,
+        ...(before && before.url !== target.url
+          ? { replaced_agent: wakeAgentName(before.agent) ?? null }
+          : {}),
       };
       if (pass.stalled) {
         return result({
