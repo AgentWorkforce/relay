@@ -80,7 +80,8 @@ pub struct SettingsValues {
     /// owner. Neither `spawn_requester_approvals` nor the spawn's approval
     /// profile limits it: an `interactive` spawn's approve/deny requests go
     /// to the leaders too. Needs `spawn_native_input`. Off unless the
-    /// machine owner turns it on. Absent in older cores.
+    /// machine owner turns it on. Absent in older cores, and on a gate-only
+    /// install, where it cannot work and turning it on is refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_leader_approvals: Option<bool>,
     /// The workspace's leaders as Relaycast last listed them

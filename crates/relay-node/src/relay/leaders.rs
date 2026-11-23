@@ -54,6 +54,17 @@ pub const REREAD_AFTER: Duration = Duration::from_secs(5);
 
 const PATH: &str = "/v1/workspace/leaders";
 
+/// The setting that lets workspace leaders answer spawned sessions' requests.
+pub const SETTING: &str = "spawn_leader_approvals";
+
+/// Why approvals from workspace leaders ([`SETTING`]) are not
+/// available on a gate-only install, as `GET /settings` lists it and a
+/// change that turns it on is refused. Such a workspace has no workspace
+/// key and its sessions keep none, so neither the leader list nor a
+/// session's workspace can be checked here; the node's own credential is
+/// never sent for it (it goes to Control alone).
+pub const GATE_ONLY: &str = "Approvals from workspace leaders are not available on this computer: it reaches its workspace only through relaygate, where Agent Relay cannot read the workspace's leaders or check that a session is in the workspace.";
+
 /// The leaders in a `GET /v1/workspace/leaders` answer, as its `data` or
 /// the whole `{"ok":true,"data":…}` envelope. A leader without a plain name
 /// and a valid id is left out; missing lists are empty. `None` for an
@@ -348,17 +359,40 @@ impl Core {
         &self,
         registration: &Registration,
     ) -> Vec<WorkspaceLeader> {
-        let Some(workspace) = self.leaders_workspace(registration) else {
-            return Vec::new();
-        };
-        self.leaders
-            .verified(&workspace, &self.config.app_data_dir)
+        self.verified_workspace_leaders_read(registration)
             .await
-            .map(|list| list.leaders)
             .unwrap_or_default()
-            .into_iter()
-            .filter(|leader| !leader.agent_id.is_empty())
-            .collect()
+    }
+
+    /// [`Self::verified_workspace_leaders`], telling a list that could not
+    /// be had (`None`: no read succeeded within [`REFRESH_AFTER`], or one
+    /// was refused) from one that has no such leader. A session not in
+    /// this computer's workspace has none (`Some` of an empty list).
+    pub(crate) async fn verified_workspace_leaders_read(
+        &self,
+        registration: &Registration,
+    ) -> Option<Vec<WorkspaceLeader>> {
+        let Some(workspace) = self.leaders_workspace(registration) else {
+            return Some(Vec::new());
+        };
+        let list = self
+            .leaders
+            .verified(&workspace, &self.config.app_data_dir)
+            .await?;
+        Some(
+            list.leaders
+                .into_iter()
+                .filter(|leader| !leader.agent_id.is_empty())
+                .collect(),
+        )
+    }
+
+    /// Why **Approvals from workspace leaders** cannot work on this
+    /// computer, when it cannot ([`GATE_ONLY`]); `None` otherwise.
+    pub(crate) fn leader_approvals_unavailable(&self) -> Option<&'static str> {
+        self.workspace()
+            .is_some_and(|workspace| workspace.is_gate_only())
+            .then_some(GATE_ONLY)
     }
 
     /// Reads `workspace`'s leaders again in the background, as an agent

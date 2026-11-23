@@ -1050,18 +1050,36 @@ async fn a_request_that_is_not_approvable_is_never_sent_to_a_leader() {
 // leader may answer, and without leaders it is as it is with the setting off.
 #[test]
 fn the_notice_says_a_workspace_leader_may_answer_in_a_fixed_sentence() {
-    use crate::relay::spawn::drive::{who_may_answer, who_may_answer_with};
+    use crate::relay::spawn::drive::{who_may_answer, who_may_answer_with, Leaders};
     assert_eq!(
-        who_may_answer_with(None, true),
+        who_may_answer_with(None, Leaders::Listed),
         "The signed-in machine owner or a workspace leader may answer; the first answer counts."
     );
     assert_eq!(
-        who_may_answer_with(Some("grokbot"), true),
+        who_may_answer_with(Some("grokbot"), Leaders::Listed),
         "The signed-in machine owner, @grokbot (the agent that spawned this session) \
          or a workspace leader may answer; the first answer counts."
     );
-    assert_eq!(who_may_answer_with(Some("grokbot"), false), who_may_answer(Some("grokbot")));
-    assert_eq!(who_may_answer_with(None, false), who_may_answer(None));
+    // While the organization holds, only a leader that is one of its admins.
+    assert_eq!(
+        who_may_answer_with(None, Leaders::Admins),
+        "The signed-in machine owner or a workspace leader that is one of the \
+         organization's admins may answer; the first answer counts."
+    );
+    assert_eq!(
+        who_may_answer_with(Some("grokbot"), Leaders::Admins),
+        "The signed-in machine owner, @grokbot (the agent that spawned this session) \
+         or a workspace leader that is one of the organization's admins may answer; \
+         the first answer counts."
+    );
+    assert_eq!(
+        who_may_answer_with(Some("grokbot"), Leaders::Not),
+        who_may_answer(Some("grokbot"))
+    );
+    assert_eq!(
+        who_may_answer_with(None, Leaders::Not),
+        who_may_answer(None)
+    );
 }
 
 /// The fixture with no verified owner: the computer is not claimed by the
@@ -1176,7 +1194,11 @@ async fn a_failed_leader_copy_is_retried_a_bounded_number_of_times_with_the_same
             MessageRef::of(&f.lead.id)
         )
     );
-    assert_eq!(f.server.calls("GET", "/v1/agents/lead").len(), 1);
+    // Relaycast is asked again, just before each send, whom the name is.
+    assert_eq!(
+        f.server.calls("GET", "/v1/agents/lead").len(),
+        crate::relay::spawn::drive::LEADER_SENDS as usize
+    );
 }
 
 // The text sent under one key never changes, though the setting or the list
@@ -1293,9 +1315,9 @@ async fn a_claude_notice_reaches_each_leader_once_with_no_owner_and_no_requester
     tokio::time::sleep(Duration::from_millis(300)).await;
     let copies = copies_to(&f, "lead");
     assert_eq!(copies.len(), 1, "{copies:?}");
-    assert!(copies[0]
-        .0
-        .ends_with("The signed-in machine owner or a workspace leader may answer; the first answer counts."));
+    assert!(copies[0].0.ends_with(
+        "The signed-in machine owner or a workspace leader may answer; the first answer counts."
+    ));
     assert_eq!(f.server.calls("GET", "/v1/agents/lead").len(), 1);
     requests::forget(SESSION);
 }
@@ -1346,7 +1368,10 @@ async fn the_setting_and_takeover_are_checked_again_after_the_list_is_read() {
         }
         release.send(true).unwrap();
         assert!(not_one(answering.await.unwrap()), "{change}");
-        assert!(codex_drive::has_pending(THREAD, &notice.reference), "{change}");
+        assert!(
+            codex_drive::has_pending(THREAD, &notice.reference),
+            "{change}"
+        );
         assert_eq!(codex_drive::recorded_answer(&notice.reference), None);
     }
 }
@@ -1384,7 +1409,11 @@ async fn with_the_setting_off_the_leaders_are_never_looked_up() {
     f.core
         .forward_to_owner(&registration, &f.token(), &notice)
         .await;
-    let reply = dm("off-lookup", &f.lead, &format!("approve {}", notice.reference));
+    let reply = dm(
+        "off-lookup",
+        &f.lead,
+        &format!("approve {}", notice.reference),
+    );
     assert!(not_one(f.core.owner_reply(&registration, &reply).await));
     const SESSION: &str = "a1d0c2e4-0000-4000-8000-00000000d027";
     let claude = f.spawned("claude", SESSION);
@@ -1416,7 +1445,12 @@ async fn a_leader_approves_and_denies_a_claude_mcp_tool_and_exit_plan_mode() {
             "subtype": "can_use_tool", "tool_name": name, "input": {}}})
     };
     for (id, name, verb, behavior) in [
-        ("mcp-approve", "mcp__github__create_issue", "approve", "allow"),
+        (
+            "mcp-approve",
+            "mcp__github__create_issue",
+            "approve",
+            "allow",
+        ),
         ("mcp-deny", "mcp__github__create_issue", "deny", "deny"),
         ("plan-approve", "ExitPlanMode", "approve", "allow"),
         ("plan-deny", "ExitPlanMode", "deny", "deny"),
@@ -1454,11 +1488,466 @@ async fn with_no_verified_owner_a_leader_still_answers() {
     let registration = f.spawned("codex", THREAD);
     assert!(f.core.verified_owner(&registration).await.is_none());
     let notice = codex_request(THREAD, 571);
-    let reply = dm("no-owner", &f.lead, &format!("approve {}", notice.reference));
+    let reply = dm(
+        "no-owner",
+        &f.lead,
+        &format!("approve {}", notice.reference),
+    );
     assert_eq!(
         settled(f.core.owner_reply(&registration, &reply).await),
         format!("Codex approval reply from {}: Answered", by_leader(&f))
     );
     let answer = codex_drive::recorded_answer(&notice.reference).unwrap();
     assert_eq!(answer["decision"], "accept", "{answer}");
+}
+
+// While the organization holds messages from senders who are not its
+// admins (`claude_delivery_policy`), a leader's reply answers a request only
+// when the delivery policy would deliver it: the leader is one of the
+// organization's admins, by authenticated address or by name.
+
+use crate::relay::claude_delivery_policy::Decision as Consent;
+
+/// `delivery` with the authenticated sender address Relaycast gives it.
+fn addressed(mut delivery: Delivery, address: &str) -> Delivery {
+    delivery.sender_address = Some(address.into());
+    delivery
+}
+
+/// Holds every sender's messages but `admins`' (names or addresses).
+fn organization_holds(f: &Fixture, admins: &[&str]) {
+    f.core
+        .claude_delivery
+        .set_organization_hold(Some(admins.iter().map(|admin| admin.to_string()).collect()));
+}
+
+#[tokio::test]
+async fn under_an_organization_hold_a_leader_that_is_not_an_admin_never_answers() {
+    let f = fixture().await;
+    f.set(Some(true), None, None);
+    organization_holds(&f, &["someone-else", "someone@else"]);
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bd101";
+    let registration = f.spawned("codex", THREAD);
+    let notice = codex_request(THREAD, 901);
+    let reply = addressed(
+        dm(
+            "hold-not-admin",
+            &f.lead,
+            &format!("approve {}", notice.reference),
+        ),
+        "lead@desk",
+    );
+    assert!(not_one(f.core.owner_reply(&registration, &reply).await));
+    // Nothing answered or recorded; the request is still open.
+    assert!(codex_drive::has_pending(THREAD, &notice.reference));
+    assert_eq!(codex_drive::recorded_answer(&notice.reference), None);
+    assert!(!f
+        .core
+        .store
+        .read(|store| store.injected_delivery_ids.contains(&reply.id)));
+    // The ordinary path then holds the message for the person.
+    assert_eq!(
+        f.core.claude_delivery.decide(&registration, &reply),
+        Consent::Hold
+    );
+    // A Claude session too.
+    const SESSION: &str = "a1d0c2e4-0000-4000-8000-00000000d101";
+    let claude = f.spawned("claude", SESSION);
+    let request = claude_request(SESSION, "h1");
+    let reply = addressed(
+        dm(
+            "hold-not-admin-claude",
+            &f.lead,
+            &format!("approve {}", request.reference),
+        ),
+        "lead@desk",
+    );
+    assert!(not_one(f.core.owner_reply(&claude, &reply).await));
+    assert!(requests::due(SESSION).is_empty());
+    requests::forget(SESSION);
+}
+
+#[tokio::test]
+async fn under_an_organization_hold_an_admin_leader_answers_by_address_or_by_name() {
+    let f = fixture().await;
+    f.set(Some(true), None, None);
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bd102";
+    let registration = f.spawned("codex", THREAD);
+    for (index, admins) in [["lead@desk", "other"], ["lead", "other"]]
+        .iter()
+        .enumerate()
+    {
+        organization_holds(&f, admins);
+        let notice = codex_request(THREAD, 911 + index as u64);
+        let reply = addressed(
+            dm(
+                &format!("hold-admin-{index}"),
+                &f.lead,
+                &format!("approve {}", notice.reference),
+            ),
+            "lead@desk",
+        );
+        assert_eq!(
+            settled(f.core.owner_reply(&registration, &reply).await),
+            format!("Codex approval reply from {}: Answered", by_leader(&f)),
+            "{admins:?}"
+        );
+        let answer = codex_drive::recorded_answer(&notice.reference).unwrap();
+        assert_eq!(answer["decision"], "accept", "{answer}");
+    }
+}
+
+// Only an authenticated address proves who sent a message: without one the
+// policy reads the queue first, and no leader answers meanwhile.
+#[tokio::test]
+async fn under_an_organization_hold_a_reply_without_a_sender_address_never_answers() {
+    let f = fixture().await;
+    f.set(Some(true), None, None);
+    organization_holds(&f, &["lead"]);
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bd103";
+    let registration = f.spawned("codex", THREAD);
+    let notice = codex_request(THREAD, 921);
+    let reply = dm(
+        "hold-no-address",
+        &f.lead,
+        &format!("approve {}", notice.reference),
+    );
+    assert_eq!(
+        f.core.claude_delivery.decide(&registration, &reply),
+        Consent::ReadQueue
+    );
+    assert!(not_one(f.core.owner_reply(&registration, &reply).await));
+    assert!(codex_drive::has_pending(THREAD, &notice.reference));
+    assert_eq!(codex_drive::recorded_answer(&notice.reference), None);
+}
+
+#[tokio::test]
+async fn a_hold_that_begins_after_the_notice_wins_and_one_lifted_lets_leaders_answer_again() {
+    let f = fixture().await;
+    f.set(Some(true), None, None);
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bd104";
+    let registration = f.spawned("codex", THREAD);
+    let notice = codex_request(THREAD, 931);
+    // Noticed with no hold: any listed leader may answer, it said.
+    f.core
+        .forward_to_owner(&registration, &f.token(), &notice)
+        .await;
+    f.server
+        .wait_for("the leader's copy", |server| {
+            server
+                .calls("POST", "/v1/dm")
+                .iter()
+                .any(|call| call.body["to"] == "lead")
+        })
+        .await;
+    organization_holds(&f, &["someone-else"]);
+    let approve = format!("approve {}", notice.reference);
+    let reply = addressed(dm("hold-begun", &f.lead, &approve), "lead@desk");
+    assert!(not_one(f.core.owner_reply(&registration, &reply).await));
+    assert!(codex_drive::has_pending(THREAD, &notice.reference));
+    assert_eq!(codex_drive::recorded_answer(&notice.reference), None);
+    // Lifted: the same leader answers again.
+    f.core.claude_delivery.set_organization_hold(None);
+    let reply = addressed(dm("hold-lifted", &f.lead, &approve), "lead@desk");
+    assert_eq!(
+        settled(f.core.owner_reply(&registration, &reply).await),
+        format!("Codex approval reply from {}: Answered", by_leader(&f))
+    );
+}
+
+// A hold that begins while the leader list is read wins.
+#[tokio::test]
+async fn a_hold_that_begins_during_the_list_read_makes_no_approver() {
+    let f = fixture().await;
+    f.set(Some(true), None, None);
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bd105";
+    let registration = f.spawned("codex", THREAD);
+    let notice = codex_request(THREAD, 941);
+    f.core.leaders.age(crate::relay::leaders::REFRESH_AFTER);
+    let held = f.server.held("GET /v1/workspace/leaders");
+    let release = f.server.hold("GET /v1/workspace/leaders");
+    let reply = addressed(
+        dm(
+            "hold-during-read",
+            &f.lead,
+            &format!("approve {}", notice.reference),
+        ),
+        "lead@desk",
+    );
+    let answering = {
+        let (core, registration) = (f.core.clone(), registration.clone());
+        tokio::spawn(async move { core.owner_reply(&registration, &reply).await })
+    };
+    f.server
+        .wait_for("the held list read", |server| {
+            server.held("GET /v1/workspace/leaders") > held
+        })
+        .await;
+    organization_holds(&f, &["someone-else"]);
+    release.send(true).unwrap();
+    assert!(not_one(answering.await.unwrap()));
+    assert!(codex_drive::has_pending(THREAD, &notice.reference));
+    assert_eq!(codex_drive::recorded_answer(&notice.reference), None);
+}
+
+// Under a hold the notice goes only to a leader whose verified name is one
+// of the organization's admins (they are listed by name and address; the
+// leader list gives names), and says so.
+#[tokio::test]
+async fn under_an_organization_hold_notices_go_only_to_leaders_named_among_the_admins() {
+    let f = fixture().await;
+    f.set(Some(true), Some(false), None);
+    unclaimed(&f);
+    let second = f.server.seed_agent("lead2", "agent", json!({}));
+    f.leaders(json!([
+        {"name": "lead", "agent_id": f.lead.id},
+        {"name": "lead2", "agent_id": second.id}
+    ]));
+    // lead2 is an admin by address only: it gets no notice.
+    organization_holds(&f, &["lead", "lead2@desk"]);
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bd106";
+    let registration = f.spawned("codex", THREAD);
+    let notice = codex_request(THREAD, 951);
+    f.core
+        .forward_to_owner(&registration, &f.token(), &notice)
+        .await;
+    f.server
+        .wait_for("the admin leader's copy", |server| {
+            server
+                .calls("POST", "/v1/dm")
+                .iter()
+                .any(|call| call.body["to"] == "lead")
+        })
+        .await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let copies = copies_to(&f, "lead");
+    assert_eq!(copies.len(), 1, "{:?}", f.approval_dms());
+    assert!(
+        copies[0]
+            .0
+            .ends_with("a workspace leader that is one of the organization's admins may answer; the first answer counts."),
+        "{}",
+        copies[0].0
+    );
+    assert!(copies_to(&f, "lead2").is_empty(), "{:?}", f.approval_dms());
+}
+
+// Each try at a leader's copy checks again, just before it sends, that the
+// request is open, leaders may answer, the leader is still listed, and
+// Relaycast gives its name its id. The first send fails; `change` is made
+// while it is in flight, and no copy is sent again.
+async fn no_resend_after(thread: &str, id: u64, change: impl FnOnce(&Fixture)) -> Fixture {
+    let f = fixture().await;
+    f.set(Some(true), Some(false), None);
+    unclaimed(&f);
+    let registration = f.spawned("codex", thread);
+    let notice = codex_request(thread, id);
+    f.server
+        .set_api_error("POST /v1/dm to=lead", Some((500, "unavailable")));
+    let release = f.server.hold("POST /v1/dm");
+    f.core
+        .forward_to_owner(&registration, &f.token(), &notice)
+        .await;
+    f.server
+        .wait_for("the first send", |server| server.held("POST /v1/dm") >= 1)
+        .await;
+    change(&f);
+    release.send(true).unwrap();
+    // The client tries one send three times itself on a 5xx.
+    f.server
+        .wait_for("the failed first send", |server| {
+            server
+                .calls("POST", "/v1/dm")
+                .iter()
+                .filter(|call| call.body["to"] == "lead")
+                .count()
+                >= 3
+        })
+        .await;
+    f.server.set_api_error("POST /v1/dm to=lead", None);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(copies_to(&f, "lead").len(), 3, "{:?}", f.approval_dms());
+    f
+}
+
+#[tokio::test]
+async fn a_leaders_name_taken_by_another_agent_after_a_failed_send_gets_no_resend() {
+    let f = no_resend_after("01a1235e-70e1-7cb1-8619-e2c8bf3bd107", 961, |f| {
+        f.server.forget_agent("lead");
+        f.server.seed_agent("lead", "agent", json!({}));
+    })
+    .await;
+    // Asked once per try: the second answered with another id.
+    assert_eq!(f.server.calls("GET", "/v1/agents/lead").len(), 2);
+}
+
+#[tokio::test]
+async fn a_setting_turned_off_between_tries_stops_the_resend() {
+    no_resend_after("01a1235e-70e1-7cb1-8619-e2c8bf3bd108", 971, |f| {
+        f.set(Some(false), Some(false), None)
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_leader_dropped_from_the_list_between_tries_gets_no_resend() {
+    no_resend_after("01a1235e-70e1-7cb1-8619-e2c8bf3bd109", 981, |f| {
+        f.leaders(json!([]))
+    })
+    .await;
+}
+
+// A try on which Relaycast cannot be asked whom the name is sends nothing
+// and counts as a try; a later try that is told the name is the leader's
+// sends.
+#[tokio::test]
+async fn a_try_whose_name_check_cannot_be_made_sends_nothing_and_a_later_one_sends() {
+    let f = fixture().await;
+    f.set(Some(true), Some(false), None);
+    unclaimed(&f);
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bd110";
+    let registration = f.spawned("codex", THREAD);
+    let notice = codex_request(THREAD, 991);
+    f.server
+        .set_api_error("GET /v1/agents/lead", Some((400, "bad_request")));
+    f.core
+        .forward_to_owner(&registration, &f.token(), &notice)
+        .await;
+    f.server
+        .wait_for("the first name check", |server| {
+            !server.calls("GET", "/v1/agents/lead").is_empty()
+        })
+        .await;
+    let release = f.server.hold("GET /v1/agents/lead");
+    f.server
+        .wait_for("the second try's name check", |server| {
+            server.held("GET /v1/agents/lead") >= 1
+        })
+        .await;
+    assert!(copies_to(&f, "lead").is_empty(), "{:?}", f.approval_dms());
+    f.server.set_api_error("GET /v1/agents/lead", None);
+    release.send(true).unwrap();
+    f.server
+        .wait_for("the leader's copy", |server| {
+            server
+                .calls("POST", "/v1/dm")
+                .iter()
+                .any(|call| call.body["to"] == "lead")
+        })
+        .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(copies_to(&f, "lead").len(), 1, "{:?}", f.approval_dms());
+}
+
+// On a gate-only install the leader list cannot be read and a session's
+// workspace cannot be checked: the setting is listed unavailable with why,
+// turning it on is refused, and no leader is sent a notice or answers.
+#[tokio::test]
+async fn on_a_gate_only_install_leader_approvals_are_unavailable_and_say_why() {
+    let f = fixture().await;
+    // With a workspace key, listed and available as before.
+    let keyed = f.core.settings();
+    assert_eq!(keyed[crate::relay::leaders::SETTING], false);
+    let entry = crate::relay::settings_registry::describe(&keyed)
+        .into_iter()
+        .find(|entry| entry["key"] == crate::relay::leaders::SETTING)
+        .unwrap();
+    assert_eq!(
+        (&entry["available"], &entry["writable"]),
+        (&json!(true), &json!(true))
+    );
+    assert!(entry.get("unavailable").is_none());
+    // `settings` reads a due list in the background: let it finish.
+    let workspace = f.core.workspace().unwrap();
+    f.server
+        .wait_for("the keyed list read", |_| !f.core.leaders.due(&workspace))
+        .await;
+    f.core
+        .store
+        .update(|store| {
+            store.cloud = Some(CloudWorkspace {
+                key: Secret::default(),
+                base_url: f.server.base_url.clone(),
+                gate_url: Some(f.server.base_url.clone()),
+                ..Default::default()
+            });
+        })
+        .unwrap();
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| f.core.rediscover_workspace())
+            .join()
+            .unwrap()
+    });
+    assert!(f.core.workspace().unwrap().is_gate_only());
+
+    let values = f.core.settings();
+    assert!(!values.contains_key(crate::relay::leaders::SETTING));
+    let listed = crate::relay::settings_registry::describe(&values);
+    let entry = listed
+        .iter()
+        .find(|entry| entry["key"] == crate::relay::leaders::SETTING)
+        .unwrap();
+    assert_eq!(entry["available"], false);
+    assert_eq!(entry["writable"], false);
+    assert_eq!(entry["unavailable"], crate::relay::leaders::GATE_ONLY);
+    let on = json!({"spawn_leader_approvals": true});
+    let refused = f.core.set_settings(on.as_object().unwrap()).unwrap_err();
+    assert_eq!(refused.message, crate::relay::leaders::GATE_ONLY);
+    assert_eq!(
+        f.core
+            .store
+            .read(|store| store.extras.spawn_leader_approvals),
+        None
+    );
+    let off = json!({"spawn_leader_approvals": false});
+    f.core.set_settings(off.as_object().unwrap()).unwrap();
+
+    // Even set on as the store saves it, and with a session whose saved key
+    // is the gate workspace's (empty) one, leaders may not answer: the
+    // notice says only the owner may, and the list is never read.
+    f.set(Some(true), Some(false), None);
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bd111";
+    let mut registration = f.spawned("codex", THREAD);
+    f.core
+        .store
+        .update(|store| {
+            let saved = store
+                .registrations
+                .iter_mut()
+                .find(|saved| saved.agent_id == registration.agent_id)
+                .unwrap();
+            saved.workspace_key = Some(Secret::default());
+            registration = saved.clone();
+        })
+        .unwrap();
+    let reads = f.server.calls("GET", "/v1/workspace/leaders").len();
+    // By the explicit check, not a failed read: the text is fixed before
+    // any list is read.
+    let plan = f.core.approval_plan(
+        &registration,
+        &f.token(),
+        "00000000000000a1",
+        true,
+        |leaders| format!("{leaders:?}"),
+    );
+    assert_eq!(plan, "Not");
+    let notice = codex_request(THREAD, 995);
+    f.core
+        .forward_to_owner(&registration, &f.token(), &notice)
+        .await;
+    let reply = dm(
+        "gate-only",
+        &f.lead,
+        &format!("approve {}", notice.reference),
+    );
+    assert!(not_one(f.core.owner_reply(&registration, &reply).await));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(copies_to(&f, "lead").is_empty(), "{:?}", f.approval_dms());
+    assert!(f
+        .approval_dms()
+        .iter()
+        .all(|(_, text, _)| !text.contains("workspace leader")));
+    assert_eq!(f.server.calls("GET", "/v1/workspace/leaders").len(), reads);
+    assert!(codex_drive::has_pending(THREAD, &notice.reference));
 }

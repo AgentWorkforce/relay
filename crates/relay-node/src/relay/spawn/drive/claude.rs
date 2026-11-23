@@ -5,7 +5,7 @@
 //! they may, `Core::notify_leaders`), their replies, and what a
 //! message to a Claude that has ended comes to.
 
-use super::{direct_from, watching, who_may_answer_with, OwnerReply, ReplyDecision};
+use super::{direct_from, watching, who_may_answer_with, Leaders, OwnerReply, ReplyDecision};
 use crate::relay::client;
 use crate::relay::codex::app_server::drive::ReplyResult;
 use crate::relay::daemon::Core;
@@ -40,16 +40,16 @@ pub(crate) fn approval_text_for(
     notice: &requests::Notice,
     requester: Option<&str>,
 ) -> String {
-    approval_text_with(agent, notice, requester, false)
+    approval_text_with(agent, notice, requester, Leaders::Not)
 }
 
-/// [`approval_text_for`], saying a workspace leader may answer too when
-/// `leaders` may.
+/// [`approval_text_for`], saying which workspace leaders may answer too
+/// (`leaders`).
 pub(crate) fn approval_text_with(
     agent: &str,
     notice: &requests::Notice,
     requester: Option<&str>,
-    leaders: bool,
+    leaders: Leaders,
 ) -> String {
     let reference = &notice.reference;
     let response = if notice.approvable {

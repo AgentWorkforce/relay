@@ -1254,6 +1254,7 @@ all it may do: choices, forms, input and local verification stay with the
 owner. It does so when all of these hold:
 
 - the build has an account (`plugins.account`); a public core never does;
+- the computer's workspace is not gate-only (below);
 - `spawn_native_input` is on too, which leader approvals never outlive;
 - the sender's id is a listed leader's `agent_id` (never a name or a
   pattern), in a list read successfully less than 60 s ago: an older list
@@ -1269,7 +1270,17 @@ owner. It does so when all of these hold:
   a choice (`choose`), a form, input or local verification stays with the
   machine owner, and a leader's reply to one, `deny` included, is an
   ordinary message, as is its reply to an answered, expired or unknown
-  reference. A spawned Claude that has ended still says it ended.
+  reference. A spawned Claude that has ended still says it ended;
+- while the organization holds messages from senders who are not its
+  admins (`delivery.inbound_default: "hold"`), the delivery policy's own
+  decision for the reply is to deliver it: the sender is one of the
+  organization's admins, by its authenticated sender address or by name.
+  A reply with no authenticated address, or from a leader that is not an
+  admin, answers nothing: it takes the ordinary path, where the
+  organization's hold keeps it for the person, and the request stays open.
+  The hold is read before the list and again after the list read comes
+  back, so a hold that begins meanwhile wins. With no hold this changes
+  nothing.
 
 The requests a leader may approve or deny are those that may be approved:
 for Codex, commands, file changes, extra permissions and MCP tool calls
@@ -1299,9 +1310,9 @@ What the exclusions cover, and what they do not:
   checks above count, not whether an owner could answer too.
 - A leader removed from the list keeps answering until the list is read
   again: for up to 60 s after the last read that succeeded.
-- The setting and a takeover are checked again once the list read comes
-  back: the setting turned off, or the session taken over, meanwhile makes
-  the reply an ordinary message.
+- The setting, a takeover and the organization's hold are checked again
+  once the list read comes back: the setting turned off, the session taken
+  over, or a hold begun meanwhile makes the reply an ordinary message.
 
 With the setting on, each approvable request's approval DM also goes to
 every listed leader (not the session, nor the requester, which has its own
@@ -1311,20 +1322,45 @@ idempotency key. Each leader's copy is the owner's text, with the MCP
 server, tool and argument names where the owner's copy has them. The notice
 never names the leaders: when they may answer, its closing line says, in a
 fixed sentence, that `a workspace leader may answer` too, so it never waits
-for the list or changes with it. The text of a request's DM is fixed by its
-first try: every later try sends the same text under the same keys, though
-a setting or the list changed meanwhile.
+for the list or changes with it. While the organization holds messages, the
+sentence says instead that `a workspace leader that is one of the
+organization's admins may answer`. The text of a request's DM is fixed by
+its first try: every later try sends the same text under the same keys,
+though a setting, the list or the organization's hold changed meanwhile.
 
 The leaders' copies go out in the background, apart from the owner's and
 the requester's, which never wait for them. Whether to send them is decided
-once, on the request's first try; the leaders are then looked up once (the
-list, and one name check per leader), and each is sent one copy. A copy
-that fails is sent again at most twice more, a few seconds apart, while the
-request is open; never once per second for the life of the request.
+once, on the request's first try; each leader then gets at most three tries,
+a few seconds apart, and is sent one copy: a try after a failed send is the
+only resend, never once per second for the life of the request. Just before
+every send, the first included, the node checks again that the request is
+open, that leaders may still answer, that the leader is still in the
+verified list with the same id and may answer this session, that Relaycast
+gives its name that id now, and, while the organization holds messages,
+that its verified name is one of the organization's admins. A leader whose
+name now belongs to another id, that left the list, or whose setting was
+turned off gets no further try; when Relaycast or the list cannot be asked,
+that try sends nothing and still counts. The organization's admins are
+listed by name and address, and the leader list has names and ids only, so
+under a hold an admin listed by address alone gets no notice (its reply
+still answers, by address). A copy goes only to a name Relaycast has just
+said is the leader's, but Relaycast addresses a direct message by name, not
+by id: a name taken by another agent between that check and the send is not
+caught. The check narrows that window; it does not close it.
 Whether the notice counts as forwarded is decided by the owner's and
 requester's copies alone, as before, so with neither (no verified owner and
 no requester) the notice is tried again each second as it was, but the
 leaders are not. With the setting off, notices are unchanged.
+
+On a gate-only install (the account's workspace has a relaygate URL and no
+workspace key) approvals from workspace leaders cannot work: the leader list
+cannot be read there, and the node's own credential is never sent for it (it
+goes to Control alone), and no session's workspace can be checked against a
+key. So `settings.get` leaves `spawn_leader_approvals` out, `GET /settings`
+lists it with `available: false` and the reason in `unavailable`, a change
+that turns it on is refused with the same sentence (turning it off is
+taken), and the core refuses leaders as approvers and sends them no notice
+there by an explicit check, whatever the stored value.
 
 `settings.get` shows the last list read for the current workspace as
 `workspace_leaders` (`{"leaders":[{"name","agent_id"}],"patterns":[...]}`),
