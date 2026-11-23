@@ -27,6 +27,10 @@ struct Script {
     requests: Vec<String>,
     /// Messages in each conversation's page; one when zero.
     page: usize,
+    /// Queued deliveries by id, until acknowledged.
+    deliveries: Vec<String>,
+    /// How long each answer takes, as a round trip to a distant Relaycast would.
+    delay: Duration,
 }
 
 impl Script {
@@ -52,8 +56,30 @@ impl Script {
         let messages = path
             .strip_prefix("/v1/dm/")
             .and_then(|p| p.strip_suffix("/messages"));
+        if path == "/v1/dm" {
+            let data = json!({"id": "m_sent", "conversation_id": "c2"});
+            return (200, None, json!({"ok": true, "data": data}));
+        }
+        if let Some(id) = path
+            .strip_prefix("/v1/deliveries/")
+            .and_then(|p| p.strip_suffix("/ack"))
+        {
+            self.deliveries.retain(|queued| queued != id);
+            let data = json!({"id": id, "message_id": format!("msg_{id}"),
+                "channel_id": "ch_dm", "agent_id": "ag_owner", "status": "acked",
+                "mode": "durable", "priority": "normal", "created_at": "2026-11-15T00:00:00Z"});
+            return (200, None, json!({"ok": true, "data": data}));
+        }
         let data = match (path, messages) {
-            ("/v1/deliveries", _) => json!([]),
+            ("/v1/deliveries", _) => self
+                .deliveries
+                .iter()
+                .map(|id| {
+                    json!({"id": id, "message_id": format!("msg_{id}"), "status": "pending",
+                        "reason": "dm", "channel_id": "ch_dm",
+                        "message": {"agent_name": "peer-c1", "text": "hello"}})
+                })
+                .collect(),
             ("/v1/dm/conversations", _) => Value::Array(self.conversations.clone()),
             (_, Some(id)) => (0..self.page.max(1))
                 .map(|n| {
@@ -117,6 +143,8 @@ async fn serve(script: Arc<Mutex<Script>>) -> String {
                 let head = String::from_utf8_lossy(&request);
                 let target = head.split_whitespace().nth(1).unwrap_or("/");
                 let path = target.split('?').next().unwrap_or(target).to_string();
+                let delay = script.lock().unwrap().delay;
+                tokio::time::sleep(delay).await;
                 let (status, retry_after, body) = script.lock().unwrap().answer(&path);
                 let body = body.to_string();
                 let retry_after = retry_after
@@ -174,6 +202,12 @@ async fn core_with(
         ..Script::default()
     }));
     let base = serve(script.clone()).await;
+    let (temp, core) = core_at(base);
+    (temp, core, script)
+}
+
+/// A core signed in to the Relaycast at `base`.
+fn core_at(base: String) -> (tempfile::TempDir, Arc<Core>) {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path();
     let config = Config {
@@ -192,7 +226,7 @@ async fn core_with(
         ..Plugins::default()
     };
     let core = Core::with_plugins(config, plugins).0;
-    (temp, core, script)
+    (temp, core)
 }
 
 fn peer() -> Endpoint {
@@ -415,4 +449,311 @@ async fn a_conversation_listed_with_a_null_last_message_is_read_again_on_a_reply
     core.person_woke();
     assert!(found_nothing(&core).await);
     assert_eq!(script.lock().unwrap().count("/v1/dm/c1/messages"), 2);
+}
+
+/// The Relaycast requests one history call makes, by kind.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Calls {
+    deliveries: usize,
+    acks: usize,
+    listings: usize,
+    pages: usize,
+    details: usize,
+}
+
+impl Calls {
+    fn of(requests: &[String]) -> Calls {
+        let mut calls = Calls::default();
+        for path in requests {
+            match path.as_str() {
+                "/v1/deliveries" => calls.deliveries += 1,
+                "/v1/dm/conversations" => calls.listings += 1,
+                p if p.ends_with("/ack") => calls.acks += 1,
+                p if p.starts_with("/v1/dm/") => calls.pages += 1,
+                p if p.starts_with("/v1/messages/") => calls.details += 1,
+                // Agent sync after the identity is fetched: not history's.
+                _ => {}
+            }
+        }
+        calls
+    }
+
+    fn total(&self) -> usize {
+        self.deliveries + self.acks + self.listings + self.pages + self.details
+    }
+}
+
+/// One history call: its requests, and how long it took.
+async fn call(core: &Core, script: &Mutex<Script>, endpoint: &Endpoint) -> (Calls, Duration) {
+    let before = script.lock().unwrap().requests.len();
+    let started = Instant::now();
+    core.history(endpoint, None).await.unwrap();
+    let took = started.elapsed();
+    let requests = script.lock().unwrap().requests[before..].to_vec();
+    (Calls::of(&requests), took)
+}
+
+/// Waits until every queued delivery is acknowledged.
+async fn drained(script: &Mutex<Script>) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !script.lock().unwrap().deliveries.is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "deliveries were not acknowledged"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+fn three() -> Vec<Value> {
+    vec![
+        conversation("c1", "m1"),
+        conversation("c2", "m2"),
+        conversation("c3", "m3"),
+    ]
+}
+
+fn calls(deliveries: usize, listings: usize, pages: usize, details: usize) -> Calls {
+    Calls {
+        deliveries,
+        acks: 0,
+        listings,
+        pages,
+        details,
+    }
+}
+
+/// The Relaycast requests each kind of history call makes. A change that
+/// adds a round trip fails here. Acks are counted apart: they run in the
+/// background, off the read.
+#[tokio::test]
+async fn request_counts_per_history_call() {
+    if ran_without_file_roots("request_counts_per_history_call") {
+        return;
+    }
+    let named = Endpoint::Name("peer-c2".into());
+    let address = Endpoint::Address("peer-c2@elsewhere".into());
+    // A distant Relaycast: the times printed show the serial waits.
+    let rtt = Duration::from_millis(40);
+    let mut rows = Vec::new();
+    let mut row = |case: &'static str, (mut got, took): (Calls, Duration), want: Calls| {
+        got.acks = 0;
+        rows.push((case, got.total(), took));
+        assert_eq!(got, want, "{case}");
+    };
+
+    let (_home, core, script) = core_with(three()).await;
+    script.lock().unwrap().delay = rtt;
+    row(
+        "name, first",
+        call(&core, &script, &named).await,
+        calls(1, 1, 1, 1),
+    );
+    row(
+        "name, following",
+        call(&core, &script, &named).await,
+        calls(1, 0, 1, 0),
+    );
+
+    let (_home, core, script) = core_with(three()).await;
+    script.lock().unwrap().delay = rtt;
+    // c1 is read and has no proof; c2's newest page is the proof and the
+    // page shown.
+    row(
+        "address, first",
+        call(&core, &script, &address).await,
+        calls(1, 1, 2, 1),
+    );
+    row(
+        "address, remembered",
+        call(&core, &script, &address).await,
+        calls(1, 0, 1, 0),
+    );
+    // After the listing is read again, c1 is not: it did not change.
+    core.person_woke();
+    row(
+        "address, after a wake",
+        call(&core, &script, &address).await,
+        calls(1, 1, 1, 0),
+    );
+
+    let (_home, core, script) = core_with(three()).await;
+    script.lock().unwrap().delay = rtt;
+    call(&core, &script, &named).await;
+    script.lock().unwrap().deliveries = (1..=5).map(|n| format!("del_{n}")).collect();
+    // New deliveries: the listing is read again; the acks do not wait.
+    row(
+        "name, 5 queued",
+        call(&core, &script, &named).await,
+        calls(1, 1, 1, 0),
+    );
+    row(
+        "name, while acking",
+        call(&core, &script, &named).await,
+        calls(1, 0, 1, 0),
+    );
+    drained(&script).await;
+    assert_eq!(Calls::of(&script.lock().unwrap().requests).acks, 5);
+
+    let (_home, core, script) = core_with(three()).await;
+    {
+        let mut script = script.lock().unwrap();
+        script.delay = rtt;
+        script.page = 50;
+    }
+    row(
+        "name, 50 incomplete",
+        call(&core, &script, &named).await,
+        calls(1, 1, 1, 50),
+    );
+    row(
+        "name, 50 following",
+        call(&core, &script, &named).await,
+        calls(1, 0, 1, 0),
+    );
+
+    for (case, total, took) in &rows {
+        println!("| {case} | {total} | {} ms |", took.as_millis());
+    }
+}
+
+#[tokio::test]
+async fn a_failed_history_call_still_acknowledges_its_deliveries() {
+    if ran_without_file_roots("a_failed_history_call_still_acknowledges_its_deliveries") {
+        return;
+    }
+    let (_home, core, script) = core_with(three()).await;
+    {
+        let mut script = script.lock().unwrap();
+        script.deliveries = vec!["del_1".into(), "del_2".into()];
+        script.failures.insert(
+            "/v1/dm/conversations".into(),
+            std::iter::repeat_n((500, "internal_error", None), 3).collect(),
+        );
+    }
+    assert!(core.history(&peer(), None).await.is_err());
+    drained(&script).await;
+    assert_eq!(Calls::of(&script.lock().unwrap().requests).acks, 2);
+}
+
+#[tokio::test]
+async fn background_acks_stop_at_shutdown_and_a_later_read_acknowledges_the_rest() {
+    if ran_without_file_roots(
+        "background_acks_stop_at_shutdown_and_a_later_read_acknowledges_the_rest",
+    ) {
+        return;
+    }
+    let script = Arc::new(Mutex::new(Script {
+        conversations: three(),
+        deliveries: (1..=20).map(|n| format!("del_{n}")).collect(),
+        delay: Duration::from_millis(100),
+        ..Script::default()
+    }));
+    let base = serve(script.clone()).await;
+    let acks = || Calls::of(&script.lock().unwrap().requests).acks;
+    let (_home, core) = core_at(base.clone());
+    core.history(&Endpoint::Name("peer-c2".into()), None)
+        .await
+        .unwrap();
+    core.request_shutdown();
+    // An ack already sent may still land; nothing is sent after.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let stopped = acks();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(acks(), stopped);
+    assert!(stopped < 20, "{stopped}");
+    assert_eq!(script.lock().unwrap().deliveries.len(), 20 - stopped);
+    drop(core);
+
+    // Nothing was lost: the queue still holds the rest, and the next read
+    // acknowledges them.
+    let (_home, core) = core_at(base);
+    core.history(&Endpoint::Name("peer-c2".into()), None)
+        .await
+        .unwrap();
+    drained(&script).await;
+    assert_eq!(acks(), 20);
+}
+
+#[tokio::test]
+async fn a_reply_lets_a_missed_address_find_its_proof_on_the_same_call() {
+    if ran_without_file_roots("a_reply_lets_a_missed_address_find_its_proof_on_the_same_call") {
+        return;
+    }
+    let (_home, core, script) = core_with(vec![conversation("c1", "m1")]).await;
+    let address = Endpoint::Address("peer-c9@elsewhere".into());
+    assert!(core
+        .history(&address, None)
+        .await
+        .unwrap()
+        .messages
+        .is_empty());
+
+    // The conversation that proves the address appears; without a reply
+    // the miss still holds.
+    script
+        .lock()
+        .unwrap()
+        .conversations
+        .push(conversation("c9", "m9"));
+    assert!(core
+        .history(&address, None)
+        .await
+        .unwrap()
+        .messages
+        .is_empty());
+
+    // A reply is queued: the call that sees it forgets the miss and the
+    // kept listing, and finds the proof.
+    script.lock().unwrap().deliveries = vec!["del_9".into()];
+    let found = core.history(&address, None).await.unwrap();
+    assert_eq!(found.messages.len(), 1);
+    assert_eq!(found.messages[0].id, "msg_c9");
+}
+
+#[tokio::test]
+async fn a_refused_token_reads_the_listing_again() {
+    if ran_without_file_roots("a_refused_token_reads_the_listing_again") {
+        return;
+    }
+    let (_home, core, script) = core_with(three()).await;
+    let named = Endpoint::Name("peer-c2".into());
+    core.history(&named, None).await.unwrap();
+    script.lock().unwrap().failures.insert(
+        "/v1/dm/c2/messages".into(),
+        [(401, "unauthorized", None)].into(),
+    );
+    let history = core.history(&named, None).await.unwrap();
+    assert_eq!(history.messages.len(), 1);
+    // Read once, then again with the fresh identity after the refusal.
+    assert_eq!(script.lock().unwrap().count("/v1/dm/conversations"), 2);
+}
+
+#[tokio::test]
+async fn a_send_or_a_wake_reads_the_listing_again() {
+    if ran_without_file_roots("a_send_or_a_wake_reads_the_listing_again") {
+        return;
+    }
+    let (_home, core, script) = core_with(three()).await;
+    let address = Endpoint::Address("peer-c2@elsewhere".into());
+    let listings = || script.lock().unwrap().count("/v1/dm/conversations");
+    core.history(&address, None).await.unwrap();
+    core.history(&address, None).await.unwrap();
+    assert_eq!(listings(), 1);
+
+    core.send_as_person(&address, "hello", None).await.unwrap();
+    core.history(&address, None).await.unwrap();
+    assert_eq!(listings(), 2);
+
+    // A conversation the listing no longer shows is not shown once the
+    // listing is read again.
+    script.lock().unwrap().conversations.remove(1);
+    core.person_woke();
+    assert!(core
+        .history(&address, None)
+        .await
+        .unwrap()
+        .messages
+        .is_empty());
+    assert_eq!(listings(), 3);
 }
