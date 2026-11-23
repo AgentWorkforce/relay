@@ -3,8 +3,9 @@ use super::*;
 impl LocalSessions {
     /// The OpenCode session of the caller `pid`, held by the nearest
     /// OpenCode process of this user's above it in its plugin record: the
-    /// one `claim` names, or with no claim the only session it holds. The
-    /// caller must still be the same process afterwards.
+    /// only session that process holds, which `claim`, when given, must name.
+    /// A process holding several names no caller. The caller must still be
+    /// the same process afterwards.
     pub(super) fn opencode_caller(&self, pid: i32, claim: Option<&str>) -> Option<Target> {
         let table = &*self.table;
         let uid = self.config.uid;
@@ -47,12 +48,14 @@ impl LocalSessions {
                 .flat_map(|process| process.sessions)
                 .map(|session| session.session_id)
                 .collect();
-        let session_id = match claim {
-            Some(claim) => held.iter().find(|id| *id == claim)?.clone(),
-            None => match held.as_slice() {
-                [only] => only.clone(),
-                _ => return None,
-            },
+        // The tag is set in the shell's environment, which any process
+        // under the same OpenCode can set to another session that process
+        // holds. So it is believed only when it names the one session held:
+        // with several, nothing proves which started the caller, and the
+        // caller is nobody until the others close.
+        let session_id = match held.as_slice() {
+            [only] if claim.is_none_or(|claim| claim == only) => only.clone(),
+            _ => return None,
         };
         (table.process(pid) == Some(caller))
             .then(|| Target::new(SessionKind::OpenCodeOpen, session_id))

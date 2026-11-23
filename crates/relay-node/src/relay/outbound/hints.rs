@@ -20,6 +20,23 @@ pub fn reply_hint(
     kind: SessionKind,
     needs_probe: bool,
 ) -> Option<String> {
+    reply_hint_with_token(socket, to, address, reply_to, kind, needs_probe, None)
+}
+
+/// [`reply_hint`] whose send command also carries the session's send token
+/// (`relay::session_tokens`), when one is given: only this session's own
+/// turns are handed it.
+pub fn reply_hint_with_token(
+    socket: &Path,
+    to: Option<&str>,
+    address: Option<&str>,
+    reply_to: &str,
+    kind: SessionKind,
+    needs_probe: bool,
+    session_token: Option<&str>,
+) -> Option<String> {
+    let session_token =
+        session_token.filter(|token| crate::relay::session_tokens::well_formed(token));
     let (key, recipient) = match (to, address) {
         (Some(to), None) => ("to", to),
         (None, Some(address)) => ("address", address),
@@ -29,11 +46,14 @@ pub fn reply_hint(
         return None;
     }
     let path = socket.to_str()?;
-    let request_path = format!(
+    let mut request_path = format!(
         "/send?{key}={}&reply_to={}",
         query_encode(recipient),
         query_encode(reply_to)
     );
+    if let Some(token) = session_token {
+        request_path.push_str(&format!("&{}={token}", crate::relay::session_tokens::QUERY));
+    }
     if probe_client(needs_probe) || prefers_probe_client(kind) {
         let probe = (|| {
             let recipient = match key {
@@ -45,6 +65,7 @@ pub fn reply_hint(
                 reply_to: Some(reply_to.to_string()),
                 thread: None,
                 owner_approval: None,
+                session_token: session_token.map(str::to_string),
             };
             let send = probe_session_command(socket, &reply, Some("your reply"))?;
             let agents = probe_session_command(socket, &SessionCommand::Agents, None)?;

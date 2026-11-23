@@ -64,3 +64,55 @@ fn versioned_muse_stops_a_grok_claim_at_the_nearest_agent_boundary() {
     assert_eq!(nearest_leader(&table, 400, 501), None);
     assert_eq!(nearest_leader(&table, 100, 501), Some(100));
 }
+
+#[test]
+fn a_leader_is_known_by_its_executable_not_its_argv() {
+    let table = FakeProcesses::default();
+    let mut leader = process(1, "/opt/grok");
+    leader.arguments = vec!["grok".into(), "agent".into(), "leader".into()];
+    table.insert(100, leader.clone());
+    table.insert(200, process(100, "/bin/bash"));
+    assert_eq!(nearest_leader(&table, 200, 501), Some(100));
+    // The same argv on any other program is no leader.
+    leader.executable = Some("/home/me/bin/python3".into());
+    table.insert(100, leader);
+    assert_eq!(nearest_leader(&table, 200, 501), None);
+    assert!(!is_verified_leader(&table, 100));
+}
+
+#[test]
+fn an_unverified_leader_still_keeps_an_outer_codex_tag_out() {
+    let table = FakeProcesses::default();
+    table
+        .trusted_codex
+        .lock()
+        .unwrap()
+        .insert(PathBuf::from("/trusted/codex"));
+    table.insert(100, process(1, "/trusted/codex"));
+    let mut leader = process(100, "/home/me/bin/python3");
+    leader.arguments = vec!["grok".into(), "agent".into(), "leader".into()];
+    table.insert(200, leader);
+    inherited_tool(&table, 200);
+    // Not a Grok that can name a session, but still an agent boundary.
+    assert_eq!(nearest_leader(&table, 400, 501), None);
+    assert!(!codex_tag_names_caller(&table, 400, 501, false, false));
+    // Without it, the Codex's own tool keeps its tag.
+    table.insert(200, process(100, "/bin/bash"));
+    assert!(codex_tag_names_caller(&table, 400, 501, false, false));
+}
+
+#[test]
+fn an_unverified_leader_shape_ends_the_walk_without_an_outer_leader() {
+    let table = FakeProcesses::default();
+    let mut outer = process(1, "/opt/grok");
+    outer.arguments = vec!["grok".into(), "agent".into(), "leader".into()];
+    table.insert(100, outer);
+    let mut inner = process(100, "/home/me/bin/python3");
+    inner.arguments = vec!["grok".into(), "agent".into(), "leader".into()];
+    table.insert(200, inner);
+    table.insert(300, process(200, "/bin/bash"));
+    assert_eq!(nearest_leader(&table, 300, 501), None);
+    // Without the impostor, the outer leader is the caller's.
+    table.insert(200, process(100, "/bin/bash"));
+    assert_eq!(nearest_leader(&table, 300, 501), Some(100));
+}

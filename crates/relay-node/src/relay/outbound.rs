@@ -74,7 +74,7 @@ mod settings;
 mod socket_path;
 use connect_send::ConnectSendKey;
 pub use hints::shell_quote;
-pub use hints::{fetch_hint, reply_hint};
+pub use hints::{fetch_hint, reply_hint, reply_hint_with_token};
 pub(crate) use hints::{
     probe_session_command, probe_socket_command, probe_socket_command_with_body, query_encode,
 };
@@ -559,10 +559,40 @@ impl Outbound {
         match caller_session(&self.core, pid).await {
             Ok(session) => Ok(session),
             Err(CallerMiss::Unreadable(file)) => Err(OutboundError::session_file_unreadable(&file)),
-            Err(CallerMiss::NotASession | CallerMiss::Unattributed) => {
-                Err(OutboundError::not_a_session())
-            }
+            Err(CallerMiss::Unattributed) => match self.token_caller(pid).await {
+                Some(session) => Ok(session),
+                None => Err(OutboundError::not_a_session()),
+            },
+            Err(CallerMiss::NotASession) => Err(OutboundError::not_a_session()),
         }
+    }
+
+    /// The session a send token names (`relay::session_tokens`), for a
+    /// caller the kernel leaves unattributed: only on a send route that
+    /// carried one (`SEND_TOKEN`), only while `session_send_tokens` is on,
+    /// only for the registration the token was minted for, and only when
+    /// that session is one the caller's own host process holds
+    /// (`SessionDirectory::caller_among_held`). Anything else names nobody.
+    async fn token_caller(&self, pid: i32) -> Option<DiscoveredSession> {
+        let token = SEND_TOKEN.try_with(Clone::clone).ok().flatten()?;
+        if !crate::relay::session_tokens::well_formed(&token)
+            || !self.core.store.read(|store| store.session_send_tokens_on())
+        {
+            return None;
+        }
+        let (target, agent_id) = self.core.session_tokens.target_of(&token)?;
+        let current = self
+            .core
+            .store
+            .read(|store| store.registration_for(&target).map(|r| r.agent_id.clone()));
+        if current.as_deref() != Some(agent_id.as_str()) {
+            return None;
+        }
+        let directory = self.core.plugins.sessions.clone();
+        tokio::task::spawn_blocking(move || directory.caller_among_held(pid, &target))
+            .await
+            .ok()
+            .flatten()
     }
 
     async fn connect_join(
@@ -1826,6 +1856,19 @@ pub(crate) async fn caller_session(core: &Core, pid: i32) -> Result<DiscoveredSe
         .unwrap_or(Err(CallerMiss::NotASession))
 }
 
+tokio::task_local! {
+    /// The send token a send route's request carried, for `identify`.
+    static SEND_TOKEN: Option<String>;
+}
+
+/// Runs `body` with `token` as the send token `identify` may use.
+pub(crate) async fn with_send_token<T>(
+    token: Option<String>,
+    body: impl std::future::Future<Output = T>,
+) -> T {
+    SEND_TOKEN.scope(token, body).await
+}
+
 /// Reads one HTTP/1.1 request; `None` when the peer closed without one (a
 /// liveness probe).
 async fn read_request(stream: &mut CoreStream) -> Result<Option<Request>, OutboundError> {
@@ -2296,6 +2339,48 @@ async fn accept_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // curl carries the token in the query; the probe, which Windows always
+    // uses and which needs an installed helper, carries `--session-token`
+    // (`session_cli`'s own test).
+    #[cfg(unix)]
+    #[test]
+    fn a_reply_hint_carries_a_session_token_only_when_one_is_given() {
+        let socket = Path::new("/run/user/1000/agent-relay/relay.sock");
+        let token = "cd".repeat(32);
+        let hint = |token: Option<&str>| {
+            reply_hint_with_token(
+                socket,
+                Some("alice"),
+                None,
+                "m1",
+                SessionKind::Codex,
+                false,
+                token,
+            )
+            .unwrap()
+        };
+        assert!(hint(Some(&token)).contains(&format!("&session_token={token}")));
+        assert!(!hint(None).contains("session_token"));
+        assert!(!hint(Some("not a token")).contains("session_token"));
+        assert_eq!(
+            hint(None),
+            reply_hint(socket, Some("alice"), None, "m1", SessionKind::Codex, false).unwrap()
+        );
+        let channel = channels::channel_reply_command_with_token(
+            socket,
+            "swarm",
+            "123",
+            SessionKind::Codex,
+            false,
+            Some(&token),
+        )
+        .unwrap();
+        assert!(
+            channel.contains(&format!("&session_token={token}")),
+            "{channel}"
+        );
+    }
 
     #[test]
     fn a_core_failure_keeps_its_retry_after_and_plan_limit() {

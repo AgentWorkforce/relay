@@ -402,7 +402,9 @@ pub fn resolve_for_site(
 ///
 /// In the default build `RELAYCAST_URL` overrides that origin when it is a
 /// bare https origin, and a missing or invalid one falls back to
-/// [`DEFAULT_BASE_URL`]. A site build ([`links::is_site_build`]) uses only
+/// [`DEFAULT_BASE_URL`] ([`cloud_origin`]: a release build refuses a
+/// loopback origin for this key, and an origin that is not Agent Relay's is
+/// logged). A site build ([`links::is_site_build`]) uses only
 /// what its site's workspace resolve recorded: `RELAYCAST_URL` is ignored,
 /// and a missing or invalid origin is an `Err` naming the site, never the
 /// public gateway.
@@ -426,7 +428,7 @@ pub fn resolve_cloud_for_site(
         return Ok(None);
     };
     let base_url = if links::is_site_build_for(site) {
-        validated_base_url(&cloud.base_url).ok_or_else(|| {
+        let origin = validated_base_url(&cloud.base_url).ok_or_else(|| {
             let what = if cloud.base_url.trim().is_empty() {
                 "no relaycastUrl"
             } else {
@@ -438,12 +440,17 @@ pub fn resolve_cloud_for_site(
                  is ignored in this build; sign in again once {site} answers with its own \
                  Relaycast URL."
             )
-        })?
+        })?;
+        if !LOOPBACK_ALLOWED && is_loopback_origin(&origin) {
+            return Err(loopback_refusal(&origin));
+        }
+        origin
     } else {
-        env("RELAYCAST_URL")
-            .and_then(|value| validated_base_url(&value))
-            .or_else(|| validated_base_url(&cloud.base_url))
-            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string())
+        cloud_origin(
+            env("RELAYCAST_URL").as_deref(),
+            &cloud.base_url,
+            LOOPBACK_ALLOWED,
+        )?
     };
     Ok(Some(Workspace {
         key: cloud.key.clone(),
@@ -453,6 +460,116 @@ pub fn resolve_cloud_for_site(
         control_url: None,
         gate_url: None,
     }))
+}
+
+/// Whether a Cloud sign-in's key may go to a loopback origin: only in debug
+/// and test builds. A release build's account key belongs to a hosted
+/// Relaycast, and a loopback listener is any local process of this user's.
+const LOOPBACK_ALLOWED: bool = cfg!(any(debug_assertions, test));
+
+/// Why the account's key is not used at `origin`, a loopback one.
+fn loopback_refusal(origin: &str) -> String {
+    let message = format!(
+        "The account's Relaycast URL is the loopback origin {origin}. This build sends the \
+         account's workspace key only to a hosted Relaycast, and never to a different origin \
+         than the one it was issued for; sign in again against a hosted Relaycast."
+    );
+    warn_once(&format!("relay: {message}"));
+    message
+}
+
+/// The origin the account's key goes to in the default build: `RELAYCAST_URL`
+/// when it is a valid origin, else the one the sign-in recorded, else
+/// [`DEFAULT_BASE_URL`] when the sign-in recorded none. Unless
+/// `loopback_allowed`, a loopback `RELAYCAST_URL` is ignored (and logged),
+/// and a loopback recorded origin is an `Err`: the key is bound to that
+/// origin, so it is never sent to another one instead. An origin other than
+/// Agent Relay's own is logged once, so a key going elsewhere is never
+/// silent.
+fn cloud_origin(
+    relaycast_url: Option<&str>,
+    recorded: &str,
+    loopback_allowed: bool,
+) -> Result<String, String> {
+    let overridden = relaycast_url.and_then(validated_base_url).filter(|origin| {
+        let refused = !loopback_allowed && is_loopback_origin(origin);
+        if refused {
+            warn_once(&format!(
+                "relay: RELAYCAST_URL names the loopback origin {origin}; this build sends \
+                     the account's workspace key only to a hosted Relaycast, so it is ignored"
+            ));
+        }
+        !refused
+    });
+    let origin = match overridden.clone() {
+        Some(origin) => origin,
+        None => match validated_base_url(recorded) {
+            Some(origin) if !loopback_allowed && is_loopback_origin(&origin) => {
+                return Err(loopback_refusal(&origin));
+            }
+            Some(origin) => origin,
+            None => DEFAULT_BASE_URL.to_string(),
+        },
+    };
+    if !is_agent_relay_origin(&origin) {
+        warn_once(&format!(
+            "relay: the account's workspace key goes to {origin}, which is not Agent Relay's \
+             own Relaycast ({DEFAULT_BASE_URL}); set by {}",
+            if overridden.as_deref() == Some(origin.as_str()) {
+                "RELAYCAST_URL"
+            } else {
+                "the account's sign-in"
+            }
+        ));
+    }
+    Ok(origin)
+}
+
+/// Whether `origin` is one of Agent Relay's hosted Relaycast origins, or the
+/// site this build is for.
+fn is_agent_relay_origin(origin: &str) -> bool {
+    const HOSTED: [&str; 2] = [DEFAULT_BASE_URL, "https://armadillo.agentrelay.com"];
+    HOSTED.contains(&origin)
+        || validated_base_url(links::built_in_site_url()).as_deref() == Some(origin)
+}
+
+/// Whether a validated origin's host reaches this computer: `localhost`
+/// (with or without a trailing dot, in any case) or a name under
+/// `.localhost`, any address in `127.0.0.0/8`, `::1`, an IPv4-mapped or
+/// IPv4-compatible form of a loopback address, or an unspecified address
+/// (`0.0.0.0`, `::`), which connects to this computer too.
+fn is_loopback_origin(origin: &str) -> bool {
+    let Ok(url) = url::Url::parse(origin) else {
+        return false;
+    };
+    match url.host() {
+        Some(url::Host::Domain(domain)) => {
+            let domain = domain.trim_end_matches('.').to_ascii_lowercase();
+            domain == "localhost" || domain.ends_with(".localhost")
+        }
+        Some(url::Host::Ipv4(address)) => address.is_loopback() || address.is_unspecified(),
+        Some(url::Host::Ipv6(address)) => {
+            address.is_loopback()
+                || address.is_unspecified()
+                || address
+                    .to_ipv4_mapped()
+                    .or_else(|| address.to_ipv4())
+                    .is_some_and(|v4| v4.is_loopback() || v4.is_unspecified())
+        }
+        None => false,
+    }
+}
+
+/// Logs `message` once per process (resolution runs on every refresh).
+fn warn_once(message: &str) {
+    static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let mut seen = SEEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !seen.iter().any(|line| line == message) {
+        seen.push(message.to_string());
+        crate::relay::diagnostics::write(format_args!("{message}"));
+    }
 }
 
 /// The account's workspace in gate-only mode: agent traffic goes to the gate
@@ -637,6 +754,87 @@ mod tests {
                 assert_eq!(found.control_url, None);
             }
         }
+    }
+
+    #[test]
+    fn a_release_build_never_sends_the_account_key_to_loopback() {
+        let local = "http://127.0.0.1:8787";
+        // Debug and test builds keep a local Relaycast for development.
+        assert_eq!(
+            cloud_origin(Some(local), DEFAULT_BASE_URL, true).unwrap(),
+            local
+        );
+        assert_eq!(cloud_origin(None, local, true).unwrap(), local);
+        // A release build ignores a loopback override: the key goes to the
+        // origin it was issued for.
+        assert_eq!(
+            cloud_origin(Some(local), DEFAULT_BASE_URL, false).unwrap(),
+            DEFAULT_BASE_URL
+        );
+        assert_eq!(
+            cloud_origin(
+                Some("http://localhost:9000"),
+                "https://relay.corp.test",
+                false
+            )
+            .unwrap(),
+            "https://relay.corp.test"
+        );
+        // A key issued for a loopback origin is refused, never sent to the
+        // public Relaycast instead.
+        for recorded in [
+            local,
+            "http://[::1]:8787",
+            "https://[::ffff:127.0.0.1]",
+            "http://127.9.9.9:1",
+            "https://localhost.",
+            "https://api.localhost",
+        ] {
+            let refused = cloud_origin(None, recorded, false).unwrap_err();
+            assert!(refused.contains("loopback"), "{recorded}: {refused}");
+            assert!(
+                cloud_origin(Some("https://[::ffff:7f00:1]"), recorded, false).is_err(),
+                "{recorded}"
+            );
+        }
+        // A hosted override is still honoured (and logged).
+        assert_eq!(
+            cloud_origin(Some("https://override.corp.test"), DEFAULT_BASE_URL, false).unwrap(),
+            "https://override.corp.test"
+        );
+        for loopback in [
+            local,
+            "http://localhost:1",
+            "https://LOCALHOST.",
+            "https://a.localhost",
+            "http://127.0.0.2:1",
+            "http://[::1]:1",
+            "https://[::ffff:127.0.0.1]",
+            "https://[::ffff:7f00:2]",
+            "https://0.0.0.0",
+            "https://[::]",
+        ] {
+            assert!(is_loopback_origin(loopback), "{loopback}");
+        }
+        for remote in [
+            "https://cast.agentrelay.com",
+            "https://localhost.example.com",
+            "https://128.0.0.1",
+            "https://[::ffff:8.8.8.8]",
+            "https://[2001:db8::1]",
+        ] {
+            assert!(!is_loopback_origin(remote), "{remote}");
+        }
+        assert!(is_agent_relay_origin(DEFAULT_BASE_URL));
+        assert!(!is_agent_relay_origin("https://override.corp.test"));
+    }
+
+    #[test]
+    fn a_site_build_refuses_a_loopback_account_origin_in_release() {
+        // `LOOPBACK_ALLOWED` is on in tests; the release rule is the same
+        // check, refused with the message below.
+        let refused = loopback_refusal("http://127.0.0.1:8787");
+        assert!(refused.contains("never to a different origin"), "{refused}");
     }
 
     #[test]

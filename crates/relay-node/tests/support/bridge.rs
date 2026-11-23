@@ -126,6 +126,9 @@ pub struct FakeSessions(
     pub Mutex<Option<CopilotReceiptGate>>,
     /// The native hook's already-claimed message, when a fixture supplies one.
     pub Mutex<Value>,
+    /// Pids under a host process holding several sessions: their caller is
+    /// unattributed, and these are the sessions that host holds.
+    pub Mutex<HashMap<i32, Vec<DiscoveredSession>>>,
 );
 
 pub struct CopilotReceiptGate {
@@ -155,7 +158,14 @@ impl FakeSessions {
             Mutex::default(),
             Mutex::default(),
             Mutex::default(),
+            Mutex::default(),
         )
+    }
+
+    /// Makes `pid` a process under a host holding `held`, so its caller is
+    /// unattributed unless a send token names one of them.
+    pub fn call_from_host(&self, pid: i32, held: Vec<DiscoveredSession>) {
+        self.13.lock().unwrap().insert(pid, held);
     }
 
     /// Makes the provider record `target` as archived.
@@ -244,12 +254,25 @@ impl SessionDirectory for FakeSessions {
         if let Some(file) = self.3.lock().unwrap().get(&pid) {
             return Err(CallerMiss::Unreadable(file.clone()));
         }
+        if self.13.lock().unwrap().contains_key(&pid) {
+            return Err(CallerMiss::Unattributed);
+        }
         self.1
             .lock()
             .unwrap()
             .get(&pid)
             .cloned()
             .ok_or(CallerMiss::NotASession)
+    }
+
+    fn caller_among_held(&self, pid: i32, claimed: &Target) -> Option<DiscoveredSession> {
+        self.13
+            .lock()
+            .unwrap()
+            .get(&pid)?
+            .iter()
+            .find(|session| &session.target == claimed)
+            .cloned()
     }
 
     /// Activation admits a session the test names (`.8`) once it is live

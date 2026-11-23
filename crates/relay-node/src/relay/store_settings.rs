@@ -23,7 +23,7 @@ pub const CONNECT_DETECTED_TOOLS: &str = "connect_detected_tools";
 
 /// The store's settings, in `store_settings` order; `spawn::settings` saves
 /// them with spawning's in one write (`Core::set_store_settings`).
-pub(crate) const STORE_SETTINGS: [&str; 10] = [
+pub(crate) const STORE_SETTINGS: [&str; 11] = [
     "allow_self_registration",
     "auto_activate",
     SHOW_RELAY_MESSAGES,
@@ -34,7 +34,14 @@ pub(crate) const STORE_SETTINGS: [&str; 10] = [
     CONNECT_DETECTED_TOOLS,
     PI_AUTO_ACTIVATE,
     OPENCODE_AUTO_ACTIVATE,
+    SESSION_SEND_TOKENS,
 ];
+
+/// Whether the core gives each registered session a send token
+/// (`session_tokens`), which names that session on the session socket when
+/// its tool runs under a host holding several sessions. Off unless the
+/// person turns it on.
+pub const SESSION_SEND_TOKENS: &str = "session_send_tokens";
 
 /// Whether an open Pi session joins the relay by itself while
 /// `auto_activate` is on. Off unless turned on (`relay init` turns it on for
@@ -103,6 +110,11 @@ impl Store {
         self.extras.opencode_auto_activate == Some(true)
     }
 
+    /// Whether sessions get send tokens (`SESSION_SEND_TOKENS`).
+    pub fn session_send_tokens_on(&self) -> bool {
+        self.extras.session_send_tokens == Some(true)
+    }
+
     pub fn hides_relay_messages(&self) -> bool {
         !self.shows_relay_messages()
     }
@@ -114,6 +126,7 @@ impl StoreHandle {
     pub fn open_agent_store(path: PathBuf, machine_prefix: &str) -> StoreHandle {
         let store = StoreHandle::open(path, machine_prefix);
         crate::relay::codex::compact::set_enabled(store.read(Store::hides_relay_messages));
+        crate::relay::session_tokens::set_enabled(store.read(Store::session_send_tokens_on));
         store
     }
 }
@@ -143,6 +156,7 @@ impl Core {
                 s.connects_detected_tools(),
                 s.pi_auto_activates(),
                 s.opencode_auto_activates(),
+                s.session_send_tokens_on(),
             ];
             (values, s.extras.agent_changes.clone())
         });

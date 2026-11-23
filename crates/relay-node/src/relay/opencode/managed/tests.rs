@@ -82,4 +82,32 @@ fn managed_reply_needs_exact_process_tag_attestation_and_sealed_session() {
     table.insert(40, process);
     std::fs::write(&attestation, "{}").unwrap();
     assert!(caller(&managed, &config, &table, 40, Some("ses_exact")).is_none());
+
+    // The attestation restored, the one live session answers again.
+    std::fs::write(&attestation,serde_json::json!({"version":super::super::PLUGIN_VERSION,"pid":40,"marker_sha256":format!("{:x}",Sha256::digest(marker.as_bytes()))}).to_string()).unwrap();
+    std::fs::set_permissions(&attestation, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        caller(&managed, &config, &table, 40, Some("ses_exact")),
+        Some(target.clone())
+    );
+    // A record a dead server left under the same pid counts for nothing.
+    let mut stale = binding.clone();
+    stale.session_id = "ses_stale".into();
+    stale.server_start = 6;
+    stale.credential_reference = opencode_existing::credential_reference(&stale, marker);
+    managed.adopt(ManagedBinding::OpenCode(stale)).unwrap();
+    assert_eq!(
+        caller(&managed, &config, &table, 40, Some("ses_exact")),
+        Some(target.clone())
+    );
+    assert!(can_reply(&managed, &config, &table, &target));
+    // A second live managed session on the same server: a shell's tag could
+    // name either, so it names neither, and no reply is offered for either.
+    let mut second = binding.clone();
+    second.session_id = "ses_second".into();
+    second.credential_reference = opencode_existing::credential_reference(&second, marker);
+    managed.adopt(ManagedBinding::OpenCode(second)).unwrap();
+    assert!(caller(&managed, &config, &table, 40, Some("ses_exact")).is_none());
+    assert!(caller(&managed, &config, &table, 40, Some("ses_second")).is_none());
+    assert!(!can_reply(&managed, &config, &table, &target));
 }

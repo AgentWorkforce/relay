@@ -58,7 +58,16 @@ impl LocalInjector {
         let reachable = enabled
             && message_pointer::reachable(target.kind, self.serving.get().is_some(), || {
                 self.relay_socket(target).is_some()
-            });
+            })
+            // A Codex that resumed the thread without its writer lock cannot
+            // run the read command (the socket needs the lock): it gets the
+            // whole text.
+            && !(target.kind == SessionKind::Codex
+                && crate::relay::codex::processes::resumed_without_lock(
+                    &*self.table,
+                    self.config.uid,
+                    &target.id,
+                ));
         message_pointer::prepare(
             &DeliveredTexts::here()?,
             &target.key(),

@@ -254,8 +254,29 @@ pub trait Injector: Send + Sync + 'static {
         address: Option<&str>,
         reply_to: &str,
     ) -> Option<String> {
+        self.reply_hint_with_token(target, to, address, reply_to, None)
+    }
+
+    /// [`Self::reply_hint`] whose send command carries `session_token`, the
+    /// session's own send token (`relay::session_tokens`), when one is given.
+    fn reply_hint_with_token(
+        &self,
+        target: &Target,
+        to: Option<&str>,
+        address: Option<&str>,
+        reply_to: &str,
+        session_token: Option<&str>,
+    ) -> Option<String> {
         let (socket, needs_probe) = self.relay_socket(target)?;
-        outbound::reply_hint(&socket, to, address, reply_to, target.kind, needs_probe)
+        outbound::reply_hint_with_token(
+            &socket,
+            to,
+            address,
+            reply_to,
+            target.kind,
+            needs_probe,
+            session_token,
+        )
     }
 
     /// The command this session can run to fetch attachment `file_id`

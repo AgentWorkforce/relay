@@ -92,6 +92,26 @@ pub fn process_sessions(
     found
 }
 
+/// Whether a trusted live Codex of this user runs `resume <thread>` without
+/// holding that thread's writer lock (a Codex too old to hold one). Its
+/// commands cannot be identified on the relay-send socket, which needs the
+/// lock, so a pointer handed to it could never be read: it gets whole texts.
+pub fn resumed_without_lock(table: &dyn ProcessTable, uid: u32, thread: &str) -> bool {
+    let thread = thread.to_lowercase();
+    if !crate::relay::store::is_uuid(&thread) {
+        return false;
+    }
+    let mut trust = Trust::default();
+    table.all_pids().into_iter().any(|pid| {
+        table.process(pid).is_some_and(|process| process.uid == uid)
+            && resume_argument(&table.arguments(pid)).map(str::to_lowercase) == Some(thread.clone())
+            && table
+                .executable(pid)
+                .is_some_and(|exe| trust.trusted(table, &exe))
+            && !codex_process_vouches_for_thread(table, pid, &thread)
+    })
+}
+
 /// Whether a Codex that drains `codex queue` runs `thread` now: the
 /// interactive TUI, or the app-server Conductor runs for one of its
 /// sessions. A shared app-server's writer lock is not enough.
@@ -210,7 +230,10 @@ pub fn is_terminal_codex(table: &dyn ProcessTable, pid: i32) -> bool {
 /// Whether a command run in `thread` now could be identified on the
 /// relay-send socket (`process::codex_caller_thread`): the same voucher as
 /// that socket, including a root CLI that also holds proven subagent locks,
-/// or (older Codex, no locks) `resume <thread>`.
+/// or (older Codex, no locks) `resume <thread>`. It is also liveness, so it
+/// stays broader than the socket itself, which also requires the writer lock
+/// for a `resume` and names nobody under an app-server holding several chats
+/// (`process::codex_selection_is_ambiguous`).
 pub fn reply_capable(table: &dyn ProcessTable, uid: u32, thread: &str) -> bool {
     !reply_capable_threads(table, uid, [thread]).is_empty()
 }
@@ -868,6 +891,25 @@ pub(crate) mod tests {
         table.remove(601);
         assert_eq!(running_app_server_executable(&table, UID), None);
         assert_eq!(running_executable(&table, UID), Some(codex()));
+    }
+
+    #[test]
+    fn a_resume_without_its_writer_lock_is_told_apart() {
+        let table = trusted_table();
+        assert!(!resumed_without_lock(&table, UID, SESSION));
+        table.insert(600, codex_process(10, &["codex", "resume", SESSION]));
+        assert!(resumed_without_lock(&table, UID, SESSION));
+        assert!(resumed_without_lock(&table, UID, &SESSION.to_uppercase()));
+        assert!(!resumed_without_lock(&table, UID + 1, SESSION));
+        table.insert(
+            600,
+            FakeProcess {
+                open_files: vec![lock(SESSION)],
+                ..codex_process(10, &["codex", "resume", SESSION])
+            },
+        );
+        assert!(!resumed_without_lock(&table, UID, SESSION));
+        assert!(!resumed_without_lock(&table, UID, "not-a-thread"));
     }
 
     // Review (local.rs reply hint): only a Codex that can vouch for its

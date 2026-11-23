@@ -286,6 +286,7 @@ fn a_probe_path_with_a_space_is_named_by_its_link() {
         reply_to: Some("m1".into()),
         thread: None,
         owner_approval: None,
+        session_token: None,
     }
     .command_line(&link, socket, Some("thanks"))
     .unwrap();

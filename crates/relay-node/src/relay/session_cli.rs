@@ -42,6 +42,9 @@ pub enum SessionCommand {
         /// A delegate's structured owner approval (`--owner-approval`), a
         /// JSON object passed through to Relaycast as given.
         owner_approval: Option<String>,
+        /// The session's send token, as its reply command names it
+        /// (`--session-token`, `relay::session_tokens`).
+        session_token: Option<String>,
     },
     /// `agents`: `GET /agents`.
     Agents,
@@ -186,11 +189,13 @@ impl SessionCommand {
                 reply_to,
                 thread,
                 owner_approval,
+                session_token,
             } => send_request(
                 recipient,
                 reply_to.as_deref(),
                 thread.as_deref(),
                 owner_approval.as_deref(),
+                session_token.as_deref(),
             ),
             SessionCommand::Agents => Ok(SessionRequest {
                 method: "GET",
@@ -323,6 +328,7 @@ impl SessionCommand {
                 reply_to,
                 thread,
                 owner_approval,
+                session_token,
             } => {
                 let mut parts = match recipient {
                     Recipient::To(name) => vec!["--to", name.as_str()],
@@ -337,6 +343,9 @@ impl SessionCommand {
                 }
                 if let Some(approval) = owner_approval {
                     parts.extend(["--owner-approval", approval.as_str()]);
+                }
+                if let Some(token) = session_token {
+                    parts.extend(["--session-token", token.as_str()]);
                 }
                 parts
             }
@@ -426,6 +435,7 @@ fn send_request(
     reply_to: Option<&str>,
     thread: Option<&str>,
     owner_approval: Option<&str>,
+    session_token: Option<&str>,
 ) -> Result<SessionRequest> {
     let mut query = match recipient {
         Recipient::To(name) if valid_name(name) => format!("to={}", query_encode(name)),
@@ -483,6 +493,14 @@ fn send_request(
         }
         query.push_str(&format!("&owner_approval={encoded}"));
     }
+    if let Some(token) = session_token {
+        if !crate::relay::session_tokens::well_formed(token) {
+            return Err(refuse(
+                "--session-token takes the token your reply command names.",
+            ));
+        }
+        query.push_str(&format!("&{}={token}", crate::relay::session_tokens::QUERY));
+    }
     Ok(SessionRequest {
         method: "POST",
         path: format!("/send?{query}"),
@@ -520,12 +538,36 @@ pub fn run(socket: &Path, command: &SessionCommand, body: Option<&str>) -> Resul
 mod tests {
     use super::*;
 
+    #[test]
+    fn send_carries_a_well_formed_session_token_only() {
+        let token = "ab".repeat(32);
+        let with = |value: &str| SessionCommand::Send {
+            recipient: Recipient::To("alice".into()),
+            reply_to: Some("m1".into()),
+            thread: None,
+            owner_approval: None,
+            session_token: Some(value.to_string()),
+        };
+        assert_eq!(
+            with(&token).request().unwrap().path,
+            format!("/send?to=alice&reply_to=m1&session_token={token}")
+        );
+        let line = with(&token)
+            .command_line(Path::new("/probe"), Path::new("/run/relay.sock"), None)
+            .unwrap();
+        assert!(line.contains(&format!("--session-token {token}")), "{line}");
+        for bad in ["", "short", "AB", "x&to=bob"] {
+            assert!(with(bad).request().is_err(), "{bad:?}");
+        }
+    }
+
     fn send(recipient: Recipient) -> SessionCommand {
         SessionCommand::Send {
             recipient,
             reply_to: None,
             thread: None,
             owner_approval: None,
+            session_token: None,
         }
     }
 
@@ -626,6 +668,7 @@ mod tests {
                     reply_to: Some("m1".into()),
                     thread: None,
                     owner_approval: None,
+                    session_token: None,
                 },
                 "POST",
                 "/send?to=alice&reply_to=m1",
@@ -636,6 +679,7 @@ mod tests {
                     reply_to: None,
                     thread: Some("123".into()),
                     owner_approval: None,
+                    session_token: None,
                 },
                 "POST",
                 "/send?channel=%23swarm&thread_id=123",
@@ -778,6 +822,7 @@ mod tests {
                 reply_to: Some(bad.into()),
                 thread: None,
                 owner_approval: None,
+                session_token: None,
             };
             assert!(reply.request().is_err(), "reply_to {bad:?}");
             let thread = SessionCommand::Send {
@@ -785,6 +830,7 @@ mod tests {
                 reply_to: None,
                 thread: Some(bad.into()),
                 owner_approval: None,
+                session_token: None,
             };
             assert!(thread.request().is_err(), "thread {bad:?}");
             let fetch = SessionCommand::FetchAttachment {
@@ -799,6 +845,7 @@ mod tests {
             reply_to: Some("m1".into()),
             thread: None,
             owner_approval: None,
+            session_token: None,
         };
         assert!(channel_reply.request().is_err());
         let dm_thread = SessionCommand::Send {
@@ -806,6 +853,7 @@ mod tests {
             reply_to: None,
             thread: Some("1".into()),
             owner_approval: None,
+            session_token: None,
         };
         assert!(dm_thread.request().is_err());
         for bad in [
@@ -829,6 +877,7 @@ mod tests {
             reply_to: Some("m1".into()),
             thread: None,
             owner_approval: None,
+            session_token: None,
         }
         .command_line(
             Path::new("/opt/relay/probe"),
@@ -871,6 +920,7 @@ mod owner_approval_tests {
             reply_to: None,
             thread: None,
             owner_approval: Some(approval.into()),
+            session_token: None,
         }
     }
 
@@ -927,6 +977,7 @@ mod owner_approval_tests {
             reply_to: Some("m_1".into()),
             thread: None,
             owner_approval: Some("{}".into()),
+            session_token: None,
         };
         assert!(reply.request().is_err());
         let thread = SessionCommand::Send {
@@ -934,6 +985,7 @@ mod owner_approval_tests {
             reply_to: None,
             thread: Some("m_1".into()),
             owner_approval: Some("{}".into()),
+            session_token: None,
         };
         assert!(thread.request().is_err());
     }

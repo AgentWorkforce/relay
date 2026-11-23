@@ -2766,3 +2766,31 @@ fn copilot_alias_uses_its_owner_binding_and_cannot_borrow_a_replacement() {
     assert!(crate::relay::copilot::delivery_registration(&store, &view).is_none());
     assert!(crate::relay::copilot::delivery_registration(&store, &owner).is_none());
 }
+
+#[cfg(unix)]
+#[test]
+fn an_existing_app_data_folder_open_to_others_is_made_private() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = root.path().join("app-data");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let handle = StoreHandle::open(folder.join("store.json"), PREFIX);
+    let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&folder), 0o700);
+    // Only the group and other bits go: an owner-read-only folder stays so.
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555)).unwrap();
+    // The folder is not writable now, so the save fails (root ignores the
+    // mode bits, so only a non-root run sees it fail).
+    let saved = handle.update(|store| store.registrations.push(registration("a", target(THREAD))));
+    if !running_as_root() {
+        assert!(saved.is_err(), "a save into a read-only folder must fail");
+    }
+    assert_eq!(mode(&folder), 0o500);
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // A private folder is left as it is.
+    handle
+        .update(|store| store.registrations.push(registration("b", target(THREAD))))
+        .unwrap();
+    assert!(folder.join("store.json").exists());
+    assert_eq!(mode(&folder), 0o700);
+}

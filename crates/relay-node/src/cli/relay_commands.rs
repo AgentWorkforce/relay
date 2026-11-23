@@ -161,6 +161,9 @@ pub enum RelayCommands {
         /// exactly as given.
         #[arg(long, value_name = "JSON", conflicts_with_all = ["reply_to", "thread"])]
         owner_approval: Option<String>,
+        /// The session's send token, as its reply command names it.
+        #[arg(long)]
+        session_token: Option<String>,
         /// The message; read from standard input when omitted. It may start
         /// with a hyphen (`- first item`).
         #[arg(long, allow_hyphen_values = true)]
@@ -474,6 +477,7 @@ pub fn session_command(
             reply_to,
             thread,
             owner_approval,
+            session_token,
             body,
         } => {
             let recipient = match (to, address, channel) {
@@ -489,6 +493,7 @@ pub fn session_command(
                     reply_to: reply_to.clone(),
                     thread: thread.clone(),
                     owner_approval: owner_approval.clone(),
+                    session_token: session_token.clone(),
                 },
                 body.as_deref(),
             )
@@ -770,6 +775,7 @@ mod tests {
                 reply_to: None,
                 thread: None,
                 owner_approval: Some(approval.into()),
+                session_token: None,
             }
         );
         assert!(parse(&[

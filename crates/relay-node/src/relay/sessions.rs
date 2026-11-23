@@ -321,6 +321,15 @@ pub trait SessionDirectory: Send + Sync + 'static {
         Err(CallerMiss::NotASession)
     }
 
+    /// The session `claimed`, when `caller(pid)` names none only because
+    /// the nearest agent process above `pid` holds several sessions, and
+    /// `claimed` is one that very process holds. A session held by any
+    /// other process is never named. The claim itself (a send token) is
+    /// checked by the caller of this. May block.
+    fn caller_among_held(&self, _pid: i32, _claimed: &Target) -> Option<DiscoveredSession> {
+        None
+    }
+
     /// Whether this Cursor hook's process ancestry proves the exact
     /// conversation supplied by its payload. Editor hooks need not have
     /// the conversation environment variable that ordinary tools carry.

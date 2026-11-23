@@ -102,9 +102,23 @@ pub trait ProcessTable: Send + Sync {
     /// The kernel's executable for `pid` (not argv[0], which is forgeable).
     fn executable(&self, pid: i32) -> Option<PathBuf>;
     /// Whether `executable` is a Codex this user may trust: named `codex`,
-    /// and on macOS validly signed by OpenAI; on Linux owned by root or this
-    /// user and writable by no one else.
+    /// and on macOS validly signed by OpenAI; on Linux in a folder Codex's
+    /// installers put it (`process::linux::in_codex_install`), owned by root
+    /// or this user and writable by no one else.
     fn is_trusted_codex(&self, executable: &Path) -> bool;
+    /// Whether `executable` is a Grok CLI this user may trust: named `grok`
+    /// or `grok-…`, owned by root or this user and writable by no one else
+    /// (`trusted_grok_executable`). A `grok agent leader` is recognised by
+    /// this, never by its argv alone.
+    fn is_trusted_grok(&self, executable: &Path) -> bool {
+        trusted_grok_executable(executable)
+    }
+    /// Whether the kernel's executable for `pid` is Claude Code
+    /// (`trusted_claude_process`): a session record naming a process that is
+    /// not Claude Code never names a caller.
+    fn is_trusted_claude(&self, pid: i32) -> bool {
+        trusted_claude_process(self, pid)
+    }
     /// Whether `executable` is Cursor's own: on macOS validly signed by
     /// Cursor's developer (team `VDXQ22DGB9`) in an installed app; on Linux in a folder Cursor's
     /// packages install to (`process::linux::in_cursor_install`), owned by
@@ -295,6 +309,128 @@ pub fn codex_locked_threads(
 pub fn resume_argument(arguments: &[String]) -> Option<&str> {
     let index = arguments.iter().rposition(|a| a == "resume")?;
     arguments.get(index + 1).map(String::as_str)
+}
+
+/// Whether `path` is a program file this user may trust: owned by root or
+/// this user and writable by no one else. Windows answers from the name
+/// checks alone (see `platform::fs`).
+fn trusted_program_file(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|metadata| {
+        metadata.is_file()
+            && crate::platform::fs::owned_by_root_or_current_user(&metadata)
+            && crate::platform::fs::private_to_owner(&metadata, 0o022)
+    })
+}
+
+/// Whether `executable` is a Grok CLI this user may trust: the kernel's
+/// executable is named `grok` or `grok-…` (a versioned build) and is a
+/// trusted program file.
+pub fn trusted_grok_executable(executable: &Path) -> bool {
+    executable
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "grok" || name.starts_with("grok-"))
+        && trusted_program_file(executable)
+}
+
+/// The file that makes `pid` Claude Code, from the kernel's executable: the
+/// executable itself when it is named `claude` (`claude.exe` on Windows) or
+/// is a native-installer build `…/claude/versions/<version>`; or, under a
+/// JavaScript runtime (`node`, `bun`), the script it runs, once resolved to
+/// a file inside Anthropic's `@anthropic-ai/claude-code` package.
+pub fn claude_program_file(
+    executable: &Path,
+    arguments: &[String],
+    cwd: Option<&Path>,
+) -> Option<PathBuf> {
+    let name = executable.file_name()?.to_str()?;
+    if crate::relay::claude_dirs::is_claude_name(name) {
+        return Some(executable.to_path_buf());
+    }
+    let parent = executable.parent();
+    let versions = parent
+        .and_then(Path::file_name)
+        .is_some_and(|folder| folder == "versions")
+        && parent
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .is_some_and(|folder| folder == "claude");
+    if versions {
+        return Some(executable.to_path_buf());
+    }
+    let runtime = Path::new(name)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| matches!(stem.to_ascii_lowercase().as_str(), "node" | "bun"));
+    if !runtime {
+        return None;
+    }
+    // The script is the first argument after the runtime that is not an
+    // option; Claude Code's launchers pass none before it.
+    let script = arguments.iter().skip(1).find(|a| !a.starts_with('-'))?;
+    let script = Path::new(script);
+    let script = if script.is_absolute() {
+        script.to_path_buf()
+    } else {
+        cwd?.join(script)
+    };
+    let script = std::fs::canonicalize(script).ok()?;
+    let components: Vec<_> = script
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    components
+        .windows(3)
+        .any(|parts| {
+            parts[0] == "node_modules" && parts[1] == "@anthropic-ai" && parts[2] == "claude-code"
+        })
+        .then_some(script)
+}
+
+/// Whether `pid` runs Claude Code by the kernel's view of it
+/// (`claude_program_file`), and that program is a trusted program file.
+///
+/// An executable that can no longer be read (removed by an update while it
+/// runs) does not count: such a session cannot name a caller until it is
+/// restarted.
+pub fn trusted_claude_process<T: ProcessTable + ?Sized>(table: &T, pid: i32) -> bool {
+    let Some(executable) = table.executable(pid) else {
+        return false;
+    };
+    let arguments = table.arguments(pid);
+    let cwd = table.cwd(pid);
+    claude_program_file(&executable, &arguments, cwd.as_deref())
+        .is_some_and(|program| trusted_program_file(&program) && trusted_program_file(&executable))
+}
+
+/// Whether the nearest trusted Codex above `pid` (itself included) is an
+/// `app-server` holding more than one thread's writer lock. Such a process
+/// runs several chats, and nothing the kernel shows about a tool process it
+/// started says which: `CODEX_THREAD_ID` is inherited environment that any
+/// process under it can set to any of the others. So a caller there names
+/// no session for sending, even though the claimed lock is held.
+pub fn codex_selection_is_ambiguous(table: &dyn ProcessTable, pid: i32, uid: u32) -> bool {
+    let mut current = pid;
+    for _ in 0..MAX_ANCESTRY {
+        if current <= 1 {
+            return false;
+        }
+        let Some(process) = table.process(current).filter(|p| p.uid == uid) else {
+            return false;
+        };
+        if table
+            .executable(current)
+            .is_some_and(|exe| table.is_trusted_codex(&exe))
+        {
+            return table
+                .arguments(current)
+                .iter()
+                .any(|arg| arg == "app-server")
+                && codex_locked_threads(table, current).len() > 1;
+        }
+        current = process.parent;
+    }
+    false
 }
 
 /// One open rollout, as evidence about a writer lock the same process holds.
@@ -554,18 +690,91 @@ pub(crate) fn codex_process_vouches_for_thread(
 ) -> bool {
     let thread = thread.to_lowercase();
     let files = table.opened_files(pid);
+    let app_server = table.arguments(pid).iter().any(|arg| arg == "app-server");
+    vouches_from(&files, app_server, &thread)
+}
+
+/// [`codex_process_vouches_for_thread`] from one observation of the
+/// process's open files.
+fn vouches_from(files: &[OpenedFile], app_server: bool, thread: &str) -> bool {
     let locked = files
         .iter()
         .filter_map(|file| codex_thread_of_lock(&file.path))
         .collect::<BTreeSet<_>>();
-    let app_server = table.arguments(pid).iter().any(|arg| arg == "app-server");
-    if app_server {
-        locked.contains(&thread)
-    } else if locked.len() == 1 {
-        locked.contains(&thread)
+    if app_server || locked.len() == 1 {
+        locked.contains(thread)
     } else {
-        cli_multilock_vouches(&locked, &thread, &files)
+        cli_multilock_vouches(&locked, thread, files)
     }
+}
+
+/// What a caller's `CODEX_THREAD_ID` names on the relay-send socket.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CodexTag {
+    /// The nearest trusted Codex vouches for the thread.
+    Named(String),
+    /// The nearest trusted Codex is an app-server holding several chats'
+    /// locks: the tag cannot pick among them.
+    Ambiguous,
+    /// No thread: a missing or invalid tag, no trusted Codex above the
+    /// caller, or one that does not vouch for the tag.
+    Nobody,
+}
+
+/// [`codex_caller_thread`] for a caller carrying `CODEX_THREAD_ID`, with the
+/// ambiguity of [`codex_selection_is_ambiguous`] decided from the same single
+/// read of the nearest trusted Codex's open files as the thread's voucher,
+/// so a chat opened between two reads can neither pass the gate nor be
+/// picked.
+pub fn codex_tagged_caller(table: &dyn ProcessTable, pid: i32, uid: u32) -> CodexTag {
+    let Some(caller) = table.process(pid).filter(|p| p.uid == uid) else {
+        return CodexTag::Nobody;
+    };
+    let Some(thread) = table
+        .environment_var(pid, "CODEX_THREAD_ID")
+        .map(|thread| thread.to_lowercase())
+        .filter(|thread| crate::relay::store::is_uuid(thread))
+    else {
+        return CodexTag::Nobody;
+    };
+    let mut current = pid;
+    for _ in 0..MAX_ANCESTRY {
+        if current <= 1 {
+            return CodexTag::Nobody;
+        }
+        let Some(process) = table.process(current).filter(|p| p.uid == uid) else {
+            return CodexTag::Nobody;
+        };
+        if table
+            .executable(current)
+            .is_some_and(|exe| table.is_trusted_codex(&exe))
+        {
+            let files = table.opened_files(current);
+            let app_server = table
+                .arguments(current)
+                .iter()
+                .any(|arg| arg == "app-server");
+            let locks = files
+                .iter()
+                .filter_map(|file| codex_thread_of_lock(&file.path))
+                .collect::<BTreeSet<_>>();
+            let same =
+                table.process(current) == Some(process) && table.process(pid) == Some(caller);
+            if !same {
+                return CodexTag::Nobody;
+            }
+            if app_server && locks.len() > 1 {
+                return CodexTag::Ambiguous;
+            }
+            return if vouches_from(&files, app_server, &thread) {
+                CodexTag::Named(thread)
+            } else {
+                CodexTag::Nobody
+            };
+        }
+        current = process.parent;
+    }
+    CodexTag::Nobody
 }
 
 fn subagent_chain_reaches(
@@ -656,8 +865,11 @@ pub fn has_trusted_codex_ancestor(table: &dyn ProcessTable, pid: i32, uid: u32) 
 /// CLI session, as that CLI's root when its other locks are proven
 /// subagents, or among a signed app-server's locks), and the
 /// caller must be the same process before and after the check; it never
-/// falls through to an ancestor's arguments. Without it, older Codex is
-/// matched by the nearest trusted Codex ancestor's `resume <thread>`.
+/// falls through to an ancestor's arguments. Without it, the nearest trusted
+/// Codex ancestor's `resume <thread>` names the thread, once that Codex also
+/// vouches for it by the writer lock it holds
+/// (`codex_process_vouches_for_thread`); a Codex too old to hold writer
+/// locks names none.
 pub fn codex_caller_thread(table: &dyn ProcessTable, pid: i32, uid: u32) -> Option<String> {
     let caller = table.process(pid).filter(|p| p.uid == uid)?;
     if let Some(thread) = table.environment_var(pid, "CODEX_THREAD_ID") {
@@ -676,9 +888,12 @@ pub fn codex_caller_thread(table: &dyn ProcessTable, pid: i32, uid: u32) -> Opti
         if let Some(exe) = table.executable(current) {
             if table.is_trusted_codex(&exe) {
                 let arguments = table.arguments(current);
+                // argv is the process's own say; the writer lock it holds is
+                // the kernel's. Both must name the thread.
                 let thread = resume_argument(&arguments)
                     .map(str::to_lowercase)
-                    .filter(|id| crate::relay::store::is_uuid(id));
+                    .filter(|id| crate::relay::store::is_uuid(id))
+                    .filter(|id| codex_process_vouches_for_thread(table, current, id));
                 // The walk ends at the first Codex: a nested session never
                 // takes an outer one's thread.
                 return thread.filter(|_| table.process(current) == Some(process));
@@ -1275,6 +1490,295 @@ mod tests {
             .unwrap()
             .open_files = vec![lock(THREAD), lock(OTHER)];
         assert_eq!(codex_caller_thread(&table, 200, UID), None);
+    }
+
+    #[test]
+    fn a_resume_argument_names_its_thread_only_with_that_threads_lock() {
+        let table = table();
+        let resumed = |open_files: Vec<PathBuf>| FakeProcess {
+            parent: 1,
+            uid: UID,
+            start: 10,
+            executable: Some(codex()),
+            arguments: vec!["codex".into(), "resume".into(), THREAD.into()],
+            open_files,
+            ..FakeProcess::default()
+        };
+        // The tool below carries no thread environment of its own.
+        table.insert(
+            200,
+            FakeProcess {
+                parent: 100,
+                uid: UID,
+                start: 20,
+                executable: Some("/bin/zsh".into()),
+                ..FakeProcess::default()
+            },
+        );
+        table.insert(100, resumed(vec![lock(THREAD)]));
+        assert_eq!(
+            codex_caller_thread(&table, 200, UID).as_deref(),
+            Some(THREAD)
+        );
+        // argv alone, or argv naming a thread whose lock another holds.
+        table.insert(100, resumed(Vec::new()));
+        assert_eq!(codex_caller_thread(&table, 200, UID), None);
+        table.insert(100, resumed(vec![lock(OTHER)]));
+        assert_eq!(codex_caller_thread(&table, 200, UID), None);
+    }
+
+    /// A table whose Codex lock list grows after its first read, as when a
+    /// chat opens while a caller is being identified.
+    struct GrowingLocks {
+        inner: FakeProcesses,
+        reads: std::sync::atomic::AtomicUsize,
+        first: Vec<PathBuf>,
+        later: Vec<PathBuf>,
+    }
+
+    impl ProcessTable for GrowingLocks {
+        fn process(&self, pid: i32) -> Option<ProcessInfo> {
+            self.inner.process(pid)
+        }
+        fn all_pids(&self) -> Vec<i32> {
+            self.inner.all_pids()
+        }
+        fn executable(&self, pid: i32) -> Option<PathBuf> {
+            self.inner.executable(pid)
+        }
+        fn is_trusted_codex(&self, executable: &Path) -> bool {
+            self.inner.is_trusted_codex(executable)
+        }
+        fn command_line(&self, pid: i32) -> CommandLine {
+            self.inner.command_line(pid)
+        }
+        fn open_files(&self, pid: i32) -> Vec<PathBuf> {
+            if pid != 100 {
+                return self.inner.open_files(pid);
+            }
+            let read = self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if read == 0 {
+                self.first.clone()
+            } else {
+                self.later.clone()
+            }
+        }
+        fn opened_files(&self, pid: i32) -> Vec<OpenedFile> {
+            self.open_files(pid)
+                .into_iter()
+                .map(|path| OpenedFile {
+                    path,
+                    birth_ns: None,
+                })
+                .collect()
+        }
+        fn cwd(&self, pid: i32) -> Option<PathBuf> {
+            self.inner.cwd(pid)
+        }
+        fn start_clock(&self) -> StartClock {
+            self.inner.start_clock()
+        }
+    }
+
+    #[test]
+    fn the_ambiguity_gate_and_the_voucher_read_one_lock_observation() {
+        let inner = table();
+        inner.insert(
+            100,
+            FakeProcess {
+                parent: 1,
+                uid: UID,
+                start: 10,
+                executable: Some(codex()),
+                arguments: vec!["codex".into(), "app-server".into()],
+                ..FakeProcess::default()
+            },
+        );
+        // The tool names the chat that opens only after the first read.
+        inner.insert(
+            200,
+            FakeProcess {
+                parent: 100,
+                uid: UID,
+                start: 20,
+                executable: Some("/bin/zsh".into()),
+                environment: [("CODEX_THREAD_ID".to_string(), OTHER.to_string())].into(),
+                ..FakeProcess::default()
+            },
+        );
+        let growing = GrowingLocks {
+            inner,
+            reads: Default::default(),
+            first: vec![lock(THREAD)],
+            later: vec![lock(THREAD), lock(OTHER)],
+        };
+        assert_eq!(codex_tagged_caller(&growing, 200, UID), CodexTag::Nobody);
+        assert_eq!(growing.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // Read again, both chats are held: ambiguous, never the new one.
+        assert_eq!(codex_tagged_caller(&growing, 200, UID), CodexTag::Ambiguous);
+        // A single chat named by its own tag.
+        let one = table();
+        assert_eq!(
+            codex_tagged_caller(&one, 200, UID),
+            CodexTag::Named(THREAD.to_string())
+        );
+    }
+
+    #[test]
+    fn an_app_server_holding_several_chats_leaves_its_tools_ambiguous() {
+        let table = table();
+        assert!(!codex_selection_is_ambiguous(&table, 200, UID));
+        let app_server = |open_files: Vec<PathBuf>| FakeProcess {
+            parent: 1,
+            uid: UID,
+            start: 10,
+            executable: Some(codex()),
+            arguments: vec!["codex".into(), "app-server".into()],
+            open_files,
+            ..FakeProcess::default()
+        };
+        table.insert(100, app_server(vec![lock(THREAD)]));
+        assert!(!codex_selection_is_ambiguous(&table, 200, UID));
+        assert_eq!(
+            codex_caller_thread(&table, 200, UID).as_deref(),
+            Some(THREAD)
+        );
+        table.insert(100, app_server(vec![lock(THREAD), lock(OTHER)]));
+        assert!(codex_selection_is_ambiguous(&table, 200, UID));
+        // A CLI is judged by its own root/subagent proof instead.
+        table.insert(
+            100,
+            FakeProcess {
+                arguments: vec!["codex".into()],
+                ..app_server(vec![lock(THREAD), lock(OTHER)])
+            },
+        );
+        assert!(!codex_selection_is_ambiguous(&table, 200, UID));
+        // Outside any trusted Codex there is nothing to choose among.
+        table.trusted_codex.lock().unwrap().clear();
+        assert!(!codex_selection_is_ambiguous(&table, 200, UID));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_code_is_known_by_its_executable_or_anthropics_package() {
+        let args = |list: &[&str]| list.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        for executable in [
+            "/home/me/.local/share/mise/installs/claude/2.1.319/claude",
+            "/home/me/.local/share/claude/versions/2.1.319",
+            "/opt/homebrew/bin/claude",
+        ] {
+            assert_eq!(
+                claude_program_file(Path::new(executable), &[], None).as_deref(),
+                Some(Path::new(executable)),
+                "{executable}"
+            );
+        }
+        for executable in [
+            "/bin/bash",
+            "/usr/bin/python3",
+            "/home/me/versions/2.1.319",
+            "/home/me/claude/other/2.1.319",
+        ] {
+            assert_eq!(
+                claude_program_file(Path::new(executable), &args(&["claude"]), None),
+                None,
+                "{executable}"
+            );
+        }
+        // Under Node, the script it runs must resolve into the package.
+        let root = tempfile::tempdir().unwrap();
+        let package = root
+            .path()
+            .join("lib/node_modules/@anthropic-ai/claude-code");
+        std::fs::create_dir_all(&package).unwrap();
+        let cli = package.join("cli.js");
+        std::fs::write(&cli, "").unwrap();
+        let shim = root.path().join("claude");
+        std::os::unix::fs::symlink(&cli, &shim).unwrap();
+        let fake = root.path().join("node_modules/@anthropic-ai/other");
+        std::fs::create_dir_all(&fake).unwrap();
+        std::fs::write(fake.join("cli.js"), "").unwrap();
+        let node = Path::new("/usr/bin/node");
+        let cli = std::fs::canonicalize(&cli).unwrap();
+        assert_eq!(
+            claude_program_file(node, &args(&["node", shim.to_str().unwrap()]), None),
+            Some(cli.clone())
+        );
+        assert_eq!(
+            claude_program_file(
+                node,
+                &args(&["node", "lib/node_modules/@anthropic-ai/claude-code/cli.js"]),
+                Some(root.path())
+            ),
+            Some(cli)
+        );
+        assert_eq!(
+            claude_program_file(
+                node,
+                &args(&["node", fake.join("cli.js").to_str().unwrap()]),
+                None
+            ),
+            None
+        );
+        assert_eq!(
+            claude_program_file(node, &args(&["node", "/nonexistent/claude"]), None),
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_trusted_program_file_is_writable_by_its_owner_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let grok = root.path().join("grok");
+        std::fs::write(&grok, "").unwrap();
+        std::fs::set_permissions(&grok, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(trusted_grok_executable(&grok));
+        let versioned = root.path().join("grok-1.0.46");
+        std::fs::write(&versioned, "").unwrap();
+        std::fs::set_permissions(&versioned, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(trusted_grok_executable(&versioned));
+        // Writable by others, misnamed, or missing.
+        std::fs::set_permissions(&grok, std::fs::Permissions::from_mode(0o775)).unwrap();
+        assert!(!trusted_grok_executable(&grok));
+        std::fs::set_permissions(&grok, std::fs::Permissions::from_mode(0o757)).unwrap();
+        assert!(!trusted_grok_executable(&grok));
+        let other = root.path().join("python3");
+        std::fs::write(&other, "").unwrap();
+        std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!trusted_grok_executable(&other));
+        assert!(!trusted_grok_executable(&root.path().join("missing/grok")));
+
+        // The same file rules hold for Claude Code, by the kernel's
+        // executable a table reports.
+        let claude = root.path().join("claude");
+        std::fs::write(&claude, "").unwrap();
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let table = FakeProcesses::default();
+        let at = |executable: &Path| FakeProcess {
+            parent: 1,
+            uid: UID,
+            start: 1,
+            executable: Some(executable.to_path_buf()),
+            ..FakeProcess::default()
+        };
+        table.insert(300, at(&claude));
+        assert!(trusted_claude_process(&table, 300));
+        table.insert(300, at(&other));
+        assert!(!trusted_claude_process(&table, 300));
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o777)).unwrap();
+        table.insert(300, at(&claude));
+        assert!(!trusted_claude_process(&table, 300));
+        table.insert(
+            300,
+            FakeProcess {
+                executable: None,
+                ..at(&claude)
+            },
+        );
+        assert!(!trusted_claude_process(&table, 300));
     }
 
     const CHILD: &str = "019a0000-0000-7000-8000-000000000003";

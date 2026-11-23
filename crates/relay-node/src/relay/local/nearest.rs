@@ -9,8 +9,9 @@ impl LocalSessions {
     /// conversation, or nobody when `below`, the walk's last step, is a
     /// process it started before `/clear` began that conversation (it
     /// belongs to the conversation that was cleared, which no longer runs)
-    /// or the process changed after the registry was read. `None` when
-    /// `process` is no Claude Code session.
+    /// or the process changed after the registry was read, or the kernel does
+    /// not show `process` running Claude Code (`ProcessTable::is_trusted_claude`).
+    /// `None` when no registry record names `process`.
     pub(super) fn claude_caller(
         &self,
         claude: &claude::Registry,
@@ -25,11 +26,17 @@ impl LocalSessions {
                     .as_deref()
                     .is_some_and(|start| claude_start_matches(table.start_clock(), start, &process))
         })?;
+        // The registry file is this user's to write, so a record matching a
+        // live pid and start time does not show the process is Claude Code.
+        // The kernel's executable must: a record naming any other program
+        // names no one, and the walk stops here rather than passing on to an
+        // outer session.
+        let claude_code = table.is_trusted_claude(process.pid);
         let cleared = below.is_some_and(|child| {
             claude::started_before_clear(&self.config.claude, table, session, child)
         });
         Some(
-            (!cleared && table.process(process.pid) == Some(process))
+            (claude_code && !cleared && table.process(process.pid) == Some(process))
                 .then(|| Target::new(SessionKind::ClaudeTerminal, session.session_id.clone()))
                 .ok_or(CallerMiss::Unattributed),
         )

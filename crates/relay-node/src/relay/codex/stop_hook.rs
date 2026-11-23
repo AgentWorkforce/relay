@@ -1337,6 +1337,7 @@ mod tests {
             reply_to: Some("m1".into()),
             thread: None,
             owner_approval: None,
+            session_token: None,
         }
         .command_line(&link, Path::new(socket), Some("your reply"))
         .unwrap();

@@ -90,7 +90,7 @@ async fn the_requesters_follow_up_is_framed_as_the_owners() {
     assert!(OWNER_LINE.contains("destructive or outside your task"));
     assert_eq!(compact::note_for(&text), compact::OWNER_NOTE);
     assert_eq!(
-        message_pointer::read_note(&text),
+        message_pointer::read_note(message_pointer::Framing::of(&text)),
         message_pointer::OWNER_READ_NOTE
     );
 }
@@ -152,7 +152,7 @@ async fn everyone_else_keeps_peer_framing() {
             "{case}"
         );
         assert_eq!(
-            message_pointer::read_note(&text),
+            message_pointer::read_note(message_pointer::Framing::of(&text)),
             message_pointer::READ_NOTE,
             "{case}"
         );

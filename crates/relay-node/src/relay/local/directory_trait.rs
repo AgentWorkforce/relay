@@ -334,99 +334,17 @@ impl SessionDirectory for LocalSessions {
             Some(caller) => caller?,
             None => self.caller_target(pid)?,
         };
-        // Named from the session's own state, never by scanning every
-        // process: identifying a caller reads only its ancestry.
-        let found = match target.kind {
-            SessionKind::Droid => crate::relay::droid::discover(
-                &crate::relay::droid::DroidConfig::from_local(&self.config),
-                &*self.table,
-            )
-            .into_iter()
-            .find(|row| row.target == target),
-            SessionKind::Codex => codex::thread(&self.config.codex, &target.id),
-            SessionKind::ClaudeTerminal => {
-                claude::terminal_session(&self.config.claude, &*self.table, &target.id).map(
-                    |session| DiscoveredSession {
-                        target: target.clone(),
-                        title: session.display_name(),
-                        directory: session.cwd.clone(),
-                        updated_at_ms: session.updated_at_ms,
-                        host: if claude::is_paseo_chat(
-                            &*self.table,
-                            &session,
-                            &claude::registry(&self.config.claude, &*self.table).sessions,
-                        ) {
-                            Some(crate::relay::paseo::HOST.to_string())
-                        } else {
-                            crate::relay::conductor::host(session.cwd.as_deref())
-                        },
-                        live: true,
-                        holder: Some(claude::holder(&session)),
-                    },
-                )
-            }
-            SessionKind::Grok => grok_caller::session(&self.config, &self.table, &target),
-            SessionKind::GrokOpen => crate::relay::grok::discover(
-                &self.config.grok,
-                &*self.table,
-                self.config.uid,
-                true,
-                &|_| false,
-            )
-            .into_iter()
-            .find(|row| row.target == target),
-            SessionKind::MuseOpen => crate::relay::muse::discover(
-                &self.config.muse,
-                &*self.table,
-                self.config.uid,
-                true,
-                &|_| false,
-            )
-            .into_iter()
-            .find(|row| row.target == target),
-            SessionKind::OpenCodeOpen => crate::relay::opencode::discover(
-                &self.config.opencode,
-                &*self.table,
-                self.config.uid,
-            )
-            .into_iter()
-            .find(|row| row.target == target),
-            SessionKind::Devin => crate::relay::devin::session(
-                &self.config.devin,
-                &*self.table,
-                self.config.uid,
-                &target.id,
-            ),
-            SessionKind::Copilot => crate::relay::copilot::session(
-                &self.config.copilot,
-                &*self.table,
-                self.config.uid,
-                &target.id,
-            ),
-            SessionKind::CursorCli => crate::relay::cursor_cli::session(
-                &self.config.cursor,
-                &*self.table,
-                self.config.uid,
-                &target.id,
-            ),
-            SessionKind::ClaudeCloud
-            | SessionKind::OpenCode
-            | SessionKind::OpenClaw
-            | SessionKind::Hermes
-            | SessionKind::Pi
-            | SessionKind::Omp => None,
-        };
-        Ok(found
-            .map(|s| DiscoveredSession { live: true, ..s })
-            .unwrap_or_else(|| DiscoveredSession {
-                title: fallback_title(target.kind).into(),
-                target,
-                directory: None,
-                updated_at_ms: None,
-                holder: None,
-                host: None,
-                live: true,
-            }))
+        Ok(self.caller_row(target))
+    }
+
+    fn caller_among_held(&self, pid: i32, claimed: &Target) -> Option<DiscoveredSession> {
+        let caller = self.table.process(pid)?;
+        if !matches!(self.caller(pid), Err(CallerMiss::Unattributed)) {
+            return None;
+        }
+        let held = self.held_by_host(pid);
+        (held.contains(claimed) && self.table.process(pid) == Some(caller))
+            .then(|| self.caller_row(claimed.clone()))
     }
 
     fn holds_codex_thread(&self, pid: i32, thread: &str) -> bool {
@@ -530,6 +448,103 @@ fn fallback_title(kind: SessionKind) -> &'static str {
 }
 
 impl LocalSessions {
+    /// The row for a caller's session `target`: named from the session's own
+    /// state, never by scanning every process.
+    fn caller_row(&self, target: Target) -> DiscoveredSession {
+        // Named from the session's own state, never by scanning every
+        // process: identifying a caller reads only its ancestry.
+        let found = match target.kind {
+            SessionKind::Droid => crate::relay::droid::discover(
+                &crate::relay::droid::DroidConfig::from_local(&self.config),
+                &*self.table,
+            )
+            .into_iter()
+            .find(|row| row.target == target),
+            SessionKind::Codex => codex::thread(&self.config.codex, &target.id),
+            SessionKind::ClaudeTerminal => {
+                claude::terminal_session(&self.config.claude, &*self.table, &target.id).map(
+                    |session| DiscoveredSession {
+                        target: target.clone(),
+                        title: session.display_name(),
+                        directory: session.cwd.clone(),
+                        updated_at_ms: session.updated_at_ms,
+                        host: if claude::is_paseo_chat(
+                            &*self.table,
+                            &session,
+                            &claude::registry(&self.config.claude, &*self.table).sessions,
+                        ) {
+                            Some(crate::relay::paseo::HOST.to_string())
+                        } else {
+                            crate::relay::conductor::host(session.cwd.as_deref())
+                        },
+                        live: true,
+                        holder: Some(claude::holder(&session)),
+                    },
+                )
+            }
+            SessionKind::Grok => grok_caller::session(&self.config, &self.table, &target),
+            SessionKind::GrokOpen => crate::relay::grok::discover(
+                &self.config.grok,
+                &*self.table,
+                self.config.uid,
+                true,
+                &|_| false,
+            )
+            .into_iter()
+            .find(|row| row.target == target),
+            SessionKind::MuseOpen => crate::relay::muse::discover(
+                &self.config.muse,
+                &*self.table,
+                self.config.uid,
+                true,
+                &|_| false,
+            )
+            .into_iter()
+            .find(|row| row.target == target),
+            SessionKind::OpenCodeOpen => crate::relay::opencode::discover(
+                &self.config.opencode,
+                &*self.table,
+                self.config.uid,
+            )
+            .into_iter()
+            .find(|row| row.target == target),
+            SessionKind::Devin => crate::relay::devin::session(
+                &self.config.devin,
+                &*self.table,
+                self.config.uid,
+                &target.id,
+            ),
+            SessionKind::Copilot => crate::relay::copilot::session(
+                &self.config.copilot,
+                &*self.table,
+                self.config.uid,
+                &target.id,
+            ),
+            SessionKind::CursorCli => crate::relay::cursor_cli::session(
+                &self.config.cursor,
+                &*self.table,
+                self.config.uid,
+                &target.id,
+            ),
+            SessionKind::ClaudeCloud
+            | SessionKind::OpenCode
+            | SessionKind::OpenClaw
+            | SessionKind::Hermes
+            | SessionKind::Pi
+            | SessionKind::Omp => None,
+        };
+        found
+            .map(|s| DiscoveredSession { live: true, ..s })
+            .unwrap_or_else(|| DiscoveredSession {
+                title: fallback_title(target.kind).into(),
+                target,
+                directory: None,
+                updated_at_ms: None,
+                holder: None,
+                host: None,
+                live: true,
+            })
+    }
     /// Current root user chats held by a runtime, independent of routing.
     pub(super) fn codex_runtime_sessions(
         &self,

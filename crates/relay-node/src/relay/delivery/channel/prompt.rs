@@ -6,11 +6,27 @@ use crate::relay::daemon::Core;
 use crate::relay::delivery::channel_text::thread_target;
 use crate::relay::delivery::policy::Delivery;
 use crate::relay::hosted_mcp::{self, ChannelReply};
-use crate::relay::outbound::channels::{channel_reply_command, channel_subscription_command};
+use crate::relay::outbound::channels::{
+    channel_reply_command_with_token, channel_subscription_command,
+};
 use crate::relay::store::{Registration, SessionKind};
 use crate::relay::workspace::Secret;
 
 impl Core {
+    /// This session's send token while `session_send_tokens` is on
+    /// (`relay::session_tokens`): minted for its current registration, kept
+    /// in memory only.
+    #[doc(hidden)]
+    pub fn session_send_token(&self, registration: &Registration) -> Option<String> {
+        self.store
+            .read(|store| store.session_send_tokens_on())
+            .then(|| {
+                self.session_tokens
+                    .token_for(&registration.target, &registration.agent_id)
+            })
+            .flatten()
+    }
+
     /// The channel's name, as the reply instructions need it, from this
     /// agent's channel list; `None` while it cannot be read.
     pub(super) async fn channel_name(
@@ -69,10 +85,18 @@ impl Core {
         .await
         .unwrap_or_default();
         let kind = registration.target.kind;
+        let session_token = self.session_send_token(registration);
         let command = |subscribe: Option<bool>| {
             let (path, probe) = socket.as_ref()?;
             match subscribe {
-                None => channel_reply_command(path, channel, thread, kind, *probe),
+                None => channel_reply_command_with_token(
+                    path,
+                    channel,
+                    thread,
+                    kind,
+                    *probe,
+                    session_token.as_deref(),
+                ),
                 Some(join) => channel_subscription_command(path, channel, join, kind, *probe),
             }
         };
@@ -112,8 +136,17 @@ impl Core {
         let to = address.is_none().then(|| delivery.sender.clone()).flatten();
         let parent = delivery.message_id.clone();
         let recipient = address.clone().or_else(|| to.clone())?;
-        let socket = tokio::task::spawn_blocking(move || {
-            injector.reply_hint(&target, to.as_deref(), address.as_deref(), &parent)
+        let session_token = self.session_send_token(registration);
+        let socket = tokio::task::spawn_blocking(move || match session_token {
+            // Only this session's own turn is handed its token.
+            Some(token) => injector.reply_hint_with_token(
+                &target,
+                to.as_deref(),
+                address.as_deref(),
+                &parent,
+                Some(&token),
+            ),
+            None => injector.reply_hint(&target, to.as_deref(), address.as_deref(), &parent),
         })
         .await
         .ok()

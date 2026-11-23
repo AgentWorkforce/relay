@@ -2342,6 +2342,8 @@ impl StoreFile {
         if !directory.exists() {
             fs::create_dir_all(&directory).map_err(|e| unreadable(&directory, e))?;
             let _ = crate::platform::fs::set_mode(&directory, 0o700);
+        } else {
+            keep_private(&directory);
         }
         let mut lock_path = self.path.clone().into_os_string();
         lock_path.push(".lock");
@@ -2350,6 +2352,38 @@ impl StoreFile {
         let result = body(self);
         let _ = FileExt::unlock(&lock);
         result
+    }
+}
+
+/// Tightens the store's folder (the app data folder) to this user alone
+/// (clearing its group and other bits) when
+/// it already existed with group or other access: the core did not create
+/// it, or something loosened it since. A folder of another user's is left
+/// as it is. Never fails the caller; a folder that cannot be tightened is
+/// logged.
+fn keep_private(directory: &Path) {
+    let Ok(metadata) = fs::metadata(directory) else {
+        return;
+    };
+    if !metadata.is_dir()
+        || !crate::platform::fs::owned_by_current_user(&metadata)
+        || crate::platform::fs::private_to_owner(&metadata, 0o077)
+    {
+        return;
+    }
+    let mode = crate::platform::fs::mode_of(&metadata).unwrap_or_default();
+    // Only the group and other bits go: the owner's own bits are left as
+    // they are (a folder made read-only stays read-only).
+    let private = mode & 0o700;
+    match crate::platform::fs::set_mode(directory, private) {
+        Ok(()) => crate::relay::diagnostics::write(format_args!(
+            "relay: app data folder {} was mode {mode:o}, open to other users; set it to {private:o}",
+            directory.display()
+        )),
+        Err(error) => crate::relay::diagnostics::write(format_args!(
+            "relay: app data folder {} is mode {mode:o}, open to other users, and could not be set to {private:o}: {error}",
+            directory.display()
+        )),
     }
 }
 
@@ -2379,6 +2413,7 @@ impl HandleState {
     fn saved(&mut self, saved: Store) {
         // A save adopts what other processes wrote, this setting included.
         crate::relay::codex::compact::set_enabled(saved.hides_relay_messages());
+        crate::relay::session_tokens::set_enabled(saved.session_send_tokens_on());
         // The launch registrations are never saved: they stay as they are.
         let launch_gates = std::mem::take(&mut self.store.launch_gates);
         self.store = saved;

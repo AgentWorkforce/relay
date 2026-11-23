@@ -29,7 +29,7 @@ use crate::relay::opencode::{OpenCodeConfig, OpenCodeSettings};
 use crate::relay::opencode_existing;
 use crate::relay::outbound::{self, RelaySend, ServingPath};
 use crate::relay::process::{
-    claude_start_matches, codex_caller_thread, codex_locked_threads, resume_argument,
+    claude_start_matches, codex_locked_threads, codex_process_vouches_for_thread, resume_argument,
     ProcessSnapshot, ProcessTable, SystemProcesses, MAX_ANCESTRY,
 };
 use crate::relay::sessions::{
@@ -260,7 +260,8 @@ impl LocalSessions {
     /// The Claude Code terminal session or Codex thread the process `pid`
     /// is nearest inside: the first ancestor (itself included) that is a
     /// live Claude Code session with its recorded start time, or a trusted
-    /// Codex, which names its thread only by `resume <thread>`; the walk
+    /// Codex, which names its thread only by `resume <thread>` together with
+    /// that thread's writer lock; the walk
     /// ends at the first Codex either way, so a Codex process never lends a
     /// caller an outer session's identity. A running Claude Code session
     /// whose registry file does not parse also ends the walk, as
@@ -288,9 +289,20 @@ impl LocalSessions {
         // that ancestor and let the file it holds decide.
         let devin_nearest = self.devin_is_nearest(pid, &claude);
         if grok_caller::codex_tag_names_caller(table, pid, uid, opencode_nearest, devin_nearest) {
-            return codex_caller_thread(table, pid, uid)
-                .map(|id| Target::new(SessionKind::Codex, id))
-                .ok_or_else(|| self.tag_miss(pid, &claude));
+            // An app-server running several chats holds every one of their
+            // locks, so the tag picks among them unproven: such a caller is
+            // nobody, as under a Grok leader below. One chat per app-server
+            // (or a CLI) is unaffected. The cost is that tools of a Codex
+            // app with several chats open cannot send until the others close.
+            // The gate and the thread's voucher read the app-server's
+            // locks once, together (`codex_tagged_caller`).
+            return match crate::relay::process::codex_tagged_caller(table, pid, uid) {
+                crate::relay::process::CodexTag::Named(id) => {
+                    Ok(Target::new(SessionKind::Codex, id))
+                }
+                crate::relay::process::CodexTag::Ambiguous => Err(CallerMiss::Unattributed),
+                crate::relay::process::CodexTag::Nobody => Err(self.tag_miss(pid, &claude)),
+            };
         }
         // Grok gives each tool process its session's id as
         // `GROK_SESSION_ID`, the way Codex gives `CODEX_THREAD_ID`. It
@@ -359,13 +371,23 @@ impl LocalSessions {
         // The process the walk came up from: the session's own child once
         // the walk reaches a session.
         let mut below = None;
+        // A process of this user's running an executable named `codex` that
+        // is not trusted names no session, and the walk goes on past it; but
+        // a caller under one is never outside every agent: it is
+        // unattributed, not `NotASession` (`person_guard` would serve it as
+        // the person).
+        let mut under_codex = false;
+        let outside = |under_codex: bool| match under_codex {
+            true => CallerMiss::Unattributed,
+            false => CallerMiss::NotASession,
+        };
         for _ in 0..MAX_ANCESTRY {
             if current <= 1 {
-                return Err(CallerMiss::NotASession);
+                return Err(outside(under_codex));
             }
             // An intermediate of another user (a `sudo`, say) is walked
             // past; only a session of this user's can be the caller's.
-            let process = table.process(current).ok_or(CallerMiss::NotASession)?;
+            let process = table.process(current).ok_or_else(|| outside(under_codex))?;
             let own = process.uid == uid;
             if let Some(found) = own
                 .then(|| self.claude_caller(claude, process, below.as_ref()))
@@ -417,20 +439,27 @@ impl LocalSessions {
                     .executable(current)
                     .is_some_and(|exe| table.is_trusted_codex(&exe));
             if trusted {
+                // `resume <thread>` is the process's own argv; the writer lock
+                // it holds for that thread is what the kernel vouches for.
                 let arguments = table.arguments(current);
                 let thread = resume_argument(&arguments)
                     .map(str::to_lowercase)
-                    .filter(|id| is_uuid(id));
+                    .filter(|id| is_uuid(id))
+                    .filter(|id| codex_process_vouches_for_thread(table, current, id));
                 let same = table.process(current) == Some(process);
                 return thread
                     .filter(|_| same)
                     .map(|id| Target::new(SessionKind::Codex, id))
                     .ok_or(CallerMiss::Unattributed);
             }
+            under_codex |= own
+                && table
+                    .executable(current)
+                    .is_some_and(|exe| exe.file_stem().is_some_and(|name| name == "codex"));
             current = process.parent;
             below = Some(process);
         }
-        Err(CallerMiss::NotASession)
+        Err(outside(under_codex))
     }
 }
 
@@ -1189,7 +1218,10 @@ impl LocalInjector {
                     .is_some()
             }
             // Agent Relay's plugin tags each of the session's shells, so a
-            // session one live plugin process holds can answer on the socket.
+            // session one live plugin process holds can answer on the socket,
+            // when that process holds no other session (the socket refuses a
+            // tag that could name either) or the session's send token picks
+            // it (`session_send_tokens`).
             SessionKind::OpenCodeOpen => {
                 self.config.opencode_open
                     && crate::relay::opencode::holder(
@@ -1198,7 +1230,9 @@ impl LocalInjector {
                         self.config.uid,
                         &target.id,
                     )
-                    .is_ok()
+                    .is_ok_and(|(process, _)| {
+                        process.sessions.len() == 1 || crate::relay::session_tokens::enabled()
+                    })
             }
             SessionKind::Droid | SessionKind::Devin | SessionKind::CursorCli => {
                 lock_held::can_reply(&self.config, &*self.table, target)
@@ -1905,6 +1939,7 @@ impl Injector for LocalInjector {
 mod connect_codex;
 mod gateways;
 mod grok_caller;
+mod held_sessions;
 mod lock_held;
 mod nearest;
 mod notice_observe;
@@ -2738,6 +2773,106 @@ mod tests {
         assert!(found.live);
     }
 
+    #[test]
+    fn a_claude_record_names_no_caller_unless_its_process_is_claude_code() {
+        let world = world();
+        world.table.untrusted_claude.lock().unwrap().insert(300);
+        // The record's pid and start time match, but the kernel does not
+        // show Claude Code there: nobody, and never an outer session.
+        assert!(matches!(
+            world.sessions.caller(320),
+            Err(CallerMiss::Unattributed)
+        ));
+        assert!(matches!(
+            world.sessions.caller(300),
+            Err(CallerMiss::Unattributed)
+        ));
+        world.table.untrusted_claude.lock().unwrap().clear();
+        assert_eq!(
+            target_of(&world, 320),
+            Some(Target::new(SessionKind::ClaudeTerminal, CLAUDE))
+        );
+    }
+
+    #[test]
+    fn a_send_token_may_pick_only_among_its_app_servers_own_chats() {
+        let world = world();
+        let second = "019a0000-0000-7000-8000-0000000000b2";
+        let lock = |thread: &str| {
+            PathBuf::from(format!(
+                "/Users/me/.codex/thread-writer-locks/{thread}.lock"
+            ))
+        };
+        world.table.insert(
+            400,
+            FakeProcess {
+                executable: Some(codex_exe()),
+                arguments: vec!["codex".into(), "app-server".into()],
+                open_files: vec![lock(THREAD), lock(second)],
+                ..process(1, 130)
+            },
+        );
+        world.table.insert(410, process(400, 140));
+        let held = |id: &str| Target::new(SessionKind::Codex, id);
+        assert!(matches!(
+            world.sessions.caller(410),
+            Err(CallerMiss::Unattributed)
+        ));
+        assert_eq!(
+            world
+                .sessions
+                .caller_among_held(410, &held(THREAD))
+                .map(|row| row.target),
+            Some(held(THREAD))
+        );
+        assert_eq!(
+            world
+                .sessions
+                .caller_among_held(410, &held(second))
+                .map(|row| row.target),
+            Some(held(second))
+        );
+        // A chat this app-server does not hold, or a session of another kind.
+        let elsewhere = "019a0000-0000-7000-8000-0000000000b3";
+        assert!(world
+            .sessions
+            .caller_among_held(410, &held(elsewhere))
+            .is_none());
+        assert!(world
+            .sessions
+            .caller_among_held(410, &Target::new(SessionKind::ClaudeTerminal, CLAUDE))
+            .is_none());
+        // One chat: not a host of several sessions, so a token picks
+        // nothing (its tools carry `CODEX_THREAD_ID`, which the lock proves).
+        world.table.insert(
+            400,
+            FakeProcess {
+                executable: Some(codex_exe()),
+                arguments: vec!["codex".into(), "app-server".into()],
+                open_files: vec![lock(THREAD)],
+                ..process(1, 130)
+            },
+        );
+        assert!(world
+            .sessions
+            .caller_among_held(410, &held(THREAD))
+            .is_none());
+        // A CLI Codex is not a multi-session host.
+        world.table.insert(
+            400,
+            FakeProcess {
+                executable: Some(codex_exe()),
+                arguments: vec!["codex".into()],
+                open_files: vec![lock(THREAD), lock(second)],
+                ..process(1, 130)
+            },
+        );
+        assert!(world
+            .sessions
+            .caller_among_held(410, &held(second))
+            .is_none());
+    }
+
     /// A `devin` process (pid 400) holding its session lock open, with a
     /// tool shell (410) and a command (420) inside it.
     fn devin_session_process(world: &World, session: &str) {
@@ -3350,11 +3485,15 @@ mod tests {
     #[test]
     fn the_walk_ends_at_the_first_codex() {
         let world = world();
+        let held = PathBuf::from(format!(
+            "/Users/me/.codex/thread-writer-locks/{THREAD}.lock"
+        ));
         world.table.insert(
             400,
             FakeProcess {
                 executable: Some(codex_exe()),
                 arguments: vec!["codex".into(), "resume".into(), THREAD.into()],
+                open_files: vec![held.clone()],
                 ..process(310, 130)
             },
         );
@@ -3363,6 +3502,35 @@ mod tests {
             target_of(&world, 410),
             Some(Target::new(SessionKind::Codex, THREAD))
         );
+        // `resume <thread>` without that thread's writer lock names nobody,
+        // and the walk still never passes on to the outer session.
+        world.table.insert(
+            400,
+            FakeProcess {
+                executable: Some(codex_exe()),
+                arguments: vec!["codex".into(), "resume".into(), THREAD.into()],
+                ..process(310, 130)
+            },
+        );
+        assert!(matches!(
+            world.sessions.caller(410),
+            Err(CallerMiss::Unattributed)
+        ));
+        world.table.insert(
+            400,
+            FakeProcess {
+                executable: Some(codex_exe()),
+                arguments: vec!["codex".into(), "resume".into(), THREAD.into()],
+                open_files: vec![PathBuf::from(
+                    "/Users/me/.codex/thread-writer-locks/22222222-2222-4222-8222-222222222222.lock",
+                )],
+                ..process(310, 130)
+            },
+        );
+        assert!(matches!(
+            world.sessions.caller(410),
+            Err(CallerMiss::Unattributed)
+        ));
         world.table.insert(
             400,
             FakeProcess {
@@ -3378,6 +3546,31 @@ mod tests {
             target_of(&world, 410),
             Some(Target::new(SessionKind::ClaudeTerminal, CLAUDE))
         );
+        // Outside every other agent, its tools are still under an agent:
+        // unattributed, never served as the person.
+        world.table.insert(
+            400,
+            FakeProcess {
+                executable: Some(codex_exe()),
+                arguments: vec!["codex".into()],
+                ..process(1, 130)
+            },
+        );
+        assert!(matches!(
+            world.sessions.caller(410),
+            Err(CallerMiss::Unattributed)
+        ));
+        world.table.insert(
+            400,
+            FakeProcess {
+                executable: Some("/usr/bin/bash".into()),
+                ..process(1, 130)
+            },
+        );
+        assert!(matches!(
+            world.sessions.caller(410),
+            Err(CallerMiss::NotASession)
+        ));
     }
 
     // OutboundTests.testCallerResolutionStaysUnderOneHundredMillisecondsWithLargeFakeTable,
@@ -4431,6 +4624,13 @@ mod tests {
         use std::os::unix::fs::MetadataExt;
         let root = world._temp.path().join("open-grok");
         std::fs::create_dir_all(&root).unwrap();
+        // The test binary stands in for Grok's executable.
+        world
+            .table
+            .trusted_grok
+            .lock()
+            .unwrap()
+            .insert(executable.clone());
         let socket_path = root.join("leader.sock");
         let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
         let socket = std::fs::symlink_metadata(&socket_path).unwrap();
@@ -5257,14 +5457,22 @@ mod tests {
         let grok_home = &mine.config.grok.home;
         std::fs::create_dir_all(grok_home).unwrap();
         let tui = tool + 1;
+        let tui_on = |socket: &Path| FakeProcess {
+            uid: crate::relay::peer::current_uid(),
+            start: 902,
+            executable: Some("/Users/me/.grok/bin/grok".into()),
+            arguments: vec![
+                "grok".into(),
+                "--leader-socket".into(),
+                socket.to_string_lossy().into_owned(),
+            ],
+            ..FakeProcess::default()
+        };
+        // Listed, but its TUI is attached to another leader's socket: the
+        // session is not this leader's, so the tag names nobody.
         world.table.insert(
             tui,
-            FakeProcess {
-                uid: crate::relay::peer::current_uid(),
-                start: 902,
-                executable: Some("/Users/me/.grok/bin/grok".into()),
-                ..FakeProcess::default()
-            },
+            tui_on(&binding.socket_path.with_file_name("other.sock")),
         );
         std::fs::write(
             grok_home.join("active_sessions.json"),
@@ -5272,6 +5480,8 @@ mod tests {
                 .to_string(),
         )
         .unwrap();
+        assert!(matches!(mine.caller(tool), Err(CallerMiss::Unattributed)));
+        world.table.insert(tui, tui_on(&binding.socket_path));
         let caller = mine.caller(tool).unwrap();
         assert_eq!(caller.target, target);
         assert!(caller.live);
@@ -6166,6 +6376,9 @@ printf '{{"jsonrpc":"2.0","id":"%s","result":{{"stopReason":"end_turn","outputTo
                 executable: Some(codex_exe()),
                 arguments: vec!["codex".into(), "resume".into(), codex_thread.into()],
                 environment: [(OPENCODE_SESSION_VAR.to_string(), held.to_string())].into(),
+                open_files: vec![PathBuf::from(format!(
+                    "/Users/me/.codex/thread-writer-locks/{codex_thread}.lock"
+                ))],
                 ..FakeProcess::default()
             },
         );
@@ -6176,7 +6389,8 @@ printf '{{"jsonrpc":"2.0","id":"%s","result":{{"stopReason":"end_turn","outputTo
             sessions.caller_target(660).ok(),
             Some(Target::new(SessionKind::Codex, codex_thread))
         );
-        // Holding two sessions, only a readable tag says which one.
+        // Holding two sessions, the tag cannot be told from one another
+        // shell under the same OpenCode set: it names neither.
         let other = "ses_other000000000";
         std::fs::write(
             &record,
@@ -6187,10 +6401,40 @@ printf '{{"jsonrpc":"2.0","id":"%s","result":{{"stopReason":"end_turn","outputTo
         )
         .unwrap();
         let two = LocalSessions::new(config.clone(), world.table.clone());
-        assert_eq!(
-            two.caller_target(610).ok(),
-            Some(Target::new(SessionKind::OpenCodeOpen, held))
+        assert!(matches!(
+            two.caller_target(610),
+            Err(CallerMiss::Unattributed)
+        ));
+        // And no reply command is offered for either while the send-token
+        // setting is off: the socket would refuse it.
+        let injector = LocalInjector::new(
+            config.clone(),
+            world.table.clone(),
+            CodexRouter::new(Arc::new(UnusedCodexRoutes)),
+            ServingPath::default(),
         );
+        assert!(!injector.can_reply(&Target::new(SessionKind::OpenCodeOpen, held)));
+        // Nor does a tag naming the other session.
+        world.table.insert(680, shell(680, Some(other)));
+        assert!(matches!(
+            two.caller_target(680),
+            Err(CallerMiss::Unattributed)
+        ));
+        // A send token may still pick either of the sessions that OpenCode
+        // holds, and nothing else.
+        for id in [held, other] {
+            assert_eq!(
+                two.caller_among_held(680, &Target::new(SessionKind::OpenCodeOpen, id))
+                    .map(|row| row.target),
+                Some(Target::new(SessionKind::OpenCodeOpen, id))
+            );
+        }
+        assert!(two
+            .caller_among_held(
+                680,
+                &Target::new(SessionKind::OpenCodeOpen, "ses_notheld00000000")
+            )
+            .is_none());
         // Without one, the shell names neither, but it is under OpenCode:
         // never outside every agent, so nothing sends for it as the person.
         assert!(matches!(

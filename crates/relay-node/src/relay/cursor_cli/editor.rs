@@ -656,6 +656,23 @@ pub fn sessions(config: &CursorConfig, table: &dyn ProcessTable, uid: u32) -> Ve
     found
 }
 
+/// Whether the window `host` holds a live conversation other than
+/// `session_id` (`sessions`). A window running several conversations starts
+/// their tools from the one extension host, and `CURSOR_CONVERSATION_ID` is
+/// environment any process there can set, so it cannot prove which of them a
+/// tool belongs to.
+pub(super) fn holds_another(
+    config: &CursorConfig,
+    table: &dyn ProcessTable,
+    uid: u32,
+    host: i32,
+    session_id: &str,
+) -> bool {
+    sessions(config, table, uid)
+        .iter()
+        .any(|session| session.host_pid == host && session.session_id != session_id)
+}
+
 /// The window's first workspace folder, from a hook payload.
 pub(super) fn payload_workspace(payload: &Value) -> Option<&str> {
     payload["workspace_roots"]

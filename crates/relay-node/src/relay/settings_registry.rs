@@ -44,7 +44,7 @@ pub const RECORDS: [&str; 3] = [
 /// spawned here, as approvals from the owner's delegates let theirs; `connect_detected_tools` turns on the routes into the tools found here).
 /// An agent may turn them off. A setting whose
 /// value is `"on"`/`"off"` rather than a boolean counts `"on"` as on.
-pub const PERSON_TURNS_ON: [&str; 29] = [
+pub const PERSON_TURNS_ON: [&str; 30] = [
     "accept_spawns",
     "allow_self_registration",
     "auto_activate",
@@ -65,6 +65,7 @@ pub const PERSON_TURNS_ON: [&str; 29] = [
     "opencode_plugin",
     "pi_auto_activate",
     "pi_extension",
+    crate::relay::store_settings::SESSION_SEND_TOKENS,
     "spawn_allow_teammates",
     crate::relay::delegation::SPAWN_SETTING,
     "spawn_full_access_claude",
