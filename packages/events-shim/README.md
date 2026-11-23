@@ -146,7 +146,7 @@ feed shows it as `agent.wake_agent`.
 
 ## Webhook URLs
 
-`<base>/h/<token>` accepts anyone holding the URL. `/github`, `/stripe`, `/linear` and `/bearer` suffixes
+`<base>/h/<token>` accepts anyone holding the URL. `/github`, `/stripe`, `/linear`, `/bearer` and `/mcp` suffixes
 check the sender against a secret set for that mode. Limits (`EVENTS_SHIM_LIMITS`): 60 posts/hour,
 500/day, 64 KB bodies, 50 posts in the feed, 7 days idle expiry. The 50-post limit covers unread posts
 too: if more than 50 arrive before the agent links or reads the inbox, the oldest are dropped for good.
@@ -175,6 +175,40 @@ Your data stays behind your MCP; the shim only carries the pointer. Limits:
   looks like a provider event (JSON, or `payload=…`) is always wrapped as untrusted data, whatever its
   header says. Plain text from a signing vendor is delivered as is. `/bearer` has no such check.
 - Open URLs always wrap the body as untrusted data.
+
+## MCP Events
+
+The MCP URL also speaks the MCP Events extension (`io.modelcontextprotocol/events`, SEP-3415). It is advertised in
+`initialize`, so a client with Events support reads posts without the tools above:
+
+- **`events/list`** offers one type, `webhook.received`. Its optional arguments are `event_type` (exact, or a prefix
+  ending in `*`, such as `pull_request.*`) and `mode` (`open`, `github`, …).
+- **`events/poll`** takes a cursor (`null` means from now). It answers `events`, a `seq_<n>` cursor, `truncated`,
+  `hasMore` and `nextPollMs`. `truncated: true` means posts after your cursor already left the 50-post feed, or the
+  cursor was not issued by this inbox. `maxAgeMs` with a `null` cursor reads back that far.
+- **`events/stream`** answers with an SSE stream:
+  - It opens with `notifications/events/active`, replays posts after the cursor, then sends each new post as
+    `notifications/events/event`, plus heartbeats (5–60 s).
+  - After `eventsStream.maxStreamMs` (5 minutes by default) it ends with a final result. Send `events/stream` again
+    with the last cursor.
+- **`events/subscribe`** answers `Unsupported`: this type is offered by poll and push only.
+
+Events reads move only the client's cursor. They do not mark posts read or claim them, so a session that uses
+Events should not also link a relay wake or run a listener on the same inbox, or it sees each post twice.
+
+### Receiving MCP Events webhooks
+
+The `mcp` URL (`/h/<token>/mcp`) receives an MCP server's Events webhook deliveries:
+
+1. `PUT /shims/current/secrets/mcp` with `{}`. The response has a generated `whsec_…` secret, shown once.
+2. Subscribe on the MCP server with `delivery: { mode: "webhook", url: <the mcp URL>, secret: <that secret> }`.
+3. The server's signed verification challenge is answered by the inbox.
+4. Each delivery is checked (Standard Webhooks `webhook-signature`, any one `v1,` entry, within 5 minutes),
+   deduplicated by `webhook-id`, and wakes the agent like any other post. Its event type is the Events `name`.
+
+`gap` and `terminated` envelopes arrive as `mcp.events.gap` and `mcp.events.terminated` posts that say what
+happened. Hosts can publish `/.well-known/mcp-webhook-receiver.json` by passing `mcpWebhookReceivers` (the path
+prefixes of their `/h/` URLs) and routing that path to the handler.
 
 ## Hosting
 

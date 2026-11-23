@@ -201,6 +201,7 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
           stripe: ctx.urls.hookUrl(ctx.shim.hookToken, 'stripe'),
           linear: ctx.urls.hookUrl(ctx.shim.hookToken, 'linear'),
           bearer: ctx.urls.hookUrl(ctx.shim.hookToken, 'bearer'),
+          mcp: ctx.urls.hookUrl(ctx.shim.hookToken, 'mcp'),
         },
         wake: state,
         // Which session the link wakes: only that agent's session gets the posts.

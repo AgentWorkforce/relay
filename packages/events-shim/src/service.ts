@@ -1,4 +1,4 @@
-import { mintToken, sha256Hex } from './crypto.js';
+import { bytesToBase64, mintToken, sha256Hex } from './crypto.js';
 import { EVENTS_SHIM_LIMITS } from './limits.js';
 import type {
   EventsShimStore,
@@ -10,7 +10,14 @@ import type {
   VerificationMode,
 } from './types.js';
 import { VERIFICATION_MODES } from './types.js';
-import { eventTypeFor, idempotencyKeyFor, keptHeaders, verifyInbound, type HeaderReader } from './verify.js';
+import {
+  eventTypeFor,
+  idempotencyKeyFor,
+  keptHeaders,
+  mcpWebhookKey,
+  verifyInbound,
+  type HeaderReader,
+} from './verify.js';
 import { deliverInBackground } from './delivery.js';
 
 export const MCP_TOKEN_PREFIX = 'esm_';
@@ -144,6 +151,15 @@ export async function receivePost(
   });
   if (!verified.ok)
     return { status: verified.status, body: { error: verified.code, message: verified.message } };
+  if (input.mode === 'mcp') {
+    // An MCP Events server proves the URL wants its deliveries before it sends any:
+    // the receiver echoes the signed challenge. It is answered here, never stored or forwarded.
+    const challenge = verificationChallenge(input.rawBody);
+    if (challenge !== undefined) {
+      await deps.store.touch(shim.id, now.toISOString(), false);
+      return { status: 200, body: { challenge } };
+    }
+  }
 
   const at = now.toISOString();
   const reserved = await deps.store.reservePost(shim.id, at, [
@@ -220,6 +236,19 @@ export async function receivePost(
   // Forward this post, then anything an earlier failure left pending.
   void deliverInBackground(deps, shim.id, target, [event.id]);
   return { status: accepted, body: { ok: true, event_id: event.id, seq: event.seq, wake: 'forwarding' } };
+}
+
+function verificationChallenge(rawBody: string): string | undefined {
+  try {
+    const body: unknown = JSON.parse(rawBody);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return undefined;
+    const { type, challenge } = body as { type?: unknown; challenge?: unknown };
+    return type === 'verification' && typeof challenge === 'string' && challenge.length <= 1024
+      ? challenge
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function liveTarget(shim: ShimRecord) {
@@ -339,15 +368,33 @@ export async function setModeSecret(
   let value = secret?.trim();
   let generated = false;
   if (!value) {
-    if (mode !== 'bearer') throw new EventsShimInputError(`Paste the ${mode} signing secret.`);
-    value = mintToken(BEARER_SECRET_PREFIX);
+    if (mode !== 'bearer' && mode !== 'mcp')
+      throw new EventsShimInputError(`Paste the ${mode} signing secret.`);
+    value = mode === 'mcp' ? mintMcpWebhookSecret() : mintToken(BEARER_SECRET_PREFIX);
     generated = true;
+  }
+  if (mode === 'mcp' && !mcpWebhookKey(value)) {
+    throw new EventsShimInputError(
+      'An mcp secret is whsec_ followed by the base64 of 24 to 64 random bytes. Send {} to have one generated.'
+    );
   }
   if (value.length < 8 || value.length > 256 || /\s/.test(value)) {
     throw new EventsShimInputError('Secrets are 8 to 256 characters with no spaces.');
   }
   await deps.store.setSecret(shim.id, mode, value);
   return generated ? { secret: value } : {};
+}
+
+/**
+ * A new MCP Events webhook secret: `whsec_` + base64 of 32 random bytes. The
+ * client hands it to the MCP server in `events/subscribe` (`delivery.secret`).
+ *
+ * @returns The secret.
+ */
+export function mintMcpWebhookSecret(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return `whsec_${bytesToBase64(bytes)}`;
 }
 
 export class EventsShimInputError extends Error {}
