@@ -157,8 +157,36 @@ pub(super) fn codex_tag_names_caller(
     !opencode_nearest
         && !devin_nearest
         && !muse_precedes_codex(table, pid, uid)
-        && nearest_leader(table, pid, uid).is_none()
+        && !leader_argv_precedes_codex(table, pid, uid)
         && table.environment_var(pid, "CODEX_THREAD_ID").is_some()
+}
+
+/// Whether a process of this user's with a `grok agent leader` argv is
+/// nearer the caller than any trusted Codex. That is an agent boundary for
+/// an inherited `CODEX_THREAD_ID` whether or not its executable is a trusted
+/// Grok: verification (`is_verified_leader`) decides only whether a Grok
+/// session can be named, never whether an outer Codex's tag passes through.
+fn leader_argv_precedes_codex(table: &dyn ProcessTable, pid: i32, uid: u32) -> bool {
+    let mut current = pid;
+    for _ in 0..MAX_ANCESTRY {
+        if current <= 1 {
+            return false;
+        }
+        let Some(process) = table.process(current).filter(|p| p.uid == uid) else {
+            return false;
+        };
+        if crate::relay::existing_session::grok::is_leader(&table.arguments(current)) {
+            return true;
+        }
+        if table
+            .executable(current)
+            .is_some_and(|exe| table.is_trusted_codex(&exe))
+        {
+            return false;
+        }
+        current = process.parent;
+    }
+    false
 }
 
 /// Muse's versioned launcher executable is an agent boundary too. A native

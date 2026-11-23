@@ -79,3 +79,24 @@ fn a_leader_is_known_by_its_executable_not_its_argv() {
     assert_eq!(nearest_leader(&table, 200, 501), None);
     assert!(!is_verified_leader(&table, 100));
 }
+
+#[test]
+fn an_unverified_leader_still_keeps_an_outer_codex_tag_out() {
+    let table = FakeProcesses::default();
+    table
+        .trusted_codex
+        .lock()
+        .unwrap()
+        .insert(PathBuf::from("/trusted/codex"));
+    table.insert(100, process(1, "/trusted/codex"));
+    let mut leader = process(100, "/home/me/bin/python3");
+    leader.arguments = vec!["grok".into(), "agent".into(), "leader".into()];
+    table.insert(200, leader);
+    inherited_tool(&table, 200);
+    // Not a Grok that can name a session, but still an agent boundary.
+    assert_eq!(nearest_leader(&table, 400, 501), None);
+    assert!(!codex_tag_names_caller(&table, 400, 501, false, false));
+    // Without it, the Codex's own tool keeps its tag.
+    table.insert(200, process(100, "/bin/bash"));
+    assert!(codex_tag_names_caller(&table, 400, 501, false, false));
+}
