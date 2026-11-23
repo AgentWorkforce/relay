@@ -9,9 +9,9 @@
 //! `{class: "prompt_approval", target: "<session agent id>:<ref>"}`, with
 //! the owner's own standing (never a code owner's), from the sender itself,
 //! for an owner who is this computer's signed-in person (by Cloud human id).
-//! It answers what a leader may (`Approver::Leader`), less Codex's requests
-//! for extra permissions: never a choice, form, `AskUserQuestion`, dialog or
-//! local verification. Never the session's own agent, the agent that spawned
+//! It answers what a leader may (`Approver::Leader`), Codex's requests for
+//! extra permissions included (permissions are delegable): never a choice,
+//! form, `AskUserQuestion`, dialog or local verification. Never the session's own agent, the agent that spawned
 //! it or its launcher, a session taken over, or on a gate-only install.
 //! Under an organization hold the leaders' rule applies. Independent of
 //! `spawn_leader_approvals` and `spawn_native_input`.
@@ -108,13 +108,11 @@ impl Core {
     }
 
     /// Whether `reference` is an open request a delegate may answer: one
-    /// that may be approved, and not a Codex request for extra permissions.
+    /// that may be approved (Codex extra-permission requests included,
+    /// permissions being delegable); never a choice, form, input or local
+    /// verification.
     async fn delegate_request(&self, registration: &Registration, reference: &str) -> bool {
-        if self.open_request(registration, reference).await != Some(true) {
-            return false;
-        }
-        !driven_codex(registration)
-            || drive::pending_extra_permissions(&registration.target.id, reference) == Some(false)
+        self.open_request(registration, reference).await == Some(true)
     }
 
     /// The delegate whose direct message `delivery` is, when it may approve

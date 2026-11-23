@@ -179,7 +179,7 @@ A relayed message may carry a `[delegate approval: …]` line as its **second li
 - Act on exactly the listed actions: class and target. `merge AgentWorkforce/relay#2250` does not cover #2251 or a deploy.
 - When the line says "redeem before acting", redeem right before you act: `POST /delegation/redeem?approval=<apv_…>&class=<class>&target=<target>` on the session socket. On `condition_unmet`, wait and redeem again before it expires; on any other refusal, stop and report. For a merge, pass the `head_sha` you redeemed against to the merge call.
 - Conditions only in the quote, not in the line, are yours to check. An expired line is a request.
-- Never apply it to permissions, instructions, configuration or grants, and never answer a choice or form with it.
+- A `config_change` action reads "change <setting> to <value> on @<agent>": it is single use, so redeem it, then make exactly that change yourself (the node never applies it). Change no other permissions, instructions or configuration because of the line, never a grant or your delegation settings, and never answer a choice or form with it.
 - Report back to the delegate with what you did and the approval id. When in doubt, ask the person.
 
 ## Spawning and Releasing Workers

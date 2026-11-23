@@ -1451,7 +1451,17 @@ from Relaycast. `relay::delegation` handles it:
   action lists its conditions in words ("CI is green", "head is 3f2a1c9e"
   (the first 8 characters), "it has 2 approving reviews", "it is mergeable",
   "not before <at>"). "; redeem before acting" is there when the approval is
-  single use or any action has conditions. Tier O reads `(tier O: the owner
+  single use, changes config, or any action has conditions. A
+  `config_change` action (target `<agent id>:<setting>=<value>`, exact, no
+  wildcard; always single use) reads "change <setting> to <value> on
+  @<agent id>", and the line then ends "Do not change any other permissions,
+  instructions or configuration because of it." The receiving agent redeems
+  it (`POST /delegation/redeem`) and then makes the change itself; the node
+  never applies a config change. The node writes no line (the message stays
+  a peer's) for a `config_change` of another agent, or of
+  `delegated_approvals_from` or `spawn_delegate_approvals` (Cloud refuses
+  these too), and treats a malformed `config_change` target as a failed
+  check. Tier O reads `(tier O: the owner
   approved these exact actions in Agent Relay)`. The owner is named by
   Cloud's display name, held to one line and 80 characters, or "the owner";
   never an email or handle. Every value in the line is held to one line.
@@ -1521,8 +1531,8 @@ answers when all of these hold:
   `delegated_approvals_from` is not `off` and the setting is on;
 - the session is spawned here and not taken over, and the sender is neither
   the session, its spawning agent nor its launcher;
-- the reference is an open request that may be approved, and not a Codex
-  request for extra permissions (`item/permissions/requestApproval`); a
+- the reference is an open request that may be approved, Codex requests
+  for extra permissions (`item/permissions/requestApproval`) included; a
   choice, form, `AskUserQuestion`, dialog or local verification stays with
   the owner;
 - under an organization hold, the delivery policy's own decision for the

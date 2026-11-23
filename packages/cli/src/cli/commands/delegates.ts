@@ -31,6 +31,7 @@ export const DELEGATION_CLASSES = [
   'spend',
   'external_comms',
   'prompt_approval',
+  'config_change',
 ] as const;
 
 const WORKSPACE_PATTERN =

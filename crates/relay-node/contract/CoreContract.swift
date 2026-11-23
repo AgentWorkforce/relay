@@ -4445,8 +4445,8 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
     /// requests of agents spawned on this computer. A delegate's 1:1 direct
     /// message `approve <ref>` or `deny <ref>` whose owner approval Agent
     /// Relay Cloud attests as one `prompt_approval` action naming this
-    /// session and request answers it, as the machine owner could; Codex
-    /// extra-permission requests, choices, forms, input and local
+    /// session and request answers it, as the machine owner could, Codex
+    /// extra-permission requests included; choices, forms, input and local
     /// verification stay with the owner. Independent of
     /// `spawn_leader_approvals` and `spawn_native_input`; needs
     /// `delegated_approvals_from` other than `off`. On unless the person
@@ -4840,8 +4840,8 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// requests of agents spawned on this computer. A delegate's 1:1 direct
     /// message `approve <ref>` or `deny <ref>` whose owner approval Agent
     /// Relay Cloud attests as one `prompt_approval` action naming this
-    /// session and request answers it, as the machine owner could; Codex
-    /// extra-permission requests, choices, forms, input and local
+    /// session and request answers it, as the machine owner could, Codex
+    /// extra-permission requests included; choices, forms, input and local
     /// verification stay with the owner. Independent of
     /// `spawn_leader_approvals` and `spawn_native_input`; needs
     /// `delegated_approvals_from` other than `off`. On unless the person

@@ -262,7 +262,13 @@ export type RelayDelegationActionClass =
   | 'destructive'
   | 'spend'
   | 'external_comms'
-  | 'prompt_approval';
+  | 'prompt_approval'
+  /**
+   * Change one setting of the recipient session: target
+   * `<agent id>:<setting>=<value>`, exact. Single use; the recipient redeems
+   * it, then makes the change itself.
+   */
+  | 'config_change';
 
 /** A structured condition Agent Relay Cloud checks when an approval is redeemed. */
 export type RelayDelegationCondition =

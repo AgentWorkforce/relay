@@ -141,9 +141,9 @@ pub(crate) enum Approver {
     /// local verification. Never recorded as the owner.
     Leader(WorkspaceLeader),
     /// A delegate of the machine owner, approving or denying one approvable
-    /// request named by an attested `prompt_approval` (`delegate`); never a
-    /// Codex extra-permission request, choice, form, input or local
-    /// verification. Never recorded as the owner.
+    /// request named by an attested `prompt_approval` (`delegate`), Codex
+    /// extra-permission requests included; never a choice, form, input or
+    /// local verification. Never recorded as the owner.
     Delegate(DelegateApprover),
 }
 

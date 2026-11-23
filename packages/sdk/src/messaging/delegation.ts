@@ -32,7 +32,31 @@ export const RELAY_DELEGATION_CLASSES: readonly RelayDelegationActionClass[] = [
   'spend',
   'external_comms',
   'prompt_approval',
+  'config_change',
 ];
+
+/** Settings a `config_change` may never name (the recipient's delegation settings). */
+export const RELAY_DELEGATION_PROTECTED_SETTINGS: readonly string[] = [
+  'delegated_approvals_from',
+  'spawn_delegate_approvals',
+];
+
+/** A `config_change` target as its parts, or `undefined` when malformed. */
+export function parseConfigChangeTarget(
+  target: string
+): { agentId: string; setting: string; value: string } | undefined {
+  if (target.includes('*')) return undefined;
+  const colon = target.indexOf(':');
+  if (colon <= 0) return undefined;
+  const change = target.slice(colon + 1);
+  const equals = change.indexOf('=');
+  if (equals <= 0 || equals === change.length - 1) return undefined;
+  return {
+    agentId: target.slice(0, colon),
+    setting: change.slice(0, equals),
+    value: change.slice(equals + 1),
+  };
+}
 
 /** A JWKS as Cloud publishes it; only OKP Ed25519 keys with a `kid` are used. */
 export interface RelayDelegationJwks {
@@ -97,7 +121,8 @@ function validAction(action: unknown): action is RelayDelegationAction {
     [...a.target].length <= 256 &&
     Array.isArray(conditions) &&
     conditions.length <= 5 &&
-    conditions.every(validCondition)
+    conditions.every(validCondition) &&
+    (a.class !== 'config_change' || parseConfigChangeTarget(a.target) !== undefined)
   );
 }
 
@@ -173,6 +198,18 @@ export function verifyDelegationAttestation(
   if (exp <= now || iat > now + SKEW_SECS || exp - now > MAX_LIFETIME_SECS || exp < iat) {
     return undefined;
   }
+  // A config_change only ever changes the recipient itself, never its
+  // delegation settings (as the node refuses it).
+  for (const action of actions) {
+    const change = action.class === 'config_change' ? parseConfigChangeTarget(action.target) : undefined;
+    if (
+      change &&
+      (change.agentId !== expected.recipientAgentId ||
+        RELAY_DELEGATION_PROTECTED_SETTINGS.includes(change.setting))
+    ) {
+      return undefined;
+    }
+  }
   const singleUse = claims.single_use === true;
   return {
     verified: true,
@@ -185,7 +222,9 @@ export function verifyDelegationAttestation(
     approvalId: claims.approval_id,
     actions,
     singleUse,
-    redeemFirst: singleUse || actions.some((action) => (action.conditions?.length ?? 0) > 0),
+    redeemFirst:
+      singleUse ||
+      actions.some((action) => action.class === 'config_change' || (action.conditions?.length ?? 0) > 0),
     expiresAt: new Date(exp * 1000).toISOString(),
     jws,
   };

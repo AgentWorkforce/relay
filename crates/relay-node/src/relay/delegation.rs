@@ -57,7 +57,7 @@ pub const SPAWN_SETTING: &str = "spawn_delegate_approvals";
 pub const GATE_ONLY: &str = "Approvals from owners' delegates are not available on this computer: it reaches its workspace only through relaygate, without the Agent Relay Cloud session that attests them.";
 
 /// The action classes an approval may name (wire contract v1, §16.1).
-pub const CLASSES: [&str; 9] = [
+pub const CLASSES: [&str; 10] = [
     "merge",
     "pr_ops",
     "deploy",
@@ -67,7 +67,17 @@ pub const CLASSES: [&str; 9] = [
     "spend",
     "external_comms",
     PROMPT_APPROVAL,
+    CONFIG_CHANGE,
 ];
+
+/// The class whose one action changes one setting of the recipient session
+/// (`<agent id>:<setting>=<value>`, exact): single use, redeemed right
+/// before the agent makes the change itself. The node never applies it.
+pub const CONFIG_CHANGE: &str = "config_change";
+
+/// Settings a `config_change` may never name: the recipient's delegation
+/// settings themselves, or a delegate could widen its own reach (§5.3).
+pub const NEVER_CHANGED_BY_DELEGATES: [&str; 2] = [SETTING, SPAWN_SETTING];
 
 /// The class whose one action answers one pending core permission request,
 /// targeting `<session agent id>:<request ref>`.
@@ -239,11 +249,33 @@ pub struct Action {
 }
 
 impl Action {
+    /// A `config_change` action's target as (agent id, setting, value):
+    /// `<agent id>:<setting>=<value>`, each part non-empty, no wildcard.
+    /// `None` for another class or a malformed target.
+    pub fn config_change(&self) -> Option<(&str, &str, &str)> {
+        if self.class != CONFIG_CHANGE || self.target.contains('*') {
+            return None;
+        }
+        let (agent, change) = self.target.split_once(':')?;
+        let (setting, value) = change.split_once('=')?;
+        (!agent.is_empty() && !setting.is_empty() && !value.is_empty())
+            .then_some((agent, setting, value))
+    }
+
     /// The action in words, as the delegate line lists it: `merge X if CI
-    /// is green and head is 3f2a1c9e`.
+    /// is green and head is 3f2a1c9e`, or for a `config_change`, `change
+    /// <setting> to <value> on @<agent id>`.
     pub fn words(&self) -> String {
         use crate::relay::delivery::policy::one_line;
-        let action = format!("{} {}", one_line(&self.class), one_line(&self.target));
+        let action = match self.config_change() {
+            Some((agent, setting, value)) => format!(
+                "change {} to {} on @{}",
+                one_line(setting),
+                one_line(value),
+                one_line(agent)
+            ),
+            None => format!("{} {}", one_line(&self.class), one_line(&self.target)),
+        };
         let conditions: Vec<String> = self
             .conditions
             .iter()
@@ -291,10 +323,18 @@ impl Claims {
     /// or an action with conditions.
     pub fn redeem_first(&self) -> bool {
         self.single_use
+            || self.changes_config()
             || self
                 .actions
                 .iter()
                 .any(|action| !action.conditions.is_empty())
+    }
+
+    /// Whether any action is a `config_change` (always single use).
+    pub fn changes_config(&self) -> bool {
+        self.actions
+            .iter()
+            .any(|action| action.class == CONFIG_CHANGE)
     }
 
     /// Whether the owner's standing is as a code owner of the target.
@@ -429,6 +469,7 @@ pub fn verify(jws: &str, keys: &KeySet, expected: Expected<'_>) -> Result<Claims
                 && action.target.chars().count() <= MAX_TARGET
                 && action.conditions.len() <= MAX_CONDITIONS
                 && action.conditions.iter().all(Condition::is_valid)
+                && (action.class != CONFIG_CHANGE || action.config_change().is_some())
         });
     if claims.v != 1
         || !matches!(claims.tier.as_str(), "D" | "O")
@@ -745,6 +786,23 @@ impl Core {
             return text;
         }
         match self.attest_delegation(registration, delivery, token).await {
+            // A config_change only ever changes this session, and never its
+            // delegation settings (Cloud refuses these too): otherwise the
+            // message stays a peer's.
+            Some(attestation)
+                if attestation.claims.actions.iter().any(|action| {
+                    action.config_change().is_some_and(|(agent, setting, _)| {
+                        agent != registration.agent_id
+                            || NEVER_CHANGED_BY_DELEGATES.contains(&setting)
+                    })
+                }) =>
+            {
+                log(format_args!(
+                    "message {}: a config_change of another agent or of a delegation setting",
+                    delivery.message_id
+                ));
+                text
+            }
             Some(attestation) => {
                 let delegate = delivery.sender.as_deref().unwrap_or("a teammate");
                 with_delegate_line(&text, delegate, &attestation.claims)

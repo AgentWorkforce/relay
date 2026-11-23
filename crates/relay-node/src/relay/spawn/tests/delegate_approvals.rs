@@ -467,7 +467,7 @@ async fn without_an_owner_approval_or_with_a_setting_off_cloud_is_never_asked() 
 }
 
 #[tokio::test]
-async fn extra_permissions_choices_and_dialogs_stay_with_the_owner() {
+async fn a_delegate_answers_extra_permissions_but_choices_and_dialogs_stay_with_the_owner() {
     let f = fixture().await;
     const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3be004";
     let registration = f.spawned("codex", THREAD);
@@ -483,8 +483,13 @@ async fn extra_permissions_choices_and_dialogs_stay_with_the_owner() {
         &f.delegate,
         &format!("approve {}", permissions.reference),
     );
-    assert!(not_one(f.core.owner_reply(&registration, &reply).await));
-    assert!(codex_drive::has_pending(THREAD, &permissions.reference));
+    // Permissions are delegable: a Codex extra-permission request is answered.
+    assert_eq!(
+        settled(f.core.owner_reply(&registration, &reply).await),
+        format!("Codex approval reply from {}: Answered", f.by_delegate())
+    );
+    let answer = codex_drive::recorded_answer(&permissions.reference).unwrap();
+    assert_eq!(answer["permissions"]["network"], true, "{answer}");
 
     let question = codex_opened(
         THREAD,

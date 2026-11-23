@@ -124,6 +124,7 @@ describe('agent-relay delegates', () => {
   it('checks scopes, expiry and the workspace before asking Cloud', async () => {
     expect(() => parseScope('approve_all=*')).toThrow();
     expect(() => parseScope('merge=')).toThrow();
+    expect(parseScope('config_change=*')).toEqual([{ class: 'config_change', targets: ['*'] }]);
     expect(parseScope('deploy=api:staging,web:staging')).toEqual([
       { class: 'deploy', targets: ['api:staging', 'web:staging'] },
     ]);

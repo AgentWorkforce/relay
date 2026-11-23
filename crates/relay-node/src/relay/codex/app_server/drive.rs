@@ -392,20 +392,6 @@ pub fn pending_approvable(thread: &str, reference: &str) -> Option<bool> {
         .map(|entry| entry.notice.approvable)
 }
 
-/// Whether the open request `reference` on `thread` asks for extra
-/// filesystem or network permissions (`item/permissions/requestApproval`),
-/// which an owner's delegate never answers; `None` when it is not open.
-pub fn pending_extra_permissions(thread: &str, reference: &str) -> Option<bool> {
-    pending()
-        .get(reference)
-        .filter(|entry| {
-            entry.notice.thread == thread
-                && entry.answer.is_none()
-                && Instant::now() < entry.deadline
-        })
-        .map(|entry| entry.method == "item/permissions/requestApproval")
-}
-
 pub fn mark_forwarded(reference: &str) {
     if let Some(entry) = pending().get_mut(reference) {
         entry.forwarded = true;

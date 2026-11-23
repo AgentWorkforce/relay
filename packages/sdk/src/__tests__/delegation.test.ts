@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   RelaycastMessagingClient,
   delegationCovers,
+  parseConfigChangeTarget,
   redeemOwnerApproval,
   verifyDelegationAttestation,
   withVerifiedDelegation,
@@ -106,6 +107,28 @@ describe('delegate approvals', () => {
     ];
     for (const jws of refused) {
       expect(verifyDelegationAttestation(jws, jwks, expected)).toBeUndefined();
+    }
+  });
+
+  it('verifies a config_change of the recipient, never of its delegation settings', () => {
+    const { jwks, signJws } = signer();
+    const change = (target: string) =>
+      signJws(claims({ single_use: false, actions: [{ class: 'config_change', target }] }));
+    const ok = verifyDelegationAttestation(change('agent_relay:spawn_native_input=false'), jwks, expected);
+    expect(ok?.redeemFirst).toBe(true);
+    expect(parseConfigChangeTarget('agent_relay:spawn_native_input=false')).toEqual({
+      agentId: 'agent_relay',
+      setting: 'spawn_native_input',
+      value: 'false',
+    });
+    for (const target of [
+      'agent_relay:delegated_approvals_from=code_owners',
+      'agent_relay:spawn_delegate_approvals=true',
+      'agent_other:spawn_native_input=false',
+      'agent_relay:spawn_native_input',
+      '*:spawn_native_input=false',
+    ]) {
+      expect(verifyDelegationAttestation(change(target), jwks, expected)).toBeUndefined();
     }
   });
 
