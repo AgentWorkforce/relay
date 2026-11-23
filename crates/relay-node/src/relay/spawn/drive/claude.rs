@@ -1,7 +1,7 @@
 //! Relay transport for a spawned Claude's own channel: the verified machine
 //! owner's native turns (`Core::owner_sent` admits a driven Claude), its
 //! permission requests relayed to that owner (and to the spawning agent when
-//! it may answer, `Core::approving_requester`, and to workspace leaders when
+//! it may answer, `Core::requester_to_notify`, and to workspace leaders when
 //! they may, `Core::notify_leaders`), their replies, and what a
 //! message to a Claude that has ended comes to.
 
@@ -213,19 +213,21 @@ impl Core {
             .filter(|(current, _)| current.agent_id == agent_id && spawned_claude(current))
     }
 
-    /// Sends `notice` to the verified owner and, when they may answer, the
-    /// spawning agent; with approvals from workspace leaders on, it goes to
-    /// the listed leaders too (`Core::notify_leaders`), once, apart from
-    /// the others. Only the owner's or the requester's copy marks it
-    /// forwarded: with neither it is tried again each poll (the leaders'
-    /// copies are not) until the request expires to a refusal.
+    /// Sends `notice` to the verified owner and, when they may answer and
+    /// the organization's hold (if any) counts them among its admins, the
+    /// spawning agent (`Core::requester_to_notify`); with approvals from
+    /// workspace leaders on, it goes to the listed leaders too
+    /// (`Core::notify_leaders`), once, apart from the others. Only the
+    /// owner's or the requester's copy marks it forwarded: with neither it
+    /// is tried again each poll (the leaders' copies are not) until the
+    /// request expires to a refusal.
     pub(crate) async fn forward_request(
         &self,
         registration: &Registration,
         token: &Secret,
         notice: &requests::Notice,
     ) {
-        let requester = self.approving_requester(registration);
+        let requester = self.requester_to_notify(registration);
         let text = self.approval_plan(
             registration,
             token,

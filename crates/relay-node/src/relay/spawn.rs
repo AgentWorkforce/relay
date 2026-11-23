@@ -305,6 +305,9 @@ mod tests {
         pause: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
         /// Its agents take native user turns.
         native: bool,
+        /// When set, the next `alive` call announces itself and waits to be
+        /// let go.
+        pause_alive: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
         /// A paused launch starts its session (`THREAD`) before it pauses,
         /// as Codex starts a thread before its first turn is confirmed.
         starts_before_pause: bool,
@@ -417,6 +420,10 @@ mod tests {
         }
 
         fn alive(&self, _: &Target, _: Option<&SpawnedProcess>) -> bool {
+            if let Some((asked, proceed)) = self.pause_alive.lock().unwrap().take() {
+                asked.send(()).unwrap();
+                proceed.recv().unwrap();
+            }
             !self.dead
         }
 
