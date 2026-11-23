@@ -623,12 +623,13 @@ pub type Fetch = Arc<dyn Fn() -> BoxFuture<'static, Option<Value>> + Send + Sync
 /// approval (for its redeem): longer than any approval lives (24 hours).
 pub const RECIPIENTS_FOR: Duration = Duration::from_secs(25 * 60 * 60);
 
-/// Which agent id received each verified approval, by approval id: a renamed
-/// session has several (the registered one and its aliases), and a redeem
-/// must go to Cloud as the one the attestation names.
+/// Which agent ids received each verified approval, by approval id: a renamed
+/// session has several (the registered one and its aliases), a channel
+/// approval reaches several sessions under one id, and a redeem must go to
+/// Cloud as the identity the attestation named for that session.
 #[derive(Default)]
 pub struct Recipients {
-    by_approval: Mutex<std::collections::HashMap<String, (String, Instant)>>,
+    by_approval: Mutex<std::collections::HashMap<String, Vec<(String, Instant)>>>,
 }
 
 impl Recipients {
@@ -638,21 +639,26 @@ impl Recipients {
             .by_approval
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        map.retain(|_, (_, at)| at.elapsed() < RECIPIENTS_FOR);
-        map.insert(
-            approval_id.to_string(),
-            (agent_id.to_string(), Instant::now()),
-        );
+        for seen in map.values_mut() {
+            seen.retain(|(_, at)| at.elapsed() < RECIPIENTS_FOR);
+        }
+        map.retain(|_, seen| !seen.is_empty());
+        let seen = map.entry(approval_id.to_string()).or_default();
+        seen.retain(|(id, _)| id != agent_id);
+        seen.push((agent_id.to_string(), Instant::now()));
     }
 
-    /// The agent id that received `approval_id`, when the core saw it.
-    pub fn of(&self, approval_id: &str) -> Option<String> {
+    /// Every agent id that received `approval_id`, when the core saw it.
+    pub fn of(&self, approval_id: &str) -> Vec<String> {
         self.by_approval
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(approval_id)
+            .into_iter()
+            .flatten()
             .filter(|(_, at)| at.elapsed() < RECIPIENTS_FOR)
             .map(|(id, _)| id.clone())
+            .collect()
     }
 }
 

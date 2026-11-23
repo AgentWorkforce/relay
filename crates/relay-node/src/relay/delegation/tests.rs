@@ -511,8 +511,8 @@ async fn an_attested_approval_writes_the_delegate_line_as_line_two() {
     );
     // The receiving identity is remembered for the redeem.
     assert_eq!(
-        f.core.delegation_recipients.of("apv_7Q2abcdEF").as_deref(),
-        Some(RECIPIENT)
+        f.core.delegation_recipients.of("apv_7Q2abcdEF"),
+        vec![RECIPIENT.to_string()]
     );
     let calls = f.calls();
     assert_eq!(calls.len(), 1);

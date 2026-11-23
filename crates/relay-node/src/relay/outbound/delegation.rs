@@ -83,26 +83,28 @@ pub(super) fn requested_owner_approval(
     }
 }
 
-/// The session's identity with `agent_id` (its registered agent, its current
-/// alias or a replaced alias still held), with its token; without one, or
-/// when none matches, the identity the session now sends as.
+/// The session's identity among `received_by` (the agents an approval was
+/// delivered to, across sessions): its registered agent, its current alias
+/// or a replaced alias still held, with its token; when none of them is
+/// this session's, the identity the session now sends as.
 pub(super) fn identity(
     registration: Registration,
     token: Secret,
-    agent_id: Option<&str>,
+    received_by: &[String],
 ) -> (Registration, Secret) {
+    let received = |id: &str| received_by.iter().any(|seen| seen == id);
     let current = registration.alias_credential();
-    let matching = match agent_id {
-        Some(id) if registration.agent_id == id => Some((registration.clone(), token.clone())),
-        Some(id) => current
+    let matching = if received(&registration.agent_id) {
+        Some((registration.clone(), token.clone()))
+    } else {
+        current
             .clone()
-            .filter(|(alias, _)| alias.agent_id == id)
+            .filter(|(alias, _)| received(&alias.agent_id))
             .or_else(|| {
                 registration
                     .retired_credentials()
-                    .find(|(retired, _)| retired.agent_id == id)
-            }),
-        None => None,
+                    .find(|(retired, _)| received(&retired.agent_id))
+            })
     };
     matching.or(current).unwrap_or((registration, token))
 }
@@ -148,7 +150,7 @@ impl Outbound {
         // As the identity the approval was delivered to: a renamed session
         // has its registered agent and its aliases, each with its own id.
         let received_by = self.core.delegation_recipients.of(&approval);
-        let (registration, token) = identity(registration, token, received_by.as_deref());
+        let (registration, token) = identity(registration, token, &received_by);
         Ok(self
             .core
             .redeem_delegation(&registration, &token, &approval, &action)
@@ -177,26 +179,32 @@ mod tests {
         }))
         .unwrap();
         let token = Secret::new("at_registered");
-        let pick = |id: Option<&str>| {
-            let (who, token) = identity(registration.clone(), token.clone(), id);
+        let pick = |ids: &[&str]| {
+            let ids: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+            let (who, token) = identity(registration.clone(), token.clone(), &ids);
             (who.agent_id, token.expose().to_string())
         };
         assert_eq!(
-            pick(Some("agent_registered")),
+            pick(&["agent_registered"]),
             ("agent_registered".into(), "at_registered".into())
         );
         assert_eq!(
-            pick(Some("agent_alias")),
+            pick(&["agent_alias"]),
             ("agent_alias".into(), "at_alias".into())
         );
         assert_eq!(
-            pick(Some("agent_retired")),
+            pick(&["agent_retired"]),
             ("agent_retired".into(), "at_retired".into())
         );
-        // Unknown or unseen: the name the session now sends as.
-        assert_eq!(pick(None), ("agent_alias".into(), "at_alias".into()));
+        // Another session's identity beside this one's: this one's.
         assert_eq!(
-            pick(Some("agent_other")),
+            pick(&["agent_other_session", "agent_registered"]),
+            ("agent_registered".into(), "at_registered".into())
+        );
+        // Unknown or unseen: the name the session now sends as.
+        assert_eq!(pick(&[]), ("agent_alias".into(), "at_alias".into()));
+        assert_eq!(
+            pick(&["agent_other"]),
             ("agent_alias".into(), "at_alias".into())
         );
     }
@@ -204,11 +212,18 @@ mod tests {
     #[test]
     fn recipients_are_remembered_by_approval() {
         let recipients = crate::relay::delegation::Recipients::default();
-        assert_eq!(recipients.of("apv_7Q2abcdEF"), None);
-        recipients.remember("apv_7Q2abcdEF", "agent_alias");
+        assert!(recipients.of("apv_7Q2abcdEF").is_empty());
+        // A channel approval reaches several sessions under one id: each is
+        // kept, none overwrites another.
+        recipients.remember("apv_7Q2abcdEF", "agent_registered");
+        recipients.remember("apv_7Q2abcdEF", "agent_other_session");
+        recipients.remember("apv_7Q2abcdEF", "agent_registered");
         assert_eq!(
-            recipients.of("apv_7Q2abcdEF").as_deref(),
-            Some("agent_alias")
+            recipients.of("apv_7Q2abcdEF"),
+            vec![
+                "agent_other_session".to_string(),
+                "agent_registered".to_string()
+            ]
         );
     }
 
