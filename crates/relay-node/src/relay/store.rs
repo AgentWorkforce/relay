@@ -766,8 +766,10 @@ pub struct Store {
     #[serde(default)]
     pub registrations: Vec<Registration>,
     /// Forward-only, local binding of an immutable Relaycast agent id to the
-    /// signed-in person present when this desktop registered it. Older agents
-    /// have no entry and remain unknown.
+    /// signed-in person present when this desktop registered it, or, for a
+    /// spawned agent, the person its spawn node was claimed for once the
+    /// agent's record names them (`spawn::credit`). Older agents have no
+    /// entry and remain unknown.
     #[serde(
         rename = "agentOwners",
         default,
@@ -1854,8 +1856,7 @@ impl Store {
         if let Some(legacy) = store.pending_key_migration_legacy.take() {
             store.record_pending_key_migration(legacy);
         }
-        let mut migrated =
-            legacy.apply(&mut store) | numeric_dates | store.migrate_archive_keys();
+        let mut migrated = legacy.apply(&mut store) | numeric_dates | store.migrate_archive_keys();
         for registration in &mut store.registrations {
             if registration.machine_prefix.is_none() {
                 registration.machine_prefix = Some(machine_prefix.into());
