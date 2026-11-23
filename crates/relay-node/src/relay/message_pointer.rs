@@ -1016,6 +1016,61 @@ mod tests {
         assert_eq!(record.verified_framing(), Framing::Peer);
     }
 
+    // A delegate's framing is sealed like the others: kept by this core it
+    // keeps the delegate's note; unsealed, it reads as a peer's with the
+    // delegate line taken out.
+    #[test]
+    fn a_delegates_framing_is_sealed_and_never_read_off_the_file() {
+        use crate::relay::delivery::policy::{delegate_framed, with_delegate_line};
+        let now = crate::relay::state::now_ms() / 1000;
+        let claims: crate::relay::delegation::Claims = serde_json::from_value(json!({
+            "typ": "relay-delegation+jws", "v": 1, "ws": "rw_test",
+            "owner_id": "hum_owner", "owner_display": "Ada Owner",
+            "delegate_agent_id": "agent_assistant", "grant_id": "grt_1",
+            "message_id": "m9", "recipient_agent_id": "agent_me",
+            "approval_id": "apv_7Q2abcdEF", "tier": "D",
+            "actions": [{"class": "merge", "target": "AgentWorkforce/relay#2250"}],
+            "single_use": false, "iat": now, "exp": now + 300, "jti": "jti_1"
+        }))
+        .unwrap();
+        let framed = with_delegate_line(&relayed("m9"), "assistant", &claims);
+        assert!(delegate_framed(&framed));
+        assert_eq!(Framing::of(&framed), Framing::Delegate);
+        let (_dir, kept) = kept();
+        let reader = Some(READER_FOR_TESTS);
+        prepare(
+            &kept,
+            "claude-a",
+            "m9",
+            &framed,
+            SessionKind::ClaudeTerminal,
+            reader,
+            NOW,
+        )
+        .unwrap();
+        let query = [("ref".to_string(), MessageRef::of("m9"))];
+        let genuine = answer(&kept, "claude-a", &query, NOW).unwrap();
+        assert_eq!(genuine["framing"], "delegate");
+        assert_eq!(
+            read_note(Framing::parse(genuine["framing"].as_str())),
+            DELEGATE_READ_NOTE
+        );
+        // The same text unsealed is a peer's, without the delegate line.
+        let record = Kept {
+            owner: "claude-a".into(),
+            message_id: "m9".into(),
+            message_ref: MessageRef::of("m9"),
+            text: framed.clone(),
+            kept_at_ms: NOW,
+            framing: Some("delegate".into()),
+            seal: None,
+        };
+        assert_eq!(record.verified_framing(), Framing::Peer);
+        let shown = record.shown_text();
+        assert!(!delegate_framed(&shown), "{shown}");
+        assert_eq!(shown, relayed("m9"));
+    }
+
     #[test]
     fn hmac_sha256_matches_rfc_4231() {
         let hex = |bytes: [u8; 32]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
