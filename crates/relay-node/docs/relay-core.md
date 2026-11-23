@@ -1519,8 +1519,10 @@ answers when all of these hold:
   reply is to deliver it, as for leaders (checked before Cloud is asked);
 - Cloud attests the message (as above) with exactly one action
   `{class: "prompt_approval", target: "<session agent id>:<ref>"}`, standing
-  `own_owner` (code owners never answer prompts), from the sender, and any
-  `not_before` condition has passed.
+  `own_owner` (code owners never answer prompts), from the sender, for an
+  `owner_id` equal to this computer's signed-in person's Cloud human id (an
+  unknown signed-in owner answers nothing), and any `not_before` condition
+  has passed.
 
 Everything is checked again after Cloud answers. The first answer counts
 among the owner, the requester, leaders and delegates. The delivery record

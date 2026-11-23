@@ -32,6 +32,8 @@ struct Cloud {
     owner: String,
     signer: Signer,
     claims: Mutex<Option<Value>>,
+    /// The signed-in person's Cloud human id; `None` when unknown.
+    user_id: Mutex<Option<String>>,
     delegates: Mutex<Value>,
     calls: Mutex<Vec<(String, Value)>>,
 }
@@ -41,7 +43,7 @@ impl crate::relay::cloud_session::CloudAccess for Cloud {
         Some(crate::relay::cloud_session::CloudAccount {
             site_url: self.base.clone(),
             workspace_id: WS.into(),
-            user_id: Some("person".into()),
+            user_id: self.user_id.lock().unwrap().clone(),
         })
     }
     fn agent_owner(&self) -> Option<crate::relay::cloud_session::AgentOwner> {
@@ -122,6 +124,7 @@ async fn fixture() -> Fixture {
         owner: owner.id.clone(),
         signer: Signer::new(),
         claims: Mutex::new(None),
+        user_id: Mutex::new(Some("hum_khaliq".into())),
         delegates: Mutex::new(json!({"delegates": []})),
         calls: Mutex::new(Vec::new()),
     });
@@ -746,4 +749,72 @@ async fn a_gate_only_install_never_lets_a_delegate_answer() {
     );
     assert!(not_one(f.core.owner_reply(&registration, &reply).await));
     assert_eq!(f.attestation_calls(), 0);
+}
+
+#[tokio::test]
+async fn only_a_delegate_of_this_computers_signed_in_owner_answers() {
+    let f = fixture().await;
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3be012";
+    let registration = f.spawned("codex", THREAD);
+    let notice = codex_request(THREAD, 997);
+    let text = format!("approve {}", notice.reference);
+    let exact = format!("{}:{}", f.child.id, notice.reference);
+
+    // A code owner's standing, though the owner is this computer's.
+    let mut code_owner = f.claims(&exact);
+    code_owner["standing"] = json!("code_owner");
+    f.attests_claims(code_owner);
+    assert!(not_one(
+        f.core
+            .owner_reply(
+                &registration,
+                &approval_dm("code-owner", &f.delegate, &text)
+            )
+            .await
+    ));
+
+    // Another person's delegate, with their own standing.
+    let mut other = f.claims(&exact);
+    other["owner_id"] = json!("hum_someone_else");
+    f.attests_claims(other);
+    assert!(not_one(
+        f.core
+            .owner_reply(
+                &registration,
+                &approval_dm("other-owner", &f.delegate, &text)
+            )
+            .await
+    ));
+
+    // This computer's signed-in owner is unknown.
+    f.attests(&exact);
+    *f.cloud.user_id.lock().unwrap() = None;
+    assert!(not_one(
+        f.core
+            .owner_reply(
+                &registration,
+                &approval_dm("unknown-owner", &f.delegate, &text)
+            )
+            .await
+    ));
+    *f.cloud.user_id.lock().unwrap() = Some(String::new());
+    assert!(not_one(
+        f.core
+            .owner_reply(
+                &registration,
+                &approval_dm("empty-owner", &f.delegate, &text)
+            )
+            .await
+    ));
+    assert!(codex_drive::has_pending(THREAD, &notice.reference));
+    assert_eq!(codex_drive::recorded_answer(&notice.reference), None);
+
+    // The signed-in owner's own delegate answers.
+    *f.cloud.user_id.lock().unwrap() = Some("hum_khaliq".into());
+    assert!(settled(
+        f.core
+            .owner_reply(&registration, &approval_dm("own", &f.delegate, &text))
+            .await
+    )
+    .ends_with("Answered"));
 }

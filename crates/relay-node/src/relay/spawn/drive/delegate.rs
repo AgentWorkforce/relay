@@ -7,7 +7,8 @@
 //! answers a spawned session's open request when Agent Relay Cloud attests
 //! its owner approval (`relay::delegation`) as exactly one action
 //! `{class: "prompt_approval", target: "<session agent id>:<ref>"}`, with
-//! the owner's own standing (never a code owner's), from the sender itself.
+//! the owner's own standing (never a code owner's), from the sender itself,
+//! for an owner who is this computer's signed-in person (by Cloud human id).
 //! It answers what a leader may (`Approver::Leader`), less Codex's requests
 //! for extra permissions: never a choice, form, `AskUserQuestion`, dialog or
 //! local verification. Never the session's own agent, the agent that spawned
@@ -158,15 +159,26 @@ impl Core {
                     .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
                     .is_some_and(|at| at.timestamp() <= now)
         });
+        // Only a delegate of the person who owns this computer answers its
+        // prompts (§9.3): the owner Cloud attests must be the signed-in
+        // machine owner, by Cloud human id, with their own standing. An
+        // unknown signed-in owner answers nothing.
+        let machine_owner = self
+            .plugins
+            .cloud
+            .account()
+            .and_then(|account| account.user_id)
+            .filter(|id| !id.is_empty());
         if action.class != PROMPT_APPROVAL
             || action.target != target
-            || claims.code_owner()
+            || claims.standing != "own_owner"
+            || machine_owner.as_deref() != Some(claims.owner_id.as_str())
             || claims.delegate_agent_id != sender_id
             || !conditions_hold
         {
             crate::relay::diagnostics::write(format_args!(
                 "relay: delegate approval: message {}: not a prompt approval of {target} \
-                 with the machine owner's standing",
+                 by a delegate of this computer's signed-in owner, with their own standing",
                 delivery.message_id
             ));
             return None;
