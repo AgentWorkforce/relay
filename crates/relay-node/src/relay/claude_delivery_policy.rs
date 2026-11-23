@@ -478,11 +478,17 @@ impl ClaudeDeliveryPolicy {
     /// Removes pre-existing approvals that disappeared from a successfully
     /// read Relaycast queue. The caller deliberately does not invoke this when
     /// the read fails, because absence is known only from a successful read.
+    /// A read that was not the whole queue (`whole` false) cannot say a
+    /// message left either, so nothing is removed then.
     pub fn reconcile_queue(
         &self,
         held_before_read: &BTreeSet<String>,
         queued: &HashSet<&str>,
+        whole: bool,
     ) -> Result<bool, String> {
+        if !whole {
+            return Ok(false);
+        }
         let missing: Vec<_> = held_before_read
             .iter()
             .filter(|id| !queued.contains(id.as_str()))
@@ -957,7 +963,9 @@ mod tests {
         // not be removed by that older response.
         policy.hold(&registration, &later).unwrap();
         let queued = HashSet::from(["active"]);
-        assert!(policy.reconcile_queue(&held_before_read, &queued).unwrap());
+        assert!(policy
+            .reconcile_queue(&held_before_read, &queued, true)
+            .unwrap());
 
         let status = policy.status(std::slice::from_ref(&registration));
         let held: BTreeSet<_> = status.held.iter().map(|item| item.id.as_str()).collect();
@@ -967,5 +975,125 @@ mod tests {
         let reopened = ClaudeDeliveryPolicy::open(root.path());
         assert_eq!(reopened.decide(&registration, &expired), Decision::Hold);
         assert_eq!(reopened.status(&[registration]).held.len(), 2);
+    }
+
+    /// Holds `count` deliveries listed by a queue read, and `unlisted` ones it
+    /// does not list, all before the read; returns the listed IDs.
+    fn hold_around_a_read(
+        policy: &ClaudeDeliveryPolicy,
+        registration: &Registration,
+        count: u32,
+        unlisted: &[&Delivery],
+    ) -> Vec<String> {
+        let listed: Vec<String> = (0..count).map(|n| format!("listed-{n}")).collect();
+        for id in &listed {
+            policy.hold(registration, &delivery(id, "lee")).unwrap();
+        }
+        for item in unlisted {
+            policy.hold(registration, item).unwrap();
+        }
+        listed
+    }
+
+    fn held_ids(policy: &ClaudeDeliveryPolicy, registration: &Registration) -> BTreeSet<String> {
+        let status = policy.status(std::slice::from_ref(registration));
+        status.held.into_iter().map(|item| item.id).collect()
+    }
+
+    /// Relaycast lists at most one page of deliveries per read, so a held
+    /// delivery missing from a full page may still be queued: its request
+    /// and any answer to it stay, durably.
+    #[test]
+    fn a_full_queue_page_keeps_the_holds_and_answers_it_does_not_list() {
+        let root = tempfile::tempdir().unwrap();
+        let registration = registration("11111111-1111-1111-1111-111111111111");
+        let beyond = delivery("beyond", "pat");
+        let approved = delivery("approved", "sam");
+        let dismissed = delivery("dismissed", "kim");
+        let later = delivery("later", "ana");
+        let policy = ClaudeDeliveryPolicy::open(root.path());
+        policy.set_session(&registration.target.id, false).unwrap();
+        let listed = hold_around_a_read(
+            &policy,
+            &registration,
+            crate::relay::client::QUEUE_PAGE,
+            &[&beyond, &approved, &dismissed],
+        );
+
+        let held_before_read = policy.held_ids_for_agent(&registration.name);
+        // The person answers two while the read is in flight, and a push is
+        // held after it began.
+        assert!(policy.approve("approved").unwrap().is_some());
+        assert!(policy.dismiss("dismissed").unwrap().is_some());
+        policy.hold(&registration, &later).unwrap();
+        let queued: HashSet<&str> = listed.iter().map(String::as_str).collect();
+        let whole = queued.len() < crate::relay::client::QUEUE_PAGE as usize;
+        assert!(!whole);
+        let removed = policy
+            .reconcile_queue(&held_before_read, &queued, whole)
+            .unwrap();
+
+        let reopened = ClaudeDeliveryPolicy::open(root.path());
+        for policy in [&policy, &reopened] {
+            let held = held_ids(policy, &registration);
+            assert!(
+                held.contains("beyond"),
+                "a full queue page removed the approval request it did not list"
+            );
+            assert!(held.contains("later"));
+            assert_eq!(held.len(), listed.len() + 2);
+            assert_eq!(policy.decide(&registration, &approved), Decision::Deliver);
+            assert_eq!(policy.decide(&registration, &dismissed), Decision::Dismiss);
+        }
+        assert!(!removed);
+        // The kept request can still be answered once, and only by the person.
+        assert_eq!(
+            reopened.approve("beyond").unwrap().as_deref(),
+            Some("claude-review")
+        );
+        assert_eq!(reopened.approve("beyond").unwrap(), None);
+        assert_eq!(reopened.decide(&registration, &beyond), Decision::Deliver);
+    }
+
+    /// One short of a full page is the whole queue: what it does not list
+    /// left Relaycast, so its requests and answers are removed.
+    #[test]
+    fn a_short_queue_page_removes_the_holds_and_answers_it_does_not_list() {
+        let root = tempfile::tempdir().unwrap();
+        let registration = registration("11111111-1111-1111-1111-111111111111");
+        let expired = delivery("expired", "pat");
+        let approved = delivery("approved", "sam");
+        let dismissed = delivery("dismissed", "kim");
+        let later = delivery("later", "ana");
+        let policy = ClaudeDeliveryPolicy::open(root.path());
+        policy.set_session(&registration.target.id, false).unwrap();
+        let listed = hold_around_a_read(
+            &policy,
+            &registration,
+            crate::relay::client::QUEUE_PAGE - 1,
+            &[&expired, &approved, &dismissed],
+        );
+
+        let held_before_read = policy.held_ids_for_agent(&registration.name);
+        assert!(policy.approve("approved").unwrap().is_some());
+        assert!(policy.dismiss("dismissed").unwrap().is_some());
+        policy.hold(&registration, &later).unwrap();
+        let queued: HashSet<&str> = listed.iter().map(String::as_str).collect();
+        let whole = queued.len() < crate::relay::client::QUEUE_PAGE as usize;
+        assert!(whole);
+        assert!(policy
+            .reconcile_queue(&held_before_read, &queued, whole)
+            .unwrap());
+
+        let reopened = ClaudeDeliveryPolicy::open(root.path());
+        for policy in [&policy, &reopened] {
+            let mut expected: BTreeSet<String> = listed.iter().cloned().collect();
+            expected.insert("later".into());
+            assert_eq!(held_ids(policy, &registration), expected);
+            for gone in [&expired, &approved, &dismissed] {
+                assert_eq!(policy.decide(&registration, gone), Decision::Hold);
+            }
+        }
+        assert_eq!(reopened.approve("expired").unwrap(), None);
     }
 }

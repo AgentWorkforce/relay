@@ -1044,9 +1044,10 @@ impl Core {
                 self.set_queue_error(name, None);
                 // What left the queue (settled, expired) is not tried again.
                 let queued: HashSet<&str> = deliveries.iter().map(|d| d.id.as_str()).collect();
+                let whole = deliveries.len() < client::QUEUE_PAGE as usize;
                 match self
                     .claude_delivery
-                    .reconcile_queue(&held_before_read, &queued)
+                    .reconcile_queue(&held_before_read, &queued, whole)
                 {
                     Ok(true) => self.hub.invalidated(Listing::Activity),
                     Ok(false) => {}
@@ -1057,11 +1058,7 @@ impl Core {
                         )),
                     ),
                 }
-                self.keep_queued(
-                    name,
-                    &queued,
-                    deliveries.len() < client::QUEUE_PAGE as usize,
-                );
+                self.keep_queued(name, &queued, whole);
                 self.handle_pending(&deliveries, &registration).await;
             }
             // A gate agent's token expired or was revoked: it registers

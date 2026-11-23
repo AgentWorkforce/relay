@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `agent-relay-node`: a message waiting for your approval in Agent Relay is no longer forgotten while 50 or more messages are queued for its session. A queue read lists only the oldest 50, and every waiting message it did not list was taken to have left Relaycast: its approval request disappeared, along with an approval or dismissal you had just given, so a still-queued message was asked about again. A full page now removes nothing; a waiting message that expired is cleaned up by the next read listing fewer than 50.
 
 ## [18.14.0] - 2026-11-24
 
