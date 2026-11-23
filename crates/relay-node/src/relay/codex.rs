@@ -213,16 +213,14 @@ fn windows_executable_candidates(
 
 #[cfg(windows)]
 fn windows_desktop_executables(env: &dyn Fn(&str) -> Option<String>, home: &Path) -> Vec<PathBuf> {
-    let root = env("LOCALAPPDATA")
+    let local = env("LOCALAPPDATA")
         .filter(|value| !value.trim().is_empty())
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
-        .unwrap_or_else(|| home.join(r"AppData\Local"))
-        .join(r"OpenAI\Codex\bin");
-    let mut found: Vec<_> = std::fs::read_dir(root)
+        .unwrap_or_else(|| home.join(r"AppData\Local"));
+    let mut found: Vec<_> = windows_desktop_bin_roots(&local)
         .into_iter()
-        .flatten()
-        .flatten()
+        .flat_map(|root| std::fs::read_dir(root).into_iter().flatten().flatten())
         .map(|entry| entry.path().join("codex.exe"))
         .filter(|path| is_executable_file(path))
         .collect();
@@ -240,6 +238,32 @@ fn windows_desktop_executables(env: &dyn Fn(&str) -> Option<String>, home: &Path
         )
     });
     found
+}
+
+/// The folders the Codex desktop app unpacks its builds into: the plain
+/// `LOCALAPPDATA\OpenAI\Codex\bin`, and the same folder as Windows
+/// redirects it for a Microsoft Store (MSIX) install, which writes new
+/// AppData files to its package's private
+/// `LOCALAPPDATA\Packages\<OpenAI package>\LocalCache\Local`.
+#[cfg(windows)]
+fn windows_desktop_bin_roots(local: &Path) -> Vec<PathBuf> {
+    const BIN: &str = r"OpenAI\Codex\bin";
+    let mut roots = vec![local.join(BIN)];
+    let mut packaged: Vec<PathBuf> = std::fs::read_dir(local.join("Packages"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.to_ascii_lowercase().starts_with("openai."))
+        })
+        .map(|entry| entry.path().join(r"LocalCache\Local").join(BIN))
+        .collect();
+    packaged.sort();
+    roots.extend(packaged);
+    roots
 }
 
 #[cfg(not(windows))]
@@ -368,6 +392,71 @@ impl LoadedThreads {
     }
 }
 
+/// Whether the Codex app's router was asked, and its answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Probe {
+    /// Every listed thread was already known to be running.
+    NotAsked,
+    /// How many of the asked threads a Codex app window owns.
+    Answered(usize),
+    /// Why it could not be asked (`NotRunning`: no app is listening).
+    Failed(ipc::IpcError),
+}
+
+/// What discovery's three "running" signals said in one pass, as counts
+/// (never thread ids or paths), so a chat that is not seen as running can
+/// be explained from the core log:
+/// 1. a trusted Codex of this user holds the thread's writer lock or
+///    resumed it (`process_held`; `process_live` of those run its turns);
+/// 2. the shared app-server reports the thread loaded;
+/// 3. a Codex app window owns it over the app's router
+///    (`<Codex home>/ipc/ipc.sock`, or `\\.\pipe\codex-ipc` on Windows).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunningSignals {
+    pub threads: usize,
+    pub process_held: usize,
+    pub process_live: usize,
+    /// `None` when the process signal already answered every thread.
+    pub app_server_loaded: Option<usize>,
+    pub app_router: Probe,
+    pub live: usize,
+}
+
+impl RunningSignals {
+    pub fn line(&self) -> String {
+        let app_server = match self.app_server_loaded {
+            Some(count) => format!("{count} loaded"),
+            None => "not asked".into(),
+        };
+        let router = match &self.app_router {
+            Probe::NotAsked => "not asked".to_string(),
+            Probe::Answered(count) => format!("{count} owned by an app window"),
+            Probe::Failed(error) => format!("unavailable ({error})"),
+        };
+        format!(
+            "codex discovery: {live} of {threads} recent chats running; \
+             (1) trusted Codex process holds the chat: {held} ({drains} running its turns); \
+             (2) app-server: {app_server}; (3) Codex app router: {router}",
+            live = self.live,
+            threads = self.threads,
+            held = self.process_held,
+            drains = self.process_live,
+        )
+    }
+
+    /// Writes `line` to the core log when it differs from the last pass's,
+    /// so a steady state is logged once, not every refresh.
+    fn log_if_changed(&self) {
+        static LAST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+        let line = self.line();
+        let mut last = LAST.lock().unwrap_or_else(|error| error.into_inner());
+        if last.as_deref() != Some(line.as_str()) {
+            crate::relay::diagnostics::write(format_args!("{line}"));
+            *last = Some(line);
+        }
+    }
+}
+
 /// Codex threads on this computer as sessions (title, directory,
 /// updated_at_ms, live): the 40 most recently updated, newest first. `None`
 /// when Codex's database cannot be read this pass, so the caller can keep
@@ -388,6 +477,19 @@ fn try_discover_with(
     loaded: &LoadedThreads,
     runner: &dyn CodexRunner,
 ) -> Option<Vec<DiscoveredSession>> {
+    let (found, signals) = discover_with_signals(config, table, uid, loaded, runner)?;
+    signals.log_if_changed();
+    Some(found)
+}
+
+/// `try_discover_with`, and what each running signal said.
+fn discover_with_signals(
+    config: &CodexConfig,
+    table: &dyn ProcessTable,
+    uid: u32,
+    loaded: &LoadedThreads,
+    runner: &dyn CodexRunner,
+) -> Option<(Vec<DiscoveredSession>, RunningSignals)> {
     let threads = threads::read_recent(config, DISCOVERY_LIMIT)?;
     let ids: BTreeSet<String> = threads.iter().map(|t| t.id.to_lowercase()).collect();
     let process_sessions = processes::process_sessions(table, uid, &ids);
@@ -397,6 +499,18 @@ fn try_discover_with(
         .filter(|session| processes::drains_queue(table, uid, session.pid))
         .map(|session| session.thread.clone())
         .collect();
+    let mut signals = RunningSignals {
+        threads: ids.len(),
+        process_held: process_sessions
+            .iter()
+            .map(|session| &session.thread)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        process_live: live.len(),
+        app_server_loaded: None,
+        app_router: Probe::NotAsked,
+        live: 0,
+    };
     if live.len() < ids.len() {
         let held: Vec<_> = process_sessions
             .iter()
@@ -411,35 +525,41 @@ fn try_discover_with(
             .filter(|session| processes::is_proxied_app_server(table, session.pid))
             .map(|session| session.thread.clone())
             .collect();
-        live.extend(loaded.under(locks, &served, || {
+        let from_app_server = loaded.under(locks, &served, || {
             loaded_threads(config, table, uid, runner)
                 .intersection(&ids)
                 .cloned()
                 .collect()
-        }));
+        });
+        signals.app_server_loaded = Some(from_app_server.len());
+        live.extend(from_app_server);
     }
     let unknown: Vec<String> = threads
         .iter()
         .filter(|t| !live.contains(&t.id.to_lowercase()))
         .map(|t| t.id.clone())
         .collect();
-    live.extend(
-        ipc::open_threads(&config.ipc_socket, &unknown)
-            .into_keys()
-            .map(|id| id.to_lowercase()),
-    );
-    Some(
-        threads
-            .into_iter()
-            .map(|thread| {
-                let is_live = live.contains(&thread.id.to_lowercase());
-                let host = paseo_threads
-                    .contains(&thread.id.to_lowercase())
-                    .then(|| crate::relay::paseo::HOST.to_string());
-                session(thread, is_live, host)
-            })
-            .collect(),
-    )
+    if !unknown.is_empty() {
+        match ipc::try_open_threads(&config.ipc_socket, &unknown) {
+            Ok(owned) => {
+                signals.app_router = Probe::Answered(owned.len());
+                live.extend(owned.into_keys().map(|id| id.to_lowercase()));
+            }
+            Err(error) => signals.app_router = Probe::Failed(error),
+        }
+    }
+    signals.live = live.len();
+    let found = threads
+        .into_iter()
+        .map(|thread| {
+            let is_live = live.contains(&thread.id.to_lowercase());
+            let host = paseo_threads
+                .contains(&thread.id.to_lowercase())
+                .then(|| crate::relay::paseo::HOST.to_string());
+            session(thread, is_live, host)
+        })
+        .collect();
+    Some((found, signals))
 }
 
 fn session(thread: CodexThread, live: bool, host: Option<String>) -> DiscoveredSession {
@@ -537,7 +657,8 @@ pub fn open_thread_ids(
     uid: u32,
 ) -> BTreeSet<String> {
     let mut open = processes::open_threads(table, uid);
-    if config.ipc_socket.exists() {
+    // Windows has no socket file: its router is a named pipe, always asked.
+    if ipc::router_may_listen(&config.ipc_socket) {
         let recent: Vec<String> = recent_threads(config, WINDOW_CATALOG)
             .into_iter()
             .map(|t| t.id)
@@ -1420,6 +1541,216 @@ mod tests {
                 "0.154.0",
                 "0.99.0"
             ]
+        );
+    }
+
+    // relay#2239: each running signal is reported, as counts only.
+    #[test]
+    fn discovery_reports_each_running_signal() {
+        let home = tempfile::tempdir().unwrap();
+        let mut config = config(home.path());
+        config.ipc_socket = home.path().join("no-router.sock");
+        let db = seed(home.path(), "wal");
+        add_thread(&db, SECOND, 1_790_659_487);
+        let table = trusted_table();
+        // A terminal Codex holds THREAD: signal 1 alone answers it.
+        table.insert(
+            600,
+            FakeProcess {
+                open_files: vec![lock(THREAD)],
+                ..codex_process(10, &["codex"])
+            },
+        );
+        #[cfg(windows)]
+        ipc::TEST_ROUTER_PIPE.with(|name| {
+            *name.borrow_mut() = Some(crate::relay::transport::pipe_name(
+                &home.path().join("no-router"),
+            ))
+        });
+        let (found, signals) = discover_with_signals(
+            &config,
+            &table,
+            UID,
+            &LoadedThreads::default(),
+            &runner_hosting(&[]),
+        )
+        .unwrap();
+        assert_eq!(live_ids(&found), [THREAD]);
+        assert_eq!(
+            signals,
+            RunningSignals {
+                threads: 2,
+                process_held: 1,
+                process_live: 1,
+                app_server_loaded: Some(0),
+                app_router: Probe::Failed(ipc::IpcError::NotRunning),
+                live: 1,
+            }
+        );
+        let line = signals.line();
+        assert!(line.contains("1 of 2 recent chats running"), "{line}");
+        assert!(line.contains("(1) trusted Codex process holds the chat: 1 (1 running its turns)"));
+        assert!(line.contains("(2) app-server: 0 loaded"));
+        assert!(line.contains("(3) Codex app router: unavailable (The Codex app is not running.)"));
+        assert!(!line.contains(THREAD) && !line.contains(SECOND));
+        // Every chat answered by a process: the others are not asked.
+        let all = RunningSignals {
+            app_server_loaded: None,
+            app_router: Probe::NotAsked,
+            ..signals
+        };
+        assert!(all
+            .line()
+            .contains("(2) app-server: not asked; (3) Codex app router: not asked"));
+    }
+
+    /// A Codex app router on a Windows named pipe of the test's own, owning
+    /// `owned`; serves one connection. Returns the pipe's name.
+    #[cfg(windows)]
+    async fn serve_windows_router(
+        dir: &Path,
+        owned: &'static [&'static str],
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        use crate::relay::transport::{pipe_name, CoreListener};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let path = dir.join("codex-router");
+        let mut listener = CoreListener::bind(&path).unwrap();
+        let server = tokio::spawn(async move {
+            let mut stream = listener.accept().await.unwrap();
+            loop {
+                let Ok(size) = stream.read_u32_le().await else {
+                    return;
+                };
+                let mut payload = vec![0; size as usize];
+                if stream.read_exact(&mut payload).await.is_err() {
+                    return;
+                }
+                let request: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+                let id = request["requestId"].clone();
+                let response = match request["method"].as_str() {
+                    Some("initialize") => serde_json::json!({
+                        "type": "response", "requestId": id, "resultType": "success",
+                        "result": {"clientId": "relay-1"}
+                    }),
+                    Some("thread-owner-discovery") => {
+                        let thread = request["params"]["conversationId"].as_str().unwrap();
+                        if owned.iter().any(|known| *known == thread) {
+                            serde_json::json!({
+                                "type": "response", "requestId": id, "resultType": "success",
+                                "handledByClientId": "window-1", "result": {}
+                            })
+                        } else {
+                            serde_json::json!({
+                                "type": "response", "requestId": id, "resultType": "error",
+                                "error": "no-client-found"
+                            })
+                        }
+                    }
+                    _ => continue,
+                };
+                let frame = ipc::encode_frame(&serde_json::to_vec(&response).unwrap()).unwrap();
+                if stream.write_all(&frame).await.is_err() {
+                    return;
+                }
+            }
+        });
+        (pipe_name(&path), server)
+    }
+
+    // relay#2239: Windows has no `ipc.sock`; the app's named pipe is asked
+    // anyway, and a chat an app window owns is open.
+    #[cfg(windows)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn windows_open_thread_ids_asks_the_named_pipe_without_a_socket_file() {
+        let home = tempfile::tempdir().unwrap();
+        let config = config(home.path());
+        assert!(!config.ipc_socket.exists());
+        let db = seed(home.path(), "wal");
+        add_thread(&db, SECOND, 1_790_659_487);
+        drop(db);
+        let (pipe, server) = serve_windows_router(home.path(), &[SECOND]).await;
+        let open = tokio::task::spawn_blocking(move || {
+            ipc::TEST_ROUTER_PIPE.with(|name| *name.borrow_mut() = Some(pipe));
+            open_thread_ids(&config, &trusted_table(), UID)
+        })
+        .await
+        .unwrap();
+        assert_eq!(open, BTreeSet::from([SECOND.to_string()]));
+        server.await.unwrap();
+    }
+
+    // relay#2239: discovery marks a chat the app's window owns as running
+    // over the named pipe, and says so.
+    #[cfg(windows)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn windows_discovery_reads_app_windows_over_the_named_pipe() {
+        let home = tempfile::tempdir().unwrap();
+        let config = config(home.path());
+        let db = seed(home.path(), "wal");
+        add_thread(&db, SECOND, 1_790_659_487);
+        drop(db);
+        let (pipe, server) = serve_windows_router(home.path(), &[THREAD]).await;
+        let (found, signals) = tokio::task::spawn_blocking(move || {
+            ipc::TEST_ROUTER_PIPE.with(|name| *name.borrow_mut() = Some(pipe));
+            discover_with_signals(
+                &config,
+                &trusted_table(),
+                UID,
+                &LoadedThreads::default(),
+                &runner_hosting(&[]),
+            )
+            .unwrap()
+        })
+        .await
+        .unwrap();
+        assert_eq!(live_ids(&found), [THREAD]);
+        assert_eq!(signals.app_router, Probe::Answered(1));
+        assert_eq!(signals.process_held, 0);
+        server.await.unwrap();
+    }
+
+    // relay#2239: with no app running, the pipe's absence is reported at
+    // once, not waited for.
+    #[cfg(windows)]
+    #[test]
+    fn windows_an_absent_app_router_is_not_running_quickly() {
+        let home = tempfile::tempdir().unwrap();
+        ipc::TEST_ROUTER_PIPE.with(|name| {
+            *name.borrow_mut() = Some(crate::relay::transport::pipe_name(
+                &home.path().join("absent"),
+            ))
+        });
+        assert!(ipc::router_may_listen(&home.path().join("ipc/ipc.sock")));
+        let started = std::time::Instant::now();
+        assert_eq!(
+            ipc::try_open_threads(&home.path().join("ipc/ipc.sock"), &[THREAD.into()]),
+            Err(ipc::IpcError::NotRunning)
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_store_installs_of_the_codex_app_are_found() {
+        let home = tempfile::tempdir().unwrap();
+        let local = home.path().join(r"AppData\Local");
+        let binary = local
+            .join(r"Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Local\OpenAI\Codex\bin\b1")
+            .join("codex.exe");
+        executable(&binary);
+        // Another publisher's package is not looked into.
+        executable(
+            &local
+                .join(r"Packages\Other.App_1\LocalCache\Local\OpenAI\Codex\bin\b2")
+                .join("codex.exe"),
+        );
+        assert_eq!(
+            windows_desktop_executables(&env(&[]), home.path()),
+            vec![binary.clone()]
+        );
+        assert_eq!(
+            CodexConfig::from_env(&env(&[]), home.path()).executable,
+            Some(binary)
         );
     }
 
