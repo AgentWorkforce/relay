@@ -258,6 +258,19 @@ describe('MCP Events server (events/*)', () => {
     });
   });
 
+  it('treats a cursor ahead of a new, empty inbox as foreign and still returns its first posts', async () => {
+    const h = createHarness();
+    const shim = await h.create();
+
+    const ahead = await h.poll(shim.mcp_url, { cursor: 'seq_50' });
+    expect(ahead).toMatchObject({ truncated: true, events: [], cursor: 'seq_0' });
+
+    await h.post(shim.webhook_url, { n: 1 });
+    const next = await h.poll(shim.mcp_url, { cursor: ahead.cursor });
+    expect(next.events.map((event) => event.data.seq)).toEqual([1]);
+    expect(next.truncated).toBe(false);
+  });
+
   it('reads back maxAgeMs from a null cursor', async () => {
     const h = createHarness();
     const shim = await h.create();

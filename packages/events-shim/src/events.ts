@@ -337,8 +337,10 @@ async function readPage(deps: EventsShimDeps, shimId: string, sub: Subscription)
   const oldest = feed[0]?.seq;
   let after: number;
   let truncated = false;
-  if (sub.cursorUnusable || (sub.after !== null && sub.after > newest && feed.length > 0)) {
-    // Not ours: start fresh from now and say so.
+  if (sub.cursorUnusable || (sub.after !== null && sub.after > newest)) {
+    // Not ours (or ahead of every post this inbox has, e.g. from an inbox that was
+    // replaced): start fresh from now and say so. An empty feed counts too, or a
+    // foreign seq_50 on a new inbox would silently skip its first 50 posts.
     after = newest;
     truncated = true;
   } else if (sub.after === null) {
