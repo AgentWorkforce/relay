@@ -115,18 +115,22 @@ fn newest_first(
 /// `<root>/<version>/bin/codex` for every version directory under `root`.
 #[cfg(not(windows))]
 fn versions(root: &Path) -> Vec<PathBuf> {
+    versions_with(root, &["bin/codex"])
+}
+
+/// Each of `files` in every version directory under `root`: newest version
+/// first, and within a version in the order given.
+#[cfg(not(windows))]
+fn versions_with(root: &Path, files: &[&str]) -> Vec<PathBuf> {
     let found = std::fs::read_dir(root)
-        .map(|entries| {
-            entries
-                .flatten()
-                .map(|e| e.path().join("bin/codex"))
-                .collect::<Vec<_>>()
-        })
+        .map(|entries| entries.flatten().map(|e| e.path()).collect::<Vec<_>>())
         .unwrap_or_default();
-    newest_first(found, |path| {
-        let version = path.parent()?.parent()?.file_name()?;
-        Some(version.to_string_lossy().into_owned())
+    newest_first(found, |dir| {
+        Some(dir.file_name()?.to_string_lossy().into_owned())
     })
+    .into_iter()
+    .flat_map(|dir| files.iter().map(move |file| dir.join(file)))
+    .collect()
 }
 
 /// Resolve npm's launcher to its bundled native executable so desktop apps
@@ -162,10 +166,11 @@ fn npm_native_executable(launcher: &Path) -> Option<PathBuf> {
 /// Where a `codex` command line may be installed, in order of preference:
 /// the binary inside the Codex desktop app (the very build that reads the
 /// queue for app threads), version-managed installs (mise's `codex` and
-/// npm-backend installs, then npm global installs under nvm's and mise's node
-/// versions, each newest first), the usual command-line locations, then
-/// `PATH`. A mise shim is never a candidate. An app launched from the desktop has no shell
-/// `PATH`, so the fixed locations come first.
+/// npm-backend installs, then npm global installs under nvm's node
+/// versions, each newest first), the usual command-line locations, npm
+/// global installs under mise's node versions, then `PATH`. A mise shim is
+/// never a candidate. An app launched from the desktop has no shell `PATH`,
+/// so the fixed locations come first.
 pub fn executable_candidates(env: &dyn Fn(&str) -> Option<String>, home: &Path) -> Vec<PathBuf> {
     #[cfg(windows)]
     {
@@ -310,18 +315,29 @@ fn unix_executable_candidates(env: &dyn Fn(&str) -> Option<String>, home: &Path)
     candidates.push(mise.join("latest/bin/codex"));
     candidates.push(home.join(".local/bin/codex"));
     candidates.extend(versions(&mise));
-    // mise's npm backend (`mise use -g npm:@openai/codex`) installs each
-    // version with `npm install -g --prefix`, so its `bin/codex` is npm's
-    // launcher; older mise kept the `@` in the folder name.
+    // mise's npm backend (`mise use -g npm:@openai/codex`): npm's
+    // `--prefix` layout puts the launcher in `bin`, a pnpm-style installer
+    // in `node_modules/.bin` (possibly as a wrapper script that needs Node),
+    // so the package's own launcher is tried before it and
+    // `npm_native_executable` finds the bundled binary from there. Older mise kept the `@` in the folder name.
     for folder in MISE_NPM_CODEX {
-        candidates.extend(versions(&installs.join(folder)));
+        candidates.extend(versions_with(
+            &installs.join(folder),
+            &[
+                "bin/codex",
+                "node_modules/@openai/codex/bin/codex.js",
+                "node_modules/.bin/codex",
+            ],
+        ));
     }
     candidates.extend(versions(&home.join(".nvm/versions/node")));
-    // `npm install -g @openai/codex` under a node mise provides: the global
-    // bin of each mise node version, like nvm's.
-    candidates.extend(versions(&installs.join("node")));
     candidates.push(PathBuf::from("/opt/homebrew/bin/codex"));
     candidates.push(PathBuf::from("/usr/local/bin/codex"));
+    // `npm install -g @openai/codex` under a node mise provides: the global
+    // bin of each mise node version, newest first. After the system
+    // locations, so a Codex left behind in an old node never displaces a
+    // Homebrew install that was reachable before.
+    candidates.extend(versions(&installs.join("node")));
     if let Some(path) = env("PATH") {
         candidates.extend(
             path.split(':')
@@ -1972,6 +1988,62 @@ mod tests {
             installed_under(&env(&[]), home),
             vec![new, old, legacy, node]
         );
+    }
+
+    // Review on #2258: a pnpm-style installer puts mise's npm-backend
+    // launcher in `node_modules/.bin`, possibly as a wrapper script rather
+    // than a link; the package's own launcher still resolves to the bundled
+    // native binary, so Node is not needed on PATH.
+    #[cfg(unix)]
+    #[test]
+    fn a_codex_from_mises_npm_backend_in_node_modules_bin_is_found() {
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path().canonicalize().unwrap();
+        let home = home.as_path();
+        let version = home.join(".local/share/mise/installs/npm-openai-codex/0.154.0");
+        let wrapper = version.join("node_modules/.bin/codex");
+        executable(&wrapper);
+        std::fs::write(
+            &wrapper,
+            "#!/bin/sh\nexec node \"$0/../../@openai/codex/bin/codex.js\" \"$@\"\n",
+        )
+        .unwrap();
+        let launcher = version.join("node_modules/@openai/codex/bin/codex.js");
+        executable(&launcher);
+        let env = env(&[("PATH", "/usr/bin:/bin")]);
+        assert_eq!(
+            installed_under(&env, home),
+            vec![launcher.clone(), wrapper.clone()]
+        );
+        let (triple, package) = match (std::env::consts::OS, std::env::consts::ARCH) {
+            ("macos", "aarch64") => ("aarch64-apple-darwin", "codex-darwin-arm64"),
+            ("macos", "x86_64") => ("x86_64-apple-darwin", "codex-darwin-x64"),
+            ("linux", "aarch64") => ("aarch64-unknown-linux-musl", "codex-linux-arm64"),
+            ("linux", "x86_64") => ("x86_64-unknown-linux-musl", "codex-linux-x64"),
+            _ => return,
+        };
+        let native = version
+            .join("node_modules/@openai")
+            .join(package)
+            .join("vendor")
+            .join(triple)
+            .join("bin/codex");
+        executable(&native);
+        assert_eq!(installed_under(&env, home), vec![native, launcher, wrapper]);
+    }
+
+    // Review on #2258: a Codex left in a mise node version never displaces
+    // a system install that was found before; it still beats PATH.
+    #[cfg(unix)]
+    #[test]
+    fn mise_node_installs_come_after_the_system_locations() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let in_node = npm_global_codex(&home.join(".local/share/mise/installs/node/22.23.2"));
+        let candidates = executable_candidates(&env(&[("PATH", "/usr/bin")]), home);
+        let position = |p: &Path| candidates.iter().position(|c| c == p).unwrap();
+        assert!(position(Path::new("/usr/local/bin/codex")) < position(&in_node));
+        assert!(position(&in_node) < position(Path::new("/usr/bin/codex")));
     }
 
     // mise's data folder follows MISE_DATA_DIR, then XDG_DATA_HOME.
