@@ -911,8 +911,9 @@ async fn a_revoked_delegate_gets_no_retried_copy() {
         Arc::new(tokio::sync::Notify::new()),
         Arc::new(tokio::sync::Notify::new()),
     );
-    // Call 1 is discovery; call 2 is the first retry's re-check.
-    *f.cloud.gate.lock().unwrap() = Some((2, reached.clone(), release.clone()));
+    // Call 1 is discovery, call 2 the first try's check, call 3 the first
+    // retry's.
+    *f.cloud.gate.lock().unwrap() = Some((3, reached.clone(), release.clone()));
     f.server
         .set_api_error("POST /v1/dm to=assistant", Some((500, "unavailable")));
     const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3be013";
@@ -927,13 +928,13 @@ async fn a_revoked_delegate_gets_no_retried_copy() {
     *f.cloud.delegates.lock().unwrap() = json!({"delegates": []});
     release.notify_one();
     tokio::time::timeout(Duration::from_secs(10), async {
-        while f.cloud.answered.load(SeqCst) < 2 {
+        while f.cloud.answered.load(SeqCst) < 3 {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
     .unwrap();
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    copies_settled(&f.core, 1).await;
     // One send is three POSTs: the client retries a 5xx itself.
     let copies = f
         .server
@@ -1007,15 +1008,16 @@ async fn a_leader_that_is_also_a_delegate_gets_both_copies() {
         .filter(|call| call.body["to"] == "assistant")
         .filter_map(|call| call.idempotency_key)
         .collect();
+    // A send the client repeated under load keeps its key.
     keys.sort();
+    keys.dedup();
     let id = MessageRef::of(&f.delegate.id);
-    assert_eq!(
-        keys,
-        vec![
-            format!("spawn-approval-{}-{id}", notice.reference),
-            format!("spawn-approval-delegate-{}-{id}", notice.reference),
-        ]
-    );
+    let mut expected = vec![
+        format!("spawn-approval-{}-{id}", notice.reference),
+        format!("spawn-approval-delegate-{}-{id}", notice.reference),
+    ];
+    expected.sort();
+    assert_eq!(keys, expected);
 }
 
 /// A delegate without a conversation Relaycast lists to the session (none
@@ -1032,7 +1034,7 @@ async fn no_notice_goes_to_a_delegate_without_a_listed_private_conversation() {
     f.core
         .forward_to_owner(&registration, &f.token(), &notice)
         .await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    copies_settled(&f.core, 1).await;
     assert!(!f
         .server
         .calls("POST", "/v1/dm")
@@ -1064,7 +1066,7 @@ async fn a_conversation_with_a_third_participant_is_not_one_to_one() {
     f.core
         .forward_to_owner(&registration, &f.token(), &notice)
         .await;
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    copies_settled(&f.core, 1).await;
     assert!(!f
         .server
         .calls("POST", "/v1/dm")
@@ -1098,4 +1100,44 @@ async fn a_participant_added_during_attestation_stops_the_answer() {
     assert!(not_one(f.core.owner_reply(&registration, &reply).await));
     assert_eq!(f.attestation_calls(), 1, "Cloud was asked");
     assert!(codex_drive::has_pending(THREAD, &notice.reference));
+}
+
+/// Waits until `n` leaders' or delegates' notice copies have finished
+/// their tries (sent, stopped or out of tries).
+async fn copies_settled(core: &Core, n: usize) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while core
+            .notice_copies_settled
+            .load(std::sync::atomic::Ordering::SeqCst)
+            < n
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the notice copies finish");
+}
+
+/// Only the conversation that carried the reply decides, for delegates too.
+#[tokio::test]
+async fn the_conversation_that_carried_a_delegate_reply_decides() {
+    let f = fixture().await;
+    f.server.seed_agent("other", "agent", json!({}));
+    f.server.seed_conversation("other", "c1");
+    f.server.add_dm_participant("other", "c1", "assistant");
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3be019";
+    let registration = f.spawned("codex", THREAD);
+    let notice = codex_request(THREAD, 1005);
+    f.attests(&format!("{}:{}:approve", f.child.id, notice.reference));
+    let text = format!("approve {}", notice.reference);
+    let elsewhere = Delivery {
+        channel_id: Some("dmch_c1_other".into()),
+        ..approval_dm("elsewhere", &f.delegate, &text)
+    };
+    assert!(not_one(f.core.owner_reply(&registration, &elsewhere).await));
+    let private = Delivery {
+        channel_id: Some("dmch_assistant_c1".into()),
+        ..approval_dm("private", &f.delegate, &text)
+    };
+    assert!(settled(f.core.owner_reply(&registration, &private).await).ends_with("Answered"));
 }

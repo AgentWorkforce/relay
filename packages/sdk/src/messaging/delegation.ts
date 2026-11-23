@@ -374,6 +374,11 @@ export interface RelayRedeemOptions {
  * session's own agent (`POST /delegation/redeem` on the node's session
  * socket). `condition_unmet` (with `unmet`) leaves the approval unconsumed:
  * wait and redeem again before it expires.
+ *
+ * On Windows the named pipe is opened by name, and Node cannot check which
+ * process serves it; a pipe another local user created first could answer.
+ * Use it only where local users are trusted, or verify the outcome through
+ * Cloud.
  * @param approvalId - The approval id from the delegate line (`apv_…`)
  * @param action - The exact class and target about to be acted on
  * @param options - Where the node's session socket is

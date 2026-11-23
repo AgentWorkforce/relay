@@ -558,28 +558,42 @@ impl Core {
                 .filter(|leader| Some(&leader.agent_id) != person.as_ref());
             let (core, registration) = (&core, &registration);
             let (token, reference, text) = (&token, reference.as_str(), text.as_str());
-            futures_util::future::join_all(leaders.map(|leader| async move {
-                let id = &leader.agent_id;
-                for send in 0..LEADER_SENDS {
-                    if send > 0 {
-                        tokio::time::sleep(LEADER_RESEND_AFTER).await;
+            futures_util::future::join_all(leaders.map(|leader| {
+                let copy = async move {
+                    let id = &leader.agent_id;
+                    for send in 0..LEADER_SENDS {
+                        if send > 0 {
+                            tokio::time::sleep(LEADER_RESEND_AFTER).await;
+                        }
+                        let name = match core.leader_try(registration, token, reference, id).await {
+                            LeaderTry::Send(name) => name,
+                            LeaderTry::Skip => continue,
+                            LeaderTry::Stop => return,
+                        };
+                        let base_url = &registration.base_url;
+                        if send_approval_dm(base_url, token, reference, text, &name, id)
+                            .await
+                            .is_ok()
+                        {
+                            return;
+                        }
                     }
-                    let name = match core.leader_try(registration, token, reference, id).await {
-                        LeaderTry::Send(name) => name,
-                        LeaderTry::Skip => continue,
-                        LeaderTry::Stop => return,
-                    };
-                    let base_url = &registration.base_url;
-                    if send_approval_dm(base_url, token, reference, text, &name, id)
-                        .await
-                        .is_ok()
-                    {
-                        return;
-                    }
+                };
+                async move {
+                    copy.await;
+                    core.note_copy_settled();
                 }
             }))
             .await;
         });
+    }
+
+    /// Counts a leader's or delegate's copy of an approval DM whose tries
+    /// are over (sent, stopped or out of tries), for tests to wait on.
+    pub(crate) fn note_copy_settled(&self) {
+        #[cfg(test)]
+        self.notice_copies_settled
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Whether one try at the leader `id`'s copy of the approval DM about
@@ -645,6 +659,24 @@ impl Core {
         token: &Secret,
         peer_id: &str,
     ) -> PairConversation {
+        self.pair_conversation_in(registration, token, peer_id, None)
+            .await
+    }
+
+    /// [`Self::pair_conversation`], limited to the conversation of
+    /// `channel` (`dmch_<key>` is conversation `dm_<key>`) when a reply names
+    /// the one that carried it: another conversation with the peer does not
+    /// decide it.
+    pub(crate) async fn pair_conversation_in(
+        &self,
+        registration: &Registration,
+        token: &Secret,
+        peer_id: &str,
+        channel: Option<&str>,
+    ) -> PairConversation {
+        let carried = channel
+            .and_then(|channel| channel.strip_prefix(ONE_TO_ONE_DM_CHANNEL))
+            .map(|key| format!("dm_{key}"));
         let Ok(http) = sdk_gaps::http(&registration.base_url, token) else {
             return PairConversation::Unknown;
         };
@@ -654,7 +686,12 @@ impl Core {
         };
         let pair: HashSet<&str> = [registration.agent_id.as_str(), peer_id].into();
         let mut found = false;
-        for conversation in list.iter().filter(|c| c["type"].as_str() == Some("1:1")) {
+        for conversation in list.iter().filter(|c| {
+            c["type"].as_str() == Some("1:1")
+                && carried
+                    .as_deref()
+                    .is_none_or(|id| c["id"].as_str() == Some(id))
+        }) {
             let ids: HashSet<&str> = conversation["participants"]
                 .as_array()
                 .into_iter()
@@ -679,16 +716,28 @@ impl Core {
     }
 
     /// Whether the reply `delivery` from `sender_id` came in the private
-    /// 1:1 conversation of `registration` and the sender.
-    async fn in_private_pair(&self, registration: &Registration, sender_id: &str) -> bool {
+    /// 1:1 conversation of `registration` and the sender: the conversation
+    /// that carried it when the delivery names its channel, else every 1:1
+    /// conversation with the sender.
+    async fn in_private_pair(
+        &self,
+        registration: &Registration,
+        delivery: &Delivery,
+        sender_id: &str,
+    ) -> bool {
         let Some((_, token)) = self
             .agent_credential(&registration.name)
             .filter(|(current, _)| current.agent_id == registration.agent_id)
         else {
             return false;
         };
-        self.pair_conversation(registration, &token, sender_id)
-            .await
+        self.pair_conversation_in(
+            registration,
+            &token,
+            sender_id,
+            delivery.channel_id.as_deref(),
+        )
+        .await
             == PairConversation::Private
     }
 
@@ -857,7 +906,9 @@ impl Core {
             || !self.leaders_may_answer(registration)
             || !self.organization_admits(registration, delivery)
             || self.open_request(registration, reference).await != Some(true)
-            || !self.in_private_pair(registration, sender_id).await
+            || !self
+                .in_private_pair(registration, delivery, sender_id)
+                .await
         {
             return None;
         }
@@ -869,7 +920,9 @@ impl Core {
         // Reading the list can take a while: the setting turned off, the
         // session taken over, or an organization hold begun meanwhile makes
         // no approver.
-        (self.in_private_pair(registration, sender_id).await
+        (self
+            .in_private_pair(registration, delivery, sender_id)
+            .await
             && self.leaders_may_answer_now(registration)
             && self.organization_admits(registration, delivery))
         .then_some(leader)

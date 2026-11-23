@@ -1974,7 +1974,7 @@ async fn a_conversation_with_a_third_participant_is_not_one_to_one() {
     f.core
         .forward_to_owner(&registration, &f.token(), &notice)
         .await;
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    copies_settled(&f.core, 1).await;
     assert!(copies_to(&f, "lead").is_empty(), "{:?}", f.approval_dms());
 
     // A leader added to another agent's conversation with the session is
@@ -2022,6 +2022,47 @@ async fn no_notice_goes_to_a_leader_without_a_listed_private_conversation() {
                 .any(|call| call.body["to"] == "lead")
         })
         .await;
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    copies_settled(&f.core, 2).await;
     assert!(copies_to(&f, "lead3").is_empty(), "{:?}", f.approval_dms());
+}
+
+/// Waits until `n` leaders' or delegates' notice copies have finished
+/// their tries (sent, stopped or out of tries).
+async fn copies_settled(core: &Core, n: usize) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while core
+            .notice_copies_settled
+            .load(std::sync::atomic::Ordering::SeqCst)
+            < n
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the notice copies finish");
+}
+
+/// Only the conversation that carried the reply decides: a reply in the
+/// private DM answers even though the leader is also in another agent's
+/// conversation with the session, and a reply in that one does not.
+#[tokio::test]
+async fn the_conversation_that_carried_the_reply_decides() {
+    let f = fixture().await;
+    f.set(Some(true), None, None);
+    f.server.seed_agent("other", "agent", json!({}));
+    f.server.seed_conversation("other", "c1");
+    f.server.add_dm_participant("other", "c1", "lead");
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bd204";
+    let registration = f.spawned("codex", THREAD);
+    let first = codex_request(THREAD, 1204);
+    let mut elsewhere = dm(
+        "elsewhere",
+        &f.lead,
+        &format!("approve {}", first.reference),
+    );
+    elsewhere.channel_id = Some("dmch_c1_other".into());
+    assert!(not_one(f.core.owner_reply(&registration, &elsewhere).await));
+    let mut private = dm("private", &f.lead, &format!("approve {}", first.reference));
+    private.channel_id = Some("dmch_c1_lead".into());
+    assert!(settled(f.core.owner_reply(&registration, &private).await).ends_with("Answered"));
 }

@@ -6236,7 +6236,7 @@ async fn a_delegate_sends_its_owner_approval_through_unchanged() {
         json!({"to": "alice", "text": "x", "owner_approval": [1, 2]}),
         json!({"to": "alice", "text": "x", "owner_approval": "[1]"}),
         json!({"to": "alice", "text": "x",
-            "owner_approval": {"quote": "q".repeat(40 * 1024)}}),
+            "owner_approval": {"quote": "q".repeat(200 * 1024)}}),
         json!({"to": "alice", "text": "x", "reply_to": "m_1", "owner_approval": approval}),
         json!({"channel": "screens", "thread_id": "m_1", "text": "x", "owner_approval": approval}),
     ] {

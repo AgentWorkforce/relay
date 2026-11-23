@@ -1293,7 +1293,13 @@ impl Core {
         // (`relay::delegation`), before the hand-over and so before the
         // acknowledgement. Any failure leaves it a peer's message.
         let text = match source {
-            session_text::InputSource::Peer | session_text::InputSource::Teammate
+            // Every relayed source but the verified owner's own message: the
+            // spawning agent's or a leader's frame keeps its line, and the
+            // delegate line goes under it.
+            session_text::InputSource::Peer
+            | session_text::InputSource::Teammate
+            | session_text::InputSource::Requester
+            | session_text::InputSource::Leader
                 if !via_webhook && !via_integration =>
             {
                 self.with_delegation(registration, delivery, token, text)

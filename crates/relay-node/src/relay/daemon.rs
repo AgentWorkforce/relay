@@ -232,6 +232,9 @@ pub struct Core {
     pub(crate) leaders: crate::relay::leaders::Cache,
     /// Cloud's delegation keys, read on first need (`relay::delegation`).
     pub(crate) delegation_keys: crate::relay::delegation::Keys,
+    /// Leaders' and delegates' approval DM copies whose tries are over.
+    #[cfg(test)]
+    pub(crate) notice_copies_settled: std::sync::atomic::AtomicUsize,
     pub(crate) me: std::sync::Weak<Core>,
 }
 
@@ -346,6 +349,8 @@ impl Core {
             spawn_node: tokio::sync::Mutex::new(None),
             leaders: Default::default(),
             delegation_keys: Default::default(),
+            #[cfg(test)]
+            notice_copies_settled: Default::default(),
             me: me.clone(),
         });
         if let Some(trusted) = &core.plugins.trusted {

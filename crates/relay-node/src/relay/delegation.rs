@@ -341,15 +341,22 @@ impl Action {
     /// <setting> to <value> on @<agent id>`.
     pub fn words(&self) -> String {
         use crate::relay::delivery::policy::one_line;
+        // The exact class and target to redeem, when the words do not
+        // already read as them.
+        let exact = format!(
+            "(redeem as {} {})",
+            one_line(&self.class),
+            one_line(&self.target)
+        );
         let action = match self.config_change() {
             Some((agent, setting, value)) => format!(
-                "change {} to {} on @{}",
+                "change {} to {} on @{} {exact}",
                 one_line(setting),
                 one_line(value),
                 one_line(agent)
             ),
             None => match self.pr_op() {
-                Some((pull, op)) => format!("{} on {}", one_line(&op), one_line(pull)),
+                Some((pull, op)) => format!("{} on {} {exact}", one_line(&op), one_line(pull)),
                 None => format!("{} {}", one_line(&self.class), one_line(&self.target)),
             },
         };
@@ -538,6 +545,10 @@ pub fn verify(jws: &str, keys: &KeySet, expected: Expected<'_>) -> Result<Claims
             CLASSES.contains(&action.class.as_str())
                 && !action.target.trim().is_empty()
                 && action.target.chars().count() <= MAX_TARGET
+                // Shown exactly: a target the line would change (brackets,
+                // control or line-separator characters, runs of spaces) is
+                // refused, so the agent redeems exactly what was signed.
+                && crate::relay::delivery::policy::one_line(&action.target) == action.target
                 && action.conditions.len() <= MAX_CONDITIONS
                 && action.conditions.iter().all(Condition::is_valid)
                 && (action.class != CONFIG_CHANGE || action.config_change().is_some())
@@ -578,8 +589,10 @@ pub fn verify(jws: &str, keys: &KeySet, expected: Expected<'_>) -> Result<Claims
         return Err(Refusal::Expired);
     }
     if claims.iat > expected.now + SKEW_SECS
-        || claims.exp - expected.now > MAX_LIFETIME_SECS
-        || claims.exp - claims.iat > MAX_LIFETIME_SECS
+        // Checked arithmetic: a signed claim with an out-of-range time
+        // is refused, never wrapped.
+        || claims.exp.checked_sub(expected.now).is_none_or(|left| left > MAX_LIFETIME_SECS)
+        || claims.exp.checked_sub(claims.iat).is_none_or(|life| life > MAX_LIFETIME_SECS)
         || claims.exp < claims.iat
     {
         return Err(Refusal::Lifetime);
@@ -721,9 +734,12 @@ async fn fetch_site_keys() -> Option<Value> {
     None
 }
 
-/// The longest owner approval the session socket takes, in bytes: far more
-/// than the wire contract allows (20 actions, a 2000-character quote).
-pub const MAX_OWNER_APPROVAL: usize = 32 * 1024;
+/// The longest owner approval the session socket takes, in bytes: above the
+/// largest valid v1 object, which is about 161 KB when every character is a
+/// four-byte one written as a JSON `\u` escape pair (12 bytes): a 2000-char
+/// quote (24 000), 20 actions of a 256-char target, a 280-char note and 5
+/// conditions (about 6 800 each), and the other fields.
+pub const MAX_OWNER_APPROVAL: usize = 192 * 1024;
 
 /// `raw`, a delegate's `owner_approval` as sent to the session socket, read
 /// as a JSON object, unchanged, or why it is refused. Its content is
@@ -912,16 +928,10 @@ impl Core {
         token: &Secret,
         text: String,
     ) -> String {
-        use crate::relay::delivery::policy::{
-            delegate_framed, leader_framed, owner_authority_framed, owner_framed,
-            with_delegate_line,
-        };
-        if !delivery.has_owner_approval
-            || owner_framed(&text)
-            || owner_authority_framed(&text)
-            || leader_framed(&text)
-            || delegate_framed(&text)
-        {
+        use crate::relay::delivery::policy::{delegate_framed, with_delegate_line};
+        // An owner or leader frame keeps its line; a verified delegate line
+        // goes under it (design §9.1).
+        if !delivery.has_owner_approval || delegate_framed(&text) {
             return text;
         }
         match self.attest_delegation(registration, delivery, token).await {

@@ -1753,7 +1753,9 @@ fn route(
             // A conversation `me` was added to is listed to it too.
             let mut listed: Vec<Value> = Vec::new();
             for (conversation, ((a, b), added)) in &world.added_participants {
-                if added.iter().any(|(name, _)| *name == me.name) {
+                // By immutable id, as Relaycast lists them: an agent that
+                // later takes the name does not inherit the conversation.
+                if added.iter().any(|(_, id)| *id == me.id) {
                     {
                         let mut participants: Vec<Value> = [a.as_str(), b.as_str()]
                             .iter()

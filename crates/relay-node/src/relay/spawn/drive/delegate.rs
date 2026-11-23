@@ -135,7 +135,9 @@ impl Core {
             || !self.delegates_may_answer(registration)
             || !self.organization_admits(registration, delivery)
             || !self.delegate_request(registration, reference).await
-            || !self.in_private_pair(registration, sender_id).await
+            || !self
+                .in_private_pair(registration, delivery, sender_id)
+                .await
         {
             return None;
         }
@@ -184,8 +186,11 @@ impl Core {
         }
         // The awaited check first, the synchronous ones last: nothing can
         // change between them and the answer.
+        let exp = claims.exp;
         (self.delegate_request(registration, reference).await
-            && self.in_private_pair(registration, sender_id).await
+            && self.in_private_pair(registration, delivery, sender_id).await
+            // The attestation must still be live when the answer is taken.
+            && crate::relay::state::now_ms() / 1000 < exp
             && self.delegates_may_answer_now(registration)
             && self.organization_admits(registration, delivery))
         .then(|| DelegateApprover {
@@ -277,34 +282,38 @@ impl Core {
                 .filter(|id| Self::delegate_may_be(&registration, id));
             let (core, registration) = (&core, &registration);
             let (token, reference, text) = (&token, reference.as_str(), text.as_str());
-            futures_util::future::join_all(delegates.map(|id| async move {
-                for send in 0..LEADER_SENDS {
-                    if send > 0 {
-                        tokio::time::sleep(LEADER_RESEND_AFTER).await;
-                    }
-                    let name = match core
-                        .delegate_try(registration, token, reference, &id, send > 0)
+            futures_util::future::join_all(delegates.map(|id| {
+                let copy = async move {
+                    for send in 0..LEADER_SENDS {
+                        if send > 0 {
+                            tokio::time::sleep(LEADER_RESEND_AFTER).await;
+                        }
+                        let name =
+                            match core.delegate_try(registration, token, reference, &id).await {
+                                DelegateTry::Send(name) => name,
+                                DelegateTry::Skip => continue,
+                                DelegateTry::Stop => return,
+                            };
+                        let base_url = &registration.base_url;
+                        if send_approval_dm_keyed(
+                            base_url,
+                            token,
+                            "spawn-approval-delegate",
+                            reference,
+                            text,
+                            &name,
+                            &id,
+                        )
                         .await
-                    {
-                        DelegateTry::Send(name) => name,
-                        DelegateTry::Skip => continue,
-                        DelegateTry::Stop => return,
-                    };
-                    let base_url = &registration.base_url;
-                    if send_approval_dm_keyed(
-                        base_url,
-                        token,
-                        "spawn-approval-delegate",
-                        reference,
-                        text,
-                        &name,
-                        &id,
-                    )
-                    .await
-                    .is_ok()
-                    {
-                        return;
+                        .is_ok()
+                        {
+                            return;
+                        }
                     }
+                };
+                async move {
+                    copy.await;
+                    core.note_copy_settled();
                 }
             }))
             .await;
@@ -319,21 +328,11 @@ impl Core {
         token: &Secret,
         reference: &str,
         id: &str,
-        again: bool,
     ) -> DelegateTry {
         if !self.delegate_request(registration, reference).await
             || !self.delegates_may_answer_now(registration)
         {
             return DelegateTry::Stop;
-        }
-        // A try after the first asks Cloud again whether the delegate's grant
-        // still covers the session: a revoked delegate is never sent it.
-        if again {
-            match self.prompt_delegates(registration, token).await {
-                None => return DelegateTry::Skip,
-                Some(ids) if !ids.iter().any(|listed| listed == id) => return DelegateTry::Stop,
-                Some(_) => {}
-            }
         }
         let Some(name) = self.name_of(registration, id).await else {
             return DelegateTry::Skip;
@@ -347,6 +346,14 @@ impl Core {
             PairConversation::Private => {}
             PairConversation::Absent | PairConversation::Shared => return DelegateTry::Stop,
             PairConversation::Unknown => return DelegateTry::Skip,
+        }
+        // Every try, the first included, asks Cloud as late as it can
+        // whether the delegate's grant still covers the session: a revoked
+        // delegate is never sent it.
+        match self.prompt_delegates(registration, token).await {
+            None => return DelegateTry::Skip,
+            Some(ids) if !ids.iter().any(|listed| listed == id) => return DelegateTry::Stop,
+            Some(_) => {}
         }
         if !self.delegate_request(registration, reference).await
             || !self.delegates_may_answer_now(registration)

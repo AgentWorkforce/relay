@@ -39,6 +39,20 @@ function signer() {
 
 const NOW = 1_800_000_000;
 
+/**
+ * Listens where the SDK connects for `path` (the path itself, or on Windows
+ * the core's named pipe), rejecting when the listener cannot bind.
+ */
+function listenOn(server: Server, path: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(sessionSocketEndpoint(path), () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
+}
+
 function claims(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     v: 1,
@@ -237,7 +251,7 @@ describe('delegate approvals', () => {
         res.end(JSON.stringify({ ok: true, data: answer }));
       });
       // Where the SDK connects: the path itself, or on Windows the core's pipe.
-      await new Promise<void>((resolve) => server!.listen(sessionSocketEndpoint(path), resolve));
+      await listenOn(server, path);
       return path;
     }
 
@@ -330,8 +344,8 @@ describe('delegate approvals', () => {
         : { ok: true, consumed: false, checked: { head_sha: sha } };
       res.end(JSON.stringify({ ok: true, data }));
     });
-    await new Promise<void>((resolve) => server.listen(sessionSocketEndpoint(socketPath), resolve));
     try {
+      await listenOn(server, socketPath);
       await expect(
         redeemOwnerApproval('apv_7Q2abcdEF', { class: 'merge', target: 'acme/api#12' }, { socketPath })
       ).resolves.toEqual({ ok: true, consumed: false, checked: { head_sha: sha } });

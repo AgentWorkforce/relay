@@ -754,21 +754,48 @@ pub fn with_delegate_line(
     delegate: &str,
     claims: &crate::relay::delegation::Claims,
 ) -> String {
-    with_line(text, &delegate_line(delegate, claims))
+    let line = delegate_line(delegate, claims);
+    // Under the core's own owner or leader line when there is one, so both
+    // signals survive (design §9.1): the delegate line is then the third.
+    if framed_by_core(text) {
+        let mut lines = text.splitn(3, '\n');
+        return match (lines.next(), lines.next(), lines.next()) {
+            (Some(first), Some(second), Some(rest)) => {
+                format!("{first}\n{second}\n{line}\n{rest}")
+            }
+            (Some(first), Some(second), None) => format!("{first}\n{second}\n{line}"),
+            _ => with_line(text, &line),
+        };
+    }
+    with_line(text, &line)
+}
+
+/// Whether `text` carries one of the core's own lines under its
+/// attribution: the owner's, the owner's with authority, or a leader's.
+fn framed_by_core(text: &str) -> bool {
+    owner_framed(text) || owner_authority_framed(text) || leader_framed(text)
+}
+
+/// Whether `line` is a delegate line ([`delegate_line`]).
+fn is_delegate_line(line: &str) -> bool {
+    line.starts_with(DELEGATE_LINE_START)
+        && (line.ends_with(DELEGATE_LINE_END) || line.ends_with(DELEGATE_LINE_END_CONFIG))
 }
 
 /// Whether `text` is framed as a delegate's attested approval: a relay
 /// attribution, a peer's or a native turn's ([`RELAYED_PREFIXES`]), with a
-/// [`delegate_line`] right under it. The line anywhere else, in the body
-/// included, is not.
+/// [`delegate_line`] right under it, or right under the core's own owner or
+/// leader line. The line anywhere else, in the body included, is not.
 pub fn delegate_framed(text: &str) -> bool {
     let mut lines = text.split('\n');
-    lines.next().is_some_and(relayed_input)
-        && lines.next().is_some_and(|second| {
-            second.starts_with(DELEGATE_LINE_START)
-                && (second.ends_with(DELEGATE_LINE_END)
-                    || second.ends_with(DELEGATE_LINE_END_CONFIG))
-        })
+    if !lines.next().is_some_and(relayed_input) {
+        return false;
+    }
+    match lines.next() {
+        Some(second) if is_delegate_line(second) => true,
+        Some(_) if framed_by_core(text) => lines.next().is_some_and(is_delegate_line),
+        _ => false,
+    }
 }
 
 /// `text` without its delegate line when it is framed as a delegate's
@@ -778,12 +805,15 @@ pub fn without_delegate_line(text: &str) -> String {
     if !delegate_framed(text) {
         return text.to_string();
     }
-    let (attribution, rest) = text.split_once('\n').unwrap_or((text, ""));
-    let rest = rest.split_once('\n').map_or("", |(_, rest)| rest);
-    match rest.is_empty() && !text.ends_with('\n') {
-        true => attribution.to_string(),
-        false => format!("{attribution}\n{rest}"),
-    }
+    let lines: Vec<&str> = text.split('\n').collect();
+    let at = if is_delegate_line(lines[1]) { 1 } else { 2 };
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != at)
+        .map(|(_, line)| *line)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Whether `text` is framed as its owner's: a relay attribution, a peer's

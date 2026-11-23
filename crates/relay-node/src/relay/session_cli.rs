@@ -912,7 +912,7 @@ mod owner_approval_tests {
                 "{bad}"
             );
         }
-        let large = format!(r#"{{"quote":"{}"}}"#, "q".repeat(40 * 1024));
+        let large = format!(r#"{{"quote":"{}"}}"#, "q".repeat(50 * 1024));
         assert!(send(Recipient::To("alice".into()), &large)
             .request()
             .is_err());
