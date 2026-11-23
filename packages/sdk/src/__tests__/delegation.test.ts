@@ -1,0 +1,226 @@
+import { generateKeyPairSync, sign } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { createServer, type Server } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import {
+  RelaycastMessagingClient,
+  delegationCovers,
+  redeemOwnerApproval,
+  verifyDelegationAttestation,
+  withVerifiedDelegation,
+  type RelayDelegationJwks,
+  type RelayMessage,
+} from '../messaging/index.js';
+
+const KID = 'k-test';
+
+function signer() {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const jwk = publicKey.export({ format: 'jwk' }) as { x: string };
+  const jwks: RelayDelegationJwks = { keys: [{ kty: 'OKP', crv: 'Ed25519', kid: KID, x: jwk.x }] };
+  const signJws = (claims: Record<string, unknown>, header: Record<string, unknown> = {}) => {
+    const head = Buffer.from(
+      JSON.stringify({ alg: 'EdDSA', typ: 'relay-delegation+jws', kid: KID, ...header })
+    ).toString('base64url');
+    const body = Buffer.from(JSON.stringify(claims)).toString('base64url');
+    const signature = sign(null, Buffer.from(`${head}.${body}`), privateKey).toString('base64url');
+    return `${head}.${body}.${signature}`;
+  };
+  return { jwks, signJws };
+}
+
+const NOW = 1_800_000_000;
+
+function claims(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    v: 1,
+    ws: 'ws_1',
+    owner_id: 'hum_khaliq',
+    owner_display: 'Khaliq Gant',
+    delegate_agent_id: 'agent_kjgrok',
+    grant_id: 'grt_1',
+    message_id: 'msg_1',
+    recipient_agent_id: 'agent_relay',
+    approval_id: 'apv_7Q2abcdEF',
+    tier: 'D',
+    standing: 'code_owner',
+    actions: [
+      {
+        class: 'merge',
+        target: 'AgentWorkforce/relay#2250',
+        conditions: [{ type: 'ci_green' }, { type: 'head_sha', sha: 'a'.repeat(40) }],
+      },
+    ],
+    single_use: false,
+    iat: NOW,
+    exp: NOW + 300,
+    jti: 'jti_1',
+    ...overrides,
+  };
+}
+
+const expected = {
+  workspaceId: 'ws_1',
+  messageId: 'msg_1',
+  recipientAgentId: 'agent_relay',
+  senderId: 'agent_kjgrok',
+  now: NOW + 10,
+};
+
+describe('delegate approvals', () => {
+  it('verifies an attestation and exposes only verified fields', () => {
+    const { jwks, signJws } = signer();
+    const delegation = verifyDelegationAttestation(signJws(claims()), jwks, expected);
+    expect(delegation).toMatchObject({
+      verified: true,
+      tier: 'D',
+      standing: 'code_owner',
+      ownerDisplay: 'Khaliq Gant',
+      approvalId: 'apv_7Q2abcdEF',
+      redeemFirst: true,
+      singleUse: false,
+    });
+    expect(delegation?.expiresAt).toBe(new Date((NOW + 300) * 1000).toISOString());
+  });
+
+  it('refuses another delivery, a forged signature, an unknown key or expiry', () => {
+    const { jwks, signJws } = signer();
+    const other = signer();
+    const refused = [
+      signJws(claims({ recipient_agent_id: 'agent_other' })),
+      signJws(claims({ message_id: 'msg_other' })),
+      signJws(claims({ ws: 'ws_other' })),
+      signJws(claims({ delegate_agent_id: 'agent_mallory' })),
+      signJws(claims({ exp: NOW })),
+      signJws(claims({ exp: NOW + 3600 })),
+      signJws(claims({ standing: 'org_admin' })),
+      signJws(claims({ actions: [{ class: 'merge', target: 'x', conditions: [{ type: 'when_green' }] }] })),
+      signJws(claims(), { kid: 'k-unknown' }),
+      signJws(claims(), { alg: 'none' }),
+      other.signJws(claims()),
+      'not.a.jws',
+    ];
+    for (const jws of refused) {
+      expect(verifyDelegationAttestation(jws, jwks, expected)).toBeUndefined();
+    }
+  });
+
+  it('sets message.delegation only when verified, and covers exact actions', () => {
+    const { jwks, signJws } = signer();
+    const message: RelayMessage = {
+      id: 'msg_1',
+      messageId: 'msg_1',
+      text: 'merge it',
+      from: { id: 'agent_kjgrok', name: 'kjgrok' },
+      // An unverified claim on the way in is dropped.
+      delegation: { verified: true } as RelayMessage['delegation'],
+    };
+    const base = { workspaceId: 'ws_1', recipientAgentId: 'agent_relay', now: NOW + 10 };
+    const verified = withVerifiedDelegation(message, signJws(claims()), jwks, base);
+    expect(verified.delegation?.approvalId).toBe('apv_7Q2abcdEF');
+    expect(delegationCovers(verified, { class: 'merge', target: 'AgentWorkforce/relay#2250' })).toBe(true);
+    expect(delegationCovers(verified, { class: 'merge', target: 'AgentWorkforce/relay#2251' })).toBe(false);
+    const forged = withVerifiedDelegation(message, signer().signJws(claims()), jwks, base);
+    expect(forged.delegation).toBeUndefined();
+  });
+
+  it('sends ownerApproval through as owner_approval beside the message', async () => {
+    const post = vi.fn(async () => ({
+      conversation_id: 'dm-1',
+      message: { id: 'dm-send', agent_name: 'kjgrok', text: 'merge', attachments: [] },
+    }));
+    const agentClient = { client: { post } } as unknown as ConstructorParameters<
+      typeof RelaycastMessagingClient
+    >[0]['agentClient'];
+    const client = new RelaycastMessagingClient({
+      relaycast: {} as ConstructorParameters<typeof RelaycastMessagingClient>[0]['relaycast'],
+      agentClient,
+      sessionRef: 'session-1',
+    });
+    await client.messages.direct({
+      to: 'relay',
+      text: 'Khaliq approved: merge #2250 once CI is green.',
+      idempotencyKey: 'idem-1',
+      ownerApproval: {
+        ownerId: 'hum_khaliq',
+        actions: [
+          { class: 'merge', target: 'AgentWorkforce/relay#2250', conditions: [{ type: 'ci_green' }] },
+        ],
+        quote: 'yes merge 2250 when green',
+        quotedAt: '2026-11-23T07:49:00Z',
+        quoteSource: 'grok:dm',
+        expiresAt: '2026-11-23T08:49:00Z',
+      },
+    });
+    expect(post).toHaveBeenCalledWith(
+      '/v1/dm',
+      {
+        to: 'relay',
+        text: 'Khaliq approved: merge #2250 once CI is green.',
+        data: { session_ref: 'session-1' },
+        mode: 'wait',
+        owner_approval: {
+          v: 1,
+          owner_id: 'hum_khaliq',
+          actions: [
+            { class: 'merge', target: 'AgentWorkforce/relay#2250', conditions: [{ type: 'ci_green' }] },
+          ],
+          quote: 'yes merge 2250 when green',
+          quoted_at: '2026-11-23T07:49:00Z',
+          quote_source: 'grok:dm',
+          expires_at: '2026-11-23T08:49:00Z',
+        },
+      },
+      { headers: { 'Idempotency-Key': 'idem-1', 'X-Idempotency-Key': 'idem-1' } }
+    );
+  });
+
+  describe('redeem', () => {
+    let server: Server | undefined;
+    let dir: string | undefined;
+    afterEach(() => {
+      server?.close();
+      if (dir) rmSync(dir, { recursive: true, force: true });
+    });
+
+    async function socket(answer: unknown, seen: string[]): Promise<string> {
+      dir = mkdtempSync(join(tmpdir(), 'relay-redeem-'));
+      const path = join(dir, 'relay.sock');
+      server = createServer((req, res) => {
+        seen.push(`${req.method} ${req.url}`);
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify(answer));
+      });
+      await new Promise<void>((resolve) => server!.listen(path, resolve));
+      return path;
+    }
+
+    it('redeems through the session socket and passes on unmet conditions', async () => {
+      const seen: string[] = [];
+      const socketPath = await socket(
+        { ok: false, reason: 'condition_unmet', unmet: [{ type: 'ci_green' }] },
+        seen
+      );
+      const result = await redeemOwnerApproval(
+        'apv_7Q2abcdEF',
+        { class: 'merge', target: 'AgentWorkforce/relay#2250' },
+        { socketPath }
+      );
+      expect(result).toEqual({ ok: false, reason: 'condition_unmet', unmet: [{ type: 'ci_green' }] });
+      expect(seen).toEqual([
+        'POST /delegation/redeem?approval=apv_7Q2abcdEF&class=merge&target=AgentWorkforce%2Frelay%232250',
+      ]);
+    });
+
+    it('reports a consumed approval', async () => {
+      const socketPath = await socket({ ok: true, consumed: true }, []);
+      await expect(
+        redeemOwnerApproval('apv_7Q2abcdEF', { class: 'release', target: 'pkg' }, { socketPath })
+      ).resolves.toEqual({ ok: true, consumed: true });
+    });
+  });
+});

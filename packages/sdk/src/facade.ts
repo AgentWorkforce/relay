@@ -13,6 +13,7 @@ import type {
   RelayAgentReleaseResult,
   RelaySendChannelMessageInput,
   RelayWorkspaceInfo,
+  RelayOwnerApprovalInput,
 } from './messaging/index.js';
 import {
   actionSchemaToJsonSchema,
@@ -113,6 +114,11 @@ export interface RelaySendMessageInput {
   blocks?: RelayMessageBlock[];
   idempotencyKey?: string;
   metadata?: Record<string, unknown> | null;
+  /**
+   * Sent as a delegate quoting the owner's approval for these actions
+   * (channel or direct message; not a group DM).
+   */
+  ownerApproval?: RelayOwnerApprovalInput;
 }
 
 export interface RelayReplyInput {
@@ -140,6 +146,8 @@ export interface RelayDirectInput {
   mode?: RelayMessageMode;
   idempotencyKey?: string;
   metadata?: Record<string, unknown> | null;
+  /** Sent as a delegate quoting the owner's approval for these actions. */
+  ownerApproval?: RelayOwnerApprovalInput;
 }
 
 /** Messaging surface plus the high-level overloads documented in the README. */
@@ -262,6 +270,9 @@ export function createEnrichedMessages(
     const messages = resolveFrom(sendInput.from);
     const text = buildText(sendInput.text ?? sendInput.msg, sendInput.mentions);
     if (Array.isArray(sendInput.to)) {
+      if (sendInput.ownerApproval) {
+        throw new Error('ownerApproval goes on a channel or direct message, not a group DM.');
+      }
       return messages.groupDirect({
         participants: sendInput.to.map(resolveAgentName),
         text,
@@ -280,6 +291,7 @@ export function createEnrichedMessages(
         mode: sendInput.mode,
         idempotencyKey: sendInput.idempotencyKey,
         metadata: sendInput.metadata,
+        ownerApproval: sendInput.ownerApproval,
       });
     }
     return messages.direct({
@@ -289,6 +301,7 @@ export function createEnrichedMessages(
       mode: sendInput.mode,
       idempotencyKey: sendInput.idempotencyKey,
       metadata: sendInput.metadata,
+      ownerApproval: sendInput.ownerApproval,
     });
   };
 
@@ -321,6 +334,7 @@ export function createEnrichedMessages(
       mode: input.mode,
       idempotencyKey: input.idempotencyKey,
       metadata: input.metadata,
+      ownerApproval: input.ownerApproval,
     });
   };
 
