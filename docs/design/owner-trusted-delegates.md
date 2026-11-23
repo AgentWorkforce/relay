@@ -830,6 +830,14 @@ Each one is open to Khaliq's override.
    - **Why a setting:** orgs differ. Some must keep audit evidence for a
      year or more, and others want less private text kept.
 
+**No approval prompts** (Khaliq, 2026-11-23, 7:41 AM PT, relayed): "he
+doesn't want approval prompts at all". A gate trusts the verified,
+single-use approval line by default: no tap and no prompt to the owner, just
+the line Relay verified. What this means elsewhere in the design (Tier O vs
+Tier D defaults, one-tap requests, owner notices, anomaly handling) is still
+waiting on his own answers. Until he gives them, the rest of this document
+stands as written.
+
 Two more decisions by Khaliq (2026-11-23), recorded in skills#219:
 
 - **A delegate approval can override an earlier denial** when the owner's
