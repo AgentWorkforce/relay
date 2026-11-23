@@ -73,7 +73,7 @@ describe('agent-relay delegates', () => {
     const h = harness({ grant_id: 'grt_1' });
     await h.run(
       'add',
-      'agent_kjgrok',
+      'agent_assistant',
       '--workspace',
       WS,
       '--scope',
@@ -89,7 +89,7 @@ describe('agent-relay delegates', () => {
     expect(call.path).toBe(`/api/v1/workspaces/${WS}/delegates`);
     expect(call.method).toBe('POST');
     expect(call.body).toMatchObject({
-      delegate_agent_id: 'agent_kjgrok',
+      delegate_agent_id: 'agent_assistant',
       scopes: [
         { class: 'merge', targets: ['AgentWorkforce/*'] },
         { class: 'prompt_approval', targets: ['*'] },

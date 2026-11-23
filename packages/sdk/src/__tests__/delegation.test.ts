@@ -39,9 +39,9 @@ function claims(overrides: Record<string, unknown> = {}): Record<string, unknown
   return {
     v: 1,
     ws: 'ws_1',
-    owner_id: 'hum_khaliq',
-    owner_display: 'Khaliq Gant',
-    delegate_agent_id: 'agent_kjgrok',
+    owner_id: 'hum_owner',
+    owner_display: 'Ada Owner',
+    delegate_agent_id: 'agent_assistant',
     grant_id: 'grt_1',
     message_id: 'msg_1',
     recipient_agent_id: 'agent_relay',
@@ -67,7 +67,7 @@ const expected = {
   workspaceId: 'ws_1',
   messageId: 'msg_1',
   recipientAgentId: 'agent_relay',
-  senderId: 'agent_kjgrok',
+  senderId: 'agent_assistant',
   now: NOW + 10,
 };
 
@@ -79,7 +79,7 @@ describe('delegate approvals', () => {
       verified: true,
       tier: 'D',
       standing: 'code_owner',
-      ownerDisplay: 'Khaliq Gant',
+      ownerDisplay: 'Ada Owner',
       approvalId: 'apv_7Q2abcdEF',
       redeemFirst: true,
       singleUse: false,
@@ -115,7 +115,7 @@ describe('delegate approvals', () => {
       id: 'msg_1',
       messageId: 'msg_1',
       text: 'merge it',
-      from: { id: 'agent_kjgrok', name: 'kjgrok' },
+      from: { id: 'agent_assistant', name: 'assistant' },
       // An unverified claim on the way in is dropped.
       delegation: { verified: true } as RelayMessage['delegation'],
     };
@@ -131,7 +131,7 @@ describe('delegate approvals', () => {
   it('sends ownerApproval through as owner_approval beside the message', async () => {
     const post = vi.fn(async () => ({
       conversation_id: 'dm-1',
-      message: { id: 'dm-send', agent_name: 'kjgrok', text: 'merge', attachments: [] },
+      message: { id: 'dm-send', agent_name: 'assistant', text: 'merge', attachments: [] },
     }));
     const agentClient = { client: { post } } as unknown as ConstructorParameters<
       typeof RelaycastMessagingClient
@@ -143,16 +143,16 @@ describe('delegate approvals', () => {
     });
     await client.messages.direct({
       to: 'relay',
-      text: 'Khaliq approved: merge #2250 once CI is green.',
+      text: 'The owner approved: merge #2250 once CI is green.',
       idempotencyKey: 'idem-1',
       ownerApproval: {
-        ownerId: 'hum_khaliq',
+        ownerId: 'hum_owner',
         actions: [
           { class: 'merge', target: 'AgentWorkforce/relay#2250', conditions: [{ type: 'ci_green' }] },
         ],
         quote: 'yes merge 2250 when green',
         quotedAt: '2026-11-23T07:49:00Z',
-        quoteSource: 'grok:dm',
+        quoteSource: 'chat:dm',
         expiresAt: '2026-11-23T08:49:00Z',
       },
     });
@@ -160,18 +160,18 @@ describe('delegate approvals', () => {
       '/v1/dm',
       {
         to: 'relay',
-        text: 'Khaliq approved: merge #2250 once CI is green.',
+        text: 'The owner approved: merge #2250 once CI is green.',
         data: { session_ref: 'session-1' },
         mode: 'wait',
         owner_approval: {
           v: 1,
-          owner_id: 'hum_khaliq',
+          owner_id: 'hum_owner',
           actions: [
             { class: 'merge', target: 'AgentWorkforce/relay#2250', conditions: [{ type: 'ci_green' }] },
           ],
           quote: 'yes merge 2250 when green',
           quoted_at: '2026-11-23T07:49:00Z',
-          quote_source: 'grok:dm',
+          quote_source: 'chat:dm',
           expires_at: '2026-11-23T08:49:00Z',
         },
       },

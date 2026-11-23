@@ -100,8 +100,8 @@ struct Fixture {
 async fn fixture() -> Fixture {
     let server = FakeRelaycast::start(Default::default()).await;
     let owner = server.seed_agent("owner", "human", json!({}));
-    let requester = server.seed_agent("grokbot", "agent", json!({}));
-    let delegate = server.seed_agent("kjgrok", "agent", json!({}));
+    let requester = server.seed_agent("spawner", "agent", json!({}));
+    let delegate = server.seed_agent("assistant", "agent", json!({}));
     let child = server.seed_agent("c1", "agent", json!({}));
     let home = tempfile::tempdir().unwrap();
     let spawner = Arc::new(FakeSpawner {
@@ -124,7 +124,7 @@ async fn fixture() -> Fixture {
         owner: owner.id.clone(),
         signer: Signer::new(),
         claims: Mutex::new(None),
-        user_id: Mutex::new(Some("hum_khaliq".into())),
+        user_id: Mutex::new(Some("hum_owner".into())),
         delegates: Mutex::new(json!({"delegates": []})),
         calls: Mutex::new(Vec::new()),
     });
@@ -182,7 +182,7 @@ async fn fixture() -> Fixture {
 }
 
 impl Fixture {
-    /// `c1`, spawned here by `grokbot` with `harness` on `session`, and saved.
+    /// `c1`, spawned here by `spawner` with `harness` on `session`, and saved.
     fn spawned(&self, harness: &str, session: &str) -> Registration {
         let kind = if harness == "claude" {
             "claude-terminal"
@@ -230,7 +230,7 @@ impl Fixture {
     fn claims(&self, target: &str) -> Value {
         let now = crate::relay::state::now_ms() / 1000;
         json!({
-            "v": 1, "ws": WS, "owner_id": "hum_khaliq", "owner_display": "Khaliq Gant",
+            "v": 1, "ws": WS, "owner_id": "hum_owner", "owner_display": "Ada Owner",
             "delegate_agent_id": self.delegate.id, "grant_id": "grt_1",
             "message_id": null, "recipient_agent_id": self.child.id,
             "approval_id": "apv_7Q2abcdEF", "tier": "D",
@@ -262,7 +262,7 @@ impl Fixture {
 
     fn by_delegate(&self) -> String {
         format!(
-            "the delegate @kjgrok ({}) of Khaliq Gant, grant grt_1",
+            "the delegate @assistant ({}) of Ada Owner, grant grt_1",
             self.delegate.id
         )
     }
@@ -592,7 +592,7 @@ async fn the_delegates_cloud_names_get_the_notice_with_how_to_answer() {
             server
                 .calls("POST", "/v1/dm")
                 .iter()
-                .any(|call| call.body["to"] == "kjgrok")
+                .any(|call| call.body["to"] == "assistant")
         })
         .await;
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -601,9 +601,16 @@ async fn the_delegates_cloud_names_get_the_notice_with_how_to_answer() {
         .iter()
         .filter_map(|call| call.body["to"].as_str())
         .collect();
-    assert_eq!(to.iter().filter(|to| **to == "kjgrok").count(), 1, "{to:?}");
+    assert_eq!(
+        to.iter().filter(|to| **to == "assistant").count(),
+        1,
+        "{to:?}"
+    );
     assert!(!to.contains(&"c1"), "{to:?}");
-    let copy = dms.iter().find(|call| call.body["to"] == "kjgrok").unwrap();
+    let copy = dms
+        .iter()
+        .find(|call| call.body["to"] == "assistant")
+        .unwrap();
     let text = copy.body["text"].as_str().unwrap();
     assert!(
         text.ends_with(&format!(
@@ -664,7 +671,7 @@ async fn with_the_setting_off_cloud_is_not_asked_for_delegates() {
         .server
         .calls("POST", "/v1/dm")
         .iter()
-        .any(|call| call.body["to"] == "kjgrok"));
+        .any(|call| call.body["to"] == "assistant"));
 }
 
 #[tokio::test]
@@ -673,7 +680,7 @@ async fn a_failed_delegate_copy_is_tried_at_most_three_times() {
     *f.cloud.delegates.lock().unwrap() =
         json!({"delegates": [{"agent_id": f.delegate.id, "grant_id": "grt_1"}]});
     f.server
-        .set_api_error("POST /v1/dm to=kjgrok", Some((500, "unavailable")));
+        .set_api_error("POST /v1/dm to=assistant", Some((500, "unavailable")));
     const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3be009";
     let registration = f.spawned("codex", THREAD);
     let notice = codex_request(THREAD, 981);
@@ -689,7 +696,7 @@ async fn a_failed_delegate_copy_is_tried_at_most_three_times() {
             server
                 .calls("POST", "/v1/dm")
                 .iter()
-                .filter(|call| call.body["to"] == "kjgrok")
+                .filter(|call| call.body["to"] == "assistant")
                 .count()
                 >= sends
         })
@@ -699,7 +706,7 @@ async fn a_failed_delegate_copy_is_tried_at_most_three_times() {
         .server
         .calls("POST", "/v1/dm")
         .iter()
-        .filter(|call| call.body["to"] == "kjgrok")
+        .filter(|call| call.body["to"] == "assistant")
         .count();
     assert_eq!(copies, sends);
 }
@@ -713,7 +720,7 @@ async fn under_an_organization_hold_only_an_admin_delegate_answers() {
     let text = format!("approve {}", notice.reference);
     f.attests(&format!("{}:{}", f.child.id, notice.reference));
     let addressed = |id: &str| Delivery {
-        sender_address: Some("kjgrok@desk".into()),
+        sender_address: Some("assistant@desk".into()),
         ..approval_dm(id, &f.delegate, &text)
     };
     f.core
@@ -726,7 +733,7 @@ async fn under_an_organization_hold_only_an_admin_delegate_answers() {
     assert!(codex_drive::has_pending(THREAD, &notice.reference));
     f.core
         .claude_delivery
-        .set_organization_hold(Some(["kjgrok@desk".to_string()].into()));
+        .set_organization_hold(Some(["assistant@desk".to_string()].into()));
     assert!(
         settled(f.core.owner_reply(&registration, &addressed("admin")).await).ends_with("Answered")
     );
@@ -810,7 +817,7 @@ async fn only_a_delegate_of_this_computers_signed_in_owner_answers() {
     assert_eq!(codex_drive::recorded_answer(&notice.reference), None);
 
     // The signed-in owner's own delegate answers.
-    *f.cloud.user_id.lock().unwrap() = Some("hum_khaliq".into());
+    *f.cloud.user_id.lock().unwrap() = Some("hum_owner".into());
     assert!(settled(
         f.core
             .owner_reply(&registration, &approval_dm("own", &f.delegate, &text))
