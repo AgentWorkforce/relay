@@ -210,7 +210,10 @@ pub fn is_terminal_codex(table: &dyn ProcessTable, pid: i32) -> bool {
 /// Whether a command run in `thread` now could be identified on the
 /// relay-send socket (`process::codex_caller_thread`): the same voucher as
 /// that socket, including a root CLI that also holds proven subagent locks,
-/// or (older Codex, no locks) `resume <thread>`.
+/// or (older Codex, no locks) `resume <thread>`. It is also liveness, so it
+/// stays broader than the socket itself, which also requires the writer lock
+/// for a `resume` and names nobody under an app-server holding several chats
+/// (`process::codex_selection_is_ambiguous`).
 pub fn reply_capable(table: &dyn ProcessTable, uid: u32, thread: &str) -> bool {
     !reply_capable_threads(table, uid, [thread]).is_empty()
 }

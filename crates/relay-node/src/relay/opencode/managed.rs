@@ -94,15 +94,24 @@ pub fn caller(
     // The server can host several sessions or subagents. Its PID alone must
     // never lend a shell the identity of the one registration we know.
     let claim = claim.filter(|id| is_session_id(id))?;
-    let matches: Vec<_> = managed
+    let served: Vec<_> = managed
         .opencode_claims()
         .ok()?
         .into_iter()
-        .filter(|b| b.server_pid == server_pid && b.session_id == claim)
+        .filter(|b| b.server_pid == server_pid)
         .collect();
+    // The claim is the shell's environment, which any process under the
+    // server can set to another session it serves. With more than one
+    // managed session on this server nothing proves which one started the
+    // caller, so it names none.
+    let matches: Vec<_> = served.iter().filter(|b| b.session_id == claim).collect();
+    if served.len() != 1 {
+        return None;
+    }
     let [binding] = matches.as_slice() else {
         return None;
     };
+    let binding = *binding;
     let target = Target::new(SessionKind::OpenCode, claim);
     if !tagging_ready(config, table, binding) {
         return None;

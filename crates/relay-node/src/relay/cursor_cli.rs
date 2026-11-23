@@ -658,7 +658,8 @@ fn answer_now(
 /// (`editor::claim`), or nobody. A tool naming its conversation vouches for
 /// it as a hook it ran itself would, so a new conversation's first tool
 /// call can put it on the relay before Cursor writes the transcript a hook
-/// that names none needs.
+/// that names none needs. While the window holds another live conversation
+/// (`editor::holds_another`), nobody.
 pub fn editor_caller(
     config: &CursorConfig,
     table: &dyn ProcessTable,
@@ -669,6 +670,18 @@ pub fn editor_caller(
         return None;
     }
     let session_id = editor::tool_conversation(table, pid, host)?;
+    // With several conversations live in this window, the tag picks among
+    // them unproven: the caller is nobody until the others go idle or the
+    // window closes. A window with one conversation is unaffected.
+    if editor::holds_another(
+        config,
+        table,
+        crate::relay::peer::current_uid(),
+        host,
+        &session_id,
+    ) {
+        return None;
+    }
     let workspace = table
         .cwd(pid)
         .map(|path| path.to_string_lossy().into_owned());

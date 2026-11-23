@@ -154,6 +154,14 @@ impl ProcessTable for ProcessSnapshot {
         self.inner.is_trusted_codex(executable)
     }
 
+    fn is_trusted_grok(&self, executable: &Path) -> bool {
+        self.inner.is_trusted_grok(executable)
+    }
+
+    fn is_trusted_claude(&self, pid: i32) -> bool {
+        self.inner.is_trusted_claude(pid)
+    }
+
     fn is_trusted_vscode(&self, pid: i32, executable: &Path) -> bool {
         self.inner.is_trusted_vscode(pid, executable)
     }

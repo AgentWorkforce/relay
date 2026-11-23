@@ -62,7 +62,9 @@ impl ProcessTable for SystemProcesses {
 
     fn is_trusted_codex(&self, executable: &Path) -> bool {
         let uid = crate::relay::peer::current_uid();
+        let home = crate::relay::paths::home().ok();
         executable.file_name().is_some_and(|name| name == "codex")
+            && in_codex_install(executable, home.as_deref())
             && fs::metadata(executable)
                 .is_ok_and(|m| (m.uid() == 0 || m.uid() == uid) && m.mode() & 0o022 == 0)
     }
@@ -238,6 +240,81 @@ pub fn in_cursor_install(executable: &Path, mountinfo: &str) -> bool {
     })
 }
 
+/// Where Codex's Linux installers put it: a system `bin` folder or package
+/// root (npm's global `node_modules/@openai`, `/opt`, Linuxbrew, Nix, snap),
+/// or one of the folders under this user's home that Codex's own updater,
+/// npm/npx, the usual Node version managers, mise, asdf, pnpm, Bun, Cargo or
+/// `~/.local/bin` install to. A `codex` anywhere else (a project folder, a
+/// temporary folder) is not trusted.
+///
+/// The home folders are this user's to write, so this keeps a stray or
+/// copied `codex` out rather than proving the binary's origin; a caller's
+/// thread is also proven by the writer lock that Codex holds
+/// (`codex_process_vouches_for_thread`).
+pub fn in_codex_install(executable: &Path, home: Option<&Path>) -> bool {
+    const SYSTEM: [&str; 9] = [
+        "/usr/bin/codex",
+        "/usr/local/bin/codex",
+        "/usr/lib/node_modules/@openai/",
+        "/usr/local/lib/node_modules/@openai/",
+        "/opt/",
+        "/home/linuxbrew/.linuxbrew/",
+        "/nix/store/",
+        "/snap/",
+        "/var/lib/snapd/snap/",
+    ];
+    const HOME: [&str; 18] = [
+        ".codex/packages/",
+        ".codex/bin/codex",
+        ".local/bin/codex",
+        ".local/lib/node_modules/@openai/",
+        ".local/share/mise/installs/",
+        ".local/share/pnpm/",
+        ".local/share/fnm/",
+        ".fnm/",
+        ".nvm/versions/node/",
+        ".volta/tools/",
+        ".npm-global/",
+        ".npm/_npx/",
+        ".bun/install/global/",
+        ".asdf/installs/",
+        ".cargo/bin/codex",
+        ".linuxbrew/",
+        ".nix-profile/",
+        ".local/state/nix/profiles/",
+    ];
+    // Compared as text so a root like `/opt/` never matches `/optional`, and
+    // a file root (`…/bin/codex`) only itself.
+    let Some(path) = executable.to_str() else {
+        return false;
+    };
+    if !executable.is_absolute()
+        || executable
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return false;
+    }
+    let under = |root: &str| {
+        if root.ends_with('/') {
+            path.starts_with(root)
+        } else {
+            path == root
+        }
+    };
+    if SYSTEM.iter().any(|root| under(root)) {
+        return true;
+    }
+    let Some(home) = home
+        .and_then(Path::to_str)
+        .filter(|home| home.starts_with('/'))
+    else {
+        return false;
+    };
+    let home = home.trim_end_matches('/');
+    HOME.iter().any(|root| under(&format!("{home}/{root}")))
+}
+
 /// `mountinfo` writes a space, tab, newline and backslash as octal escapes.
 fn unescape_mount(field: &str) -> String {
     field
@@ -250,6 +327,50 @@ fn unescape_mount(field: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_is_trusted_only_where_its_installers_put_it() {
+        let home = Some(Path::new("/home/me"));
+        for trusted in [
+            "/usr/bin/codex",
+            "/usr/local/bin/codex",
+            "/usr/lib/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/codex/codex",
+            "/opt/codex/bin/codex",
+            "/home/me/.codex/packages/app-server-daemon/releases/0.171.0-x86_64-unknown-linux-musl/bin/codex",
+            "/home/me/.local/share/mise/installs/codex/0.154.0/bin/codex",
+            "/home/me/.nvm/versions/node/v22.1.0/lib/node_modules/@openai/codex/vendor/x/codex/codex",
+            "/home/me/.npm/_npx/0123abcd/node_modules/@openai/codex/vendor/x/codex/codex",
+            "/home/me/.cargo/bin/codex",
+            "/home/me/.local/bin/codex",
+        ] {
+            assert!(in_codex_install(Path::new(trusted), home), "{trusted}");
+        }
+        for untrusted in [
+            "/tmp/codex",
+            "/tmp/x/node_modules/@openai/codex/codex",
+            "/dev/shm/codex",
+            "/home/me/codex",
+            "/home/me/project/codex",
+            "/home/me/.local/bin/sub/codex",
+            "/home/me/.cargo/bin/codex/codex",
+            "/home/other/.cargo/bin/codex",
+            "/optional/codex",
+            "/usr/bin/../../tmp/codex",
+            "codex",
+        ] {
+            assert!(!in_codex_install(Path::new(untrusted), home), "{untrusted}");
+        }
+        // Without a home, only the system folders.
+        assert!(in_codex_install(Path::new("/usr/local/bin/codex"), None));
+        assert!(!in_codex_install(
+            Path::new("/home/me/.cargo/bin/codex"),
+            None
+        ));
+        assert!(!in_codex_install(
+            Path::new("/home/me/.cargo/bin/codex"),
+            Some(Path::new("relative"))
+        ));
+    }
 
     #[test]
     fn cursor_is_trusted_only_where_its_packages_install_it() {

@@ -71,6 +71,14 @@ fn managed_reply_needs_exact_process_tag_attestation_and_sealed_session() {
     assert!(caller(&managed, &config, &table, 40, None).is_none());
     assert!(caller(&managed, &config, &table, 40, Some("ses_other")).is_none());
     assert!(caller(&managed, &config, &table, 41, Some("ses_exact")).is_none());
+    // A second managed session on the same server: a shell's tag could name
+    // either, so it names neither.
+    let mut second = binding.clone();
+    second.session_id = "ses_second".into();
+    second.credential_reference = opencode_existing::credential_reference(&second, marker);
+    managed.adopt(ManagedBinding::OpenCode(second)).unwrap();
+    assert!(caller(&managed, &config, &table, 40, Some("ses_exact")).is_none());
+    assert!(caller(&managed, &config, &table, 40, Some("ses_second")).is_none());
     table.insert(
         40,
         FakeProcess {

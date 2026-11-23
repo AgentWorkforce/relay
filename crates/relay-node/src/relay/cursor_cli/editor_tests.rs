@@ -1113,3 +1113,42 @@ fn a_tool_of_the_editors_agent_is_the_conversation_its_environment_names() {
     // And never under anything but an extension host.
     assert_eq!(editor_caller(&config, &table, 702, 701), None);
 }
+
+#[test]
+fn a_window_running_two_conversations_names_neither_for_its_tools() {
+    let (_temp, config, table) = world();
+    table.insert(701, shell(HOST_PID, &[]));
+    table.insert(702, shell(701, &[(CONVERSATION_VAR, SESSION)]));
+    assert_eq!(
+        editor_caller(&config, &table, 702, HOST_PID).as_deref(),
+        Some(SESSION)
+    );
+    // The same window now also holds OTHER: a tool's variable could name
+    // either, so it names neither.
+    let folder = config.home.join(".agentworkforce/desktop/cursor/editor");
+    let held = read(&folder.join(format!("{SESSION}.json"))).unwrap();
+    std::fs::write(
+        folder.join(format!("{OTHER}.json")),
+        serde_json::to_vec(&held).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(editor_caller(&config, &table, 702, HOST_PID), None);
+    table.insert(703, shell(701, &[(CONVERSATION_VAR, OTHER)]));
+    assert_eq!(editor_caller(&config, &table, 703, HOST_PID), None);
+    // Once OTHER belongs to another window, this one holds SESSION alone.
+    table.insert(660, host(30));
+    let elsewhere = Record {
+        host_pid: 660,
+        host_start: 30,
+        ..held
+    };
+    std::fs::write(
+        folder.join(format!("{OTHER}.json")),
+        serde_json::to_vec(&elsewhere).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        editor_caller(&config, &table, 702, HOST_PID).as_deref(),
+        Some(SESSION)
+    );
+}

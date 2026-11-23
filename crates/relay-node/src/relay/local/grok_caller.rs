@@ -11,25 +11,56 @@ impl LocalSessions {
     }
 
     /// The Grok session a tool process claims through `GROK_SESSION_ID`,
-    /// when the claim holds: the already-open route is on, an ancestor of
-    /// this user's is a `grok agent leader`, Grok lists the session (its TUI
-    /// registry, or a Paseo `grok agent stdio` of this user), and the caller
-    /// is still the same process afterwards. The walk ends at the first leader.
+    /// when the claim holds: the already-open route is on, the nearest
+    /// agent above the caller is this user's verified `grok agent leader`,
+    /// Grok lists the session (its TUI registry, or a Paseo `grok agent
+    /// stdio` of this user) with a client attached to the socket that very
+    /// leader serves, and the caller and leader are still the same processes
+    /// afterwards. A session open under some other leader is never named.
     pub(super) fn grok_caller(&self, pid: i32, session_id: &str) -> Option<String> {
         self.config.existing_grok.as_ref()?;
         let table = &*self.table;
         let uid = self.config.uid;
         let caller = table.process(pid)?;
-        nearest_leader(table, pid, uid)?;
-        let listed = crate::relay::grok::open_sessions(&self.config.grok, table, uid)
+        let leader = nearest_leader(table, pid, uid)?;
+        let leader_process = table.process(leader)?;
+        let served = served_socket(table, leader)?;
+        let belongs = crate::relay::grok::open_sessions(&self.config.grok, table, uid)
             .iter()
-            .any(|session| session.session_id == session_id);
-        (listed && table.process(pid) == Some(caller)).then(|| session_id.to_string())
+            .any(|session| {
+                session.session_id == session_id
+                    && crate::relay::grok::attached_leader_socket(table, session.pid).as_ref()
+                        == Some(&served)
+            });
+        (belongs
+            && table.process(leader) == Some(leader_process)
+            && table.process(pid) == Some(caller))
+        .then(|| session_id.to_string())
     }
 }
 
-/// The first agent boundary must be this user's exact Grok leader. An inherited
-/// session variable cannot lend a nested agent an outer leader's identity.
+/// The socket the leader `pid` serves: the one its argv names, else
+/// `leader.sock` in its own Grok home.
+fn served_socket(table: &dyn ProcessTable, pid: i32) -> Option<PathBuf> {
+    use crate::relay::existing_session::grok::{default_leader_socket, leader_socket};
+    let default = default_leader_socket(table, pid);
+    leader_socket(&table.arguments(pid), default.as_deref())
+}
+
+/// Whether `pid` is a `grok agent leader` whose kernel executable is a
+/// trusted Grok CLI (`ProcessTable::is_trusted_grok`). argv alone names a
+/// candidate; any program can be started with those arguments.
+pub(super) fn is_verified_leader(table: &dyn ProcessTable, pid: i32) -> bool {
+    crate::relay::existing_session::grok::is_leader(&table.arguments(pid))
+        && table
+            .executable(pid)
+            .is_some_and(|executable| table.is_trusted_grok(&executable))
+}
+
+/// The first agent boundary must be this user's exact Grok leader, verified
+/// by its executable (`is_verified_leader`). An inherited session variable
+/// cannot lend a nested agent an outer leader's identity, and a process that
+/// only carries a leader's argv is no leader.
 pub(super) fn nearest_leader(table: &dyn ProcessTable, pid: i32, uid: u32) -> Option<i32> {
     let mut current = pid;
     for _ in 0..MAX_ANCESTRY {
@@ -40,7 +71,7 @@ pub(super) fn nearest_leader(table: &dyn ProcessTable, pid: i32, uid: u32) -> Op
         if process.uid != uid {
             return None;
         }
-        if crate::relay::existing_session::grok::is_leader(&table.arguments(current)) {
+        if is_verified_leader(table, current) {
             return Some(current);
         }
         if crate::relay::muse::is_muse_process(table, current)

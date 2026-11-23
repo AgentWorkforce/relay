@@ -1492,6 +1492,10 @@ mod tests {
             crate::relay::process::codex_caller_thread(&table, 601, UID),
             Some(THREAD.to_string())
         );
+        // It holds two chats, so the relay-send socket names neither.
+        assert!(crate::relay::process::codex_selection_is_ambiguous(
+            &table, 601, UID
+        ));
         assert!(thread_is_live(&config, &table, UID, SECOND));
         table.remove(600);
         // A plain Codex holding the thread's writer lock alone.

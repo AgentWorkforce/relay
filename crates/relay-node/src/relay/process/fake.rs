@@ -28,7 +28,8 @@ pub struct FakeProcess {
 
 /// A process table the tests write, so no test starts a real session.
 /// Executables in `trusted_codex` count as trusted Codex, those in
-/// `trusted_cursor` as Cursor's own.
+/// `trusted_cursor` as Cursor's own; processes outside `untrusted_claude` as
+/// Claude Code.
 #[derive(Default)]
 pub struct FakeProcesses {
     pub processes: std::sync::Mutex<HashMap<i32, FakeProcess>>,
@@ -39,6 +40,12 @@ pub struct FakeProcesses {
     pub trusted_copilot: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
     pub trusted_copilot_bundles: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
     pub trusted_cursor: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
+    /// Executables that count as a trusted Grok CLI whatever their name.
+    pub trusted_grok: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
+    /// Processes whose kernel executable is not Claude Code, though a
+    /// Claude Code session record may name them. Every other process counts
+    /// as Claude Code wherever a record names it.
+    pub untrusted_claude: std::sync::Mutex<std::collections::HashSet<i32>>,
     pub clock: Option<StartClock>,
     /// Processes whose environment the kernel would not let this user read.
     pub unreadable_environment: std::sync::Mutex<std::collections::HashSet<i32>>,
@@ -122,6 +129,27 @@ impl ProcessTable for FakeProcesses {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .contains(executable)
+    }
+    /// A Grok CLI by its executable's name, or listed in `trusted_grok`:
+    /// the file checks of `trusted_grok_executable` are tested against real
+    /// files.
+    fn is_trusted_grok(&self, executable: &Path) -> bool {
+        executable
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name == "grok" || name.starts_with("grok-"))
+            || self
+                .trusted_grok
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .contains(executable)
+    }
+    fn is_trusted_claude(&self, pid: i32) -> bool {
+        !self
+            .untrusted_claude
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains(&pid)
     }
     fn is_trusted_cursor(&self, executable: &Path) -> bool {
         self.trusted_cursor

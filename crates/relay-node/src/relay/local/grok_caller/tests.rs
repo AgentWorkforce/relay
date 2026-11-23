@@ -64,3 +64,18 @@ fn versioned_muse_stops_a_grok_claim_at_the_nearest_agent_boundary() {
     assert_eq!(nearest_leader(&table, 400, 501), None);
     assert_eq!(nearest_leader(&table, 100, 501), Some(100));
 }
+
+#[test]
+fn a_leader_is_known_by_its_executable_not_its_argv() {
+    let table = FakeProcesses::default();
+    let mut leader = process(1, "/opt/grok");
+    leader.arguments = vec!["grok".into(), "agent".into(), "leader".into()];
+    table.insert(100, leader.clone());
+    table.insert(200, process(100, "/bin/bash"));
+    assert_eq!(nearest_leader(&table, 200, 501), Some(100));
+    // The same argv on any other program is no leader.
+    leader.executable = Some("/home/me/bin/python3".into());
+    table.insert(100, leader);
+    assert_eq!(nearest_leader(&table, 200, 501), None);
+    assert!(!is_verified_leader(&table, 100));
+}
