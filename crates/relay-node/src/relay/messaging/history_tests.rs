@@ -25,8 +25,16 @@ struct Script {
     conversations: Vec<Value>,
     failures: HashMap<String, VecDeque<Failure>>,
     requests: Vec<String>,
-    /// Messages in each conversation's page; one when zero.
+    /// Messages in each conversation, newest first (`msg_<id>`, then
+    /// `msg_<id>_1`, ...); one when zero. A page is up to `limit` of them,
+    /// those older than `before` when it is given.
     page: usize,
+    /// A message, by conversation id and position, that names another
+    /// address for its sender than `peer-<id>@elsewhere`.
+    addressed: HashMap<(String, usize), String>,
+    /// Holds the next listing answer, read when the request arrives:
+    /// `reached` is notified then, and the answer is sent once `release` is.
+    hold: Option<Hold>,
     /// Queued deliveries, by id and the id of their message, until
     /// acknowledged.
     deliveries: Vec<(String, String)>,
@@ -46,7 +54,15 @@ impl Script {
             .count()
     }
 
-    fn answer(&mut self, path: &str) -> (u16, Option<u64>, Value) {
+    fn answer(&mut self, path: &str, query: &str) -> (u16, Option<u64>, Value) {
+        let param = |name: &str| {
+            query
+                .split('&')
+                .find_map(|pair| pair.strip_prefix(name)?.strip_prefix('='))
+                .map(str::to_string)
+        };
+        let limit: usize = param("limit").and_then(|n| n.parse().ok()).unwrap_or(100);
+        let before = param("before");
         self.requests.push(path.to_string());
         if let Some((status, code, retry_after)) =
             self.failures.get_mut(path).and_then(VecDeque::pop_front)
@@ -82,22 +98,40 @@ impl Script {
                 })
                 .collect(),
             ("/v1/dm/conversations", _) => Value::Array(self.conversations.clone()),
-            (_, Some(id)) => (0..self.page.max(1))
-                .map(|n| {
-                    let message = if n == 0 {
-                        format!("msg_{id}")
-                    } else {
-                        format!("msg_{id}_{n}")
-                    };
-                    json!({
-                        "id": message, "agent_id": format!("ag_{id}"),
-                        "agent_name": format!("peer-{id}"),
-                        "agent_address": format!("peer-{id}@elsewhere"),
-                        "thread_id": null, "text": "hello",
-                        "created_at": "2026-11-15T00:00:00Z",
+            (_, Some(id)) => {
+                let position = |message: &str| match message.strip_prefix(&format!("msg_{id}")) {
+                    Some("") => Some(0),
+                    Some(rest) => rest.strip_prefix('_')?.parse::<usize>().ok(),
+                    None => None,
+                };
+                // Older than `before`; a cursor from elsewhere matches nothing.
+                let from = match before.as_deref() {
+                    None => 0,
+                    Some(before) => position(before).map_or(usize::MAX, |n| n + 1),
+                };
+                (from..self.page.max(1))
+                    .take(limit)
+                    .map(|n| {
+                        let message = if n == 0 {
+                            format!("msg_{id}")
+                        } else {
+                            format!("msg_{id}_{n}")
+                        };
+                        let address = self
+                            .addressed
+                            .get(&(id.to_string(), n))
+                            .cloned()
+                            .unwrap_or_else(|| format!("peer-{id}@elsewhere"));
+                        json!({
+                            "id": message, "agent_id": format!("ag_{id}"),
+                            "agent_name": format!("peer-{id}"),
+                            "agent_address": address,
+                            "thread_id": null, "text": "hello",
+                            "created_at": "2026-11-15T00:00:00Z",
+                        })
                     })
-                })
-                .collect(),
+                    .collect()
+            }
             _ if path.starts_with("/v1/messages/") => {
                 let id = &path["/v1/messages/".len()..];
                 json!({"id": id, "thread_id": null, "text": "hello"})
@@ -109,6 +143,12 @@ impl Script {
         };
         (200, None, json!({"ok": true, "data": data}))
     }
+}
+
+/// A held listing answer ([`Script::hold`]).
+struct Hold {
+    reached: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
 }
 
 /// A 1:1 conversation with `peer-<id>` as Relaycast lists it, its last
@@ -143,10 +183,19 @@ async fn serve(script: Arc<Mutex<Script>>) -> String {
                 }
                 let head = String::from_utf8_lossy(&request);
                 let target = head.split_whitespace().nth(1).unwrap_or("/");
-                let path = target.split('?').next().unwrap_or(target).to_string();
+                let (path, query) = target.split_once('?').unwrap_or((target, ""));
+                let (path, query) = (path.to_string(), query.to_string());
                 let delay = script.lock().unwrap().delay;
                 tokio::time::sleep(delay).await;
-                let (status, retry_after, body) = script.lock().unwrap().answer(&path);
+                let (status, retry_after, body) = script.lock().unwrap().answer(&path, &query);
+                let hold = match path.as_str() {
+                    "/v1/dm/conversations" => script.lock().unwrap().hold.take(),
+                    _ => None,
+                };
+                if let Some(hold) = hold {
+                    hold.reached.notify_one();
+                    hold.release.notified().await;
+                }
                 let body = body.to_string();
                 let retry_after = retry_after
                     .map(|secs| format!("Retry-After: {secs}\r\n"))
@@ -615,6 +664,14 @@ async fn request_counts_per_history_call() {
         call(&core, &script, &named).await,
         (read(1, 1, 1, 0), settled(1, 0, 0)),
     );
+    // An empty answer does not rest on the kept listing: it is read again,
+    // one listing more than a found conversation costs.
+    let absent = Endpoint::Name("peer-c9".into());
+    row(
+        "name, absent",
+        call(&core, &script, &absent).await,
+        (read(1, 1, 0, 0), Calls::default()),
+    );
 
     let (_home, core, script) = core_with(three()).await;
     script.lock().unwrap().delay = rtt;
@@ -650,6 +707,19 @@ async fn request_counts_per_history_call() {
         "address, after a wake",
         call(&core, &script, &address).await,
         (read(1, 1, 1, 0), settled(1, 0, 0)),
+    );
+    // No conversation proves it: each is read once over the kept listing,
+    // which is then read again, and the miss is cached off that one.
+    let absent = Endpoint::Address("peer-c9@elsewhere".into());
+    row(
+        "address, absent",
+        call(&core, &script, &absent).await,
+        (read(1, 1, 3, 0), Calls::default()),
+    );
+    row(
+        "address, absent, missed",
+        call(&core, &script, &absent).await,
+        (read(1, 0, 0, 0), Calls::default()),
     );
 
     let (_home, core, script) = core_with(three()).await;
@@ -945,4 +1015,218 @@ async fn a_listing_kept_for_another_identity_or_token_is_not_served() {
         assert_eq!(history.messages.len(), 1, "{kept_for}");
         assert_eq!(listings(), 2 + n, "{kept_for}");
     }
+}
+
+#[tokio::test]
+async fn a_conversation_missing_from_the_kept_listing_is_found_at_once() {
+    if ran_without_file_roots("a_conversation_missing_from_the_kept_listing_is_found_at_once") {
+        return;
+    }
+    let (_home, core, script) = core_with(vec![conversation("c1", "m1")]).await;
+    let listings = || script.lock().unwrap().count("/v1/dm/conversations");
+    core.history(&Endpoint::Name("peer-c1".into()), None)
+        .await
+        .unwrap();
+    assert_eq!(listings(), 1);
+
+    // Started elsewhere after the listing was kept, with no delivery seen
+    // here: found by name and by address on the next read.
+    script
+        .lock()
+        .unwrap()
+        .conversations
+        .push(conversation("c8", "m8"));
+    let named = core
+        .history(&Endpoint::Name("peer-c8".into()), None)
+        .await
+        .unwrap();
+    assert_eq!(named.messages.len(), 1);
+    assert_eq!(listings(), 2);
+    script
+        .lock()
+        .unwrap()
+        .conversations
+        .push(conversation("c9", "m9"));
+    let address = Endpoint::Address("peer-c9@elsewhere".into());
+    let found = core.history(&address, None).await.unwrap();
+    assert_eq!(found.messages[0].id, "msg_c9");
+    assert_eq!(listings(), 3);
+}
+
+#[tokio::test]
+async fn a_miss_is_cached_only_off_a_listing_read_by_the_call() {
+    if ran_without_file_roots("a_miss_is_cached_only_off_a_listing_read_by_the_call") {
+        return;
+    }
+    let (_home, core, script) = core_with(vec![conversation("c1", "m1")]).await;
+    let listings = || script.lock().unwrap().count("/v1/dm/conversations");
+    let address = Endpoint::Address("peer-c9@elsewhere".into());
+    core.history(&Endpoint::Name("peer-c1".into()), None)
+        .await
+        .unwrap();
+    // The kept listing does not show the conversation, and neither does
+    // the one read for this call: that one, and only it, caches the miss.
+    assert!(core
+        .history(&address, None)
+        .await
+        .unwrap()
+        .messages
+        .is_empty());
+    assert_eq!(listings(), 2);
+    let workspace = "cloud-workspace".to_string();
+    let miss = (workspace, "owner".to_string(), address.key());
+    assert!(core.messaging.lock().unwrap().misses.contains_key(&miss));
+    // The listing read for the miss is the one kept.
+    assert!(core.messaging.lock().unwrap().listing.is_some());
+}
+
+#[tokio::test]
+async fn a_listing_read_before_a_send_is_not_kept_after_it() {
+    if ran_without_file_roots("a_listing_read_before_a_send_is_not_kept_after_it") {
+        return;
+    }
+    let (_home, core, script) = core_with(three()).await;
+    let named = Endpoint::Name("peer-c2".into());
+    let reached = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    script.lock().unwrap().hold = Some(Hold {
+        reached: reached.clone(),
+        release: release.clone(),
+    });
+    let reading = tokio::spawn({
+        let core = core.clone();
+        let named = named.clone();
+        async move { core.history(&named, None).await }
+    });
+    // The listing is read; before its answer arrives, a send drops the
+    // kept listing.
+    reached.notified().await;
+    core.send_as_person(&named, "hello", None).await.unwrap();
+    release.notify_one();
+    // The answer is still returned to its caller, but not kept.
+    let history = reading.await.unwrap().unwrap();
+    assert_eq!(history.messages.len(), 1);
+    assert!(core.messaging.lock().unwrap().listing.is_none());
+    core.history(&named, None).await.unwrap();
+    assert_eq!(script.lock().unwrap().count("/v1/dm/conversations"), 2);
+}
+
+#[tokio::test]
+async fn a_paused_delivery_poll_is_not_answered_from_the_kept_listing() {
+    if ran_without_file_roots("a_paused_delivery_poll_is_not_answered_from_the_kept_listing") {
+        return;
+    }
+    let (_home, core, script) = core_with(three()).await;
+    core.history(&Endpoint::Name("peer-c2".into()), None)
+        .await
+        .unwrap();
+    core.reads_settled().await;
+    script
+        .lock()
+        .unwrap()
+        .failures
+        .insert("/v1/deliveries".into(), overloaded());
+    // A name the kept listing does not show: the pause, not an empty list.
+    let error = core
+        .history(&Endpoint::Name("peer-c9".into()), None)
+        .await
+        .unwrap_err();
+    assert_paused(&error);
+    let script = script.lock().unwrap();
+    assert_eq!(script.count("/v1/dm/conversations"), 1);
+    assert_eq!(script.message_reads(), 1);
+}
+
+#[tokio::test]
+async fn a_refused_delivery_poll_reads_the_listing_with_the_refused_token() {
+    if ran_without_file_roots("a_refused_delivery_poll_reads_the_listing_with_the_refused_token") {
+        return;
+    }
+    let (_home, core, script) = core_with(three()).await;
+    let named = Endpoint::Name("peer-c2".into());
+    core.history(&named, None).await.unwrap();
+    core.reads_settled().await;
+    {
+        let mut script = script.lock().unwrap();
+        script.requests.clear();
+        // The token is refused by the next poll and listing.
+        for path in ["/v1/deliveries", "/v1/dm/conversations"] {
+            script
+                .failures
+                .insert(path.into(), [(401, "unauthorized", None)].into());
+        }
+    }
+    // The listing request follows the refused poll, as it did before the
+    // listing was kept; the refusal fetches the token again and the read
+    // is made with it.
+    let history = core.history(&named, None).await.unwrap();
+    assert_eq!(history.messages[0].id, "msg_c2");
+    let script = script.lock().unwrap();
+    let reads: Vec<&str> = script
+        .requests
+        .iter()
+        .map(String::as_str)
+        .filter(|p| p.starts_with("/v1/d"))
+        .take(3)
+        .collect();
+    assert_eq!(
+        reads,
+        ["/v1/deliveries", "/v1/dm/conversations", "/v1/deliveries"]
+    );
+    assert_eq!(script.count("/v1/dm/conversations"), 2);
+    assert_eq!(script.count("/v1/dm/c2/messages"), 1);
+}
+
+#[tokio::test]
+async fn an_older_page_holds_the_proof_and_each_page_is_the_one_asked_for() {
+    if ran_without_file_roots("an_older_page_holds_the_proof_and_each_page_is_the_one_asked_for") {
+        return;
+    }
+    let (_home, core, script) = core_with(vec![conversation("c1", "m1")]).await;
+    let total = HISTORY_LIMIT as usize + 10;
+    let address = Endpoint::Address("peer-c1@older-machine".into());
+    {
+        let mut script = script.lock().unwrap();
+        script.page = total;
+        // Only a message on the older page names this address.
+        script
+            .addressed
+            .insert(("c1".into(), total - 5), "peer-c1@older-machine".into());
+    }
+    let ids = |messages: &[DirectMessage]| {
+        let mut ids: Vec<String> = messages.iter().map(|m| m.id.clone()).collect();
+        ids.sort();
+        ids
+    };
+    let page = |range: std::ops::Range<usize>| {
+        let mut ids: Vec<String> = range
+            .map(|n| match n {
+                0 => "msg_c1".to_string(),
+                n => format!("msg_c1_{n}"),
+            })
+            .collect();
+        ids.sort();
+        ids
+    };
+    let limit = HISTORY_LIMIT as usize;
+
+    // The latest read walks back for the proof and answers with the newest
+    // page as it was read.
+    let latest = core.history(&address, None).await.unwrap();
+    assert_eq!(ids(&latest.messages), page(0..limit));
+    {
+        let script = script.lock().unwrap();
+        assert_eq!(script.count("/v1/dm/c1/messages"), 2);
+    }
+
+    // Paging back from the oldest message shown returns the older page.
+    let cursor = format!("msg_c1_{}", limit - 1);
+    let older = core.history(&address, Some(&cursor)).await.unwrap();
+    assert_eq!(ids(&older.messages), page(limit..total));
+    let proof = older
+        .messages
+        .iter()
+        .find(|m| m.sender_address.as_deref() == Some("peer-c1@older-machine"))
+        .map(|m| m.id.clone());
+    assert_eq!(proof, Some(format!("msg_c1_{}", total - 5)));
 }

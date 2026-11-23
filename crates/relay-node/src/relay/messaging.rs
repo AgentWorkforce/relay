@@ -52,7 +52,12 @@
 //! the token is refused, or you sign out or change account. A conversation
 //! removed, re-bound or given other participants meanwhile (by another of
 //! your machines, say, whose deliveries are not seen here) is noticed
-//! within [`LISTING_TTL`].
+//! within [`LISTING_TTL`]. A listing read while one of those drops it is
+//! not kept. A history read whose delivery poll fails reads the listing,
+//! so a pause or a refused token reaches the caller as before. A lookup
+//! over the kept listing that finds no conversation runs again on a
+//! listing read now: an empty answer, and an exact-address miss, rest only
+//! on a listing read by that call.
 //!
 //! Every read as you is paced by the workspace's Relaycast pause
 //! ([`crate::relay::backoff`]): while it lasts, a read is refused with the
@@ -172,6 +177,9 @@ pub struct MessagingState {
     conversations: HashMap<(String, String), String>,
     /// The last conversation listing, for [`LISTING_TTL`].
     listing: Option<KeptListing>,
+    /// How many times the kept listing was dropped on purpose (not by
+    /// expiry): a listing read while it changed is not kept.
+    listing_drops: u64,
     /// Exact-address lookups that found no proof, by `(workspace, identity, endpoint key)`.
     misses: HashMap<(String, String, String), Instant>,
     /// The conversations an exact-address lookup read without finding
@@ -197,7 +205,7 @@ impl MessagingState {
     /// is read again. `key` limits this to one lookup. Either may also
     /// start a conversation: the kept listing is dropped.
     fn forget_misses(&mut self, key: Option<&(String, String, String)>) {
-        self.listing = None;
+        self.drop_listing();
         match key {
             Some(key) => {
                 self.misses.remove(key);
@@ -214,6 +222,21 @@ impl MessagingState {
         }
     }
 
+    /// Forgets everything, as on sign-out or another account. A listing
+    /// still being read is not kept afterwards.
+    fn reset(&mut self) {
+        let drops = self.listing_drops;
+        *self = MessagingState::default();
+        self.listing_drops = drops + 1;
+    }
+
+    /// Drops the kept listing on purpose: a listing whose read started
+    /// before this is not kept when it arrives.
+    fn drop_listing(&mut self) {
+        self.listing = None;
+        self.listing_drops += 1;
+    }
+
     /// The listing `key` read less than [`LISTING_TTL`] ago.
     fn kept_listing(&mut self, key: &ListingKey) -> Option<Vec<Listed>> {
         let kept = self.listing.as_ref()?;
@@ -224,7 +247,13 @@ impl MessagingState {
         None
     }
 
-    fn keep_listing(&mut self, key: ListingKey, conversations: &[Listed]) {
+    /// Keeps a listing whose read started when [`Self::listing_drops`] was
+    /// `drops`; if the listing was dropped since, the answer is older than
+    /// the drop and is not kept.
+    fn keep_listing(&mut self, key: ListingKey, conversations: &[Listed], drops: u64) {
+        if drops != self.listing_drops {
+            return;
+        }
         self.listing = (conversations.len() <= LISTING_KEPT).then(|| KeptListing {
             key,
             at: Instant::now(),
@@ -564,7 +593,7 @@ impl Core {
             (Some((owner, identity)), Some(key)) if *owner == key => Some(identity.clone()),
             (None, _) => None,
             _ => {
-                *state = MessagingState::default();
+                state.reset();
                 None
             }
         }
@@ -666,7 +695,7 @@ impl Core {
                 .as_ref()
                 .is_some_and(|(owner, _)| *owner != account_key(&account))
             {
-                *state = MessagingState::default();
+                state.reset();
             }
             state.identity = Some((account_key(&account), identity.clone()));
             state.gate = None;
@@ -865,7 +894,7 @@ impl Core {
                 .as_ref()
                 .is_some_and(|(owner, _)| *owner != account_key(account))
             {
-                *state = MessagingState::default();
+                state.reset();
             }
             state.identity = Some((account_key(account), identity.clone()));
             state.gate = Some(enrolment);
@@ -1066,7 +1095,7 @@ impl Core {
         let result = match self.history_as(&identity, endpoint, before).await {
             Err(error) if error.is_auth_rejection() => {
                 // Nothing read with the refused token is used again.
-                self.messaging.lock().unwrap().listing = None;
+                self.messaging.lock().unwrap().drop_listing();
                 let fresh = self.person_identity_refused(&identity.token).await?;
                 self.history_as(&fresh, endpoint, before)
                     .await
@@ -1090,6 +1119,13 @@ impl Core {
         let http = sdk_gaps::http(&identity.base_url, &identity.token)?;
         let scope = self.person_scope(identity);
         let pending = self.person_deliveries(identity, &scope).await;
+        if pending.is_none() {
+            // The poll failed (a workspace pause, a refused token): the
+            // listing is read, not taken from the kept copy, so its request
+            // meets the same refusal and the caller gets it, not a lookup
+            // over an older listing.
+            self.messaging.lock().unwrap().drop_listing();
+        }
         if self.new_person_deliveries(pending.as_deref().unwrap_or_default()) {
             // Any incoming DM can be the proof an earlier lookup lacked.
             self.messaging.lock().unwrap().forget_misses(None);
@@ -1116,113 +1152,32 @@ impl Core {
                 .get(&(identity.name.clone(), peer.key()))
                 .cloned()
         };
-        let mut conversations = self.listed_conversations(&http, identity, &scope).await?;
-        if let Some(preferred) = &preferred {
-            conversations
-                .sort_by_key(|c| c.conversation["id"].as_str() != Some(preferred.as_str()));
-        }
-        let mut selected: Option<String> = None;
-        // The selected conversation's newest page, when the lookup read it.
-        let mut newest: Option<Vec<Value>> = None;
-        match peer {
-            Endpoint::Address(address) => {
-                {
-                    // Conversations no longer listed are not remembered.
-                    let listed: HashSet<String> = conversations
-                        .iter()
-                        .filter_map(|c| text(&c.conversation["id"]))
-                        .collect();
-                    let mut state = self.messaging.lock().unwrap();
-                    if state.checked.len() >= DETAILS_KEPT {
-                        state.checked.clear();
-                    }
-                    if let Some(checked) = state.checked.get_mut(&miss_key) {
-                        checked.retain(|id, _| listed.contains(id));
-                    }
-                }
-                for listed in &conversations {
-                    let candidate = &listed.conversation;
-                    let Some(id) = text(&candidate["id"]) else {
-                        continue;
-                    };
-                    // A conversation read without proof is read again only
-                    // once the listing shows it changed. What was read before
-                    // an error stays read, so a retry goes on from there.
-                    // A kept listing can be up to LISTING_TTL old, so a
-                    // change it does not show yet is read once it is
-                    // listed again: at most LISTING_TTL after the miss's
-                    // EXACT_MISS_TTL, and sooner on anything that forgets
-                    // misses, which also drops the kept listing.
-                    let listed = Checked::of(listed);
-                    let unchanged = self
-                        .messaging
-                        .lock()
-                        .unwrap()
-                        .checked
-                        .get(&miss_key)
-                        .and_then(|checked| checked.get(&id))
-                        .is_some_and(|checked| checked.covers(&listed));
-                    if unchanged {
-                        continue;
-                    }
-                    // An address that embeds the peer's agent id is proved by
-                    // the participants alone: no message has to be read.
-                    if endpoint_binding(candidate, &[], address, &identity.name).is_some() {
-                        selected = Some(id);
-                        break;
-                    }
-                    let first = self
-                        .person_read(
-                            &scope,
-                            sdk_gaps::dm_messages(&http, &id, HISTORY_LIMIT, None),
-                        )
-                        .await?;
-                    let mut proof = endpoint_binding(candidate, &first, address, &identity.name);
-                    let mut older: Option<Vec<Value>> = None;
-                    let mut seen = HashSet::new();
-                    // The address-bearing message may be older than the
-                    // latest page: walk back until it is found or the
-                    // conversation ends.
-                    while proof.is_none() {
-                        let page = older.as_ref().unwrap_or(&first);
-                        if (page.len() as u32) < HISTORY_LIMIT {
-                            break;
-                        }
-                        let Some(cursor) = page.last().and_then(|m| text(&m["id"])) else {
-                            break;
-                        };
-                        if !seen.insert(cursor.clone()) {
-                            break;
-                        }
-                        let page = self
-                            .person_read(
-                                &scope,
-                                sdk_gaps::dm_messages(&http, &id, HISTORY_LIMIT, Some(&cursor)),
-                            )
-                            .await?;
-                        proof = endpoint_binding(candidate, &page, address, &identity.name);
-                        older = Some(page);
-                    }
-                    if proof.is_some() {
-                        selected = Some(id);
-                        newest = Some(first);
-                        break;
-                    }
-                    self.messaging
-                        .lock()
-                        .unwrap()
-                        .checked
-                        .entry(miss_key.clone())
-                        .or_default()
-                        .insert(id, listed);
-                }
+        let (mut conversations, mut kept) = self
+            .listed_conversations(&http, identity, &scope, false)
+            .await?;
+        let (selected, newest) = loop {
+            let found = self
+                .select_conversation(
+                    &http,
+                    identity,
+                    &scope,
+                    peer,
+                    &miss_key,
+                    preferred.as_deref(),
+                    conversations,
+                )
+                .await?;
+            if found.0.is_some() || !kept {
+                break found;
             }
-            Endpoint::Name(name) => {
-                let conversations: Vec<Value> =
-                    conversations.into_iter().map(|c| c.conversation).collect();
-                selected = find_conversation(&conversations, &identity.name, name);
-            }
-        }
+            // A kept listing can be up to LISTING_TTL old and miss a
+            // conversation started since: an empty answer, and a miss, rest
+            // only on a listing this call read.
+            self.messaging.lock().unwrap().drop_listing();
+            (conversations, kept) = self
+                .listed_conversations(&http, identity, &scope, true)
+                .await?;
+        };
         let Some(selected) = selected else {
             if peer.is_address() {
                 self.messaging
@@ -1263,6 +1218,126 @@ impl Core {
         // conversation: there an ack is also a read.
         self.settle_read(read);
         Ok(threaded(&hydrated, &identity.name))
+    }
+
+    /// The conversation `peer` names among `conversations` (the one
+    /// `preferred` first), and its newest page when the lookup read it.
+    #[allow(clippy::too_many_arguments, clippy::result_large_err)]
+    async fn select_conversation(
+        &self,
+        http: &crate::relay::diagnostic_http::HttpClient,
+        identity: &PersonIdentity,
+        scope: &WorkspaceScope,
+        peer: &Endpoint,
+        miss_key: &(String, String, String),
+        preferred: Option<&str>,
+        mut conversations: Vec<Listed>,
+    ) -> relaycast::Result<(Option<String>, Option<Vec<Value>>)> {
+        if let Some(preferred) = preferred {
+            conversations.sort_by_key(|c| c.conversation["id"].as_str() != Some(preferred));
+        }
+        let mut selected: Option<String> = None;
+        // The selected conversation's newest page, when the lookup read it.
+        let mut newest: Option<Vec<Value>> = None;
+        match peer {
+            Endpoint::Address(address) => {
+                {
+                    // Conversations no longer listed are not remembered.
+                    let listed: HashSet<String> = conversations
+                        .iter()
+                        .filter_map(|c| text(&c.conversation["id"]))
+                        .collect();
+                    let mut state = self.messaging.lock().unwrap();
+                    if state.checked.len() >= DETAILS_KEPT {
+                        state.checked.clear();
+                    }
+                    if let Some(checked) = state.checked.get_mut(miss_key) {
+                        checked.retain(|id, _| listed.contains(id));
+                    }
+                }
+                for listed in &conversations {
+                    let candidate = &listed.conversation;
+                    let Some(id) = text(&candidate["id"]) else {
+                        continue;
+                    };
+                    // A conversation read without proof is read again only
+                    // once the listing shows it changed. What was read before
+                    // an error stays read, so a retry goes on from there.
+                    // A kept listing can be up to LISTING_TTL old, so a
+                    // change it does not show yet is read once it is
+                    // listed again. A miss is cached only off a listing
+                    // the call read from Relaycast (`history_as`), so a
+                    // conversation started elsewhere is found at most
+                    // EXACT_MISS_TTL after it started, and sooner on
+                    // anything that forgets misses.
+                    let listed = Checked::of(listed);
+                    let unchanged = self
+                        .messaging
+                        .lock()
+                        .unwrap()
+                        .checked
+                        .get(miss_key)
+                        .and_then(|checked| checked.get(&id))
+                        .is_some_and(|checked| checked.covers(&listed));
+                    if unchanged {
+                        continue;
+                    }
+                    // An address that embeds the peer's agent id is proved by
+                    // the participants alone: no message has to be read.
+                    if endpoint_binding(candidate, &[], address, &identity.name).is_some() {
+                        selected = Some(id);
+                        break;
+                    }
+                    let first = self
+                        .person_read(scope, sdk_gaps::dm_messages(http, &id, HISTORY_LIMIT, None))
+                        .await?;
+                    let mut proof = endpoint_binding(candidate, &first, address, &identity.name);
+                    let mut older: Option<Vec<Value>> = None;
+                    let mut seen = HashSet::new();
+                    // The address-bearing message may be older than the
+                    // latest page: walk back until it is found or the
+                    // conversation ends.
+                    while proof.is_none() {
+                        let page = older.as_ref().unwrap_or(&first);
+                        if (page.len() as u32) < HISTORY_LIMIT {
+                            break;
+                        }
+                        let Some(cursor) = page.last().and_then(|m| text(&m["id"])) else {
+                            break;
+                        };
+                        if !seen.insert(cursor.clone()) {
+                            break;
+                        }
+                        let page = self
+                            .person_read(
+                                scope,
+                                sdk_gaps::dm_messages(http, &id, HISTORY_LIMIT, Some(&cursor)),
+                            )
+                            .await?;
+                        proof = endpoint_binding(candidate, &page, address, &identity.name);
+                        older = Some(page);
+                    }
+                    if proof.is_some() {
+                        selected = Some(id);
+                        newest = Some(first);
+                        break;
+                    }
+                    self.messaging
+                        .lock()
+                        .unwrap()
+                        .checked
+                        .entry(miss_key.clone())
+                        .or_default()
+                        .insert(id, listed);
+                }
+            }
+            Endpoint::Name(name) => {
+                let conversations: Vec<Value> =
+                    conversations.into_iter().map(|c| c.conversation).collect();
+                selected = find_conversation(&conversations, &identity.name, name);
+            }
+        }
+        Ok((selected, newest))
     }
 
     /// Fills in what DM history omits (`thread_id`, and on older servers the
@@ -1350,14 +1425,16 @@ impl Core {
     }
 
     /// Your 1:1 conversations as listed, from the listing kept for this
-    /// identity and token, or from Relaycast.
+    /// identity and token unless `fresh`, or from Relaycast; and whether
+    /// they came from the kept listing.
     #[allow(clippy::result_large_err)] // the SDK's own error type
     async fn listed_conversations(
         &self,
         http: &crate::relay::diagnostic_http::HttpClient,
         identity: &PersonIdentity,
         scope: &WorkspaceScope,
-    ) -> relaycast::Result<Vec<Listed>> {
+        fresh: bool,
+    ) -> relaycast::Result<(Vec<Listed>, bool)> {
         let key: ListingKey = (
             self.plugins
                 .cloud
@@ -1368,9 +1445,15 @@ impl Core {
             identity.base_url.clone(),
             identity.token.clone(),
         );
-        if let Some(kept) = self.messaging.lock().unwrap().kept_listing(&key) {
-            return Ok(kept);
-        }
+        let drops = {
+            let mut state = self.messaging.lock().unwrap();
+            if !fresh {
+                if let Some(kept) = state.kept_listing(&key) {
+                    return Ok((kept, true));
+                }
+            }
+            state.listing_drops
+        };
         let listing = self
             .person_read(scope, sdk_gaps::dm_conversations(http))
             .await?;
@@ -1378,8 +1461,13 @@ impl Core {
             .iter()
             .map(Listed::of)
             .collect();
-        self.messaging.lock().unwrap().keep_listing(key, &listed);
-        Ok(listed)
+        // A send or a reply that dropped the listing while it was read
+        // may have changed it: this answer is returned, not kept.
+        self.messaging
+            .lock()
+            .unwrap()
+            .keep_listing(key, &listed, drops);
+        Ok((listed, false))
     }
 
     /// Your 1:1 conversations, as Relaycast lists them.
@@ -1675,23 +1763,64 @@ mod tests {
         assert!(kept.marked);
 
         let mut state = MessagingState::default();
-        state.keep_listing(key("at_one"), std::slice::from_ref(&kept));
+        state.keep_listing(
+            key("at_one"),
+            std::slice::from_ref(&kept),
+            state.listing_drops,
+        );
         assert!(state.kept_listing(&key("at_one")).is_some());
         // Another token (a refused one replaced) or identity reads its own,
         // and the kept one is dropped.
         assert!(state.kept_listing(&key("at_two")).is_none());
         assert!(state.kept_listing(&key("at_one")).is_none());
 
-        state.keep_listing(key("at_one"), std::slice::from_ref(&kept));
+        state.keep_listing(
+            key("at_one"),
+            std::slice::from_ref(&kept),
+            state.listing_drops,
+        );
         state.listing.as_mut().unwrap().at = Instant::now() - LISTING_TTL;
         assert!(state.kept_listing(&key("at_one")).is_none());
 
-        state.keep_listing(key("at_one"), std::slice::from_ref(&kept));
+        state.keep_listing(
+            key("at_one"),
+            std::slice::from_ref(&kept),
+            state.listing_drops,
+        );
         state.forget_misses(None);
         assert!(state.listing.is_none());
 
-        state.keep_listing(key("at_one"), &vec![kept; LISTING_KEPT + 1]);
+        state.keep_listing(
+            key("at_one"),
+            &vec![kept.clone(); LISTING_KEPT + 1],
+            state.listing_drops,
+        );
         assert!(state.listing.is_none());
+    }
+
+    #[test]
+    fn a_listing_read_before_a_drop_is_not_kept() {
+        let kept = Listed::of(&conversation("conv_1", "agent_peer"));
+        let mut state = MessagingState::default();
+        // Expiry is not a drop: a read started before it is kept.
+        let drops = state.listing_drops;
+        state.keep_listing(key("at_one"), std::slice::from_ref(&kept), drops);
+        state.listing.as_mut().unwrap().at = Instant::now() - LISTING_TTL;
+        assert!(state.kept_listing(&key("at_one")).is_none());
+        state.keep_listing(key("at_one"), std::slice::from_ref(&kept), drops);
+        assert!(state.listing.is_some());
+
+        for drop in [
+            MessagingState::drop_listing as fn(&mut MessagingState),
+            |state| state.forget_misses(None),
+            |state| state.forget_misses(Some(&("w".into(), ME.into(), "peer".into()))),
+            MessagingState::reset,
+        ] {
+            let drops = state.listing_drops;
+            drop(&mut state);
+            state.keep_listing(key("at_one"), std::slice::from_ref(&kept), drops);
+            assert!(state.listing.is_none());
+        }
     }
 
     #[test]
