@@ -1,4 +1,4 @@
-import { hmacSha256Hex, sha256Hex, timingSafeEqual } from './crypto.js';
+import { base64ToBytes, hmacSha256Base64, hmacSha256Hex, sha256Hex, timingSafeEqual } from './crypto.js';
 import { EVENTS_SHIM_LIMITS } from './limits.js';
 import type { ShimRecord, VerificationMode } from './types.js';
 
@@ -84,7 +84,56 @@ export async function verifyInbound(input: {
       }
       return { ok: true };
     }
+    case 'mcp':
+      return verifyStandardWebhook(secret, headers, rawBody, now);
   }
+}
+
+/** `whsec_` + base64 of 24 to 64 random bytes, as SEP-3415 requires of a webhook secret. */
+export const MCP_WEBHOOK_SECRET_PATTERN = /^whsec_([A-Za-z0-9+/]+={0,2})$/;
+
+/**
+ * The HMAC key of an MCP Events webhook secret: the base64-decoded bytes after `whsec_`.
+ *
+ * @param secret - The `whsec_…` secret.
+ * @returns The key, or `null` when the secret is malformed.
+ */
+export function mcpWebhookKey(secret: string): Uint8Array | null {
+  const match = MCP_WEBHOOK_SECRET_PATTERN.exec(secret);
+  const bytes = match ? base64ToBytes(match[1]!) : null;
+  return bytes && bytes.length >= 24 && bytes.length <= 64 ? bytes : null;
+}
+
+/**
+ * Checks a Standard Webhooks delivery (the MCP Events webhook profile):
+ * `webhook-signature` holds space-separated `v1,<base64>` signatures of
+ * `webhook-id.webhook-timestamp.body`; any one matching is enough (secret
+ * rotation). `v1a,` (ed25519) entries are ignored.
+ */
+async function verifyStandardWebhook(
+  secret: string,
+  headers: HeaderReader,
+  rawBody: string,
+  now: Date
+): Promise<VerifyResult> {
+  const key = mcpWebhookKey(secret);
+  if (!key) return refused('The stored mcp secret is not a whsec_ secret; set it again.');
+  const id = headers.get('webhook-id')?.trim() ?? '';
+  const timestamp = headers.get('webhook-timestamp')?.trim() ?? '';
+  const signatures = (headers.get('webhook-signature') ?? '')
+    .split(' ')
+    .filter((entry) => entry.startsWith('v1,'))
+    .map((entry) => entry.slice('v1,'.length));
+  if (!id || id.length > 256 || !/^\d{1,12}$/.test(timestamp) || signatures.length === 0) {
+    return refused('Missing or malformed webhook-id, webhook-timestamp or webhook-signature.');
+  }
+  if (Math.abs(now.getTime() - Number(timestamp) * 1000) > EVENTS_SHIM_LIMITS.signatureToleranceMs) {
+    return refused('webhook-timestamp is outside the accepted window.');
+  }
+  const expected = await hmacSha256Base64(key, `${id}.${timestamp}.${rawBody}`);
+  return signatures.some((signature) => timingSafeEqual(signature, expected))
+    ? { ok: true }
+    : refused('Webhook signature does not match the stored mcp secret.');
 }
 
 function refused(message: string): VerifyResult {
@@ -112,6 +161,11 @@ export async function idempotencyKeyFor(
   if (mode === 'stripe') {
     const id = readJson(rawBody)?.id;
     if (typeof id === 'string' && id) return `stripe:${await boundedKey(id)}`;
+  }
+  if (mode === 'mcp') {
+    // webhook-id is signed and stays the same across retries of one delivery.
+    const id = headers.get('webhook-id')?.trim();
+    if (id) return `mcp:id:${await boundedKey(id)}`;
   }
   if (mode === 'github' || mode === 'stripe' || mode === 'linear') {
     return `${mode}:body:${await sha256Hex(rawBody)}`;
@@ -146,6 +200,11 @@ export function eventTypeFor(
     return typeof body?.action === 'string' ? `${event}.${body.action}` : event;
   }
   if (mode === 'stripe') return typeof body?.type === 'string' ? body.type : undefined;
+  if (mode === 'mcp') {
+    // Control envelopes carry `type`; event occurrences carry the event `name`.
+    if (typeof body?.type === 'string') return `mcp.events.${body.type}`.slice(0, 100);
+    return typeof body?.name === 'string' ? body.name.slice(0, 100) : undefined;
+  }
   if (mode === 'linear') {
     if (typeof body?.type !== 'string') return undefined;
     return typeof body.action === 'string' ? `${body.type}.${body.action}` : body.type;
@@ -166,6 +225,8 @@ const KEPT_HEADERS = [
   'linear-delivery',
   'linear-event',
   'idempotency-key',
+  'webhook-id',
+  'x-mcp-subscription-id',
 ] as const;
 
 /**

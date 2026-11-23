@@ -348,12 +348,48 @@ behind skips the backlog: if subscribed to `status`, it receives one fresh
 | `messages.conversations`                     | —                                                                                                                                    | `{"identity","conversations":[{"id","peer":{"name","agent_id"},"last_message","unread_count"}]}`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | 2a       |
 | `messages.history`                           | `{"endpoint","before"?}`                                                                                                             | `{"identity","messages":[{"id","sender","sender_id","sender_address","text","created_at","thread_id","mine"}]}` in reading order (replies beneath their parent); exact-address history fails closed without immutable proof                                                                                                                                                                                                                                                                                                                                                                                                                                                                | 2a       |
 | `messages.send`                              | `{"to"\|"address","text","reply_to"?}`                                                                                               | `{"message_id","conversation_id","to","recipient":{…roster.get's answer for this message}}`, read just after the send; no agent at the name or address is `not_found`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | 2a       |
+| `messages.inbox`                             | —      | `{"identity","unread":[{"conversation_id","peer","unread_count","last_message":{"id","text","created_at"}\|null}],"unread_channels":[{"channel","unread_count"}]}`: Relaycast's own read state (`GET /v1/inbox`), shared by every device; counts only the other side's messages after your read position | 2a                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `messages.mark_read`                         | `{"message_id"}` | `{}`; reads that message and everything before it in its conversation on every device (`POST /v1/messages/{id}/read`), then raises `invalidated` `messages`; `not_found` for a message in none of your conversations | 2a                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `people.list`                                | —                                                                                                                                    | `{"people":[{"name","avatar_url","identity_hash","is_self"}]}`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | 2a       |
 
 `people.list` returns the avatar's https URL rather than a cached file: a
 client loads public images itself, and Cloud's email, role and join date are
 dropped in the core. `identity_hash` joins a person to `roster.list`'s
 `owner_hash`.
+
+Read state is Relaycast's, so it is shared with the iOS app and the
+dashboard. A read on another device (`messages.mark_read` there, or the
+dashboard) fans `message.read` out on the person identity's push socket
+as a `deliver` frame, which raises `invalidated` `messages` here, as a
+reply does; clients then read `messages.inbox` again. Relaycast sends it
+best effort, only while the socket is up, and a socket that comes back up
+raises the invalidation too. On Relaycast acknowledging a delivery is also
+a read, so `messages.history` acknowledges only the deliveries of the
+conversation it read, up to its newest message; the others stay queued and
+unread until their own conversation is read.
+
+`messages.history` returns its page first and reads the conversation on
+Relaycast afterwards, in the background, one conversation at a time per
+identity, so acknowledging never delays the answer. Reading the newest page
+(no `before`) also marks its newest message read
+(`POST /v1/messages/{id}/read`), so a conversation whose deliveries expired
+is read too. The delivery queue is listed after the page, so a reply that
+arrived during the read is acknowledged with it. The background read honours
+the workspace's Relaycast pause: it sends nothing while a pause lasts, waits
+it out and starts over (three tries at most). What it leaves queued is
+acknowledged by the conversation's next read.
+
+Limit: `GET /v1/deliveries` lists only your 200 oldest pending deliveries,
+with no cursor or channel filter. Acknowledged ones leave the list, so the
+core lists it again (20 times at most), but when all 200 belong to other
+conversations, the open conversation's deliveries cannot be reached without
+reading those others. They then stay queued and Relaycast keeps redriving
+them, while, on a newest-page read (no `before`), the conversation itself
+is still marked read by its newest message. An older-page read (`before`)
+moves no read position. A client that must read a conversation at a given
+message, for example from a notification, calls `messages.mark_read` with
+it, which reads it whatever the queue holds. Closing the limit needs a `channel_id`
+filter or a cursor on `GET /v1/deliveries` in Relaycast.
 
 **Platform services**
 
@@ -1030,6 +1066,8 @@ upstream request and is deleted once the SDK has it.
 | `GET /v1/dm/conversations`                                          | `at_` | `AgentClient::dm_conversations` — **gap**: participants are flattened to names, losing the immutable `agent_id` exact-address proof needs (`sdk_gaps::dm_conversations`)                                                                                                           |
 | `GET /v1/dm/{id}/messages`                                          | `at_` | `AgentClient::dm_messages` — **gap**: `MessageWithMeta` has no `agent_address` or `thread_id` (`sdk_gaps::dm_messages`)                                                                                                                                                            |
 | `GET /v1/messages/{id}`                                             | `at_` | `AgentClient::message` — same gap (`sdk_gaps::message`)                                                                                                                                                                                                                            |
+| `GET /v1/inbox`                                                     | `at_` | `AgentClient::inbox` — **gap**: `UnreadDm.last_message` is a string where the server sends `{id, text, created_at}` (`sdk_gaps::inbox`)                                                                                                                                            |
+| `POST /v1/messages/{id}/read`                                       | `at_` | `AgentClient::mark_read`                                                                                                                                                                                                                                                           |
 | `GET /v1/workspace`                                                 | `rk_` | `RelayCast::workspace_info`                                                                                                                                                                                                                                                        |
 
 Every gap is still a call through the SDK's own `HttpClient` (auth,

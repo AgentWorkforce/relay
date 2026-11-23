@@ -27,8 +27,9 @@ struct Script {
     requests: Vec<String>,
     /// Messages in each conversation's page; one when zero.
     page: usize,
-    /// Queued deliveries by id, until acknowledged.
-    deliveries: Vec<String>,
+    /// Queued deliveries, by id and the id of their message, until
+    /// acknowledged.
+    deliveries: Vec<(String, String)>,
     /// How long each answer takes, as a round trip to a distant Relaycast would.
     delay: Duration,
 }
@@ -64,7 +65,7 @@ impl Script {
             .strip_prefix("/v1/deliveries/")
             .and_then(|p| p.strip_suffix("/ack"))
         {
-            self.deliveries.retain(|queued| queued != id);
+            self.deliveries.retain(|(queued, _)| queued != id);
             let data = json!({"id": id, "message_id": format!("msg_{id}"),
                 "channel_id": "ch_dm", "agent_id": "ag_owner", "status": "acked",
                 "mode": "durable", "priority": "normal", "created_at": "2026-11-15T00:00:00Z"});
@@ -74,8 +75,8 @@ impl Script {
             ("/v1/deliveries", _) => self
                 .deliveries
                 .iter()
-                .map(|id| {
-                    json!({"id": id, "message_id": format!("msg_{id}"), "status": "pending",
+                .map(|(id, message)| {
+                    json!({"id": id, "message_id": message, "status": "pending",
                         "reason": "dm", "channel_id": "ch_dm",
                         "message": {"agent_name": "peer-c1", "text": "hello"}})
                 })
@@ -252,7 +253,7 @@ fn peer() -> Endpoint {
 }
 
 /// Whether the history with [`PEER`] is empty, as it is without proof.
-async fn found_nothing(core: &Core) -> bool {
+async fn found_nothing(core: &Arc<Core>) -> bool {
     core.history(&peer(), None)
         .await
         .unwrap()
@@ -474,6 +475,8 @@ async fn a_conversation_listed_with_a_null_last_message_is_read_again_on_a_reply
 struct Calls {
     deliveries: usize,
     acks: usize,
+    /// `POST /v1/messages/{id}/read`.
+    marks: usize,
     listings: usize,
     pages: usize,
     details: usize,
@@ -487,6 +490,7 @@ impl Calls {
                 "/v1/deliveries" => calls.deliveries += 1,
                 "/v1/dm/conversations" => calls.listings += 1,
                 p if p.ends_with("/ack") => calls.acks += 1,
+                p if p.starts_with("/v1/messages/") && p.ends_with("/read") => calls.marks += 1,
                 p if p.starts_with("/v1/dm/") => calls.pages += 1,
                 p if p.starts_with("/v1/messages/") => calls.details += 1,
                 // Agent sync after the identity is fetched: not history's.
@@ -497,18 +501,31 @@ impl Calls {
     }
 
     fn total(&self) -> usize {
-        self.deliveries + self.acks + self.listings + self.pages + self.details
+        self.deliveries + self.acks + self.marks + self.listings + self.pages + self.details
     }
 }
 
-/// One history call: its requests, and how long it took.
-async fn call(core: &Core, script: &Mutex<Script>, endpoint: &Endpoint) -> (Calls, Duration) {
+/// One history call: the requests made before it answered, those made
+/// after (the conversation read settled on Relaycast), and how long it
+/// took to answer.
+async fn call(
+    core: &Arc<Core>,
+    script: &Mutex<Script>,
+    endpoint: &Endpoint,
+) -> (Calls, Calls, Duration) {
+    core.reads_settled().await;
     let before = script.lock().unwrap().requests.len();
     let started = Instant::now();
     core.history(endpoint, None).await.unwrap();
     let took = started.elapsed();
-    let requests = script.lock().unwrap().requests[before..].to_vec();
-    (Calls::of(&requests), took)
+    let answered = script.lock().unwrap().requests.len();
+    core.reads_settled().await;
+    let requests = script.lock().unwrap().requests.clone();
+    (
+        Calls::of(&requests[before..answered]),
+        Calls::of(&requests[answered..]),
+        took,
+    )
 }
 
 fn three() -> Vec<Value> {
@@ -519,18 +536,32 @@ fn three() -> Vec<Value> {
     ]
 }
 
-fn calls(deliveries: usize, acks: usize, listings: usize, pages: usize, details: usize) -> Calls {
+/// The requests before the answer: deliveries, listings, pages, details.
+fn read(deliveries: usize, listings: usize, pages: usize, details: usize) -> Calls {
     Calls {
         deliveries,
-        acks,
         listings,
         pages,
         details,
+        ..Calls::default()
     }
 }
 
-/// The Relaycast requests each kind of history call makes. A change that
-/// adds a round trip fails here.
+/// The requests after the answer: deliveries, acks, marks.
+fn settled(deliveries: usize, acks: usize, marks: usize) -> Calls {
+    Calls {
+        deliveries,
+        acks,
+        marks,
+        ..Calls::default()
+    }
+}
+
+/// A queued delivery of the message `message`.
+fn queued(id: &str, message: &str) -> (String, String) {
+    (id.into(), message.into())
+}
+
 /// Makes the kept listing `by` older, as the time between two calls would.
 fn age(core: &Core, by: Duration) {
     if let Some(kept) = core.messaging.lock().unwrap().listing.as_mut() {
@@ -541,6 +572,8 @@ fn age(core: &Core, by: Duration) {
 /// How often the apps re-read an open conversation.
 const FOLLOW: Duration = Duration::from_secs(9);
 
+/// The Relaycast requests each kind of history call makes, before its
+/// answer and after it. A change that adds a round trip fails here.
 #[tokio::test]
 async fn request_counts_per_history_call() {
     if ran_without_file_roots("request_counts_per_history_call") {
@@ -551,9 +584,11 @@ async fn request_counts_per_history_call() {
     // A distant Relaycast: the times printed show the serial waits.
     let rtt = Duration::from_millis(40);
     let mut rows = Vec::new();
-    let mut row = |case: &'static str, (got, took): (Calls, Duration), want: Calls| {
-        rows.push((case, got.total(), took));
-        assert_eq!(got, want, "{case}");
+    let mut row = |case: &'static str,
+                   (before, after, took): (Calls, Calls, Duration),
+                   want: (Calls, Calls)| {
+        rows.push((case, before.total(), after.total(), took));
+        assert_eq!((before, after), want, "{case}");
     };
 
     let (_home, core, script) = core_with(three()).await;
@@ -561,24 +596,24 @@ async fn request_counts_per_history_call() {
     row(
         "name, first",
         call(&core, &script, &named).await,
-        calls(1, 0, 1, 1, 1),
+        (read(1, 1, 1, 1), settled(1, 0, 1)),
     );
     row(
         "name, following",
         call(&core, &script, &named).await,
-        calls(1, 0, 0, 1, 0),
+        (read(1, 0, 1, 0), settled(1, 0, 0)),
     );
     age(&core, FOLLOW);
     row(
         "name, following at 9 s",
         call(&core, &script, &named).await,
-        calls(1, 0, 0, 1, 0),
+        (read(1, 0, 1, 0), settled(1, 0, 0)),
     );
     age(&core, LISTING_TTL);
     row(
         "name, after the kept time",
         call(&core, &script, &named).await,
-        calls(1, 0, 1, 1, 0),
+        (read(1, 1, 1, 0), settled(1, 0, 0)),
     );
 
     let (_home, core, script) = core_with(three()).await;
@@ -588,18 +623,18 @@ async fn request_counts_per_history_call() {
     row(
         "address, first",
         call(&core, &script, &address).await,
-        calls(1, 0, 1, 2, 1),
+        (read(1, 1, 2, 1), settled(1, 0, 1)),
     );
     row(
         "address, remembered",
         call(&core, &script, &address).await,
-        calls(1, 0, 0, 1, 0),
+        (read(1, 0, 1, 0), settled(1, 0, 0)),
     );
     age(&core, FOLLOW);
     row(
         "address, following at 9 s",
         call(&core, &script, &address).await,
-        calls(1, 0, 0, 1, 0),
+        (read(1, 0, 1, 0), settled(1, 0, 0)),
     );
     // Read again, the listing shows c2 first (remembered): its newest page
     // is the proof and the answer, and c1 is not read.
@@ -607,31 +642,38 @@ async fn request_counts_per_history_call() {
     row(
         "address, after the kept time",
         call(&core, &script, &address).await,
-        calls(1, 0, 1, 1, 0),
+        (read(1, 1, 1, 0), settled(1, 0, 0)),
     );
     // After the listing is read again, c1 is not: it did not change.
     core.person_woke();
     row(
         "address, after a wake",
         call(&core, &script, &address).await,
-        calls(1, 0, 1, 1, 0),
+        (read(1, 1, 1, 0), settled(1, 0, 0)),
     );
 
     let (_home, core, script) = core_with(three()).await;
     script.lock().unwrap().delay = rtt;
     call(&core, &script, &named).await;
-    script.lock().unwrap().deliveries = (1..=5).map(|n| format!("del_{n}")).collect();
-    // Acknowledged one after another, as on main; acknowledging any reads
-    // the listing again.
+    // One for the conversation read, four for others.
+    script.lock().unwrap().deliveries = vec![
+        queued("del_1", "msg_c2"),
+        queued("del_2", "msg_c1"),
+        queued("del_3", "msg_c1"),
+        queued("del_4", "msg_c3"),
+        queued("del_5", "msg_c3"),
+    ];
+    // New deliveries read the listing again; after the answer, only the
+    // read conversation's delivery is acknowledged.
     row(
         "name, 5 queued",
         call(&core, &script, &named).await,
-        calls(1, 5, 1, 1, 0),
+        (read(1, 1, 1, 0), settled(1, 1, 0)),
     );
     row(
         "name, after queued",
         call(&core, &script, &named).await,
-        calls(1, 0, 0, 1, 0),
+        (read(1, 0, 1, 0), settled(1, 0, 0)),
     );
 
     let (_home, core, script) = core_with(three()).await;
@@ -643,39 +685,48 @@ async fn request_counts_per_history_call() {
     row(
         "name, 50 incomplete",
         call(&core, &script, &named).await,
-        calls(1, 0, 1, 1, 50),
+        (read(1, 1, 1, 50), settled(1, 0, 1)),
     );
     row(
         "name, 50 following",
         call(&core, &script, &named).await,
-        calls(1, 0, 0, 1, 0),
+        (read(1, 0, 1, 0), settled(1, 0, 0)),
     );
 
-    for (case, total, took) in &rows {
-        println!("| {case} | {total} | {} ms |", took.as_millis());
+    for (case, before, after, took) in &rows {
+        println!("| {case} | {before} | {after} | {} ms |", took.as_millis());
     }
 }
 
 #[tokio::test]
-async fn each_call_still_acknowledges_the_queued_deliveries_once() {
-    if ran_without_file_roots("each_call_still_acknowledges_the_queued_deliveries_once") {
+async fn reading_a_conversation_acknowledges_its_deliveries_after_the_answer() {
+    if ran_without_file_roots("reading_a_conversation_acknowledges_its_deliveries_after_the_answer")
+    {
         return;
     }
     let (_home, core, script) = core_with(three()).await;
     let named = Endpoint::Name("peer-c2".into());
-    let acks = || {
+    let queue = || {
         let script = script.lock().unwrap();
-        (Calls::of(&script.requests).acks, script.deliveries.len())
+        let queued: Vec<String> = script.deliveries.iter().map(|(id, _)| id.clone()).collect();
+        (Calls::of(&script.requests).acks, queued)
     };
-    script.lock().unwrap().deliveries = vec!["del_1".into(), "del_2".into()];
+    script.lock().unwrap().deliveries = vec![queued("del_1", "msg_c2"), queued("del_2", "msg_c1")];
     core.history(&named, None).await.unwrap();
-    assert_eq!(acks(), (2, 0));
-    // Nothing queued: nothing acknowledged.
+    core.reads_settled().await;
+    // This conversation's, once; another conversation's stays queued.
+    assert_eq!(queue(), (1, vec!["del_2".to_string()]));
     core.history(&named, None).await.unwrap();
-    assert_eq!(acks(), (2, 0));
-    script.lock().unwrap().deliveries = vec!["del_3".into()];
+    core.reads_settled().await;
+    assert_eq!(queue(), (1, vec!["del_2".to_string()]));
+    script
+        .lock()
+        .unwrap()
+        .deliveries
+        .push(queued("del_3", "msg_c2"));
     core.history(&named, None).await.unwrap();
-    assert_eq!(acks(), (3, 0));
+    core.reads_settled().await;
+    assert_eq!(queue(), (2, vec!["del_2".to_string()]));
 }
 
 #[tokio::test]
@@ -706,9 +757,9 @@ async fn a_reply_lets_a_missed_address_find_its_proof_on_the_same_call() {
         .messages
         .is_empty());
 
-    // A reply is queued: the call that acknowledges it forgets the miss
+    // A reply is queued: the call that sees it forgets the miss
     // and the kept listing, and finds the proof.
-    script.lock().unwrap().deliveries = vec!["del_9".into()];
+    script.lock().unwrap().deliveries = vec![queued("del_9", "msg_c9")];
     let found = core.history(&address, None).await.unwrap();
     assert_eq!(found.messages.len(), 1);
     assert_eq!(found.messages[0].id, "msg_c9");

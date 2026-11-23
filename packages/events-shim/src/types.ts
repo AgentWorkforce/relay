@@ -1,5 +1,9 @@
-/** How a webhook URL checks who posted to it. */
-export type VerificationMode = 'open' | 'github' | 'stripe' | 'linear' | 'bearer';
+/**
+ * How a webhook URL checks who posted to it. `mcp` takes deliveries from an
+ * MCP server's Events extension (SEP-3415): Standard Webhooks signatures with
+ * a `whsec_` secret, plus its verification, gap and terminated envelopes.
+ */
+export type VerificationMode = 'open' | 'github' | 'stripe' | 'linear' | 'bearer' | 'mcp';
 
 export const VERIFICATION_MODES: readonly VerificationMode[] = [
   'open',
@@ -7,6 +11,7 @@ export const VERIFICATION_MODES: readonly VerificationMode[] = [
   'stripe',
   'linear',
   'bearer',
+  'mcp',
 ];
 
 /** Modes whose URL needs a stored secret before it accepts posts. */

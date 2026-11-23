@@ -177,8 +177,17 @@ pub const QUEUE_PAGE: u32 = 50;
 
 /// The agent's delivery queue, oldest first.
 pub async fn deliveries(base_url: &str, token: &Secret) -> relaycast::Result<Vec<Delivery>> {
+    deliveries_up_to(base_url, token, QUEUE_PAGE).await
+}
+
+/// The oldest `limit` pending deliveries (Relaycast answers at most 200).
+pub async fn deliveries_up_to(
+    base_url: &str,
+    token: &Secret,
+    limit: u32,
+) -> relaycast::Result<Vec<Delivery>> {
     let http = sdk_gaps::http(base_url, token)?;
-    let items = sdk_gaps::deliveries(&http, QUEUE_PAGE).await?;
+    let items = sdk_gaps::deliveries(&http, limit).await?;
     Ok(Delivery::list(&Value::Array(items)))
 }
 
@@ -191,6 +200,25 @@ pub async fn ack(base_url: &str, token: &Secret, delivery_id: &str) -> relaycast
         async {
             agent_client(base_url, token)?
                 .ack_delivery(delivery_id)
+                .await
+                .map(drop)
+        },
+    )
+    .await
+}
+
+/// Marks `message_id` read for the agent `token` authenticates as:
+/// Relaycast records a receipt, acks its delivery and moves the
+/// conversation's read position up to it.
+pub async fn mark_read(base_url: &str, token: &Secret, message_id: &str) -> relaycast::Result<()> {
+    crate::relay::request_log::observe(
+        "SDK: mark_read",
+        base_url,
+        serde_json::json!({"message_id": message_id}),
+        token.expose(),
+        async {
+            agent_client(base_url, token)?
+                .mark_read(message_id)
                 .await
                 .map(drop)
         },

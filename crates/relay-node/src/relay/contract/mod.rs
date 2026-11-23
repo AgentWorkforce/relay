@@ -170,6 +170,8 @@ methods! {
     MessagesConversations = "messages.conversations", Always, NoParams => Conversations;
     MessagesHistory = "messages.history", Always, HistoryParams => History;
     MessagesSend = "messages.send", Always, SendParams => SentMessage;
+    MessagesInbox = "messages.inbox", Always, NoParams => MessageInbox;
+    MessagesMarkRead = "messages.mark_read", Always, MarkReadParams => Done;
     PeopleList = "people.list", Always, NoParams => People;
 
     // Platform services.
