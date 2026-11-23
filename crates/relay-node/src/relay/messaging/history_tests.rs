@@ -675,12 +675,12 @@ async fn request_counts_per_history_call() {
 
     let (_home, core, script) = core_with(three()).await;
     script.lock().unwrap().delay = rtt;
-    // c1 is read and has no proof; c2's newest page is the proof and the
-    // page shown.
+    // c2, whose peer goes by the address's name, is read first: its newest
+    // page is the proof and the page shown, and c1 is never read.
     row(
         "address, first",
         call(&core, &script, &address).await,
-        (read(1, 1, 2, 1), settled(1, 0, 1)),
+        (read(1, 1, 1, 1), settled(1, 0, 1)),
     );
     row(
         "address, remembered",
@@ -1229,4 +1229,77 @@ async fn an_older_page_holds_the_proof_and_each_page_is_the_one_asked_for() {
         .find(|m| m.sender_address.as_deref() == Some("peer-c1@older-machine"))
         .map(|m| m.id.clone());
     assert_eq!(proof, Some(format!("msg_c1_{}", total - 5)));
+}
+
+/// A long conversation whose proof is many pages back is walked once: the
+/// next read of the same address trusts it and reads only the page shown,
+/// and other agents' conversations listed before it are not walked at all.
+#[tokio::test]
+async fn a_proof_far_back_is_walked_once() {
+    if ran_without_file_roots("a_proof_far_back_is_walked_once") {
+        return;
+    }
+    let address = Endpoint::Address("peer-c3@elsewhere".into());
+    let (_home, core, script) = core_with(three()).await;
+    let pages = (HISTORY_LIMIT as usize) * 4;
+    {
+        let mut script = script.lock().unwrap();
+        script.page = pages;
+        // Only c3's oldest message carries the address.
+        for conversation in ["c1", "c2", "c3"] {
+            for n in 0..pages - 1 {
+                script
+                    .addressed
+                    .insert((conversation.into(), n), "someone@else".into());
+            }
+        }
+    }
+    core.history(&address, None).await.unwrap();
+    core.reads_settled().await;
+    {
+        let script = script.lock().unwrap();
+        assert_eq!(script.count("/v1/dm/c1/messages"), 0, "c1 is never walked");
+        assert_eq!(script.count("/v1/dm/c2/messages"), 0, "c2 is never walked");
+        assert_eq!(
+            script.count("/v1/dm/c3/messages"),
+            4,
+            "c3 is walked to its end"
+        );
+    }
+    let before = script.lock().unwrap().message_reads();
+    core.history(&address, None).await.unwrap();
+    core.reads_settled().await;
+    assert_eq!(
+        script.lock().unwrap().message_reads() - before,
+        1,
+        "the second read is the page shown only"
+    );
+
+    // After PROOF_TTL the proof is read again.
+    for proven in core.messaging.lock().unwrap().proven.values_mut() {
+        proven.at = proven.at.checked_sub(PROOF_TTL).unwrap();
+    }
+    let before = script.lock().unwrap().message_reads();
+    core.history(&address, None).await.unwrap();
+    core.reads_settled().await;
+    assert_eq!(
+        script.lock().unwrap().message_reads() - before,
+        4,
+        "an expired proof is walked for again"
+    );
+
+    // A conversation whose peer is no longer the agent proved is not
+    // trusted: here nothing proves the address any more.
+    script.lock().unwrap().conversations[2]["participants"][1]["agent_id"] = json!("ag_other");
+    core.person_woke();
+    assert!(core
+        .history(&address, None)
+        .await
+        .unwrap()
+        .messages
+        .is_empty());
+
+    // Sign-out or another account forgets every proof.
+    core.messaging.lock().unwrap().reset();
+    assert!(core.messaging.lock().unwrap().proven.is_empty());
 }

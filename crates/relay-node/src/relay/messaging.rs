@@ -90,6 +90,20 @@ use std::time::{Duration, Instant};
 pub const HISTORY_LIMIT: u32 = 50;
 /// How long an exact-address lookup without proof is not repeated.
 pub const EXACT_MISS_TTL: Duration = Duration::from_secs(60);
+/// How long a conversation that proved an exact address is trusted for it
+/// without its proof being read again. An address re-registered by another
+/// agent is seen at most this late, and at once when the conversation's
+/// peer is no longer the agent proved.
+pub const PROOF_TTL: Duration = Duration::from_secs(600);
+
+/// A conversation that proved an exact address: the agent it proved and
+/// when.
+#[derive(Clone, Debug)]
+struct Proven {
+    conversation: String,
+    agent_id: String,
+    at: Instant,
+}
 const DETAILS_KEPT: usize = 2_000;
 /// How long a conversation listing is used again without reading it:
 /// longer than the apps' follow interval (9 s), so following reads only
@@ -180,6 +194,10 @@ pub struct MessagingState {
     /// How many times the kept listing was dropped on purpose (not by
     /// expiry): a listing read while it changed is not kept.
     listing_drops: u64,
+    /// The conversation that last proved each exact address, by the same
+    /// key as `misses`: trusted for [`PROOF_TTL`] while its peer is the
+    /// agent proved.
+    proven: HashMap<(String, String, String), Proven>,
     /// Exact-address lookups that found no proof, by `(workspace, identity, endpoint key)`.
     misses: HashMap<(String, String, String), Instant>,
     /// The conversations an exact-address lookup read without finding
@@ -1220,6 +1238,23 @@ impl Core {
         Ok(threaded(&hydrated, &identity.name))
     }
 
+    /// Whether conversation `id` (listed as `candidate`) proved the address
+    /// `key` names within [`PROOF_TTL`] and still has the agent it proved
+    /// as a participant.
+    fn proven(&self, key: &(String, String, String), id: &str, candidate: &Value) -> bool {
+        let state = self.messaging.lock().unwrap();
+        let Some(proven) = state.proven.get(key) else {
+            return false;
+        };
+        proven.conversation == id
+            && proven.at.elapsed() < PROOF_TTL
+            && candidate["participants"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|p| p["agent_id"].as_str() == Some(proven.agent_id.as_str()))
+    }
+
     /// The conversation `peer` names among `conversations` (the one
     /// `preferred` first), and its newest page when the lookup read it.
     #[allow(clippy::too_many_arguments, clippy::result_large_err)]
@@ -1233,9 +1268,37 @@ impl Core {
         preferred: Option<&str>,
         mut conversations: Vec<Listed>,
     ) -> relaycast::Result<(Option<String>, Option<Vec<Value>>)> {
-        if let Some(preferred) = preferred {
-            conversations.sort_by_key(|c| c.conversation["id"].as_str() != Some(preferred));
-        }
+        // The conversation proved before first, then those whose other side
+        // goes by the address's name: an address is `<name>@<machine>`, so
+        // the conversation it names is almost always one of them, and the
+        // walk back for proof through other agents' long conversations is
+        // left for when none of them proves it.
+        let named = match peer {
+            Endpoint::Address(address) => address.split('@').next(),
+            _ => None,
+        };
+        conversations.sort_by_key(|c| {
+            let id = c.conversation["id"].as_str();
+            let names_it = named.is_some_and(|name| {
+                c.conversation["participants"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|p| p["agent_name"].as_str() == Some(name))
+            });
+            let proven = self
+                .messaging
+                .lock()
+                .unwrap()
+                .proven
+                .get(miss_key)
+                .map(|p| p.conversation.clone());
+            (
+                proven.as_deref() != id,
+                preferred.is_none() || id != preferred,
+                !names_it,
+            )
+        });
         let mut selected: Option<String> = None;
         // The selected conversation's newest page, when the lookup read it.
         let mut newest: Option<Vec<Value>> = None;
@@ -1282,6 +1345,15 @@ impl Core {
                     if unchanged {
                         continue;
                     }
+                    // Proved for this address within PROOF_TTL, by this
+                    // identity in this workspace, and its peer still the
+                    // agent proved: the proof is not walked for again on
+                    // every read (a long conversation's proof can be many
+                    // pages back). Sign-out or another account forgets it.
+                    if self.proven(miss_key, &id, candidate) {
+                        selected = Some(id);
+                        break;
+                    }
                     // An address that embeds the peer's agent id is proved by
                     // the participants alone: no message has to be read.
                     if endpoint_binding(candidate, &[], address, &identity.name).is_some() {
@@ -1317,7 +1389,15 @@ impl Core {
                         proof = endpoint_binding(candidate, &page, address, &identity.name);
                         older = Some(page);
                     }
-                    if proof.is_some() {
+                    if let Some((agent_id, _)) = proof {
+                        self.messaging.lock().unwrap().proven.insert(
+                            miss_key.clone(),
+                            Proven {
+                                conversation: id.clone(),
+                                agent_id,
+                                at: Instant::now(),
+                            },
+                        );
                         selected = Some(id);
                         newest = Some(first);
                         break;
