@@ -85,6 +85,11 @@ pub enum Forwarded {
     Sent { courier_session: String },
     /// No courier could be made ready; nothing was written.
     Unavailable,
+    /// The target is in a turn that a send now would stop; nothing was
+    /// written. A later attempt sends once the turn has ended.
+    Busy,
+    /// The route refused for a reason no retry changes; nothing was written.
+    Refused(Failure),
 }
 
 /// A warm courier pool. `forward` ensures one courier for the workspace and
@@ -224,6 +229,10 @@ impl super::Adapter for MuseCourierAdapter {
             }
             // Nothing was written, so this is safe to retry later.
             Forwarded::Unavailable => Outcome::Retry(Failure::EndpointUnavailable),
+            // Nothing was written; the journal deletes the claim and the
+            // message waits for the target's turn to end.
+            Forwarded::Busy => Outcome::Waiting(Failure::EndpointUnavailable),
+            Forwarded::Refused(failure) => Outcome::Refused(failure),
         }
     }
 

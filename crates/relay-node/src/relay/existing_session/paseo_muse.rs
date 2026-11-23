@@ -7,12 +7,38 @@
 //! a `turn_queue_submit` that was not already in the serve session's log
 //! when the POST started, and whose prompt equals the text that was sent.
 //!
-//! A refusal, or a failure before the connection exists, deletes the journal
-//! claim so a later attempt can send. A timeout, a reset, or a body that
-//! cannot be read may already have queued the prompt: the claim stays, the
-//! log can still confirm it, and the attempt is never sent again.
+//! Paseo has no queue for a caller outside its own agents: through v0.11.4
+//! the daemon replaces a running turn, and from v0.12.0 a top-level
+//! `send_agent_prompt` interrupts it unless the caller asks to steer. So the
+//! courier first asks `get_agent_status` on the same endpoint and posts the
+//! prompt only when the agent is not in a turn (`idle`, or `error` after a
+//! failed turn). Any other status, including one this build does not know,
+//! waits: nothing is sent, the journal claim is deleted, and a later
+//! attempt asks again. A status call that fails, times out, or cannot be
+//! read sent nothing either, so it is retried and never in doubt.
+//!
+//! A small race remains: the agent can start a turn between the status
+//! answer and the prompt, and that turn is then interrupted as before. The
+//! daemon offers an outside caller no way to close it, and this route does
+//! not pose as one of Paseo's agents to get a queue.
+//!
+//! A JSON-RPC error on the prompt call, or a failure before the connection
+//! exists, deletes the journal claim so a later attempt can send. A
+//! timeout, a reset, a body that cannot be read, or a tool-level error
+//! (`isError`, `success: false`) may already have queued the prompt: Paseo
+//! reports a run that did not start in time, or a provider that failed to
+//! start it, as a tool error after dispatching the prompt. The claim stays,
+//! the log can still confirm it, and the attempt is never sent again. A `401`
+//! on either call means the daemon has a password and Agent Relay holds
+//! none: the delivery is refused with that reason, and no credential is
+//! looked for.
+//!
+//! One attempt blocks for at most `STATUS_TIMEOUT` plus `PROMPT_TIMEOUT`
+//! (80 s), and the courier route's 120 s delivery window still bounds the
+//! wait for the receipt that follows.
 
 use super::muse_open::{Courier, Forwarded, Receipts};
+use super::Failure;
 use crate::relay::muse::{session_log, MuseConfig};
 use crate::relay::process::{ProcessTable, MAX_ANCESTRY};
 use serde_json::Value;
@@ -25,7 +51,25 @@ use std::time::{Duration, Instant};
 const DEFAULT_PORT: u16 = 6767;
 const MCP_PATH: &str = "/mcp/agents";
 const MAX_BODY: usize = 256 * 1024;
-const CALL_TIMEOUT: Duration = Duration::from_secs(5);
+/// `get_agent_status` reads the daemon's in-memory snapshot (or the stored
+/// record) and starts nothing, so a short wait is enough.
+const STATUS_TIMEOUT: Duration = Duration::from_secs(5);
+/// A top-level `send_agent_prompt` returns only once the provider has
+/// started the turn, and Paseo waits up to 60 s for that
+/// (`AGENT_RUN_START_TIMEOUT_MS` in its `agent-prompt.ts`, v0.11.4 through
+/// v0.17.3; v0.11.4 waits the same way with `background: true`). 75 s lets
+/// Paseo answer before this side gives up. Its own run-start timeout comes
+/// back as a tool error after the prompt was dispatched, so that answer, as
+/// well as this timeout, leaves the attempt to the session log: delivered
+/// if the command appears, otherwise in doubt and never sent again.
+const PROMPT_TIMEOUT: Duration = Duration::from_secs(75);
+
+/// What a person reads when the daemon answers `401`.
+pub const PASSWORD_REFUSAL: &str =
+    "The Paseo daemon has a password set and Agent Relay holds none, so it refused this message.";
+/// What a person reads while the message waits for Muse's turn to end.
+pub const WAITING_FOR_TURN: &str =
+    "Muse is working in Paseo; this message waits until its turn ends.";
 
 /// The loopback MCP URL for this Paseo daemon.
 ///
@@ -140,29 +184,54 @@ pub enum Posted {
     Uncertain,
 }
 
+/// Which call is being made, so the client can give each its own timeout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Call {
+    /// `get_agent_status`: reads state, sends nothing.
+    Status,
+    /// `send_agent_prompt`: may start a turn.
+    Prompt,
+}
+
 /// Posts one JSON-RPC body and classifies the result. `Unsent` is a URL
 /// this process refused or a connection that never opened. `Uncertain` is
 /// a timeout, a reset, or a body that could not be read: ureq reports the
 /// first two as `Io`. An auth challenge is an answered `401`. This route
 /// does not invent a token.
 pub trait Mcp: Send + Sync {
-    fn call(&self, endpoint: &str, body: &str) -> Posted;
+    fn call(&self, endpoint: &str, body: &str, call: Call) -> Posted;
 }
 
-pub struct UreqMcp;
+pub struct UreqMcp {
+    status_timeout: Duration,
+    prompt_timeout: Duration,
+}
+
+impl Default for UreqMcp {
+    fn default() -> Self {
+        Self {
+            status_timeout: STATUS_TIMEOUT,
+            prompt_timeout: PROMPT_TIMEOUT,
+        }
+    }
+}
 
 impl Mcp for UreqMcp {
-    fn call(&self, endpoint: &str, body: &str) -> Posted {
+    fn call(&self, endpoint: &str, body: &str, call: Call) -> Posted {
         if !loopback_agents(endpoint) {
             return Posted::Unsent;
         }
+        let timeout = match call {
+            Call::Status => self.status_timeout,
+            Call::Prompt => self.prompt_timeout,
+        };
         let agent = ureq::AgentBuilder::new()
             .redirects(0)
             .try_proxy_from_env(false)
-            .timeout(CALL_TIMEOUT)
-            .timeout_connect(CALL_TIMEOUT)
-            .timeout_read(CALL_TIMEOUT)
-            .timeout_write(CALL_TIMEOUT)
+            .timeout(timeout)
+            .timeout_connect(timeout.min(STATUS_TIMEOUT))
+            .timeout_read(timeout)
+            .timeout_write(timeout)
             .build();
         match agent
             .post(endpoint)
@@ -238,10 +307,11 @@ impl Attempt {
     }
 }
 
-/// One Paseo agent. `forward` asks the daemon to queue the prompt and does
-/// not wait for the model turn (`background: true`). `release` does nothing:
-/// there is no courier process. The receipts share `attempt`, so only a
-/// command id that appears after the snapshot can confirm the POST.
+/// One Paseo agent. `forward` asks the daemon for the agent's status and
+/// posts the prompt only when no turn is running; the session log confirms
+/// it. `release` does nothing: there is no courier process. The receipts
+/// share `attempt`, so only a command id that appears after the snapshot
+/// can confirm the POST.
 pub struct PaseoCourier<T: Mcp> {
     agent_id: String,
     endpoint: String,
@@ -252,7 +322,7 @@ pub struct PaseoCourier<T: Mcp> {
 
 impl PaseoCourier<UreqMcp> {
     pub fn system(agent_id: String, endpoint: String, store: MuseConfig) -> (Self, PaseoReceipts) {
-        Self::new(agent_id, endpoint, UreqMcp, store)
+        Self::new(agent_id, endpoint, UreqMcp::default(), store)
     }
 }
 
@@ -288,35 +358,165 @@ impl<T: Mcp> Courier for PaseoCourier<T> {
         if !loopback_agents(&self.endpoint) {
             return Forwarded::Unavailable;
         }
+        let status = self.mcp.call(
+            &self.endpoint,
+            &status_request(&self.agent_id),
+            Call::Status,
+        );
+        match turn_of(&status) {
+            Turn::Free => {}
+            // Nothing was sent: the claim is deleted and a later attempt
+            // asks again.
+            Turn::Busy => return Forwarded::Busy,
+            Turn::Unknown => return Forwarded::Unavailable,
+            Turn::Locked => return Forwarded::Refused(Failure::AuthenticationUnavailable),
+        }
         self.note_prior(target_session, text);
         let body = prompt_request(&self.agent_id, text);
-        if queued(&self.mcp.call(&self.endpoint, &body)) {
-            Forwarded::Sent {
+        match taken(&self.mcp.call(&self.endpoint, &body, Call::Prompt)) {
+            Taken::Maybe => Forwarded::Sent {
                 // The receipt is the session log, not a courier session.
                 courier_session: self.agent_id.clone(),
-            }
-        } else {
-            Forwarded::Unavailable
+            },
+            Taken::No => Forwarded::Unavailable,
+            Taken::Locked => Forwarded::Refused(Failure::AuthenticationUnavailable),
         }
     }
 }
 
-fn queued(posted: &Posted) -> bool {
+/// What `get_agent_status` said about the agent's turn.
+#[derive(Debug, PartialEq, Eq)]
+enum Turn {
+    /// Not in a turn: the prompt starts one and interrupts nothing.
+    Free,
+    /// In a turn, starting up, closed, or a status this build does not know.
+    Busy,
+    /// No usable answer. Nothing was sent.
+    Unknown,
+    /// `401`: the daemon has a password and this route holds none.
+    Locked,
+}
+
+/// Paseo's lifecycle statuses are `initializing`, `idle`, `running`,
+/// `error` and `closed` (`AgentStatusEnum`, v0.11.4 through v0.17.3). Its
+/// own busy set is `initializing` and `running`. `error` is set when a turn
+/// ends with an error and no turn is active, so a prompt starts a new turn.
+/// `closed` waits: a prompt would make Paseo load the agent again rather
+/// than reach the serve process whose log is the receipt.
+fn turn_of(posted: &Posted) -> Turn {
     match posted {
-        Posted::Unsent => false,
+        Posted::Unsent | Posted::Uncertain => Turn::Unknown,
+        Posted::Answered { status: 401, .. } => Turn::Locked,
+        Posted::Answered {
+            status: 200..=299,
+            body: Some(body),
+        } => match agent_status(body).as_deref() {
+            Some("idle" | "error") => Turn::Free,
+            Some(_) => Turn::Busy,
+            None => Turn::Unknown,
+        },
+        Posted::Answered { .. } => Turn::Unknown,
+    }
+}
+
+/// The `status` of a `get_agent_status` result, from `structuredContent`
+/// or from a JSON text item. `None` for an error, `isError`, or a body
+/// without one.
+fn agent_status(body: &str) -> Option<String> {
+    let mut found = None;
+    for message in mcp_messages(body) {
+        if message.get("error").is_some() {
+            return None;
+        }
+        let Some(result) = message.get("result") else {
+            continue;
+        };
+        if result.get("isError").and_then(Value::as_bool) == Some(true) {
+            return None;
+        }
+        if let Some(status) = result
+            .pointer("/structuredContent/status")
+            .and_then(Value::as_str)
+        {
+            found = Some(status.to_string());
+            continue;
+        }
+        let texts = result
+            .get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item.get("text").and_then(Value::as_str))
+            .filter_map(|text| serde_json::from_str::<Value>(text).ok());
+        for parsed in texts {
+            if let Some(status) = parsed.get("status").and_then(Value::as_str) {
+                found = Some(status.to_string());
+            }
+        }
+    }
+    found
+}
+
+/// The `get_agent_status` call.
+pub fn status_request(agent_id: &str) -> String {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "get_agent_status",
+            "arguments": {"agentId": agent_id}
+        }
+    })
+    .to_string()
+}
+
+/// Whether the prompt POST may have queued the prompt.
+#[derive(Debug, PartialEq, Eq)]
+enum Taken {
+    Maybe,
+    No,
+    Locked,
+}
+
+fn taken(posted: &Posted) -> Taken {
+    match posted {
+        Posted::Unsent => Taken::No,
         // The request may have been written. Keep the claim and let the log
         // confirm it, or leave the attempt in doubt.
-        Posted::Uncertain => true,
-        // 401 is the daemon asking for a token. The prompt was not taken.
-        Posted::Answered { status: 401, .. } => false,
+        Posted::Uncertain => Taken::Maybe,
+        // 401 is the daemon asking for a password. The prompt was not taken.
+        Posted::Answered { status: 401, .. } => Taken::Locked,
         Posted::Answered { body, .. } => {
-            !matches!(body.as_deref().map(verdict), Some(Verdict::Rejected))
+            if body.as_deref().is_some_and(handler_never_ran) {
+                Taken::No
+            } else {
+                Taken::Maybe
+            }
         }
     }
 }
 
-/// The `send_agent_prompt` call. `background` is true so the probe returns
-/// as soon as Paseo has taken the prompt, and the session log confirms it.
+/// Whether a `send_agent_prompt` answer proves the tool handler never ran:
+/// a JSON-RPC `error` member. A tool-level failure (`isError: true`, or
+/// `success: false`) does not. The MCP SDK Paseo uses turns every throw
+/// inside `tools/call` into an `isError` result, and Paseo's handler
+/// throws after it has dispatched the prompt when the run does not start
+/// within its 60 s (`waitForAgentRunStartWithTimeout`), or when the
+/// provider fails to start it. Only the error text tells those apart from
+/// a refusal before dispatch, so every tool-level failure may have queued
+/// the prompt and is left to the session log.
+fn handler_never_ran(body: &str) -> bool {
+    mcp_messages(body)
+        .iter()
+        .any(|message| message.get("error").is_some())
+}
+
+/// The `send_agent_prompt` call. Paseo through v0.11.4 reads `background`:
+/// true returns once the turn has started instead of when it ends. From
+/// v0.12.0 the field is gone from the tool's input schema, and unknown
+/// keys are not refused there, so it is ignored. `activeTurnBehavior` is
+/// left out: the status check above is what keeps a running turn whole.
 pub fn prompt_request(agent_id: &str, prompt: &str) -> String {
     serde_json::json!({
         "jsonrpc": "2.0",
@@ -335,8 +535,9 @@ pub fn prompt_request(agent_id: &str, prompt: &str) -> String {
 }
 
 /// Whether `body` is an MCP result that reports the prompt was queued.
-/// A JSON-RPC error, `isError`, or `success: false` did not. A result
-/// without a success flag may have: the session log is what confirms it.
+/// A JSON-RPC error, `isError`, or `success: false` does not report it. A
+/// result without a success flag may have. This reads the answer only: the
+/// resend decision is `handler_never_ran`, and the session log confirms.
 pub fn prompt_accepted(body: &str) -> bool {
     matches!(verdict(body), Verdict::Accepted)
 }
@@ -776,20 +977,53 @@ mod tests {
         );
     }
 
+    fn status_sse(status: &str) -> String {
+        format!(
+            "event: message\ndata: {}\n\n",
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "content": [],
+                    "structuredContent": {"status": status, "snapshot": {"id": AGENT}}
+                }
+            })
+        )
+    }
+
+    fn status(status: &str) -> Posted {
+        Posted::Answered {
+            status: 200,
+            body: Some(status_sse(status)),
+        }
+    }
+
+    fn idle() -> Posted {
+        status("idle")
+    }
+
     struct Script {
+        /// The answer to `get_agent_status`.
+        status: Mutex<Posted>,
+        /// The answer to `send_agent_prompt`.
         response: Mutex<Posted>,
         calls: Arc<Mutex<Vec<String>>>,
-        /// Written into the session log when the POST is attempted, after
-        /// the courier has snapshotted the ids already there.
+        /// Written into the session log when the prompt POST is attempted,
+        /// after the courier has snapshotted the ids already there.
         append: Mutex<Option<(PathBuf, String)>>,
     }
 
     impl Mcp for Script {
-        fn call(&self, endpoint: &str, body: &str) -> Posted {
+        fn call(&self, endpoint: &str, body: &str, call: Call) -> Posted {
             self.calls
                 .lock()
                 .unwrap()
                 .push(format!("{endpoint}\n{body}"));
+            if call == Call::Status {
+                assert!(body.contains("\"get_agent_status\""));
+                return self.status.lock().unwrap().clone();
+            }
+            assert!(body.contains("\"send_agent_prompt\""));
             if let Some((path, line)) = self.append.lock().unwrap().clone() {
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent).unwrap();
@@ -803,6 +1037,16 @@ mod tests {
             }
             self.response.lock().unwrap().clone()
         }
+    }
+
+    /// How many `send_agent_prompt` POSTs were made.
+    fn prompts(calls: &Arc<Mutex<Vec<String>>>) -> usize {
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| call.contains("\"send_agent_prompt\""))
+            .count()
     }
 
     fn target(root: &Path) -> Target {
@@ -838,7 +1082,12 @@ mod tests {
     }
 
     fn script(response: Posted, calls: Arc<Mutex<Vec<String>>>) -> Script {
+        scripted(idle(), response, calls)
+    }
+
+    fn scripted(status: Posted, response: Posted, calls: Arc<Mutex<Vec<String>>>) -> Script {
         Script {
+            status: Mutex::new(status),
             response: Mutex::new(response),
             calls,
             append: Mutex::new(None),
@@ -853,7 +1102,20 @@ mod tests {
         delivery_id: &str,
         timeout: Duration,
     ) -> Outcome {
-        let mcp = script(response, calls);
+        deliver_after(root, idle(), response, calls, append, delivery_id, timeout)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn deliver_after(
+        root: &Path,
+        status: Posted,
+        response: Posted,
+        calls: Arc<Mutex<Vec<String>>>,
+        append: Option<String>,
+        delivery_id: &str,
+        timeout: Duration,
+    ) -> Outcome {
+        let mcp = scripted(status, response, calls);
         if let Some(line) = append {
             *mcp.append.lock().unwrap() = Some((log_path(root), line));
         }
@@ -894,7 +1156,7 @@ mod tests {
                 receipt_id: COMMAND.into()
             }
         );
-        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert_eq!(prompts(&calls), 1);
 
         let tmp = tempfile::tempdir().unwrap();
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -916,7 +1178,7 @@ mod tests {
             Duration::from_secs(2),
         );
         assert!(matches!(retried, Outcome::Delivered { .. }));
-        assert_eq!(calls.lock().unwrap().len(), 2);
+        assert_eq!(prompts(&calls), 2);
     }
 
     #[test]
@@ -935,7 +1197,7 @@ mod tests {
         };
         assert!(matches!(send(Posted::Uncertain), Outcome::InDoubt(_)));
         assert!(matches!(send(accepted()), Outcome::InDoubt(_)));
-        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert_eq!(prompts(&calls), 1);
 
         let tmp = tempfile::tempdir().unwrap();
         write_log(tmp.path(), &intake("please ack", "please ack", OLDER));
@@ -952,7 +1214,7 @@ mod tests {
         };
         assert!(matches!(send(), Outcome::InDoubt(_)));
         assert!(matches!(send(), Outcome::InDoubt(_)));
-        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert_eq!(prompts(&calls), 1);
     }
 
     #[test]
@@ -985,7 +1247,7 @@ mod tests {
                 courier_session: AGENT.into()
             }
         );
-        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert_eq!(prompts(&calls), 1);
         assert_eq!(
             receipts.admitted(SESSION, AGENT, "please ack", Instant::now()),
             None
@@ -1026,7 +1288,7 @@ mod tests {
             courier.forward(tmp.path(), SESSION, "please ack"),
             Forwarded::Unavailable
         );
-        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert_eq!(prompts(&calls), 1);
 
         let (courier, _) = PaseoCourier::new(
             AGENT.into(),
@@ -1058,89 +1320,152 @@ mod tests {
         response
     }
 
-    fn serve(response: Vec<u8>) -> u16 {
+    /// One connection per entry, answered in order. `None` reads the
+    /// request and never answers. List only the calls the client makes:
+    /// the server waits for each. Returns the port and the requests read.
+    fn serve(responses: Vec<Option<Vec<u8>>>) -> (u16, std::thread::JoinHandle<Vec<String>>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            let Ok((mut stream, _)) = listener.accept() else {
-                return;
-            };
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-            read_request(&mut stream).unwrap();
-            let _ = std::io::Write::write_all(&mut stream, &response);
+        let handle = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            let mut held = Vec::new();
+            for response in responses {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                let Ok(buf) = read_request(&mut stream) else {
+                    break;
+                };
+                requests.push(String::from_utf8_lossy(&buf).into_owned());
+                match response {
+                    Some(response) => {
+                        let _ = std::io::Write::write_all(&mut stream, &response);
+                    }
+                    None => held.push(stream),
+                }
+            }
+            // Keep unanswered connections open until the client gives up.
+            std::thread::sleep(Duration::from_millis(1500));
+            drop(held);
+            requests
         });
-        port
+        (port, handle)
     }
 
-    fn forward_to(endpoint: String) -> Forwarded {
+    fn sse(body: &str) -> Vec<u8> {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes()
+    }
+
+    fn quick() -> UreqMcp {
+        UreqMcp {
+            status_timeout: Duration::from_millis(500),
+            prompt_timeout: Duration::from_millis(500),
+        }
+    }
+
+    fn forward_with(endpoint: String, mcp: UreqMcp) -> Forwarded {
         let tmp = tempfile::tempdir().unwrap();
-        let (courier, _) = PaseoCourier::system(AGENT.into(), endpoint, store_of(tmp.path()));
-        let forwarded = courier.forward(Path::new("/tmp"), SESSION, "please ack");
+        let (courier, _) = PaseoCourier::new(AGENT.into(), endpoint, mcp, store_of(tmp.path()));
+        let forwarded = courier.forward(tmp.path(), SESSION, "please ack");
         // Keep the temp dir until the POST has returned.
         drop(tmp);
         forwarded
     }
 
-    #[test]
-    fn the_system_client_posts_the_prompt_and_keeps_an_ambiguous_answer() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let expected = accepted_sse();
-        let received = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-            let buf = read_request(&mut stream).unwrap();
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{expected}",
-                expected.len()
-            );
-            let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
-            String::from_utf8_lossy(&buf).into_owned()
-        });
-        assert_eq!(
-            forward_to(format!("http://127.0.0.1:{port}/mcp/agents")),
-            Forwarded::Sent {
-                courier_session: AGENT.into()
-            }
-        );
-        let request = received.join().unwrap();
-        assert!(request.contains("POST /mcp/agents "));
-        let json: Value = serde_json::from_str(
+    fn forward_to(endpoint: String) -> Forwarded {
+        forward_with(endpoint, UreqMcp::default())
+    }
+
+    fn json_body(request: &str) -> Value {
+        serde_json::from_str(
             request
                 .split_once("\r\n\r\n")
                 .map(|(_, body)| body)
                 .unwrap(),
         )
-        .unwrap();
-        assert_eq!(json["params"]["arguments"]["agentId"], AGENT);
-        assert_eq!(json["params"]["arguments"]["prompt"], "please ack");
-        assert_eq!(json["params"]["arguments"]["background"], true);
+        .unwrap()
+    }
 
-        let port = serve(http("401 Unauthorized", ""));
-        assert_eq!(
-            forward_to(format!("http://127.0.0.1:{port}/mcp/agents")),
-            Forwarded::Unavailable
-        );
-
-        let port = serve(http("200 OK", "not json"));
+    #[test]
+    fn the_system_client_asks_the_status_then_posts_the_prompt() {
+        let (port, received) = serve(vec![
+            Some(sse(&status_sse("idle"))),
+            Some(sse(&accepted_sse())),
+        ]);
         assert_eq!(
             forward_to(format!("http://127.0.0.1:{port}/mcp/agents")),
             Forwarded::Sent {
                 courier_session: AGENT.into()
             }
         );
+        let requests = received.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].contains("POST /mcp/agents "));
+        let status = json_body(&requests[0]);
+        assert_eq!(status["params"]["name"], "get_agent_status");
+        assert_eq!(
+            status["params"]["arguments"],
+            serde_json::json!({"agentId": AGENT})
+        );
+        assert!(requests[1].contains("POST /mcp/agents "));
+        let prompt = json_body(&requests[1]);
+        assert_eq!(prompt["params"]["name"], "send_agent_prompt");
+        assert_eq!(prompt["params"]["arguments"]["agentId"], AGENT);
+        assert_eq!(prompt["params"]["arguments"]["prompt"], "please ack");
+        assert_eq!(prompt["params"]["arguments"]["background"], true);
+        assert!(prompt["params"]["arguments"]
+            .get("activeTurnBehavior")
+            .is_none());
+        // No credential is sent on either call.
+        assert!(requests
+            .iter()
+            .all(|request| !request.to_ascii_lowercase().contains("authorization:")));
+    }
 
-        let huge = "x".repeat(MAX_BODY + 1);
-        let port = serve(http("200 OK", &huge));
+    #[test]
+    fn the_system_client_waits_while_the_agent_runs() {
+        let (port, received) = serve(vec![Some(sse(&status_sse("running")))]);
         assert_eq!(
             forward_to(format!("http://127.0.0.1:{port}/mcp/agents")),
+            Forwarded::Busy
+        );
+        assert_eq!(received.join().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_system_client_keeps_an_ambiguous_prompt_answer() {
+        for prompt in [
+            http("200 OK", "not json"),
+            http("200 OK", &"x".repeat(MAX_BODY + 1)),
+        ] {
+            let (port, _) = serve(vec![Some(sse(&status_sse("idle"))), Some(prompt)]);
+            assert_eq!(
+                forward_to(format!("http://127.0.0.1:{port}/mcp/agents")),
+                Forwarded::Sent {
+                    courier_session: AGENT.into()
+                }
+            );
+        }
+
+        // The status answered idle and the prompt never did: in doubt.
+        let (port, received) = serve(vec![Some(sse(&status_sse("idle"))), None]);
+        assert_eq!(
+            forward_with(format!("http://127.0.0.1:{port}/mcp/agents"), quick()),
             Forwarded::Sent {
                 courier_session: AGENT.into()
             }
         );
+        assert_eq!(received.join().unwrap().len(), 2);
+    }
 
+    #[test]
+    fn the_system_client_sends_nothing_when_the_status_is_unusable() {
+        // Refused connection.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
@@ -1149,19 +1474,35 @@ mod tests {
             Forwarded::Unavailable
         );
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-                read_request(&mut stream).unwrap();
-            }
-        });
+        // A status call that never answers, then one that cannot be read.
+        for status in [None, Some(http("200 OK", "not json"))] {
+            let (port, received) = serve(vec![status]);
+            assert_eq!(
+                forward_with(format!("http://127.0.0.1:{port}/mcp/agents"), quick()),
+                Forwarded::Unavailable
+            );
+            let requests = received.join().unwrap();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(
+                json_body(&requests[0])["params"]["name"],
+                "get_agent_status"
+            );
+        }
+
+        let (port, received) = serve(vec![Some(http("401 Unauthorized", ""))]);
         assert_eq!(
             forward_to(format!("http://127.0.0.1:{port}/mcp/agents")),
-            Forwarded::Sent {
-                courier_session: AGENT.into()
-            }
+            Forwarded::Refused(Failure::AuthenticationUnavailable)
+        );
+        assert_eq!(received.join().unwrap().len(), 1);
+
+        let (port, _) = serve(vec![
+            Some(sse(&status_sse("idle"))),
+            Some(http("401 Unauthorized", r#"{"error":"Unauthorized"}"#)),
+        ]);
+        assert_eq!(
+            forward_to(format!("http://127.0.0.1:{port}/mcp/agents")),
+            Forwarded::Refused(Failure::AuthenticationUnavailable)
         );
 
         assert_eq!(
@@ -1170,5 +1511,396 @@ mod tests {
         );
         assert!(!loopback_agents("http://localhost:6767/mcp/agents"));
         assert!(loopback_agents("http://[::1]:6767/mcp/agents"));
+    }
+
+    #[test]
+    fn only_a_session_out_of_its_turn_takes_the_prompt() {
+        assert_eq!(turn_of(&status("idle")), Turn::Free);
+        assert_eq!(turn_of(&status("error")), Turn::Free);
+        for busy in ["running", "initializing", "closed", "thinking", ""] {
+            assert_eq!(turn_of(&status(busy)), Turn::Busy, "{busy}");
+        }
+        let text = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {"content": [{"type": "text", "text": "{\"status\":\"running\"}"}]}
+        })
+        .to_string();
+        assert_eq!(
+            turn_of(&Posted::Answered {
+                status: 200,
+                body: Some(text)
+            }),
+            Turn::Busy
+        );
+        let unknown = [
+            Posted::Unsent,
+            Posted::Uncertain,
+            Posted::Answered {
+                status: 200,
+                body: None,
+            },
+            Posted::Answered {
+                status: 200,
+                body: Some("not json".into()),
+            },
+            Posted::Answered {
+                status: 200,
+                body: Some(
+                    serde_json::json!({"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"no"}})
+                        .to_string(),
+                ),
+            },
+            Posted::Answered {
+                status: 200,
+                body: Some(
+                    serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"isError":true,"structuredContent":{"status":"idle"}}})
+                        .to_string(),
+                ),
+            },
+            Posted::Answered {
+                status: 200,
+                body: Some(
+                    serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"status":7}}})
+                        .to_string(),
+                ),
+            },
+            Posted::Answered {
+                status: 500,
+                body: Some(status_sse("idle")),
+            },
+        ];
+        for posted in unknown {
+            assert_eq!(turn_of(&posted), Turn::Unknown, "{posted:?}");
+        }
+        assert_eq!(
+            turn_of(&Posted::Answered {
+                status: 401,
+                body: None
+            }),
+            Turn::Locked
+        );
+    }
+
+    #[test]
+    fn a_running_session_waits_and_a_later_idle_attempt_sends() {
+        let tmp = tempfile::tempdir().unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let waited = deliver_after(
+            tmp.path(),
+            status("running"),
+            accepted(),
+            calls.clone(),
+            Some(intake("please ack", "please ack", COMMAND)),
+            "relay-5",
+            Duration::from_secs(1),
+        );
+        assert!(matches!(waited, Outcome::Waiting(_)), "{waited:?}");
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert_eq!(prompts(&calls), 0);
+
+        // An unknown status waits too.
+        let waited = deliver_after(
+            tmp.path(),
+            status("compacting"),
+            accepted(),
+            calls.clone(),
+            None,
+            "relay-5",
+            Duration::from_secs(1),
+        );
+        assert!(matches!(waited, Outcome::Waiting(_)), "{waited:?}");
+        assert_eq!(prompts(&calls), 0);
+
+        // The claim was released: the same delivery sends once idle.
+        let sent = deliver_after(
+            tmp.path(),
+            idle(),
+            accepted(),
+            calls.clone(),
+            Some(intake("please ack", "please ack", COMMAND)),
+            "relay-5",
+            Duration::from_secs(2),
+        );
+        assert_eq!(
+            sent,
+            Outcome::Delivered {
+                receipt_id: COMMAND.into()
+            }
+        );
+        assert_eq!(prompts(&calls), 1);
+        let prompt = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|call| call.contains("send_agent_prompt"))
+            .cloned()
+            .unwrap();
+        let body: Value = serde_json::from_str(prompt.split_once('\n').unwrap().1).unwrap();
+        assert_eq!(body["params"]["arguments"]["agentId"], AGENT);
+        assert_eq!(body["params"]["arguments"]["prompt"], "please ack");
+        assert_eq!(body["params"]["arguments"]["background"], true);
+        assert!(body["params"]["arguments"]
+            .get("activeTurnBehavior")
+            .is_none());
+    }
+
+    #[test]
+    fn a_status_call_that_fails_sends_nothing_and_can_be_retried() {
+        let unusable = [
+            // Timeout or reset: the status call sends nothing either way.
+            Posted::Uncertain,
+            // Connection refused.
+            Posted::Unsent,
+            Posted::Answered {
+                status: 200,
+                body: Some("not json".into()),
+            },
+        ];
+        for (index, failed) in unusable.into_iter().enumerate() {
+            let tmp = tempfile::tempdir().unwrap();
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let delivery = format!("relay-6-{index}");
+            let outcome = deliver_after(
+                tmp.path(),
+                failed,
+                accepted(),
+                calls.clone(),
+                None,
+                &delivery,
+                Duration::from_secs(1),
+            );
+            assert!(matches!(outcome, Outcome::Retry(_)), "{outcome:?}");
+            assert_eq!(prompts(&calls), 0);
+            let retried = deliver_after(
+                tmp.path(),
+                idle(),
+                accepted(),
+                calls.clone(),
+                Some(intake("please ack", "please ack", COMMAND)),
+                &delivery,
+                Duration::from_secs(2),
+            );
+            assert!(matches!(retried, Outcome::Delivered { .. }), "{retried:?}");
+            assert_eq!(prompts(&calls), 1);
+        }
+    }
+
+    #[test]
+    fn a_password_on_the_daemon_is_a_readable_refusal_and_releases_the_claim() {
+        let locked = || Posted::Answered {
+            status: 401,
+            body: Some(r#"{"error":"Unauthorized"}"#.into()),
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let refused = deliver_after(
+            tmp.path(),
+            locked(),
+            accepted(),
+            calls.clone(),
+            None,
+            "relay-7",
+            Duration::from_secs(1),
+        );
+        assert_eq!(
+            refused,
+            Outcome::Refused(Failure::AuthenticationUnavailable)
+        );
+        assert_eq!(prompts(&calls), 0);
+        let refused = deliver_after(
+            tmp.path(),
+            idle(),
+            locked(),
+            calls.clone(),
+            None,
+            "relay-7",
+            Duration::from_secs(1),
+        );
+        assert_eq!(
+            refused,
+            Outcome::Refused(Failure::AuthenticationUnavailable)
+        );
+        assert_eq!(prompts(&calls), 1);
+        // Neither refusal kept the claim.
+        let sent = deliver_after(
+            tmp.path(),
+            idle(),
+            accepted(),
+            calls.clone(),
+            Some(intake("please ack", "please ack", COMMAND)),
+            "relay-7",
+            Duration::from_secs(2),
+        );
+        assert!(matches!(sent, Outcome::Delivered { .. }), "{sent:?}");
+        assert!(PASSWORD_REFUSAL.contains("password"));
+        assert!(PASSWORD_REFUSAL.contains("Agent Relay holds none"));
+    }
+
+    #[test]
+    fn a_prompt_timeout_after_an_idle_status_stays_in_doubt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let first = deliver_after(
+            tmp.path(),
+            idle(),
+            Posted::Uncertain,
+            calls.clone(),
+            None,
+            "relay-8",
+            Duration::from_secs(1),
+        );
+        assert!(matches!(first, Outcome::InDoubt(_)), "{first:?}");
+        let calls_after_first = calls.lock().unwrap().len();
+        let second = deliver_after(
+            tmp.path(),
+            idle(),
+            accepted(),
+            calls.clone(),
+            None,
+            "relay-8",
+            Duration::from_secs(1),
+        );
+        assert!(matches!(second, Outcome::InDoubt(_)), "{second:?}");
+        // The second attempt posts nothing at all, not even the status.
+        assert_eq!(calls.lock().unwrap().len(), calls_after_first);
+        assert_eq!(prompts(&calls), 1);
+    }
+
+    /// Paseo's answer when the run did not start within its 60 s: the MCP
+    /// SDK wraps the handler's throw, after the prompt was dispatched.
+    fn tool_error() -> Posted {
+        Posted::Answered {
+            status: 200,
+            body: Some(format!(
+                "event: message\ndata: {}\n\n",
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "content": [{"type": "text", "text": "run did not start in time"}],
+                        "isError": true
+                    }
+                })
+            )),
+        }
+    }
+
+    fn unsuccessful() -> Posted {
+        Posted::Answered {
+            status: 200,
+            body: Some(
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {"structuredContent": {"success": false, "status": "error"}}
+                })
+                .to_string(),
+            ),
+        }
+    }
+
+    fn rpc_error() -> Posted {
+        Posted::Answered {
+            status: 200,
+            body: Some(
+                serde_json::json!({"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"no"}})
+                    .to_string(),
+            ),
+        }
+    }
+
+    #[test]
+    fn a_tool_error_after_an_idle_status_may_have_queued_the_prompt() {
+        for (index, failed) in [tool_error(), unsuccessful()].into_iter().enumerate() {
+            // The forward reports it sent, so the log decides.
+            let tmp = tempfile::tempdir().unwrap();
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let (courier, _) = PaseoCourier::new(
+                AGENT.into(),
+                "http://127.0.0.1:6767/mcp/agents".into(),
+                script(failed.clone(), calls.clone()),
+                store_of(tmp.path()),
+            );
+            assert_eq!(
+                courier.forward(tmp.path(), SESSION, "please ack"),
+                Forwarded::Sent {
+                    courier_session: AGENT.into()
+                }
+            );
+
+            // Paseo queued it anyway: the new command id delivers it.
+            let tmp = tempfile::tempdir().unwrap();
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let delivered = deliver_after(
+                tmp.path(),
+                idle(),
+                failed.clone(),
+                calls.clone(),
+                Some(intake("please ack", "please ack", COMMAND)),
+                &format!("relay-9-{index}"),
+                Duration::from_secs(2),
+            );
+            assert_eq!(
+                delivered,
+                Outcome::Delivered {
+                    receipt_id: COMMAND.into()
+                }
+            );
+            assert_eq!(prompts(&calls), 1);
+
+            // No command id: in doubt, and never posted again.
+            let tmp = tempfile::tempdir().unwrap();
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let delivery = format!("relay-10-{index}");
+            let first = deliver_after(
+                tmp.path(),
+                idle(),
+                failed,
+                calls.clone(),
+                None,
+                &delivery,
+                Duration::from_secs(1),
+            );
+            assert!(matches!(first, Outcome::InDoubt(_)), "{first:?}");
+            let second = deliver_after(
+                tmp.path(),
+                status("error"),
+                accepted(),
+                calls.clone(),
+                None,
+                &delivery,
+                Duration::from_secs(1),
+            );
+            assert!(matches!(second, Outcome::InDoubt(_)), "{second:?}");
+            assert_eq!(prompts(&calls), 1);
+        }
+    }
+
+    #[test]
+    fn a_json_rpc_error_on_the_prompt_was_not_taken_and_can_be_retried() {
+        let tmp = tempfile::tempdir().unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let failed = deliver_after(
+            tmp.path(),
+            idle(),
+            rpc_error(),
+            calls.clone(),
+            None,
+            "relay-11",
+            Duration::from_secs(1),
+        );
+        assert!(matches!(failed, Outcome::Retry(_)), "{failed:?}");
+        let retried = deliver_after(
+            tmp.path(),
+            idle(),
+            accepted(),
+            calls.clone(),
+            Some(intake("please ack", "please ack", COMMAND)),
+            "relay-11",
+            Duration::from_secs(2),
+        );
+        assert!(matches!(retried, Outcome::Delivered { .. }), "{retried:?}");
+        assert_eq!(prompts(&calls), 2);
     }
 }
