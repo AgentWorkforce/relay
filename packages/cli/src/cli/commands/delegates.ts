@@ -59,6 +59,9 @@ function requireId(value: string, label: string): string {
 /**
  * `class=target[,target…]`, e.g. `merge=AgentWorkforce/*` or
  * `prompt_approval=*`. Repeatable.
+ * @param value - One `--scope` value; split at its first `=`, so a target keeps any later `=`
+ * @param previous - The scopes given so far
+ * @returns The scopes with this one added
  */
 export function parseScope(
   value: string,
@@ -84,7 +87,12 @@ export function parseScope(
   return [...previous, { class: cls, targets: list }];
 }
 
-/** Days from now as an ISO time, 1 to 90 (Cloud caps it at the org policy). */
+/**
+ * Days from now as an ISO time, 1 to 90 (Cloud caps it at the org policy).
+ * @param value - Whole days, as typed
+ * @param now - Milliseconds since the epoch; defaults to now
+ * @returns The expiry as an ISO 8601 time
+ */
 export function expiryFromDays(value: string, now = Date.now()): string {
   const days = Number(value);
   if (!Number.isInteger(days) || days < 1 || days > 90) {
@@ -158,7 +166,11 @@ function defaults(overrides: Partial<DelegatesDependencies>): DelegatesDependenc
   };
 }
 
-/** Registers `agent-relay delegates list|add|revoke|revoke-all|claim`. */
+/**
+ * Registers `agent-relay delegates list|add|revoke|revoke-all|claim`.
+ * @param program - The CLI program to add the `delegates` group to
+ * @param overrides - Dependencies to replace, in tests
+ */
 export function registerDelegatesCommands(
   program: Command,
   overrides: Partial<DelegatesDependencies> = {}
