@@ -28,9 +28,14 @@ impl LocalSessions {
         let belongs = crate::relay::grok::open_sessions(&self.config.grok, table, uid)
             .iter()
             .any(|session| {
+                // The client is read before and after its socket, so a pid
+                // replaced in between never lends its attachment.
+                let client = table.process(session.pid);
                 session.session_id == session_id
+                    && client.is_some()
                     && crate::relay::grok::attached_leader_socket(table, session.pid).as_ref()
                         == Some(&served)
+                    && table.process(session.pid) == client
             });
         (belongs
             && table.process(leader) == Some(leader_process)

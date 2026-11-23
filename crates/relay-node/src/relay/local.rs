@@ -2975,6 +2975,27 @@ mod tests {
         let mut world = world();
         openclaw_gateway_process(&mut world, &["main", "work"]);
         assert_eq!(target_of(&world, 630), None);
+        // Its Codex runtime is an app-server holding two threads: a send
+        // token for either still names nobody under the Gateway.
+        let thread = "11111111-2222-3333-4444-555555555555";
+        let other = "11111111-2222-3333-4444-666666666666";
+        let lock =
+            |id: &str| PathBuf::from(format!("/Users/me/.codex/thread-writer-locks/{id}.lock"));
+        world.table.insert(
+            610,
+            FakeProcess {
+                executable: Some(codex_exe()),
+                arguments: vec!["codex".into(), "app-server".into()],
+                open_files: vec![lock(thread), lock(other)],
+                ..process(600, 610)
+            },
+        );
+        for id in [thread, other] {
+            assert!(world
+                .sessions
+                .caller_among_held(630, &Target::new(SessionKind::Codex, id))
+                .is_none());
+        }
     }
 
     #[test]

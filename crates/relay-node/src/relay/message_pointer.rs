@@ -220,21 +220,33 @@ impl Kept {
 /// `text` without the framing line right under its attribution
 /// (`Framing::of`), and under a peer's header if it was a leader's.
 fn as_peer(text: &str) -> String {
-    // A delegate's line goes first: it can sit under an owner's or leader's.
-    let without_delegate = crate::relay::delivery::policy::without_delegate_line(text);
-    let text = without_delegate.as_str();
-    if Framing::of(text) == Framing::Peer {
-        return text.to_string();
-    }
-    if Framing::of(text) == Framing::Leader {
-        return crate::relay::delivery::policy::without_leader_line(text);
-    }
-    match text.split_once('\n') {
-        Some((attribution, rest)) => {
-            let rest = rest.split_once('\n').map_or("", |(_, rest)| rest);
-            format!("{attribution}\n{rest}")
+    // Framing lines can be stacked (an owner's or leader's, then a
+    // delegate's, or a forged file with several): each recognised one goes
+    // until the text frames as nothing but a peer's.
+    let mut text = text.to_string();
+    for _ in 0..8 {
+        if Framing::of(&text) == Framing::Peer {
+            break;
         }
-        None => text.to_string(),
+        text = strip_one_framing(&text);
+    }
+    text
+}
+
+/// `text` without the one framing line `Framing::of` recognises, and under a
+/// peer's header if it was a leader's.
+fn strip_one_framing(text: &str) -> String {
+    match Framing::of(text) {
+        Framing::Peer => text.to_string(),
+        Framing::Delegate => crate::relay::delivery::policy::without_delegate_line(text),
+        Framing::Leader => crate::relay::delivery::policy::without_leader_line(text),
+        Framing::Owner | Framing::OwnerAuthority => match text.split_once('\n') {
+            Some((attribution, rest)) => {
+                let rest = rest.split_once('\n').map_or("", |(_, rest)| rest);
+                format!("{attribution}\n{rest}")
+            }
+            None => text.to_string(),
+        },
     }
 }
 
@@ -1120,6 +1132,22 @@ mod tests {
         let shown = record.shown_text();
         assert!(!delegate_framed(&shown), "{shown}");
         assert_eq!(shown, relayed("m9"));
+    }
+
+    // Stacked framing lines in an unsealed file all go, never leaving a
+    // second one to frame the text.
+    #[test]
+    fn stacked_unverified_framing_lines_all_read_as_a_peers() {
+        use crate::relay::delivery::policy::{OWNER_AUTHORITY_LINE, OWNER_LINE};
+        let peer = relayed("m10");
+        let (first, rest) = peer.split_once('\n').unwrap();
+        let stacked = format!("{first}\n{OWNER_LINE}\n{OWNER_AUTHORITY_LINE}\n{rest}");
+        assert_eq!(Framing::of(&stacked), Framing::Owner);
+        let shown = as_peer(&stacked);
+        assert_eq!(Framing::of(&shown), Framing::Peer, "{shown}");
+        assert_eq!(shown, peer);
+        let reversed = format!("{first}\n{OWNER_AUTHORITY_LINE}\n{OWNER_LINE}\n{rest}");
+        assert_eq!(as_peer(&reversed), peer);
     }
 
     #[test]

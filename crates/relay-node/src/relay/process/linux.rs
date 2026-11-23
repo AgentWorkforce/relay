@@ -337,9 +337,13 @@ fn codex_location_trusted(
     codex_home: Option<PathBuf>,
 ) -> bool {
     let canonical = |path: PathBuf| fs::canonicalize(&path).unwrap_or(path);
+    // `~/.codex` itself may be a link elsewhere: its own packages and binary
+    // are matched where it resolves to, as a custom `CODEX_HOME` is.
+    let default_codex_home = home.as_ref().map(|home| canonical(home.join(".codex")));
     let home = home.map(canonical);
     let codex_home = codex_home.filter(|path| path.is_absolute()).map(canonical);
     in_codex_install(executable, home.as_deref(), codex_home.as_deref())
+        || in_codex_install(executable, None, default_codex_home.as_deref())
 }
 
 /// `mountinfo` writes a space, tab, newline and backslash as octal escapes.
@@ -379,6 +383,26 @@ mod tests {
             None,
             Some(PathBuf::from("custom"))
         ));
+    }
+
+    #[test]
+    fn a_dot_codex_that_links_elsewhere_still_matches() {
+        let root = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(root.path()).unwrap();
+        let home = root.join("home");
+        let data = root.join("codex-data/packages/app-server-daemon/releases/1/bin");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&data).unwrap();
+        let codex = data.join("codex");
+        fs::write(&codex, "").unwrap();
+        std::os::unix::fs::symlink(root.join("codex-data"), home.join(".codex")).unwrap();
+        assert!(codex_location_trusted(&codex, Some(home.clone()), None));
+        // Only its packages and binary, not anything under it.
+        let other = root.join("codex-data/sessions");
+        fs::create_dir_all(&other).unwrap();
+        let stray = other.join("codex");
+        fs::write(&stray, "").unwrap();
+        assert!(!codex_location_trusted(&stray, Some(home), None));
     }
 
     #[test]
