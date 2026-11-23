@@ -1505,8 +1505,11 @@ or alters it, and Relaycast validates it. Anything that is not a JSON
 object, or is larger than 32 KiB, is `400 invalid_owner_approval` before
 anything is sent.
 
-A session redeems every action as its own agent, right before it acts, on
-the session socket:
+A `prompt_approval` is never redeemed: the delegate answers a spawned
+session's request with `approve <ref>` or `deny <ref>`, and the core
+verifies and settles it itself (below). Every other action is redeemed by
+the session as its own agent, right before it acts, on the session socket
+(each query value percent-encoded: `#` is `%23`, `/` is `%2F`):
 
 ```
 POST /delegation/redeem?approval=<apv_…>&class=<class>&target=<target>
@@ -1515,8 +1518,8 @@ POST /delegation/redeem?approval=<apv_…>&class=<class>&target=<target>
 The core sends `{recipient_agent_id, recipient_token, approval_id,
 action:{class, target}}` to Cloud's `POST /messaging/delegation/redeem` and
 answers `{"ok":true,"consumed":<bool>}` (with `"checked":{"head_sha":…}`,
-the full commit Cloud checked for a pull request, when Cloud names one: pass
-it to the merge call) or `{"ok":false,"reason":<Cloud's reason code>}`; with `condition_unmet` it adds `unmet`, the conditions that
+the full commit Cloud checked for a pull request: a merge passes exactly
+that commit to GitHub, and does not merge when the redeem names none) or `{"ok":false,"reason":<Cloud's reason code>}`; with `condition_unmet` it adds `unmet`, the conditions that
 do not hold yet (the approval is not consumed: redeem again later). The
 reason is `unavailable` when Cloud cannot be asked (gate-only, signed out,
 unreachable) and `refused` for a 4xx or a reason that is not a plain code. A
@@ -1545,9 +1548,13 @@ answers when all of these hold:
   (`GET /v1/dm/conversations`, with the session's own token) and requires
   every 1:1 conversation that includes the sender to have exactly the two
   of them as participants (one who left included). A failed lookup answers
-  nothing. The same check guards a workspace leader's approve/deny
-  (`spawn_leader_approvals`), and no approval notice is sent to a leader or
-  delegate into a 1:1 conversation that gained another participant;
+  nothing, and the pair is checked again after Cloud's attestation, right
+  before the answer settles. The same check guards a workspace leader's
+  approve/deny (`spawn_leader_approvals`). An approval notice goes to a
+  leader or delegate only into a 1:1 conversation Relaycast lists with just
+  the two of them: never one that gained another participant, nor one
+  Relaycast does not list (none yet, or one the session left, whose members
+  a send cannot see);
 
 - the computer is signed in to Cloud, not gate-only,
   `delegated_approvals_from` is not `off` and the setting is on;
@@ -1576,8 +1583,13 @@ An approvable request's approval DM also goes, in the background, to each
 delegate Cloud names for the session (`POST
 /messaging/delegation/prompt-delegates` with `{session_agent_id,
 session_token}`, answering `{delegates:[{agent_id, grant_id}]}`), never the
-signed-in person, the session or its spawning agent, with a line saying how
-to answer. Each send first checks again that the request is open and may be
+signed-in person, the session or its spawning agent, with a closing of its
+own saying how a delegate answers (never the owner-only sentence), under a
+key of its own kind (`spawn-approval-delegate-…`), so an agent that is both
+a leader and a delegate gets both copies. A failed discovery is tried again
+(at most three times, while the request is open) rather than read as an
+empty list, and each later send asks Cloud again whether the delegate's
+grant still covers the session. Each send first checks again that the request is open and may be
 answered by a delegate and that the settings allow it, finds the name
 Relaycast gives the delegate's id, and under an organization hold skips a
 delegate that is not one of its admins; at most three tries, under the same

@@ -227,7 +227,13 @@ export function verifyDelegationAttestation(
   ) {
     return undefined;
   }
-  if (exp <= now || iat > now + SKEW_SECS || exp - now > MAX_LIFETIME_SECS || exp < iat) {
+  if (
+    exp <= now ||
+    iat > now + SKEW_SECS ||
+    exp - now > MAX_LIFETIME_SECS ||
+    exp - iat > MAX_LIFETIME_SECS ||
+    exp < iat
+  ) {
     return undefined;
   }
   // A config_change only ever changes the recipient itself, never its
@@ -243,6 +249,8 @@ export function verifyDelegationAttestation(
     }
   }
   const singleUse = claims.single_use === true;
+  // A config change is always single use.
+  if (!singleUse && actions.some((action) => action.class === 'config_change')) return undefined;
   return {
     verified: true,
     tier: claims.tier,

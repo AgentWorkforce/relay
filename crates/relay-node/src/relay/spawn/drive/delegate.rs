@@ -185,6 +185,7 @@ impl Core {
         // The awaited check first, the synchronous ones last: nothing can
         // change between them and the answer.
         (self.delegate_request(registration, reference).await
+            && self.in_private_pair(registration, sender_id).await
             && self.delegates_may_answer_now(registration)
             && self.organization_admits(registration, delivery))
         .then(|| DelegateApprover {
@@ -250,13 +251,26 @@ impl Core {
         let reference = reference.to_string();
         let text = format!("{text}\n{}", delegate_note(&registration, &reference));
         tokio::spawn(async move {
-            if !core.delegate_request(&registration, &reference).await {
-                return;
+            // Discovery has bounded tries of its own, while the request is
+            // open and delegates may answer: a failed read is not an empty
+            // list.
+            let mut listed = None;
+            for attempt in 0..LEADER_SENDS {
+                if attempt > 0 {
+                    tokio::time::sleep(LEADER_RESEND_AFTER).await;
+                }
+                if !core.delegate_request(&registration, &reference).await
+                    || !core.delegates_may_answer_now(&registration)
+                {
+                    return;
+                }
+                listed = core.prompt_delegates(&registration, &token).await;
+                if listed.is_some() {
+                    break;
+                }
             }
             let person = core.current_identity().map(|person| person.agent_id);
-            let delegates = core
-                .prompt_delegates(&registration, &token)
-                .await
+            let delegates = listed
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|id| Some(id) != person.as_ref())
@@ -277,9 +291,17 @@ impl Core {
                         DelegateTry::Stop => return,
                     };
                     let base_url = &registration.base_url;
-                    if send_approval_dm(base_url, token, reference, text, &name, &id)
-                        .await
-                        .is_ok()
+                    if send_approval_dm_keyed(
+                        base_url,
+                        token,
+                        "spawn-approval-delegate",
+                        reference,
+                        text,
+                        &name,
+                        &id,
+                    )
+                    .await
+                    .is_ok()
                     {
                         return;
                     }
@@ -319,10 +341,11 @@ impl Core {
         let Some(name) = name else {
             return DelegateTry::Stop;
         };
-        // Never into a conversation someone else was added to.
+        // Only into a conversation Relaycast lists with just the two of
+        // them (not one the session left, which is unlisted).
         match self.pair_conversation(registration, token, id).await {
-            PairConversation::Private | PairConversation::Absent => {}
-            PairConversation::Shared => return DelegateTry::Stop,
+            PairConversation::Private => {}
+            PairConversation::Absent | PairConversation::Shared => return DelegateTry::Stop,
             PairConversation::Unknown => return DelegateTry::Skip,
         }
         if !self.delegate_request(registration, reference).await

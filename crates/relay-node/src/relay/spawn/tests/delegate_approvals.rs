@@ -36,6 +36,14 @@ struct Cloud {
     user_id: Mutex<Option<String>>,
     delegates: Mutex<Value>,
     calls: Mutex<Vec<(String, Value)>>,
+    /// How many of the next `prompt-delegates` calls fail.
+    discovery_failures: std::sync::atomic::AtomicUsize,
+    /// `prompt-delegates` calls so far, and those answered.
+    discoveries: std::sync::atomic::AtomicUsize,
+    answered: std::sync::atomic::AtomicUsize,
+    /// Holds the `prompt-delegates` call with this number (1-based): it
+    /// signals `reached`, then waits for `release`.
+    gate: Mutex<Option<(usize, Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
 }
 
 impl crate::relay::cloud_session::CloudAccess for Cloud {
@@ -64,6 +72,26 @@ impl crate::relay::cloud_session::CloudAccess for Cloud {
             .unwrap()
             .push((path.clone(), body.clone()));
         Box::pin(async move {
+            use std::sync::atomic::Ordering::SeqCst;
+            if path.ends_with("/messaging/delegation/prompt-delegates") {
+                let call = self.discoveries.fetch_add(1, SeqCst) + 1;
+                let gate = self.gate.lock().unwrap().clone();
+                if let Some((at, reached, release)) = gate.filter(|(at, ..)| *at == call) {
+                    let _ = at;
+                    reached.notify_one();
+                    release.notified().await;
+                }
+                let failing = self
+                    .discovery_failures
+                    .fetch_update(SeqCst, SeqCst, |n| n.checked_sub(1))
+                    .is_ok();
+                let answer = self.delegates.lock().unwrap().clone();
+                self.answered.fetch_add(1, SeqCst);
+                return match failing {
+                    true => Err(crate::relay::cloud_session::CloudError::Unreachable),
+                    false => Ok(answer),
+                };
+            }
             Ok(if path.ends_with("/messaging/identity/credential") {
                 json!({"identity":{"name":"owner","agentId":self.owner,"token":"at_owner","relaycastUrl":self.base}})
             } else if path.ends_with("/messaging/delegation") {
@@ -129,6 +157,10 @@ async fn fixture() -> Fixture {
         user_id: Mutex::new(Some("hum_owner".into())),
         delegates: Mutex::new(json!({"delegates": []})),
         calls: Mutex::new(Vec::new()),
+        discovery_failures: Default::default(),
+        discoveries: Default::default(),
+        answered: Default::default(),
+        gate: Mutex::new(None),
     });
     let (core, _signals) = Core::with_plugins(
         config,
@@ -642,6 +674,15 @@ async fn the_delegates_cloud_names_get_the_notice_with_how_to_answer() {
         .find(|call| call.body["to"] == "assistant")
         .unwrap();
     let text = copy.body["text"].as_str().unwrap();
+    // A delegate-specific closing, never the owner-only sentence.
+    assert!(
+        !text.contains("Only the signed-in machine owner may answer"),
+        "{text}"
+    );
+    assert!(
+        text.contains("As a delegate of the machine owner you may answer too"),
+        "{text}"
+    );
     assert!(
         text.ends_with(&format!(
             "{{\"class\":\"prompt_approval\",\"target\":\"{0}:{1}:approve\"}} \
@@ -654,7 +695,7 @@ async fn the_delegates_cloud_names_get_the_notice_with_how_to_answer() {
         copy.idempotency_key.as_deref(),
         Some(
             format!(
-                "spawn-approval-{}-{}",
+                "spawn-approval-delegate-{}-{}",
                 notice.reference,
                 MessageRef::of(&f.delegate.id)
             )
@@ -858,12 +899,20 @@ async fn only_a_delegate_of_this_computers_signed_in_owner_answers() {
 }
 
 /// A copy whose first send failed is not sent again once Cloud no longer
-/// lists the delegate (its grant was revoked).
+/// lists the delegate (its grant was revoked). The retry's `prompt-delegates`
+/// call is held until the grant is gone, so the test never races it.
 #[tokio::test]
 async fn a_revoked_delegate_gets_no_retried_copy() {
+    use std::sync::atomic::Ordering::SeqCst;
     let f = fixture().await;
     *f.cloud.delegates.lock().unwrap() =
         json!({"delegates": [{"agent_id": f.delegate.id, "grant_id": "grt_1"}]});
+    let (reached, release) = (
+        Arc::new(tokio::sync::Notify::new()),
+        Arc::new(tokio::sync::Notify::new()),
+    );
+    // Call 1 is discovery; call 2 is the first retry's re-check.
+    *f.cloud.gate.lock().unwrap() = Some((2, reached.clone(), release.clone()));
     f.server
         .set_api_error("POST /v1/dm to=assistant", Some((500, "unavailable")));
     const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3be013";
@@ -872,19 +921,20 @@ async fn a_revoked_delegate_gets_no_retried_copy() {
     f.core
         .forward_to_owner(&registration, &f.token(), &notice)
         .await;
-    // One send is three POSTs: the client retries a 5xx itself.
-    f.server
-        .wait_for("the first send of the delegate's copy", |server| {
-            server
-                .calls("POST", "/v1/dm")
-                .iter()
-                .filter(|call| call.body["to"] == "assistant")
-                .count()
-                >= 3
-        })
-        .await;
+    tokio::time::timeout(Duration::from_secs(10), reached.notified())
+        .await
+        .expect("the retry asks Cloud again");
     *f.cloud.delegates.lock().unwrap() = json!({"delegates": []});
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    release.notify_one();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while f.cloud.answered.load(SeqCst) < 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // One send is three POSTs: the client retries a 5xx itself.
     let copies = f
         .server
         .calls("POST", "/v1/dm")
@@ -892,6 +942,102 @@ async fn a_revoked_delegate_gets_no_retried_copy() {
         .filter(|call| call.body["to"] == "assistant")
         .count();
     assert_eq!(copies, 3, "no copy after the grant went away");
+}
+
+/// A failed discovery is not an empty list: it is tried again, a bounded
+/// number of times, while the request is open.
+#[tokio::test]
+async fn delegate_discovery_is_tried_again_after_a_failure() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let f = fixture().await;
+    *f.cloud.delegates.lock().unwrap() =
+        json!({"delegates": [{"agent_id": f.delegate.id, "grant_id": "grt_1"}]});
+    f.cloud.discovery_failures.store(1, SeqCst);
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3be015";
+    let registration = f.spawned("codex", THREAD);
+    let notice = codex_request(THREAD, 1001);
+    f.core
+        .forward_to_owner(&registration, &f.token(), &notice)
+        .await;
+    f.server
+        .wait_for("the delegate's copy after a failed discovery", |server| {
+            server
+                .calls("POST", "/v1/dm")
+                .iter()
+                .any(|call| call.body["to"] == "assistant")
+        })
+        .await;
+    assert!(f.cloud.discoveries.load(SeqCst) >= 2);
+}
+
+/// An agent that is both a workspace leader and a delegate gets both
+/// copies, under keys of their own kinds.
+#[tokio::test]
+async fn a_leader_that_is_also_a_delegate_gets_both_copies() {
+    let f = fixture().await;
+    f.server.set_leaders(Some(json!({
+        "leaders": [{"name": "assistant", "agent_id": f.delegate.id}], "patterns": []
+    })));
+    f.core
+        .store
+        .update(|store| store.extras.spawn_leader_approvals = Some(true))
+        .unwrap();
+    *f.cloud.delegates.lock().unwrap() =
+        json!({"delegates": [{"agent_id": f.delegate.id, "grant_id": "grt_1"}]});
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3be016";
+    let registration = f.spawned("codex", THREAD);
+    let notice = codex_request(THREAD, 1002);
+    f.core
+        .forward_to_owner(&registration, &f.token(), &notice)
+        .await;
+    f.server
+        .wait_for("both copies", |server| {
+            server
+                .calls("POST", "/v1/dm")
+                .iter()
+                .filter(|call| call.body["to"] == "assistant")
+                .count()
+                >= 2
+        })
+        .await;
+    let mut keys: Vec<String> = f
+        .server
+        .calls("POST", "/v1/dm")
+        .into_iter()
+        .filter(|call| call.body["to"] == "assistant")
+        .filter_map(|call| call.idempotency_key)
+        .collect();
+    keys.sort();
+    let id = MessageRef::of(&f.delegate.id);
+    assert_eq!(
+        keys,
+        vec![
+            format!("spawn-approval-{}-{id}", notice.reference),
+            format!("spawn-approval-delegate-{}-{id}", notice.reference),
+        ]
+    );
+}
+
+/// A delegate without a conversation Relaycast lists to the session (none
+/// yet, or one the session left) gets no notice: its members are unseen.
+#[tokio::test]
+async fn no_notice_goes_to_a_delegate_without_a_listed_private_conversation() {
+    let f = fixture().await;
+    let unlisted = f.server.seed_agent("assistant2", "agent", json!({}));
+    *f.cloud.delegates.lock().unwrap() =
+        json!({"delegates": [{"agent_id": unlisted.id, "grant_id": "grt_2"}]});
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3be017";
+    let registration = f.spawned("codex", THREAD);
+    let notice = codex_request(THREAD, 1003);
+    f.core
+        .forward_to_owner(&registration, &f.token(), &notice)
+        .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!f
+        .server
+        .calls("POST", "/v1/dm")
+        .iter()
+        .any(|call| call.body["to"] == "assistant2"));
 }
 
 /// A reply in a 1:1 conversation that gained a third participant is not a
@@ -924,4 +1070,32 @@ async fn a_conversation_with_a_third_participant_is_not_one_to_one() {
         .calls("POST", "/v1/dm")
         .iter()
         .any(|call| call.body["to"] == "assistant"));
+}
+
+/// A participant added while Cloud attests the reply: the pair is checked
+/// again after the attestation, right before the answer settles.
+#[tokio::test]
+async fn a_participant_added_during_attestation_stops_the_answer() {
+    let f = fixture().await;
+    f.server.seed_agent("outsider", "agent", json!({}));
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3be018";
+    let registration = f.spawned("codex", THREAD);
+    let notice = codex_request(THREAD, 1004);
+    f.attests(&format!("{}:{}:approve", f.child.id, notice.reference));
+    let add = f.server.participant_adder();
+    let jwks = json!({"keys": [f.cloud.signer.jwk(KID)]});
+    f.core.delegation_keys.set_fetch(Arc::new(move || {
+        // The keys are read after Cloud answered: the pair stops being one.
+        add("assistant", "c1", "outsider");
+        let jwks = jwks.clone();
+        Box::pin(async move { Some(jwks) })
+    }));
+    let reply = approval_dm(
+        "added",
+        &f.delegate,
+        &format!("approve {}", notice.reference),
+    );
+    assert!(not_one(f.core.owner_reply(&registration, &reply).await));
+    assert_eq!(f.attestation_calls(), 1, "Cloud was asked");
+    assert!(codex_drive::has_pending(THREAD, &notice.reference));
 }

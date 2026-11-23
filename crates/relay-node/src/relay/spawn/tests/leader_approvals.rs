@@ -1110,6 +1110,7 @@ async fn with_no_owner_and_no_requester_each_leader_gets_one_copy_not_one_per_ti
     f.set(Some(true), Some(false), None);
     unclaimed(&f);
     let second = f.server.seed_agent("lead2", "agent", json!({}));
+    f.server.seed_conversation("lead2", "c1");
     f.leaders(json!([
         {"name": "lead", "agent_id": f.lead.id},
         {"name": "lead2", "agent_id": second.id}
@@ -1992,4 +1993,35 @@ async fn a_conversation_with_a_third_participant_is_not_one_to_one() {
         &format!("approve {}", notice.reference),
     );
     assert!(not_one(f.core.owner_reply(&registration, &reply).await));
+}
+
+/// A conversation Relaycast does not list to the session (it never existed,
+/// or the session left it) is not safe for a notice: its members cannot be
+/// seen, so the leader gets no copy there.
+#[tokio::test]
+async fn no_notice_goes_to_a_leader_without_a_listed_private_conversation() {
+    let f = fixture().await;
+    f.set(Some(true), Some(false), None);
+    unclaimed(&f);
+    let unlisted = f.server.seed_agent("lead3", "agent", json!({}));
+    f.leaders(json!([
+        {"name": "lead", "agent_id": f.lead.id},
+        {"name": "lead3", "agent_id": unlisted.id}
+    ]));
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bd203";
+    let registration = f.spawned("codex", THREAD);
+    let notice = codex_request(THREAD, 1203);
+    f.core
+        .forward_to_owner(&registration, &f.token(), &notice)
+        .await;
+    f.server
+        .wait_for("the listed leader's copy", |server| {
+            server
+                .calls("POST", "/v1/dm")
+                .iter()
+                .any(|call| call.body["to"] == "lead")
+        })
+        .await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(copies_to(&f, "lead3").is_empty(), "{:?}", f.approval_dms());
 }

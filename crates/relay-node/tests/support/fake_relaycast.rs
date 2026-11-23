@@ -192,9 +192,10 @@ struct World {
     webhooks: BTreeMap<String, Value>,
     subscriptions: BTreeMap<String, Value>,
     messages: Vec<StoredMessage>,
-    /// 1:1 conversation id → agents added to it besides the pair
-    /// (`POST /v1/dm/{id}/participants`), as (name, id).
-    added_participants: BTreeMap<String, Vec<(String, String)>>,
+    /// 1:1 conversation id → its original pair (names) and the agents
+    /// added to it besides them (`POST /v1/dm/{id}/participants`), as
+    /// (name, id). The id is only a lookup key: names may hold `_`.
+    added_participants: BTreeMap<String, ((String, String), Vec<(String, String)>)>,
     /// relayfile-cloud subscriptions by id.
     relayfile: BTreeMap<String, Value>,
     files: BTreeMap<String, FakeFile>,
@@ -451,19 +452,13 @@ impl FakeRelaycast {
     /// Adds `third` to the 1:1 conversation of `a` and `b`, as Relaycast's
     /// `POST /v1/dm/{id}/participants` does without checking its type.
     pub fn add_dm_participant(&self, a: &str, b: &str, third: &str) {
-        let mut shared = self.shared.lock().unwrap();
-        let id = shared
-            .world
-            .agents
-            .get(third)
-            .map(|agent| agent.id.clone())
-            .unwrap_or_default();
-        shared
-            .world
-            .added_participants
-            .entry(conversation_id(a, b))
-            .or_default()
-            .push((third.to_string(), id));
+        add_participant(&self.shared, a, b, third);
+    }
+
+    /// [`FakeRelaycast::add_dm_participant`], usable from another task.
+    pub fn participant_adder(&self) -> impl Fn(&str, &str, &str) + Send + Sync + 'static {
+        let shared = self.shared.clone();
+        move |a, b, third| add_participant(&shared, a, b, third)
     }
 
     pub fn send_dm(&self, sender: &str, recipient: &str, text: &str) -> (String, String) {
@@ -924,6 +919,26 @@ fn gate_register(world: &mut World, bearer: &str, body: &Value) -> (u16, Value) 
             "user_id": "user_fake",
         }),
     )
+}
+
+fn add_participant(shared: &Arc<Mutex<Shared>>, a: &str, b: &str, third: &str) {
+    let mut shared = shared.lock().unwrap();
+    let id = shared
+        .world
+        .agents
+        .get(third)
+        .map(|agent| agent.id.clone())
+        .unwrap_or_default();
+    let mut pair = [a.to_string(), b.to_string()];
+    pair.sort();
+    let [first, second] = pair;
+    shared
+        .world
+        .added_participants
+        .entry(conversation_id(a, b))
+        .or_insert_with(|| ((first, second), Vec::new()))
+        .1
+        .push((third.to_string(), id));
 }
 
 fn conversation_id(a: &str, b: &str) -> String {
@@ -1737,13 +1752,10 @@ fn route(
             peers.dedup();
             // A conversation `me` was added to is listed to it too.
             let mut listed: Vec<Value> = Vec::new();
-            for (conversation, added) in &world.added_participants {
+            for (conversation, ((a, b), added)) in &world.added_participants {
                 if added.iter().any(|(name, _)| *name == me.name) {
-                    if let Some((a, b)) = conversation
-                        .strip_prefix("dm_")
-                        .and_then(|rest| rest.split_once('_'))
                     {
-                        let mut participants: Vec<Value> = [a, b]
+                        let mut participants: Vec<Value> = [a.as_str(), b.as_str()]
                             .iter()
                             .map(|name| json!({"agent_id": world.agents.get(*name).map(|x| x.id.clone()), "agent_name": name}))
                             .collect();
@@ -1759,7 +1771,12 @@ fn route(
                     let conversation = conversation_id(&me.name, peer);
                     let mut participants = vec![json!({"agent_id": me.id, "agent_name": me.name}),
                                                 json!({"agent_id": peer_id, "agent_name": peer})];
-                    for (name, id) in world.added_participants.get(&conversation).into_iter().flatten() {
+                    for (name, id) in world
+                        .added_participants
+                        .get(&conversation)
+                        .into_iter()
+                        .flat_map(|(_, added)| added)
+                    {
                         participants.push(json!({"agent_id": id, "agent_name": name}));
                     }
                     json!({"id": conversation, "type": "1:1", "unread_count": 0,

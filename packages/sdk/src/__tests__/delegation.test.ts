@@ -100,6 +100,8 @@ describe('delegate approvals', () => {
       signJws(claims({ delegate_agent_id: 'agent_mallory' })),
       signJws(claims({ exp: NOW })),
       signJws(claims({ exp: NOW + 3600 })),
+      // Issued long ago, expiring soon: its whole life is too long.
+      signJws(claims({ iat: NOW - 3600, exp: NOW + 30 })),
       signJws(claims({ standing: 'org_admin' })),
       signJws(claims({ actions: [{ class: 'merge', target: 'x', conditions: [{ type: 'when_green' }] }] })),
       signJws(claims(), { kid: 'k-unknown' }),
@@ -114,10 +116,14 @@ describe('delegate approvals', () => {
 
   it('verifies a config_change of the recipient, never of its delegation settings', () => {
     const { jwks, signJws } = signer();
-    const change = (target: string) =>
-      signJws(claims({ single_use: false, actions: [{ class: 'config_change', target }] }));
+    const change = (target: string, singleUse = true) =>
+      signJws(claims({ single_use: singleUse, actions: [{ class: 'config_change', target }] }));
+    // A reusable config change is refused.
+    expect(
+      verifyDelegationAttestation(change('agent_relay:spawn_native_input=false', false), jwks, expected)
+    ).toBeUndefined();
     const ok = verifyDelegationAttestation(change('agent_relay:spawn_native_input=false'), jwks, expected);
-    expect(ok?.singleUse).toBe(false);
+    expect(ok?.singleUse).toBe(true);
     expect(parseConfigChangeTarget('agent_relay:spawn_native_input=false')).toEqual({
       agentId: 'agent_relay',
       setting: 'spawn_native_input',
@@ -295,12 +301,16 @@ describe('delegate approvals', () => {
       op: 'request_review=ada',
     });
     expect(
-      one({
-        class: 'config_change',
-        target: 'agent_relay:spawn_native_input=false',
-        conditions: [{ type: 'ci_green' }],
-      })
+      one(
+        {
+          class: 'config_change',
+          target: 'agent_relay:spawn_native_input=false',
+          conditions: [{ type: 'ci_green' }],
+        },
+        { single_use: true }
+      )
     ).toBeUndefined();
+    expect(parsePrOpsTarget('acme//api#12:close')).toBeUndefined();
     expect(one({ class: 'merge', target: 'acme/api#12' }, { quote: 'yes merge 12' })?.quote).toBe(
       'yes merge 12'
     );

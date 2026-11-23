@@ -1097,3 +1097,84 @@ async fn a_failed_key_read_is_shared_not_repeated() {
     assert!(keys.for_kid(KID).await.is_none());
     assert_eq!(reads.load(Ordering::SeqCst), 1, "still shared just after");
 }
+
+#[test]
+fn a_pr_ops_target_has_exactly_one_owner_and_one_repository() {
+    let signer = Signer::new();
+    let keys = keys(&signer);
+    let now = now();
+    for target in [
+        "acme//api#12:close",
+        "/api#12:close",
+        "acme/#12:close",
+        "acme/api/x#12:close",
+        "acme#12:close",
+    ] {
+        let bad = with(
+            claims(),
+            "actions",
+            json!([{"class": "pr_ops", "target": target}]),
+        );
+        assert_eq!(
+            verify(&signer.sign(KID, &bad), &keys, expected(now)),
+            Err(Refusal::Claims),
+            "{target}"
+        );
+    }
+}
+
+#[test]
+fn a_reusable_config_change_or_an_over_long_attestation_is_refused() {
+    let signer = Signer::new();
+    let keys = keys(&signer);
+    let now = now();
+    let reusable = with(
+        config_claims("agent_relay:spawn_native_input=false"),
+        "single_use",
+        json!(false),
+    );
+    assert_eq!(
+        verify(&signer.sign(KID, &reusable), &keys, expected(now)),
+        Err(Refusal::Claims)
+    );
+    assert!(verify(
+        &signer.sign(KID, &config_claims("agent_relay:spawn_native_input=false")),
+        &keys,
+        expected(now)
+    )
+    .is_ok());
+    // Issued long ago, expiring soon: its whole life is too long.
+    let old = with(
+        with(claims(), "iat", json!(now - 3600)),
+        "exp",
+        json!(now + 30),
+    );
+    assert_eq!(
+        verify(&signer.sign(KID, &old), &keys, expected(now)),
+        Err(Refusal::Lifetime)
+    );
+}
+
+/// With fresh keys that lack a key id, a read that failed just now is
+/// shared too: no second read within the failure window.
+#[tokio::test]
+async fn a_failed_read_is_shared_on_the_unknown_kid_path_too() {
+    let signer = Signer::new();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let keys = Keys::default();
+    let jwks = json!({"keys": [signer.jwk(KID)]});
+    let counted = reads.clone();
+    keys.set_fetch(Arc::new(move || {
+        let n = counted.fetch_add(1, Ordering::SeqCst);
+        let jwks = jwks.clone();
+        Box::pin(async move { (n == 0).then_some(jwks) })
+    }));
+    assert!(keys.for_kid(KID).await.is_some());
+    // The unknown kid reads again, and that read fails.
+    assert!(keys.for_kid("k-a").await.unwrap().get("k-a").is_none());
+    assert_eq!(reads.load(Ordering::SeqCst), 2);
+    // Past the unknown-kid throttle, a recent failure still holds it back.
+    *keys.unknown_read.lock().unwrap() = None;
+    assert!(keys.for_kid("k-b").await.is_some());
+    assert_eq!(reads.load(Ordering::SeqCst), 2, "the failure is shared");
+}

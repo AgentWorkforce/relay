@@ -303,8 +303,18 @@ impl Action {
         let end = hash + 1 + digits;
         let (pull, rest) = self.target.split_at(end);
         let op = rest.strip_prefix(':')?;
+        // Exactly `owner/repo`: two non-empty parts.
         let repo = &pull[..hash];
-        if digits == 0 || !repo.contains('/') || repo.contains(['#', ':']) {
+        let mut parts = repo.split('/');
+        let shaped = matches!(
+            (parts.next(), parts.next(), parts.next()),
+            (Some(owner), Some(name), None) if !owner.is_empty() && !name.is_empty()
+        );
+        if digits == 0
+            || !shaped
+            || repo.contains(['#', ':'])
+            || repo.chars().any(char::is_whitespace)
+        {
             return None;
         }
         let named = |value: &str| {
@@ -536,6 +546,10 @@ pub fn verify(jws: &str, keys: &KeySet, expected: Expected<'_>) -> Result<Claims
                 && (action.class != CONFIG_CHANGE
                     || action.conditions.iter().all(|c| c.kind == "not_before"))
         });
+    // A config change is always single use.
+    if claims.changes_config() && !claims.single_use {
+        return Err(Refusal::Claims);
+    }
     if claims.v != 1
         || !matches!(claims.tier.as_str(), "D" | "O")
         || !matches!(claims.standing.as_str(), "own_owner" | "code_owner")
@@ -565,6 +579,7 @@ pub fn verify(jws: &str, keys: &KeySet, expected: Expected<'_>) -> Result<Claims
     }
     if claims.iat > expected.now + SKEW_SECS
         || claims.exp - expected.now > MAX_LIFETIME_SECS
+        || claims.exp - claims.iat > MAX_LIFETIME_SECS
         || claims.exp < claims.iat
     {
         return Err(Refusal::Lifetime);
@@ -668,6 +683,8 @@ impl Keys {
         // A read that finished while this one waited may have brought it.
         match self.fresh() {
             Some(keys) if keys.get(kid).is_some() => Some(keys),
+            // A read that failed just now is shared here too.
+            Some(keys) if failed_recently => Some(keys),
             Some(keys) => {
                 {
                     let mut last = self
