@@ -2,10 +2,10 @@
 //! owner's native turns (`Core::owner_sent` admits a driven Claude), its
 //! permission requests relayed to that owner (and to the spawning agent when
 //! it may answer, `Core::approving_requester`, and to workspace leaders when
-//! they may, `Core::notified_leaders`), their replies, and what a
+//! they may, `Core::notify_leaders`), their replies, and what a
 //! message to a Claude that has ended comes to.
 
-use super::{direct_from, leader_names, watching, who_may_answer_with, OwnerReply, ReplyDecision};
+use super::{direct_from, watching, who_may_answer_with, OwnerReply, ReplyDecision};
 use crate::relay::client;
 use crate::relay::codex::app_server::drive::ReplyResult;
 use crate::relay::daemon::Core;
@@ -40,15 +40,16 @@ pub(crate) fn approval_text_for(
     notice: &requests::Notice,
     requester: Option<&str>,
 ) -> String {
-    approval_text_with(agent, notice, requester, &[])
+    approval_text_with(agent, notice, requester, false)
 }
 
-/// [`approval_text_for`], naming `leaders` too when they may answer it.
+/// [`approval_text_for`], saying a workspace leader may answer too when
+/// `leaders` may.
 pub(crate) fn approval_text_with(
     agent: &str,
     notice: &requests::Notice,
     requester: Option<&str>,
-    leaders: &[String],
+    leaders: bool,
 ) -> String {
     let reference = &notice.reference;
     let response = if notice.approvable {
@@ -213,9 +214,11 @@ impl Core {
     }
 
     /// Sends `notice` to the verified owner and, when they may answer, the
-    /// spawning agent and the workspace leaders. With neither owner nor
-    /// requester it is never forwarded, and the request expires to a
-    /// refusal.
+    /// spawning agent; with approvals from workspace leaders on, it goes to
+    /// the listed leaders too (`Core::notify_leaders`), once, apart from
+    /// the others. Only the owner's or the requester's copy marks it
+    /// forwarded: with neither it is tried again each poll (the leaders'
+    /// copies are not) until the request expires to a refusal.
     pub(crate) async fn forward_request(
         &self,
         registration: &Registration,
@@ -223,21 +226,22 @@ impl Core {
         notice: &requests::Notice,
     ) {
         let requester = self.approving_requester(registration);
-        let leaders = self.notified_leaders(registration, notice.approvable).await;
-        let text = approval_text_with(
-            &registration.name,
-            notice,
-            requester.as_ref().map(|r| r.name.as_str()),
-            &leader_names(&leaders),
+        let text = self.approval_plan(
+            registration,
+            token,
+            &notice.reference,
+            notice.approvable,
+            |leaders| {
+                approval_text_with(
+                    &registration.name,
+                    notice,
+                    requester.as_ref().map(|r| r.name.as_str()),
+                    leaders,
+                )
+            },
         );
         if self
-            .send_approval(
-                registration,
-                token,
-                &notice.reference,
-                &text,
-                (requester, leaders),
-            )
+            .send_approval(registration, token, &notice.reference, &text, requester)
             .await
         {
             requests::mark_forwarded(&notice.reference);

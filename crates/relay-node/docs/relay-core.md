@@ -1248,9 +1248,10 @@ Leaders are approvers only with **Approvals from workspace leaders** on
 permission requests of agents spawned on this computer; off unless the
 machine owner turns it on, in `settings.get` and `settings.set` like the
 other spawn settings, and a non-boolean is refused). Then a leader's 1:1
-direct message `approve <ref>` or `deny <ref>` answers a spawned session's
-request, with the machine owner's standing rather than the requester's,
-when all of these hold:
+direct message `approve <ref>` or `deny <ref>` approves or denies a spawned
+session's request as the machine owner could, not as the requester; that is
+all it may do: choices, forms, input and local verification stay with the
+owner. It does so when all of these hold:
 
 - the build has an account (`plugins.account`); a public core never does;
 - `spawn_native_input` is on too, which leader approvals never outlive;
@@ -1270,19 +1271,60 @@ when all of these hold:
   ordinary message, as is its reply to an answered, expired or unknown
   reference. A spawned Claude that has ended still says it ended.
 
-`spawn_requester_approvals` and the `interactive` or `full_access` approval
-profile limit only the spawning agent, not a leader. The first answer
-counts, between the owner, the requester and the leaders. The delivery
-record and the diagnostics line name `the workspace leader @<name>
-(<agent id>)`, never the machine owner. With the setting on, each approvable
-request's approval DM also goes to each listed leader (not the session, nor
-the requester, which has its own copy) while Relaycast still gives the
-leader's listed name its listed id, under the same per-recipient idempotency
-key, and names them (`a workspace leader (@a, @b, @c and 2 more)`). Whether
-the notice counts as forwarded is decided by the owner's and requester's
-copies alone, as before: a leader's copy that fails never holds the notice
-back or repeats theirs, and is sent again (under its key) only while theirs
-are. With the setting off, notices are unchanged.
+The requests a leader may approve or deny are those that may be approved:
+for Codex, commands, file changes, extra permissions and MCP tool calls
+without a form (an elicitation marked as an MCP tool call with an empty
+schema); for Claude, its tools, `ExitPlanMode` and MCP tools included. A
+Codex question (`choose`) or any other MCP elicitation, and Claude's
+`AskUserQuestion`, an MCP elicitation or a dialog, is not one.
+
+`spawn_requester_approvals` and the approval profile limit only the spawning
+agent, not a leader. That includes `interactive`, which otherwise keeps
+prompts with the machine owner: with `spawn_leader_approvals` on, an
+`interactive` spawn's approve/deny requests also go to the workspace
+leaders, who may approve or deny them. The first answer counts, between the
+owner, the requester and the leaders. The delivery record and the
+diagnostics line name `the workspace leader @<name> (<agent id>)`, never the
+machine owner.
+
+What the exclusions cover, and what they do not:
+
+- A leader is refused only for the session itself and as the spawn's own
+  requester (the agent that spawned it). A session that another agent
+  spawned at a leader's request is not the leader's, so the leader may
+  answer it; and a leader that is itself a spawned session (on this
+  computer or another) may answer for another spawned session.
+- A leader may answer on a computer with no verified owner (one not claimed
+  by the signed-in person): only the account build, the settings and the
+  checks above count, not whether an owner could answer too.
+- A leader removed from the list keeps answering until the list is read
+  again: for up to 60 s after the last read that succeeded.
+- The setting and a takeover are checked again once the list read comes
+  back: the setting turned off, or the session taken over, meanwhile makes
+  the reply an ordinary message.
+
+With the setting on, each approvable request's approval DM also goes to
+every listed leader (not the session, nor the requester, which has its own
+copy, nor the signed-in person, who has the owner's) while Relaycast still
+gives the leader's listed name its listed id, under the same per-recipient
+idempotency key. Each leader's copy is the owner's text, with the MCP
+server, tool and argument names where the owner's copy has them. The notice
+never names the leaders: when they may answer, its closing line says, in a
+fixed sentence, that `a workspace leader may answer` too, so it never waits
+for the list or changes with it. The text of a request's DM is fixed by its
+first try: every later try sends the same text under the same keys, though
+a setting or the list changed meanwhile.
+
+The leaders' copies go out in the background, apart from the owner's and
+the requester's, which never wait for them. Whether to send them is decided
+once, on the request's first try; the leaders are then looked up once (the
+list, and one name check per leader), and each is sent one copy. A copy
+that fails is sent again at most twice more, a few seconds apart, while the
+request is open; never once per second for the life of the request.
+Whether the notice counts as forwarded is decided by the owner's and
+requester's copies alone, as before, so with neither (no verified owner and
+no requester) the notice is tried again each second as it was, but the
+leaders are not. With the setting off, notices are unchanged.
 
 `settings.get` shows the last list read for the current workspace as
 `workspace_leaders` (`{"leaders":[{"name","agent_id"}],"patterns":[...]}`),

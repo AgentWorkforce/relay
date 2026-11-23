@@ -75,10 +75,12 @@ pub struct SettingsValues {
     pub spawn_requester_approvals: Option<bool>,
     /// Whether workspace leaders may approve or deny permission requests of
     /// agents spawned on this computer. A listed leader's direct message
-    /// answers an open approve/deny request with the machine owner's
-    /// standing, never a choice, form, input or local verification. Needs
-    /// `spawn_native_input`. Off unless the machine owner turns it on. Absent
-    /// in older cores.
+    /// may approve or deny an open approvable request, as the machine owner
+    /// could; choices, forms, input and local verification stay with the
+    /// owner. Neither `spawn_requester_approvals` nor the spawn's approval
+    /// profile limits it: an `interactive` spawn's approve/deny requests go
+    /// to the leaders too. Needs `spawn_native_input`. Off unless the
+    /// machine owner turns it on. Absent in older cores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_leader_approvals: Option<bool>,
     /// The workspace's leaders as Relaycast last listed them

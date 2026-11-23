@@ -4709,10 +4709,12 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     public let spawnHarnesses: [String: SpawnHarnessSettings]?
     /// Whether workspace leaders may approve or deny permission requests of
     /// agents spawned on this computer. A listed leader's direct message
-    /// answers an open approve/deny request with the machine owner's
-    /// standing, never a choice, form, input or local verification. Needs
-    /// `spawn_native_input`. Off unless the machine owner turns it on. Absent
-    /// in older cores.
+    /// may approve or deny an open approvable request, as the machine owner
+    /// could; choices, forms, input and local verification stay with the
+    /// owner. Neither `spawn_requester_approvals` nor the spawn's approval
+    /// profile limits it: an `interactive` spawn's approve/deny requests go
+    /// to the leaders too. Needs `spawn_native_input`. Off unless the
+    /// machine owner turns it on. Absent in older cores.
     public let spawnLeaderApprovals: Bool?
     /// The most spawned agents this computer runs at once: 0 to 32, where 0
     /// (or no setting) means no limit. An idle agent keeps its place until

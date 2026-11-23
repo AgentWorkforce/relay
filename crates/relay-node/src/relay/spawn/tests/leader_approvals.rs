@@ -2,9 +2,9 @@
 //! off unless the machine owner turns it on) and native input from spawning
 //! agents on, a workspace leader may approve or deny a spawned session's open
 //! permission request by direct message, though it did not spawn the
-//! session, with the machine owner's standing rather than the requester's:
-//! neither `spawn_requester_approvals` nor the spawn's approval profile limits
-//! it. Leaders are matched by agent id in a list read successfully within
+//! session, as the machine owner could rather than as the requester: neither
+//! `spawn_requester_approvals` nor the spawn's approval profile (`interactive`
+//! included) limits it. Leaders are matched by agent id in a list read successfully within
 //! `leaders::REFRESH_AFTER`; the kept list of failed reads never serves.
 //! Choices, forms, input and local verification stay with the machine owner.
 //! The leader is never recorded as the machine owner.
@@ -486,10 +486,10 @@ async fn with_the_setting_off_as_it_is_by_default_a_leaders_reply_is_a_message()
         .read(|store| store.injected_delivery_ids.is_empty()));
 }
 
-// The leader has the owner's standing: approvals from the spawning agent off,
-// or a profile that keeps the requester out, does not stop it. Native input
-// from spawning agents off, a core without an account, and a session taken
-// over do.
+// The leader approves or denies as the owner could: approvals from the
+// spawning agent off, or a profile that keeps the requester out
+// (`interactive` included), does not stop it. Native input from spawning
+// agents off, a core without an account, and a session taken over do.
 #[tokio::test]
 async fn a_leaders_standing_is_the_owners_within_the_machine_owners_limits() {
     let f = fixture().await;
@@ -934,8 +934,10 @@ async fn with_the_setting_off_notices_are_unchanged_byte_for_byte() {
     requests::forget(SESSION);
 }
 
+// The notice says a workspace leader may answer, in a fixed sentence: it
+// never names them, so it never waits for the list or changes with it.
 #[tokio::test]
-async fn with_the_setting_on_each_listed_leader_gets_the_notice_and_is_named() {
+async fn with_the_setting_on_each_listed_leader_gets_the_notice_which_says_leaders_may_answer() {
     let f = fixture().await;
     f.set(Some(true), None, None);
     let taken = f.server.seed_agent("lead2", "agent", json!({}));
@@ -960,16 +962,25 @@ async fn with_the_setting_on_each_listed_leader_gets_the_notice_and_is_named() {
          {}\n\
          Reply `approve {reference}` or `deny {reference}` within 15 minutes. \
          The signed-in machine owner, @grokbot (the agent that spawned this session) \
-         or a workspace leader (@lead) may answer; the first answer counts.",
+         or a workspace leader may answer; the first answer counts.",
         notice.description
     );
     let key = |id: &str| format!("spawn-approval-{reference}-{}", MessageRef::of(id));
+    // The leaders' copies go out apart from the owner's and requester's.
+    f.server
+        .wait_for("the leader's copy", |server| {
+            server.calls("POST", "/v1/dm").len() >= 3
+        })
+        .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let mut dms = f.approval_dms();
+    dms.sort();
     assert_eq!(
-        f.approval_dms(),
+        dms,
         vec![
-            ("owner".into(), expected.clone(), key(&f.owner.id)),
             ("grokbot".into(), expected.clone(), key(&f.requester.id)),
-            ("lead".into(), expected, key(&f.lead.id)),
+            ("lead".into(), expected.clone(), key(&f.lead.id)),
+            ("owner".into(), expected, key(&f.owner.id)),
         ]
     );
     assert!(!f.approval_dms().iter().any(|(to, _, _)| to == &taken.name));
@@ -991,13 +1002,21 @@ async fn a_leaders_copy_that_fails_never_blocks_or_repeats_the_owners() {
         .forward_to_owner(&registration, &f.token(), &notice)
         .await;
     assert!(codex_drive::unforwarded(THREAD).is_empty(), "forwarded");
+    f.server
+        .wait_for("the leader's copy", |server| {
+            server
+                .calls("POST", "/v1/dm")
+                .iter()
+                .any(|call| call.body["to"] == "lead")
+        })
+        .await;
     let to: Vec<String> = f.approval_dms().into_iter().map(|(to, _, _)| to).collect();
     assert_eq!(to.iter().filter(|to| *to == "owner").count(), 1);
     assert!(to.iter().all(|to| to == "owner" || to == "lead"), "{to:?}");
     let text = &f.approval_dms()[0].1;
     assert!(
         text.ends_with(
-            "The signed-in machine owner or a workspace leader (@lead) may answer; \
+            "The signed-in machine owner or a workspace leader may answer; \
              the first answer counts."
         ),
         "{text}"
@@ -1027,30 +1046,419 @@ async fn a_request_that_is_not_approvable_is_never_sent_to_a_leader() {
     requests::forget(SESSION);
 }
 
-// A notice names at most a few leaders.
+// The notice never names the leaders: one fixed sentence says a workspace
+// leader may answer, and without leaders it is as it is with the setting off.
 #[test]
-fn the_notice_names_at_most_a_few_leaders() {
-    use crate::relay::spawn::drive::who_may_answer_with;
-    let names: Vec<String> = ["a", "b", "c", "d", "e"]
-        .iter()
-        .map(|name| name.to_string())
-        .collect();
+fn the_notice_says_a_workspace_leader_may_answer_in_a_fixed_sentence() {
+    use crate::relay::spawn::drive::{who_may_answer, who_may_answer_with};
     assert_eq!(
-        who_may_answer_with(None, &names[..1]),
-        "The signed-in machine owner or a workspace leader (@a) may answer; the first answer counts."
+        who_may_answer_with(None, true),
+        "The signed-in machine owner or a workspace leader may answer; the first answer counts."
     );
     assert_eq!(
-        who_may_answer_with(None, &names),
-        "The signed-in machine owner or a workspace leader (@a, @b, @c and 2 more) may answer; \
-         the first answer counts."
-    );
-    assert_eq!(
-        who_may_answer_with(Some("grokbot"), &names[..3]),
+        who_may_answer_with(Some("grokbot"), true),
         "The signed-in machine owner, @grokbot (the agent that spawned this session) \
-         or a workspace leader (@a, @b, @c) may answer; the first answer counts."
+         or a workspace leader may answer; the first answer counts."
     );
+    assert_eq!(who_may_answer_with(Some("grokbot"), false), who_may_answer(Some("grokbot")));
+    assert_eq!(who_may_answer_with(None, false), who_may_answer(None));
+}
+
+/// The fixture with no verified owner: the computer is not claimed by the
+/// signed-in person.
+fn unclaimed(f: &Fixture) {
+    f.core.hub.update(|status| {
+        status.spawn.as_mut().unwrap().claim = None;
+    });
+}
+
+/// The copies of an approval DM sent to `to`: (text, idempotency key).
+fn copies_to(f: &Fixture, to: &str) -> Vec<(String, String)> {
+    f.approval_dms()
+        .into_iter()
+        .filter(|(recipient, _, _)| recipient == to)
+        .map(|(_, text, key)| (text, key))
+        .collect()
+}
+
+// With no verified owner and no requester, nothing marks the notice
+// forwarded, so the watcher tries it again every second. The leaders are
+// looked up once and each sent one copy, however often it is tried.
+#[tokio::test]
+async fn with_no_owner_and_no_requester_each_leader_gets_one_copy_not_one_per_tick() {
+    let f = fixture().await;
+    f.set(Some(true), Some(false), None);
+    unclaimed(&f);
+    let second = f.server.seed_agent("lead2", "agent", json!({}));
+    f.leaders(json!([
+        {"name": "lead", "agent_id": f.lead.id},
+        {"name": "lead2", "agent_id": second.id}
+    ]));
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bd020";
+    let registration = f.spawned("codex", THREAD);
+    let notice = codex_request(THREAD, 501);
+    let reads = || f.server.calls("GET", "/v1/workspace/leaders").len();
+    let before = reads();
+    for _ in 0..5 {
+        f.core
+            .forward_to_owner(&registration, &f.token(), &notice)
+            .await;
+    }
+    f.server
+        .wait_for("both leaders' copies", |server| {
+            let dms = server.calls("POST", "/v1/dm");
+            ["lead", "lead2"]
+                .iter()
+                .all(|to| dms.iter().any(|call| call.body["to"] == *to))
+        })
+        .await;
+    for _ in 0..3 {
+        f.core
+            .forward_to_owner(&registration, &f.token(), &notice)
+            .await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(copies_to(&f, "lead").len(), 1, "{:?}", f.approval_dms());
+    assert_eq!(copies_to(&f, "lead2").len(), 1, "{:?}", f.approval_dms());
+    assert!(copies_to(&f, "owner").is_empty());
+    assert!(reads() - before <= 1, "{} list reads", reads() - before);
+    assert_eq!(f.server.calls("GET", "/v1/agents/lead").len(), 1);
+    assert_eq!(f.server.calls("GET", "/v1/agents/lead2").len(), 1);
+    // Still not forwarded: a leader's copy never counts.
+    assert_eq!(codex_drive::unforwarded(THREAD).len(), 1);
+}
+
+// A leader's copy that fails is sent again a few times, never once per tick,
+// and always with the same text under the same key.
+#[tokio::test]
+async fn a_failed_leader_copy_is_retried_a_bounded_number_of_times_with_the_same_body() {
+    let f = fixture().await;
+    f.set(Some(true), Some(false), None);
+    unclaimed(&f);
+    f.server
+        .set_api_error("POST /v1/dm to=lead", Some((500, "unavailable")));
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bd021";
+    let registration = f.spawned("codex", THREAD);
+    let notice = codex_request(THREAD, 511);
+    for _ in 0..3 {
+        f.core
+            .forward_to_owner(&registration, &f.token(), &notice)
+            .await;
+    }
+    // The client tries each send three times itself on a 5xx: one send
+    // is three POSTs.
+    let sends = crate::relay::spawn::drive::LEADER_SENDS as usize * 3;
+    f.server
+        .wait_for("every send of the leader's copy", |server| {
+            server
+                .calls("POST", "/v1/dm")
+                .iter()
+                .filter(|call| call.body["to"] == "lead")
+                .count()
+                >= sends
+        })
+        .await;
+    for _ in 0..3 {
+        f.core
+            .forward_to_owner(&registration, &f.token(), &notice)
+            .await;
+    }
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let copies = copies_to(&f, "lead");
+    assert_eq!(copies.len(), sends);
+    let first = copies[0].clone();
+    assert!(copies.iter().all(|copy| *copy == first), "{copies:?}");
     assert_eq!(
-        who_may_answer_with(Some("grokbot"), &[]),
-        crate::relay::spawn::drive::who_may_answer(Some("grokbot"))
+        first.1,
+        format!(
+            "spawn-approval-{}-{}",
+            notice.reference,
+            MessageRef::of(&f.lead.id)
+        )
     );
+    assert_eq!(f.server.calls("GET", "/v1/agents/lead").len(), 1);
+}
+
+// The text sent under one key never changes, though the setting or the list
+// changes between tries.
+#[tokio::test]
+async fn the_owners_copy_keeps_its_text_when_the_setting_changes_between_tries() {
+    let f = fixture().await;
+    f.set(Some(true), Some(false), None);
+    f.server
+        .set_api_error("POST /v1/dm to=owner", Some((500, "unavailable")));
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bd022";
+    let registration = f.spawned("codex", THREAD);
+    let notice = codex_request(THREAD, 521);
+    f.core
+        .forward_to_owner(&registration, &f.token(), &notice)
+        .await;
+    f.set(Some(false), Some(false), None);
+    f.leaders(json!([]));
+    f.server.set_api_error("POST /v1/dm to=owner", None);
+    f.core
+        .forward_to_owner(&registration, &f.token(), &notice)
+        .await;
+    assert!(codex_drive::unforwarded(THREAD).is_empty(), "forwarded");
+    let copies = copies_to(&f, "owner");
+    assert!(copies.len() >= 2, "{copies:?}");
+    assert!(copies.iter().all(|copy| *copy == copies[0]), "{copies:?}");
+    assert!(copies[0].0.contains("or a workspace leader may answer"));
+}
+
+// The owner's copy never waits for the leaders: a list read held (or failing),
+// or a leader's name check held, leaves it to go at once.
+#[tokio::test]
+async fn the_owners_copy_is_never_held_by_a_slow_or_failing_leader_lookup() {
+    let f = fixture().await;
+    f.set(Some(true), Some(false), None);
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bd023";
+    let registration = f.spawned("codex", THREAD);
+
+    // The list read held.
+    f.core.leaders.age(crate::relay::leaders::REFRESH_AFTER);
+    let release = f.server.hold("GET /v1/workspace/leaders");
+    let notice = codex_request(THREAD, 531);
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        f.core.forward_to_owner(&registration, &f.token(), &notice),
+    )
+    .await
+    .expect("the owner's copy waited for the list");
+    assert_eq!(copies_to(&f, "owner").len(), 1);
+    assert!(codex_drive::unforwarded(THREAD).is_empty(), "forwarded");
+    f.server
+        .wait_for("the held list read", |server| {
+            server.held("GET /v1/workspace/leaders") >= 1
+        })
+        .await;
+    assert!(copies_to(&f, "lead").is_empty());
+    release.send(true).unwrap();
+    f.server
+        .wait_for("the leader's copy once the list came", |server| {
+            server
+                .calls("POST", "/v1/dm")
+                .iter()
+                .any(|call| call.body["to"] == "lead")
+        })
+        .await;
+
+    // The leader's name check held.
+    let release = f.server.hold("GET /v1/agents/lead");
+    let notice = codex_request(THREAD, 532);
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        f.core.forward_to_owner(&registration, &f.token(), &notice),
+    )
+    .await
+    .expect("the owner's copy waited for the leader's name check");
+    assert_eq!(copies_to(&f, "owner").len(), 2);
+    assert!(codex_drive::unforwarded(THREAD).is_empty(), "forwarded");
+    release.send(true).unwrap();
+
+    // The list read failing.
+    f.server.set_failing(&["GET /v1/workspace/leaders"]);
+    f.core.leaders.age(crate::relay::leaders::REFRESH_AFTER);
+    let notice = codex_request(THREAD, 533);
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        f.core.forward_to_owner(&registration, &f.token(), &notice),
+    )
+    .await
+    .expect("the owner's copy waited for a failing list");
+    assert_eq!(copies_to(&f, "owner").len(), 3);
+    assert!(codex_drive::unforwarded(THREAD).is_empty(), "forwarded");
+}
+
+// A Claude's notice too: the leaders are looked up once, each gets one copy.
+#[tokio::test]
+async fn a_claude_notice_reaches_each_leader_once_with_no_owner_and_no_requester() {
+    let f = fixture().await;
+    f.set(Some(true), Some(false), None);
+    unclaimed(&f);
+    const SESSION: &str = "a1d0c2e4-0000-4000-8000-00000000d024";
+    let claude = f.spawned("claude", SESSION);
+    let notice = claude_request(SESSION, "n24");
+    for _ in 0..5 {
+        f.core.forward_request(&claude, &f.token(), &notice).await;
+    }
+    f.server
+        .wait_for("the leader's copy", |server| {
+            server
+                .calls("POST", "/v1/dm")
+                .iter()
+                .any(|call| call.body["to"] == "lead")
+        })
+        .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let copies = copies_to(&f, "lead");
+    assert_eq!(copies.len(), 1, "{copies:?}");
+    assert!(copies[0]
+        .0
+        .ends_with("The signed-in machine owner or a workspace leader may answer; the first answer counts."));
+    assert_eq!(f.server.calls("GET", "/v1/agents/lead").len(), 1);
+    requests::forget(SESSION);
+}
+
+// Answers are checked again once the list comes back: the setting turned off,
+// or the session taken over, while it was read makes no approver.
+#[tokio::test]
+async fn the_setting_and_takeover_are_checked_again_after_the_list_is_read() {
+    let f = fixture().await;
+    f.set(Some(true), None, None);
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bd025";
+    let registration = f.spawned("codex", THREAD);
+    for (index, change) in ["setting off", "taken over"].into_iter().enumerate() {
+        f.set(Some(true), None, None);
+        let notice = codex_request(THREAD, 541 + index as u64);
+        f.core.leaders.age(crate::relay::leaders::REFRESH_AFTER);
+        let held = f.server.held("GET /v1/workspace/leaders");
+        let release = f.server.hold("GET /v1/workspace/leaders");
+        let reply = dm(
+            &format!("recheck-{index}"),
+            &f.lead,
+            &format!("approve {}", notice.reference),
+        );
+        let answering = {
+            let (core, registration) = (f.core.clone(), registration.clone());
+            tokio::spawn(async move { core.owner_reply(&registration, &reply).await })
+        };
+        f.server
+            .wait_for("the held list read", |server| {
+                server.held("GET /v1/workspace/leaders") > held
+            })
+            .await;
+        if change == "setting off" {
+            f.set(Some(false), None, None);
+        } else {
+            f.core
+                .store
+                .update(|store| {
+                    let saved = store
+                        .registrations
+                        .iter_mut()
+                        .find(|saved| saved.agent_id == registration.agent_id)
+                        .unwrap();
+                    saved.spawn.as_mut().unwrap().taken_over_at =
+                        Some("2026-10-28T01:00:00Z".into());
+                })
+                .unwrap();
+        }
+        release.send(true).unwrap();
+        assert!(not_one(answering.await.unwrap()), "{change}");
+        assert!(codex_drive::has_pending(THREAD, &notice.reference), "{change}");
+        assert_eq!(codex_drive::recorded_answer(&notice.reference), None);
+    }
+}
+
+// A list read that times out (`report_back::REQUESTER_WAIT`) makes no
+// approver.
+#[tokio::test]
+async fn a_list_read_that_times_out_makes_no_approver() {
+    let f = fixture().await;
+    f.set(Some(true), None, None);
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bd026";
+    let registration = f.spawned("codex", THREAD);
+    let notice = codex_request(THREAD, 551);
+    f.core.leaders.age(crate::relay::leaders::REFRESH_AFTER);
+    let release = f.server.hold("GET /v1/workspace/leaders");
+    let reply = dm("timeout", &f.lead, &format!("approve {}", notice.reference));
+    assert!(not_one(f.core.owner_reply(&registration, &reply).await));
+    assert!(f.server.held("GET /v1/workspace/leaders") >= 1);
+    assert!(codex_drive::has_pending(THREAD, &notice.reference));
+    release.send(true).unwrap();
+}
+
+// With the setting off the leaders are never looked up: no list read and no
+// name check for a leader, for a notice or for a leader's reply.
+#[tokio::test]
+async fn with_the_setting_off_the_leaders_are_never_looked_up() {
+    let f = fixture().await;
+    f.set(None, Some(true), None);
+    f.core.leaders.age(crate::relay::leaders::REFRESH_AFTER);
+    let reads = || f.server.calls("GET", "/v1/workspace/leaders").len();
+    let before = reads();
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bd027";
+    let registration = f.spawned("codex", THREAD);
+    let notice = codex_request(THREAD, 561);
+    f.core
+        .forward_to_owner(&registration, &f.token(), &notice)
+        .await;
+    let reply = dm("off-lookup", &f.lead, &format!("approve {}", notice.reference));
+    assert!(not_one(f.core.owner_reply(&registration, &reply).await));
+    const SESSION: &str = "a1d0c2e4-0000-4000-8000-00000000d027";
+    let claude = f.spawned("claude", SESSION);
+    let request = claude_request(SESSION, "n27");
+    f.core.forward_request(&claude, &f.token(), &request).await;
+    let reply = dm(
+        "off-lookup-claude",
+        &f.lead,
+        &format!("approve {}", request.reference),
+    );
+    assert!(not_one(f.core.owner_reply(&claude, &reply).await));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(reads(), before, "the list was read");
+    assert!(f.server.calls("GET", "/v1/agents/lead").is_empty());
+    assert!(copies_to(&f, "lead").is_empty());
+    requests::forget(SESSION);
+}
+
+// Claude: a leader approves and denies an MCP tool's request and leaving plan
+// mode.
+#[tokio::test]
+async fn a_leader_approves_and_denies_a_claude_mcp_tool_and_exit_plan_mode() {
+    let f = fixture().await;
+    f.set(Some(true), None, None);
+    const SESSION: &str = "a1d0c2e4-0000-4000-8000-00000000d028";
+    let claude = f.spawned("claude", SESSION);
+    let tool = |id: &str, name: &str| {
+        json!({"type": "control_request", "request_id": id, "request": {
+            "subtype": "can_use_tool", "tool_name": name, "input": {}}})
+    };
+    for (id, name, verb, behavior) in [
+        ("mcp-approve", "mcp__github__create_issue", "approve", "allow"),
+        ("mcp-deny", "mcp__github__create_issue", "deny", "deny"),
+        ("plan-approve", "ExitPlanMode", "approve", "allow"),
+        ("plan-deny", "ExitPlanMode", "deny", "deny"),
+    ] {
+        let notice = claude_registered(SESSION, &tool(id, name));
+        assert!(notice.approvable, "{id}");
+        let reply = dm(id, &f.lead, &format!("{verb} {}", notice.reference));
+        assert_eq!(
+            settled(f.core.owner_reply(&claude, &reply).await),
+            format!("Claude approval reply from {}: Answered", by_leader(&f)),
+            "{id}"
+        );
+        let due = requests::due(SESSION);
+        let (_, line) = due
+            .iter()
+            .find(|(reference, _)| *reference == notice.reference)
+            .unwrap_or_else(|| panic!("{id}: no answer due"));
+        assert!(
+            line.contains(&format!(r#""behavior":"{behavior}""#)),
+            "{id}: {line}"
+        );
+    }
+    requests::forget(SESSION);
+}
+
+// With no verified owner (the computer not claimed by the signed-in person),
+// a leader still answers. This is the current behaviour; a later decision
+// to require a verified owner changes this test.
+#[tokio::test]
+async fn with_no_verified_owner_a_leader_still_answers() {
+    let f = fixture().await;
+    f.set(Some(true), None, None);
+    unclaimed(&f);
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bd029";
+    let registration = f.spawned("codex", THREAD);
+    assert!(f.core.verified_owner(&registration).await.is_none());
+    let notice = codex_request(THREAD, 571);
+    let reply = dm("no-owner", &f.lead, &format!("approve {}", notice.reference));
+    assert_eq!(
+        settled(f.core.owner_reply(&registration, &reply).await),
+        format!("Codex approval reply from {}: Answered", by_leader(&f))
+    );
+    let answer = codex_drive::recorded_answer(&notice.reference).unwrap();
+    assert_eq!(answer["decision"], "accept", "{answer}");
 }

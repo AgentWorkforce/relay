@@ -20,8 +20,9 @@
 //! leader's 1:1 direct message, from a listed leader's agent id (never a
 //! name or a pattern), then approves or denies an open, approvable request
 //! of an agent spawned here, registered in this computer's workspace and
-//! not taken over, with the machine owner's standing: neither
-//! `spawn_requester_approvals` nor the spawn's approval profile limits it.
+//! not taken over, as the machine owner could: neither
+//! `spawn_requester_approvals` nor the spawn's approval profile
+//! (`interactive` included) limits it.
 //! Only a list read successfully within [`REFRESH_AFTER`] serves
 //! ([`Cache::verified`]): one that is older is read again, and when that
 //! read fails or is refused no one is an approver; the list failed reads
