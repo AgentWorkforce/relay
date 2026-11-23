@@ -343,12 +343,14 @@ impl Core {
         });
     }
 
-    /// Sends `notice` to the verified owner and, when they may answer, the
-    /// spawning agent; with approvals from workspace leaders on, it goes to
-    /// the listed leaders too (`notify_leaders`), once, apart from the
-    /// others. Only the owner's or the requester's copy marks it forwarded:
-    /// with neither it is tried again each tick (the leaders' copies are
-    /// not) until the request expires to a refusal.
+    /// Sends `notice` to the verified owner and, when they may answer and
+    /// the organization's hold (if any) counts them among its admins, the
+    /// spawning agent (`requester_to_notify`); with approvals from
+    /// workspace leaders on, it goes to the listed leaders too
+    /// (`notify_leaders`), once, apart from the others. Only the owner's or
+    /// the requester's copy marks it forwarded: with neither it is tried
+    /// again each tick (the leaders' copies are not) until the request
+    /// expires to a refusal.
     pub(crate) async fn forward_to_owner(
         &self,
         registration: &Registration,
@@ -360,7 +362,7 @@ impl Core {
         if self.escalate_codex_question(registration, notice).await {
             return;
         }
-        let requester = self.approving_requester(registration);
+        let requester = self.requester_to_notify(registration);
         let text = self.approval_plan(
             registration,
             token,
@@ -428,7 +430,11 @@ impl Core {
 
     /// Sends an approval DM about `reference` to the verified owner and to
     /// `requester`. True once someone may answer it and everyone it is for
-    /// has it; until then it is sent again, under the same keys.
+    /// has it; until then it is sent again, under the same keys. The
+    /// organization's hold is read again once Relaycast has confirmed the
+    /// requester's name, just before the sends: while it holds and does not
+    /// count that name among its admins, the requester is sent no copy, and
+    /// the owner's copy alone marks the request forwarded.
     pub(crate) async fn send_approval(
         &self,
         registration: &Registration,
@@ -446,8 +452,10 @@ impl Core {
                 .holds_name(registration, &requester.name, &requester.agent_id)
                 .await
             {
-                Some(true) => (Some(requester), true),
-                Some(false) => (None, true),
+                Some(true) if self.organization_names_admin(&requester.name) => {
+                    (Some(requester), true)
+                }
+                Some(_) => (None, true),
                 None => (None, false),
             },
         };
@@ -647,7 +655,11 @@ impl Core {
     /// session's requests: the machine owner's native-input and requester-
     /// approval settings permit it, the explicit profile does not restrict
     /// it to the owner, the session is not taken over, and its requester's
-    /// immutable id is known. Teammates and other agents never may.
+    /// immutable id is known. Teammates and other agents never may. While
+    /// the organization holds messages, its answer is taken only when the
+    /// delivery policy would deliver that reply (`approver`), and it is
+    /// named in and sent approval DMs only when the organization counts its
+    /// name among its admins (`requester_to_notify`).
     pub(crate) fn approving_requester(
         &self,
         registration: &Registration,
@@ -678,6 +690,26 @@ impl Core {
             })
             .and_then(|spawn| spawn.requester.clone())
             .filter(|requester| !requester.agent_id.is_empty())
+    }
+
+    /// The spawning agent an approval DM about a request of `registration`
+    /// names and is sent to: [`Self::approving_requester`], and, while the
+    /// organization holds messages from senders who are not its admins,
+    /// only when the organization counts its name among them (as
+    /// `leader_try` treats a leader). Read again at each try: the text is
+    /// fixed by the first (`approval_plan`), the copy follows the hold.
+    pub(crate) fn requester_to_notify(
+        &self,
+        registration: &Registration,
+    ) -> Option<SpawnRequester> {
+        self.approving_requester(registration)
+            .filter(|requester| self.organization_names_admin(&requester.name))
+    }
+
+    /// Whether the organization's hold, while there is one, counts `name`
+    /// among its admins. Without a hold, always.
+    fn organization_names_admin(&self, name: &str) -> bool {
+        self.claude_delivery.organization_admin_name(name) != Some(false)
     }
 
     /// Whether `reference` is one of `registration`'s open requests, and
@@ -747,11 +779,14 @@ impl Core {
     /// Who may answer `reference` with `delivery`: the verified owner's
     /// direct message; a workspace leader's, when leaders may answer and the
     /// reference is an open request that may be approved
-    /// (`approving_leader`); or the spawning agent's when it may answer and
-    /// the reference is one of the session's open requests. A leader's or
-    /// requester's reply to anything else (an answered, expired or ended
-    /// request, or one a leader may not answer) is an ordinary message, so a
-    /// session that ended still says so.
+    /// (`approving_leader`); or the spawning agent's when it may answer
+    /// (`approving_requester`), the reference is one of the session's open
+    /// requests, and the organization's hold, while there is one, would
+    /// deliver the message (`organization_admits`, checked before and after
+    /// the request is read). A leader's or requester's reply to anything
+    /// else (an answered, expired or ended request, one a leader may not
+    /// answer, or one the hold keeps) is an ordinary message, so a session
+    /// that ended still says so and the hold keeps it for the person.
     async fn approver(
         &self,
         registration: &Registration,
@@ -768,8 +803,15 @@ impl Core {
             return Some(Approver::Leader(leader));
         }
         let requester = self.approving_requester(registration)?;
+        if !direct_from(delivery, Some(&requester.agent_id))
+            || !self.organization_admits(registration, delivery)
+        {
+            return None;
+        }
         let open = self.open_request(registration, reference).await.is_some();
-        (open && direct_from(delivery, Some(&requester.agent_id)))
+        // Reading the request can take a while: an organization hold begun
+        // meanwhile makes no approver.
+        (open && self.organization_admits(registration, delivery))
             .then_some(Approver::Requester(requester))
     }
 

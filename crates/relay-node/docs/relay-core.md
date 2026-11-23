@@ -1185,6 +1185,23 @@ body. Who may answer the session's permission requests is separate
 are compared, never names. Release ownership and fork authorization accept
 either id too.
 
+While the organization holds messages from senders who are not its admins
+(`delivery.inbound_default: "hold"`), the requester's `approve <ref>` or
+`deny <ref>` answers only when the delivery policy's own decision for that
+reply is to deliver it, the rule workspace leaders follow below: the
+requester is one of the organization's admins, by its authenticated sender
+address or by name. A reply with no authenticated address, or from a
+requester that is not an admin, answers nothing: it takes the ordinary path,
+where the hold keeps it for the person, and the request stays open. The hold
+is read before the request is looked up and again after, so a hold that
+begins meanwhile wins. Under a hold the approval DM names the requester, and
+it is sent a copy, only when the organization lists its name among its
+admins; otherwise the DM says only the owner (and, with leader approvals on,
+a leader that is an admin) may answer, and the owner's copy alone marks the
+request forwarded. The text is fixed by the request's first try; who is sent
+a copy and whose answer is taken follow the hold at each try. With no hold
+this changes nothing.
+
 ### Workspace leaders
 
 A workspace can name leaders: agents whose direct messages spawned agents on

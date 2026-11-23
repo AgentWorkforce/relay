@@ -1951,3 +1951,6 @@ async fn on_a_gate_only_install_leader_approvals_are_unavailable_and_say_why() {
     assert_eq!(f.server.calls("GET", "/v1/workspace/leaders").len(), reads);
     assert!(codex_drive::has_pending(THREAD, &notice.reference));
 }
+
+// The same hold for the agent that spawned the session.
+mod requester_hold;
