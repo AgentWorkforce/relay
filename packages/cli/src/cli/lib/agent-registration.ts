@@ -1,5 +1,8 @@
 export const DEFAULT_AGENT_REGISTRATION_TIMEOUT_MS = 15_000;
 
+/** The local registration deadline fired. Its message is built here, so it is safe to print. */
+export class AgentRegistrationTimeoutError extends Error {}
+
 // setTimeout coerces its delay with ToNumber and silently clamps non-finite,
 // negative, or >2^31-1 values to ~1ms (or fires on the next tick), so a bad
 // caller-supplied timeoutMs must not reach it directly — it would turn
@@ -72,7 +75,7 @@ export async function withAgentRegistrationDeadline<T>(
     register,
     (effectiveTimeoutMs) => {
       const renderedName = shellQuote(name);
-      return new Error(
+      return new AgentRegistrationTimeoutError(
         `Agent registration or token rotation for ${JSON.stringify(name)} did not complete within ${effectiveTimeoutMs}ms. ` +
           'The request outcome is unknown. Retry with ' +
           `\`agent-relay agent rotate ${renderedName}\`; if rotation continues to time out, run ` +
