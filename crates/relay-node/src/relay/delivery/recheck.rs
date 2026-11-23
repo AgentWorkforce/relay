@@ -37,7 +37,11 @@ impl Core {
             .await
             .ok()?
             .ok()?;
-        let delivery = delivery_of(kept, &server)?;
+        let mut delivery = delivery_of(kept, &server)?;
+        // The files it carried come back with the commands that fetch them,
+        // as a delivery whose files were not saved in time shows them.
+        self.add_fetch_hints(&registration.target, &mut delivery.attachments)
+            .await;
         let (framed, _, _) = self
             .session_text(registration, (&delivery, None), false, false)
             .await;
@@ -78,6 +82,7 @@ fn delivery_of(kept: &Kept, server: &Value) -> Option<Delivery> {
         sender_address: text("agent_address"),
         text: server["text"].as_str().map(str::to_string),
         thread_id,
+        attachments: crate::relay::delivery::policy::Attachment::list(&[server]),
         ..Delivery::default()
     })
 }

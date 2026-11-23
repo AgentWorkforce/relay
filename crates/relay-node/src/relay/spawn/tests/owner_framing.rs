@@ -370,6 +370,18 @@ async fn a_recheck_against_relaycast_restores_a_genuine_owners_note() {
             message_pointer::OWNER_READ_NOTE
         );
     }
+    // The files it carried come back too.
+    registration.base_url = relaycast_answering(requester_message(json!({
+        "attachments": [{"file_id": "file_shot1", "filename": "shot.png",
+            "content_type": "image/png", "size_bytes": 1024}],
+    })))
+    .await;
+    let rechecked = core
+        .recheck_kept_framing(&registration, &token, &kept)
+        .await
+        .unwrap();
+    assert_eq!(rechecked.framing, Framing::Owner);
+    assert!(rechecked.text.contains("shot.png"), "{}", rechecked.text);
 }
 
 #[tokio::test]
