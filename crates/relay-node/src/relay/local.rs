@@ -1596,8 +1596,10 @@ impl LocalInjector {
             crate::relay::existing_session::Outcome::Retry(_) => {
                 InjectOutcome::Retry("The Muse courier is unavailable.".into())
             }
+            // Only a running turn makes the Paseo route wait. Nothing was
+            // handed over, so this is `Waiting`, not `WaitingForTurn`.
             crate::relay::existing_session::Outcome::Waiting(_) if hosted => {
-                InjectOutcome::Waiting("Paseo is not ready for this message.".into())
+                InjectOutcome::Waiting(paseo_muse::WAITING_FOR_TURN.into())
             }
             crate::relay::existing_session::Outcome::Waiting(_) => {
                 InjectOutcome::Waiting("The Muse courier is not ready.".into())
@@ -1611,6 +1613,9 @@ impl LocalInjector {
             crate::relay::existing_session::Outcome::InDoubt(_) => InjectOutcome::InDoubt(
                 "Muse may have received this message; operator reconciliation is required.".into(),
             ),
+            crate::relay::existing_session::Outcome::Refused(
+                crate::relay::existing_session::Failure::AuthenticationUnavailable,
+            ) if hosted => InjectOutcome::Refused(paseo_muse::PASSWORD_REFUSAL.into()),
             crate::relay::existing_session::Outcome::Refused(_) if hosted => {
                 InjectOutcome::Refused("The Paseo delivery was refused.".into())
             }

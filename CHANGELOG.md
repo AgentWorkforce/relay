@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `agent-relay-node`: spawned Codex MCP tool approvals now reach the verified spawning agent with the server, tool and argument names, remain visibly `waiting_for_approval` for 15 minutes, and accept authenticated Relay approval replies instead of silently timing out after five minutes. Spawn actions also accept an `approval_profile` (`interactive`, `requester`, or machine-owner-enabled `full_access`) so hosted launchers can declare the prompt policy up front.
+- `agent-relay-node`: a message relayed to a Muse session that Paseo drives now waits while Muse is working, where before it could stop the running turn. Agent Relay asks Paseo for the agent's status first and sends only when no turn is running; otherwise the message waits and is tried again. A Paseo daemon with a password now refuses the message with that reason, since Agent Relay holds no Paseo password. Checked against Paseo's source and unit tests, not yet against a live Paseo daemon.
 
 ## [18.12.0] - 2026-11-21
 
