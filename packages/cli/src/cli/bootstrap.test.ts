@@ -61,6 +61,12 @@ const expectedLeafCommands = [
   'cloud room session',
   'cloud room revoke-session',
   'cloud room accept',
+  // owner-named delegates
+  'delegates list',
+  'delegates add',
+  'delegates revoke',
+  'delegates revoke-all',
+  'delegates claim',
   'cloud integration catalog',
   'cloud integration connections',
   'cloud integration connect',

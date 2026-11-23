@@ -59,6 +59,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub mod channels;
 mod connect_send;
+mod delegation;
 pub(crate) mod fetch;
 mod hints;
 mod hooks;
@@ -484,6 +485,13 @@ impl Outbound {
             ("POST", "/attachments/fetch") => self.fetch_attachment(pid, uid, &request.query).await,
             ("GET", "/messages") => self.read_message(pid, uid, &request.query).await,
             ("POST", "/send") => self.send_route(pid, uid, request).await,
+            ("POST", "/delegation/withdraw") => {
+                self.withdraw_delegation_route(pid, uid, &request.query)
+                    .await
+            }
+            ("POST", "/delegation/redeem") => {
+                self.redeem_delegation_route(pid, uid, &request.query).await
+            }
             ("POST", "/register") => self.register_route(pid, uid, request).await,
             ("POST", "/channels") => self.create_channel_route(pid, uid, request).await,
             ("POST" | "DELETE", "/channels/subscribe") => {
@@ -1115,6 +1123,7 @@ impl Outbound {
                 .map(|value| value.strip_prefix('#').unwrap_or(value))
                 .filter(|value| {
                     !value.is_empty()
+                        && !value.starts_with('#')
                         && value.chars().count() <= 200
                         && !value
                             .chars()
@@ -1155,6 +1164,14 @@ impl Outbound {
             .filter(|text| !text.trim().is_empty())
             .ok_or_else(|| OutboundError::new(400, "invalid_text", "The message has no text."))?;
         let paths = requested_files(request)?;
+        let owner_approval = delegation::requested_owner_approval(request)?;
+        if owner_approval.is_some() && request.contains_key("reply_to") {
+            return Err(OutboundError::new(
+                400,
+                "invalid_owner_approval",
+                "An owner approval goes on a direct message or channel post, not a reply.",
+            ));
+        }
         let (session, registration, token) = self.authorize_sender(pid, uid).await?;
         if channel.is_some() && request.contains_key("reply_to") {
             return Err(OutboundError::new(
@@ -1242,7 +1259,45 @@ impl Outbound {
         let base = &registration.base_url;
         let (channel, endpoint, reply_to, attachments, registration) =
             (&channel, &endpoint, &reply_to, &attachments, &registration);
-        let send = |key, token: Secret| async move {
+        let owner_approval = &owner_approval;
+        let send = |key: Option<String>, token: Secret| async move {
+            // A delegate's owner approval goes to Relaycast beside the text,
+            // exactly as the session gave it (`relay::delegation`).
+            if let Some(approval) = owner_approval {
+                use client::ApprovalDestination;
+                let destination = match (channel, endpoint) {
+                    (Some(channel), _) => ApprovalDestination::Channel(channel),
+                    (None, Some(endpoint)) => ApprovalDestination::Direct(endpoint),
+                    (None, None) => unreachable!("one send destination is required"),
+                };
+                let sent = client::send_with_owner_approval(
+                    base,
+                    &token,
+                    destination,
+                    text,
+                    attachments,
+                    approval,
+                    key.clone(),
+                )
+                .await;
+                return match (sent, channel) {
+                    (Err(error), Some(channel)) if channels::not_a_member(&error) => {
+                        client::join_channel(base, &token, channel).await?;
+                        self.leave_as_forwarder(registration, channel).await;
+                        client::send_with_owner_approval(
+                            base,
+                            &token,
+                            ApprovalDestination::Channel(channel),
+                            text,
+                            attachments,
+                            approval,
+                            key,
+                        )
+                        .await
+                    }
+                    (sent, _) => sent,
+                };
+            }
             if let Some(channel) = channel {
                 self.post(registration, &token, channel, text, attachments, key)
                     .await

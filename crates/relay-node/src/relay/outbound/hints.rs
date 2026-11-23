@@ -44,6 +44,7 @@ pub fn reply_hint(
                 recipient,
                 reply_to: Some(reply_to.to_string()),
                 thread: None,
+                owner_approval: None,
             };
             let send = probe_session_command(socket, &reply, Some("your reply"))?;
             let agents = probe_session_command(socket, &SessionCommand::Agents, None)?;

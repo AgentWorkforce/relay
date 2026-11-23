@@ -38,6 +38,7 @@ import { registerNodeCommands, registerRemovedBrokerCommands } from './commands/
 import { registerStatusCommand } from './commands/status.js';
 import { registerLocalWorkflowCommands } from './commands/local-workflow.js';
 import { registerCloudCommands } from './commands/cloud.js';
+import { registerDelegatesCommands } from './commands/delegates.js';
 import { registerWorkspaceCommands } from './commands/workspace.js';
 import { registerInitCommand } from './commands/init.js';
 import { registerObserverCommands } from './commands/observer.js';
@@ -417,6 +418,7 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerStatusCommand(program);
   registerSetupCommands(program);
   registerCloudCommands(program);
+  registerDelegatesCommands(program);
   registerInitCommand(program, { cliVersion: VERSION });
   registerWorkspaceCommands(program);
   registerObserverCommands(program);

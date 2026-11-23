@@ -81,6 +81,8 @@ async fn fixture_with(dead: bool, account: bool) -> Fixture {
     let requester = server.seed_agent("grokbot", "agent", json!({}));
     let lead = server.seed_agent("lead", "agent", json!({}));
     let child = server.seed_agent("c1", "agent", json!({}));
+    // Their 1:1 conversation, with just the two of them.
+    server.seed_conversation("lead", "c1");
     server.set_leaders(Some(json!({
         "leaders": [{"name": "lead", "agent_id": lead.id}],
         "patterns": []
@@ -1108,6 +1110,7 @@ async fn with_no_owner_and_no_requester_each_leader_gets_one_copy_not_one_per_ti
     f.set(Some(true), Some(false), None);
     unclaimed(&f);
     let second = f.server.seed_agent("lead2", "agent", json!({}));
+    f.server.seed_conversation("lead2", "c1");
     f.leaders(json!([
         {"name": "lead", "agent_id": f.lead.id},
         {"name": "lead2", "agent_id": second.id}
@@ -1950,4 +1953,116 @@ async fn on_a_gate_only_install_leader_approvals_are_unavailable_and_say_why() {
         .all(|(_, text, _)| !text.contains("workspace leader")));
     assert_eq!(f.server.calls("GET", "/v1/workspace/leaders").len(), reads);
     assert!(codex_drive::has_pending(THREAD, &notice.reference));
+}
+
+/// Relaycast lets a participant add a third agent to a 1:1 conversation
+/// without changing its type: a leader's reply there is not a 1:1 direct
+/// message, and no notice is sent into it.
+#[tokio::test]
+async fn a_conversation_with_a_third_participant_is_not_one_to_one() {
+    let f = fixture().await;
+    f.set(Some(true), Some(false), None);
+    unclaimed(&f);
+    f.server.seed_agent("outsider", "agent", json!({}));
+    f.server.add_dm_participant("lead", "c1", "outsider");
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bd201";
+    let registration = f.spawned("codex", THREAD);
+    let notice = codex_request(THREAD, 1201);
+    let reply = dm("shared", &f.lead, &format!("approve {}", notice.reference));
+    assert!(not_one(f.core.owner_reply(&registration, &reply).await));
+    assert!(codex_drive::has_pending(THREAD, &notice.reference));
+    f.core
+        .forward_to_owner(&registration, &f.token(), &notice)
+        .await;
+    copies_settled(&f.core, 1).await;
+    assert!(copies_to(&f, "lead").is_empty(), "{:?}", f.approval_dms());
+
+    // A leader added to another agent's conversation with the session is
+    // not in a 1:1 conversation with it either.
+    let f = fixture().await;
+    f.set(Some(true), None, None);
+    f.server.seed_agent("other", "agent", json!({}));
+    f.server.seed_conversation("other", "c1");
+    f.server.add_dm_participant("other", "c1", "lead");
+    const THREAD2: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bd202";
+    let registration = f.spawned("codex", THREAD2);
+    let notice = codex_request(THREAD2, 1202);
+    let reply = dm(
+        "elsewhere",
+        &f.lead,
+        &format!("approve {}", notice.reference),
+    );
+    assert!(not_one(f.core.owner_reply(&registration, &reply).await));
+}
+
+/// A conversation Relaycast does not list to the session (it never existed,
+/// or the session left it) is not safe for a notice: its members cannot be
+/// seen, so the leader gets no copy there.
+#[tokio::test]
+async fn no_notice_goes_to_a_leader_without_a_listed_private_conversation() {
+    let f = fixture().await;
+    f.set(Some(true), Some(false), None);
+    unclaimed(&f);
+    let unlisted = f.server.seed_agent("lead3", "agent", json!({}));
+    f.leaders(json!([
+        {"name": "lead", "agent_id": f.lead.id},
+        {"name": "lead3", "agent_id": unlisted.id}
+    ]));
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bd203";
+    let registration = f.spawned("codex", THREAD);
+    let notice = codex_request(THREAD, 1203);
+    f.core
+        .forward_to_owner(&registration, &f.token(), &notice)
+        .await;
+    f.server
+        .wait_for("the listed leader's copy", |server| {
+            server
+                .calls("POST", "/v1/dm")
+                .iter()
+                .any(|call| call.body["to"] == "lead")
+        })
+        .await;
+    copies_settled(&f.core, 2).await;
+    assert!(copies_to(&f, "lead3").is_empty(), "{:?}", f.approval_dms());
+}
+
+/// Waits until `n` leaders' or delegates' notice copies have finished
+/// their tries (sent, stopped or out of tries).
+async fn copies_settled(core: &Core, n: usize) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while core
+            .notice_copies_settled
+            .load(std::sync::atomic::Ordering::SeqCst)
+            < n
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the notice copies finish");
+}
+
+/// Only the conversation that carried the reply decides: a reply in the
+/// private DM answers even though the leader is also in another agent's
+/// conversation with the session, and a reply in that one does not.
+#[tokio::test]
+async fn the_conversation_that_carried_the_reply_decides() {
+    let f = fixture().await;
+    f.set(Some(true), None, None);
+    f.server.seed_agent("other", "agent", json!({}));
+    f.server.seed_conversation("other", "c1");
+    f.server.add_dm_participant("other", "c1", "lead");
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bd204";
+    let registration = f.spawned("codex", THREAD);
+    let first = codex_request(THREAD, 1204);
+    let mut elsewhere = dm(
+        "elsewhere",
+        &f.lead,
+        &format!("approve {}", first.reference),
+    );
+    elsewhere.channel_id = Some("dmch_c1_other".into());
+    assert!(not_one(f.core.owner_reply(&registration, &elsewhere).await));
+    let mut private = dm("private", &f.lead, &format!("approve {}", first.reference));
+    private.channel_id = Some("dmch_c1_lead".into());
+    assert!(settled(f.core.owner_reply(&registration, &private).await).ends_with("Answered"));
 }

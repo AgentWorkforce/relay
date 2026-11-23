@@ -180,6 +180,13 @@ impl Outbound {
         let fields = payload(request, Purpose::Send)?;
         let key = request.header("idempotency-key").map(str::to_string);
         if fields.contains_key("channel") && fields.contains_key("thread_id") {
+            if fields.contains_key("owner_approval") {
+                return Err(OutboundError::new(
+                    400,
+                    "invalid_owner_approval",
+                    "An owner approval goes on a direct message or channel post, not a reply.",
+                ));
+            }
             return self.send_thread_reply(pid, uid, &fields, key).await;
         }
         self.send(pid, uid, &fields, key).await
@@ -370,7 +377,7 @@ impl Outbound {
 
     /// Takes every forwarding name out of `channel` once the current one is
     /// in it (or on leaving), so each post reaches the session once.
-    async fn leave_as_forwarder(&self, current: &Registration, channel: &str) {
+    pub(super) async fn leave_as_forwarder(&self, current: &Registration, channel: &str) {
         for token in self.forwarder_tokens(current) {
             let _ = client::leave_channel(&current.base_url, &token, channel).await;
         }
@@ -400,7 +407,7 @@ impl Outbound {
     }
 }
 
-fn not_a_member(error: &relaycast::RelayError) -> bool {
+pub(super) fn not_a_member(error: &relaycast::RelayError) -> bool {
     matches!(error, relaycast::RelayError::Api { status: 403, code, .. } if code == "not_channel_member")
 }
 
@@ -485,6 +492,7 @@ pub fn channel_reply_command(
         recipient: Recipient::Channel(channel.to_string()),
         reply_to: None,
         thread: Some(thread_id.to_string()),
+        owner_approval: None,
     };
     socket_command(
         socket,

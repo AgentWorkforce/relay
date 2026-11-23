@@ -83,6 +83,7 @@ pub mod contract;
 pub mod copilot;
 pub mod cursor_cli;
 pub mod daemon;
+pub mod delegation;
 pub mod delivery;
 pub(crate) mod detach;
 pub mod devin;

@@ -156,6 +156,11 @@ pub enum RelayCommands {
         /// The channel thread this answers in.
         #[arg(long, requires = "channel")]
         thread: Option<String>,
+        /// A delegate's structured owner approval, as a JSON object
+        /// (`owner_approval`, wire contract v1), sent with the message
+        /// exactly as given.
+        #[arg(long, value_name = "JSON", conflicts_with_all = ["reply_to", "thread"])]
+        owner_approval: Option<String>,
         /// The message; read from standard input when omitted. It may start
         /// with a hyphen (`- first item`).
         #[arg(long, allow_hyphen_values = true)]
@@ -468,6 +473,7 @@ pub fn session_command(
             channel,
             reply_to,
             thread,
+            owner_approval,
             body,
         } => {
             let recipient = match (to, address, channel) {
@@ -482,6 +488,7 @@ pub fn session_command(
                     recipient,
                     reply_to: reply_to.clone(),
                     thread: thread.clone(),
+                    owner_approval: owner_approval.clone(),
                 },
                 body.as_deref(),
             )
@@ -750,6 +757,42 @@ mod tests {
         &["subscribe", "owner/repo#1"],
         &["socket-request", "--method", "GET", "--path", "/whoami"],
     ];
+
+    #[test]
+    fn send_takes_an_owner_approval_but_not_on_a_reply() {
+        let approval = r#"{"v":1,"owner_id":"hum_owner","actions":[]}"#;
+        let command = parse(&["send", "--to", "ada", "--owner-approval", approval]).unwrap();
+        let (_, session, _) = super::session_command(&command).unwrap();
+        assert_eq!(
+            session,
+            super::SessionCommand::Send {
+                recipient: super::Recipient::To("ada".into()),
+                reply_to: None,
+                thread: None,
+                owner_approval: Some(approval.into()),
+            }
+        );
+        assert!(parse(&[
+            "send",
+            "--to",
+            "ada",
+            "--reply-to",
+            "m1",
+            "--owner-approval",
+            "{}"
+        ])
+        .is_err());
+        assert!(parse(&[
+            "send",
+            "--channel",
+            "c",
+            "--thread",
+            "m1",
+            "--owner-approval",
+            "{}"
+        ])
+        .is_err());
+    }
 
     #[test]
     fn session_commands_run_without_a_socket() {

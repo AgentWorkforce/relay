@@ -51,10 +51,14 @@ import {
   normalizeThread,
   normalizeFileInfo,
 } from './normalize.js';
+import { randomUUID } from 'node:crypto';
+
+import { toWireOwnerApproval } from './delegation.js';
 import { downloadRelayFile, uploadRelayFile } from './files.js';
 import { currentReplaySessionRef, replayMessageMetadata, resolveReplaySessionRef } from './session-ref.js';
 import type { AgentSessionEvent } from '../session/index.js';
 import type {
+  RelayOwnerApprovalInput,
   RelayActionInvocation,
   RelayActionInvocationAck,
   RelayCompleteInvocationInput,
@@ -362,6 +366,28 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
 
   readonly messages = {
     send: async (input: RelaySendChannelMessageInput): Promise<RelayMessage> => {
+      if (input.ownerApproval) {
+        const name = normalizeChannelName(input.channel).replace(/^#/, '');
+        const message = await this.postWithOwnerApproval(
+          'messages.send',
+          `/v1/channels/${encodeURIComponent(name)}/messages`,
+          {
+            text: input.text,
+            ...definedOptions({
+              attachments: serializeAttachmentInputs(input.attachments),
+              blocks: input.blocks,
+              data: replayMessageMetadata(input.metadata, this.sessionRef),
+            }),
+            mode: input.mode ?? 'wait',
+          },
+          input.ownerApproval,
+          input.idempotencyKey
+        );
+        return normalizeMessage(message, {
+          kind: 'channel',
+          channelName: normalizeChannelName(input.channel),
+        });
+      }
       const message = await this.requireAgentClient('messages.send').send(
         input.channel,
         input.text,
@@ -398,6 +424,24 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       });
     },
     direct: async (input: RelaySendDirectMessageInput): Promise<RelayMessage> => {
+      if (input.ownerApproval) {
+        const response = await this.postWithOwnerApproval(
+          'messages.direct',
+          '/v1/dm',
+          {
+            to: input.to,
+            text: input.text,
+            ...definedOptions({
+              attachments: serializeAttachmentInputs(input.attachments),
+              data: replayMessageMetadata(input.metadata, this.sessionRef),
+            }),
+            mode: input.mode ?? 'wait',
+          },
+          input.ownerApproval,
+          input.idempotencyKey
+        );
+        return this.normalizeDirectResponse(response, 'dm');
+      }
       const response = await this.requireAgentClient('messages.direct').dm(
         input.to,
         input.text,
@@ -1385,6 +1429,42 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       );
     }
     return actions;
+  }
+
+  /**
+   * Sends `body` with `owner_approval` beside it, as a delegate: the
+   * relaycast client's own send drops fields it does not know, so this
+   * posts through its HTTP client. The approval goes out in wire (snake_case)
+   * form, which the client's key casing leaves as it is.
+   */
+  private async postWithOwnerApproval(
+    operation: string,
+    path: string,
+    body: Record<string, unknown>,
+    ownerApproval: RelayOwnerApprovalInput,
+    idempotencyKey: string | undefined
+  ): Promise<unknown> {
+    const agent = this.requireAgentClient(operation) as RelaycastAgentLike & {
+      client?: {
+        post?: (
+          path: string,
+          body?: unknown,
+          options?: { headers?: Record<string, string> }
+        ) => Promise<unknown>;
+      };
+    };
+    const post = agent.client?.post?.bind(agent.client);
+    if (!post) {
+      throw new Error(
+        `RelaycastMessagingClient.${operation} with ownerApproval requires a relaycast agent client.`
+      );
+    }
+    const key = idempotencyKey?.trim() || randomUUID();
+    return post(
+      path,
+      { ...body, owner_approval: toWireOwnerApproval(ownerApproval) },
+      { headers: { 'Idempotency-Key': key, 'X-Idempotency-Key': key } }
+    );
   }
 
   private requireAgentClient(operation: string): RelaycastAgentLike {

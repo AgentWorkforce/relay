@@ -230,6 +230,13 @@ pub struct Core {
     pub(crate) spawn_node: tokio::sync::Mutex<Option<crate::relay::spawn::node::SpawnNode>>,
     /// The workspace's leaders, read on first need (`relay::leaders`).
     pub(crate) leaders: crate::relay::leaders::Cache,
+    /// Cloud's delegation keys, read on first need (`relay::delegation`).
+    pub(crate) delegation_keys: crate::relay::delegation::Keys,
+    /// Which of a session's identities received each verified approval.
+    pub(crate) delegation_recipients: crate::relay::delegation::Recipients,
+    /// Leaders' and delegates' approval DM copies whose tries are over.
+    #[cfg(test)]
+    pub(crate) notice_copies_settled: std::sync::atomic::AtomicUsize,
     pub(crate) me: std::sync::Weak<Core>,
 }
 
@@ -343,6 +350,10 @@ impl Core {
             integration_defaults: std::sync::atomic::AtomicBool::new(true),
             spawn_node: tokio::sync::Mutex::new(None),
             leaders: Default::default(),
+            delegation_keys: Default::default(),
+            delegation_recipients: Default::default(),
+            #[cfg(test)]
+            notice_copies_settled: Default::default(),
             me: me.clone(),
         });
         if let Some(trusted) = &core.plugins.trusted {

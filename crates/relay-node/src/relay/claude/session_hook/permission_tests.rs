@@ -285,6 +285,7 @@ fn a_probe_path_with_a_space_is_named_by_its_link() {
         recipient: Recipient::To("alice".into()),
         reply_to: Some("m1".into()),
         thread: None,
+        owner_approval: None,
     }
     .command_line(&link, socket, Some("thanks"))
     .unwrap();

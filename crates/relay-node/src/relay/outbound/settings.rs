@@ -32,7 +32,8 @@ use crate::relay::daemon::Core;
 use crate::relay::protocol::{ErrorKind, RpcError};
 use crate::relay::sessions::DiscoveredSession;
 use crate::relay::settings_registry::{
-    describe, person_only, writing, PERSON_ADDS, PERSON_SETS, PERSON_TURNS_ON, RECORDS,
+    describe, person_only, writing, PERSON_ADDS, PERSON_SETS, PERSON_TURNS_ON, PERSON_WIDENS,
+    RECORDS,
 };
 use crate::relay::state::{Level, Listing};
 use serde_json::{json, Map, Value};
@@ -254,6 +255,11 @@ fn widens(
     }
     if PERSON_ADDS.contains(&key) {
         return added(values, saved_folder, key, asked);
+    }
+    if PERSON_WIDENS.contains(&key) {
+        return asked
+            .as_str()
+            .is_some_and(|asked| crate::relay::delegation::Accept::widens(asked, now.as_ref()));
     }
     match key {
         // One folder, shared when it was not (or is not watched yet).
@@ -571,6 +577,37 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// Whose delegates' approvals count is the person's to widen; an agent
+    /// may narrow it.
+    #[test]
+    fn an_agent_may_narrow_but_not_widen_whose_delegates_count() {
+        let key = crate::relay::delegation::SETTING;
+        for (now, asked) in [
+            ("off", "own_owner"),
+            ("own_owner", "code_owners"),
+            ("off", "code_owners"),
+        ] {
+            let (status, code, message) =
+                refusal(json!({key: now}), json!({key: asked})).expect(asked);
+            assert_eq!((status, code.as_str()), (403, "person_only_setting"));
+            assert_eq!(
+                message,
+                format!("Only the person can widen {key}, in Agent Relay's Settings. An agent may narrow it.")
+            );
+        }
+        for (now, asked) in [
+            ("code_owners", "own_owner"),
+            ("own_owner", "off"),
+            ("code_owners", "code_owners"),
+        ] {
+            assert_eq!(
+                refusal(json!({key: now}), json!({key: asked})),
+                None,
+                "{asked}"
+            );
+        }
     }
 
     /// An agent may remove a trusted sender, but adding one, by a new name

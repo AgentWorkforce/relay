@@ -68,6 +68,7 @@ fn checked_by_owner(key: &str) -> bool {
         || crate::relay::spawn::CONFIGURED_KEYS.contains(&key)
         || crate::relay::question::settings::KEYS.contains(&key)
         || key == crate::relay::repositories::SETTING
+        || key == crate::relay::delegation::SETTING
 }
 
 /// Settings whose value is a list (or, for session history, a number of
@@ -1322,6 +1323,11 @@ impl Core {
         if self.leader_approvals_unavailable().is_some() {
             settings.remove(crate::relay::leaders::SETTING);
         }
+        // Likewise approvals from owners' delegates (`delegation::GATE_ONLY`).
+        if self.delegation_unavailable().is_some() {
+            settings.remove(crate::relay::delegation::SETTING);
+            settings.remove(crate::relay::delegation::SPAWN_SETTING);
+        }
         settings.extend(self.store.read(crate::relay::question::settings::values));
         for extension in &self.plugins.settings {
             settings.extend(extension.get());
@@ -1379,7 +1385,17 @@ impl Core {
                     return Err(RpcError::setting_refused(reason.to_string()));
                 }
             }
-            if !known.contains_key(key) && !write_only(key) && !leader_approvals {
+            // Approvals from owners' delegates likewise: only `off` is taken.
+            let delegated = key == crate::relay::delegation::SETTING
+                || key == crate::relay::delegation::SPAWN_SETTING;
+            if let Some(reason) = self.delegation_unavailable().filter(|_| delegated) {
+                let off = value.as_str() == Some(crate::relay::delegation::Accept::Off.name())
+                    || value.as_bool() == Some(false);
+                if !off {
+                    return Err(RpcError::setting_refused(reason.to_string()));
+                }
+            }
+            if !known.contains_key(key) && !write_only(key) && !leader_approvals && !delegated {
                 return Err(RpcError::invalid_params(format!(
                     "There is no setting named {key}."
                 )));

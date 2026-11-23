@@ -48,6 +48,14 @@ fn group_post(groups: &mut Vec<Group>, channel: &str, post: Delivery) {
     }
 }
 
+/// Whether a channel post is coalesced with its channel's others. One that
+/// carries an owner approval (`has_owner_approval`) goes on its own, so its
+/// approval is attested for it alone (`relay::delegation`) and never applies
+/// to its neighbours.
+fn batched(delivery: &Delivery, webhook: Option<&str>, integration: Option<&str>) -> bool {
+    !delivery.has_owner_approval && is_channel_post(delivery, webhook, integration)
+}
+
 impl Core {
     pub(crate) fn delivery_state(&self) -> MutexGuard<'_, DeliveryState> {
         self.delivery.lock().unwrap_or_else(PoisonError::into_inner)
@@ -101,7 +109,7 @@ impl Core {
         for delivery in deliveries.iter().filter(|d| d.is_pending()) {
             // Sent under either of the session's names: acknowledged, not injected.
             let own = self.sent_by_itself(delivery, registration);
-            let post = !own && is_channel_post(delivery, webhook, integration);
+            let post = !own && batched(delivery, webhook, integration);
             match delivery.channel_id.as_deref().filter(|_| post) {
                 Some(channel) => group_post(&mut groups, channel, delivery.clone()),
                 None => self.handle(delivery, registration, false).await,
@@ -546,5 +554,32 @@ mod tests {
     #[test]
     fn the_budget_leaves_room_below_the_prompt_limit() {
         const { assert!(PROMPT_BUDGET + 8 * 1024 < 65_536) };
+    }
+}
+
+#[cfg(test)]
+mod approval_batch_tests {
+    use super::*;
+
+    #[test]
+    fn a_channel_post_with_an_owner_approval_is_never_coalesced() {
+        let post = Delivery {
+            id: "d1".into(),
+            message_id: "m1".into(),
+            reason: Some("message".into()),
+            channel_id: Some("ch_ops".into()),
+            text: Some("merge it".into()),
+            ..Delivery::default()
+        };
+        assert!(batched(&post, None, None));
+        let approval = Delivery {
+            has_owner_approval: true,
+            ..post.clone()
+        };
+        assert!(!batched(&approval, None, None));
+        assert!(
+            is_channel_post(&approval, None, None),
+            "still a channel post"
+        );
     }
 }

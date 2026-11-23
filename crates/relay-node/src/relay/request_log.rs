@@ -155,6 +155,12 @@ fn scrub(value: &Value, secret: &str, depth: usize) -> Value {
                                 | "code"
                                 | "url"
                                 | "download_url"
+                                // A delegate's quote of its owner, in an
+                                // outgoing approval or Cloud's claims, and the
+                                // attestation carrying it (design §8).
+                                | "quote"
+                                | "owner_approval"
+                                | "attestation"
                         );
                     (
                         key.clone(),
@@ -440,6 +446,20 @@ mod tests {
             "https://localhost/test"
         );
     }
+    #[test]
+    fn delegate_quotes_never_reach_the_request_log() {
+        let rendered = body(
+            &json!({"to": "relay", "owner_approval": {"v": 1, "quote": "yes merge 12"},
+                "verdict": "delegate", "attestation": "eyJhbGciOi.jws.sig",
+                "claims": {"quote": "yes merge 12", "approval_id": "apv_1"}}),
+            "",
+        );
+        for private in ["yes merge 12", "eyJhbGciOi"] {
+            assert!(!rendered.contains(private), "{rendered}");
+        }
+        assert!(rendered.contains("apv_1"), "{rendered}");
+    }
+
     #[test]
     fn identity_refusals_have_a_specific_status_summary() {
         let entry = RequestEntry {

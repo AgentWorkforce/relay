@@ -26,6 +26,8 @@ pub(super) fn socket_request_allowed(method: &str, path: &str) -> bool {
             path == "/send"
                 || path.starts_with("/send?")
                 || path.starts_with("/attachments/fetch?file_id=")
+                || path.starts_with("/delegation/redeem?approval=")
+                || path.starts_with("/delegation/withdraw?approval=")
                 || path == "/connect/send"
                 || path.starts_with("/connect/send?")
                 || path.starts_with("/channels/subscribe?channel=")

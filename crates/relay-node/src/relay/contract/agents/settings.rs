@@ -84,6 +84,31 @@ pub struct SettingsValues {
     /// install, where it cannot work and turning it on is refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_leader_approvals: Option<bool>,
+    /// Whose delegates' approvals this computer's sessions accept: `off`,
+    /// `own_owner` (delegates of the person who owns this computer or the
+    /// spawn) or `code_owners` (also delegates of any code owner of each
+    /// action's target). A delegate is an agent an owner named in Agent Relay Cloud
+    /// to relay their approval for named actions; with a choice other than
+    /// `off`, a message carrying such an approval that Cloud attests is
+    /// delivered with a `[delegate approval: …]` line naming those actions
+    /// only. `code_owners` unless the person changes it; only the person may
+    /// widen it. Absent in older cores, and on a gate-only install, where it
+    /// cannot work and only `off` is taken.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegated_approvals_from: Option<String>,
+    /// Whether the machine owner's delegates may approve or deny permission
+    /// requests of agents spawned on this computer. A delegate's 1:1 direct
+    /// message `approve <ref>` or `deny <ref>` whose owner approval Agent
+    /// Relay Cloud attests as one `prompt_approval` action naming this
+    /// session and request answers it, as the machine owner could, Codex
+    /// extra-permission requests included; choices, forms, input and local
+    /// verification stay with the owner. Independent of
+    /// `spawn_leader_approvals` and `spawn_native_input`; needs
+    /// `delegated_approvals_from` other than `off`. On unless the person
+    /// turns it off. Absent in older cores, and on a gate-only install,
+    /// where it cannot work and turning it on is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn_delegate_approvals: Option<bool>,
     /// The workspace's leaders as Relaycast last listed them
     /// (`GET /v1/workspace/leaders`): a leader's direct message to a
     /// spawned agent (with `spawn_native_input` on) or to a Claude Code
@@ -498,6 +523,41 @@ pub struct SettingsChange {
     )]
     #[schemars(with = "bool")]
     pub spawn_leader_approvals: Option<bool>,
+    /// Whose delegates' approvals this computer's sessions accept: `off`,
+    /// `own_owner` (delegates of the person who owns this computer or the
+    /// spawn) or `code_owners` (also delegates of any code owner of each
+    /// action's target). A delegate is an agent an owner named in Agent Relay Cloud
+    /// to relay their approval for named actions; with a choice other than
+    /// `off`, a message carrying such an approval that Cloud attests is
+    /// delivered with a `[delegate approval: …]` line naming those actions
+    /// only. `code_owners` unless the person changes it; only the person may
+    /// widen it. Absent in older cores, and on a gate-only install, where it
+    /// cannot work and only `off` is taken.
+    #[serde(
+        default,
+        deserialize_with = "given",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "String")]
+    pub delegated_approvals_from: Option<String>,
+    /// Whether the machine owner's delegates may approve or deny permission
+    /// requests of agents spawned on this computer. A delegate's 1:1 direct
+    /// message `approve <ref>` or `deny <ref>` whose owner approval Agent
+    /// Relay Cloud attests as one `prompt_approval` action naming this
+    /// session and request answers it, as the machine owner could, Codex
+    /// extra-permission requests included; choices, forms, input and local
+    /// verification stay with the owner. Independent of
+    /// `spawn_leader_approvals` and `spawn_native_input`; needs
+    /// `delegated_approvals_from` other than `off`. On unless the person
+    /// turns it off. Absent in older cores, and on a gate-only install,
+    /// where it cannot work and turning it on is refused.
+    #[serde(
+        default,
+        deserialize_with = "given",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "bool")]
+    pub spawn_delegate_approvals: Option<bool>,
     #[serde(
         default,
         deserialize_with = "given",

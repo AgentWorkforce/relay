@@ -1,6 +1,7 @@
 import { RelayCast, RelayError } from '@relaycast/sdk';
 
 import { ActionRegistry, type AgentRelayActions } from './actions/index.js';
+import { redeemOwnerApproval, withdrawOwnerApproval } from './messaging/delegation.js';
 import {
   relaycastTelemetryOptions,
   relaycastWorkspaceTelemetryOptions,
@@ -103,6 +104,8 @@ export interface AgentRelayAgent {
   readonly triggers: RelayMessaging['triggers'];
   readonly workspace: RelayWorkspace;
   readonly files: RelayMessaging['files'];
+  /** Delegate approvals: redeem one right before every action, or withdraw one this agent sent. */
+  readonly approvals: { redeem: typeof redeemOwnerApproval; withdraw: typeof withdrawOwnerApproval };
   registerAction<TInput, TOutput>(
     def: RegisterActionInput<TInput, TOutput>
   ): TypedActionHandle<TInput, TOutput>;
@@ -124,6 +127,7 @@ export interface AgentRelayAgent {
 
 export class AgentRelay implements AgentRelayAgent {
   readonly messaging: RelayMessaging;
+  readonly approvals = { redeem: redeemOwnerApproval, withdraw: withdrawOwnerApproval };
   private readonly actions: AgentRelayActions;
   readonly workspaceKey?: string;
   private readonly observerToken?: string;
@@ -513,6 +517,7 @@ export function agentRelayAgent(
     nodes: messaging.nodes,
     triggers: messaging.triggers,
     files: messaging.files,
+    approvals: { redeem: redeemOwnerApproval, withdraw: withdrawOwnerApproval },
     workspace: createWorkspaceFacade(messaging),
     registerAction: (def) =>
       registerFacadeAction(actions, def, { messaging, handlerAgent, onError: options?.onError }),

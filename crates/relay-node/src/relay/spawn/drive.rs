@@ -16,7 +16,11 @@
 //! is sent the requests it may approve or deny and may approve or deny them
 //! as the machine owner could, whatever the spawn's approval profile
 //! (`Approver::Leader`, `relay::leaders`); choices, forms, input and local
-//! verification stay with the owner.
+//! verification stay with the owner. With **Approvals from the owner's
+//! delegates** on (`spawn_delegate_approvals`, on unless turned off), a
+//! delegate of the machine owner whose reply carries an owner approval that
+//! Agent Relay Cloud attests as a `prompt_approval` of exactly that request
+//! may approve or deny it too (`Approver::Delegate`, `delegate`).
 
 use crate::relay::claude_delivery_policy::Decision as ClaudeConsent;
 use crate::relay::client;
@@ -35,6 +39,8 @@ use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 pub(crate) mod claude;
+mod delegate;
+pub(crate) use delegate::DelegateApprover;
 
 fn watching() -> MutexGuard<'static, HashSet<String>> {
     static WATCHING: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
@@ -85,6 +91,26 @@ pub(crate) fn direct_from(delivery: &Delivery, id: Option<&str>) -> bool {
     id.is_some() && delivery.sender_id.as_deref() == id && direct
 }
 
+/// What Relaycast says of the 1:1 conversation between a session and a peer
+/// (`Core::pair_conversation`). Relaycast lets a participant add a third
+/// agent to a 1:1 conversation (`POST /v1/dm/{id}/participants`), keeping
+/// its type and `dmch_` channel, so neither proves a message private.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PairConversation {
+    /// It exists, with exactly the session and the peer as participants.
+    Private,
+    /// None is listed: none exists yet, or the session left it (Relaycast
+    /// no longer lists it to the session). Never safe for a notice.
+    Absent,
+    /// One has (or had) another participant.
+    Shared,
+    /// Relaycast could not be asked.
+    Unknown,
+}
+
+/// How long the conversation lookup may take.
+const PAIR_LOOKUP_WAIT: Duration = Duration::from_secs(3);
+
 pub(crate) enum ReplyDecision {
     Approve,
     Deny,
@@ -134,6 +160,11 @@ pub(crate) enum Approver {
     /// request as the machine owner could; never a choice, form, input or
     /// local verification. Never recorded as the owner.
     Leader(WorkspaceLeader),
+    /// A delegate of the machine owner, approving or denying one approvable
+    /// request named by an attested `prompt_approval` (`delegate`), Codex
+    /// extra-permission requests included; never a choice, form, input or
+    /// local verification. Never recorded as the owner.
+    Delegate(DelegateApprover),
 }
 
 impl Approver {
@@ -143,6 +174,7 @@ impl Approver {
             Approver::Owner(id) => id,
             Approver::Requester(requester) => &requester.agent_id,
             Approver::Leader(leader) => &leader.agent_id,
+            Approver::Delegate(delegate) => &delegate.agent_id,
         }
     }
 
@@ -158,6 +190,7 @@ impl Approver {
                 "the workspace leader @{} ({})",
                 leader.name, leader.agent_id
             ),
+            Approver::Delegate(delegate) => delegate.describe(),
         }
     }
 }
@@ -183,6 +216,9 @@ pub(crate) enum Leaders {
     /// Only a listed leader that is one of the organization's admins: the
     /// organization holds every other sender's messages.
     Admins,
+    /// The copy for one of the machine owner's delegates (`delegate`): its
+    /// closing says how a delegate answers, not who else may.
+    Delegate,
 }
 
 /// The closing line of an approval DM that a workspace leader may answer
@@ -192,6 +228,11 @@ pub(crate) enum Leaders {
 pub(crate) fn who_may_answer_with(requester: Option<&str>, leaders: Leaders) -> String {
     let leader = match leaders {
         Leaders::Not => return who_may_answer(requester),
+        Leaders::Delegate => {
+            return "As a delegate of the machine owner you may answer too, as the next line \
+                    says; the first answer counts."
+                .into()
+        }
         Leaders::Listed => "a workspace leader",
         Leaders::Admins => "a workspace leader that is one of the organization's admins",
     };
@@ -255,7 +296,21 @@ async fn send_approval_dm(
     name: &str,
     id: &str,
 ) -> relaycast::Result<client::Sent> {
-    let key = format!("spawn-approval-{reference}-{}", MessageRef::of(id));
+    send_approval_dm_keyed(base_url, token, "spawn-approval", reference, text, name, id).await
+}
+
+/// [`send_approval_dm`] under a key of its own kind (`kind`): a delegate's
+/// copy differs from a leader's, so an agent that is both gets both.
+async fn send_approval_dm_keyed(
+    base_url: &str,
+    token: &Secret,
+    kind: &str,
+    reference: &str,
+    text: &str,
+    name: &str,
+    id: &str,
+) -> relaycast::Result<client::Sent> {
+    let key = format!("{kind}-{reference}-{}", MessageRef::of(id));
     client::send_dm(
         base_url,
         token,
@@ -400,10 +455,10 @@ impl Core {
         token: &Secret,
         reference: &str,
         approvable: bool,
-        text: impl FnOnce(Leaders) -> String,
+        text: impl Fn(Leaders) -> String,
     ) -> String {
         let leaders;
-        let text = {
+        let planned = {
             let mut plans = plans();
             plans.retain(|_, (at, _)| at.elapsed() < PLAN_KEPT);
             if let Some((_, text)) = plans.get(reference) {
@@ -421,9 +476,14 @@ impl Core {
             text
         };
         if leaders != Leaders::Not {
-            self.notify_leaders(registration, token, reference, &text);
+            self.notify_leaders(registration, token, reference, &planned);
         }
-        text
+        // The machine owner's delegates Cloud names get a copy too, once,
+        // in the background (`delegate::notify_delegates`).
+        if approvable && self.delegates_may_answer(registration) {
+            self.notify_delegates(registration, token, reference, &text(Leaders::Delegate));
+        }
+        planned
     }
 
     /// Sends an approval DM about `reference` to the verified owner and to
@@ -498,28 +558,42 @@ impl Core {
                 .filter(|leader| Some(&leader.agent_id) != person.as_ref());
             let (core, registration) = (&core, &registration);
             let (token, reference, text) = (&token, reference.as_str(), text.as_str());
-            futures_util::future::join_all(leaders.map(|leader| async move {
-                let id = &leader.agent_id;
-                for send in 0..LEADER_SENDS {
-                    if send > 0 {
-                        tokio::time::sleep(LEADER_RESEND_AFTER).await;
+            futures_util::future::join_all(leaders.map(|leader| {
+                let copy = async move {
+                    let id = &leader.agent_id;
+                    for send in 0..LEADER_SENDS {
+                        if send > 0 {
+                            tokio::time::sleep(LEADER_RESEND_AFTER).await;
+                        }
+                        let name = match core.leader_try(registration, token, reference, id).await {
+                            LeaderTry::Send(name) => name,
+                            LeaderTry::Skip => continue,
+                            LeaderTry::Stop => return,
+                        };
+                        let base_url = &registration.base_url;
+                        if send_approval_dm(base_url, token, reference, text, &name, id)
+                            .await
+                            .is_ok()
+                        {
+                            return;
+                        }
                     }
-                    let name = match core.leader_try(registration, reference, id).await {
-                        LeaderTry::Send(name) => name,
-                        LeaderTry::Skip => continue,
-                        LeaderTry::Stop => return,
-                    };
-                    let base_url = &registration.base_url;
-                    if send_approval_dm(base_url, token, reference, text, &name, id)
-                        .await
-                        .is_ok()
-                    {
-                        return;
-                    }
+                };
+                async move {
+                    copy.await;
+                    core.note_copy_settled();
                 }
             }))
             .await;
         });
+    }
+
+    /// Counts a leader's or delegate's copy of an approval DM whose tries
+    /// are over (sent, stopped or out of tries), for tests to wait on.
+    pub(crate) fn note_copy_settled(&self) {
+        #[cfg(test)]
+        self.notice_copies_settled
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Whether one try at the leader `id`'s copy of the approval DM about
@@ -529,6 +603,7 @@ impl Core {
     async fn leader_try(
         &self,
         registration: &Registration,
+        token: &Secret,
         reference: &str,
         id: &str,
     ) -> LeaderTry {
@@ -549,6 +624,14 @@ impl Core {
             Some(false) => return LeaderTry::Stop,
             None => return LeaderTry::Skip,
         }
+        // Only into a conversation Relaycast lists with just the two of
+        // them: never one someone else was added to, nor one the session
+        // left (unlisted), whose other members a send cannot see.
+        match self.pair_conversation(registration, token, id).await {
+            PairConversation::Private => {}
+            PairConversation::Absent | PairConversation::Shared => return LeaderTry::Stop,
+            PairConversation::Unknown => return LeaderTry::Skip,
+        }
         if self.open_request(registration, reference).await != Some(true)
             || !self.leaders_may_answer_now(registration)
         {
@@ -561,6 +644,101 @@ impl Core {
             return LeaderTry::Skip;
         }
         LeaderTry::Send(leader.name)
+    }
+
+    /// The 1:1 conversation between `registration` and `peer_id`, as
+    /// Relaycast lists `registration`'s conversations (`GET
+    /// /v1/dm/conversations`, with its own `token`): every 1:1 conversation
+    /// that includes the peer must have exactly the two of them as
+    /// participants, a participant who left included. Used wherever a
+    /// leader's or delegate's message counts as a 1:1 direct message, and
+    /// before a notice is sent to one, never on the conversation type alone.
+    pub(crate) async fn pair_conversation(
+        &self,
+        registration: &Registration,
+        token: &Secret,
+        peer_id: &str,
+    ) -> PairConversation {
+        self.pair_conversation_in(registration, token, peer_id, None)
+            .await
+    }
+
+    /// [`Self::pair_conversation`], limited to the conversation of
+    /// `channel` (`dmch_<key>` is conversation `dm_<key>`) when a reply names
+    /// the one that carried it: another conversation with the peer does not
+    /// decide it.
+    pub(crate) async fn pair_conversation_in(
+        &self,
+        registration: &Registration,
+        token: &Secret,
+        peer_id: &str,
+        channel: Option<&str>,
+    ) -> PairConversation {
+        let carried = channel
+            .and_then(|channel| channel.strip_prefix(ONE_TO_ONE_DM_CHANNEL))
+            .map(|key| format!("dm_{key}"));
+        let Ok(http) = sdk_gaps::http(&registration.base_url, token) else {
+            return PairConversation::Unknown;
+        };
+        let list = tokio::time::timeout(PAIR_LOOKUP_WAIT, sdk_gaps::dm_conversations(&http)).await;
+        let Ok(Ok(list)) = list else {
+            return PairConversation::Unknown;
+        };
+        let pair: HashSet<&str> = [registration.agent_id.as_str(), peer_id].into();
+        let mut found = false;
+        for conversation in list.iter().filter(|c| {
+            c["type"].as_str() == Some("1:1")
+                && carried
+                    .as_deref()
+                    .is_none_or(|id| c["id"].as_str() == Some(id))
+        }) {
+            let ids: HashSet<&str> = conversation["participants"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|p| p["agent_id"].as_str())
+                .collect();
+            if !ids.contains(peer_id) {
+                continue;
+            }
+            let others = conversation["participants"]
+                .as_array()
+                .map_or(0, |p| p.len());
+            if ids != pair || others != 2 {
+                return PairConversation::Shared;
+            }
+            found = true;
+        }
+        match found {
+            true => PairConversation::Private,
+            false => PairConversation::Absent,
+        }
+    }
+
+    /// Whether the reply `delivery` from `sender_id` came in the private
+    /// 1:1 conversation of `registration` and the sender: the conversation
+    /// that carried it when the delivery names its channel, else every 1:1
+    /// conversation with the sender.
+    async fn in_private_pair(
+        &self,
+        registration: &Registration,
+        delivery: &Delivery,
+        sender_id: &str,
+    ) -> bool {
+        let Some((_, token)) = self
+            .agent_credential(&registration.name)
+            .filter(|(current, _)| current.agent_id == registration.agent_id)
+        else {
+            return false;
+        };
+        self.pair_conversation_in(
+            registration,
+            &token,
+            sender_id,
+            delivery.channel_id.as_deref(),
+        )
+        .await
+            == PairConversation::Private
     }
 
     /// Whether Relaycast still gives the saved `name` (a requester's or a
@@ -728,6 +906,9 @@ impl Core {
             || !self.leaders_may_answer(registration)
             || !self.organization_admits(registration, delivery)
             || self.open_request(registration, reference).await != Some(true)
+            || !self
+                .in_private_pair(registration, delivery, sender_id)
+                .await
         {
             return None;
         }
@@ -739,7 +920,10 @@ impl Core {
         // Reading the list can take a while: the setting turned off, the
         // session taken over, or an organization hold begun meanwhile makes
         // no approver.
-        (self.leaders_may_answer_now(registration)
+        (self
+            .in_private_pair(registration, delivery, sender_id)
+            .await
+            && self.leaders_may_answer_now(registration)
             && self.organization_admits(registration, delivery))
         .then_some(leader)
     }
@@ -766,6 +950,12 @@ impl Core {
             .await
         {
             return Some(Approver::Leader(leader));
+        }
+        if let Some(delegate) = self
+            .approving_delegate(registration, delivery, reference)
+            .await
+        {
+            return Some(Approver::Delegate(delegate));
         }
         let requester = self.approving_requester(registration)?;
         let open = self.open_request(registration, reference).await.is_some();

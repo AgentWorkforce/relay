@@ -1288,6 +1288,25 @@ impl Core {
                 via_integration,
             )
             .await;
+        // A delegate's owner approval, attested by Cloud and verified here,
+        // puts the delegate line under a peer's attribution
+        // (`relay::delegation`), before the hand-over and so before the
+        // acknowledgement. Any failure leaves it a peer's message.
+        let text = match source {
+            // Every relayed source but the verified owner's own message: the
+            // spawning agent's or a leader's frame keeps its line, and the
+            // delegate line goes under it.
+            session_text::InputSource::Peer
+            | session_text::InputSource::Teammate
+            | session_text::InputSource::Requester
+            | session_text::InputSource::Leader
+                if !via_webhook && !via_integration =>
+            {
+                self.with_delegation(registration, delivery, token, text)
+                    .await
+            }
+            _ => text,
+        };
         let terminal = via_integration
             .then(|| {
                 delivery.text.as_deref().and_then(|text| {

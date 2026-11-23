@@ -543,6 +543,48 @@ pub async fn reply(
     .await
 }
 
+/// Where a message carrying a delegate's owner approval goes.
+pub enum ApprovalDestination<'a> {
+    Direct(&'a Endpoint),
+    Channel(&'a str),
+}
+
+/// Sends a message with a delegate's `owner_approval` beside its text,
+/// passed to Relaycast exactly as the session gave it (Relaycast stores it
+/// immutably and validates it, `400 invalid_owner_approval`).
+pub async fn send_with_owner_approval(
+    base_url: &str,
+    token: &Secret,
+    destination: ApprovalDestination<'_>,
+    text: &str,
+    attachments: &[String],
+    owner_approval: &serde_json::Map<String, serde_json::Value>,
+    idempotency_key: Option<String>,
+) -> relaycast::Result<Sent> {
+    let mut body = serde_json::json!({"text": text, "owner_approval": owner_approval});
+    if !attachments.is_empty() {
+        body["attachments"] = serde_json::json!(attachments);
+    }
+    let path = match destination {
+        ApprovalDestination::Direct(Endpoint::Name(name)) => {
+            body["to"] = serde_json::json!(name);
+            "/v1/dm".to_string()
+        }
+        ApprovalDestination::Direct(Endpoint::Address(address)) => {
+            body["address"] = serde_json::json!(address);
+            "/v1/dm".to_string()
+        }
+        ApprovalDestination::Channel(channel) => format!(
+            "/v1/channels/{}/messages",
+            // Already normalized by the caller (one leading `#` removed).
+            sdk_gaps::segment(channel)
+        ),
+    };
+    let http = sdk_gaps::http(base_url, token)?;
+    let value = sdk_gaps::post_message(&http, &path, body, idempotency_key).await?;
+    Ok(Sent::from_value(&value))
+}
+
 /// Sends a direct message carrying uploaded files (their Relaycast ids).
 pub async fn send_dm_with_attachments(
     base_url: &str,

@@ -252,6 +252,79 @@ export type RelayMessageTarget =
   | { kind: 'group_dm'; conversationId: string }
   | { kind: string; [key: string]: unknown };
 
+/** Action classes a delegate's owner approval may name (wire contract v1). */
+export type RelayDelegationActionClass =
+  | 'merge'
+  /** Pull request operations: target `owner/repo#N:<op>` (`open`, `close`, `reopen`, `label=<name>`, `unlabel=<name>`, `request_review=<login>`, `rerun_ci`, `comment`). */
+  | 'pr_ops'
+  | 'deploy'
+  | 'release'
+  | 'secret_change'
+  | 'destructive'
+  | 'spend'
+  | 'external_comms'
+  /** Approve or deny one pending core request: target `<session agent id>:<ref>:approve` or `:deny`; no conditions. */
+  | 'prompt_approval'
+  /**
+   * Change one setting of the recipient session: target
+   * `<agent id>:<setting>=<value>`, exact. Single use; the recipient redeems
+   * it, then makes the change itself.
+   */
+  | 'config_change';
+
+/** A structured condition Agent Relay Cloud checks when an approval is redeemed. */
+export type RelayDelegationCondition =
+  | { type: 'ci_green' }
+  | { type: 'head_sha'; sha: string }
+  | { type: 'reviews_approved'; min: number }
+  | { type: 'mergeable' }
+  | { type: 'not_before'; at: string };
+
+/** One action an owner approval names. */
+export interface RelayDelegationAction {
+  class: RelayDelegationActionClass;
+  target: string;
+  conditions?: RelayDelegationCondition[];
+  note?: string;
+}
+
+/**
+ * The structured approval a delegate sends with a message, quoting its
+ * owner. Relaycast stores it immutably; recipients never see it unverified.
+ */
+export interface RelayOwnerApprovalInput {
+  ownerId: string;
+  actions: RelayDelegationAction[];
+  quote?: string;
+  quotedAt?: string;
+  quoteSource?: string;
+  expiresAt?: string;
+  approvalRef?: string | null;
+}
+
+/**
+ * A delegate approval this SDK or the recipient's node verified: Agent
+ * Relay Cloud's signed attestation, checked against Cloud's published keys.
+ * Present on a message only when verified.
+ */
+export interface RelayMessageDelegation {
+  verified: true;
+  tier: 'D' | 'O';
+  standing: 'own_owner' | 'code_owner';
+  ownerId: string;
+  ownerDisplay?: string;
+  delegateAgentId: string;
+  grantId: string;
+  approvalId: string;
+  actions: RelayDelegationAction[];
+  singleUse: boolean;
+  /** The owner's words as the delegate quoted them (signed); absent once redacted. */
+  quote?: string;
+  /** When the attestation expires (ISO 8601). */
+  expiresAt: string;
+  jws: string;
+}
+
 export interface RelayMessage {
   id: wire.MessageWithMeta['id'];
   /** Public identifier for the message; mirrors `id`. */
@@ -274,6 +347,8 @@ export interface RelayMessage {
   reactions?: RelayMessageReaction[];
   readByCount?: wire.MessageWithMeta['read_by_count'];
   mentions?: NonNullable<wire.MessageWithMeta['mentions']>;
+  /** A verified delegate approval (`verifyDelegationAttestation`); never set unverified. */
+  delegation?: RelayMessageDelegation;
 }
 
 export interface RelayThread {
@@ -391,6 +466,8 @@ export interface RelayMessageListOptions {
 export interface RelaySendChannelMessageInput {
   channel: string;
   text: string;
+  /** Sent as a delegate, quoting the owner's approval for these actions. */
+  ownerApproval?: RelayOwnerApprovalInput;
   blocks?: RelayMessageBlock[];
   attachments?: RelayMessageAttachmentInput[];
   mode?: RelayMessageMode;
@@ -409,6 +486,8 @@ export interface RelayReplyMessageInput {
 export interface RelaySendDirectMessageInput {
   to: string;
   text: string;
+  /** Sent as a delegate, quoting the owner's approval for these actions. */
+  ownerApproval?: RelayOwnerApprovalInput;
   attachments?: RelayMessageAttachmentInput[];
   mode?: RelayMessageMode;
   idempotencyKey?: string;

@@ -437,6 +437,7 @@ mod tests {
         }
     }
 
+    mod delegate_approvals;
     mod gate_credential;
     mod launch_gate;
     mod leader_approvals;

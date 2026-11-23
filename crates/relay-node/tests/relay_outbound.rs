@@ -6131,3 +6131,125 @@ async fn a_gate_agent_goes_live_through_the_gate_and_acks_over_http() {
     assert_no_workspace_key(&h.fake);
     h.stop().await;
 }
+
+/// A delegate's `owner_approval` goes to Relaycast beside the text exactly
+/// as the session gave it: a JSON body object, or the `owner_approval` query
+/// value of the probe's `send --owner-approval`.
+#[tokio::test]
+async fn a_delegate_sends_its_owner_approval_through_unchanged() {
+    let h = Harness::start().await;
+    h.register(IN_CODEX, json!({"name": "codex-api"})).await;
+    h.fake.seed_agent("alice", "agent", json!({}));
+    h.fake.seed_channel("screens", &["codex-api"]);
+    let approval = json!({
+        "v": 1, "owner_id": "hum_owner",
+        "actions": [{"class": "merge", "target": "acme/api#12",
+            "conditions": [{"type": "ci_green"}]}],
+        "quote": "yes merge 12 when green", "quote_source": "chat:dm",
+        "expires_at": "2026-11-23T08:49:00Z", "approval_ref": null,
+        "unknown_field": {"kept": true}
+    });
+
+    // A JSON body, to an agent.
+    h.call(
+        IN_CODEX,
+        "POST",
+        "/send",
+        json!({"to": "alice", "text": "The owner approved: merge #12 once CI is green.",
+            "owner_approval": approval}),
+    )
+    .await
+    .unwrap();
+    let dm = h.fake.calls("POST", "/v1/dm").pop().unwrap();
+    assert_eq!(dm.body["to"], "alice");
+    assert_eq!(
+        dm.body["text"],
+        "The owner approved: merge #12 once CI is green."
+    );
+    assert_eq!(dm.body["owner_approval"], approval);
+
+    // The query form, with the text as the body, as the probe sends it.
+    let raw = approval.to_string();
+    let query: String = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("to", "alice")
+        .append_pair("owner_approval", &raw)
+        .finish();
+    h.call_text(
+        IN_CODEX,
+        "POST",
+        &format!("/send?{query}"),
+        "Merge #12 when green.",
+    )
+    .await
+    .unwrap();
+    let dm = h.fake.calls("POST", "/v1/dm").pop().unwrap();
+    assert_eq!(dm.body["text"], "Merge #12 when green.");
+    assert_eq!(dm.body["owner_approval"], approval);
+
+    // A channel post.
+    h.call(
+        IN_CODEX,
+        "POST",
+        "/send",
+        json!({"channel": "#screens", "text": "Approved.", "owner_approval": approval}),
+    )
+    .await
+    .unwrap();
+    let post = h
+        .fake
+        .calls("POST", "/v1/channels/screens/messages")
+        .pop()
+        .unwrap();
+    assert_eq!(post.body["owner_approval"], approval);
+
+    // Without one the request is exactly what it was.
+    h.call(
+        IN_CODEX,
+        "POST",
+        "/send",
+        json!({"to": "alice", "text": "Plain."}),
+    )
+    .await
+    .unwrap();
+    let dm = h.fake.calls("POST", "/v1/dm").pop().unwrap();
+    assert!(dm.body.get("owner_approval").is_none(), "{}", dm.body);
+
+    // One leading `#` is the channel's mark; a second is not stripped.
+    let error = h
+        .call(
+            IN_CODEX,
+            "POST",
+            "/send",
+            json!({"channel": "##screens", "text": "x", "owner_approval": approval}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (error.status, error.code.as_str()),
+        (400, "invalid_recipient")
+    );
+
+    // Not an object, too large, or on a reply: refused before anything is sent.
+    let sent_before = h.fake.calls("POST", "/v1/dm").len();
+    for bad in [
+        json!({"to": "alice", "text": "x", "owner_approval": "not json"}),
+        json!({"to": "alice", "text": "x", "owner_approval": [1, 2]}),
+        json!({"to": "alice", "text": "x", "owner_approval": "[1]"}),
+        json!({"to": "alice", "text": "x",
+            "owner_approval": {"quote": "q".repeat(200 * 1024)}}),
+        json!({"to": "alice", "text": "x", "reply_to": "m_1", "owner_approval": approval}),
+        json!({"channel": "screens", "thread_id": "m_1", "text": "x", "owner_approval": approval}),
+    ] {
+        let error = h
+            .call(IN_CODEX, "POST", "/send", bad.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (error.status, error.code.as_str()),
+            (400, "invalid_owner_approval"),
+            "{bad}"
+        );
+    }
+    assert_eq!(h.fake.calls("POST", "/v1/dm").len(), sent_before);
+    h.stop().await;
+}
