@@ -549,6 +549,22 @@ pub async fn upload(
     Ok(file_id)
 }
 
+/// Deletes the upload `file_id` as its owner, the agent holding `token`:
+/// one no message carries. Best effort; a failure is logged, never
+/// reported, and the file is then left to Relaycast's own lifecycle.
+pub async fn discard(base_url: &str, token: &Secret, file_id: &str) {
+    let deleted = match crate::relay::client::agent_client(base_url, token) {
+        Ok(client) => client.delete_file(file_id).await,
+        Err(error) => Err(error),
+    };
+    if let Err(error) = deleted {
+        let status = error
+            .status()
+            .map_or_else(|| "no answer".to_string(), |s| format!("HTTP {s}"));
+        eprintln!("relay: could not delete an upload no message carries ({status})");
+    }
+}
+
 fn put(url: &str, content_type: &str, bytes: &[u8]) -> Result<(), String> {
     let agent = ureq::AgentBuilder::new().timeout(UPLOAD_TIMEOUT).build();
     match agent

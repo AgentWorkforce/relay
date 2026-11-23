@@ -208,7 +208,9 @@ impl PersonFiles {
         refused.dedup();
         PersonFiles {
             refused,
-            received: real(&app_data_dir.join(super::ATTACHMENTS_DIR)),
+            // The folder's own name, not where it may lead: a link there to
+            // a refused folder must not make that folder allowed.
+            received: real(app_data_dir).join(super::ATTACHMENTS_DIR),
         }
     }
 
@@ -240,7 +242,9 @@ pub fn read_person_file(path: &str, files: &PersonFiles) -> Result<LocalFile, Lo
 }
 
 /// Reads the absolute `path` once `check` has resolved it to the real file
-/// it may send, checking again once the file is open.
+/// it may send. Once the file is open, `check` judges the open file itself,
+/// by the path the system holds for it, so the bytes read are from a file
+/// the policy allowed, however the path was swapped meanwhile.
 fn read_checked(
     path: &str,
     check: impl Fn(&Path) -> Result<PathBuf, LocalFileError>,
@@ -252,19 +256,98 @@ fn read_checked(
         )));
     }
     let real = check(given)?;
-    // Checked again once open: a file or folder swapped for a link since
-    // leads elsewhere now, or no longer to the file that was opened.
+    let changed = || {
+        LocalFileError::Invalid(format!(
+            "{} changed while Agent Relay was reading it; send it again.",
+            given.display()
+        ))
+    };
     read_opened_file(&real.to_string_lossy(), |file| {
-        let opened = file.try_clone().and_then(same_file::Handle::from_file);
-        let checked = same_file::Handle::from_path(&real);
-        match (check(given)?, opened, checked) {
-            (again, Ok(opened), Ok(checked)) if again == real && opened == checked => Ok(()),
-            _ => Err(LocalFileError::Invalid(format!(
-                "{} changed while Agent Relay was reading it; send it again.",
-                given.display()
-            ))),
+        match opened_path(file) {
+            // The open file's own path is judged: allowed, and already
+            // real (no link along it now).
+            Some(Ok(held)) => match check(&held)? {
+                again if again == held => Ok(()),
+                _ => Err(changed()),
+            },
+            Some(Err(())) => Err(changed()),
+            // Where the system cannot name an open file, checked again by
+            // path: a file or folder swapped for a link since leads
+            // elsewhere now, or no longer to the file that was opened.
+            None => {
+                let opened = file.try_clone().and_then(same_file::Handle::from_file);
+                let checked = same_file::Handle::from_path(&real);
+                match (check(given)?, opened, checked) {
+                    (again, Ok(opened), Ok(checked)) if again == real && opened == checked => {
+                        Ok(())
+                    }
+                    _ => Err(changed()),
+                }
+            }
         }
     })
+}
+
+/// The path the system holds for an open file, spelled as
+/// [`std::fs::canonicalize`] spells it; `None` where it cannot say.
+#[cfg(target_os = "linux")]
+fn opened_path(file: &std::fs::File) -> Option<Result<PathBuf, ()>> {
+    use std::os::fd::AsRawFd;
+    Some(std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).map_err(|_| ()))
+}
+
+#[cfg(target_os = "macos")]
+fn opened_path(file: &std::fs::File) -> Option<Result<PathBuf, ()>> {
+    use std::ffi::CStr;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    let mut buffer = vec![0 as libc::c_char; libc::PATH_MAX as usize];
+    // SAFETY: F_GETPATH writes at most PATH_MAX bytes, NUL-terminated, into
+    // the buffer, which is that long.
+    let answer = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETPATH, buffer.as_mut_ptr()) };
+    if answer == -1 {
+        return Some(Err(()));
+    }
+    // SAFETY: on success the buffer holds a NUL-terminated path.
+    let path = unsafe { CStr::from_ptr(buffer.as_ptr()) };
+    Some(Ok(PathBuf::from(std::ffi::OsStr::from_bytes(
+        path.to_bytes(),
+    ))))
+}
+
+#[cfg(windows)]
+fn opened_path(file: &std::fs::File) -> Option<Result<PathBuf, ()>> {
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
+    // FILE_NAME_NORMALIZED | VOLUME_NAME_DOS (both 0): the `\\?\C:\…` form
+    // std::fs::canonicalize also returns.
+    let handle = file.as_raw_handle() as _;
+    let mut buffer = vec![0u16; 1024];
+    loop {
+        // SAFETY: the buffer is `buffer.len()` UTF-16 units long, as passed.
+        let written = unsafe {
+            GetFinalPathNameByHandleW(handle, buffer.as_mut_ptr(), buffer.len() as u32, 0)
+        } as usize;
+        if written == 0 {
+            return Some(Err(()));
+        }
+        if written < buffer.len() {
+            return Some(Ok(PathBuf::from(std::ffi::OsString::from_wide(
+                &buffer[..written],
+            ))));
+        }
+        // Too small: `written` is the length needed, with its NUL.
+        if written > 32 * 1024 {
+            return Some(Err(()));
+        }
+        buffer.resize(written + 1, 0);
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn opened_path(_file: &std::fs::File) -> Option<Result<PathBuf, ()>> {
+    None
 }
 
 /// The nearest folder from `dir` up holding a `.git` (a repository or a
@@ -438,6 +521,40 @@ mod tests {
         std::fs::write(received.join("shot.png"), b"png").unwrap();
         let person = PersonFiles::new(&c.home, &c.app_data);
         assert!(person.check(&received.join("shot.png")).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_received_folder_that_links_elsewhere_allows_nothing_there() {
+        let c = computer();
+        let desktop = c.home.join(".agentworkforce/desktop");
+        std::fs::create_dir_all(&desktop).unwrap();
+        std::fs::write(desktop.join("token"), b"x").unwrap();
+        std::os::unix::fs::symlink(
+            c.home.join(".agentworkforce"),
+            c.app_data.join(super::super::ATTACHMENTS_DIR),
+        )
+        .unwrap();
+        let person = PersonFiles::new(&c.home, &c.app_data);
+        not_allowed(person.check(&desktop.join("token")));
+        let through = c
+            .app_data
+            .join(super::super::ATTACHMENTS_DIR)
+            .join("desktop/token");
+        not_allowed(person.check(&through));
+    }
+
+    #[test]
+    fn the_open_file_is_judged_by_the_path_the_system_holds_for_it() {
+        let c = computer();
+        let file = c.home.join("notes.txt");
+        let opened = std::fs::File::open(&file).unwrap();
+        if let Some(held) = opened_path(&opened) {
+            assert_eq!(held.unwrap(), real(&file));
+        }
+        let person = PersonFiles::new(&c.home, &c.app_data);
+        let read = read_person_file(file.to_str().unwrap(), &person).unwrap();
+        assert_eq!(read.bytes, b"x");
     }
 
     #[test]

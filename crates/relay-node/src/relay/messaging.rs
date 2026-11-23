@@ -821,21 +821,32 @@ impl Core {
                 "Files cannot be attached to a reply; send them in a new message instead.",
             ));
         }
+        // A renewed identity is only ever used in the workspace the send
+        // began in: never to carry this message, or its files, elsewhere.
+        let started_in = self.plugins.cloud.account().map(|a| a.workspace_id);
         let identity = self.person_identity(false).await?;
         // Every file is uploaded, as you, before the message is sent: a file
-        // that cannot be leaves no half-sent message behind.
+        // that cannot be leaves no half-sent message behind, and the files
+        // already uploaded for it are deleted again.
         let (identity, attachments) = match upload_as_person(&identity, files).await {
-            Err((_, error)) if error.status == 401 => {
-                let fresh = self.person_identity_refused(&identity.token).await?;
-                let attachments = upload_as_person(&fresh, files)
-                    .await
-                    .map_err(|(name, error)| person_upload_error(&name, &error))?;
-                (fresh, attachments)
+            Ok(ids) => (identity, ids),
+            Err(failed) if failed.error.status == 401 => {
+                let fresh = self.renewed_person(&identity, &started_in).await?;
+                if fresh.agent_id == identity.agent_id {
+                    discard_uploads(&fresh, &failed.uploaded).await;
+                }
+                match upload_as_person(&fresh, files).await {
+                    Ok(ids) => (fresh, ids),
+                    Err(failed) => {
+                        discard_uploads(&fresh, &failed.uploaded).await;
+                        return Err(failed.into_error());
+                    }
+                }
             }
-            other => (
-                identity,
-                other.map_err(|(name, error)| person_upload_error(&name, &error))?,
-            ),
+            Err(failed) => {
+                discard_uploads(&identity, &failed.uploaded).await;
+                return Err(failed.into_error());
+            }
         };
         let attachments = &attachments;
         let send = |identity: PersonIdentity| async move {
@@ -861,14 +872,22 @@ impl Core {
         };
         let (identity, sent) = match send(identity.clone()).await {
             Err(error) if error.is_auth_rejection() => {
-                let fresh = self.person_identity_refused(&identity.token).await?;
+                let fresh = self.renewed_person(&identity, &started_in).await?;
                 (fresh.clone(), send(fresh).await)
             }
             other => (identity, other),
         };
         let sent = match sent {
             Ok(sent) => sent,
-            Err(error) => return Err(self.person_send_error(endpoint, &error).await),
+            Err(error) => {
+                // Relaycast refused the message as made, so it was not
+                // sent and its files are attached to nothing. An outcome
+                // that may have committed keeps them.
+                if refused_before_commit(&error) {
+                    discard_uploads(&identity, attachments).await;
+                }
+                return Err(self.person_send_error(endpoint, &error).await);
+            }
         };
         let workspace = self
             .plugins
@@ -885,6 +904,23 @@ impl Core {
         }
         state.forget_misses(Some(&(workspace, identity.name.clone(), endpoint.key())));
         Ok(sent)
+    }
+
+    /// Your identity again after `refused`'s token was rejected, refused
+    /// itself when the account's workspace is no longer `started_in`.
+    async fn renewed_person(
+        &self,
+        refused: &PersonIdentity,
+        started_in: &Option<String>,
+    ) -> Result<PersonIdentity, RpcError> {
+        let fresh = self.person_identity_refused(&refused.token).await?;
+        if self.plugins.cloud.account().map(|a| a.workspace_id) != *started_in {
+            return Err(RpcError::new(
+                ErrorKind::Conflict,
+                "The Agent Relay workspace changed while this message was being sent, so it was not sent. Send it again.",
+            ));
+        }
+        Ok(fresh)
     }
 
     /// The Relaycast workspace that paces calls as you.
@@ -1323,20 +1359,53 @@ impl Core {
     }
 }
 
-/// Uploads each file, in order, as `identity`; their Relaycast ids, or the
-/// name of the file that failed and why.
+/// An upload of the person's files that stopped at `name`, with the ids of
+/// those uploaded before it.
+struct UploadFailed {
+    name: String,
+    error: UploadError,
+    uploaded: Vec<String>,
+}
+
+impl UploadFailed {
+    fn into_error(self) -> RpcError {
+        person_upload_error(&self.name, &self.error)
+    }
+}
+
+/// Uploads each file, in order, as `identity`: their Relaycast ids.
 async fn upload_as_person(
     identity: &PersonIdentity,
     files: &[LocalFile],
-) -> Result<Vec<String>, (String, UploadError)> {
+) -> Result<Vec<String>, UploadFailed> {
     let mut ids = Vec::with_capacity(files.len());
     for file in files {
-        let id = crate::relay::files::upload(&identity.base_url, &identity.token, file)
-            .await
-            .map_err(|error| (file.filename.clone(), error))?;
-        ids.push(id);
+        match crate::relay::files::upload(&identity.base_url, &identity.token, file).await {
+            Ok(id) => ids.push(id),
+            Err(error) => {
+                return Err(UploadFailed {
+                    name: file.filename.clone(),
+                    error,
+                    uploaded: ids,
+                })
+            }
+        }
     }
     Ok(ids)
+}
+
+/// Deletes uploads that no message carries, as `identity` (their owner).
+async fn discard_uploads(identity: &PersonIdentity, ids: &[String]) {
+    for id in ids {
+        crate::relay::files::discard(&identity.base_url, &identity.token, id).await;
+    }
+}
+
+/// Whether Relaycast refused a send as made (a 4xx answer other than a
+/// timeout), so it cannot have committed.
+fn refused_before_commit(error: &relaycast::RelayError) -> bool {
+    matches!(error, relaycast::RelayError::Api { status, .. }
+        if (400..500).contains(status) && *status != 408)
 }
 
 /// A failed upload of the person's file `name`: nothing was sent.

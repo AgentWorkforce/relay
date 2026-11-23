@@ -762,6 +762,15 @@ impl FakeRelaycast {
         self.shared.lock().unwrap().world.gate.lose_register_replies = lose;
     }
 
+    /// Gives `name` a new token, so the one it had is refused from now on;
+    /// returns the new one.
+    pub fn rotate_token(&self, name: &str) -> String {
+        let mut shared = self.shared.lock().unwrap();
+        let agent = shared.world.agents.get_mut(name).expect("a seeded agent");
+        agent.token = format!("{}-rotated", agent.token);
+        agent.token.clone()
+    }
+
     /// Expires `name`'s current `rg_` token now, as if its lifetime ran out.
     pub fn expire_gate_token(&self, name: &str) {
         let mut shared = self.shared.lock().unwrap();
@@ -1786,6 +1795,19 @@ fn route(
                     ok(json!({"file_id": file.id, "status": "complete"}))
                 }
                 Some(_) => error(409, "upload_incomplete"),
+                None => error(404, "file_not_found"),
+            }
+        }
+        // Its uploader deletes a file (Relaycast's soft delete).
+        ("DELETE", ["v1", "files", id]) => {
+            if caller.is_none() {
+                return error(401, "unauthorized");
+            }
+            match world.files.get_mut(*id) {
+                Some(file) => {
+                    file.status = "deleted".into();
+                    no_content()
+                }
                 None => error(404, "file_not_found"),
             }
         }

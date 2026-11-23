@@ -3985,6 +3985,105 @@ async fn your_files_are_refused_past_the_limits_and_nothing_is_sent() {
 }
 
 #[tokio::test]
+async fn your_files_upload_again_with_a_renewed_identity_once() {
+    let h = Harness::signed_in().await;
+    let cloud = h.cloud.clone().unwrap();
+    let mut client = h.client().await;
+    h.fake.seed_agent("reviewer", "agent", json!({}));
+    // The identity is held from a first send.
+    client
+        .ok("messages.send", json!({"to": "reviewer", "text": "hello"}))
+        .await;
+    let person = h.fake.agent(PERSON).unwrap();
+    let shot = h.home.join("shot.png");
+    std::fs::write(&shot, b"PNG bytes").unwrap();
+    let files = json!([shot.to_str().unwrap()]);
+
+    // Its token is refused at the upload: Cloud hands a fresh one, and the
+    // file and the message both go as that.
+    let fresh = h.fake.rotate_token(PERSON);
+    let credential =
+        "/workspaces/50587328-441d-4acb-b8f3-dbe1b3c5de99/messaging/identity/credential";
+    let identity = |token: &str| {
+        Ok(
+            json!({"identity": {"name": PERSON, "agentId": person.id, "token": token,
+            "relaycastUrl": h.fake.base_url}}),
+        )
+    };
+    cloud.answer("POST", credential, identity(&fresh));
+    client
+        .ok(
+            "messages.send",
+            json!({"to": "reviewer", "text": "with a file", "files": files}),
+        )
+        .await;
+    let uploads = h.fake.calls("POST", "/v1/files/upload");
+    let bearers: Vec<_> = uploads
+        .iter()
+        .map(|u| u.authorization.clone().unwrap())
+        .collect();
+    assert_eq!(
+        bearers,
+        vec![
+            format!("Bearer {}", person.token),
+            format!("Bearer {fresh}")
+        ]
+    );
+    let dm = h.fake.calls("POST", "/v1/dm").pop().unwrap();
+    assert_eq!(dm.authorization, Some(format!("Bearer {fresh}")));
+    let id = dm.body["attachments"][0].as_str().unwrap().to_string();
+    assert_eq!(h.fake.file(&id).unwrap().status, "complete");
+
+    // Refused again, with no fresher identity to be had: once, then nothing
+    // is sent.
+    let dms = h.fake.calls("POST", "/v1/dm").len();
+    let stale = fresh.clone();
+    h.fake.rotate_token(PERSON);
+    cloud.answer("POST", credential, identity(&stale));
+    let (kind, message) = client
+        .error(
+            "messages.send",
+            json!({"to": "reviewer", "text": "again", "files": files}),
+        )
+        .await;
+    assert_eq!(kind, "unauthorized", "{message}");
+    assert!(message.contains("Nothing was sent"), "{message}");
+    assert_eq!(h.fake.calls("POST", "/v1/dm").len(), dms);
+    assert_eq!(h.fake.calls("POST", "/v1/files/upload").len(), 4);
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn files_of_a_message_relaycast_refuses_are_deleted_again() {
+    let h = Harness::signed_in().await;
+    let mut client = h.client().await;
+    let shot = h.home.join("shot.png");
+    std::fs::write(&shot, b"PNG bytes").unwrap();
+    let (kind, _) = client
+        .error(
+            "messages.send",
+            json!({"to": "nobody", "text": "x", "files": [shot.to_str().unwrap()]}),
+        )
+        .await;
+    assert_eq!(kind, "not_found");
+    let deletes: Vec<_> = h
+        .fake
+        .requests()
+        .into_iter()
+        .filter(|r| r.method == "DELETE" && r.path.starts_with("/v1/files/"))
+        .collect();
+    assert_eq!(deletes.len(), 1);
+    let id = deletes[0].path.trim_start_matches("/v1/files/");
+    assert_eq!(h.fake.file(id).unwrap().status, "deleted");
+    let person = h.fake.agent(PERSON).unwrap();
+    assert_eq!(
+        deletes[0].authorization,
+        Some(format!("Bearer {}", person.token))
+    );
+    h.stop().await;
+}
+
+#[tokio::test]
 async fn a_send_reports_what_relaycast_holds_for_the_message() {
     let h = Harness::signed_in().await;
     let mut client = h.client().await;

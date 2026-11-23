@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `agent-relay-node`: the bridge's `messages.send` accepts an optional `files` list (absolute local paths, at most 5, each at most 25 MB) and uploads them as you before sending, so the desktop Chat page can attach screenshots and files to a direct message. Links are followed and judged by where they lead; directories and anything in Agent Relay's own data are refused, and files cannot ride on a reply. Clients that omit `files` send as before.
+- `agent-relay-node`: the bridge's `messages.send` accepts an optional `files` list (absolute local paths, at most 5, each at most 25 MB) and uploads them as you before sending, so the desktop Chat page can attach screenshots and files to a direct message. Links are followed and judged by where they lead; directories and anything in Agent Relay's own data are refused, and files cannot ride on a reply. Files of a message Relaycast refuses are deleted again. Clients that omit `files` send as before.
 
 ### Fixed
 
