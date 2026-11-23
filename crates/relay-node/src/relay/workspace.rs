@@ -402,7 +402,9 @@ pub fn resolve_for_site(
 ///
 /// In the default build `RELAYCAST_URL` overrides that origin when it is a
 /// bare https origin, and a missing or invalid one falls back to
-/// [`DEFAULT_BASE_URL`]. A site build ([`links::is_site_build`]) uses only
+/// [`DEFAULT_BASE_URL`] ([`cloud_origin`]: a release build refuses a
+/// loopback origin for this key, and an origin that is not Agent Relay's is
+/// logged). A site build ([`links::is_site_build`]) uses only
 /// what its site's workspace resolve recorded: `RELAYCAST_URL` is ignored,
 /// and a missing or invalid origin is an `Err` naming the site, never the
 /// public gateway.
@@ -440,10 +442,11 @@ pub fn resolve_cloud_for_site(
             )
         })?
     } else {
-        env("RELAYCAST_URL")
-            .and_then(|value| validated_base_url(&value))
-            .or_else(|| validated_base_url(&cloud.base_url))
-            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string())
+        cloud_origin(
+            env("RELAYCAST_URL").as_deref(),
+            &cloud.base_url,
+            LOOPBACK_ALLOWED,
+        )
     };
     Ok(Some(Workspace {
         key: cloud.key.clone(),
@@ -453,6 +456,81 @@ pub fn resolve_cloud_for_site(
         control_url: None,
         gate_url: None,
     }))
+}
+
+/// Whether a Cloud sign-in's key may go to a loopback origin: only in debug
+/// and test builds. A release build's account key belongs to a hosted
+/// Relaycast, and a loopback listener is any local process of this user's.
+const LOOPBACK_ALLOWED: bool = cfg!(debug_assertions);
+
+/// The origin the account's key goes to in the default build: `RELAYCAST_URL`
+/// when it is a valid origin, else the one the sign-in recorded, else
+/// [`DEFAULT_BASE_URL`]. Unless `loopback_allowed`, a loopback origin from
+/// either is refused (and logged) and the next one is used. An origin other
+/// than Agent Relay's own is logged once, so a key going elsewhere is never
+/// silent.
+fn cloud_origin(relaycast_url: Option<&str>, recorded: &str, loopback_allowed: bool) -> String {
+    let usable = |value: &str, from: &str| {
+        let origin = validated_base_url(value)?;
+        if !loopback_allowed && is_loopback_origin(&origin) {
+            warn_once(&format!(
+                "relay: {from} names the loopback origin {origin}; this build sends the \
+                 account's workspace key only to a hosted Relaycast, so it is ignored"
+            ));
+            return None;
+        }
+        Some(origin)
+    };
+    let origin = relaycast_url
+        .and_then(|value| usable(value, "RELAYCAST_URL"))
+        .or_else(|| usable(recorded, "the account's recorded Relaycast URL"))
+        .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
+    if !is_agent_relay_origin(&origin) {
+        warn_once(&format!(
+            "relay: the account's workspace key goes to {origin}, which is not Agent Relay's \
+             own Relaycast ({DEFAULT_BASE_URL}); set by {}",
+            if relaycast_url.and_then(validated_base_url).as_deref() == Some(origin.as_str()) {
+                "RELAYCAST_URL"
+            } else {
+                "the account's sign-in"
+            }
+        ));
+    }
+    origin
+}
+
+/// Whether `origin` is one of Agent Relay's hosted Relaycast origins, or the
+/// site this build is for.
+fn is_agent_relay_origin(origin: &str) -> bool {
+    const HOSTED: [&str; 2] = [DEFAULT_BASE_URL, "https://armadillo.agentrelay.com"];
+    HOSTED.contains(&origin)
+        || validated_base_url(links::built_in_site_url()).as_deref() == Some(origin)
+}
+
+/// Whether a validated origin's host is a loopback one.
+fn is_loopback_origin(origin: &str) -> bool {
+    url::Url::parse(origin)
+        .ok()
+        .and_then(|url| {
+            Some(match url.host()? {
+                url::Host::Domain(domain) => domain.eq_ignore_ascii_case("localhost"),
+                url::Host::Ipv4(address) => address.is_loopback(),
+                url::Host::Ipv6(address) => address.is_loopback(),
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Logs `message` once per process (resolution runs on every refresh).
+fn warn_once(message: &str) {
+    static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let mut seen = SEEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !seen.iter().any(|line| line == message) {
+        seen.push(message.to_string());
+        crate::relay::diagnostics::write(format_args!("{message}"));
+    }
 }
 
 /// The account's workspace in gate-only mode: agent traffic goes to the gate
@@ -637,6 +715,40 @@ mod tests {
                 assert_eq!(found.control_url, None);
             }
         }
+    }
+
+    #[test]
+    fn a_release_build_never_sends_the_account_key_to_loopback() {
+        let local = "http://127.0.0.1:8787";
+        // Debug and test builds keep a local Relaycast for development.
+        assert_eq!(cloud_origin(Some(local), DEFAULT_BASE_URL, true), local);
+        // A release build ignores it, from either source, and falls back.
+        assert_eq!(
+            cloud_origin(Some(local), DEFAULT_BASE_URL, false),
+            DEFAULT_BASE_URL
+        );
+        assert_eq!(
+            cloud_origin(
+                Some("http://localhost:9000"),
+                "https://relay.corp.test",
+                false
+            ),
+            "https://relay.corp.test"
+        );
+        assert_eq!(
+            cloud_origin(None, "http://[::1]:8787", false),
+            DEFAULT_BASE_URL
+        );
+        // A hosted override is still honoured (and logged).
+        assert_eq!(
+            cloud_origin(Some("https://override.corp.test"), DEFAULT_BASE_URL, false),
+            "https://override.corp.test"
+        );
+        assert!(is_loopback_origin(local));
+        assert!(is_loopback_origin("http://localhost:1"));
+        assert!(!is_loopback_origin("https://cast.agentrelay.com"));
+        assert!(is_agent_relay_origin(DEFAULT_BASE_URL));
+        assert!(!is_agent_relay_origin("https://override.corp.test"));
     }
 
     #[test]
