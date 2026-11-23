@@ -776,6 +776,39 @@ The default limits in §5.1 apply to everything else.
 - **relay-control** exposes the same route, and accepts OIDC from the
   self-host's configured issuers.
 
+### 11a.3a As built (cloud#6507, relay-control#278)
+
+These details came out of review and are part of the contract:
+
+- **Pinning at registration.** When a gate is registered, its repository is
+  resolved to GitHub's numeric repository and owner ids, through the GitHub
+  App installation or else the public API, and pinned (audited as
+  `gate.pinned`).
+  - A renamed or missing repository is refused with 422
+    `repository_unresolved`, and an outage with 503.
+  - Redeem never pins. A token whose repository name matches but whose ids
+    differ is refused with `repository_mismatch`, audited for the owner and
+    logged.
+- **Commit binding.** For `release` targets, the OIDC `sha` claim must equal
+  the source sha in the approved target; otherwise the answer is
+  `sha_mismatch`.
+  - A gate may set `allow_source_sha_mismatch` when the job derives the
+    source commit itself. relay-app's desktop-promote is the example: it runs
+    from `main`, and the job compares the approved sha with the commit it
+    derives after its verify step.
+  - The opt-out is refused on `ref_pattern` (tag) gates, both at
+    registration and at redeem.
+- **Matching rules.** A gate's `target_prefix` must end with `:`. Live gates
+  are unique on the repository (compared case-insensitively), the workflow,
+  `job_workflow_ref`, the ref or ref pattern, and the event. A SHA-pinned
+  `job_workflow_ref` is not required for a top-level workflow.
+- **Status codes.** A passing redeem or dry run answers 200. An OIDC
+  failure answers 401 `oidc_invalid`. `unavailable` and
+  `condition_unavailable` answer 503. Every other refusal answers 403.
+- **Locking.** Consuming redeems lock the approval `FOR NO KEY UPDATE` and
+  record `gate.redeemed` in the same transaction. An approval revoked
+  between the check and the consume answers `revoked`.
+
 ### 11a.4 Order of work
 
 - **Here:** the Cloud and relay-control routes and gate registry, and the
@@ -1063,7 +1096,9 @@ Agent routes are proven with the agent's own Relaycast token, as in
 token>` and `{approval_id, action}`. It returns
   `{ok:true, consumed, same_run?, dry_run?}` or `{ok:false, reason}`. It also
   takes `dry_run`, and a gate may use `ref_pattern` (§11a.3). Its extra reasons
-  are `gate_unknown`, `oidc_invalid`, `gate_mismatch` and `target_prefix`.
+  are `gate_unknown`, `oidc_invalid`, `gate_mismatch`, `target_prefix`,
+  `sha_mismatch`, `repository_mismatch` and (at registration)
+  `repository_unresolved`. Refusals are non-2xx (§11a.3a).
 - Keys: `GET /.well-known/relay-delegation-keys.json` returns a JWKS of OKP
   Ed25519 keys with `kid`.
 - Reason codes: `not_enabled`, `not_delegate`, `no_approval`, `out_of_scope`,
@@ -1086,6 +1121,14 @@ once redacted), iat, exp, jti`.
 `approval_id` is Cloud's id for this approval: the minted id in Tier O, and
 one derived for the message in Tier D (`apv_` followed by base62 of
 SHA-256(ws|message_id)[0..16]). Redeem and audit use it.
+
+A Tier D approval is refused as `revoked` when its message was sent before
+the grant was created. The send time is Relaycast's `created_at` when it
+reports one. Otherwise it is decoded from the Relaycast snowflake message id:
+`(id >> 22)` milliseconds after 2025-01-01T00:00:00Z, accepted at most 5
+minutes in the future. If neither is available, the approval is refused as
+`unavailable`. The send time is also where the approval's expiry window
+starts.
 
 ### 16.5 relay-node
 
