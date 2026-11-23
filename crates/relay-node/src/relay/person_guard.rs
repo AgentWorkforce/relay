@@ -3,8 +3,8 @@
 //!
 //! The bridge admits any process of this user, and `messages.send` and
 //! `agents.test_message` send as the signed-in person, while
-//! `agents.register`, `agents.unregister`, `agents.end`, `agents.rename` and
-//! `agents.webhook.create` change any agent of the person's by name. A process the session
+//! the methods in `PERSON_CONTROL_METHODS` change any agent, session or
+//! delivery choice of the person's by name. A process the session
 //! directory places inside a registered agent session (the same peer-process
 //! walk the relay-send socket names its caller with) is refused those
 //! methods (and told to send as its own agent instead), and so is a process
@@ -57,12 +57,44 @@ async fn caller(core: &Core, context: &CallContext) -> Caller {
     }
 }
 
-/// Refuses a call that changes the person's agents (`agents.register`,
-/// `agents.unregister`, `agents.end`, `agents.rename`,
-/// `agents.webhook.create`) when it comes from inside an agent session on
-/// this computer, on the same terms as `admit_person_send`. These take any
-/// agent's name; a session changes only its own registration, through the
-/// relay-send socket, which names it from the kernel.
+/// The bridge methods that change the person's agents, sessions or delivery
+/// choices by name (`admit_person_control`), refused from inside an agent
+/// session before they are dispatched (`server::call_from`). A session changes
+/// only its own registration, webhook, subscriptions and settings, through
+/// the relay-send socket, which names it from the kernel.
+///
+/// Left open on purpose: `spawn.*`, where a session names itself as the
+/// caller (`caller_name`) and the core checks that registration; and
+/// `settings.set`, which `relay init` and the desktop setup run from inside
+/// a session, and whose person-only settings an agent can only turn off
+/// over the socket.
+pub const PERSON_CONTROL_METHODS: [&str; 21] = [
+    "agents.register",
+    "agents.unregister",
+    "agents.end",
+    "agents.rename",
+    "agents.reply_setting",
+    "agents.take_over",
+    "agents.webhook.create",
+    "agents.webhook.revoke",
+    "agents.integrations.subscribe",
+    "agents.integrations.unsubscribe",
+    "agents.integrations.clean_up",
+    "claude_delivery.restrict",
+    "claude_delivery.session",
+    "claude_delivery.sender",
+    "claude_delivery.approve",
+    "claude_delivery.dismiss",
+    "sessions.title.set",
+    "sessions.existing.register",
+    "sessions.managed.launch",
+    "fleet.release",
+    "openclaw.relay_tools.connect",
+];
+
+/// Refuses a call that changes the person's agents, sessions or delivery
+/// choices (`PERSON_CONTROL_METHODS`) when it comes from inside an agent
+/// session on this computer, on the same terms as `admit_person_send`.
 pub async fn admit_person_control(core: &Core, context: &CallContext) -> Result<(), RpcError> {
     match caller(core, context).await {
         Caller::Person => Ok(()),
@@ -263,24 +295,18 @@ mod tests {
             ..Callers::default()
         });
         let core = core(home.path(), callers.clone());
-        let methods = [
-            (
-                "agents.register",
-                json!({"target": {"kind": "codex", "id": "other-thread"}, "name": "taken"}),
-            ),
-            ("agents.unregister", json!({"name": "codex-api"})),
-            ("agents.end", json!({"name": "codex-api"})),
-            (
-                "agents.rename",
-                json!({"name": "codex-api", "new_name": "renamed"}),
-            ),
-            ("agents.webhook.create", json!({"name": "codex-api"})),
-        ];
+        let params = |method: &str| match method {
+            "agents.register" => {
+                json!({"target": {"kind": "codex", "id": "other-thread"}, "name": "taken"})
+            }
+            "agents.rename" => json!({"name": "codex-api", "new_name": "renamed"}),
+            _ => json!({"name": "codex-api"}),
+        };
         for pid in [REGISTERED, UNATTRIBUTED, UNREADABLE] {
             let context = from(Some(pid));
-            for (method, params) in &methods {
+            for method in PERSON_CONTROL_METHODS {
                 let refused =
-                    crate::relay::server::call_from(&core, &context, method, params.clone())
+                    crate::relay::server::call_from(&core, &context, method, params(method))
                         .await
                         .unwrap_err();
                 assert_eq!(refused.data.kind, ErrorKind::Refused, "{method} {pid}");
@@ -291,23 +317,25 @@ mod tests {
         assert!(core
             .store
             .read(|store| store.registrations.iter().any(|r| r.name == "codex-api")));
-        // From outside every session the guard lets the call through (it
-        // then fails or succeeds on its own terms, never as `refused` by
-        // the guard).
+        // From outside every session, and without a pid, the guard lets each
+        // call through: it then fails or succeeds on its own terms, never as
+        // the guard's refusal.
         admit_person_control(&core, &from(Some(OUTSIDE)))
             .await
             .unwrap();
         admit_person_control(&core, &from(None)).await.unwrap();
-        let served = crate::relay::server::call_from(
-            &core,
-            &from(Some(OUTSIDE)),
-            "agents.rename",
-            json!({"name": "codex-api", "new_name": "renamed"}),
-        )
-        .await;
-        assert!(served
-            .err()
-            .is_none_or(|error| !error.message.contains("person's agents")));
+        for context in [from(Some(OUTSIDE)), from(None)] {
+            for method in PERSON_CONTROL_METHODS {
+                let served =
+                    crate::relay::server::call_from(&core, &context, method, params(method)).await;
+                assert!(
+                    served
+                        .err()
+                        .is_none_or(|error| !error.message.contains("person's agents")),
+                    "{method}"
+                );
+            }
+        }
     }
 
     #[tokio::test]

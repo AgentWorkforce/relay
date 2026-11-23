@@ -16,7 +16,7 @@ use crate::relay::contract::{answer, method, Done};
 use crate::relay::daemon::{CallContext, Core};
 use crate::relay::links::{self, Endpoint};
 use crate::relay::people::RosterQuery;
-use crate::relay::person_guard::{admit_person_control, admit_person_send};
+use crate::relay::person_guard::admit_person_send;
 use crate::relay::protocol::{ErrorKind, RpcError};
 use crate::relay::usage::{action, UsageEvent, UsageOperation as Op};
 use serde_json::{Map, Value};
@@ -76,7 +76,6 @@ pub async fn call(
         }
         method::AgentsRegister::NAME => {
             answer::<method::AgentsRegister, _>(raw, |request| async move {
-                admit_person_control(core, context).await?;
                 usage::register(core, request).await
             })
             .await
@@ -84,14 +83,12 @@ pub async fn call(
         method::AgentsUnregister::NAME | method::AgentsEnd::NAME => {
             let end_spawned = method == method::AgentsEnd::NAME;
             answer::<method::AgentsUnregister, _>(raw, |request| async move {
-                admit_person_control(core, context).await?;
                 usage::remove(core, &request.name, end_spawned).await
             })
             .await
         }
         method::AgentsRename::NAME => {
             answer::<method::AgentsRename, _>(raw, |request| async move {
-                admit_person_control(core, context).await?;
                 core.rename(&request.name, &request.new_name).await
             })
             .await
@@ -118,7 +115,6 @@ pub async fn call(
         }
         method::AgentsWebhookCreate::NAME => {
             answer::<method::AgentsWebhookCreate, _>(raw, |request| async move {
-                admit_person_control(core, context).await?;
                 core.create_webhook(&request.name)
                     .await
                     .map(|hook| CreatedWebhook {

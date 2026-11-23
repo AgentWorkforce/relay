@@ -492,6 +492,9 @@ pub async fn call_from(
             "Agent Relay core is stopping.",
         ));
     }
+    if crate::relay::person_guard::PERSON_CONTROL_METHODS.contains(&name) {
+        crate::relay::person_guard::admit_person_control(core, context).await?;
+    }
     if core.plugins.account.is_none() && needs_account(core, name) {
         return Err(no_such_method());
     }
