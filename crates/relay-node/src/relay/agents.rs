@@ -39,7 +39,7 @@ mod naming;
 mod registration_routes;
 mod removal;
 mod reply_setting;
-mod roster_publication;
+pub(crate) mod roster_publication;
 use activation_journal::auto_activation_allowance;
 pub use naming::suggested_name;
 use naming::suggested_name_numbered;

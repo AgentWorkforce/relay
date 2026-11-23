@@ -24,9 +24,11 @@
 //! looked at again on every lifecycle pass, so an agent spawned before this
 //! (or before the claim settled) is credited once it can be.
 
+use crate::relay::agents::roster_publication::rejected_keys::KeyProof;
 use crate::relay::cloud_session::AgentOwner;
 use crate::relay::daemon::Core;
 use crate::relay::store::Registration;
+use crate::relay::workspace::Secret;
 use crate::relay::{client, sdk_gaps, workspace};
 use serde_json::Value;
 
@@ -72,11 +74,16 @@ impl Core {
     }
 
     /// Names the node's owner on the spawned agent `name` (Relaycast id
-    /// `agent_id`) when its record names nobody, under the name's roster
-    /// lock so it is serialized with presence and marker updates.
+    /// `agent_id`) when its record names nobody. Held under the name's
+    /// agent lock, which release and removal take, so the name cannot be
+    /// freed and given to another agent between the read and the
+    /// by-name write; and under its roster lock, so it is serialized with
+    /// presence and marker updates.
     pub(crate) async fn credit_spawned(&self, name: &str, agent_id: &str) -> Credit {
-        let lock = self.roster_locks.get(name);
-        let _publishing = lock.lock().await;
+        let agent_lock = self.agent_locks.get(name);
+        let _held = agent_lock.lock().await;
+        let roster_lock = self.roster_locks.get(name);
+        let _publishing = roster_lock.lock().await;
         let registration = self.store.read(|s| {
             s.registration_named(name)
                 .filter(|r| r.agent_id == agent_id && r.spawn.is_some() && r.gate.is_none())
@@ -96,25 +103,30 @@ impl Core {
         let Some(owner) = self.node_owner(&node_id) else {
             return Credit::Later;
         };
-        let Some(key) = self
+        let Some(mut key) = self
             .key_for(&registration)
             .filter(|key| !key.expose().is_empty())
         else {
             return Credit::Left;
         };
-        let route = workspace::workspace_route(
-            &registration.base_url,
-            &key,
-            registration.control_url.as_deref(),
-        );
-        let Ok(http) = sdk_gaps::route_http(&route) else {
-            return Credit::Later;
-        };
-        let record = match sdk_gaps::get_agent(&http, name).await {
-            Ok(Some(record)) if record["id"].as_str() == Some(agent_id) => record,
+        let mut lookup = self.read_record(&registration, &key).await;
+        // A saved key rejected since a rotation is replaced, as for writes.
+        if let Some(Err(error)) = &lookup {
+            match self.prove_rejected_key(&registration, &key, error).await {
+                KeyProof::Current(current) => {
+                    key = current;
+                    lookup = self.read_record(&registration, &key).await;
+                }
+                KeyProof::Unreachable => return Credit::Left,
+                KeyProof::Unknown => {}
+            }
+        }
+        let record = match lookup {
+            Some(Ok(Some(record))) if record["id"].as_str() == Some(agent_id) => record,
             // Another agent holds the name now, or none does.
-            Ok(_) => return Credit::Left,
-            Err(_) => return Credit::Later,
+            Some(Ok(_)) => return Credit::Left,
+            // Paused by the workspace's rate limit, or not answered.
+            None | Some(Err(_)) => return Credit::Later,
         };
         match named_owner(&record) {
             Some(hash) if hash == owner_hash(&owner) => {
@@ -127,6 +139,11 @@ impl Core {
         }
         let workspace = self.relaycast_scope(&registration.base_url, &key);
         if !self.relaycast_write_allowed(&workspace) {
+            return Credit::Later;
+        }
+        // The claim may have settled for someone else while the record was
+        // read: only the owner the node is claimed for now is named.
+        if self.node_owner(&node_id).as_ref() != Some(&owner) {
             return Credit::Later;
         }
         // A PATCH with no status activates the agent: send the one it has.
@@ -148,6 +165,31 @@ impl Core {
             }
             Err(_) => Credit::Later,
         }
+    }
+
+    /// `registration`'s Relaycast record, read with `key`; `None` while the
+    /// workspace's shared rate-limit pause stands. The outcome feeds that
+    /// pause.
+    async fn read_record(
+        &self,
+        registration: &Registration,
+        key: &Secret,
+    ) -> Option<relaycast::Result<Option<Value>>> {
+        let workspace = self.relaycast_scope(&registration.base_url, key);
+        if !self.relaycast_poll_allowed(&workspace) {
+            return None;
+        }
+        let route = workspace::workspace_route(
+            &registration.base_url,
+            key,
+            registration.control_url.as_deref(),
+        );
+        let result = match sdk_gaps::route_http(&route) {
+            Ok(http) => sdk_gaps::get_agent(&http, &registration.name).await,
+            Err(error) => Err(error),
+        };
+        self.observe_relaycast_result(&workspace, &result);
+        Some(result)
     }
 
     /// Keeps `agent_id`'s owner, so it is never asked again or changed.
