@@ -40,10 +40,13 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
   if (options.forceEntrypoint) {
     process.argv = ['node', '/entry'];
     const realpathSync = vi.fn(() => '/entry');
-    vi.doMock('node:fs', () => ({
-      default: { realpathSync },
-      realpathSync,
-    }));
+    vi.doMock('node:fs', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('node:fs')>();
+      return { ...actual, default: { ...actual, realpathSync }, realpathSync };
+    });
+  } else {
+    // resetModules keeps mocks registered, so a later load would run as the entrypoint too.
+    vi.doUnmock('node:fs');
   }
 
   const serverInstances: FakeMcpServer[] = [];
