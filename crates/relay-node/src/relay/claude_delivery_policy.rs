@@ -249,11 +249,48 @@ impl ClaudeDeliveryPolicy {
     }
 
     pub fn decide(&self, registration: &Registration, delivery: &Delivery) -> Decision {
-        let organization = self
-            .organization
+        let organization = self.organization();
+        self.decide_under(organization, registration, delivery)
+    }
+
+    /// The organization's admins while it holds, `None` when it does not.
+    fn organization(&self) -> Option<BTreeSet<String>> {
+        self.organization
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .clone();
+            .clone()
+    }
+
+    /// [`Self::decide`] while the organization holds messages: `None` when
+    /// it does not, else what the policy decides for `delivery` into
+    /// `registration` under that one reading of the hold. A reply that
+    /// answers a pending request on the person's behalf (a workspace
+    /// leader's) is acted on only when this is `None` or
+    /// [`Decision::Deliver`], so the hold and that answer read one rule.
+    pub fn organization_decision(
+        &self,
+        registration: &Registration,
+        delivery: &Delivery,
+    ) -> Option<Decision> {
+        let organization = self.organization()?;
+        Some(self.decide_under(Some(organization), registration, delivery))
+    }
+
+    /// Whether the organization, while it holds messages, counts `name`
+    /// among its admins: `None` when it does not hold. Its admins are
+    /// listed by name and address; a name alone is matched here, so an
+    /// admin listed only by address is not.
+    pub fn organization_admin_name(&self, name: &str) -> Option<bool> {
+        self.organization()
+            .map(|admins| !name.is_empty() && admins.contains(name))
+    }
+
+    fn decide_under(
+        &self,
+        organization: Option<BTreeSet<String>>,
+        registration: &Registration,
+        delivery: &Delivery,
+    ) -> Decision {
         let saved = self.saved.lock().unwrap_or_else(|p| p.into_inner());
         // A dismissal, and an injection already made, stand in every
         // harness, even after the organization lifts the rule that held the

@@ -73,11 +73,23 @@ pub struct SettingsValues {
     /// owner turns it off. Absent in older cores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_requester_approvals: Option<bool>,
+    /// Whether workspace leaders may approve or deny permission requests of
+    /// agents spawned on this computer. A listed leader's direct message
+    /// may approve or deny an open approvable request, as the machine owner
+    /// could; choices, forms, input and local verification stay with the
+    /// owner. Neither `spawn_requester_approvals` nor the spawn's approval
+    /// profile limits it: an `interactive` spawn's approve/deny requests go
+    /// to the leaders too. Needs `spawn_native_input`. Off unless the
+    /// machine owner turns it on. Absent in older cores, and on a gate-only
+    /// install, where it cannot work and turning it on is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn_leader_approvals: Option<bool>,
     /// The workspace's leaders as Relaycast last listed them
     /// (`GET /v1/workspace/leaders`): a leader's direct message to a
     /// spawned agent (with `spawn_native_input` on) or to a Claude Code
-    /// session with `teammate_native_input` on is native input, though never
-    /// an approval. Read only;
+    /// session with `teammate_native_input` on is native input, and with
+    /// `spawn_leader_approvals` on its approve/deny reply to a spawned
+    /// session's open request is an answer. Read only;
     /// absent until the list has been read for the current workspace, and
     /// in older cores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -479,6 +491,13 @@ pub struct SettingsChange {
     )]
     #[schemars(with = "bool")]
     pub spawn_requester_approvals: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "given",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "bool")]
+    pub spawn_leader_approvals: Option<bool>,
     #[serde(
         default,
         deserialize_with = "given",

@@ -1237,13 +1237,130 @@ turn's visible input, sent whole as a requester's is, also while relay
 messages are hidden. Ids are compared, never names:
 another agent with a leader's name is a peer. Channel posts, group messages
 and mentions from a leader stay peer messages. The spawn's own requester
-keeps its requester framing and route even when the list names it. Leaders
-are never approvers: a leader cannot answer permission or approval requests
-(`approve`, `deny`, `choose`), fork a session or release an agent it did not
-ask for; `spawn.fork` and `spawn.release` never consult the list, so this
-holds by construction. A leader's native turn can still lead the session to
-fork or release through its own tools; the leader line's wording is the
-guard there.
+keeps its requester framing and route even when the list names it. A leader
+cannot fork a session or release an agent it did not ask for; `spawn.fork`
+and `spawn.release` never consult the list, so this holds by construction. A
+leader's native turn can still lead the session to fork or release through
+its own tools; the leader line's wording is the guard there.
+
+Leaders are approvers only with **Approvals from workspace leaders** on
+(`spawn_leader_approvals`: whether workspace leaders may approve or deny
+permission requests of agents spawned on this computer; off unless the
+machine owner turns it on, in `settings.get` and `settings.set` like the
+other spawn settings, and a non-boolean is refused). Then a leader's 1:1
+direct message `approve <ref>` or `deny <ref>` approves or denies a spawned
+session's request as the machine owner could, not as the requester; that is
+all it may do: choices, forms, input and local verification stay with the
+owner. It does so when all of these hold:
+
+- the build has an account (`plugins.account`); a public core never does;
+- the computer's workspace is not gate-only (below);
+- `spawn_native_input` is on too, which leader approvals never outlive;
+- the sender's id is a listed leader's `agent_id` (never a name or a
+  pattern), in a list read successfully less than 60 s ago: an older list
+  is read again first, and when that read fails or is refused the sender is
+  not an approver. The list failed reads keep for 10 minutes serves native
+  input only, never an approval;
+- the session is registered in this computer's workspace, is not taken
+  over, and is not the sender itself;
+- the sender is not the spawn's own requester, which keeps the requester's
+  rules (`spawn_requester_approvals` and the approval profile) even when the
+  list names it;
+- the reference is one of the session's open requests and may be approved:
+  a choice (`choose`), a form, input or local verification stays with the
+  machine owner, and a leader's reply to one, `deny` included, is an
+  ordinary message, as is its reply to an answered, expired or unknown
+  reference. A spawned Claude that has ended still says it ended;
+- while the organization holds messages from senders who are not its
+  admins (`delivery.inbound_default: "hold"`), the delivery policy's own
+  decision for the reply is to deliver it: the sender is one of the
+  organization's admins, by its authenticated sender address or by name.
+  A reply with no authenticated address, or from a leader that is not an
+  admin, answers nothing: it takes the ordinary path, where the
+  organization's hold keeps it for the person, and the request stays open.
+  The hold is read before the list and again after the list read comes
+  back, so a hold that begins meanwhile wins. With no hold this changes
+  nothing.
+
+The requests a leader may approve or deny are those that may be approved:
+for Codex, commands, file changes, extra permissions and MCP tool calls
+without a form (an elicitation marked as an MCP tool call with an empty
+schema); for Claude, its tools, `ExitPlanMode` and MCP tools included. A
+Codex question (`choose`) or any other MCP elicitation, and Claude's
+`AskUserQuestion`, an MCP elicitation or a dialog, is not one.
+
+`spawn_requester_approvals` and the approval profile limit only the spawning
+agent, not a leader. That includes `interactive`, which otherwise keeps
+prompts with the machine owner: with `spawn_leader_approvals` on, an
+`interactive` spawn's approve/deny requests also go to the workspace
+leaders, who may approve or deny them. The first answer counts, between the
+owner, the requester and the leaders. The delivery record and the
+diagnostics line name `the workspace leader @<name> (<agent id>)`, never the
+machine owner.
+
+What the exclusions cover, and what they do not:
+
+- A leader is refused only for the session itself and as the spawn's own
+  requester (the agent that spawned it). A session that another agent
+  spawned at a leader's request is not the leader's, so the leader may
+  answer it; and a leader that is itself a spawned session (on this
+  computer or another) may answer for another spawned session.
+- A leader may answer on a computer with no verified owner (one not claimed
+  by the signed-in person): only the account build, the settings and the
+  checks above count, not whether an owner could answer too.
+- A leader removed from the list keeps answering until the list is read
+  again: for up to 60 s after the last read that succeeded.
+- The setting, a takeover and the organization's hold are checked again
+  once the list read comes back: the setting turned off, the session taken
+  over, or a hold begun meanwhile makes the reply an ordinary message.
+
+With the setting on, each approvable request's approval DM also goes to
+every listed leader (not the session, nor the requester, which has its own
+copy, nor the signed-in person, who has the owner's) while Relaycast still
+gives the leader's listed name its listed id, under the same per-recipient
+idempotency key. Each leader's copy is the owner's text, with the MCP
+server, tool and argument names where the owner's copy has them. The notice
+never names the leaders: when they may answer, its closing line says, in a
+fixed sentence, that `a workspace leader may answer` too, so it never waits
+for the list or changes with it. While the organization holds messages, the
+sentence says instead that `a workspace leader that is one of the
+organization's admins may answer`. The text of a request's DM is fixed by
+its first try: every later try sends the same text under the same keys,
+though a setting, the list or the organization's hold changed meanwhile.
+
+The leaders' copies go out in the background, apart from the owner's and
+the requester's, which never wait for them. Whether to send them is decided
+once, on the request's first try; each leader then gets at most three tries,
+a few seconds apart, and is sent one copy: a try after a failed send is the
+only resend, never once per second for the life of the request. Just before
+every send, the first included, the node checks again that the request is
+open, that leaders may still answer, that the leader is still in the
+verified list with the same id and may answer this session, that Relaycast
+gives its name that id now, and, while the organization holds messages,
+that its verified name is one of the organization's admins. A leader whose
+name now belongs to another id, that left the list, or whose setting was
+turned off gets no further try; when Relaycast or the list cannot be asked,
+that try sends nothing and still counts. The organization's admins are
+listed by name and address, and the leader list has names and ids only, so
+under a hold an admin listed by address alone gets no notice (its reply
+still answers, by address). A copy goes only to a name Relaycast has just
+said is the leader's, but Relaycast addresses a direct message by name, not
+by id: a name taken by another agent between that check and the send is not
+caught. The check narrows that window; it does not close it.
+Whether the notice counts as forwarded is decided by the owner's and
+requester's copies alone, as before, so with neither (no verified owner and
+no requester) the notice is tried again each second as it was, but the
+leaders are not. With the setting off, notices are unchanged.
+
+On a gate-only install (the account's workspace has a relaygate URL and no
+workspace key) approvals from workspace leaders cannot work: the leader list
+cannot be read there, and the node's own credential is never sent for it (it
+goes to Control alone), and no session's workspace can be checked against a
+key. So `settings.get` leaves `spawn_leader_approvals` out, `GET /settings`
+lists it with `available: false` and the reason in `unavailable`, a change
+that turns it on is refused with the same sentence (turning it off is
+taken), and the core refuses leaders as approvers and sends them no notice
+there by an explicit check, whatever the stored value.
 
 `settings.get` shows the last list read for the current workspace as
 `workspace_leaders` (`{"leaders":[{"name","agent_id"}],"patterns":[...]}`),

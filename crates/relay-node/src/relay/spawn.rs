@@ -439,6 +439,7 @@ mod tests {
 
     mod gate_credential;
     mod launch_gate;
+    mod leader_approvals;
     mod lifecycle_failures;
     mod native_sender;
     mod owner_credit;

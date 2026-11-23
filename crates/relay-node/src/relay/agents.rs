@@ -1317,6 +1317,11 @@ impl Core {
     pub fn settings(&self) -> Map<String, Value> {
         let mut settings = self.store_settings();
         settings.extend(self.spawn_setting_values());
+        // Not available on a gate-only install (`leaders::GATE_ONLY`):
+        // absent, so `GET /settings` lists it unavailable and says why.
+        if self.leader_approvals_unavailable().is_some() {
+            settings.remove(crate::relay::leaders::SETTING);
+        }
         settings.extend(self.store.read(crate::relay::question::settings::values));
         for extension in &self.plugins.settings {
             settings.extend(extension.get());
@@ -1362,7 +1367,19 @@ impl Core {
                 .any(|extension| extension.write_only().contains(&key))
         };
         for (key, value) in changes {
-            if !known.contains_key(key) && !write_only(key) {
+            // Approvals from workspace leaders cannot work on a gate-only
+            // install: turning them on is refused, saying why; turning
+            // them off is still taken.
+            let leader_approvals = key == crate::relay::leaders::SETTING;
+            if let Some(reason) = self
+                .leader_approvals_unavailable()
+                .filter(|_| leader_approvals)
+            {
+                if value.as_bool() == Some(true) {
+                    return Err(RpcError::setting_refused(reason.to_string()));
+                }
+            }
+            if !known.contains_key(key) && !write_only(key) && !leader_approvals {
                 return Err(RpcError::invalid_params(format!(
                     "There is no setting named {key}."
                 )));
