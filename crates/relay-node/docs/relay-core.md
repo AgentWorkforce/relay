@@ -479,12 +479,12 @@ the bridge socket is for UIs, the relay-send socket for sessions
   whose text claims a framing its seal cannot prove (kept before the core
   restarted) is read again from Relaycast (`GET /v1/messages/{id}`) as the
   session's own agent, only at the registration's pinned origin (a bare
-  origin exactly as recorded; never loopback in a release build). Its
-  framing is then recomputed from the server's sender exactly as delivery
-  computes it, and counts only when the server's message has the same id
-  and body and gives the framing the kept text shows. A failed read, a
-  timeout (10 s) or any mismatch answers a peer's framing, with the framing
-  line taken out of the text.
+  origin exactly as recorded; never loopback in a release build). The text
+  shown is then rebuilt from the server's copy (a one-to-one `dmch_`
+  channel keeps DM semantics) exactly as delivery builds it, with the
+  framing its sender gives; nothing of the kept file but the message id is
+  used. A failed read, a timeout (10 s) or another message id answers a
+  peer's framing, with the framing line taken out of the kept text.
 - **Send tokens.** With the person-only setting `session_send_tokens` on
   (off by default), the core mints a random 256-bit token per registered
   session, kept in memory only (new on every core start, and new when the

@@ -9,7 +9,7 @@
 
 use crate::relay::daemon::Core;
 use crate::relay::delivery::policy::Delivery;
-use crate::relay::message_pointer::{self, Framing, Kept};
+use crate::relay::message_pointer::{self, Kept};
 use crate::relay::store::Registration;
 use crate::relay::workspace::Secret;
 use serde_json::Value;
@@ -18,33 +18,30 @@ use serde_json::Value;
 const RECHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl Core {
-    /// The framing Relaycast's copy of `kept` proves for `registration`
-    /// (`message_pointer::rechecked`), or a peer's when the origin is not
-    /// the registration's pinned one (`workspace::pinned_origin`), the read
-    /// fails or times out, or anything disagrees.
+    /// The message Relaycast's copy of `kept` proves for `registration`,
+    /// rebuilt from the server's copy (`message_pointer::rechecked`): its
+    /// text and framing are the server's, never the file's. `None` when the
+    /// origin is not the registration's pinned one
+    /// (`workspace::pinned_origin`), the read fails or times out, or the
+    /// server's message is another one.
     pub(crate) async fn recheck_kept_framing(
         &self,
         registration: &Registration,
         token: &Secret,
         kept: &Kept,
-    ) -> Framing {
-        let Some(origin) = crate::relay::workspace::pinned_origin(&registration.base_url) else {
-            return Framing::Peer;
-        };
-        let Ok(http) = crate::relay::sdk_gaps::http(&origin, token) else {
-            return Framing::Peer;
-        };
+    ) -> Option<message_pointer::Rechecked> {
+        let origin = crate::relay::workspace::pinned_origin(&registration.base_url)?;
+        let http = crate::relay::sdk_gaps::http(&origin, token).ok()?;
         let read = crate::relay::sdk_gaps::message(&http, &kept.message_id);
-        let Ok(Ok(server)) = tokio::time::timeout(RECHECK_TIMEOUT, read).await else {
-            return Framing::Peer;
-        };
-        let Some(delivery) = delivery_of(kept, &server) else {
-            return Framing::Peer;
-        };
+        let server = tokio::time::timeout(RECHECK_TIMEOUT, read)
+            .await
+            .ok()?
+            .ok()?;
+        let delivery = delivery_of(kept, &server)?;
         let (framed, _, _) = self
             .session_text(registration, (&delivery, None), false, false)
             .await;
-        message_pointer::rechecked(kept, &server, &framed)
+        message_pointer::rechecked(kept, &server, framed)
     }
 }
 
@@ -59,9 +56,15 @@ fn delivery_of(kept: &Kept, server: &Value) -> Option<Delivery> {
     };
     let channel_id = text("channel_id");
     let thread_id = text("thread_id");
+    // A one-to-one DM keeps DM semantics whether or not Relaycast names its
+    // `dmch_` channel, as the queue reports it (`spawn::drive::direct_from`).
+    let dm_channel = channel_id.as_deref().is_some_and(|channel| {
+        channel.starts_with(crate::relay::spawn::drive::ONE_TO_ONE_DM_CHANNEL)
+    });
     let reason = match (&channel_id, &thread_id) {
         (None, _) => "dm",
         (Some(_), Some(_)) => "thread-reply",
+        (Some(_), None) if dm_channel => "dm",
         (Some(_), None) => "mention",
     };
     Some(Delivery {

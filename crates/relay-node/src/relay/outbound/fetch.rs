@@ -86,13 +86,13 @@ impl Outbound {
         // A framing the seal cannot prove (kept before this core started) is
         // checked again against Relaycast, as the session's own agent.
         let rechecked = match message_pointer::needs_recheck(&record) {
-            true => Some(
+            true => {
                 self.core
                     .recheck_kept_framing(&registration, &token, &record)
-                    .await,
-            ),
+                    .await
+            }
             false => None,
         };
-        Ok(message_pointer::render(&record, rechecked))
+        Ok(message_pointer::render(&record, rechecked.as_ref()))
     }
 }

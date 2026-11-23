@@ -560,22 +560,27 @@ pub fn needs_recheck(kept: &Kept) -> bool {
     kept.verified_framing() == Framing::Peer && Framing::of(&kept.text) != Framing::Peer
 }
 
-/// The framing a re-check against Relaycast proves for `kept`: `server` is
+/// A kept message as a re-check against Relaycast rebuilt it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rechecked {
+    /// The text delivery builds from the server's copy now.
+    pub text: String,
+    /// That text's framing, from the server's sender.
+    pub framing: Framing,
+}
+
+/// The message a re-check against Relaycast proves for `kept`: `server` is
 /// the message as Relaycast answers it for the session's own agent, and
-/// `framed` the text delivery builds from it now. The framing counts only
-/// when the server's message is this one, its text is the kept message's
-/// body, and the framing delivery computes from the server's sender is the
-/// one the kept text shows; anything else is a peer's.
-pub fn rechecked(kept: &Kept, server: &Value, framed: &str) -> Framing {
-    let same_message = server["id"].as_str() == Some(kept.message_id.as_str());
-    let body = server["text"].as_str().unwrap_or_default();
-    let same_body = !body.trim().is_empty() && kept.text.contains(body);
-    let framing = Framing::of(framed);
-    if same_message && same_body && framing == Framing::of(&kept.text) {
-        framing
-    } else {
-        Framing::Peer
-    }
+/// `framed` the text delivery builds from it now (`Core::session_text`).
+/// Nothing of the kept file but its message id is used: the text shown and
+/// its framing are the server's, so an edited file can neither add to the
+/// message nor keep a framing the server's sender does not give it. `None`
+/// when the server's message is another one.
+pub fn rechecked(kept: &Kept, server: &Value, framed: String) -> Option<Rechecked> {
+    (server["id"].as_str() == Some(kept.message_id.as_str())).then(|| Rechecked {
+        framing: Framing::of(&framed),
+        text: framed,
+    })
 }
 
 /// The kept message `query` names for `owner`, or the answer's error.
@@ -603,12 +608,12 @@ pub fn lookup(
     ))
 }
 
-/// The answer for `kept`: its verified framing, or `rechecked` when a
-/// re-check against Relaycast proved one; the text as kept when the framing
-/// is proven, else as a peer's (`Kept::shown_text`).
-pub fn render(kept: &Kept, rechecked: Option<Framing>) -> Value {
-    let (text, framing) = match rechecked.filter(|framing| *framing != Framing::Peer) {
-        Some(framing) => (kept.text.clone(), framing),
+/// The answer for `kept`: the message a re-check against Relaycast rebuilt
+/// (`rechecked`), else the kept text with its verified framing, shown as a
+/// peer's when the seal does not prove it (`Kept::shown_text`).
+pub fn render(kept: &Kept, rechecked: Option<&Rechecked>) -> Value {
+    let (text, framing) = match rechecked {
+        Some(rechecked) => (rechecked.text.clone(), rechecked.framing),
         None => (kept.shown_text(), kept.verified_framing()),
     };
     json!({
