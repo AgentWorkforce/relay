@@ -414,3 +414,43 @@ async fn without_a_hold_notices_and_answers_are_unchanged_byte_for_byte() {
     );
     requests::forget(SESSION);
 }
+
+// The hold is read again once Relaycast has said whose the requester's name
+// is, just before the sends: a hold that begins during that lookup sends
+// the spawning agent no copy, and the owner's copy marks it forwarded.
+#[tokio::test]
+async fn a_hold_that_begins_during_the_name_check_sends_the_spawning_agent_no_copy() {
+    let f = fixture().await;
+    f.set(None, Some(true), None);
+    const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3be111";
+    let registration = f.spawned("codex", THREAD);
+    let notice = codex_request(THREAD, 1191);
+    let release = f.server.hold("GET /v1/agents/grokbot");
+    let forwarding = {
+        let (core, registration, token, notice) = (
+            f.core.clone(),
+            registration.clone(),
+            f.token(),
+            notice.clone(),
+        );
+        tokio::spawn(async move { core.forward_to_owner(&registration, &token, &notice).await })
+    };
+    f.server
+        .wait_for("the requester's name check", |server| {
+            server.held("GET /v1/agents/grokbot") >= 1
+        })
+        .await;
+    organization_holds(&f, &["someone-else"]);
+    release.send(true).unwrap();
+    forwarding.await.unwrap();
+    let owner = copies_to(&f, "owner");
+    assert_eq!(owner.len(), 1, "{:?}", f.approval_dms());
+    // The text was fixed before the hold began.
+    assert!(owner[0].0.contains("@grokbot"), "{}", owner[0].0);
+    assert!(
+        copies_to(&f, "grokbot").is_empty(),
+        "{:?}",
+        f.approval_dms()
+    );
+    assert!(codex_drive::unforwarded(THREAD).is_empty(), "forwarded");
+}

@@ -430,7 +430,11 @@ impl Core {
 
     /// Sends an approval DM about `reference` to the verified owner and to
     /// `requester`. True once someone may answer it and everyone it is for
-    /// has it; until then it is sent again, under the same keys.
+    /// has it; until then it is sent again, under the same keys. The
+    /// organization's hold is read again once Relaycast has confirmed the
+    /// requester's name, just before the sends: while it holds and does not
+    /// count that name among its admins, the requester is sent no copy, and
+    /// the owner's copy alone marks the request forwarded.
     pub(crate) async fn send_approval(
         &self,
         registration: &Registration,
@@ -448,8 +452,10 @@ impl Core {
                 .holds_name(registration, &requester.name, &requester.agent_id)
                 .await
             {
-                Some(true) => (Some(requester), true),
-                Some(false) => (None, true),
+                Some(true) if self.organization_names_admin(&requester.name) => {
+                    (Some(requester), true)
+                }
+                Some(_) => (None, true),
                 None => (None, false),
             },
         };
@@ -696,11 +702,14 @@ impl Core {
         &self,
         registration: &Registration,
     ) -> Option<SpawnRequester> {
-        self.approving_requester(registration).filter(|requester| {
-            self.claude_delivery
-                .organization_admin_name(&requester.name)
-                != Some(false)
-        })
+        self.approving_requester(registration)
+            .filter(|requester| self.organization_names_admin(&requester.name))
+    }
+
+    /// Whether the organization's hold, while there is one, counts `name`
+    /// among its admins. Without a hold, always.
+    fn organization_names_admin(&self, name: &str) -> bool {
+        self.claude_delivery.organization_admin_name(name) != Some(false)
     }
 
     /// Whether `reference` is one of `registration`'s open requests, and
