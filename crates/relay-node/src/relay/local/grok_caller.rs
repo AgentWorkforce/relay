@@ -59,8 +59,9 @@ pub(super) fn is_verified_leader(table: &dyn ProcessTable, pid: i32) -> bool {
 
 /// The first agent boundary must be this user's exact Grok leader, verified
 /// by its executable (`is_verified_leader`). An inherited session variable
-/// cannot lend a nested agent an outer leader's identity, and a process that
-/// only carries a leader's argv is no leader.
+/// cannot lend a nested agent an outer leader's identity. A process that
+/// only carries a leader's argv is no leader, and is still a boundary: the
+/// walk ends there with no leader rather than passing on to an outer one.
 pub(super) fn nearest_leader(table: &dyn ProcessTable, pid: i32, uid: u32) -> Option<i32> {
     let mut current = pid;
     for _ in 0..MAX_ANCESTRY {
@@ -71,8 +72,12 @@ pub(super) fn nearest_leader(table: &dyn ProcessTable, pid: i32, uid: u32) -> Op
         if process.uid != uid {
             return None;
         }
-        if is_verified_leader(table, current) {
-            return Some(current);
+        // A leader's argv ends the walk either way; only a verified
+        // executable makes it a leader that can name a session. A
+        // leader-shaped process that is not one is a boundary, so the walk
+        // never passes it to an outer leader.
+        if crate::relay::existing_session::grok::is_leader(&table.arguments(current)) {
+            return is_verified_leader(table, current).then_some(current);
         }
         if crate::relay::muse::is_muse_process(table, current)
             || crate::relay::cursor_cli::is_cursor_process(table, current)

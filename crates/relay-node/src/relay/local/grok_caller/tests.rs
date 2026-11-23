@@ -100,3 +100,19 @@ fn an_unverified_leader_still_keeps_an_outer_codex_tag_out() {
     table.insert(200, process(100, "/bin/bash"));
     assert!(codex_tag_names_caller(&table, 400, 501, false, false));
 }
+
+#[test]
+fn an_unverified_leader_shape_ends_the_walk_without_an_outer_leader() {
+    let table = FakeProcesses::default();
+    let mut outer = process(1, "/opt/grok");
+    outer.arguments = vec!["grok".into(), "agent".into(), "leader".into()];
+    table.insert(100, outer);
+    let mut inner = process(100, "/home/me/bin/python3");
+    inner.arguments = vec!["grok".into(), "agent".into(), "leader".into()];
+    table.insert(200, inner);
+    table.insert(300, process(200, "/bin/bash"));
+    assert_eq!(nearest_leader(&table, 300, 501), None);
+    // Without the impostor, the outer leader is the caller's.
+    table.insert(200, process(100, "/bin/bash"));
+    assert_eq!(nearest_leader(&table, 300, 501), Some(100));
+}
