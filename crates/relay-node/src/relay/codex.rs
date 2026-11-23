@@ -161,8 +161,10 @@ fn npm_native_executable(launcher: &Path) -> Option<PathBuf> {
 
 /// Where a `codex` command line may be installed, in order of preference:
 /// the binary inside the Codex desktop app (the very build that reads the
-/// queue for app threads), version-managed installs, the usual command-line
-/// locations, then `PATH`. An app launched from the desktop has no shell
+/// queue for app threads), version-managed installs (mise's `codex` and
+/// npm-backend installs, then npm global installs under nvm's and mise's node
+/// versions, each newest first), the usual command-line locations, then
+/// `PATH`. A mise shim is never a candidate. An app launched from the desktop has no shell
 /// `PATH`, so the fixed locations come first.
 pub fn executable_candidates(env: &dyn Fn(&str) -> Option<String>, home: &Path) -> Vec<PathBuf> {
     #[cfg(windows)]
@@ -266,6 +268,25 @@ fn windows_desktop_bin_roots(local: &Path) -> Vec<PathBuf> {
     roots
 }
 
+/// The folders mise's npm backend installs `@openai/codex` into, under
+/// `<mise data>/installs`.
+#[cfg(not(windows))]
+const MISE_NPM_CODEX: [&str; 2] = ["npm-openai-codex", "npm-@openai-codex"];
+
+/// mise's data folder: `MISE_DATA_DIR`, else `$XDG_DATA_HOME/mise`, else
+/// `~/.local/share/mise`. Only absolute settings count.
+#[cfg(not(windows))]
+fn mise_data_dir(env: &dyn Fn(&str) -> Option<String>, home: &Path) -> PathBuf {
+    let set = |key: &str| {
+        env(key)
+            .map(|value| PathBuf::from(value.trim()))
+            .filter(|path| path.is_absolute())
+    };
+    set("MISE_DATA_DIR")
+        .or_else(|| set("XDG_DATA_HOME").map(|data| data.join("mise")))
+        .unwrap_or_else(|| home.join(".local/share/mise"))
+}
+
 #[cfg(not(windows))]
 fn unix_executable_candidates(env: &dyn Fn(&str) -> Option<String>, home: &Path) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
@@ -284,11 +305,21 @@ fn unix_executable_candidates(env: &dyn Fn(&str) -> Option<String>, home: &Path)
             )));
         }
     }
-    let mise = home.join(".local/share/mise/installs/codex");
+    let installs = mise_data_dir(env, home).join("installs");
+    let mise = installs.join("codex");
     candidates.push(mise.join("latest/bin/codex"));
     candidates.push(home.join(".local/bin/codex"));
     candidates.extend(versions(&mise));
+    // mise's npm backend (`mise use -g npm:@openai/codex`) installs each
+    // version with `npm install -g --prefix`, so its `bin/codex` is npm's
+    // launcher; older mise kept the `@` in the folder name.
+    for folder in MISE_NPM_CODEX {
+        candidates.extend(versions(&installs.join(folder)));
+    }
     candidates.extend(versions(&home.join(".nvm/versions/node")));
+    // `npm install -g @openai/codex` under a node mise provides: the global
+    // bin of each mise node version, like nvm's.
+    candidates.extend(versions(&installs.join("node")));
     candidates.push(PathBuf::from("/opt/homebrew/bin/codex"));
     candidates.push(PathBuf::from("/usr/local/bin/codex"));
     if let Some(path) = env("PATH") {
@@ -1879,5 +1910,134 @@ mod tests {
             home.path(),
         );
         assert_eq!(config.executable, None);
+    }
+
+    /// The installed candidates under `home`, in order: what `from_env`
+    /// would pick from there, ignoring installs on the machine running the
+    /// test.
+    #[cfg(unix)]
+    fn installed_under(env: &dyn Fn(&str) -> Option<String>, home: &Path) -> Vec<PathBuf> {
+        executable_candidates(env, home)
+            .into_iter()
+            .filter(|path| path.starts_with(home) && is_executable_file(path))
+            .collect()
+    }
+
+    /// npm's global layout under `prefix`: the launcher in
+    /// `lib/node_modules/@openai/codex/bin/codex.js`, linked from `bin/codex`.
+    #[cfg(unix)]
+    fn npm_global_codex(prefix: &Path) -> PathBuf {
+        let launcher = prefix.join("lib/node_modules/@openai/codex/bin/codex.js");
+        executable(&launcher);
+        let link = prefix.join("bin/codex");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink("../lib/node_modules/@openai/codex/bin/codex.js", &link)
+            .unwrap();
+        link
+    }
+
+    // #2247: `npm install -g @openai/codex` under a node mise provides is
+    // found without the shell's PATH (the core started by the desktop app
+    // has only /usr/bin:/bin), newest node first.
+    #[cfg(unix)]
+    #[test]
+    fn a_codex_in_a_mise_node_global_bin_is_found_without_path() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let node = home.join(".local/share/mise/installs/node");
+        let older = npm_global_codex(&node.join("20.20.0"));
+        let newer = npm_global_codex(&node.join("22.23.2"));
+        // A newer node without Codex is skipped.
+        std::fs::create_dir_all(node.join("24.20.0/bin")).unwrap();
+        let env = env(&[("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")]);
+        assert_eq!(installed_under(&env, home), vec![newer.clone(), older]);
+        assert!(!is_shim(&newer));
+    }
+
+    // #2247: mise's npm backend (`mise use -g npm:@openai/codex`) puts each
+    // version under `installs/npm-openai-codex/<version>`, newest first, and
+    // ahead of npm installs under a node version.
+    #[cfg(unix)]
+    #[test]
+    fn a_codex_from_mises_npm_backend_is_found_newest_first() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let installs = home.join(".local/share/mise/installs");
+        let backend = installs.join("npm-openai-codex");
+        let old = npm_global_codex(&backend.join("0.99.0"));
+        let new = npm_global_codex(&backend.join("0.154.0"));
+        let legacy = npm_global_codex(&installs.join("npm-@openai-codex/0.98.0"));
+        let node = npm_global_codex(&installs.join("node/22.23.2"));
+        assert_eq!(
+            installed_under(&env(&[]), home),
+            vec![new, old, legacy, node]
+        );
+    }
+
+    // mise's data folder follows MISE_DATA_DIR, then XDG_DATA_HOME.
+    #[cfg(unix)]
+    #[test]
+    fn mise_installs_follow_mises_data_folder() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let data = home.join("data");
+        let xdg = npm_global_codex(&data.join("mise/installs/npm-openai-codex/0.154.0"));
+        let custom = npm_global_codex(&home.join("custom/installs/node/22.23.2"));
+        let custom_dir = home.join("custom");
+        assert_eq!(
+            installed_under(&env(&[("XDG_DATA_HOME", data.to_str().unwrap())]), home),
+            vec![xdg.clone()]
+        );
+        assert_eq!(
+            installed_under(
+                &env(&[
+                    ("XDG_DATA_HOME", data.to_str().unwrap()),
+                    ("MISE_DATA_DIR", custom_dir.to_str().unwrap()),
+                ]),
+                home
+            ),
+            vec![custom]
+        );
+        assert_eq!(
+            installed_under(&env(&[("MISE_DATA_DIR", "relative/mise")]), home),
+            Vec::<PathBuf>::new(),
+            "a relative MISE_DATA_DIR falls back to ~/.local/share/mise"
+        );
+    }
+
+    // #2247: the shim stays skipped even when it is the only `codex` on
+    // PATH; the real mise install behind it is used instead.
+    #[cfg(unix)]
+    #[test]
+    fn the_mise_shim_stays_skipped_beside_mise_installs() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let mise = home.join(".local/share/mise");
+        let shim = mise.join("shims/codex");
+        executable(&shim);
+        let real = npm_global_codex(&mise.join("installs/npm-openai-codex/0.154.0"));
+        let path = mise.join("shims");
+        let env = env(&[("PATH", path.to_str().unwrap())]);
+        let found = installed_under(&env, home);
+        assert_eq!(found, vec![real]);
+        assert!(!executable_candidates(&env, home).contains(&shim));
+    }
+
+    // #2247: RELAY_DESKTOP_CODEX still wins over every mise install.
+    #[cfg(unix)]
+    #[test]
+    fn the_override_wins_over_mise_installs() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let installs = home.join(".local/share/mise/installs");
+        npm_global_codex(&installs.join("npm-openai-codex/0.154.0"));
+        npm_global_codex(&installs.join("node/22.23.2"));
+        let pinned = home.join("pinned/codex");
+        executable(&pinned);
+        let config = CodexConfig::from_env(
+            &env(&[("RELAY_DESKTOP_CODEX", pinned.to_str().unwrap())]),
+            home,
+        );
+        assert_eq!(config.executable, Some(pinned));
     }
 }
