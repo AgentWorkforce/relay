@@ -3,7 +3,7 @@
 Status: being built. Product design approved by Khaliq Gant on 2026-11-22.
 On 2026-11-23 he asked for it to ship ("Why is this docs only? I want this
 shipped"); both were relayed through `kjgrok`. §15 sets the answers to the open
-questions: Khaliq's own for (3), (6) and (8) (2026-11-23), and defaults for the
+questions: Khaliq's own for (3), (6), (8) and (9) (2026-11-23), and defaults for the
 rest. §16 is the wire contract the implementing PRs share. Every other decision
 below is open to Khaliq's override.
 
@@ -641,7 +641,7 @@ carve-out:
 
 ## 13. Open questions
 
-§15 answers all of these except (9). The questions are kept here as they
+§15 answers all of these. The questions are kept here as they
 were asked.
 
 1. **Is Tier D enough for `merge`, or should merges into protected default
@@ -708,25 +708,30 @@ Each one is open to Khaliq's override.
 7. **Not plan-gated.** Audit export is available on every plan.
 8. **Khaliq's decision: structured conditions are built in** (§5.5).
    Cloud checks them at redeem.
-9. **Pending Khaliq's decision. Interim default: 90 days.** After that, the
-   quote text is redacted to its SHA-256 hash, and the owner can redact any
-   quote at any time. The audit events themselves (who, what, when, the
-   hash) are kept. Why 90 days:
-   - **It matches the longest a grant can last.** The quote behind any use
-     of a grant is still on hand for the whole time that grant could be
-     live.
-   - **Disputes surface quickly.** The owner is told about every use (§8),
-     so a made-up quote is usually caught within days. 90 days leaves room
-     for monthly access reviews and a late "I never said that".
-   - **The quote is the owner's private chat text**, copied from another
-     product. Keeping less of it limits the damage of a breach and fits
-     data-minimisation rules such as GDPR's.
-   - **The SHA-256 hash is kept for good**, so a quote produced later from
-     the delegate's own chat history can still be checked against it.
-   - **The alternatives:** keep quotes as long as the audit log (simpler,
-     but it keeps private text indefinitely), or 30 days (less exposure,
-     but it can miss a quarterly review). An org-configurable window with
-     90 days as the default is a natural middle ground.
+9. **Khaliq's decision (2026-11-23, 6:36 AM PT): "Org setting, default 90
+   days".**
+   - **The setting:** quote retention is the org policy field
+     `quote_retention_days`, from 1 to 3650, default 90. Admins change it.
+   - **What happens at the end:** when a quote is older than its org's
+     window, the quote text is redacted to its SHA-256 hash. A shorter
+     window applies to existing quotes at the next sweep. A longer one
+     cannot bring back quotes already redacted.
+   - **What is kept:** the owner can redact any quote at any time, and the
+     audit events themselves (who, what, when, the hash) are kept.
+   - **Why 90 is the default:**
+     - **It matches the longest a grant can last.** The quote behind any use
+       of a grant is still on hand for the whole time that grant could be
+       live.
+     - **Disputes surface quickly.** The owner is told about every use (§8),
+       so a made-up quote is usually caught within days. 90 days leaves room
+       for monthly access reviews and a late "I never said that".
+     - **The quote is the owner's private chat text**, copied from another
+       product. Keeping less of it limits the damage of a breach and fits
+       data-minimisation rules such as GDPR's.
+     - **The SHA-256 hash is kept for good**, so a quote produced later from
+       the delegate's own chat history can still be checked against it.
+   - **Why a setting:** orgs differ. Some must keep audit evidence for a
+     year or more, and others want less private text kept.
 
 Two more decisions by Khaliq (2026-11-23), recorded in skills#219:
 
@@ -792,18 +797,18 @@ Human-only routes take a browser session or a desktop-verified bearer, never
 an agent token or a plain CLI token. They are refused while the workspace's
 `delegation_enabled` is off, except `GET` and revocation:
 
-| Method & path (under `/api/v1/workspaces/{ws}`) | Purpose                                                                                                                           |
-| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /delegates`                                | the caller's grants (admins: `?all=1`)                                                                                            |
-| `POST /delegates`                               | create a grant: `{delegate_agent_id, scopes:[{class, targets[]}], expires_at, require_tier_o?:[class]}`                           |
-| `PATCH /delegates/{grant_id}`                   | narrow scopes or expiry (widening = new grant)                                                                                    |
-| `DELETE /delegates/{grant_id}`                  | revoke                                                                                                                            |
-| `POST /delegates/revoke-all`                    | revoke every grant of the caller (admins: `{all:true}` for the workspace)                                                         |
-| `POST /delegates/claims`                        | start a claim, returns `{claim_id, code, expires_at}` (10 min, single use)                                                        |
-| `POST /delegates/approvals`                     | Tier O: mint `{actions, expires_at, single_use?}` returns `{approval_id}`                                                         |
-| `GET /delegates/audit`                          | audit events, `?since=&grant_id=&format=jsonl`                                                                                    |
-| `PUT /delegates/policy`                         | admin only: `{delegation_enabled, max_expiry_days, allowed_classes, require_tier_o, code_owner_match: "any_path" \| "all_paths"}` |
-| `GET`/`PUT /delegates/target-owners`            | admin only: `[{pattern, repo?, owner_ids?}]` for targets that are not repos (§5.4)                                                |
+| Method & path (under `/api/v1/workspaces/{ws}`) | Purpose                                                                                                                                                                      |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /delegates`                                | the caller's grants (admins: `?all=1`)                                                                                                                                       |
+| `POST /delegates`                               | create a grant: `{delegate_agent_id, scopes:[{class, targets[]}], expires_at, require_tier_o?:[class]}`                                                                      |
+| `PATCH /delegates/{grant_id}`                   | narrow scopes or expiry (widening = new grant)                                                                                                                               |
+| `DELETE /delegates/{grant_id}`                  | revoke                                                                                                                                                                       |
+| `POST /delegates/revoke-all`                    | revoke every grant of the caller (admins: `{all:true}` for the workspace)                                                                                                    |
+| `POST /delegates/claims`                        | start a claim, returns `{claim_id, code, expires_at}` (10 min, single use)                                                                                                   |
+| `POST /delegates/approvals`                     | Tier O: mint `{actions, expires_at, single_use?}` returns `{approval_id}`                                                                                                    |
+| `GET /delegates/audit`                          | audit events, `?since=&grant_id=&format=jsonl`                                                                                                                               |
+| `PUT /delegates/policy`                         | admin only: `{delegation_enabled, max_expiry_days, allowed_classes, require_tier_o, code_owner_match: "any_path" \| "all_paths", quote_retention_days (1–3650, default 90)}` |
+| `GET`/`PUT /delegates/target-owners`            | admin only: `[{pattern, repo?, owner_ids?}]` for targets that are not repos (§5.4)                                                                                           |
 
 Agent routes are proven with the agent's own Relaycast token, as in
 `native-authority`, with the same bearer rules:
