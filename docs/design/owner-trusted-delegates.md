@@ -164,9 +164,9 @@ A grant lists classes. Each class can be narrowed by a target pattern.
 | `pr_ops`          | open/close PR, label, request review, re-run CI                                                                          | `owner/repo`                                                                                                  | Tier D                                     |
 | `deploy`          | deploy to a named environment                                                                                            | `service:env` (`*:staging`)                                                                                   | Tier D for non-prod; prod needs single-use |
 | `release`         | publish npm/crate/GitHub release, cut a tag                                                                              | package or repo                                                                                               | single-use                                 |
-| `secret_change`   | rotate, set or delete a secret                                                                                           | secret store path                                                                                             | single-use                                 |
-| `destructive`     | delete branches/data, force-push, drop tables                                                                            | resource                                                                                                      | single-use (see §15, item D)               |
-| `spend`           | buy, scale up paid resources                                                                                             | amount cap                                                                                                    | single-use                                 |
+| `secret_change`   | rotate, set or delete a secret                                                                                           | secret store path                                                                                             | Tier O + single-use (held, §15)            |
+| `destructive`     | delete branches/data, force-push, drop tables                                                                            | resource                                                                                                      | Tier O + single-use (held, §15)            |
+| `spend`           | buy, scale up paid resources                                                                                             | amount cap                                                                                                    | Tier O + single-use (held, §15)            |
 | `external_comms`  | post publicly, email customers                                                                                           | channel                                                                                                       | Tier D                                     |
 | `config_change`   | change the recipient session's own permissions, sandbox, approval profile, instructions, skills, hooks or Relay settings | `<agent id>:<setting>=<value>`, exact, never a wildcard; grants list agent ids or `*` for the agent part only | single-use                                 |
 | `prompt_approval` | approve or deny one pending core permission request (#2238's set, §9.3)                                                  | `<session agent id>:<request ref>`; grants use `<agent id>:*` or `*`                                          | Tier D; answers one request                |
@@ -850,7 +850,9 @@ Each one is open to Khaliq's override.
 anything else in this document that disagrees:
 
 - **A. Release approvals need no tap.** The verified, single-use line is
-  enough, and Tier O is not the default for `release` or for anything else.
+  enough, and Tier O is not the default for `release`. **Held:**
+  `secret_change`, `destructive` and `spend` keep their earlier Tier O
+  default until Khaliq answers for them himself.
   Tier O stays available: the owner can mint an approval himself, and an
   org can require it through `require_tier_o`.
 - **B. No approval prompts at all.** Gates trust the verified single-use
@@ -913,8 +915,10 @@ grant. A target is a string of at most 256 characters, and
 An exact target covers only itself plus, for `owner/repo`, `owner/repo#N`.
 High-risk, always `single_use`: `release`, `secret_change`, `destructive`,
 `spend`, `config_change`, and `deploy` whose target ends in `:prod` or
-`:production`. No class needs Tier O by default (§15, items A and B). An org
-can still require it for any class with `require_tier_o`.
+`:production`. Classes that need Tier O by default, held until Khaliq
+answers: `secret_change`, `destructive`, `spend`. No other class needs it
+(§15, items A and B). An org can still require it for any class with
+`require_tier_o`.
 
 Conditions (§5.5) are `{type, …}` with `type` in `ci_green`, `head_sha`
 (`sha`: 40 lowercase hex characters), `reviews_approved` (`min`: 1 to 10),
