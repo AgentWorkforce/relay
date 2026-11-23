@@ -30,7 +30,7 @@ const EMBEDDED_SECRET = new RegExp(`(?<![A-Za-z0-9])(?:${SECRET_PREFIXES})[A-Za-
 const THIRD_PARTY_SECRETS = [
   'gh[pousr]_[A-Za-z0-9]{36}', // GitHub tokens
   'github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}', // GitHub fine-grained tokens
-  'xox[abposr]-[0-9]{6,}-[A-Za-z0-9-]+', // Slack tokens
+  'xox[abposr]-[0-9]{8,}-(?:[0-9]+-){1,2}[A-Za-z0-9]{24,}', // Slack tokens
   '(?:AKIA|ASIA)[0-9A-Z]{16}', // AWS access key IDs
   'sk-(?:ant|proj)-[A-Za-z0-9_-]{80,}', // Anthropic and OpenAI project keys
   'sk-[A-Za-z0-9]{32,}', // OpenAI legacy keys
@@ -41,8 +41,11 @@ const EMBEDDED_THIRD_PARTY_SECRET = new RegExp(
   'g'
 );
 
-/** URL userinfo (`https://user:pass@host`); fetch echoes the URL when it rejects one. */
-const URL_USERINFO = /(\b[A-Za-z][A-Za-z0-9+.-]*:\/\/)[^\s/?#@]+@/g;
+/**
+ * URL userinfo (`https://user:pass@host`); fetch echoes the URL when it rejects
+ * one. Masked through the authority's last `@`, where a URL parser splits it.
+ */
+const URL_USERINFO = /(\b[A-Za-z][A-Za-z0-9+.-]*:\/\/)[^\s/?#]+@/g;
 
 /**
  * Mask a credential for display: the known prefix (if any) and the last four

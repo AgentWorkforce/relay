@@ -137,6 +137,11 @@ describe('maskSecretsInText', () => {
       ['xoxb', '123456789012', '1234567890123', 'AbCdEfGhIjKlMnOpQrStUvWx'].join('-'),
       '…UvWx',
     ],
+    [
+      'a Slack user token',
+      ['xoxp', '1234567890', '1234567890', '1234567890', 'a1b2c3d4'.repeat(4)].join('-'),
+      '…c3d4',
+    ],
     ['an AWS access key ID', ['AKIA', 'IOSFODNN7EXAMPLE'].join(''), '…MPLE'],
     ['an Anthropic key', `sk-ant-api03-${'Xy9_'.repeat(23)}AA`, '…9_AA'],
     ['an OpenAI legacy key', `sk-${'Ab3'.repeat(16)}`, '…3Ab3'],
@@ -149,6 +154,8 @@ describe('maskSecretsInText', () => {
     expect(maskSecretsInText('fetch https://user:hunter22@relay.example/v1 and http://token@h:8080')).toBe(
       'fetch https://…@relay.example/v1 and http://…@h:8080'
     );
+    // A URL parser splits at the last `@`, so an unencoded one belongs to the password.
+    expect(maskSecretsInText('https://ops:p@ss@word@relay.example/v1')).toBe('https://…@relay.example/v1');
     expect(maskSecretsInText('mail ops@relay.example, see https://relay.example/@team')).toBe(
       'mail ops@relay.example, see https://relay.example/@team'
     );
@@ -167,6 +174,8 @@ describe('maskSecretsInText', () => {
       'gho_builder',
       'github_pat_bot',
       'xoxb-bot',
+      'xoxb-202611-build',
+      'xoxb-20261123-nightly-build-for-the-release-train',
       'AKIA-bot',
       'sk-ant-helper',
       'sk-proj-planner',
