@@ -799,12 +799,16 @@ These details came out of review and are part of the contract:
   - The opt-out is refused on `ref_pattern` (tag) gates, both at
     registration and at redeem.
 - **Matching rules.** A gate's `target_prefix` must end with `:`. Live gates
-  are unique on the repository (compared case-insensitively), the workflow,
-  `job_workflow_ref`, the ref or ref pattern, and the event. A SHA-pinned
-  `job_workflow_ref` is not required for a top-level workflow.
-- **Status codes.** A passing redeem or dry run answers 200. An OIDC
-  failure answers 401 `oidc_invalid`. `unavailable` and
-  `condition_unavailable` answer 503. Every other refusal answers 403.
+  are unique per workspace and owner on (repository, `workflow_ref`,
+  `job_workflow_ref`, event, `target_prefix`). The `workflow_ref` includes
+  the ref. Only the repository name is compared case-insensitively; workflow
+  paths and refs are case-sensitive. A SHA-pinned `job_workflow_ref` is not
+  required for a top-level workflow.
+- **Status codes.** A dry run always answers 200, whether it passes or
+  not; the body carries `ok`, `reason` and `dry_run`. A passing redeem
+  answers 200. A refused redeem that is not a dry run answers 401 for
+  `oidc_invalid`, 503 for `unavailable` and `condition_unavailable`, and
+  403 for every other reason.
 - **Locking.** Consuming redeems lock the approval `FOR NO KEY UPDATE` and
   record `gate.redeemed` in the same transaction. An approval revoked
   between the check and the consume answers `revoked`.
