@@ -22,6 +22,42 @@ use std::time::{Duration, Instant};
 #[cfg(windows)]
 pub use windows::IpcStream;
 
+/// The Codex desktop app's router on Windows.
+pub const WINDOWS_ROUTER_PIPE: &str = r"\\.\pipe\codex-ipc";
+
+#[cfg(all(windows, test))]
+thread_local! {
+    /// A test's own router pipe, so tests never reach a real Codex app.
+    pub(crate) static TEST_ROUTER_PIPE: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(windows)]
+fn windows_pipe() -> String {
+    // Tests never reach a real Codex app: without a pipe of their own they
+    // get a private one nothing listens on.
+    #[cfg(test)]
+    return TEST_ROUTER_PIPE
+        .with(|name| name.borrow().clone())
+        .unwrap_or_else(|| {
+            format!(
+                r"\\.\pipe\relay-test-absent-codex-ipc-{}",
+                std::process::id()
+            )
+        });
+    #[cfg(not(test))]
+    WINDOWS_ROUTER_PIPE.to_string()
+}
+
+/// Whether the Codex app's router could be listening, without asking it.
+/// On Unix, only when its socket file exists. On Windows its named pipe is
+/// always worth asking: no file marks it, a missing pipe fails at once and
+/// a busy one is waited for at most two seconds, and every answer after
+/// that is bounded by the request timeouts.
+pub fn router_may_listen(socket: &Path) -> bool {
+    cfg!(windows) || socket.exists()
+}
+
 /// The Codex app refuses frames larger than this.
 pub const MAX_FRAME_BYTES: usize = 268_435_456;
 
@@ -268,9 +304,11 @@ impl Session {
         Session::register(stream)
     }
 
+    /// On Windows the app listens on its named pipe, whatever `socket` says:
+    /// `<Codex home>\ipc\ipc.sock` is never created there.
     #[cfg(windows)]
     pub fn connect(_socket: &Path) -> Result<Session, IpcError> {
-        let stream = IpcStream::connect_named(r"\\.\pipe\codex-ipc").map_err(connection_error)?;
+        let stream = IpcStream::connect_named(&windows_pipe()).map_err(connection_error)?;
         Session::register(stream)
     }
 
@@ -342,6 +380,15 @@ impl Session {
     }
 
     pub fn owners(&mut self, threads: &[String]) -> Result<BTreeMap<String, String>, IpcError> {
+        self.owners_answered(threads).map(|(owners, _)| owners)
+    }
+
+    /// `owners`, and how many of `threads` the router left unanswered by
+    /// its deadline.
+    pub fn owners_answered(
+        &mut self,
+        threads: &[String],
+    ) -> Result<(BTreeMap<String, String>, usize), IpcError> {
         let mut by_request: HashMap<String, String> = HashMap::new();
         for thread in threads {
             let id = crate::relay::store::random_uuid();
@@ -379,7 +426,7 @@ impl Session {
                 owners.insert(thread, owner);
             }
         }
-        Ok(owners)
+        Ok((owners, by_request.len()))
     }
 
     /// Asks `owner` to start a turn with `text` (and `hidden` model-only
@@ -495,12 +542,21 @@ impl Session {
 /// Which of `threads` a Codex app window owns now; none when the app is
 /// not running or does not answer.
 pub fn open_threads(socket: &Path, threads: &[String]) -> BTreeMap<String, String> {
-    if threads.is_empty() {
-        return BTreeMap::new();
-    }
-    Session::connect(socket)
-        .and_then(|mut session| session.owners(threads))
+    try_open_threads(socket, threads)
+        .map(|(owners, _)| owners)
         .unwrap_or_default()
+}
+
+/// `open_threads` and how many threads went unanswered, or why the router
+/// could not be asked.
+pub fn try_open_threads(
+    socket: &Path,
+    threads: &[String],
+) -> Result<(BTreeMap<String, String>, usize), IpcError> {
+    if threads.is_empty() {
+        return Ok((BTreeMap::new(), 0));
+    }
+    Session::connect(socket).and_then(|mut session| session.owners_answered(threads))
 }
 
 #[cfg(test)]
