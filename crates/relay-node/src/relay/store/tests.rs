@@ -2779,7 +2779,12 @@ fn an_existing_app_data_folder_open_to_others_is_made_private() {
     assert_eq!(mode(&folder), 0o700);
     // Only the group and other bits go: an owner-read-only folder stays so.
     std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555)).unwrap();
-    let _ = handle.update(|store| store.registrations.push(registration("a", target(THREAD))));
+    // The folder is not writable now, so the save fails (root ignores the
+    // mode bits, so only a non-root run sees it fail).
+    let saved = handle.update(|store| store.registrations.push(registration("a", target(THREAD))));
+    if !running_as_root() {
+        assert!(saved.is_err(), "a save into a read-only folder must fail");
+    }
     assert_eq!(mode(&folder), 0o500);
     std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700)).unwrap();
     // A private folder is left as it is.
