@@ -235,6 +235,12 @@ Each recipient node has a setting, `delegated_approvals_from`:
 - `own_owner`: accepts delegates of the recipient's own owner only;
 - `off`.
 
+**High-risk classes on repo-level targets.** For `release`, `deploy`,
+`secret_change`, `destructive` and `spend` on a whole-repo target
+(`owner/repo` or a wildcard), code-owner standing needs a whole-repo owner:
+a person named by the last `*` or `**` rule in CODEOWNERS. Owning one path
+is not enough.
+
 **Who counts as a code owner of a target.** Cloud resolves this, and every
 step fails closed:
 
@@ -1111,7 +1117,8 @@ token>` and `{approval_id, action}`. It returns
   Ed25519 keys with `kid`.
 - Reason codes: `not_enabled`, `not_delegate`, `no_approval`, `out_of_scope`,
   `expired`, `revoked`, `recipient_policy`, `tier_o_required`, `consumed`,
-  `not_pending`, `unavailable`, `condition_unmet`, `condition_unavailable`.
+  `not_pending`, `unavailable`, `condition_unmet`, `condition_unavailable`,
+  `predates_grant`.
 - Defaults: a grant expires after 30 days and may last at most 90. An
   approval expires after 1 hour and may last at most 24 hours, never past its
   grant. An attestation lasts 300 seconds.
@@ -1130,8 +1137,8 @@ once redacted), iat, exp, jti`.
 one derived for the message in Tier D (`apv_` followed by base62 of
 SHA-256(ws|message_id)[0..16]). Redeem and audit use it.
 
-A Tier D approval is refused as `revoked` when its message was sent before
-the grant was created. The send time is Relaycast's `created_at` when it
+A Tier D approval is refused as `predates_grant` when its message was sent
+more than 2 seconds (clock skew) before the grant was created. The send time is Relaycast's `created_at` when it
 reports one. Otherwise it is decoded from the Relaycast snowflake message id:
 `(id >> 22)` milliseconds after 2025-01-01T00:00:00Z, accepted at most 5
 minutes in the future. If neither is available, the approval is refused as
