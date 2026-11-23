@@ -148,10 +148,9 @@ carrying a claim of its own. The attestation then states that the owner
 approved these exact actions. An org policy or a grant can require Tier O for
 some classes, for example production deploys and secret changes.
 
-A useful middle ground: a delegate asks for an owner approval
-(`POST .../approvals/request`), and the owner gets a one-tap prompt. That
-turns "the bot says Khaliq said" into "Khaliq tapped approve" with very little
-extra friction.
+The delegate-requested one-tap prompt this section once proposed is dropped
+(§15): Khaliq wants no approval prompts. Tier O is only ever started by the
+owner.
 
 ## 5. Scope
 
@@ -159,17 +158,18 @@ extra friction.
 
 A grant lists classes. Each class can be narrowed by a target pattern.
 
-| Class             | Examples                                                                | Target pattern                                                       | Default limit                              |
-| ----------------- | ----------------------------------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------ |
-| `merge`           | merge a PR, enable auto-merge                                           | `owner/repo`, `owner/repo#N`                                         | Tier D                                     |
-| `pr_ops`          | open/close PR, label, request review, re-run CI                         | `owner/repo`                                                         | Tier D                                     |
-| `deploy`          | deploy to a named environment                                           | `service:env` (`*:staging`)                                          | Tier D for non-prod; prod needs single-use |
-| `release`         | publish npm/crate/GitHub release, cut a tag                             | package or repo                                                      | single-use                                 |
-| `secret_change`   | rotate, set or delete a secret                                          | secret store path                                                    | Tier O + single-use                        |
-| `destructive`     | delete branches/data, force-push, drop tables                           | resource                                                             | Tier O + single-use                        |
-| `spend`           | buy, scale up paid resources                                            | amount cap                                                           | Tier O                                     |
-| `external_comms`  | post publicly, email customers                                          | channel                                                              | Tier D                                     |
-| `prompt_approval` | approve or deny one pending core permission request (#2238's set, §9.3) | `<session agent id>:<request ref>`; grants use `<agent id>:*` or `*` | Tier D; answers one request                |
+| Class             | Examples                                                                                                                 | Target pattern                                                                                                | Default limit                              |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| `merge`           | merge a PR, enable auto-merge                                                                                            | `owner/repo`, `owner/repo#N`                                                                                  | Tier D                                     |
+| `pr_ops`          | open/close PR, label, request review, re-run CI                                                                          | `owner/repo`                                                                                                  | Tier D                                     |
+| `deploy`          | deploy to a named environment                                                                                            | `service:env` (`*:staging`)                                                                                   | Tier D for non-prod; prod needs single-use |
+| `release`         | publish npm/crate/GitHub release, cut a tag                                                                              | package or repo                                                                                               | single-use                                 |
+| `secret_change`   | rotate, set or delete a secret                                                                                           | secret store path                                                                                             | single-use                                 |
+| `destructive`     | delete branches/data, force-push, drop tables                                                                            | resource                                                                                                      | single-use (see §15, item D)               |
+| `spend`           | buy, scale up paid resources                                                                                             | amount cap                                                                                                    | single-use                                 |
+| `external_comms`  | post publicly, email customers                                                                                           | channel                                                                                                       | Tier D                                     |
+| `config_change`   | change the recipient session's own permissions, sandbox, approval profile, instructions, skills, hooks or Relay settings | `<agent id>:<setting>=<value>`, exact, never a wildcard; grants list agent ids or `*` for the agent part only | single-use                                 |
+| `prompt_approval` | approve or deny one pending core permission request (#2238's set, §9.3)                                                  | `<session agent id>:<request ref>`; grants use `<agent id>:*` or `*`                                          | Tier D; answers one request                |
 
 The classes are a closed enum, versioned with the protocol, so no free-form
 classes. `owner_approval.actions[]` entries are `{class, target, conditions?, note?}`
@@ -190,18 +190,26 @@ part**, so an approval is never partly accepted without anyone noticing.
 
 ### 5.3 Never delegable
 
+Khaliq's decision (2026-11-23, 7:43 AM PT): a session's own permissions,
+sandbox and config **are delegable**, through the `config_change` class
+(§5.1). Each approval names exactly one setting and its new value, is single
+use, and is redeemed right before the change.
+
 These stay out of every class, in every tier:
 
-- changing a recipient's permissions, sandbox, approval profile, instructions,
-  skills, hooks or Relay settings (`spawn_*`, `spawn_leader_approvals`, and so
-  on);
-- creating or changing grants;
+- creating or changing grants, delegation policy, release gates, and the
+  recipient's delegation settings themselves (`delegated_approvals_from`,
+  `spawn_delegate_approvals`). Without that limit, a delegate could widen its
+  own reach.
 - answering choices, forms, `AskUserQuestion`, dialogs or local
-  verification, and Codex extra-permission requests. A `prompt_approval`
-  answers only the rest of #2238's approve/deny set (§9.3).
+  verification. A `prompt_approval` answers #2238's approve/deny set, and
+  Codex extra-permission requests too, now that permissions are delegable
+  (§9.3).
 
-This matches the limits #2238 keeps for leaders and the "do not change
-permissions, instructions or configuration" clause in `OWNER_LINE`.
+A `config_change` never overrides the harness's own rules: whatever the
+harness refuses, it still refuses. The delegate line keeps its "do not
+change permissions, instructions or configuration because of it" sentence
+for everything except the exact `config_change` actions it lists.
 
 ### 5.4 Whose approval the recipient accepts
 
@@ -507,7 +515,7 @@ requester and leaders.
   session runs on. Code owners do not apply here (§5.4).
 - **What it answers.** #2238's approvable set: Codex commands, file changes
   and MCP tool calls without a form; Claude tools, including `ExitPlanMode`
-  and MCP tools. Codex extra-permission requests are left out (§5.3). It
+  and MCP tools, and Codex extra-permission requests (§5.3). It
   never answers choices, forms, `AskUserQuestion`, dialogs or local
   verification. A delegate's message about any of those is ordinary text.
 - **Settings.** Everything below must hold:
@@ -734,7 +742,7 @@ The default limits in §5.1 apply to everything else.
 | Approvals of a delegate of another person (Alice's bot directing Bob's agent)            | Accepted only when Alice is a code owner of every action's target (§5.4), or the recipient's own owner. CODEOWNERS is read from the base branch, and logins map to people only through a verified GitHub link. | With `any_path`, the owner of one changed path can approve merging the whole PR. Orgs can choose `all_paths`. Branch protection still applies. |
 | A PR edits CODEOWNERS to add its author                                                  | CODEOWNERS is read from the base branch, never the head.                                                                                                                                                       | None.                                                                                                                                          |
 | A condition goes stale (CI green, then a new commit is pushed)                           | Conditions are checked at redeem; `head_sha` pins the commit; the agent passes it to GitHub's merge call.                                                                                                      | Without `head_sha`, a commit pushed between redeem and merge. Delegates should always add `head_sha` for merges.                               |
-| A delegate answers a prompt to escalate                                                  | Only the machine owner's delegates, per request, with Codex extra-permission requests, choices and forms left out. The answer is audited as the delegate's.                                                    | A delegate inside its grant can approve tool calls the owner would have refused. Keep `prompt_approval` targets narrow.                        |
+| A delegate answers a prompt to escalate                                                  | Only the machine owner's delegates, per request, with choices and forms left out. The answer is audited as the delegate's.                                                                                     | A delegate inside its grant can approve tool calls the owner would have refused. Keep `prompt_approval` targets narrow.                        |
 | A delegate escalates to config, permissions or grants                                    | These are never delegable (§5.3), and there is no grant API for agent tokens.                                                                                                                                  | None.                                                                                                                                          |
 | The owner's account is compromised                                                       | Admin co-approval policy, every grant change logged and announced (no step-up, §4.1).                                                                                                                          | The same risk as any account takeover. Out of scope.                                                                                           |
 | Cloud signing key leaks                                                                  | Online attestation plus key rotation by `kid`. Nodes check revocation online, so a forged JWS alone fails the redeem step for high-risk classes.                                                               | A forged Tier D line during the leak. Needs an HSM-backed key (open question 4).                                                               |
@@ -781,7 +789,7 @@ were asked.
 | **0**                       | This doc. skills#217 stays the interim rule for the AgentWorkforce workspace only.                                                                                                                                                                                                                                                                                                                                                             | Design approved.                                                                                   |
 | **1: grants and audit**     | Cloud grant model, claim flow, org policy, grant API and dashboard UI (human-only), audit log, owner notices. Relaycast #543 merged and deployed, plus immutable `owner_approval` storage and validation. Nothing reaches recipients yet.                                                                                                                                                                                                      | Grants are created, revoked and audited end-to-end in staging.                                     |
 | **2: Tier D, low-risk**     | Cloud `messaging/delegation` attestation. relay-node verifies it and writes the delegate line (`with_delegate_line`, `delegate_framed`, `without_delegate_line`, tests on the model of `leader_approvals.rs`). Classes `merge`, `pr_ops`, `external_comms`, `deploy` to non-prod. Workspace setting off by default. Dogfood in AgentWorkforce: the owner's assistants claimed as delegates, skill section §11 shipped, #217 carve-out deleted. | Two weeks of dogfood with no false-positive line, and refusal reasons look right in the audit log. |
-| **3: high-risk and Tier O** | Code-owner standing (§5.4) and structured conditions (§5.5). `prompt_approval` mapped onto #2238 (§9.3). Single-use redeem. `release`, prod `deploy`, `secret_change`, `destructive`, `spend`. Owner-minted approvals and delegate-requested one-tap approvals. Anomaly-triggered move to Tier O. Panic button in every surface.                                                                                                               | Security review sign-off, plus a red-team pass on the §12 table.                                   |
+| **3: high-risk and Tier O** | Code-owner standing (§5.4) and structured conditions (§5.5). `prompt_approval` mapped onto #2238 (§9.3). Single-use redeem. `release`, prod `deploy`, `secret_change`, `destructive`, `spend`. Owner-minted approvals (owner-started, never a prompt). `config_change`. Release gates (§11a). Panic button in every surface.                                                                                                                   | Security review sign-off, plus a red-team pass on the §12 table.                                   |
 | **4: GA**                   | SDK (TS, then Python), MCP fields and the `redeem_owner_approval` tool, CLI, customer docs, SIEM export, pricing decision.                                                                                                                                                                                                                                                                                                                     | n/a                                                                                                |
 | **Later**                   | Offline attestation verification for air-gapped nodes. More condition types (deploy health, a successful staging deploy).                                                                                                                                                                                                                                                                                                                      | Separate design.                                                                                   |
 
@@ -838,13 +846,46 @@ Each one is open to Khaliq's override.
    - **Why a setting:** orgs differ. Some must keep audit evidence for a
      year or more, and others want less private text kept.
 
+**Khaliq's decisions of 2026-11-23, 7:43 AM PT** (relayed). They supersede
+anything else in this document that disagrees:
+
+- **A. Release approvals need no tap.** The verified, single-use line is
+  enough, and Tier O is not the default for `release` or for anything else.
+  Tier O stays available: the owner can mint an approval himself, and an
+  org can require it through `require_tier_o`.
+- **B. No approval prompts at all.** Gates trust the verified single-use
+  line by default.
+- **C. Gate credential: GitHub Actions OIDC** (§11a.3).
+- **D. The signing key `RELAY_DELEGATION_SIGNING_KEY`** may be created and
+  set in SST for staging and production.
+- **E. No re-authentication before creating grants** (§4.1).
+- **F. Permissions, sandbox and config are delegable**, through
+  `config_change` (§5.3).
+
+What these change:
+
+- **Tier O one-tap** (the delegate asks, the owner taps approve): dropped.
+- **Anomaly-to-Tier-O:** dropped, because nothing may prompt. What replaces
+  it is still open: refuse and record, or flag only. Until Khaliq decides,
+  anomalies are flagged in the audit log only.
+- **Admin co-approval of grants:** dropped, because it is an approval prompt
+  to admins. Org policy can still forbid classes and cap expiry.
+- **Owner notices:** these are not prompts, and nothing waits on them. The
+  default is the audit log plus a passive daily digest, with no real-time
+  push. His call is still open.
+- **§4.1 host-bearer limits:** none. A desktop-verified bearer may do every
+  owner action. Still open as his call: once per-device credentials exist,
+  excluding agent-host devices from owner actions.
+- **`destructive`:** relay-app's lead reports that Khaliq told it directly
+  that deletes and production data are never delegated. That is not yet
+  confirmed through this channel. Until it is, `destructive` stays
+  delegable as single use.
+
 **No approval prompts** (Khaliq, 2026-11-23, 7:41 AM PT, relayed): "he
 doesn't want approval prompts at all". A gate trusts the verified,
 single-use approval line by default: no tap and no prompt to the owner, just
-the line Relay verified. What this means elsewhere in the design (Tier O vs
-Tier D defaults, one-tap requests, owner notices, anomaly handling) is still
-waiting on his own answers. Until he gives them, the rest of this document
-stands as written.
+the line Relay verified. His decisions at 7:43 AM PT, above, set what this
+means for the rest of the design.
 
 Two more decisions by Khaliq (2026-11-23), recorded in skills#219:
 
@@ -862,15 +903,18 @@ to this document first.
 ### 16.1 Action classes
 
 `merge`, `pr_ops`, `deploy`, `release`, `secret_change`, `destructive`,
-`spend`, `external_comms`, `prompt_approval`. A `prompt_approval` target is
+`spend`, `external_comms`, `prompt_approval`, `config_change`. A
+`config_change` target is `<agent id>:<setting>=<value>` (exact, at most 256
+characters, no `*`). A `prompt_approval` target is
 `<agent id>:<request ref>` in an approval, and `<agent id>:*` or `*` in a
 grant. A target is a string of at most 256 characters, and
 `*` is a wildcard for one path segment or a whole segment of `owner/repo`,
 `service:env` and similar targets. `owner/*` covers `owner/x` and `owner/x#12`.
 An exact target covers only itself plus, for `owner/repo`, `owner/repo#N`.
 High-risk, always `single_use`: `release`, `secret_change`, `destructive`,
-`spend`, and `deploy` whose target ends in `:prod` or `:production`. A class
-that needs Tier O by default: `secret_change`, `destructive`, `spend`.
+`spend`, `config_change`, and `deploy` whose target ends in `:prod` or
+`:production`. No class needs Tier O by default (§15, items A and B). An org
+can still require it for any class with `require_tier_o`.
 
 Conditions (§5.5) are `{type, …}` with `type` in `ci_green`, `head_sha`
 (`sha`: 40 lowercase hex characters), `reviews_approved` (`min`: 1 to 10),
