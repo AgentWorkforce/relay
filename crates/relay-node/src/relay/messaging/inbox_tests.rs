@@ -19,8 +19,8 @@ use tokio::net::TcpListener;
 
 /// A Relaycast that answers `GET /v1/inbox` with `inbox` and marks any
 /// message read but `msg_gone`, a path's queued failure statuses first.
-/// With `inbox` null the inbox is counted as Relaycast counts it, from the
-/// deliveries not yet acked: an ack is a read.
+/// With `inbox` null the inbox is counted as Relaycast counts it: the
+/// messages after your read position, which an ack or a read moves.
 #[derive(Default)]
 struct Script {
     inbox: Value,
@@ -33,6 +33,16 @@ struct Script {
     /// Pending deliveries, oldest first: `(delivery id, message id, channel)`.
     deliveries: Vec<(String, String, String)>,
     acked: Vec<String>,
+    /// Message ids marked read, in order.
+    read: Vec<String>,
+    /// How many of the next `GET /v1/deliveries` answer an empty queue, as
+    /// one listed before a delivery arrived does.
+    hidden_lists: usize,
+}
+
+/// Relaycast's message ids are increasing integers in decimal.
+fn id_key(id: &str) -> (usize, &str) {
+    (id.len(), id)
 }
 
 impl Script {
@@ -58,13 +68,32 @@ impl Script {
             .filter(|(id, _, _)| !self.acked.contains(id))
     }
 
+    /// Your read position in conversation `id`: the newest message read
+    /// or acked in it.
+    fn position(&self, id: &str, messages: &[String]) -> Option<String> {
+        let channel = format!("ch_{id}");
+        let acked = self
+            .deliveries
+            .iter()
+            .filter(|(d, _, c)| *c == channel && self.acked.contains(d))
+            .map(|(_, m, _)| m);
+        let read = self.read.iter().filter(|m| messages.contains(m));
+        acked
+            .chain(read)
+            .max_by(|a, b| id_key(a).cmp(&id_key(b)))
+            .cloned()
+    }
+
     fn counted_inbox(&self) -> Value {
         let unread: Vec<Value> = self
             .conversations
             .iter()
-            .filter_map(|(id, _)| {
-                let channel = format!("ch_{id}");
-                let n = self.pending().filter(|(_, _, c)| *c == channel).count();
+            .filter_map(|(id, messages)| {
+                let position = self.position(id, messages);
+                let n = messages
+                    .iter()
+                    .filter(|m| position.as_deref().is_none_or(|p| id_key(m) > id_key(p)))
+                    .count();
                 (n > 0).then(|| {
                     json!({"conversation_id": id, "from": format!("peer-{id}"),
                         "unread_count": n, "last_message": null})
@@ -107,6 +136,10 @@ impl Script {
         match (method, path, read) {
             ("GET", "/v1/inbox", _) if self.inbox.is_null() => ok(self.counted_inbox()),
             ("GET", "/v1/inbox", _) => ok(self.inbox.clone()),
+            ("GET", "/v1/deliveries", _) if self.hidden_lists > 0 => {
+                self.hidden_lists -= 1;
+                ok(json!([]))
+            }
             ("GET", "/v1/deliveries", _) => ok(self
                 .pending()
                 .take(limit)
@@ -168,11 +201,14 @@ impl Script {
                     ),
                 }
             }
-            ("POST", _, Some(id)) if id != "msg_gone" => (
-                200,
-                json!({"ok": true, "data": {"message_id": id, "agent_id": "ag_owner",
+            ("POST", _, Some(id)) if id != "msg_gone" => {
+                self.read.push(id.to_string());
+                (
+                    200,
+                    json!({"ok": true, "data": {"message_id": id, "agent_id": "ag_owner",
                     "read_at": "2026-11-22T00:00:00Z"}}),
-            ),
+                )
+            }
             _ => (
                 404,
                 json!({"ok": false, "error": {"code": "message_not_found", "message": path}}),
@@ -537,6 +573,7 @@ async fn reading_one_conversation_leaves_the_others_unread() {
     let h = two_conversations(ids(500, 2), ids(100, 3)).await;
     let history = h.core.history(&peer("a"), None).await.unwrap();
     assert_eq!(history.messages.len(), 2);
+    h.core.reads_settled().await;
     {
         let script = h.script.lock().unwrap();
         assert_eq!(acked_in(&script, "b"), 0);
@@ -565,6 +602,7 @@ async fn reading_a_conversation_acknowledges_its_own_deliveries() {
         .deliveries
         .push(("del_999".into(), "999".into(), "ch_a".into()));
     h.core.history(&peer("a"), None).await.unwrap();
+    h.core.reads_settled().await;
     let script = h.script.lock().unwrap();
     assert_eq!(acked_in(&script, "a"), 60);
     assert!(!script.acked.contains(&"del_999".to_string()));
@@ -580,9 +618,11 @@ async fn a_queue_led_by_other_conversations_is_read_on_past_them() {
     // 150: acknowledging those lets the next list reach the next 20.
     let h = two_conversations(ids(5_000, 150), ids(1_000, 180)).await;
     h.core.history(&peer("a"), None).await.unwrap();
+    h.core.reads_settled().await;
     let script = h.script.lock().unwrap();
     assert_eq!(acked_in(&script, "a"), 150);
     assert_eq!(acked_in(&script, "b"), 0);
+    // One list before the page (for new replies), the rest after it.
     assert!(script.count("GET", "/v1/deliveries") <= 1 + acks::QUEUE_PASSES);
 }
 
@@ -595,11 +635,121 @@ async fn a_queue_full_of_other_conversations_is_never_read_away() {
     // reading b, so a's stay queued and b stays unread.
     let h = two_conversations(ids(5_000, 3), ids(1_000, 200)).await;
     h.core.history(&peer("a"), None).await.unwrap();
+    h.core.reads_settled().await;
     {
         let script = h.script.lock().unwrap();
         assert!(script.acked.is_empty());
-        assert_eq!(script.count("GET", "/v1/deliveries"), 1);
+        // Before the page, and once after it.
+        assert_eq!(script.count("GET", "/v1/deliveries"), 2);
+        // a is read all the same, by its read position.
+        assert_eq!(script.read, ["5002"]);
     }
-    // Marking a read still reads it, whatever the queue holds.
-    h.core.mark_read("5002").await.unwrap();
+    let inbox = h.core.inbox().await.unwrap();
+    let unread: Vec<(&str, u64)> = inbox
+        .unread
+        .iter()
+        .map(|c| (c.conversation_id.as_str(), c.unread_count))
+        .collect();
+    assert_eq!(unread, [("b", 200)]);
+}
+
+fn unread_in(inbox: &crate::relay::contract::directory::MessageInbox) -> Vec<(String, u64)> {
+    inbox
+        .unread
+        .iter()
+        .map(|c| (c.conversation_id.clone(), c.unread_count))
+        .collect()
+}
+
+#[tokio::test]
+async fn reading_a_conversation_whose_deliveries_expired_reads_it() {
+    if ran_without_file_roots("reading_a_conversation_whose_deliveries_expired_reads_it") {
+        return;
+    }
+    // a's messages are stored, but their deliveries expired: nothing to ack.
+    let h = two_conversations(ids(500, 2), ids(100, 1)).await;
+    h.script
+        .lock()
+        .unwrap()
+        .deliveries
+        .retain(|(_, _, c)| c != "ch_a");
+    let before = h.core.inbox().await.unwrap();
+    assert_eq!(unread_in(&before), [("a".into(), 2), ("b".into(), 1)]);
+    h.core.history(&peer("a"), None).await.unwrap();
+    h.core.reads_settled().await;
+    let after = h.core.inbox().await.unwrap();
+    assert_eq!(unread_in(&after), [("b".to_string(), 1)]);
+    // Read once: reading it again with nothing new sends no second read.
+    h.core.history(&peer("a"), None).await.unwrap();
+    h.core.reads_settled().await;
+    let script = h.script.lock().unwrap();
+    assert_eq!(script.read, ["501"]);
+    assert_eq!(acked_in(&script, "b"), 0);
+}
+
+#[tokio::test]
+async fn an_older_page_moves_no_read_position() {
+    if ran_without_file_roots("an_older_page_moves_no_read_position") {
+        return;
+    }
+    let h = two_conversations(ids(500, 60), ids(100, 1)).await;
+    h.core.history(&peer("a"), Some("510")).await.unwrap();
+    h.core.reads_settled().await;
+    assert!(h.script.lock().unwrap().read.is_empty());
+}
+
+#[tokio::test]
+async fn history_returns_before_the_conversation_is_read() {
+    if ran_without_file_roots("history_returns_before_the_conversation_is_read") {
+        return;
+    }
+    let h = two_conversations(ids(500, 60), ids(100, 1)).await;
+    let history = h.core.history(&peer("a"), None).await.unwrap();
+    assert_eq!(history.messages.len(), HISTORY_LIMIT as usize);
+    {
+        // The page came back with no ack or read sent yet.
+        let script = h.script.lock().unwrap();
+        assert!(script.acked.is_empty());
+        assert!(script.read.is_empty());
+    }
+    h.core.reads_settled().await;
+    let script = h.script.lock().unwrap();
+    assert_eq!(acked_in(&script, "a"), 60);
+    assert_eq!(script.read, ["559"]);
+}
+
+#[tokio::test]
+async fn a_delivery_listed_after_the_page_is_acknowledged() {
+    if ran_without_file_roots("a_delivery_listed_after_the_page_is_acknowledged") {
+        return;
+    }
+    // The queue is empty when history starts: the delivery arrives while
+    // the page is read, and the page shows its message.
+    let h = two_conversations(ids(500, 2), Vec::new()).await;
+    h.script.lock().unwrap().hidden_lists = 1;
+    h.core.history(&peer("a"), None).await.unwrap();
+    h.core.reads_settled().await;
+    let script = h.script.lock().unwrap();
+    assert_eq!(acked_in(&script, "a"), 2);
+}
+
+#[tokio::test]
+async fn a_pause_stops_the_read_before_any_ack() {
+    if ran_without_file_roots("a_pause_stops_the_read_before_any_ack") {
+        return;
+    }
+    let h = two_conversations(ids(500, 3), ids(100, 1)).await;
+    h.script
+        .lock()
+        .unwrap()
+        .failures
+        .insert("/v1/messages/502/read".into(), VecDeque::from([429]));
+    h.core.history(&peer("a"), None).await.unwrap();
+    // The 429 pauses the workspace; the read waits it out, sending nothing.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let script = h.script.lock().unwrap();
+    assert_eq!(script.count("POST", "/v1/messages/502/read"), 1);
+    assert!(script.acked.is_empty());
+    // Only the list made before the page: none after it.
+    assert_eq!(script.count("GET", "/v1/deliveries"), 1);
 }

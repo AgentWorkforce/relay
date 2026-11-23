@@ -31,10 +31,10 @@
 //! ```
 //! Relaycast queues every reply to you as a delivery. On Relaycast an ack is
 //! also a read (it moves your read position), so reading a conversation
-//! acknowledges that conversation's deliveries only ([`acks`]); the others
-//! stay queued, and unread, until their conversation is read or they
-//! expire. The identity's push socket wakes an open conversation the moment
-//! one arrives.
+//! acknowledges that conversation's deliveries only, after its page is
+//! returned ([`acks`]); the others stay queued, and unread, until their
+//! conversation is read or they expire. The identity's push socket wakes an
+//! open conversation the moment one arrives.
 //!
 //! An exact `agent@machine` history is shown only with proof from server
 //! history: the conversation must list exactly two participants with
@@ -69,6 +69,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Messages per history page.
@@ -164,6 +165,12 @@ pub struct MessagingState {
     /// Ids of your queued deliveries already seen by a history read: a new
     /// one is a reply that may be the proof a lookup lacked.
     seen_deliveries: HashSet<String>,
+    /// Conversation reads waiting their turn, by `(base url, identity
+    /// name)`: an entry is there while that identity's reads are settled.
+    settling: HashMap<(String, String), Vec<acks::ConversationRead>>,
+    /// The newest message marked read in each conversation, by
+    /// `(base url, identity name, conversation id)`.
+    marked: HashMap<(String, String, String), String>,
 }
 
 impl MessagingState {
@@ -964,7 +971,7 @@ impl Core {
     /// first message, and for an exact address without proof. `before`
     /// pages back from a message id.
     pub async fn history(
-        &self,
+        self: &Arc<Self>,
         endpoint: &Endpoint,
         before: Option<&str>,
     ) -> Result<History, RpcError> {
@@ -988,7 +995,7 @@ impl Core {
     }
 
     async fn history_as(
-        &self,
+        self: &Arc<Self>,
         identity: &PersonIdentity,
         peer: &Endpoint,
         before: Option<&str>,
@@ -1131,10 +1138,17 @@ impl Core {
                 sdk_gaps::dm_messages(&http, &selected, HISTORY_LIMIT, before),
             )
             .await?;
-        // Only this conversation's: on Relaycast an ack is also a read.
-        self.acknowledge_conversation(&http, identity, &scope, &page, pending)
-            .await;
+        let read = acks::ConversationRead {
+            identity: identity.clone(),
+            scope: scope.clone(),
+            conversation: selected,
+            on_page: page.iter().filter_map(|m| text(&m["id"])).collect(),
+            latest: before.is_none(),
+        };
         let hydrated = self.hydrate(&http, identity, &scope, page).await?;
+        // Read on Relaycast after the page is returned, and only this
+        // conversation: there an ack is also a read.
+        self.settle_read(read);
         Ok(threaded(&hydrated, &identity.name))
     }
 

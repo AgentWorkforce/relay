@@ -368,6 +368,28 @@ a read, so `messages.history` acknowledges only the deliveries of the
 conversation it read, up to its newest message; the others stay queued and
 unread until their own conversation is read.
 
+`messages.history` returns its page first and reads the conversation on
+Relaycast afterwards, in the background, one conversation at a time per
+identity, so acknowledging never delays the answer. Reading the newest page
+(no `before`) also marks its newest message read
+(`POST /v1/messages/{id}/read`), so a conversation whose deliveries expired
+is read too. The delivery queue is listed after the page, so a reply that
+arrived during the read is acknowledged with it. The background read honours
+the workspace's Relaycast pause: it sends nothing while a pause lasts, waits
+it out and starts over (three tries at most). What it leaves queued is
+acknowledged by the conversation's next read.
+
+Limit: `GET /v1/deliveries` lists only your 200 oldest pending deliveries,
+with no cursor or channel filter. Acknowledged ones leave the list, so the
+core lists it again (20 times at most), but when all 200 belong to other
+conversations, the open conversation's deliveries cannot be reached without
+reading those others. They then stay queued and Relaycast keeps redriving
+them, while the conversation itself is still marked read by its newest
+message. A client that must read a conversation at a given message, for
+example from a notification, calls `messages.mark_read` with it, which
+reads it whatever the queue holds. Closing the limit needs a `channel_id`
+filter or a cursor on `GET /v1/deliveries` in Relaycast.
+
 **Platform services**
 
 | Method                      | Params                                                                                                           | Result                                                                                                                                                                                                                                                                                              | Lands in |
