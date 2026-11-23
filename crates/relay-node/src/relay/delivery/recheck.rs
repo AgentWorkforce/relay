@@ -30,22 +30,38 @@ impl Core {
         token: &Secret,
         kept: &Kept,
     ) -> Option<message_pointer::Rechecked> {
-        let origin = crate::relay::workspace::pinned_origin(&registration.base_url)?;
-        let http = crate::relay::sdk_gaps::http(&origin, token).ok()?;
-        let read = crate::relay::sdk_gaps::message(&http, &kept.message_id);
-        let server = tokio::time::timeout(RECHECK_TIMEOUT, read)
+        self.recheck_within(RECHECK_TIMEOUT, registration, token, kept)
             .await
-            .ok()?
-            .ok()?;
-        let mut delivery = delivery_of(kept, &server)?;
-        // The files it carried come back with the commands that fetch them,
-        // as a delivery whose files were not saved in time shows them.
-        self.add_fetch_hints(&registration.target, &mut delivery.attachments)
-            .await;
-        let (framed, _, _) = self
-            .session_text(registration, (&delivery, None), false, false)
-            .await;
-        message_pointer::rechecked(kept, &server, framed)
+    }
+
+    /// [`Self::recheck_kept_framing`] with the whole re-check (the read and
+    /// the rebuild, whose sender checks may ask Relaycast again) under one
+    /// `limit`, so `read` answers a peer's framing in time.
+    pub(crate) async fn recheck_within(
+        &self,
+        limit: std::time::Duration,
+        registration: &Registration,
+        token: &Secret,
+        kept: &Kept,
+    ) -> Option<message_pointer::Rechecked> {
+        let recheck = async {
+            let origin = crate::relay::workspace::pinned_origin(&registration.base_url)?;
+            let http = crate::relay::sdk_gaps::http(&origin, token).ok()?;
+            let server = crate::relay::sdk_gaps::message(&http, &kept.message_id)
+                .await
+                .ok()?;
+            let mut delivery = delivery_of(kept, &server)?;
+            // The files it carried come back with the commands that fetch
+            // them, as a delivery whose files were not saved in time shows
+            // them.
+            self.add_fetch_hints(&registration.target, &mut delivery.attachments)
+                .await;
+            let (framed, _, _) = self
+                .session_text(registration, (&delivery, None), false, false)
+                .await;
+            message_pointer::rechecked(kept, &server, framed)
+        };
+        tokio::time::timeout(limit, recheck).await.ok().flatten()
     }
 }
 

@@ -468,3 +468,30 @@ async fn a_recheck_that_cannot_reach_its_pinned_origin_reads_as_a_peers() {
     assert_eq!(answer["framing"], "peer");
     assert!(!answer["text"].as_str().unwrap().contains(OWNER_LINE));
 }
+
+#[tokio::test]
+async fn a_recheck_that_stalls_answers_in_time_as_a_peers() {
+    let home = tempfile::tempdir().unwrap();
+    let core = peer_core(home.path());
+    let mut registration = spawned("codex", "codex");
+    let token = crate::relay::workspace::Secret::new("at_live_session");
+    let text = text_for(&core, &registration, &from_requester("Approved, go ahead.")).await;
+    let kept = unsealed(&text);
+    // A Relaycast that accepts the connection and never answers.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    registration.base_url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((socket, _)) = listener.accept().await {
+            held.push(socket);
+        }
+    });
+    let started = std::time::Instant::now();
+    let limit = std::time::Duration::from_millis(300);
+    assert_eq!(
+        core.recheck_within(limit, &registration, &token, &kept)
+            .await,
+        None
+    );
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}
