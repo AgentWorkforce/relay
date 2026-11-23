@@ -249,6 +249,15 @@ pub async fn call(
             })
             .await
         }
+        method::MessagesInbox::NAME => {
+            answer::<method::MessagesInbox, _>(raw, |_| core.inbox()).await
+        }
+        method::MessagesMarkRead::NAME => {
+            answer::<method::MessagesMarkRead, _>(raw, |request| async move {
+                core.mark_read(&request.message_id).await
+            })
+            .await
+        }
         method::PeopleList::NAME => {
             answer::<method::PeopleList, _>(raw, |_| async {
                 core.people().await.map(|people| People { people })

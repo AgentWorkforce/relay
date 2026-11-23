@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Minor]
 
+### Added
+
+- `agent-relay-node`: `messages.inbox` returns what is unread for you from Relaycast's own read state (`GET /v1/inbox`): each direct conversation with messages from the other side you have not read, its peer, count and newest message, and unread channels. `messages.mark_read {message_id}` reads a message and everything before it in its conversation on every device. A read on another device, such as the iOS app, raises the `messages` invalidation, so clients read the inbox again.
+
 ### Fixed
 
+- `agent-relay-node`: reading a conversation no longer marks every other conversation read. Relaycast counts a delivery ack as a read, and `messages.history` acknowledged all of your queued deliveries whatever conversation was open, so `GET /v1/inbox` showed nothing unread on any device. It now acknowledges only the conversation it read, up to its newest message. A core without this fix keeps clearing unread for every device signed in as you, so it must reach your desktops before the iOS app relies on the inbox's unread counts.
 - `agent-relay-node`: spawned Codex MCP tool approvals now reach the verified spawning agent with the server, tool and argument names, remain visibly `waiting_for_approval` for 15 minutes, and accept authenticated Relay approval replies instead of silently timing out after five minutes. Spawn actions also accept an `approval_profile` (`interactive`, `requester`, or machine-owner-enabled `full_access`) so hosted launchers can declare the prompt policy up front.
 - `agent-relay-node`: a message relayed to a Muse session that Paseo drives now waits while Muse is working, where before it could stop the running turn. Agent Relay asks Paseo for the agent's status first and sends only when no turn is running; otherwise the message waits and is tried again. A Paseo daemon with a password now refuses the message with that reason, since Agent Relay holds no Paseo password. Checked against Paseo's source and unit tests, not yet against a live Paseo daemon.
 

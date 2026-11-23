@@ -64,6 +64,8 @@ public enum CoreMethod {
     public static let messagesConversations = "messages.conversations"
     public static let messagesHistory = "messages.history"
     public static let messagesSend = "messages.send"
+    public static let messagesInbox = "messages.inbox"
+    public static let messagesMarkRead = "messages.mark_read"
     public static let peopleList = "people.list"
     public static let linksParse = "links.parse"
 }
@@ -1928,6 +1930,38 @@ public struct HistoryParams: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+public struct InboxMessage: Codable, Equatable, Hashable, Sendable {
+    public let createdAt: String?
+    public let id: String
+    public let text: String
+
+    public init(createdAt: String? = nil, id: String, text: String) {
+        self.createdAt = createdAt
+        self.id = id
+        self.text = text
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case createdAt = "created_at"
+        case id
+        case text
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)
+        self.id = try c.decode(String.self, forKey: .id)
+        self.text = try c.decode(String.self, forKey: .text)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.createdAt, forKey: .createdAt)
+        try c.encode(self.id, forKey: .id)
+        try c.encode(self.text, forKey: .text)
+    }
+}
+
 /// A session holding relay messages it has not read, as `agents.list` and
 /// the session socket's `GET /agents` report it.
 public struct InboxStall: Codable, Equatable, Hashable, Sendable {
@@ -2655,6 +2689,70 @@ public struct ManagedSessionStarted: Codable, Equatable, Hashable, Sendable {
         try c.encode(self.directory, forKey: .directory)
         try c.encode(self.target, forKey: .target)
         try c.encode(self.title, forKey: .title)
+    }
+}
+
+public struct MarkReadParams: Codable, Equatable, Hashable, Sendable {
+    /// A message in one of your conversations: it and everything before it
+    /// there are read.
+    public let messageId: String
+
+    public init(messageId: String) {
+        self.messageId = messageId
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case messageId = "message_id"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.messageId = try c.decode(String.self, forKey: .messageId)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.messageId, forKey: .messageId)
+    }
+}
+
+/// `messages.inbox`'s result: what Relaycast counts as unread for you.
+/// The count is Relaycast's own read state, shared by every device you
+/// read on (the desktop, the iOS app and the dashboard).
+public struct MessageInbox: Codable, Equatable, Hashable, Sendable {
+    /// Your relay identity's name.
+    public let identity: String
+    /// Direct conversations with messages from the other side you have not
+    /// read; none when everything is read.
+    public let unread: [UnreadConversation]
+    /// Channels you are a member of with top-level messages you have not
+    /// read.
+    public let unreadChannels: [UnreadChannel]
+
+    public init(identity: String, unread: [UnreadConversation], unreadChannels: [UnreadChannel]) {
+        self.identity = identity
+        self.unread = unread
+        self.unreadChannels = unreadChannels
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case identity
+        case unread
+        case unreadChannels = "unread_channels"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.identity = try c.decode(String.self, forKey: .identity)
+        self.unread = try c.decode([UnreadConversation].self, forKey: .unread)
+        self.unreadChannels = try c.decode([UnreadChannel].self, forKey: .unreadChannels)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.identity, forKey: .identity)
+        try c.encode(self.unread, forKey: .unread)
+        try c.encode(self.unreadChannels, forKey: .unreadChannels)
     }
 }
 
@@ -6134,6 +6232,77 @@ public struct UnfinishedWork: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+public struct UnreadChannel: Codable, Equatable, Hashable, Sendable {
+    /// The channel's name, without `#`.
+    public let channel: String
+    public let unreadCount: Int
+
+    public init(channel: String, unreadCount: Int) {
+        self.channel = channel
+        self.unreadCount = unreadCount
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case channel
+        case unreadCount = "unread_count"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.channel = try c.decode(String.self, forKey: .channel)
+        self.unreadCount = try c.decode(Int.self, forKey: .unreadCount)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.channel, forKey: .channel)
+        try c.encode(self.unreadCount, forKey: .unreadCount)
+    }
+}
+
+/// A direct conversation with unread messages.
+public struct UnreadConversation: Codable, Equatable, Hashable, Sendable {
+    /// The conversation's id, as `messages.conversations` lists it.
+    public let conversationId: String
+    /// The conversation's newest message, which may be your own;
+    /// `messages.mark_read` with its id reads everything before it.
+    public let lastMessage: InboxMessage?
+    /// The name of who you talk to (for a group conversation, one of them).
+    public let peer: String
+    /// Messages from the other side after the last one you read.
+    public let unreadCount: Int
+
+    public init(conversationId: String, lastMessage: InboxMessage? = nil, peer: String, unreadCount: Int) {
+        self.conversationId = conversationId
+        self.lastMessage = lastMessage
+        self.peer = peer
+        self.unreadCount = unreadCount
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case conversationId = "conversation_id"
+        case lastMessage = "last_message"
+        case peer
+        case unreadCount = "unread_count"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.conversationId = try c.decode(String.self, forKey: .conversationId)
+        self.lastMessage = try c.decodeIfPresent(InboxMessage.self, forKey: .lastMessage)
+        self.peer = try c.decode(String.self, forKey: .peer)
+        self.unreadCount = try c.decode(Int.self, forKey: .unreadCount)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.conversationId, forKey: .conversationId)
+        try c.encode(self.lastMessage, forKey: .lastMessage)
+        try c.encode(self.peer, forKey: .peer)
+        try c.encode(self.unreadCount, forKey: .unreadCount)
+    }
+}
+
 public struct Unsubscribed: Codable, Equatable, Hashable, Sendable {
     /// The topics that remain subscribed.
     public let topics: [Topic]
@@ -6911,6 +7080,18 @@ extension CoreClient {
     @discardableResult
     public func messagesSend(_ params: SendParams) async throws -> SentMessage {
         try await call(CoreMethod.messagesSend, params)
+    }
+
+    /// `messages.inbox`.
+    @discardableResult
+    public func messagesInbox() async throws -> MessageInbox {
+        try await call(CoreMethod.messagesInbox, NoParams())
+    }
+
+    /// `messages.mark_read`.
+    @discardableResult
+    public func messagesMarkRead(_ params: MarkReadParams) async throws -> Done {
+        try await call(CoreMethod.messagesMarkRead, params)
     }
 
     /// `people.list`.
