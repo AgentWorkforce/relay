@@ -384,10 +384,11 @@ with no cursor or channel filter. Acknowledged ones leave the list, so the
 core lists it again (20 times at most), but when all 200 belong to other
 conversations, the open conversation's deliveries cannot be reached without
 reading those others. They then stay queued and Relaycast keeps redriving
-them, while the conversation itself is still marked read by its newest
-message. A client that must read a conversation at a given message, for
-example from a notification, calls `messages.mark_read` with it, which
-reads it whatever the queue holds. Closing the limit needs a `channel_id`
+them, while, on a newest-page read (no `before`), the conversation itself
+is still marked read by its newest message. An older-page read (`before`)
+moves no read position. A client that must read a conversation at a given
+message, for example from a notification, calls `messages.mark_read` with
+it, which reads it whatever the queue holds. Closing the limit needs a `channel_id`
 filter or a cursor on `GET /v1/deliveries` in Relaycast.
 
 **Platform services**

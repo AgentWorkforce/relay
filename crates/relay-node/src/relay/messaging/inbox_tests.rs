@@ -110,6 +110,10 @@ impl Script {
             .find_map(|pair| pair.strip_prefix("limit="))
             .and_then(|n| n.parse().ok())
             .unwrap_or(100);
+        let before: Option<String> = query
+            .split('&')
+            .find_map(|pair| pair.strip_prefix("before="))
+            .map(str::to_string);
         self.requests
             .push((method.to_string(), path.to_string(), token.to_string()));
         if let Some(status) = self.failures.get_mut(path).and_then(VecDeque::pop_front) {
@@ -175,6 +179,11 @@ impl Script {
                 ok(messages
                     .iter()
                     .rev()
+                    .filter(|m| {
+                        before
+                            .as_deref()
+                            .is_none_or(|before| id_key(m) < id_key(before))
+                    })
                     .take(HISTORY_LIMIT as usize)
                     .map(|m| {
                         json!({"id": m, "agent_id": format!("ag_{id}"),
@@ -693,9 +702,21 @@ async fn an_older_page_moves_no_read_position() {
         return;
     }
     let h = two_conversations(ids(500, 60), ids(100, 1)).await;
-    h.core.history(&peer("a"), Some("510")).await.unwrap();
+    let history = h.core.history(&peer("a"), Some("510")).await.unwrap();
+    let mut page: Vec<&str> = history.messages.iter().map(|m| m.id.as_str()).collect();
+    page.sort();
+    assert_eq!(page, ids(500, 10));
     h.core.reads_settled().await;
-    assert!(h.script.lock().unwrap().read.is_empty());
+    let script = h.script.lock().unwrap();
+    assert!(script.read.is_empty());
+    // Only the older page's deliveries: none from 510 on.
+    let acked: Vec<&str> = script
+        .deliveries
+        .iter()
+        .filter(|(d, _, _)| script.acked.contains(d))
+        .map(|(_, m, _)| m.as_str())
+        .collect();
+    assert_eq!(acked, ids(500, 10));
 }
 
 #[tokio::test]
@@ -752,4 +773,34 @@ async fn a_pause_stops_the_read_before_any_ack() {
     assert!(script.acked.is_empty());
     // Only the list made before the page: none after it.
     assert_eq!(script.count("GET", "/v1/deliveries"), 1);
+}
+
+#[tokio::test]
+async fn a_read_left_from_before_sign_out_leaves_the_next_reads_alone() {
+    if ran_without_file_roots("a_read_left_from_before_sign_out_leaves_the_next_reads_alone") {
+        return;
+    }
+    let h = two_conversations(ids(500, 2), ids(100, 1)).await;
+    h.core.history(&peer("a"), None).await.unwrap();
+    // Signed out and in again before the read ran: the identity's reads now
+    // belong to a task started since, with one read waiting.
+    let key = {
+        let mut state = h.core.messaging.lock().unwrap();
+        let key = state.settling.keys().next().cloned().unwrap();
+        let waiting = state.settling[&key].1.clone();
+        state.settling.insert(key.clone(), (u64::MAX, waiting));
+        key
+    };
+    for _ in 0..200 {
+        if acked_in(&h.script.lock().unwrap(), "a") == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let state = h.core.messaging.lock().unwrap();
+    assert_eq!(
+        state.settling.get(&key).map(|(owner, _)| *owner),
+        Some(u64::MAX)
+    );
 }

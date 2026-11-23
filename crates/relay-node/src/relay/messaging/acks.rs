@@ -73,6 +73,9 @@ impl ConversationRead {
     }
 }
 
+/// Marks each settling task apart, across sign-outs.
+static NEXT_WORKER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// The identity a read is made as: one task at a time each.
 fn settling_key(identity: &PersonIdentity) -> (String, String) {
     (identity.base_url.clone(), identity.name.clone())
@@ -113,9 +116,13 @@ impl Core {
             return;
         }
         let key = settling_key(&read.identity);
+        // This task's own mark: sign-out forgets `settling` while a task
+        // may still be running, and a task started after it for the same
+        // identity must not have its queue drained or removed by this one.
+        let worker = NEXT_WORKER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         {
             let mut state = self.messaging.lock().unwrap();
-            if let Some(queued) = state.settling.get_mut(&key) {
+            if let Some((_, queued)) = state.settling.get_mut(&key) {
                 let same = |r: &ConversationRead| {
                     r.conversation == read.conversation
                         && r.latest == read.latest
@@ -126,7 +133,7 @@ impl Core {
                 }
                 return;
             }
-            state.settling.insert(key.clone(), Vec::new());
+            state.settling.insert(key.clone(), (worker, Vec::new()));
         }
         let core = self.clone();
         tokio::spawn(async move {
@@ -135,10 +142,14 @@ impl Core {
                 core.settle_with_retries(&read).await;
                 let mut state = core.messaging.lock().unwrap();
                 match state.settling.get_mut(&key) {
-                    Some(queued) if !queued.is_empty() => next = Some(queued.remove(0)),
-                    _ => {
+                    Some((owner, queued)) if *owner == worker && !queued.is_empty() => {
+                        next = Some(queued.remove(0));
+                    }
+                    Some((owner, _)) if *owner == worker => {
                         state.settling.remove(&key);
                     }
+                    // Forgotten (signed out), or another task's now.
+                    _ => {}
                 }
             }
         });

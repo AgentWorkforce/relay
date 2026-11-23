@@ -167,7 +167,8 @@ pub struct MessagingState {
     seen_deliveries: HashSet<String>,
     /// Conversation reads waiting their turn, by `(base url, identity
     /// name)`: an entry is there while that identity's reads are settled.
-    settling: HashMap<(String, String), Vec<acks::ConversationRead>>,
+    /// The task settling them is marked by the number beside its queue.
+    settling: HashMap<(String, String), (u64, Vec<acks::ConversationRead>)>,
     /// The newest message marked read in each conversation, by
     /// `(base url, identity name, conversation id)`.
     marked: HashMap<(String, String, String), String>,
