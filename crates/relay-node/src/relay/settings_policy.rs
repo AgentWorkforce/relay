@@ -47,11 +47,12 @@ pub const DEFAULTED: &str = "Managed by your organization.";
 /// The person-only settings the workspace policy names (its allowlist's
 /// person-only column): an operator value that widens one needs the
 /// computer's enrollment consent and a `consent` entry.
-pub const PERSON_ONLY: [&str; 7] = [
+pub const PERSON_ONLY: [&str; 8] = [
     "accept_spawns",
     "spawn_allow_teammates",
     "spawn_full_access_claude",
     "spawn_full_access_codex",
+    "spawn_leader_approvals",
     "spawn_native_input",
     "spawn_repositories",
     "spawn_requester_approvals",

@@ -13,7 +13,22 @@
 //! the list changes (`workspace.leaders.updated` is server telemetry), so it
 //! is also read again as each spawned agent starts (at most once per
 //! [`REREAD_AFTER`]); otherwise a change shows within [`REFRESH_AFTER`].
-//! Leaders are never approvers.
+//!
+//! Leaders are approvers only with **Approvals from workspace leaders**
+//! (`spawn_leader_approvals`) on, off unless the machine owner turns it on,
+//! and native input from spawning agents on, in a build with an account. A
+//! leader's 1:1 direct message, from a listed leader's agent id (never a
+//! name or a pattern), then approves or denies an open, approvable request
+//! of an agent spawned here, registered in this computer's workspace and
+//! not taken over, with the machine owner's standing: neither
+//! `spawn_requester_approvals` nor the spawn's approval profile limits it.
+//! Only a list read successfully within [`REFRESH_AFTER`] serves
+//! ([`Cache::verified`]): one that is older is read again, and when that
+//! read fails or is refused no one is an approver; the list failed reads
+//! keep for [`KEEP_FOR`] never is. A leader never chooses an option,
+//! answers a form, input or local verification, answers for the session
+//! itself, or answers as the spawning agent (which keeps its own rules), and
+//! its answer is never recorded as the machine owner's.
 
 use crate::relay::contract::agents::{WorkspaceLeader, WorkspaceLeaders};
 use crate::relay::daemon::Core;
@@ -173,6 +188,42 @@ impl Cache {
             .is_some_and(|entry| entry.of(workspace) && entry.checked_at.elapsed() < within)
     }
 
+    /// The list for `workspace` as a read that succeeded less than `within`
+    /// ago gave it.
+    fn read_within(&self, workspace: &Workspace, within: Duration) -> Option<WorkspaceLeaders> {
+        self.entry()
+            .as_ref()
+            .filter(|entry| {
+                entry.of(workspace) && entry.read_at.is_some_and(|at| at.elapsed() < within)
+            })
+            .and_then(|entry| entry.list.clone())
+    }
+
+    /// The list for `workspace` while a read that succeeded less than
+    /// [`REFRESH_AFTER`] ago gives it, for approvals: an older one is read
+    /// again first, unless a read was made less than [`REREAD_AFTER`] ago.
+    /// `None` when there is no such read: the list failed reads keep
+    /// ([`KEEP_FOR`]) never serves, and a refusal serves nothing.
+    pub async fn verified(
+        &self,
+        workspace: &Workspace,
+        app_data_dir: &Path,
+    ) -> Option<WorkspaceLeaders> {
+        if let Some(list) = self.read_within(workspace, REFRESH_AFTER) {
+            return Some(list);
+        }
+        let _reading = self.reading.lock().await;
+        if let Some(list) = self.read_within(workspace, REFRESH_AFTER) {
+            return Some(list);
+        }
+        if self.checked_within(workspace, REREAD_AFTER) {
+            return None;
+        }
+        let read = fetch(workspace, app_data_dir).await;
+        self.record(workspace, read);
+        self.read_within(workspace, REFRESH_AFTER)
+    }
+
     /// The list in use for `workspace`, fresh or not.
     pub fn snapshot(&self, workspace: &Workspace) -> Option<WorkspaceLeaders> {
         self.entry()
@@ -260,6 +311,15 @@ impl Cache {
 }
 
 impl Core {
+    /// The workspace this computer is in, when `registration` is registered
+    /// in it.
+    fn leaders_workspace(&self, registration: &Registration) -> Option<Workspace> {
+        self.workspace().filter(|workspace| {
+            registration.base_url == workspace.base_url
+                && registration.workspace_key.as_ref() == Some(&workspace.key)
+        })
+    }
+
     /// The leader whose agent id is `sender_id`, for a session registered
     /// in the workspace this computer is in. Matched by id alone.
     pub(crate) async fn workspace_leader(
@@ -267,11 +327,8 @@ impl Core {
         registration: &Registration,
         sender_id: &str,
     ) -> Option<WorkspaceLeader> {
-        let workspace = self.workspace()?;
-        if sender_id.is_empty()
-            || registration.base_url != workspace.base_url
-            || registration.workspace_key.as_ref() != Some(&workspace.key)
-        {
+        let workspace = self.leaders_workspace(registration)?;
+        if sender_id.is_empty() {
             return None;
         }
         self.leaders
@@ -280,6 +337,27 @@ impl Core {
             .leaders
             .into_iter()
             .find(|leader| leader.agent_id == sender_id)
+    }
+
+    /// The leaders of the workspace `registration` is registered in, when it
+    /// is this computer's, as a read that succeeded within
+    /// [`REFRESH_AFTER`] lists them ([`Cache::verified`]): the only list a
+    /// leader's approval is taken from. Empty when there is none.
+    pub(crate) async fn verified_workspace_leaders(
+        &self,
+        registration: &Registration,
+    ) -> Vec<WorkspaceLeader> {
+        let Some(workspace) = self.leaders_workspace(registration) else {
+            return Vec::new();
+        };
+        self.leaders
+            .verified(&workspace, &self.config.app_data_dir)
+            .await
+            .map(|list| list.leaders)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|leader| !leader.agent_id.is_empty())
+            .collect()
     }
 
     /// Reads `workspace`'s leaders again in the background, as an agent
@@ -507,5 +585,41 @@ mod tests {
         let dir = std::env::temp_dir();
         assert_eq!(cache.current(&ws, &dir).await, WorkspaceLeaders::default());
         assert!(!cache.due(&ws));
+    }
+
+    // Approvals take only a list read successfully within `REFRESH_AFTER`:
+    // never the list failed reads keep, and nothing after a refusal.
+    #[tokio::test]
+    async fn approvals_take_only_a_list_read_successfully_within_refresh_after() {
+        let cache = Cache::default();
+        let ws = workspace("rk_live_a");
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(cache.verified(&ws, dir.path()).await, None);
+        let leaders = list(&[("lead", "agt_lead")]);
+        cache.record(&ws, Read::List(leaders.clone()));
+        assert_eq!(cache.verified(&ws, dir.path()).await, Some(leaders.clone()));
+        cache.age(REFRESH_AFTER - Duration::from_secs(1));
+        assert_eq!(cache.verified(&ws, dir.path()).await, Some(leaders.clone()));
+        // Aged past it, it is read again (here the read fails): none, though
+        // native input keeps the list.
+        cache.age(Duration::from_secs(1));
+        assert_eq!(cache.verified(&ws, dir.path()).await, None);
+        assert!(cache.checked_within(&ws, REREAD_AFTER));
+        assert_eq!(cache.snapshot(&ws), Some(leaders.clone()));
+        assert_eq!(cache.current(&ws, dir.path()).await, leaders);
+        // A failed read just made is not made again at once.
+        cache.record(&ws, Read::Failed);
+        assert_eq!(cache.verified(&ws, dir.path()).await, None);
+        assert!(cache.read_within(&ws, KEEP_FOR).is_some());
+        // A good read serves again; a refusal serves nothing.
+        cache.record(&ws, Read::List(leaders.clone()));
+        assert_eq!(cache.verified(&ws, dir.path()).await, Some(leaders));
+        cache.record(&ws, Read::Refused);
+        assert_eq!(cache.verified(&ws, dir.path()).await, None);
+        // Another workspace never sees a list.
+        assert_eq!(
+            cache.verified(&workspace("rk_live_b"), dir.path()).await,
+            None
+        );
     }
 }

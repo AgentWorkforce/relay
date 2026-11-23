@@ -2942,7 +2942,7 @@ async fn settings_round_trip_and_refuse_unknown_keys() {
             "question_escalation_coverage": agent_relay_node::relay::question::coverage::value(),
             "accept_spawns": true, "spawn_max_agents": 0,
             "spawn_full_access_codex": true, "spawn_full_access_claude": true,
-            "spawn_allow_teammates": false, "spawn_native_input": true, "spawn_requester_approvals": true,
+            "spawn_allow_teammates": false, "spawn_native_input": true, "spawn_requester_approvals": true, "spawn_leader_approvals": false,
             "spawn_billing_codex": "unspecified", "spawn_billing_claude": "unspecified",
             "spawn_repositories": [],
             "spawn_harnesses": {

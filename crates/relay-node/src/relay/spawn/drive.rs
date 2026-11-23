@@ -10,10 +10,15 @@
 //! is on (`session_text`). With **Approvals from the spawning agent** also on
 //! (`settings::requester_approvals`), the requester, and no other agent, is
 //! sent the same requests and may answer them by direct message too; the
-//! first answer counts, and each is written to the diagnostics log.
+//! first answer counts, and each is written to the diagnostics log. With
+//! **Approvals from workspace leaders** on (`settings::leader_approvals`,
+//! off unless the machine owner turns it on), each listed workspace leader
+//! is sent the requests it may approve or deny and may answer them with the
+//! machine owner's standing (`Approver::Leader`, `relay::leaders`).
 
 use crate::relay::client;
 use crate::relay::codex::app_server::drive::{self, Notice, ReplyResult};
+use crate::relay::contract::agents::WorkspaceLeader;
 use crate::relay::daemon::Core;
 use crate::relay::delivery::policy::{Delivery, MessageRef};
 use crate::relay::harness::codex;
@@ -122,6 +127,9 @@ pub(crate) enum Approver {
     Owner(String),
     /// The agent that spawned the session, allowed to answer.
     Requester(SpawnRequester),
+    /// A workspace leader, by agent id, answering an approve/deny request
+    /// with the machine owner's standing. Never recorded as the owner.
+    Leader(WorkspaceLeader),
 }
 
 impl Approver {
@@ -130,6 +138,7 @@ impl Approver {
         match self {
             Approver::Owner(id) => id,
             Approver::Requester(requester) => &requester.agent_id,
+            Approver::Leader(leader) => &leader.agent_id,
         }
     }
 
@@ -140,6 +149,10 @@ impl Approver {
             Approver::Requester(requester) => format!(
                 "the spawning agent @{} ({})",
                 requester.name, requester.agent_id
+            ),
+            Approver::Leader(leader) => format!(
+                "the workspace leader @{} ({})",
+                leader.name, leader.agent_id
             ),
         }
     }
@@ -156,9 +169,50 @@ pub(crate) fn who_may_answer(requester: Option<&str>) -> String {
     }
 }
 
+/// How many leaders a notice names.
+const LEADERS_NAMED: usize = 3;
+
+/// The closing line of an approval DM that `leaders` may answer too (by
+/// name, at most [`LEADERS_NAMED`] of them); without any, [`who_may_answer`].
+pub(crate) fn who_may_answer_with(requester: Option<&str>, leaders: &[String]) -> String {
+    if leaders.is_empty() {
+        return who_may_answer(requester);
+    }
+    let mut named = leaders
+        .iter()
+        .take(LEADERS_NAMED)
+        .map(|name| format!("@{name}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if leaders.len() > LEADERS_NAMED {
+        named.push_str(&format!(" and {} more", leaders.len() - LEADERS_NAMED));
+    }
+    match requester {
+        None => format!(
+            "The signed-in machine owner or a workspace leader ({named}) may answer; \
+             the first answer counts."
+        ),
+        Some(name) => format!(
+            "The signed-in machine owner, @{name} (the agent that spawned this session) \
+             or a workspace leader ({named}) may answer; the first answer counts."
+        ),
+    }
+}
+
 /// The approval DM for `notice` of `agent`, naming `requester` when the
 /// spawning agent may answer it too.
+#[cfg(test)]
 pub(crate) fn approval_text(agent: &str, notice: &Notice, requester: Option<&str>) -> String {
+    approval_text_with(agent, notice, requester, &[])
+}
+
+/// [`approval_text`], naming `leaders` too when they may answer it.
+pub(crate) fn approval_text_with(
+    agent: &str,
+    notice: &Notice,
+    requester: Option<&str>,
+    leaders: &[String],
+) -> String {
     let reference = &notice.reference;
     let response = if notice.approvable {
         format!("Reply `approve {reference}` or `deny {reference}` within 15 minutes.")
@@ -179,8 +233,13 @@ pub(crate) fn approval_text(agent: &str, notice: &Notice, requester: Option<&str
     format!(
         "[Codex approval {reference} for @{agent}]\nStatus: `waiting_for_approval`. Unanswered requests expire as an explicit denial after 15 minutes.\n{}\n{response} {}",
         notice.description,
-        who_may_answer(requester)
+        who_may_answer_with(requester, leaders)
     )
+}
+
+/// The names of `leaders`, as a notice names them.
+pub(crate) fn leader_names(leaders: &[WorkspaceLeader]) -> Vec<String> {
+    leaders.iter().map(|leader| leader.name.clone()).collect()
 }
 
 /// The diagnostics line recording who answered `reference` of `agent`.
@@ -226,46 +285,67 @@ impl Core {
         });
     }
 
-    /// Sends `notice` to the verified owner and, when it may answer, the
-    /// spawning agent. With neither it is never forwarded, and the request
-    /// expires to a refusal.
-    async fn forward_to_owner(&self, registration: &Registration, token: &Secret, notice: &Notice) {
+    /// Sends `notice` to the verified owner and, when they may answer, the
+    /// spawning agent and the workspace leaders. With neither owner nor
+    /// requester it is never forwarded, and the request expires to a
+    /// refusal.
+    pub(crate) async fn forward_to_owner(
+        &self,
+        registration: &Registration,
+        token: &Secret,
+        notice: &Notice,
+    ) {
         // A question goes to the question inbox instead, when escalation is
         // on; one it cannot send is forwarded as any other request.
         if self.escalate_codex_question(registration, notice).await {
             return;
         }
         let requester = self.approving_requester(registration);
-        let text = approval_text(
+        let leaders = self.notified_leaders(registration, notice.approvable).await;
+        let text = approval_text_with(
             &registration.name,
             notice,
             requester.as_ref().map(|r| r.name.as_str()),
+            &leader_names(&leaders),
         );
         if self
-            .send_approval(registration, token, &notice.reference, &text, requester)
+            .send_approval(
+                registration,
+                token,
+                &notice.reference,
+                &text,
+                (requester, leaders),
+            )
             .await
         {
             drive::mark_forwarded(&notice.reference);
         }
     }
 
-    /// Sends an approval DM about `reference` to the verified owner and to
-    /// `requester`. True once someone may answer it and everyone it is for
-    /// has it; until then it is sent again, under the same keys.
+    /// Sends an approval DM about `reference` to the verified owner, to
+    /// `requester` and to `leaders` (already checked with
+    /// [`Self::notified_leaders`]). True once the owner or the requester may
+    /// answer it and both it is for have it; until then it is sent again,
+    /// under the same keys. A leader's copy never counts: one that fails
+    /// never holds the notice back or repeats the others, and is sent again
+    /// (under its key) only while theirs are.
     pub(crate) async fn send_approval(
         &self,
         registration: &Registration,
         token: &Secret,
         reference: &str,
         text: &str,
-        requester: Option<SpawnRequester>,
+        (requester, leaders): (Option<SpawnRequester>, Vec<WorkspaceLeader>),
     ) -> bool {
         let owner = self.verified_owner(registration).await;
         // A name can be taken again: the requester's copy goes to its saved
         // name only while Relaycast still gives it the requester's id.
         let (requester, mut sent) = match requester {
             None => (None, true),
-            Some(requester) => match self.holds_name(registration, &requester).await {
+            Some(requester) => match self
+                .holds_name(registration, &requester.name, &requester.agent_id)
+                .await
+            {
                 Some(true) => (Some(requester), true),
                 Some(false) => (None, true),
                 None => (None, false),
@@ -276,29 +356,27 @@ impl Core {
             .chain(requester.map(|r| (r.name, r.agent_id)))
             .collect();
         sent &= !recipients.is_empty();
-        for (name, id) in recipients {
-            let key = format!("spawn-approval-{reference}-{}", MessageRef::of(&id));
-            sent &= client::send_dm(
-                &registration.base_url,
-                token,
-                &Endpoint::Name(name),
-                text,
-                Some(key),
-            )
-            .await
-            .is_ok();
+        let base_url = registration.base_url.as_str();
+        let send = |name: String, id: &str| {
+            let key = format!("spawn-approval-{reference}-{}", MessageRef::of(id));
+            async move { client::send_dm(base_url, token, &Endpoint::Name(name), text, Some(key)).await }
+        };
+        for (name, id) in &recipients {
+            sent &= send(name.clone(), id).await.is_ok();
+        }
+        for leader in leaders {
+            if recipients.iter().any(|(_, id)| *id == leader.agent_id) {
+                continue;
+            }
+            let _ = send(leader.name, &leader.agent_id).await;
         }
         sent
     }
 
-    /// Whether Relaycast still gives `requester`'s saved name its immutable
-    /// id in `registration`'s workspace; `None` when it could not be asked,
-    /// so the notice is sent again later.
-    async fn holds_name(
-        &self,
-        registration: &Registration,
-        requester: &SpawnRequester,
-    ) -> Option<bool> {
+    /// Whether Relaycast still gives the saved `name` (a requester's or a
+    /// listed leader's) its immutable `id` in `registration`'s workspace;
+    /// `None` when it could not be asked, so the notice is sent again later.
+    async fn holds_name(&self, registration: &Registration, name: &str, id: &str) -> Option<bool> {
         let workspace = self.workspace()?;
         if workspace.base_url != registration.base_url
             || registration.workspace_key.as_ref() != Some(&workspace.key)
@@ -306,8 +384,64 @@ impl Core {
             return Some(false);
         }
         let http = sdk_gaps::workspace_http(&workspace).ok()?;
-        let agent = sdk_gaps::get_agent(&http, &requester.name).await.ok()?;
-        Some(agent.is_some_and(|agent| agent["id"].as_str() == Some(requester.agent_id.as_str())))
+        let agent = sdk_gaps::get_agent(&http, name).await.ok()?;
+        Some(agent.is_some_and(|agent| agent["id"].as_str() == Some(id)))
+    }
+
+    /// Whether workspace leaders may answer `registration`'s approve/deny
+    /// requests at all: a build with an account, approvals from workspace
+    /// leaders and native input from spawning agents on
+    /// (`settings::leader_approvals`), and a spawned session not taken
+    /// over. Neither `spawn_requester_approvals` nor the approval profile
+    /// counts: those limit the spawning agent, and a leader's answer has the
+    /// machine owner's standing.
+    fn leaders_may_answer(&self, registration: &Registration) -> bool {
+        self.plugins.account.is_some()
+            && self.store.read(super::settings::leader_approvals)
+            && registration
+                .spawn
+                .as_ref()
+                .is_some_and(|spawn| spawn.taken_over_at.is_none())
+    }
+
+    /// Whether `id` may answer as a leader of `registration`: not the
+    /// session itself, nor the agent that spawned it (which keeps the
+    /// spawning agent's rules).
+    fn leader_may_be(registration: &Registration, id: &str) -> bool {
+        let requester = registration
+            .spawn
+            .as_ref()
+            .and_then(|spawn| spawn.requester.as_ref())
+            .map(|requester| requester.agent_id.as_str());
+        !id.is_empty() && id != registration.agent_id && Some(id) != requester
+    }
+
+    /// The listed leaders to send an approval DM about a request of
+    /// `registration` to: only for an `approvable` one, when leaders may
+    /// answer it, from a list read successfully within `REFRESH_AFTER`,
+    /// neither the session nor its requester (which has its own copy), and
+    /// only those Relaycast still gives their listed name and id. Empty
+    /// otherwise, and with the setting off.
+    pub(crate) async fn notified_leaders(
+        &self,
+        registration: &Registration,
+        approvable: bool,
+    ) -> Vec<WorkspaceLeader> {
+        if !approvable || !self.leaders_may_answer(registration) {
+            return Vec::new();
+        }
+        let mut notified = Vec::new();
+        for leader in self.verified_workspace_leaders(registration).await {
+            if Self::leader_may_be(registration, &leader.agent_id)
+                && self
+                    .holds_name(registration, &leader.name, &leader.agent_id)
+                    .await
+                    == Some(true)
+            {
+                notified.push(leader);
+            }
+        }
+        notified
     }
 
     /// The agent that spawned `registration`, when it may answer the
@@ -347,11 +481,57 @@ impl Core {
             .filter(|requester| !requester.agent_id.is_empty())
     }
 
+    /// Whether `reference` is one of `registration`'s open requests, and
+    /// then whether it may be approved (not a choice, form, input or local
+    /// verification). An ended Claude's requests are not open: a message
+    /// to it is settled as ended, never answered.
+    async fn open_request(&self, registration: &Registration, reference: &str) -> Option<bool> {
+        let thread = &registration.target.id;
+        if driven_codex(registration) {
+            return drive::pending_approvable(thread, reference);
+        }
+        if !self.driven_claude(registration) {
+            return None;
+        }
+        let approvable =
+            crate::relay::harness::claude::requests::pending_approvable(thread, reference)?;
+        (!self.claude_ended(registration).await).then_some(approvable)
+    }
+
+    /// The workspace leader whose direct message `delivery` is, when it may
+    /// approve or deny `reference` (`leaders_may_answer`): the sender is a
+    /// listed leader by id alone, in a list read successfully within
+    /// `REFRESH_AFTER`, neither the session nor its requester, and the
+    /// reference is one of the session's open requests that may be
+    /// approved.
+    async fn approving_leader(
+        &self,
+        registration: &Registration,
+        delivery: &Delivery,
+        reference: &str,
+    ) -> Option<WorkspaceLeader> {
+        let sender_id = delivery.sender_id.as_deref()?;
+        if !direct_from(delivery, Some(sender_id))
+            || !Self::leader_may_be(registration, sender_id)
+            || !self.leaders_may_answer(registration)
+            || self.open_request(registration, reference).await != Some(true)
+        {
+            return None;
+        }
+        self.verified_workspace_leaders(registration)
+            .await
+            .into_iter()
+            .find(|leader| leader.agent_id == sender_id)
+    }
+
     /// Who may answer `reference` with `delivery`: the verified owner's
-    /// direct message, or the spawning agent's when it may answer and the
-    /// reference is one of the session's open requests. A requester's reply
-    /// to anything else (an answered, expired or ended request) is an
-    /// ordinary message, so a session that ended still says so.
+    /// direct message; a workspace leader's, when leaders may answer and the
+    /// reference is an open request that may be approved
+    /// (`approving_leader`); or the spawning agent's when it may answer and
+    /// the reference is one of the session's open requests. A leader's or
+    /// requester's reply to anything else (an answered, expired or ended
+    /// request, or one a leader may not answer) is an ordinary message, so a
+    /// session that ended still says so.
     async fn approver(
         &self,
         registration: &Registration,
@@ -361,16 +541,14 @@ impl Core {
         if let Some(owner_id) = self.owner_sent(registration, delivery).await {
             return Some(Approver::Owner(owner_id));
         }
+        if let Some(leader) = self
+            .approving_leader(registration, delivery, reference)
+            .await
+        {
+            return Some(Approver::Leader(leader));
+        }
         let requester = self.approving_requester(registration)?;
-        let thread = &registration.target.id;
-        let open = if driven_codex(registration) {
-            drive::has_pending(thread, reference)
-        } else {
-            // An ended Claude's message is settled as ended, never answered.
-            self.driven_claude(registration)
-                && crate::relay::harness::claude::requests::has_pending(thread, reference)
-                && !self.claude_ended(registration).await
-        };
+        let open = self.open_request(registration, reference).await.is_some();
         (open && direct_from(delivery, Some(&requester.agent_id)))
             .then_some(Approver::Requester(requester))
     }
@@ -496,7 +674,8 @@ impl Core {
         };
         // Choice replies answer a tool's input question, not a permission
         // prompt. Only the verified machine owner may supply that input; a
-        // requester may still approve or deny where its profile permits it.
+        // requester may still approve or deny where its profile permits it,
+        // and a leader only a request that may be approved.
         if matches!(decision, ReplyDecision::Choose(_)) && !matches!(approver, Approver::Owner(_)) {
             return OwnerReply::NotOne;
         }

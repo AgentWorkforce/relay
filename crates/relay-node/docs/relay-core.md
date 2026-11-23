@@ -1237,13 +1237,52 @@ turn's visible input, sent whole as a requester's is, also while relay
 messages are hidden. Ids are compared, never names:
 another agent with a leader's name is a peer. Channel posts, group messages
 and mentions from a leader stay peer messages. The spawn's own requester
-keeps its requester framing and route even when the list names it. Leaders
-are never approvers: a leader cannot answer permission or approval requests
-(`approve`, `deny`, `choose`), fork a session or release an agent it did not
-ask for; `spawn.fork` and `spawn.release` never consult the list, so this
-holds by construction. A leader's native turn can still lead the session to
-fork or release through its own tools; the leader line's wording is the
-guard there.
+keeps its requester framing and route even when the list names it. A leader
+cannot fork a session or release an agent it did not ask for; `spawn.fork`
+and `spawn.release` never consult the list, so this holds by construction. A
+leader's native turn can still lead the session to fork or release through
+its own tools; the leader line's wording is the guard there.
+
+Leaders are approvers only with **Approvals from workspace leaders** on
+(`spawn_leader_approvals`: whether workspace leaders may approve or deny
+permission requests of agents spawned on this computer; off unless the
+machine owner turns it on, in `settings.get` and `settings.set` like the
+other spawn settings, and a non-boolean is refused). Then a leader's 1:1
+direct message `approve <ref>` or `deny <ref>` answers a spawned session's
+request, with the machine owner's standing rather than the requester's,
+when all of these hold:
+
+- the build has an account (`plugins.account`); a public core never does;
+- `spawn_native_input` is on too, which leader approvals never outlive;
+- the sender's id is a listed leader's `agent_id` (never a name or a
+  pattern), in a list read successfully less than 60 s ago: an older list
+  is read again first, and when that read fails or is refused the sender is
+  not an approver. The list failed reads keep for 10 minutes serves native
+  input only, never an approval;
+- the session is registered in this computer's workspace, is not taken
+  over, and is not the sender itself;
+- the sender is not the spawn's own requester, which keeps the requester's
+  rules (`spawn_requester_approvals` and the approval profile) even when the
+  list names it;
+- the reference is one of the session's open requests and may be approved:
+  a choice (`choose`), a form, input or local verification stays with the
+  machine owner, and a leader's reply to one, `deny` included, is an
+  ordinary message, as is its reply to an answered, expired or unknown
+  reference. A spawned Claude that has ended still says it ended.
+
+`spawn_requester_approvals` and the `interactive` or `full_access` approval
+profile limit only the spawning agent, not a leader. The first answer
+counts, between the owner, the requester and the leaders. The delivery
+record and the diagnostics line name `the workspace leader @<name>
+(<agent id>)`, never the machine owner. With the setting on, each approvable
+request's approval DM also goes to each listed leader (not the session, nor
+the requester, which has its own copy) while Relaycast still gives the
+leader's listed name its listed id, under the same per-recipient idempotency
+key, and names them (`a workspace leader (@a, @b, @c and 2 more)`). Whether
+the notice counts as forwarded is decided by the owner's and requester's
+copies alone, as before: a leader's copy that fails never holds the notice
+back or repeats theirs, and is sent again (under its key) only while theirs
+are. With the setting off, notices are unchanged.
 
 `settings.get` shows the last list read for the current workspace as
 `workspace_leaders` (`{"leaders":[{"name","agent_id"}],"patterns":[...]}`),

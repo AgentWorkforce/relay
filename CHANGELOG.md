@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Minor]
 
+### Added
+
+- `agent-relay-node`: a new machine-owner setting, `spawn_leader_approvals` (off by default), lets workspace leaders approve or deny permission requests of agents spawned on this computer by direct message, though they did not spawn them, with the owner's standing: `spawn_requester_approvals` and the spawn's approval profile do not limit them, and `spawn_native_input` off still does. A leader is matched by agent id in a list read successfully within the last minute (never the list kept through failed reads), and never answers for the session itself, as its spawning agent (which keeps its own rules), a session taken over, or a choice, form, input or local verification, which stay with the owner. Its answer is recorded and logged as the leader's, never the owner's. With the setting on, approvable requests' notices also go to the listed leaders and name them; with it off nothing changes.
+
 ### Fixed
 
 - `agent-relay-node`: spawned Codex MCP tool approvals now reach the verified spawning agent with the server, tool and argument names, remain visibly `waiting_for_approval` for 15 minutes, and accept authenticated Relay approval replies instead of silently timing out after five minutes. Spawn actions also accept an `approval_profile` (`interactive`, `requester`, or machine-owner-enabled `full_access`) so hosted launchers can declare the prompt policy up front.
