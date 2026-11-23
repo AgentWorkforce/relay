@@ -6,6 +6,7 @@
  * and mount `handleEventsShimRequest`; everything else lives here.
  */
 export { EVENTS_SHIM_LIMITS, type EventsShimLimits } from './limits.js';
+export { WAKE_AGENT_NAME_PATTERN, wakeAgentName } from './agent-name.js';
 export {
   mintToken,
   sha256Hex,

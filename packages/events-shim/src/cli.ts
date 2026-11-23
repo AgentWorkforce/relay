@@ -38,6 +38,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { isNudge } from './wake.js';
+import { wakeAgentName } from './agent-name.js';
 import type { ShimEvent, VerificationMode } from './types.js';
 
 export const SKILL_NAME = 'agent-relay-webhooks';
@@ -1514,8 +1515,7 @@ async function setup(io: CliIo, positional: string[], flags: Record<string, stri
   const before = previousInboxes(io, previous);
   // One inbox wakes one session. Adding a waking CLI to an inbox another agent already uses (set up
   // here, or linked to a session elsewhere) would leave one of them never woken: refuse unless asked.
-  const linkedAgent =
-    watched.wake === 'linked' ? (typeof watched.linked_agent === 'string' ? watched.linked_agent : '') : null;
+  const linkedAgent = watched.wake === 'linked' ? (wakeAgentName(watched.linked_agent) ?? '') : null;
   const ownAgents = new Set(Object.keys(previous?.ownWebhooks ?? {}));
   const linkedElsewhere = linkedAgent !== null && !ownAgents.has(linkedAgent);
   const adding = clis.filter((cli) => wakes(cli) && before[cli.id] !== mcpUrl);
@@ -2061,7 +2061,7 @@ async function relayWakeLinked(io: CliIo, mcpUrl: string): Promise<{ agent: stri
   try {
     const state = await callTool(io, mcpUrl, 'watch_webhooks', {}, AbortSignal.timeout(15_000));
     if (state.wake !== 'linked') return null;
-    const agent = typeof state.linked_agent === 'string' && state.linked_agent ? state.linked_agent : null;
+    const agent = wakeAgentName(state.linked_agent) ?? null;
     io.appendLog(
       `${new Date().toISOString()} listen: standing down; the inbox's relay wake link delivers every post to ${agent ? `"${agent}"` : 'another session'}`
     );
