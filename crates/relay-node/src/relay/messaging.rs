@@ -48,8 +48,8 @@
 //! The conversation listing is kept for [`LISTING_TTL`] for the account,
 //! identity and token that read it, without its last messages, so following
 //! an open conversation reads only its newest page. It is read again sooner
-//! when a delivery is acknowledged here, a push wake arrives, you send, the
-//! token is refused, or you sign out or change account. A conversation
+//! when a history read sees a new delivery, a push wake arrives, you send,
+//! the token is refused, or you sign out or change account. A conversation
 //! removed, re-bound or given other participants meanwhile (by another of
 //! your machines, say, whose deliveries are not seen here) is noticed
 //! within [`LISTING_TTL`].
