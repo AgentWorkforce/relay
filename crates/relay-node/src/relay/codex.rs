@@ -363,28 +363,46 @@ pub struct LoadedThreads(std::sync::Mutex<LoadedAnswer>);
 struct LoadedAnswer {
     locks: Option<ListedLocks>,
     loaded: BTreeSet<String>,
+    /// Why the kept answer's ask failed, so a pass that reuses it still
+    /// says the app-server could not be checked.
+    failure: Option<String>,
 }
 
 impl LoadedThreads {
     /// The loaded listed threads under `locks`, where the proxied
-    /// app-server holds `served`: the kept answer, or `ask`'s.
+    /// app-server holds `served`: the kept answer, or `ask`'s (none when it
+    /// fails), and how it was had.
     fn under(
         &self,
         locks: ListedLocks,
         served: &BTreeSet<String>,
-        ask: impl FnOnce() -> BTreeSet<String>,
-    ) -> BTreeSet<String> {
+        ask: impl FnOnce() -> Result<BTreeSet<String>, String>,
+    ) -> (BTreeSet<String>, AppServerProbe) {
         {
             let kept = self.answer();
             if kept.locks.as_ref() == Some(&locks) {
-                return kept.loaded.clone();
+                let probe = match &kept.failure {
+                    Some(reason) => AppServerProbe::Failed(reason.clone()),
+                    None => AppServerProbe::Kept(kept.loaded.len()),
+                };
+                return (kept.loaded.clone(), probe);
             }
         }
-        let loaded = ask();
+        let (loaded, probe) = match ask() {
+            Ok(loaded) => {
+                let count = loaded.len();
+                (loaded, AppServerProbe::Answered(count))
+            }
+            Err(reason) => (BTreeSet::new(), AppServerProbe::Failed(reason)),
+        };
         let mut kept = self.answer();
         kept.locks = (&loaded == served).then_some(locks);
         kept.loaded = loaded.clone();
-        loaded
+        kept.failure = match &probe {
+            AppServerProbe::Failed(reason) => Some(reason.clone()),
+            _ => None,
+        };
+        (loaded, probe)
     }
 
     fn answer(&self) -> std::sync::MutexGuard<'_, LoadedAnswer> {
@@ -559,21 +577,11 @@ fn discover_with_signals(
             .filter(|session| processes::is_proxied_app_server(table, session.pid))
             .map(|session| session.thread.clone())
             .collect();
-        let mut asked = None;
-        let from_app_server = loaded.under(locks, &served, || {
-            let answer = try_loaded_threads(config, table, uid, runner);
-            let loaded: BTreeSet<String> = answer
-                .as_ref()
+        let (from_app_server, probe) = loaded.under(locks, &served, || {
+            try_loaded_threads(config, table, uid, runner)
                 .map(|loaded| loaded.intersection(&ids).cloned().collect())
-                .unwrap_or_default();
-            asked = Some(answer.map(|_| loaded.len()));
-            loaded
         });
-        signals.app_server = match asked {
-            None => AppServerProbe::Kept(from_app_server.len()),
-            Some(Ok(count)) => AppServerProbe::Answered(count),
-            Some(Err(reason)) => AppServerProbe::Failed(reason),
-        };
+        signals.app_server = probe;
         live.extend(from_app_server);
     }
     let unknown: Vec<String> = threads
@@ -1690,6 +1698,17 @@ mod tests {
             idle.app_server,
             AppServerProbe::Failed("no trusted Codex is running".into())
         );
+        // A later pass that reuses that answer still says it failed.
+        let cache = LoadedThreads::default();
+        for _ in 0..2 {
+            let (_, again) =
+                discover_with_signals(&config, &trusted_table(), UID, &cache, &runner_hosting(&[]))
+                    .unwrap();
+            assert_eq!(
+                again.app_server,
+                AppServerProbe::Failed("no trusted Codex is running".into())
+            );
+        }
     }
 
     /// A Codex app router on a Windows named pipe of the test's own, owning
