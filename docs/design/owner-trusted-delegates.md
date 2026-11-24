@@ -242,8 +242,10 @@ Each recipient node has a setting, `delegated_approvals_from`:
 a person named by the last `*` or `**` rule in CODEOWNERS. Owning one path
 is not enough.
 
-**A PR's author counts as a code owner of their own PR when CODEOWNERS
-names them** (Khaliq, 2026-11-23, 5:42 PM PT: "Let the PR author count as a
+**A PR's author is not excluded from code-owner standing on their own PR.**
+They count under the same changed-path rules as anyone else: they must be an
+effective owner of a changed path, or of every changed path with
+`code_owner_match: all_paths` (Khaliq, 2026-11-23, 5:42 PM PT: "Let the PR author count as a
 code owner if CODEOWNERS names them", superseding D1 on this point). The PR
 is read fresh for each check, and a `/*` rule is not a catch-all for
 whole-repo standing.
@@ -303,13 +305,13 @@ Khaliq's decision (2026-11-23): conditions such as "when CI is green" are
 - **Can't check:** if Cloud cannot check a condition (no GitHub App access,
   an API error), the redeem fails closed with `condition_unavailable`.
 
-| Type               | Fields          | Holds when                                                                                                                                                                             | Targets |
-| ------------------ | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| `ci_green`         | none            | every run under each required check name succeeded on the PR's current head; if the branch has no required checks, every check run on the head finished as success, neutral or skipped | PR      |
-| `head_sha`         | `sha` (40 hex)  | the PR's head is exactly this commit, the one the owner saw                                                                                                                            | PR      |
-| `reviews_approved` | `min` (1 to 10) | at least `min` approving reviews on the current head, and no review requesting changes that is still outstanding                                                                       | PR      |
-| `mergeable`        | none            | GitHub reports the PR mergeable, with no conflicts                                                                                                                                     | PR      |
-| `not_before`       | `at` (RFC 3339) | the current time is at or after `at`                                                                                                                                                   | any     |
+| Type               | Fields          | Holds when                                                                                                                                                                                                                                            | Targets |
+| ------------------ | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| `ci_green`         | none            | each required check name has at least one run on the PR's current head and every such run succeeded (a required name with no run is unmet); if the branch has no required checks, every check run on the head finished as success, neutral or skipped | PR      |
+| `head_sha`         | `sha` (40 hex)  | the PR's head is exactly this commit, the one the owner saw                                                                                                                                                                                           | PR      |
+| `reviews_approved` | `min` (1 to 10) | at least `min` approving reviews on the current head, and no review requesting changes that is still outstanding                                                                                                                                      | PR      |
+| `mergeable`        | none            | GitHub reports the PR mergeable, with no conflicts                                                                                                                                                                                                    | PR      |
+| `not_before`       | `at` (RFC 3339) | the current time is at or after `at`                                                                                                                                                                                                                  | any     |
 
 - **Delegates encode conditions.** A delegate turns a quoted condition ("when
   green") into its structured form. A condition that is in the quote but not
@@ -867,8 +869,9 @@ These details came out of review and are part of the contract:
   the ref. Only the repository name is compared case-insensitively; workflow
   paths and refs are case-sensitive. A SHA-pinned `job_workflow_ref` is not
   required for a top-level workflow. Any `job_workflow_ref` that differs from the
-  `workflow_ref` (a reusable workflow, in the same repository or another)
-  must be pinned to a 40-hex commit SHA.
+  `workflow_ref` must be pinned to a 40-hex commit SHA, with one exception: a
+  reusable workflow in the gate's own repository at the gate's exact ref
+  (never together with the source-sha opt-out).
 - **Status codes.** A dry run always answers 200, whether it passes or
   not; the body carries `ok`, `reason` and `dry_run`. A passing redeem
   answers 200. A refused redeem that is not a dry run answers 401 for
