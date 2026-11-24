@@ -440,3 +440,27 @@ fn two_bindings_name_nobody_even_when_the_child_predates_one() {
         Some(Err(CallerMiss::Unattributed))
     ));
 }
+
+#[test]
+fn a_live_pi_or_omp_binding_is_offered_a_reply_command() {
+    let world = pi_world();
+    let injector = LocalInjector::new(
+        world.sessions.config.clone(),
+        world.table.clone(),
+        CodexRouter::new(Arc::new(UnusedCodexRoutes)),
+        ServingPath::default(),
+    );
+    let pi = Target::new(SessionKind::Pi, PI);
+    let omp = Target::new(SessionKind::Omp, OMP);
+    assert!(!injector.can_reply(&pi));
+    world.table.insert(600, own(1, 600));
+    bind(&world, SessionKind::Pi, 600, PI, INSTANCE);
+    world.table.insert(700, own(1, 700));
+    bind(&world, SessionKind::Omp, 700, OMP, INSTANCE_TWO);
+    assert!(injector.can_reply(&pi));
+    assert!(injector.can_reply(&omp));
+    // The binding ended: the session can no longer answer on the socket.
+    world.table.remove(600);
+    assert!(!injector.can_reply(&pi));
+    assert!(injector.can_reply(&omp));
+}
