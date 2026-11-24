@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1922-fleet-release-sandbox-warning",
+  "kind": "bugfix",
+  "title": "Warn that fleet release does not tear down Cloud sandboxes",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1922-fleet-release-sandbox-warning/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "fleet_release_missing_sandbox_warning"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "fleet_release_warns_sandbox_may_keep_running"
+    }
+  }
+}
