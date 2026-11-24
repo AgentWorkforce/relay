@@ -242,7 +242,8 @@ Each recipient node has a setting, `delegated_approvals_from`:
 a person named by the last `*` or `**` rule in CODEOWNERS. Owning one path
 is not enough.
 
-**A PR's author is never a code owner of their own PR** for this purpose,
+**A PR's author is never a code owner of their own PR** for this purpose
+(Khaliq's decision D1, which keeps `any_path` with this exception),
 whatever CODEOWNERS says, so nobody approves their own change through a
 delegate. The PR is read fresh for each check, and a `/*` rule is not a
 catch-all for whole-repo standing.
