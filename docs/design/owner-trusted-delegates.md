@@ -831,13 +831,18 @@ These details came out of review and are part of the contract:
 - **Signing keys.** Only `sig` (or unspecified-use) keys from GitHub's JWKS
   are used. An unknown `kid` when the cached JWKS is stale answers
   `unavailable` (503).
+- **Single use is per action.** The approval-wide `single_use` flag is set
+  only by an explicit choice of the owner or sender. Each action is single
+  use if that flag is set or if the action is high-risk. So a `merge` listed
+  next to a `release` stays reusable, while the `release` is consumed.
 - **Matching rules.** A gate's `target_prefix` must end with `:`. Live gates
   are unique per workspace and owner on (repository, `workflow_ref`,
   `job_workflow_ref`, event, `target_prefix`). The `workflow_ref` includes
   the ref. Only the repository name is compared case-insensitively; workflow
   paths and refs are case-sensitive. A SHA-pinned `job_workflow_ref` is not
-  required for a top-level workflow. A `job_workflow_ref` pointing at a
-  workflow in another repository must be pinned to a commit SHA.
+  required for a top-level workflow. Any `job_workflow_ref` that differs from the
+  `workflow_ref` (a reusable workflow, in the same repository or another)
+  must be pinned to a 40-hex commit SHA.
 - **Status codes.** A dry run always answers 200, whether it passes or
   not; the body carries `ok`, `reason` and `dry_run`. A passing redeem
   answers 200. A refused redeem that is not a dry run answers 401 for
