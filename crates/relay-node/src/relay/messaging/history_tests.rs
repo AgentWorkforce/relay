@@ -166,6 +166,14 @@ fn conversation(id: &str, last: &str) -> Value {
     })
 }
 
+/// [`conversation`] with its peer going by [`PEER`]'s name: one that may
+/// prove [`PEER`], and is read for the proof, which it does not hold.
+fn named_like_peer(id: &str, last: &str) -> Value {
+    let mut listed = conversation(id, last);
+    listed["participants"][1]["agent_name"] = json!(PEER.split('@').next().unwrap());
+    listed
+}
+
 async fn serve(script: Arc<Mutex<Script>>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -373,9 +381,9 @@ async fn a_second_lookup_without_proof_reads_only_changed_conversations() {
         return;
     }
     let (_home, core, script) = core_with(vec![
-        conversation("c1", "m1"),
-        conversation("c2", "m2"),
-        conversation("c3", "m3"),
+        named_like_peer("c1", "m1"),
+        named_like_peer("c2", "m2"),
+        named_like_peer("c3", "m3"),
     ])
     .await;
     assert!(found_nothing(&core).await);
@@ -392,7 +400,7 @@ async fn a_second_lookup_without_proof_reads_only_changed_conversations() {
     }
 
     // A conversation with a new last message is read again; only it.
-    script.lock().unwrap().conversations[1] = conversation("c2", "m2-next");
+    script.lock().unwrap().conversations[1] = named_like_peer("c2", "m2-next");
     core.person_woke();
     assert!(found_nothing(&core).await);
     let script = script.lock().unwrap();
@@ -406,9 +414,9 @@ async fn a_retry_after_an_error_goes_on_from_where_it_stopped() {
         return;
     }
     let (_home, core, script) = core_with(vec![
-        conversation("c1", "m1"),
-        conversation("c2", "m2"),
-        conversation("c3", "m3"),
+        named_like_peer("c1", "m1"),
+        named_like_peer("c2", "m2"),
+        named_like_peer("c3", "m3"),
     ])
     .await;
     // Every attempt the SDK makes at c2 fails, without pausing Relaycast.
@@ -510,7 +518,7 @@ async fn a_conversation_listed_with_a_null_last_message_is_read_again_on_a_reply
     ) {
         return;
     }
-    let mut listed = conversation("c1", "m1");
+    let mut listed = named_like_peer("c1", "m1");
     listed["last_message"] = Value::Null;
     let (_home, core, script) = core_with(vec![listed]).await;
     assert!(found_nothing(&core).await);
@@ -708,13 +716,13 @@ async fn request_counts_per_history_call() {
         call(&core, &script, &address).await,
         (read(1, 1, 1, 0), settled(1, 0, 0)),
     );
-    // No conversation proves it: each is read once over the kept listing,
-    // which is then read again, and the miss is cached off that one.
+    // No conversation lists an agent by its name: none is read, the kept
+    // listing is read again, and the miss is cached off that one.
     let absent = Endpoint::Address("peer-c9@elsewhere".into());
     row(
         "address, absent",
         call(&core, &script, &absent).await,
-        (read(1, 1, 3, 0), Calls::default()),
+        (read(1, 1, 0, 0), Calls::default()),
     );
     row(
         "address, absent, missed",
@@ -1302,4 +1310,24 @@ async fn a_proof_far_back_is_walked_once() {
     // Sign-out or another account forgets every proof.
     core.messaging.lock().unwrap().reset();
     assert!(core.messaging.lock().unwrap().proven.is_empty());
+}
+
+#[tokio::test]
+async fn an_agent_never_written_to_is_answered_without_reading_a_conversation() {
+    if ran_without_file_roots(
+        "an_agent_never_written_to_is_answered_without_reading_a_conversation",
+    ) {
+        return;
+    }
+    // Many long conversations, none with an agent by the address's name or
+    // the id it carries: none is read, however far back it goes.
+    let listed: Vec<Value> = (0..40)
+        .map(|n| conversation(&format!("c{n}"), &format!("m{n}")))
+        .collect();
+    let (_home, core, script) = core_with(listed).await;
+    script.lock().unwrap().page = 500;
+    let never = Endpoint::Address("claude-infra@laptop-250851484399009792".into());
+    let history = core.history(&never, None).await.unwrap();
+    assert!(history.messages.is_empty());
+    assert_eq!(script.lock().unwrap().message_reads(), 0);
 }
