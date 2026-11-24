@@ -235,6 +235,12 @@ Each recipient node has a setting, `delegated_approvals_from`:
 - `own_owner`: accepts delegates of the recipient's own owner only;
 - `off`.
 
+**High-risk classes on repo-level targets.** For `release`, `deploy`,
+`secret_change`, `destructive` and `spend` on a whole-repo target
+(`owner/repo` or a wildcard), code-owner standing needs a whole-repo owner:
+a person named by the last `*` or `**` rule in CODEOWNERS. Owning one path
+is not enough.
+
 **Who counts as a code owner of a target.** Cloud resolves this, and every
 step fails closed:
 
@@ -776,6 +782,88 @@ The default limits in §5.1 apply to everything else.
 - **relay-control** exposes the same route, and accepts OIDC from the
   self-host's configured issuers.
 
+### 11a.3a As built (cloud#6507, relay-control#278)
+
+These details came out of review and are part of the contract:
+
+- **Pinning at registration.** When a gate is registered, its repository is
+  resolved to GitHub's numeric repository and owner ids, through the GitHub
+  App installation or else the public API, and pinned (audited as
+  `gate.pinned`).
+  - A renamed, redirected or missing repository is refused with 422
+    `repository_unresolved`. A GitHub failure on the installation side is a
+    retryable 503. The public API is used only when no installation covers
+    the repository.
+  - relay-control only: for a self-hosted issuer (GitHub Enterprise Server),
+    Control can't resolve the repository on github.com. There, the owner
+    supplies `repository_id` and `repository_owner_id` in the registration
+    body, together with `default_branch`. All three are REQUIRED for every
+    self-hosted gate, and registration refuses a gate that omits any of them,
+    so no gate is ever unpinned. They are refused for GitHub Actions gates,
+    which are always resolved and pinned by Control itself.
+  - Redeem never pins. A token whose repository name matches but whose ids
+    differ is refused with `repository_mismatch`, audited for the owner and
+    logged.
+- **Commit binding.** For `release` targets, the OIDC `sha` claim must equal
+  the source sha in the approved target; otherwise the answer is
+  `sha_mismatch`.
+  - A gate may set `allow_source_sha_mismatch` when the job derives the
+    source commit itself. relay-app's desktop-promote is the example: it runs
+    from `main`, and the job compares the approved sha with the commit it
+    derives after its verify step.
+  - The opt-out is refused on `ref_pattern` (tag) gates, both at
+    registration and at redeem.
+- **Release only.** Gate redeem accepts only `release` actions; any other
+  class answers `out_of_scope`. A land, `<repo>:land:<branch>:<40-hex sha>`,
+  is a `release` target, so it IS gateable. It is commit-bound to the token's
+  `sha`, and the source-sha opt-out never applies to it. Agent-performed
+  merges (class `merge`) stay agent-redeemed through §6.3.
+- **Tag gates and `workflow_ref`.** A gate with `ref_pattern` stores its
+  `workflow_ref` as `<repo>/.github/workflows/<file>@<ref_pattern>`, for
+  example `…/desktop-release.yml@refs/tags/desktop-v*`. A token matches when
+  its `workflow_ref` is that file at a ref under the pattern's prefix, and
+  its `ref` matches the same pattern. A gate with an exact `ref` requires the
+  token's `workflow_ref` to equal `<file>@<ref>` exactly.
+- **`job_workflow_ref` default.** A gate registered without a
+  `job_workflow_ref` matches only a token whose `job_workflow_ref` is null or
+  equal to its `workflow_ref`. A reusable workflow called from elsewhere
+  never matches by accident.
+- **The source-sha opt-out** is accepted only when the gate's exact `ref` is
+  `refs/heads/<the repository's default branch>`. The default branch is read
+  at registration and stored on the gate (`default_branch`). If the
+  repository's default branch changes later, the gate must be registered
+  again. On every redeem where the opt-out would apply, Cloud also
+  re-reads the default branch live. If the branch can't be resolved, no gate
+  serves; if GitHub is down, the answer is `unavailable`.
+- **`same_run`** holds only when the token's issuer, repository id and run id
+  all match the run that consumed the approval. Every other run gets
+  `consumed`. Cloud accepts only GitHub's issuer; relay-control can accept
+  several, which is why the issuer is part of the identity.
+- **Signing keys.** Only `sig` (or unspecified-use) keys from GitHub's JWKS
+  are used. An unknown `kid` when the cached JWKS is stale answers
+  `unavailable` (503).
+- **Single use is per action.** The approval-wide `single_use` flag is set
+  only when the owner mints a Tier O approval with `single_use: true`. A
+  delegate's `owner_approval` has no such field. Each action is single
+  use if that flag is set or if the action is high-risk. So a `merge` listed
+  next to a `release` stays reusable, while the `release` is consumed.
+- **Matching rules.** A gate's `target_prefix` must end with `:`. Live gates
+  are unique per workspace and owner on (repository, `workflow_ref`,
+  `job_workflow_ref`, event, `target_prefix`). The `workflow_ref` includes
+  the ref. Only the repository name is compared case-insensitively; workflow
+  paths and refs are case-sensitive. A SHA-pinned `job_workflow_ref` is not
+  required for a top-level workflow. Any `job_workflow_ref` that differs from the
+  `workflow_ref` (a reusable workflow, in the same repository or another)
+  must be pinned to a 40-hex commit SHA.
+- **Status codes.** A dry run always answers 200, whether it passes or
+  not; the body carries `ok`, `reason` and `dry_run`. A passing redeem
+  answers 200. A refused redeem that is not a dry run answers 401 for
+  `oidc_invalid`, 503 for `unavailable` and `condition_unavailable`, and
+  403 for every other reason.
+- **Locking.** Consuming redeems lock the approval `FOR NO KEY UPDATE` and
+  record `gate.redeemed` in the same transaction. An approval revoked
+  between the check and the consume answers `revoked`.
+
 ### 11a.4 Order of work
 
 - **Here:** the Cloud and relay-control routes and gate registry, and the
@@ -1063,12 +1151,16 @@ Agent routes are proven with the agent's own Relaycast token, as in
 token>` and `{approval_id, action}`. It returns
   `{ok:true, consumed, same_run?, dry_run?}` or `{ok:false, reason}`. It also
   takes `dry_run`, and a gate may use `ref_pattern` (§11a.3). Its extra reasons
-  are `gate_unknown`, `oidc_invalid`, `gate_mismatch` and `target_prefix`.
+  are `gate_unknown`, `oidc_invalid`, `gate_mismatch`, `target_prefix`,
+  `sha_mismatch`, `repository_mismatch` and (at registration)
+  `repository_unresolved`. Refusals are non-2xx except for dry runs, which
+  always answer 200 with the result in the body (§11a.3a).
 - Keys: `GET /.well-known/relay-delegation-keys.json` returns a JWKS of OKP
   Ed25519 keys with `kid`.
 - Reason codes: `not_enabled`, `not_delegate`, `no_approval`, `out_of_scope`,
   `expired`, `revoked`, `recipient_policy`, `tier_o_required`, `consumed`,
-  `not_pending`, `unavailable`, `condition_unmet`, `condition_unavailable`.
+  `not_pending`, `unavailable`, `condition_unmet`, `condition_unavailable`,
+  `predates_grant`.
 - Defaults: a grant expires after 30 days and may last at most 90. An
   approval expires after 1 hour and may last at most 24 hours, never past its
   grant. An attestation lasts 300 seconds.
@@ -1086,6 +1178,14 @@ once redacted), iat, exp, jti`.
 `approval_id` is Cloud's id for this approval: the minted id in Tier O, and
 one derived for the message in Tier D (`apv_` followed by base62 of
 SHA-256(ws|message_id)[0..16]). Redeem and audit use it.
+
+A Tier D approval is refused as `predates_grant` when its message was sent
+more than 2 seconds (clock skew) before the grant was created. The send time is Relaycast's `created_at` when it
+reports one. Otherwise it is decoded from the Relaycast snowflake message id:
+`(id >> 22)` milliseconds after 2025-01-01T00:00:00Z, accepted at most 5
+minutes in the future. If neither is available, the approval is refused as
+`unavailable`. The send time is also where the approval's expiry window
+starts.
 
 ### 16.5 relay-node
 
