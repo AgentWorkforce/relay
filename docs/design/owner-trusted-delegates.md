@@ -797,8 +797,10 @@ These details came out of review and are part of the contract:
   - relay-control only: for a self-hosted issuer (GitHub Enterprise Server),
     Control can't resolve the repository on github.com. There, the owner
     supplies `repository_id` and `repository_owner_id` in the registration
-    body, together with `default_branch`, for every such gate. These are
-    refused for GitHub Actions gates.
+    body, together with `default_branch`. All three are REQUIRED for every
+    self-hosted gate, and registration refuses a gate that omits any of them,
+    so no gate is ever unpinned. They are refused for GitHub Actions gates,
+    which are always resolved and pinned by Control itself.
   - Redeem never pins. A token whose repository name matches but whose ids
     differ is refused with `repository_mismatch`, audited for the owner and
     logged.
@@ -816,6 +818,12 @@ These details came out of review and are part of the contract:
   is a `release` target, so it IS gateable. It is commit-bound to the token's
   `sha`, and the source-sha opt-out never applies to it. Agent-performed
   merges (class `merge`) stay agent-redeemed through §6.3.
+- **Tag gates and `workflow_ref`.** A gate with `ref_pattern` stores its
+  `workflow_ref` as `<repo>/.github/workflows/<file>@<ref_pattern>`, for
+  example `…/desktop-release.yml@refs/tags/desktop-v*`. A token matches when
+  its `workflow_ref` is that file at a ref under the pattern's prefix, and
+  its `ref` matches the same pattern. A gate with an exact `ref` requires the
+  token's `workflow_ref` to equal `<file>@<ref>` exactly.
 - **`job_workflow_ref` default.** A gate registered without a
   `job_workflow_ref` matches only a token whose `job_workflow_ref` is null or
   equal to its `workflow_ref`. A reusable workflow called from elsewhere
@@ -827,12 +835,16 @@ These details came out of review and are part of the contract:
   again. On every redeem where the opt-out would apply, Cloud also
   re-reads the default branch live. If the branch can't be resolved, no gate
   serves; if GitHub is down, the answer is `unavailable`.
-- **`same_run`** compares the repository id as well as the run id.
+- **`same_run`** holds only when the token's issuer, repository id and run id
+  all match the run that consumed the approval. Every other run gets
+  `consumed`. Cloud accepts only GitHub's issuer; relay-control can accept
+  several, which is why the issuer is part of the identity.
 - **Signing keys.** Only `sig` (or unspecified-use) keys from GitHub's JWKS
   are used. An unknown `kid` when the cached JWKS is stale answers
   `unavailable` (503).
 - **Single use is per action.** The approval-wide `single_use` flag is set
-  only by an explicit choice of the owner or sender. Each action is single
+  only when the owner mints a Tier O approval with `single_use: true`. A
+  delegate's `owner_approval` has no such field. Each action is single
   use if that flag is set or if the action is high-risk. So a `merge` listed
   next to a `release` stays reusable, while the `release` is consumed.
 - **Matching rules.** A gate's `target_prefix` must end with `:`. Live gates
@@ -1141,7 +1153,8 @@ token>` and `{approval_id, action}`. It returns
   takes `dry_run`, and a gate may use `ref_pattern` (§11a.3). Its extra reasons
   are `gate_unknown`, `oidc_invalid`, `gate_mismatch`, `target_prefix`,
   `sha_mismatch`, `repository_mismatch` and (at registration)
-  `repository_unresolved`. Refusals are non-2xx (§11a.3a).
+  `repository_unresolved`. Refusals are non-2xx except for dry runs, which
+  always answer 200 with the result in the body (§11a.3a).
 - Keys: `GET /.well-known/relay-delegation-keys.json` returns a JWKS of OKP
   Ed25519 keys with `kid`.
 - Reason codes: `not_enabled`, `not_delegate`, `no_approval`, `out_of_scope`,
