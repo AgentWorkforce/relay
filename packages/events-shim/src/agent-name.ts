@@ -1,10 +1,11 @@
 /**
  * An Agent Relay agent name as a wake link may record it: letters, digits, dots, dashes and
- * underscores, starting with a letter or digit, at most 100 characters. `watch_webhooks` and
+ * underscores, starting with a letter or digit, at most 128 characters (the longest name Agent
+ * Relay hosts give an agent). `watch_webhooks` and
  * `link_relay_wake` repeat the name into guidance other sessions read, so free text is never
  * accepted or repeated.
  */
-export const WAKE_AGENT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/u;
+export const WAKE_AGENT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 
 /**
  * The wake agent name to record or show: `value` trimmed, without a leading `@`, when it is a valid
