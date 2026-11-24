@@ -161,7 +161,7 @@ A grant lists classes. Each class can be narrowed by a target pattern.
 
 | Class             | Examples                                                                                                                 | Target pattern                                                                                                                                                                                                                  | Default limit                              |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| `merge`           | merge a PR, enable auto-merge                                                                                            | `owner/repo`, `owner/repo#N`                                                                                                                                                                                                    | Tier D                                     |
+| `merge`           | merge a PR, enable auto-merge                                                                                            | `owner/repo#N` in an approval (grants may use `owner/repo` or `owner/*`)                                                                                                                                                        | Tier D                                     |
 | `pr_ops`          | open/close PR, label, request review, re-run CI                                                                          | `owner/repo#N:<op>` with `<op>` one of `open`, `close`, `reopen`, `label=<name>`, `unlabel=<name>`, `request_review=<login>`, `rerun_ci`, `comment`; grants use `owner/repo`, `owner/repo#N` or `owner/*`, which cover every op | Tier D                                     |
 | `deploy`          | deploy to a named environment                                                                                            | `service:env` (`*:staging`)                                                                                                                                                                                                     | single-use (every environment)             |
 | `release`         | publish npm/crate/GitHub release, cut a tag                                                                              | package or repo                                                                                                                                                                                                                 | single-use                                 |
@@ -208,8 +208,9 @@ These stay out of every class, in every tier:
 
 - creating or changing grants, delegation policy, release gates, and the
   recipient's delegation settings themselves (`delegated_approvals_from`,
-  `spawn_delegate_approvals`). Without that limit, a delegate could widen its
-  own reach.
+  `spawn_delegate_approvals`, and any setting whose name contains
+  `delegat`, compared after normalising case and separators). Without that
+  limit, a delegate could widen its own reach.
 - answering choices, forms, `AskUserQuestion`, dialogs or local
   verification. A `prompt_approval` answers #2238's approve/deny set, and
   Codex extra-permission requests too, now that permissions are delegable
@@ -240,6 +241,14 @@ Each recipient node has a setting, `delegated_approvals_from`:
 (`owner/repo` or a wildcard), code-owner standing needs a whole-repo owner:
 a person named by the last `*` or `**` rule in CODEOWNERS. Owning one path
 is not enough.
+
+**A PR's author is not excluded from code-owner standing on their own PR.**
+They count under the same changed-path rules as anyone else: they must be an
+effective owner of a changed path, or of every changed path with
+`code_owner_match: all_paths` (Khaliq, 2026-11-23, 5:42 PM PT: "Let the PR author count as a
+code owner if CODEOWNERS names them", superseding D1 on this point). The PR
+is read fresh for each check, and a `/*` rule is not a catch-all for
+whole-repo standing.
 
 **Who counts as a code owner of a target.** Cloud resolves this, and every
 step fails closed:
@@ -296,13 +305,13 @@ Khaliq's decision (2026-11-23): conditions such as "when CI is green" are
 - **Can't check:** if Cloud cannot check a condition (no GitHub App access,
   an API error), the redeem fails closed with `condition_unavailable`.
 
-| Type               | Fields          | Holds when                                                                                                                                                                                         | Targets |
-| ------------------ | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| `ci_green`         | none            | every required check of the base branch's protection succeeded on the PR's current head; if the branch has no required checks, every check run on the head finished as success, neutral or skipped | PR      |
-| `head_sha`         | `sha` (40 hex)  | the PR's head is exactly this commit, the one the owner saw                                                                                                                                        | PR      |
-| `reviews_approved` | `min` (1 to 10) | at least `min` approving reviews on the current head, and no review requesting changes that is still outstanding                                                                                   | PR      |
-| `mergeable`        | none            | GitHub reports the PR mergeable, with no conflicts                                                                                                                                                 | PR      |
-| `not_before`       | `at` (RFC 3339) | the current time is at or after `at`                                                                                                                                                               | any     |
+| Type               | Fields          | Holds when                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Targets |
+| ------------------ | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------- |
+| `ci_green`         | none            | each required check name has at least one result on the PR's current head, counting both check runs and commit statuses of that name (for statuses, only the most recent status per context counts, as GitHub evaluates it), and every such result succeeded (a required name with no result is unmet, and a failing status is never masked by a passing run); if GitHub's test merge commit for the PR also has a result for a required name, that result must succeed too, so a failure GitHub would count blocks the redeem while the approval stays bound to the current head; if the branch has no required checks, the head has at least one check run or commit status, every check run finished as success, neutral or skipped, and the most recent status of every commit-status context is success | PR      |
+| `head_sha`         | `sha` (40 hex)  | the PR's head is exactly this commit, the one the owner saw                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | PR      |
+| `reviews_approved` | `min` (1 to 10) | at least `min` approving reviews on the current head, and no review requesting changes that is still outstanding                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | PR      |
+| `mergeable`        | none            | GitHub reports the PR mergeable, with no conflicts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | PR      |
+| `not_before`       | `at` (RFC 3339) | the current time is at or after `at`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | any     |
 
 - **Delegates encode conditions.** A delegate turns a quoted condition ("when
   green") into its structured form. A condition that is in the quote but not
@@ -449,7 +458,8 @@ revocation hold.
   Revocation takes effect in Cloud at once.
 - **Automatic revocation:** when the delegate's agent id is released or
   re-bound, when its binding changes owner, when the owner leaves the
-  workspace or is suspended, when the org policy changes so the grant no
+  workspace (a suspended or inactive org only refuses, as `not_delegate`,
+  without revoking), when the org policy changes so the grant no
   longer fits, or when the grant expires.
 - **How fast:** a new attestation is refused at once. Every action is
   redeemed right before it is taken (§6.3), and the redeem re-checks
@@ -824,6 +834,12 @@ These details came out of review and are part of the contract:
   its `workflow_ref` is that file at a ref under the pattern's prefix, and
   its `ref` matches the same pattern. A gate with an exact `ref` requires the
   token's `workflow_ref` to equal `<file>@<ref>` exactly.
+- **Own-repository reusable workflows.** A `job_workflow_ref` in the gate's
+  own repository at the gate's exact ref is accepted without a SHA pin, but
+  never together with the source-sha opt-out. Every other `job_workflow_ref`
+  that differs from the `workflow_ref` must be SHA-pinned.
+- **Signing keys during the cooldown.** An unknown `kid` within the 60 s
+  JWKS refetch cooldown answers `unavailable`.
 - **`job_workflow_ref` default.** A gate registered without a
   `job_workflow_ref` matches only a token whose `job_workflow_ref` is null or
   equal to its `workflow_ref`. A reusable workflow called from elsewhere
@@ -853,8 +869,9 @@ These details came out of review and are part of the contract:
   the ref. Only the repository name is compared case-insensitively; workflow
   paths and refs are case-sensitive. A SHA-pinned `job_workflow_ref` is not
   required for a top-level workflow. Any `job_workflow_ref` that differs from the
-  `workflow_ref` (a reusable workflow, in the same repository or another)
-  must be pinned to a 40-hex commit SHA.
+  `workflow_ref` must be pinned to a 40-hex commit SHA, with one exception: a
+  reusable workflow in the gate's own repository at the gate's exact ref
+  (never together with the source-sha opt-out).
 - **Status codes.** A dry run always answers 200, whether it passes or
   not; the body carries `ok`, `reason` and `dry_run`. A passing redeem
   answers 200. A refused redeem that is not a dry run answers 401 for
@@ -1116,19 +1133,20 @@ an agent token or a plain CLI token. They are refused while the workspace's
 `delegation_enabled` is off, except `GET`, revocation, and `PUT
 /delegates/policy` (the route that turns the feature on):
 
-| Method & path (under `/api/v1/workspaces/{ws}`) | Purpose                                                                                                                           |
-| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /delegates`                                | the caller's grants (admins: `?all=1`)                                                                                            |
-| `POST /delegates`                               | create a grant: `{delegate_agent_id, scopes:[{class, targets[]}], expires_at, require_tier_o?:[class]}`                           |
-| `PATCH /delegates/{grant_id}`                   | narrow scopes or expiry (widening = new grant)                                                                                    |
-| `DELETE /delegates/{grant_id}`                  | revoke                                                                                                                            |
-| `POST /delegates/revoke-all`                    | revoke every grant of the caller (admins: `{all:true}` for the workspace)                                                         |
-| `POST /delegates/claims`                        | start a claim, returns `{claim_id, code, expires_at}` (10 min, single use)                                                        |
-| `POST /delegates/approvals`                     | Tier O: mint `{actions, expires_at, single_use?}` returns `{approval_id}`                                                         |
-| `DELETE /delegates/approvals/{approval_id}`     | revoke one approval (Tier D or Tier O)                                                                                            |
-| `GET /delegates/audit`                          | audit events, `?since=&grant_id=&format=jsonl`                                                                                    |
-| `PUT /delegates/policy`                         | admin only: `{delegation_enabled, max_expiry_days, allowed_classes, require_tier_o, code_owner_match: "any_path" \| "all_paths"}` |
-| `GET`/`PUT /delegates/target-owners`            | admin only: `[{pattern, repo?, owner_ids?}]` for targets that are not repos (§5.4)                                                |
+| Method & path (under `/api/v1/workspaces/{ws}`) | Purpose                                                                                                                                                                         |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /delegates`                                | the caller's grants (admins: `?all=1`)                                                                                                                                          |
+| `POST /delegates`                               | create a grant: `{delegate_agent_id, scopes:[{class, targets[]}], expires_at, require_tier_o?:[class]}`                                                                         |
+| `PATCH /delegates/{grant_id}`                   | narrow scopes or expiry (widening = new grant)                                                                                                                                  |
+| `DELETE /delegates/{grant_id}`                  | revoke                                                                                                                                                                          |
+| `POST /delegates/revoke-all`                    | revoke every grant of the caller (admins: `{all:true}` for the workspace)                                                                                                       |
+| `POST /delegates/claims`                        | start a claim, returns `{claim_id, code, expires_at}` (10 min, single use)                                                                                                      |
+| `DELETE /delegates/claims/{claim_id}`           | owner or admin: release a claimed agent; also revokes the owner's grants to that agent                                                                                          |
+| `POST /delegates/approvals`                     | Tier O: mint `{actions, expires_at, single_use?}` returns `{approval_id}`                                                                                                       |
+| `DELETE /delegates/approvals/{approval_id}`     | revoke one approval (Tier D or Tier O)                                                                                                                                          |
+| `GET /delegates/audit`                          | audit events, `?since=&grant_id=&format=jsonl`                                                                                                                                  |
+| `PUT /delegates/policy`                         | admin only, and fields left out keep their stored values: `{delegation_enabled, max_expiry_days, allowed_classes, require_tier_o, code_owner_match: "any_path" \| "all_paths"}` |
+| `GET`/`PUT /delegates/target-owners`            | admin only: `[{pattern, repo?, owner_ids?}]` for targets that are not repos (§5.4)                                                                                              |
 
 Agent routes are proven with the agent's own Relaycast token, as in
 `native-authority`, with the same bearer rules:
