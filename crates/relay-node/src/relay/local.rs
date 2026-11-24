@@ -1391,11 +1391,18 @@ impl LocalInjector {
             SessionKind::Droid | SessionKind::Devin | SessionKind::CursorCli => {
                 lock_held::can_reply(&self.config, &*self.table, target)
             }
+            // A Pi or Oh My Pi session's tools run under the process holding
+            // its binding, which names the caller on the socket
+            // (`pi_caller`), so while that binding is live it can answer.
+            SessionKind::Pi | SessionKind::Omp => {
+                self.config.extension(target.kind).is_some_and(|extension| {
+                    crate::relay::pi::binding(extension, &*self.table, self.config.uid, &target.id)
+                        .is_some()
+                })
+            }
             // OpenClaw's tools never run under this core's socket: its
             // answer is read back from the Gateway (`final_answer`).
-            SessionKind::OpenClaw | SessionKind::Hermes | SessionKind::Pi | SessionKind::Omp => {
-                false
-            }
+            SessionKind::OpenClaw | SessionKind::Hermes => false,
         }
     }
 
