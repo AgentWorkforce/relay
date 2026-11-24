@@ -73,12 +73,14 @@ pub(super) fn chain(config: &PiConfig, uid: u32, registration: &Registration) ->
     pins
 }
 
-/// Whether the process `pin` names no longer holds its registry: it exited,
-/// its pid now names another process, it is a zombie, or it closed the file,
-/// as Pi's `/reload` does. A live holder that cannot be checked is not gone.
+/// Whether the process `pin` names no longer holds its registry: the kernel
+/// reports it exited, its pid now names another process, it is a zombie, or
+/// its descriptors were read and do not include the registry, as after Pi's
+/// `/reload`. A lookup that fails, or a descriptor table that cannot be
+/// read, proves nothing, and the holder counts as present.
 fn holder_gone(table: &dyn ProcessTable, uid: u32, pin: &Pin) -> bool {
     let Some(process) = table.process(pin.pid) else {
-        return true;
+        return table.process_gone(pin.pid);
     };
     if process.start != pin.start || process.uid != uid || table.zombie(process.pid) {
         return true;
@@ -86,8 +88,11 @@ fn holder_gone(table: &dyn ProcessTable, uid: u32, pin: &Pin) -> bool {
     let Ok(registry) = pin.directory.join("session.json").canonicalize() else {
         return false;
     };
-    let held = table
-        .open_files(process.pid)
+    let open = table.open_files(process.pid);
+    if open.is_empty() {
+        return false;
+    }
+    let held = open
         .iter()
         .any(|open| open == &registry || open.canonicalize().ok().as_ref() == Some(&registry));
     !held && table.process(process.pid) == Some(process)
@@ -102,16 +107,28 @@ pub(super) fn accepts(
     registration: &Registration,
     binding: &Binding,
 ) -> bool {
-    chain(config, uid, registration)
-        .last()
-        .is_some_and(|current| {
-            current.reference == binding.reference || holder_gone(table, uid, current)
-        })
+    let chain = chain(config, uid, registration);
+    chain.last().is_some_and(|current| {
+        current.reference == binding.reference
+            || (chain.len() < MAX_LINKS && holder_gone(table, uid, current))
+    })
 }
 
-/// Makes `binding` the registration's current pin. `Ok` when it already is,
-/// or when the current pin's holder is proven gone and its queued messages
-/// moved to `binding`'s directory; otherwise the outcome to report.
+fn changed(name: &str) -> InjectOutcome {
+    InjectOutcome::Refused(format!(
+        "The {name} session binding changed; turn this agent off, then add the session again."
+    ))
+}
+
+/// Makes `binding` the registration's current pin, and brings every message
+/// still queued under an earlier pin to it. `Ok` when it is the current pin
+/// or its predecessor's holder is proven gone; otherwise the outcome to
+/// report.
+///
+/// The successor link is written before anything moves, so the chain always
+/// reaches every directory a message was copied to; the moves are resumed
+/// on every later delivery until each earlier directory is drained. The
+/// holders of earlier pins were proven gone when they were followed.
 pub(super) fn follow(
     config: &PiConfig,
     table: &dyn ProcessTable,
@@ -120,50 +137,59 @@ pub(super) fn follow(
     binding: &Binding,
 ) -> Result<(), InjectOutcome> {
     let name = config.name();
-    let chain = chain(config, uid, registration);
+    let mut chain = chain(config, uid, registration);
     let Some(current) = chain.last() else {
-        return Err(InjectOutcome::Refused(format!(
-            "The {name} session binding changed; turn this agent off, then add the session again."
-        )));
+        return Err(changed(name));
     };
-    if current.reference == binding.reference {
-        return Ok(());
+    if current.reference != binding.reference {
+        if binding.registry.session_id != registration.target.id
+            || chain.iter().any(|pin| pin.directory == binding.directory)
+        {
+            return Err(changed(name));
+        }
+        if !holder_gone(table, uid, current) {
+            return Err(InjectOutcome::Waiting(format!(
+                "Waiting for the earlier {name} process to release this session."
+            )));
+        }
+        // Every link must stay reachable: past the limit, nothing follows.
+        if chain.len() >= MAX_LINKS {
+            return Err(changed(name));
+        }
+        let link = Successor {
+            version: 1,
+            session_id: registration.target.id.clone(),
+            reference: binding.reference.clone(),
+        };
+        serde_json::to_vec(&link)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| atomic_write(&current.directory.join(SUCCESSOR), &bytes))
+            .map_err(|_| {
+                InjectOutcome::Waiting(format!(
+                    "Could not record this session's new {name} process yet."
+                ))
+            })?;
+    } else {
+        chain.pop();
     }
-    if binding.registry.session_id != registration.target.id
-        || chain.iter().any(|pin| pin.directory == binding.directory)
-    {
-        return Err(InjectOutcome::Refused(format!(
-            "The {name} session binding changed; turn this agent off, then add the session again."
-        )));
-    }
-    if !holder_gone(table, uid, current) {
-        return Err(InjectOutcome::Waiting(format!(
-            "Waiting for the earlier {name} process to release this session."
-        )));
-    }
-    move_queued(uid, registration, &current.directory, &binding.directory)
-        .and_then(|()| {
-            let link = Successor {
-                version: 1,
-                session_id: registration.target.id.clone(),
-                reference: binding.reference.clone(),
-            };
-            let bytes = serde_json::to_vec(&link).map_err(std::io::Error::other)?;
-            atomic_write(&current.directory.join(SUCCESSOR), &bytes)
-        })
-        .map_err(|_| {
+    for earlier in &chain {
+        move_queued(uid, registration, &earlier.directory, &binding.directory).map_err(|_| {
             InjectOutcome::Waiting(format!(
                 "Could not move this session's queued messages to its new {name} process yet."
             ))
-        })
+        })?;
+    }
+    Ok(())
 }
 
-/// Copies every message still `pending` or `claimed` in `from` into `to`
-/// (with a new arrival sequence there), unless `to` has it already, then
-/// marks the old copy `moved`, which no extension reads. A pending message
-/// was never handed to Pi, so the new extension submits it; a claimed one
-/// was, so the new extension only records it once Pi's history shows it.
-/// Each step can be repeated after a failure.
+/// Brings `from`'s unfinished messages to `to`, where the new extension
+/// reads them, unless `to` has them already, then marks the old copies
+/// `moved`, which no extension reads: a `pending` one was never handed to Pi,
+/// so the new extension submits it; a `claimed` one was, so it is only
+/// recorded once Pi's history shows it; a `recorded` one without its answer
+/// yet gets its answer there. Copies get new arrival sequences, in the old
+/// order. Saved owner-mode choices are copied too, with or without a
+/// message. Each step can be repeated after a failure.
 fn move_queued(
     uid: u32,
     registration: &Registration,
@@ -175,6 +201,15 @@ fn move_queued(
     let mut queued = Vec::new();
     for entry in fs::read_dir(from)?.flatten() {
         let file = entry.file_name().to_string_lossy().into_owned();
+        if let Some(stem) = file.strip_suffix(".native-choice") {
+            if stem.len() == 64
+                && fs::symlink_metadata(to.join(&file)).is_err()
+                && private(&entry.path(), uid, false)
+            {
+                atomic_write(&to.join(&file), &fs::read(entry.path())?)?;
+            }
+            continue;
+        }
         let Some(stem) = file.strip_suffix(".json") else {
             continue;
         };
@@ -184,9 +219,14 @@ fn move_queued(
         let Some(record) = read::<Delivery>(&entry.path(), uid) else {
             continue;
         };
+        let unfinished = match record.state.as_str() {
+            "pending" | "claimed" => true,
+            "recorded" => record.answer.is_none(),
+            _ => false,
+        };
         if record.session_id == registration.target.id
             && key(&record.message_id) == stem
-            && matches!(record.state.as_str(), "pending" | "claimed")
+            && unfinished
         {
             queued.push((record.sequence, stem.to_string(), record));
         }
@@ -196,12 +236,6 @@ fn move_queued(
     queued.sort_by(|a, b| (a.0.is_some(), a.0, &a.1).cmp(&(b.0.is_some(), b.0, &b.1)));
     for (_, stem, mut record) in queued {
         let file = format!("{stem}.json");
-        let choice = format!("{stem}.native-choice");
-        if fs::symlink_metadata(to.join(&choice)).is_err() {
-            if let Some(saved) = read::<serde_json::Value>(&from.join(&choice), uid) {
-                atomic_write(&to.join(&choice), &serde_json::to_vec(&saved)?)?;
-            }
-        }
         if fs::symlink_metadata(to.join(&file)).is_err() {
             let sequence = next_sequence(to, uid)
                 .ok_or_else(|| std::io::Error::other("no arrival sequence in the new directory"))?;
@@ -273,7 +307,8 @@ mod tests {
         private_dir(&directory);
         let path = directory.join("session.json");
         let registry = serde_json::json!({"version":1,"pid":pid,"sessionId":ID,
-            "instance":instance,"cwd":"/work/invented","title":"Invented task"});
+            "instance":instance,"cwd":"/work/invented","title":"Invented task",
+            "nativeContinuation":1});
         atomic_write(&path, registry.to_string().as_bytes()).unwrap();
         world.table.insert(
             pid,
@@ -286,6 +321,12 @@ mod tests {
         );
     }
 
+    /// The process `pid` exited, as the kernel reports.
+    fn exit(world: &World, pid: i32) {
+        world.table.remove(pid);
+        world.table.gone.lock().unwrap().insert(pid);
+    }
+
     /// The process `pid` closed its registry, as `/reload` does.
     fn release(world: &World, pid: i32) {
         world
@@ -295,8 +336,7 @@ mod tests {
             .unwrap()
             .get_mut(&pid)
             .unwrap()
-            .open_files
-            .clear();
+            .open_files = vec![PathBuf::from("/dev/null")];
     }
 
     fn registration(config: &PiConfig, world: &World) -> Registration {
@@ -402,7 +442,7 @@ mod tests {
         let world = world();
         start(&world, &world.pi, 900, 5, OLD);
         let r = registration(&world.pi, &world);
-        world.table.remove(900);
+        exit(&world, 900);
         start(&world, &world.pi, 901, 6, NEW);
         assert!(matches!(
             deliver(&world, &world.pi, &r, "m-1"),
@@ -472,7 +512,7 @@ mod tests {
         let world = world();
         start(&world, &world.pi, 900, 5, OLD);
         let r = registration(&world.pi, &world);
-        world.table.remove(900);
+        exit(&world, 900);
         start(&world, &world.pi, 901, 6, NEW);
         start(&world, &world.pi, 902, 7, THIRD);
         assert!(matches!(
@@ -489,7 +529,7 @@ mod tests {
         let world = world();
         start(&world, &world.omp, 900, 5, OLD);
         let r = registration(&world.omp, &world);
-        world.table.remove(900);
+        exit(&world, 900);
         // The same session id, bound by Pi's extension.
         start(&world, &world.pi, 901, 6, NEW);
         assert!(matches!(
@@ -569,5 +609,194 @@ mod tests {
             .runtime
             .join(instance)
             .join(format!("{}.json", key(message_id)))
+    }
+
+    #[test]
+    fn a_holder_that_cannot_be_read_is_not_gone() {
+        let world = world();
+        start(&world, &world.pi, 900, 5, OLD);
+        let r = registration(&world.pi, &world);
+        // No process information, without the kernel saying it exited.
+        let old = world.table.processes.lock().unwrap()[&900].clone();
+        world.table.remove(900);
+        start(&world, &world.pi, 901, 6, NEW);
+        assert!(matches!(
+            deliver(&world, &world.pi, &r, "m-1"),
+            InjectOutcome::Waiting(_)
+        ));
+        // Running, with a descriptor table that cannot be read.
+        world.table.insert(
+            900,
+            FakeProcess {
+                open_files: vec![],
+                ..old
+            },
+        );
+        assert!(matches!(
+            deliver(&world, &world.pi, &r, "m-1"),
+            InjectOutcome::Waiting(_)
+        ));
+        assert!(!successor(&world.pi, OLD));
+        assert!(record(&world.pi, NEW, "m-1").is_none());
+    }
+
+    #[test]
+    fn a_queued_owner_message_moves_on_its_own_retry() {
+        let world = world();
+        start(&world, &world.pi, 900, 5, OLD);
+        let r = registration(&world.pi, &world);
+        let native = |id| {
+            send_native(
+                &world.pi,
+                &world.table,
+                current_uid(),
+                &r,
+                id,
+                "an invented note",
+            )
+        };
+        assert!(matches!(native("m-1"), InjectOutcome::Accepted(_)));
+        assert_eq!(record(&world.pi, OLD, "m-1").unwrap().version, 2);
+        exit(&world, 900);
+        start(&world, &world.pi, 901, 6, NEW);
+        // Its retry alone brings it to the new process, once.
+        assert!(matches!(native("m-1"), InjectOutcome::Accepted(_)));
+        assert_eq!(record(&world.pi, NEW, "m-1").unwrap().state, "pending");
+        assert_eq!(record(&world.pi, OLD, "m-1").unwrap().state, "moved");
+        let choice = |instance: &str| {
+            world
+                .pi
+                .runtime
+                .join(instance)
+                .join(format!("{}.native-choice", key("m-1")))
+                .exists()
+        };
+        assert!(choice(NEW));
+    }
+
+    #[test]
+    fn a_saved_choice_without_a_message_moves_too() {
+        let world = world();
+        start(&world, &world.pi, 900, 5, OLD);
+        let r = registration(&world.pi, &world);
+        let name = format!("{}.native-choice", key("m-9"));
+        atomic_write(&world.pi.runtime.join(OLD).join(&name), b"not decodable").unwrap();
+        exit(&world, 900);
+        start(&world, &world.pi, 901, 6, NEW);
+        assert!(matches!(
+            deliver(&world, &world.pi, &r, "m-1"),
+            InjectOutcome::Accepted(_)
+        ));
+        assert_eq!(
+            fs::read(world.pi.runtime.join(NEW).join(&name)).unwrap(),
+            b"not decodable"
+        );
+    }
+
+    #[test]
+    fn a_recorded_message_still_waiting_for_its_answer_moves() {
+        let world = world();
+        start(&world, &world.pi, 900, 5, OLD);
+        let r = registration(&world.pi, &world);
+        assert!(matches!(
+            deliver(&world, &world.pi, &r, "m-1"),
+            InjectOutcome::Accepted(_)
+        ));
+        let mut saved = record(&world.pi, OLD, "m-1").unwrap();
+        saved.state = "recorded".into();
+        atomic_write(
+            &config_path(&world.pi, OLD, "m-1"),
+            &serde_json::to_vec(&saved).unwrap(),
+        )
+        .unwrap();
+        release(&world, 900);
+        start(&world, &world.pi, 900, 5, NEW);
+        assert!(matches!(
+            deliver(&world, &world.pi, &r, "m-2"),
+            InjectOutcome::Accepted(_)
+        ));
+        assert_eq!(record(&world.pi, NEW, "m-1").unwrap().state, "recorded");
+        assert_eq!(record(&world.pi, OLD, "m-1").unwrap().state, "moved");
+        // The new extension writes the answer; it is found once.
+        answer(&world.pi, NEW, "m-1", "a late invented answer");
+        assert_eq!(
+            final_answer(&world.pi, current_uid(), &r, &MessageRef::of("m-1")).as_deref(),
+            Some("a late invented answer")
+        );
+    }
+
+    #[test]
+    fn an_interrupted_move_resumes_across_another_restart() {
+        let world = world();
+        start(&world, &world.pi, 900, 5, OLD);
+        let r = registration(&world.pi, &world);
+        assert!(matches!(
+            deliver(&world, &world.pi, &r, "m-1"),
+            InjectOutcome::Accepted(_)
+        ));
+        exit(&world, 900);
+        start(&world, &world.pi, 901, 6, NEW);
+        // The link was saved, then the core stopped before anything moved.
+        let new = binding(&world.pi, &world.table, current_uid(), ID).unwrap();
+        let link = Successor {
+            version: 1,
+            session_id: ID.into(),
+            reference: new.reference,
+        };
+        atomic_write(
+            &world.pi.runtime.join(OLD).join(SUCCESSOR),
+            &serde_json::to_vec(&link).unwrap(),
+        )
+        .unwrap();
+        // And the second process exited too before any delivery.
+        exit(&world, 901);
+        start(&world, &world.pi, 902, 7, THIRD);
+        assert!(matches!(
+            deliver(&world, &world.pi, &r, "m-2"),
+            InjectOutcome::Accepted(_)
+        ));
+        assert_eq!(record(&world.pi, THIRD, "m-1").unwrap().state, "pending");
+        assert_eq!(record(&world.pi, OLD, "m-1").unwrap().state, "moved");
+        assert!(record(&world.pi, NEW, "m-1").is_none());
+        assert!(matches!(
+            deliver(&world, &world.pi, &r, "m-1"),
+            InjectOutcome::Accepted(_)
+        ));
+    }
+
+    #[test]
+    fn a_chain_at_its_limit_follows_no_further() {
+        let world = world();
+        private_dir(&world.pi.runtime);
+        let instance = |i: usize| format!("{i:032x}");
+        let reference = |i: usize| format!("pi:{}:1:{}", 2000 + i, instance(i));
+        for i in 0..MAX_LINKS {
+            private_dir(&world.pi.runtime.join(instance(i)));
+            world.table.gone.lock().unwrap().insert(2000 + i as i32);
+            if i + 1 < MAX_LINKS {
+                let link = Successor {
+                    version: 1,
+                    session_id: ID.into(),
+                    reference: reference(i + 1),
+                };
+                atomic_write(
+                    &world.pi.runtime.join(instance(i)).join(SUCCESSOR),
+                    &serde_json::to_vec(&link).unwrap(),
+                )
+                .unwrap();
+            }
+        }
+        let r: Registration = serde_json::from_value(serde_json::json!({"name":"pi-invented",
+            "agentID":"a-1","target":{"kind":"pi","id":ID},"baseURL":"https://cast.agentrelay.com",
+            "registeredAt":"2026-10-20T00:00:00Z","routeBinding":reference(0)}))
+        .unwrap();
+        assert_eq!(chain(&world.pi, current_uid(), &r).len(), MAX_LINKS);
+        start(&world, &world.pi, 901, 6, NEW);
+        assert!(matches!(
+            deliver(&world, &world.pi, &r, "m-1"),
+            InjectOutcome::Refused(_)
+        ));
+        assert!(!successor(&world.pi, &instance(MAX_LINKS - 1)));
+        assert!(record(&world.pi, NEW, "m-1").is_none());
     }
 }

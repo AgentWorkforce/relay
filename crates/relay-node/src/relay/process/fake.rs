@@ -49,6 +49,8 @@ pub struct FakeProcesses {
     pub clock: Option<StartClock>,
     /// Processes whose environment the kernel would not let this user read.
     pub unreadable_environment: std::sync::Mutex<std::collections::HashSet<i32>>,
+    /// Pids the kernel positively reports gone (`process_gone`).
+    pub gone: std::sync::Mutex<std::collections::HashSet<i32>>,
 }
 
 impl FakeProcesses {
@@ -77,6 +79,10 @@ impl FakeProcesses {
 }
 
 impl ProcessTable for FakeProcesses {
+    fn process_gone(&self, pid: i32) -> bool {
+        self.gone.lock().unwrap().contains(&pid)
+    }
+
     fn zombie(&self, pid: i32) -> bool {
         self.with(pid, |p| p.zombie).unwrap_or(false)
     }

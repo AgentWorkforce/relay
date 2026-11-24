@@ -467,6 +467,16 @@ fn send_with(
 ) -> InjectOutcome {
     let native = admit.is_some();
     let name = config.name();
+    // After `/reload` or a restart the same session has a new binding: it
+    // becomes the pin once the old holder is proven gone, never before, and
+    // brings the messages queued under the old pin with it before any
+    // receipt below is read.
+    let live = (!config.turned_off())
+        .then(|| binding(config, table, uid, &registration.target.id))
+        .flatten();
+    let followed = live
+        .as_ref()
+        .map(|live| rebind::follow(config, table, uid, registration, live));
     // Settlement must survive the harness exiting or switching runtimes after receipt.
     // Only new submissions need a live process with the exact pinned identity.
     if let Some(outcome) = recorded_delivery(config, uid, registration, message_id, text, native) {
@@ -489,15 +499,13 @@ fn send_with(
             return outcome;
         }
     }
-    let Some(binding) = binding(config, table, uid, &registration.target.id) else {
+    let Some(binding) = live else {
         return InjectOutcome::Waiting(format!(
             "{name} is not connected. {}",
             config.flavor.reconnect()
         ));
     };
-    // After `/reload` or a restart the same session has a new binding: it
-    // becomes the pin once the old holder is proven gone, never before.
-    if let Err(outcome) = rebind::follow(config, table, uid, registration, &binding) {
+    if let Some(Err(outcome)) = followed {
         return outcome;
     }
     if native && binding.registry.native_continuation != 1 {
