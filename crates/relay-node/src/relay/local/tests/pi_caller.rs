@@ -398,3 +398,45 @@ fn a_send_token_never_reaches_past_a_pi_holder_to_its_host() {
     assert!(matches!(caller(&world, 420), Err(CallerMiss::Unattributed)));
     assert!(world.sessions.held_by_host(420).is_empty());
 }
+
+#[test]
+fn two_bindings_name_nobody_even_when_the_child_predates_one() {
+    let world = pi_world();
+    let table = FakeProcesses {
+        clock: Some(StartClock::Micros),
+        ..FakeProcesses::default()
+    };
+    let at = |secs: u64| std::time::UNIX_EPOCH + Duration::from_secs(secs);
+    table.insert(600, own(1, 500_000_000));
+    let pi = write_registry(&world, SessionKind::Pi, 600, PI, INSTANCE);
+    let omp = write_registry(&world, SessionKind::Omp, 600, OMP, INSTANCE_TWO);
+    for (path, secs) in [(&pi, 1_000), (&omp, 3_000)] {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(at(secs))
+            .unwrap();
+    }
+    table
+        .processes
+        .lock()
+        .unwrap()
+        .get_mut(&600)
+        .unwrap()
+        .open_files = vec![pi, omp];
+    // Started between the two registries.
+    table.insert(610, own(600, 2_000_000_000));
+    let holder = table.process(600).unwrap();
+    let child = table.process(610).unwrap();
+    assert!(matches!(
+        crate::relay::local::pi_caller::caller(
+            &world.sessions.config,
+            &table,
+            600,
+            holder,
+            Some(&child),
+        ),
+        Some(Err(CallerMiss::Unattributed))
+    ));
+}

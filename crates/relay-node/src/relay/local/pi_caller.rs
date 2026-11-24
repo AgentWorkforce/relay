@@ -42,38 +42,54 @@ pub(super) fn caller(
     if process.uid != config.uid || !is_holder(config, table, current) {
         return None;
     }
-    let mut found: Vec<Target> = [&config.pi, &config.omp]
+    let mut found: Vec<(Target, crate::relay::pi::Binding)> = [&config.pi, &config.omp]
         .into_iter()
         .flat_map(|extension| {
             crate::relay::pi::held_by(extension, table, config.uid, process)
                 .into_iter()
-                .filter(|binding| !below.is_some_and(|child| started_before(table, child, binding)))
-                .map(|binding| Target::new(extension.flavor.kind(), binding.session_id()))
+                .map(|binding| {
+                    let target = Target::new(extension.flavor.kind(), binding.session_id());
+                    (target, binding)
+                })
         })
         .collect();
+    // Several bindings name nobody, whichever of them the child predates.
+    if found.len() != 1 {
+        return Some(Err(CallerMiss::Unattributed));
+    }
+    let (target, binding) = found.remove(0);
+    let earlier = below.is_some_and(|child| started_before(table, child, &binding));
     // Still the same process after its files were read.
     let same = table.process(current) == Some(process);
-    Some(match found.len() {
-        1 if same => Ok(found.remove(0)),
-        _ => Err(CallerMiss::Unattributed),
+    Some(if same && !earlier {
+        Ok(target)
+    } else {
+        Err(CallerMiss::Unattributed)
     })
 }
 
 /// Whether `child` started before `binding`'s registry was written. A start
-/// or write time that cannot be read decides nothing, as for `/clear`.
+/// or write time that cannot be read decides nothing, as for `/clear`. On
+/// Linux a start time is counted from a boot time kept in whole seconds, so
+/// it can read up to a second early; a child that close to the write is not
+/// called earlier.
 fn started_before(
     table: &dyn ProcessTable,
     child: &ProcessInfo,
     binding: &crate::relay::pi::Binding,
 ) -> bool {
-    let Some(started) = crate::relay::claude::clear::start_epoch_ms(table.start_clock(), child)
-    else {
+    let clock = table.start_clock();
+    let Some(started) = crate::relay::claude::clear::start_epoch_ms(clock, child) else {
         return false;
+    };
+    let slack = match clock {
+        crate::relay::process::StartClock::Ticks => 1_000,
+        _ => 0,
     };
     std::fs::metadata(binding.directory.join("session.json"))
         .and_then(|metadata| metadata.modified())
         .ok()
         .and_then(|written| written.duration_since(std::time::UNIX_EPOCH).ok())
         .and_then(|written| i64::try_from(written.as_millis()).ok())
-        .is_some_and(|written| started < written)
+        .is_some_and(|written| started.saturating_add(slack) < written)
 }
