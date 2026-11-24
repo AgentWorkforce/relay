@@ -79,9 +79,20 @@ impl Outbound {
         uid: u32,
         query: &[(String, String)],
     ) -> Result<Value, OutboundError> {
-        let (session, _, _) = self.authorize(pid, uid).await?;
+        let (session, registration, token) = self.authorize(pid, uid).await?;
         let kept = DeliveredTexts::under(&self.core.config.app_data_dir);
-        message_pointer::answer(&kept, &session.target.key(), query, now_ms())
-            .map_err(|(status, code, message)| OutboundError::new(status, code, message))
+        let record = message_pointer::lookup(&kept, &session.target.key(), query, now_ms())
+            .map_err(|(status, code, message)| OutboundError::new(status, code, message))?;
+        // A framing the seal cannot prove (kept before this core started) is
+        // checked again against Relaycast, as the session's own agent.
+        let rechecked = match message_pointer::needs_recheck(&record) {
+            true => {
+                self.core
+                    .recheck_kept_framing(&registration, &token, &record)
+                    .await
+            }
+            false => None,
+        };
+        Ok(message_pointer::render(&record, rechecked.as_ref()))
     }
 }

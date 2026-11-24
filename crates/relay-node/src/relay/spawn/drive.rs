@@ -68,7 +68,7 @@ fn driven_codex(registration: &Registration) -> bool {
 
 /// The prefix Relaycast gives a 1:1 DM conversation's channel id
 /// (`dmch_<pair key>`). Group DMs and ordinary channels get other ids.
-const ONE_TO_ONE_DM_CHANNEL: &str = "dmch_";
+pub(crate) const ONE_TO_ONE_DM_CHANNEL: &str = "dmch_";
 
 /// A 1:1 direct message whose immutable Relaycast sender id is `id`. A
 /// name is never enough: it can be taken again.

@@ -212,9 +212,21 @@ impl GrokAdapter {
             Some(version) if version < MIN_VERSION => {
                 Err(LaunchError::Unavailable(too_old(version)))
             }
-            _ => std::fs::canonicalize(&executable).map_err(|error| {
-                LaunchError::Failed(format!("Grok's executable cannot be read: {error}"))
-            }),
+            _ => {
+                let canonical = std::fs::canonicalize(&executable).map_err(|error| {
+                    LaunchError::Failed(format!("Grok's executable cannot be read: {error}"))
+                })?;
+                // The same rule the session socket recognises a leader by
+                // (`process::trusted_grok_executable`): a leader it would not
+                // recognise could never name its own session's tools.
+                if !crate::relay::process::trusted_grok_executable(&canonical) {
+                    return Err(LaunchError::Unavailable(format!(
+                        "Grok's executable {} is not one Agent Relay trusts: it must be named grok or grok-…, owned by you or root, and writable by no one else",
+                        canonical.display()
+                    )));
+                }
+                Ok(canonical)
+            }
         }
     }
 

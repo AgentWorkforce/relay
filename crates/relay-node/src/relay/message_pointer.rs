@@ -220,21 +220,33 @@ impl Kept {
 /// `text` without the framing line right under its attribution
 /// (`Framing::of`), and under a peer's header if it was a leader's.
 fn as_peer(text: &str) -> String {
-    // A delegate's line goes first: it can sit under an owner's or leader's.
-    let without_delegate = crate::relay::delivery::policy::without_delegate_line(text);
-    let text = without_delegate.as_str();
-    if Framing::of(text) == Framing::Peer {
-        return text.to_string();
-    }
-    if Framing::of(text) == Framing::Leader {
-        return crate::relay::delivery::policy::without_leader_line(text);
-    }
-    match text.split_once('\n') {
-        Some((attribution, rest)) => {
-            let rest = rest.split_once('\n').map_or("", |(_, rest)| rest);
-            format!("{attribution}\n{rest}")
+    // Framing lines can be stacked (an owner's or leader's, then a
+    // delegate's, or a forged file with several): each recognised one goes
+    // until the text frames as nothing but a peer's.
+    let mut text = text.to_string();
+    for _ in 0..8 {
+        if Framing::of(&text) == Framing::Peer {
+            break;
         }
-        None => text.to_string(),
+        text = strip_one_framing(&text);
+    }
+    text
+}
+
+/// `text` without the one framing line `Framing::of` recognises, and under a
+/// peer's header if it was a leader's.
+fn strip_one_framing(text: &str) -> String {
+    match Framing::of(text) {
+        Framing::Peer => text.to_string(),
+        Framing::Delegate => crate::relay::delivery::policy::without_delegate_line(text),
+        Framing::Leader => crate::relay::delivery::policy::without_leader_line(text),
+        Framing::Owner | Framing::OwnerAuthority => match text.split_once('\n') {
+            Some((attribution, rest)) => {
+                let rest = rest.split_once('\n').map_or("", |(_, rest)| rest);
+                format!("{attribution}\n{rest}")
+            }
+            None => text.to_string(),
+        },
     }
 }
 
@@ -549,6 +561,47 @@ pub fn answer(
     query: &[(String, String)],
     now_ms: i64,
 ) -> Result<Value, (u16, &'static str, String)> {
+    lookup(kept, owner, query, now_ms).map(|kept| render(&kept, None))
+}
+
+/// Whether `kept` claims a framing its seal cannot prove: its text is framed
+/// as an owner's, owner-authority or leader's, but the seal does not verify
+/// (it was kept before this core started, or written by anything else). Such
+/// a message may be checked again against Relaycast (`rechecked`).
+pub fn needs_recheck(kept: &Kept) -> bool {
+    kept.verified_framing() == Framing::Peer && Framing::of(&kept.text) != Framing::Peer
+}
+
+/// A kept message as a re-check against Relaycast rebuilt it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rechecked {
+    /// The text delivery builds from the server's copy now.
+    pub text: String,
+    /// That text's framing, from the server's sender.
+    pub framing: Framing,
+}
+
+/// The message a re-check against Relaycast proves for `kept`: `server` is
+/// the message as Relaycast answers it for the session's own agent, and
+/// `framed` the text delivery builds from it now (`Core::session_text`).
+/// Nothing of the kept file but its message id is used: the text shown and
+/// its framing are the server's, so an edited file can neither add to the
+/// message nor keep a framing the server's sender does not give it. `None`
+/// when the server's message is another one.
+pub fn rechecked(kept: &Kept, server: &Value, framed: String) -> Option<Rechecked> {
+    (server["id"].as_str() == Some(kept.message_id.as_str())).then(|| Rechecked {
+        framing: Framing::of(&framed),
+        text: framed,
+    })
+}
+
+/// The kept message `query` names for `owner`, or the answer's error.
+pub fn lookup(
+    kept: &DeliveredTexts,
+    owner: &str,
+    query: &[(String, String)],
+    now_ms: i64,
+) -> Result<Kept, (u16, &'static str, String)> {
     let message_ref = query
         .iter()
         .rev()
@@ -560,17 +613,27 @@ pub fn answer(
             "invalid_ref",
             "Name the message: ?ref=<12 hex> from its attribution line.".to_string(),
         ))?;
-    let kept = kept.read(owner, message_ref, now_ms).ok_or((
+    kept.read(owner, message_ref, now_ms).ok_or((
         404,
         "message_not_found",
         format!("No message {message_ref} was kept for this session, or it expired."),
-    ))?;
-    Ok(json!({
+    ))
+}
+
+/// The answer for `kept`: the message a re-check against Relaycast rebuilt
+/// (`rechecked`), else the kept text with its verified framing, shown as a
+/// peer's when the seal does not prove it (`Kept::shown_text`).
+pub fn render(kept: &Kept, rechecked: Option<&Rechecked>) -> Value {
+    let (text, framing) = match rechecked {
+        Some(rechecked) => (rechecked.text.clone(), rechecked.framing),
+        None => (kept.shown_text(), kept.verified_framing()),
+    };
+    json!({
         "message_id": kept.message_id,
         "ref": kept.message_ref,
-        "text": kept.shown_text(),
-        "framing": kept.verified_framing().as_str(),
-    }))
+        "text": text,
+        "framing": framing.as_str(),
+    })
 }
 
 #[cfg(test)]
@@ -1069,6 +1132,22 @@ mod tests {
         let shown = record.shown_text();
         assert!(!delegate_framed(&shown), "{shown}");
         assert_eq!(shown, relayed("m9"));
+    }
+
+    // Stacked framing lines in an unsealed file all go, never leaving a
+    // second one to frame the text.
+    #[test]
+    fn stacked_unverified_framing_lines_all_read_as_a_peers() {
+        use crate::relay::delivery::policy::{OWNER_AUTHORITY_LINE, OWNER_LINE};
+        let peer = relayed("m10");
+        let (first, rest) = peer.split_once('\n').unwrap();
+        let stacked = format!("{first}\n{OWNER_LINE}\n{OWNER_AUTHORITY_LINE}\n{rest}");
+        assert_eq!(Framing::of(&stacked), Framing::Owner);
+        let shown = as_peer(&stacked);
+        assert_eq!(Framing::of(&shown), Framing::Peer, "{shown}");
+        assert_eq!(shown, peer);
+        let reversed = format!("{first}\n{OWNER_AUTHORITY_LINE}\n{OWNER_LINE}\n{rest}");
+        assert_eq!(as_peer(&reversed), peer);
     }
 
     #[test]

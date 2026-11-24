@@ -472,6 +472,24 @@ the bridge socket is for UIs, the relay-send socket for sessions
   OpenCode server holding several sessions, and a Cursor window with several
   live conversations, name none of them, and a Grok leader is recognised by
   its verified executable.
+- **Kept messages.** `GET /messages?ref=…` (the probe's `read`) answers
+  the kept text and its `framing` (`peer`, `owner`, `owner_authority`,
+  `leader`, `delegate`); `read` prints the matching note. The framing is proven by an
+  HMAC seal under a key this core holds only in memory. A kept message
+  whose text claims a framing its seal cannot prove (kept before the core
+  restarted) is read again from Relaycast (`GET /v1/messages/{id}`) as the
+  session's own agent, only at the registration's pinned origin (a bare
+  origin exactly as recorded; never loopback in a release build). The text
+  shown is then rebuilt from the server's copy (a one-to-one `dmch_`
+  channel keeps DM semantics) exactly as delivery builds it, with the
+  framing its sender gives; a delegate's approval is attested again by
+  Agent Relay Cloud as at delivery, when the delivery's by-message proof
+  (`GET /v1/deliveries/by-message/{id}`, as the session's agent) still
+  carries its `owner_approval` (the single-message read carries no such
+  flag, and the proof reads 404 once the delivery is acknowledged), and
+  reads as a peer's otherwise;
+  nothing of the kept file but the message id is used. A failed read, a timeout (10 s) or another message id answers a
+  peer's framing, with the framing line taken out of the kept text.
 - **Send tokens.** With the person-only setting `session_send_tokens` on
   (off by default), the core mints a random 256-bit token per registered
   session, kept in memory only (new on every core start, and new when the
@@ -1087,7 +1105,8 @@ upstream request and is deleted once the SDK has it.
 | `POST /v1/messages/{id}/replies`                                    | `at_` | `AgentClient::reply`                                                                                                                                                                                                                                                               |
 | `GET /v1/dm/conversations`                                          | `at_` | `AgentClient::dm_conversations` — **gap**: participants are flattened to names, losing the immutable `agent_id` exact-address proof needs (`sdk_gaps::dm_conversations`)                                                                                                           |
 | `GET /v1/dm/{id}/messages`                                          | `at_` | `AgentClient::dm_messages` — **gap**: `MessageWithMeta` has no `agent_address` or `thread_id` (`sdk_gaps::dm_messages`)                                                                                                                                                            |
-| `GET /v1/messages/{id}`                                             | `at_` | `AgentClient::message` — same gap (`sdk_gaps::message`)                                                                                                                                                                                                                            |
+| `GET /v1/messages/{id}`                                             | `at_` | `AgentClient::message` — same gap (`sdk_gaps::message`); also the kept-message re-check (see **Kept messages**)
+| `GET /v1/deliveries/by-message/{id}`                                | `at_` | **gap**: no method (`sdk_gaps::delivery_by_message`); the kept-message re-check's owner-approval proof                                                                                                                                                                                                                            |
 | `GET /v1/inbox`                                                     | `at_` | `AgentClient::inbox` — **gap**: `UnreadDm.last_message` is a string where the server sends `{id, text, created_at}` (`sdk_gaps::inbox`)                                                                                                                                            |
 | `POST /v1/messages/{id}/read`                                       | `at_` | `AgentClient::mark_read`                                                                                                                                                                                                                                                           |
 | `GET /v1/workspace`                                                 | `rk_` | `RelayCast::workspace_info`                                                                                                                                                                                                                                                        |

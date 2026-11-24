@@ -339,12 +339,19 @@ impl SessionDirectory for LocalSessions {
 
     fn caller_among_held(&self, pid: i32, claimed: &Target) -> Option<DiscoveredSession> {
         let caller = self.table.process(pid)?;
-        if !matches!(self.caller(pid), Err(CallerMiss::Unattributed)) {
+        // Everything under an OpenClaw Gateway is the Gateway's agent, never
+        // a session a host below it holds.
+        if self.openclaw_caller(pid).is_some()
+            || !matches!(self.caller(pid), Err(CallerMiss::Unattributed))
+        {
             return None;
         }
-        let held = self.held_by_host(pid);
-        (held.contains(claimed) && self.table.process(pid) == Some(caller))
-            .then(|| self.caller_row(claimed.clone()))
+        if !self.held_by_host(pid).contains(claimed) {
+            return None;
+        }
+        let row = self.caller_row(claimed.clone());
+        // Still the same caller once its row is read.
+        (self.table.process(pid) == Some(caller)).then_some(row)
     }
 
     fn holds_codex_thread(&self, pid: i32, thread: &str) -> bool {

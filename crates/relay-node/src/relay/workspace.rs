@@ -491,6 +491,13 @@ fn cloud_origin(
     recorded: &str,
     loopback_allowed: bool,
 ) -> Result<String, String> {
+    // The key is bound to its recorded origin: a loopback one is refused
+    // before any override is looked at, so the key never goes elsewhere.
+    if let Some(origin) = validated_base_url(recorded)
+        .filter(|origin| !loopback_allowed && is_loopback_origin(origin))
+    {
+        return Err(loopback_refusal(&origin));
+    }
     let overridden = relaycast_url.and_then(validated_base_url).filter(|origin| {
         let refused = !loopback_allowed && is_loopback_origin(origin);
         if refused {
@@ -558,6 +565,15 @@ fn is_loopback_origin(origin: &str) -> bool {
         }
         None => false,
     }
+}
+
+/// `base_url` as the origin requests for a registration may go to: a valid
+/// bare origin (`validated_base_url`) that is exactly what was recorded, and,
+/// in a release build, not a loopback one. `None` otherwise.
+pub(crate) fn pinned_origin(base_url: &str) -> Option<String> {
+    let origin = validated_base_url(base_url)?;
+    let recorded = base_url.trim().trim_end_matches('/');
+    (origin == recorded && (LOOPBACK_ALLOWED || !is_loopback_origin(&origin))).then_some(origin)
 }
 
 /// Logs `message` once per process (resolution runs on every refresh).
@@ -794,6 +810,11 @@ mod tests {
             assert!(refused.contains("loopback"), "{recorded}: {refused}");
             assert!(
                 cloud_origin(Some("https://[::ffff:7f00:1]"), recorded, false).is_err(),
+                "{recorded}"
+            );
+            // Nor does a hosted override lend it another origin.
+            assert!(
+                cloud_origin(Some("https://override.corp.test"), recorded, false).is_err(),
                 "{recorded}"
             );
         }
