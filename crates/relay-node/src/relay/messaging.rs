@@ -404,6 +404,23 @@ fn address_agent_id(address: &str) -> Option<(&str, &str)> {
         .then_some((name, id))
 }
 
+/// Whether `conversation` lists an agent with the name `address` goes by
+/// or the agent id it carries: only such a conversation can prove it
+/// ([`endpoint_binding`] needs a message from a listed agent, which sends
+/// under its own name, or the id in the address).
+fn may_prove(conversation: &Value, address: &str) -> bool {
+    let name = address.split('@').next().unwrap_or_default();
+    let id = address_agent_id(address).map(|(_, id)| id);
+    conversation["participants"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|p| {
+            p["agent_name"].as_str() == Some(name)
+                || id.is_some_and(|id| text(&p["agent_id"]).as_deref() == Some(id))
+        })
+}
+
 /// The immutable `(agent id, address)` this history proves for `address`
 /// in `conversation`, or `None`: Relaycast must list exactly two
 /// participants with distinct ids, and either the address itself names the
@@ -1323,6 +1340,13 @@ impl Core {
                     let Some(id) = text(&candidate["id"]) else {
                         continue;
                     };
+                    // A conversation whose other side has neither the
+                    // address's name nor the agent id it carries cannot
+                    // hold its proof: it is not read. An agent you never
+                    // wrote to is then answered without reading any.
+                    if !may_prove(candidate, address) {
+                        continue;
+                    }
                     // A conversation read without proof is read again only
                     // once the listing shows it changed. What was read before
                     // an error stays read, so a retry goes on from there.
