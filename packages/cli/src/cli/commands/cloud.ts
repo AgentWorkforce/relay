@@ -650,7 +650,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .description('Cloud account, provider auth, and workflow commands');
 
   registerCloudWorkerCommands(cloudCommand, deps);
-  registerCloudRoomCommands(cloudCommand, deps);
+  registerCloudRoomCommands(cloudCommand, { error: deps.error, exit: deps.exit });
   registerCloudIntegrationCommands(cloudCommand, deps);
 
   // ── login ──────────────────────────────────────────────────────────────────

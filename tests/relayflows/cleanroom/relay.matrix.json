@@ -402,7 +402,6 @@
         "local-workflows",
         "cloud",
         "cloud-integrations",
-        "cloud-rooms",
         "cloud-workers",
         "integration",
         "product-surfaces"
@@ -450,8 +449,7 @@
             "local-workflows",
             "cloud",
             "cloud-integrations",
-            "cloud-rooms",
-            "cloud-workers",
+                "cloud-workers",
             "integration"
           ]
         },
@@ -467,7 +465,7 @@
             "VERIFY_RELAY_CAPTURE_URL"
           ],
           "evidence": "integration",
-          "coversCategories": ["cloud", "cloud-integrations", "cloud-rooms", "cloud-workers", "integration"],
+          "coversCategories": ["cloud", "cloud-integrations", "cloud-workers", "integration"],
           "issues": [1265, 1393, 1481, 1620, 1621]
         },
         {

@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `agent-relay cloud room` commands, which always failed with "The room resource was not found or is no longer available." since Agent Relay Cloud retired rooms, now exit 1 with a note pointing to Relay Connect (`create_connect` and `join_connect`, or `npx -y @agent-relay/connect join <link>`). The commands are hidden from `agent-relay cloud --help`.
 
 ## [18.15.0] - 2026-11-24
 
