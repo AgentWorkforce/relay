@@ -262,5 +262,6 @@ jobs:
           relay::codex::tests::discovery_reports_each_running_signal
           relay::codex::tests::recent_and_open_threads
           relay::codex::ipc::
+          relay::local::runtime_registration::
           relay::process::windows::
           relay::process::tests::writer_lock
