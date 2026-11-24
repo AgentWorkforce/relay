@@ -11,7 +11,7 @@ impl LocalSessions {
     /// (itself included) holds, when it is such a host and holds more than
     /// one; empty otherwise, and empty when the nearest agent is any other
     /// (a Claude Code session, a CLI Codex, Grok, Muse, Devin, Cursor CLI,
-    /// Factory Droid or Copilot).
+    /// Factory Droid, Copilot, or a Pi or Oh My Pi extension holder).
     pub(super) fn held_by_host(&self, pid: i32) -> Vec<Target> {
         let table = &*self.table;
         let uid = self.config.uid;
@@ -68,6 +68,7 @@ impl LocalSessions {
                         || devin::is_devin_process(table, current)
                         || cursor_cli::is_cursor_process(table, current)
                         || crate::relay::hook_agents::is_copilot_process(table, current)
+                        || super::pi_caller::is_holder(&self.config, table, current)
                         || crate::relay::droid::caller(
                             &crate::relay::droid::DroidConfig::from_local(&self.config),
                             table,

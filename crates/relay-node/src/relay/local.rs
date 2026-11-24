@@ -580,7 +580,9 @@ impl LocalSessions {
             }
             // A Pi or Oh My Pi harness running Agent Relay's extension: the
             // one binding it is the proven live holder of, or nobody.
-            if let Some(caller) = pi_caller::caller(&self.config, table, current, process) {
+            if let Some(caller) =
+                pi_caller::caller(&self.config, table, current, process, below.as_ref())
+            {
                 return caller;
             }
             if let Some(caller) = lock_held::caller(&self.config, table, pid, current, process) {

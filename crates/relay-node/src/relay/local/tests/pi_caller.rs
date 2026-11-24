@@ -49,6 +49,13 @@ fn write_registry(world: &World, kind: SessionKind, pid: i32, id: &str, instance
     )
     .unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    // Written long before the fake processes' tools started.
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1))
+        .unwrap();
     path.canonicalize().unwrap()
 }
 
@@ -245,8 +252,14 @@ fn a_reused_pid_is_not_the_holder_the_walk_met() {
     bind(&world, SessionKind::Pi, 600, PI, INSTANCE);
     let walked = world.table.process(600).unwrap();
     assert_eq!(
-        crate::relay::local::pi_caller::caller(&world.sessions.config, &*world.table, 600, walked)
-            .and_then(Result::ok),
+        crate::relay::local::pi_caller::caller(
+            &world.sessions.config,
+            &*world.table,
+            600,
+            walked,
+            None,
+        )
+        .and_then(Result::ok),
         Some(Target::new(SessionKind::Pi, PI))
     );
     // The walk met an earlier process with this pid; the one holding the
@@ -256,7 +269,13 @@ fn a_reused_pid_is_not_the_holder_the_walk_met() {
         ..walked
     };
     assert!(matches!(
-        crate::relay::local::pi_caller::caller(&world.sessions.config, &*world.table, 600, earlier),
+        crate::relay::local::pi_caller::caller(
+            &world.sessions.config,
+            &*world.table,
+            600,
+            earlier,
+            None,
+        ),
         Some(Err(CallerMiss::Unattributed))
     ));
 }
@@ -299,4 +318,83 @@ fn an_omp_registry_is_never_taken_for_pi_and_an_off_flavor_names_nobody() {
         caller(&world, 710).ok(),
         Some(Target::new(SessionKind::Omp, OMP))
     );
+}
+
+#[test]
+fn a_tool_started_before_the_session_switch_is_nobody() {
+    let world = pi_world();
+    let table = FakeProcesses {
+        clock: Some(StartClock::Micros),
+        ..FakeProcesses::default()
+    };
+    let micros = |at: std::time::SystemTime| {
+        at.duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_micros() as u64
+    };
+    let now = std::time::SystemTime::now();
+    table.insert(600, own(1, micros(now) - 60_000_000));
+    let path = write_registry(&world, SessionKind::Pi, 600, PI, INSTANCE);
+    table
+        .processes
+        .lock()
+        .unwrap()
+        .get_mut(&600)
+        .unwrap()
+        .open_files = vec![path.clone()];
+    // The binding's registry was written now, as `/new` or `/resume` does.
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(now)
+        .unwrap();
+    let holder = table.process(600).unwrap();
+    let call = |child: FakeProcess| {
+        table.insert(610, child);
+        let child = table.process(610).unwrap();
+        crate::relay::local::pi_caller::caller(
+            &world.sessions.config,
+            &table,
+            600,
+            holder,
+            Some(&child),
+        )
+    };
+    assert!(matches!(
+        call(own(600, micros(now) - 30_000_000)),
+        Some(Err(CallerMiss::Unattributed))
+    ));
+    assert_eq!(
+        call(own(600, micros(now) + 1_000_000)).and_then(Result::ok),
+        Some(Target::new(SessionKind::Pi, PI))
+    );
+}
+
+#[test]
+fn a_send_token_never_reaches_past_a_pi_holder_to_its_host() {
+    let world = pi_world();
+    let lock = |thread: &str| {
+        PathBuf::from(format!(
+            "/home/invented/.codex/thread-writer-locks/{thread}.lock"
+        ))
+    };
+    let other = "019a0000-0000-7000-8000-000000000002";
+    world.table.insert(
+        400,
+        FakeProcess {
+            executable: Some(codex_exe()),
+            arguments: vec!["codex".into(), "app-server".into()],
+            open_files: vec![lock(THREAD), lock(other)],
+            ..own(1, 400)
+        },
+    );
+    world.table.insert(405, own(400, 405));
+    assert_eq!(world.sessions.held_by_host(405).len(), 2, "the host's own");
+    world.table.insert(410, own(400, 410));
+    world.table.insert(420, own(410, 420));
+    bind(&world, SessionKind::Pi, 410, PI, INSTANCE);
+    bind(&world, SessionKind::Pi, 410, PI_TWO, INSTANCE_TWO);
+    assert!(matches!(caller(&world, 420), Err(CallerMiss::Unattributed)));
+    assert!(world.sessions.held_by_host(420).is_empty());
 }
