@@ -63,11 +63,16 @@ impl ProcessTable for SystemProcesses {
     fn is_trusted_codex(&self, executable: &Path) -> bool {
         let uid = crate::relay::peer::current_uid();
         executable.file_name().is_some_and(|name| name == "codex")
-            && codex_location_trusted(
+            && (codex_location_trusted(
                 executable,
                 crate::relay::paths::home().ok(),
                 std::env::var_os("CODEX_HOME").map(PathBuf::from),
-            )
+            ) || crate::relay::paths::home().ok().is_some_and(|home| {
+                in_mise_installs(
+                    executable,
+                    &crate::relay::codex::mise_data_dir(&|key| std::env::var(key).ok(), &home),
+                )
+            }))
             && fs::metadata(executable)
                 .is_ok_and(|m| (m.uid() == 0 || m.uid() == uid) && m.mode() & 0o022 == 0)
     }
@@ -346,6 +351,19 @@ fn codex_location_trusted(
         || in_codex_install(executable, None, default_codex_home.as_deref())
 }
 
+/// Whether `executable` is under mise's own `installs` folder in `data_dir`
+/// (`MISE_DATA_DIR`, else `$XDG_DATA_HOME/mise`, else `~/.local/share/mise`;
+/// `codex::mise_data_dir`), canonicalised: where Agent Relay finds a Codex
+/// mise installed, so that Codex can also name its session.
+fn in_mise_installs(executable: &Path, data_dir: &Path) -> bool {
+    let installs = fs::canonicalize(data_dir.join("installs")).unwrap_or(data_dir.join("installs"));
+    installs.is_absolute()
+        && !executable
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+        && executable.starts_with(&installs)
+}
+
 /// `mountinfo` writes a space, tab, newline and backslash as octal escapes.
 fn unescape_mount(field: &str) -> String {
     field
@@ -383,6 +401,18 @@ mod tests {
             None,
             Some(PathBuf::from("custom"))
         ));
+    }
+
+    #[test]
+    fn a_codex_under_a_custom_mise_data_dir_matches() {
+        let root = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(root.path()).unwrap();
+        let data = root.join("mise-data");
+        let bin = data.join("installs/npm-openai-codex/0.171.0/bin");
+        fs::create_dir_all(&bin).unwrap();
+        assert!(in_mise_installs(&bin.join("codex"), &data));
+        assert!(!in_mise_installs(&root.join("elsewhere/codex"), &data));
+        assert!(!in_mise_installs(&data.join("shims/codex"), &data));
     }
 
     #[test]

@@ -281,7 +281,7 @@ const MISE_NPM_CODEX: [&str; 2] = ["npm-openai-codex", "npm-@openai-codex"];
 /// mise's data folder: `MISE_DATA_DIR`, else `$XDG_DATA_HOME/mise`, else
 /// `~/.local/share/mise`. Only absolute settings count.
 #[cfg(not(windows))]
-fn mise_data_dir(env: &dyn Fn(&str) -> Option<String>, home: &Path) -> PathBuf {
+pub(crate) fn mise_data_dir(env: &dyn Fn(&str) -> Option<String>, home: &Path) -> PathBuf {
     let set = |key: &str| {
         env(key)
             .map(|value| PathBuf::from(value.trim()))
