@@ -242,9 +242,9 @@ export function registerEventsShimTools(server: McpServer, ctx: EventsShimMcpCon
           .string()
           .trim()
           .min(1)
-          .max(101)
+          .max(129)
           .regex(
-            /^@?[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/u,
+            /^@?[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u,
             'agent must be an Agent Relay agent name: letters, digits, dots, dashes and underscores.'
           )
           .optional()

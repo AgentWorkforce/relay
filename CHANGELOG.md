@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `@agent-relay/events-shim`: a wake link's agent name may be up to 128 characters, the longest name Agent Relay hosts give an agent, instead of 100. A bound cloud agent (a Capy thread, say) or Control agent with a 101 to 128 character name was linked and woken but shown as unnamed.
+
 ## [18.14.0] - 2026-11-24
 
 ### Added

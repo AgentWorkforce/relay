@@ -424,6 +424,13 @@ describe('events shim', () => {
     }
     expect((await h.feed(shim.manage_token)).body.agent.wake_agent).toBe('codex-session-1');
 
+    // Up to 128 characters, the longest name hosts give an agent; 129 is refused.
+    const long = `a${'b'.repeat(127)}`;
+    const linkedLong = await agent.call('link_relay_wake', { ...RELAY_HOOK, agent: long });
+    expect(linkedLong.structuredContent).toMatchObject({ linked_agent: long });
+    expect((await agent.call('link_relay_wake', { ...RELAY_HOOK, agent: `${long}c` })).isError).toBe(true);
+    expect((await h.feed(shim.manage_token)).body.agent.wake_agent).toBe(long);
+
     // A bad name a host stored anyway (an older package, a direct write) is never shown.
     const record = (await h.store.findByMcpTokenHash(
       await sha256Hex(shim.mcp_url.split('/t/')[1]!.split('/')[0]!)
