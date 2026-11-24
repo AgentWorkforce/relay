@@ -349,29 +349,20 @@ fn an_oh_my_pi_tui_receives_idle_and_busy_messages_once_and_reconnects_on_resume
         InjectOutcome::Waiting(_)
     ));
 
-    // Reopening the first session is a new runtime: the old pin is refused.
+    // Reopening the first session is a new runtime: once the old one is
+    // gone, the registration follows it and the waiting message goes in.
     let omp = Omp::launch(&home, &["--resume", &agent.target.id]);
-    let resumed = until("resumed session rebinds", &omp, || {
+    until("resumed session rebinds", &omp, || {
         pi::binding(&config, &*table, uid, &agent.target.id)
             .filter(|b| b.reference != binding.reference)
     });
     assert!(matches!(
-        send("message-4", "Must not send"),
-        InjectOutcome::Refused(_)
-    ));
-    let resumed_agent = registration(&agent.target.id, &resumed.reference);
-    assert!(matches!(
-        injector.inject_registered(
-            &resumed_agent,
-            "message-5",
-            "message-5",
-            "[via Agent Relay] After resume"
-        ),
+        send("message-4", "Waits for omp"),
         InjectOutcome::Accepted(_)
     ));
     assert_eq!(
         until("answer after resume", &omp, || {
-            injector.final_answer_registered(&resumed_agent, &MessageRef::of("message-5"))
+            injector.final_answer_registered(&agent, &MessageRef::of("message-4"))
         }),
         "omp-test-reply-4"
     );
