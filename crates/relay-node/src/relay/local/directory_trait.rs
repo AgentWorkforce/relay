@@ -533,12 +533,21 @@ impl LocalSessions {
                 self.config.uid,
                 &target.id,
             ),
+            // Its own flavor's bindings, the registries their holders keep
+            // open: never a process scan.
+            kind @ (SessionKind::Pi | SessionKind::Omp) => self
+                .config
+                .extension(kind)
+                .map(|extension| {
+                    crate::relay::pi::discover(extension, &*self.table, self.config.uid)
+                })
+                .unwrap_or_default()
+                .into_iter()
+                .find(|row| row.target == target),
             SessionKind::ClaudeCloud
             | SessionKind::OpenCode
             | SessionKind::OpenClaw
-            | SessionKind::Hermes
-            | SessionKind::Pi
-            | SessionKind::Omp => None,
+            | SessionKind::Hermes => None,
         };
         found
             .map(|s| DiscoveredSession { live: true, ..s })

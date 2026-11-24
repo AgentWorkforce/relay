@@ -578,6 +578,11 @@ impl LocalSessions {
                     .map(|session| Target::new(SessionKind::MuseOpen, session.session_id))
                     .ok_or(CallerMiss::Unattributed);
             }
+            // A Pi or Oh My Pi harness running Agent Relay's extension: the
+            // one binding it is the proven live holder of, or nobody.
+            if let Some(caller) = pi_caller::caller(&self.config, table, current, process) {
+                return caller;
+            }
             if let Some(caller) = lock_held::caller(&self.config, table, pid, current, process) {
                 return caller;
             }
@@ -2093,6 +2098,7 @@ mod notice_observe;
 #[cfg(test)]
 pub(crate) use notice_observe::observe_codex_notice;
 mod opencode_reply;
+mod pi_caller;
 mod plugins;
 pub use plugins::{
     is_development, local_config, plugins, plugins_for, plugins_with, plugins_with_options,
@@ -2111,6 +2117,7 @@ mod runtime_registration;
 #[cfg(unix)]
 mod tests {
     mod automatic_admission;
+    mod pi_caller;
 
     mod spawned_delivery;
     use super::*;

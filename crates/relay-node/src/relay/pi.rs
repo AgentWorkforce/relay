@@ -193,6 +193,55 @@ pub fn has_native_choice(
     native_choice::exists(config, uid, registration, message_id)
 }
 
+impl Binding {
+    pub fn session_id(&self) -> &str {
+        &self.registry.session_id
+    }
+
+    /// The pid and kernel start time of the process proven to hold it.
+    fn holder(&self) -> Option<(i32, u64)> {
+        let mut parts = self.reference.split(':').skip(1);
+        let pid = parts.next()?.parse().ok()?;
+        let start = parts.next()?.parse().ok()?;
+        Some((pid, start))
+    }
+}
+
+/// Whether a process's open files include a registry this flavor's extension
+/// writes, `<runtime>/<instance>/session.json`. It reads only the paths, so
+/// it says the process runs the extension without vouching for any session,
+/// whether or not this flavor is on.
+pub fn holds_registry(config: &PiConfig, open: &[PathBuf]) -> bool {
+    let runtime = config.runtime.canonicalize().ok();
+    open.iter().any(|path| {
+        path.file_name().is_some_and(|name| name == "session.json")
+            && path.parent().is_some_and(|directory| {
+                directory
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(nonce)
+                    && directory.parent().is_some_and(|parent| {
+                        parent == config.runtime || Some(parent) == runtime.as_deref()
+                    })
+            })
+    })
+}
+
+/// The bindings of this flavor whose proven holder is exactly `holder`, the
+/// same pid with the same kernel start time. A session two processes claim
+/// is no one's (`bindings`).
+pub fn held_by(
+    config: &PiConfig,
+    table: &dyn ProcessTable,
+    uid: u32,
+    holder: crate::relay::process::ProcessInfo,
+) -> Vec<Binding> {
+    bindings(config, table, uid)
+        .into_iter()
+        .filter(|binding| binding.holder() == Some((holder.pid, holder.start)))
+        .collect()
+}
+
 pub fn discover(config: &PiConfig, table: &dyn ProcessTable, uid: u32) -> Vec<DiscoveredSession> {
     bindings(config, table, uid)
         .into_iter()
