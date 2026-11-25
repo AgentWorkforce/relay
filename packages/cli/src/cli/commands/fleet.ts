@@ -42,6 +42,7 @@ import {
 } from '../lib/agent-removal.js';
 import {
   classifySpawnFailure,
+  FleetSpawnError,
   mayStillBeRunning,
   nameTakenSpawnError,
   pendingSpawnError,
@@ -254,7 +255,9 @@ async function runFleetSpawn(
   options: Record<string, unknown> = {}
 ): Promise<void> {
   await runSdk(deps, async () => {
-    const selection = safeResolveFleetSelection(options);
+    const selection = resolveAgentToken(sdkOptionsFromOpts(options))
+      ? undefined
+      : safeResolveFleetSelection(options);
     try {
       await fn();
     } catch (error) {
@@ -1587,8 +1590,16 @@ function safeResolveFleetSelection(options: Record<string, unknown>): ResolvedWo
 }
 
 function isUnauthorizedApiKeyError(error: unknown, visited: WeakSet<object> = new WeakSet()): boolean {
+  if (error instanceof RelayPlacementError || error instanceof FleetSpawnError) {
+    return false;
+  }
   if (!error || typeof error !== 'object') {
-    return typeof error === 'string' && /\b401\b|invalid api key|unauthorized/i.test(error);
+    return (
+      typeof error === 'string' &&
+      /^(?:invalid api key|unauthorized)\b|\b(?:status|http)\s*401\b|\b401\s+unauthorized\b/i.test(
+        error.trim()
+      )
+    );
   }
   if (visited.has(error)) return false;
   visited.add(error);
@@ -1608,7 +1619,9 @@ function isUnauthorizedApiKeyError(error: unknown, visited: WeakSet<object> = ne
   }
   if (
     typeof candidate.message === 'string' &&
-    /\b401\b|invalid api key|unauthorized/i.test(candidate.message)
+    /^(?:invalid api key|unauthorized)\b|\b(?:status|http)\s*401\b|\b401\s+unauthorized\b/i.test(
+      candidate.message.trim()
+    )
   ) {
     return true;
   }

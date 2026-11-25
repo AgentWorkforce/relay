@@ -934,6 +934,91 @@ describe('fleet command support', () => {
     }
   });
 
+  it('fleet spawn preserves RelayPlacementError for node "build-401" and does not blame global workspace for --token 401s', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-fleet-home-'));
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-fleet-empty-'));
+    const saved = {
+      home: process.env.AGENT_RELAY_HOME,
+      project: process.env.AGENT_RELAY_PROJECT,
+      ws: process.env.RELAY_WORKSPACE_KEY,
+      agentWs: process.env.AGENT_RELAY_WORKSPACE_KEY,
+      api: process.env.RELAY_API_KEY,
+    };
+    process.env.AGENT_RELAY_HOME = home;
+    process.env.AGENT_RELAY_PROJECT = projectRoot;
+    delete process.env.RELAY_WORKSPACE_KEY;
+    delete process.env.AGENT_RELAY_WORKSPACE_KEY;
+    delete process.env.RELAY_API_KEY;
+    const { setWorkspaceKey } = await import('@agent-relay/cloud');
+    const { RelayPlacementError } = await import('@agent-relay/sdk');
+    setWorkspaceKey('ops', 'rk_valid_global', { AGENT_RELAY_HOME: home });
+
+    const runSpawn = async (extraArgs: string[], spawnImpl: () => Promise<never>) => {
+      const errors: string[] = [];
+      const program = new Command();
+      program.exitOverride();
+      registerFleetCommands(program, {
+        resolveSandboxRepository: () => undefined,
+        sdk: {
+          createAgentRelay: vi.fn(() => ({
+            messaging: { placement: { spawn: spawnImpl } },
+          })) as never,
+          createWorkspaceRelay: vi.fn(() => ({
+            workspace: {
+              register: vi.fn(async () => ({ token: 'at_temp_launcher' })),
+              release: vi.fn(async () => ({})),
+            },
+          })) as never,
+          createWorkspace: vi.fn() as never,
+          log: vi.fn() as never,
+          error: (...args: unknown[]) => errors.push(args.join(' ')),
+          exit: vi.fn((code) => {
+            throw new Error(`exit:${code}`);
+          }) as never,
+        },
+        log: () => undefined,
+        warn: () => undefined,
+        error: () => undefined,
+      });
+
+      await expect(
+        program.parseAsync(
+          ['fleet', 'spawn', 'claude', '--node', 'build-401', '--name', 'w1', '--task', 'hi', ...extraArgs],
+          { from: 'user' }
+        )
+      ).rejects.toThrow('exit:1');
+      return errors.join('\n');
+    };
+
+    try {
+      const placementErr = await runSpawn([], async () => {
+        throw new RelayPlacementError('node_unavailable', 'Target node "build-401" is offline', {
+          node: 'build-401',
+          dispatchState: 'not_dispatched',
+        });
+      });
+      expect(placementErr).toContain('"code":"node_unavailable"');
+      expect(placementErr).not.toContain('Key for active workspace');
+
+      const tokenErr = await runSpawn(['--token', 'at_expired'], async () => {
+        throw Object.assign(new Error('Invalid agent token'), { status: 401 });
+      });
+      expect(tokenErr).toBe('Invalid agent token');
+      expect(tokenErr).not.toContain('Key for active workspace "ops"');
+    } finally {
+      if (saved.home === undefined) delete process.env.AGENT_RELAY_HOME;
+      else process.env.AGENT_RELAY_HOME = saved.home;
+      if (saved.project === undefined) delete process.env.AGENT_RELAY_PROJECT;
+      else process.env.AGENT_RELAY_PROJECT = saved.project;
+      if (saved.ws !== undefined) process.env.RELAY_WORKSPACE_KEY = saved.ws;
+      if (saved.agentWs === undefined) delete process.env.AGENT_RELAY_WORKSPACE_KEY;
+      else process.env.AGENT_RELAY_WORKSPACE_KEY = saved.agentWs;
+      if (saved.api !== undefined) process.env.RELAY_API_KEY = saved.api;
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   it('fleet spawn targets an exact node through the agent-scoped placement action', async () => {
     const placement = {
       spawn: vi.fn(async () => ({

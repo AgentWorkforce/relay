@@ -278,6 +278,28 @@ describe('workspace session persistence', () => {
     });
   });
 
+  it('saveWorkspaceKey refuses to overwrite an existing active or previous workspace entry', () => {
+    const root = tempRoot();
+    const env = isolatedEnv(root);
+    setWorkspaceKey('prev', 'rk_live_prev', env);
+    setWorkspaceKey('default', 'rk_live_default', env);
+    switchWorkspace('default', env);
+
+    expect(() => saveWorkspaceKey('default', 'rk_live_new', { env })).toThrow(
+      'Workspace "default" already exists in the local store'
+    );
+    expect(() => saveWorkspaceKey('prev', 'rk_live_new', { env })).toThrow(
+      'Workspace "prev" already exists in the local store'
+    );
+    expect(readWorkspaceStore(env)).toMatchObject({
+      active: 'default',
+      workspaces: {
+        prev: { key: 'rk_live_prev' },
+        default: { key: 'rk_live_default' },
+      },
+    });
+  });
+
   it("records a credential issuer's canonical workspace id in the project pin", () => {
     const root = tempRoot();
     const projectDataDir = path.join(root, 'project', '.agentworkforce', 'relay');

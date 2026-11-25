@@ -19,7 +19,6 @@ vi.mock('../lib/workspace-session.js', async (importOriginal) => ({
   // Returns a result object describing what the write changed beyond the key.
   persistWorkspaceSession: vi.fn(() => ({})),
   pinProjectWorkspaceSession: vi.fn(),
-  saveWorkspaceKey: vi.fn(),
   // The real formatter, not a copy: these tests assert on its wording, so a
   // stand-in here would let the command output drift past them.
   describeClearedEnrollment: (await importOriginal<typeof import('../lib/workspace-session.js')>())
@@ -42,7 +41,6 @@ import { registerWorkspaceCommands, type WorkspaceCommandDependencies } from './
 import {
   persistWorkspaceSession,
   pinProjectWorkspaceSession,
-  saveWorkspaceKey,
   validateWorkspaceSessionName,
 } from '../lib/workspace-session.js';
 
@@ -60,6 +58,7 @@ function createHarness() {
     createWorkspaceRelay: vi.fn() as never,
     createWorkspace: vi.fn() as never,
     desktopPresent: vi.fn(async () => false),
+    saveWorkspaceKey: vi.fn(),
     log: vi.fn(() => undefined),
     error: vi.fn(() => undefined),
     exit,
@@ -278,7 +277,7 @@ describe('registerWorkspaceCommands', () => {
 
     await program.parseAsync(['node', 'agent-relay', 'workspace', 'create', 'throwaway', '--no-switch']);
 
-    expect(saveWorkspaceKey).toHaveBeenCalledWith('throwaway', 'rk_live_throwaway');
+    expect(deps.saveWorkspaceKey).toHaveBeenCalledWith('throwaway', 'rk_live_throwaway');
     expect(persistWorkspaceSession).not.toHaveBeenCalled();
     expect(deps.error).not.toHaveBeenCalled();
     expect(JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]))).toEqual({
@@ -286,6 +285,31 @@ describe('registerWorkspaceCommands', () => {
       workspaceKey: 'rk_live_…away',
     });
   });
+
+  it.each(['default', 'prev'])(
+    'workspace create --no-switch rejects existing local workspace "%s" before provisioning remotely',
+    async (existingName) => {
+      vi.mocked(readWorkspaceStore).mockReturnValueOnce({
+        active: 'default',
+        previous: 'prev',
+        workspaces: {
+          default: { key: 'rk_live_default' },
+          prev: { key: 'rk_live_prev' },
+        },
+      });
+      const { program, deps } = createHarness();
+
+      await expect(
+        program.parseAsync(['node', 'agent-relay', 'workspace', 'create', existingName, '--no-switch'])
+      ).rejects.toThrow('exit:1');
+
+      expect(deps.createWorkspace).not.toHaveBeenCalled();
+      expect(deps.saveWorkspaceKey).not.toHaveBeenCalled();
+      expect(deps.error).toHaveBeenCalledWith(
+        expect.stringContaining(`Workspace "${existingName}" already exists in the local store`)
+      );
+    }
+  );
 
   it('workspace create rejects a blank name before provisioning a remote workspace', async () => {
     const { program, deps } = createHarness();

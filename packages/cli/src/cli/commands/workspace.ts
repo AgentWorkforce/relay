@@ -27,6 +27,8 @@ import {
 export interface WorkspaceCommandDependencies extends SdkCommandDeps {
   /** Whether the desktop app, whose core serves cast only, is on this machine. */
   desktopPresent?: () => Promise<boolean>;
+  /** Store a named workspace key without switching active workspace or project pin. */
+  saveWorkspaceKey?: typeof saveWorkspaceKey;
 }
 
 /**
@@ -147,6 +149,11 @@ export function registerWorkspaceCommands(
     .action(async (name: string, o: Record<string, unknown>) => {
       await runSdk(deps, async () => {
         const workspaceName = validateWorkspaceSessionName(name);
+        if (o.switch === false && Object.hasOwn(readWorkspaceStore().workspaces, workspaceName)) {
+          throw new Error(
+            `Workspace "${workspaceName}" already exists in the local store. Choose a new name or omit --no-switch to update it.`
+          );
+        }
         const explicitBaseUrl = (o.baseUrl as string | undefined) ?? process.env.RELAY_BASE_URL?.trim();
         const desktop = !explicitBaseUrl && (await (overrides.desktopPresent ?? desktopPresent)());
         const requestedBaseUrl =
@@ -171,7 +178,7 @@ export function registerWorkspaceCommands(
         let persisted: PersistWorkspaceSessionResult = {};
         if (relay.workspaceKey) {
           if (o.switch === false) {
-            saveWorkspaceKey(workspaceName, relay.workspaceKey);
+            (overrides.saveWorkspaceKey ?? saveWorkspaceKey)(workspaceName, relay.workspaceKey);
           } else {
             const previousActive = readWorkspaceStore().active;
             persisted = persistWorkspaceSession({ name: workspaceName, workspaceKey: relay.workspaceKey });
