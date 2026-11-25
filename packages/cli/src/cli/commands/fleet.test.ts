@@ -735,41 +735,42 @@ describe('fleet command support', () => {
       agentWs: process.env.AGENT_RELAY_WORKSPACE_KEY,
       api: process.env.RELAY_API_KEY,
     };
-    process.env.AGENT_RELAY_HOME = home;
-    process.env.AGENT_RELAY_PROJECT = projectRoot;
-    delete process.env.RELAY_WORKSPACE_KEY;
-    delete process.env.AGENT_RELAY_WORKSPACE_KEY;
-    delete process.env.RELAY_API_KEY;
-    const { setWorkspaceKey } = await import('@agent-relay/cloud');
-    setWorkspaceKey('default', 'rk_stale_global', { AGENT_RELAY_HOME: home });
 
     const warnings: string[] = [];
     const errors: string[] = [];
-    const nodes = {
-      list: vi.fn(async () => {
-        throw Object.assign(new Error('Invalid API key'), { status: 401 });
-      }),
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerFleetCommands(program, {
-      resolveSandboxRepository: () => undefined,
-      sdk: {
-        createAgentRelay: vi.fn() as never,
-        createWorkspaceRelay: vi.fn(() => ({ nodes })) as never,
-        createWorkspace: vi.fn() as never,
-        log: vi.fn() as never,
-        error: (...args: unknown[]) => errors.push(args.join(' ')),
-        exit: vi.fn((code) => {
-          throw new Error(`exit:${code}`);
-        }) as never,
-      },
-      log: () => undefined,
-      warn: (...args: unknown[]) => warnings.push(args.join(' ')),
-      error: () => undefined,
-    });
-
     try {
+      process.env.AGENT_RELAY_HOME = home;
+      process.env.AGENT_RELAY_PROJECT = projectRoot;
+      delete process.env.RELAY_WORKSPACE_KEY;
+      delete process.env.AGENT_RELAY_WORKSPACE_KEY;
+      delete process.env.RELAY_API_KEY;
+      const { setWorkspaceKey } = await import('@agent-relay/cloud');
+      setWorkspaceKey('default', 'rk_stale_global', { AGENT_RELAY_HOME: home });
+
+      const nodes = {
+        list: vi.fn(async () => {
+          throw Object.assign(new Error('Invalid API key'), { status: 401 });
+        }),
+      };
+      const program = new Command();
+      program.exitOverride();
+      registerFleetCommands(program, {
+        resolveSandboxRepository: () => undefined,
+        sdk: {
+          createAgentRelay: vi.fn() as never,
+          createWorkspaceRelay: vi.fn(() => ({ nodes })) as never,
+          createWorkspace: vi.fn() as never,
+          log: vi.fn() as never,
+          error: (...args: unknown[]) => errors.push(args.join(' ')),
+          exit: vi.fn((code) => {
+            throw new Error(`exit:${code}`);
+          }) as never,
+        },
+        log: () => undefined,
+        warn: (...args: unknown[]) => warnings.push(args.join(' ')),
+        error: () => undefined,
+      });
+
       await expect(program.parseAsync(['fleet', 'nodes'], { from: 'user' })).rejects.toThrow('exit:1');
     } finally {
       if (saved.home === undefined) delete process.env.AGENT_RELAY_HOME;

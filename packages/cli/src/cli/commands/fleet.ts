@@ -273,19 +273,26 @@ async function runFleetSpawn(
   });
 }
 
+async function withStoreAuthHint<T>(
+  selection: ResolvedWorkspaceSelection | undefined,
+  fn: () => Promise<T>
+): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    rethrowWithStoreAuthHint(selection, error);
+  }
+}
+
 async function runFleetSdk(
   deps: FleetCommandDependencies,
   options: Record<string, unknown>,
-  fn: () => Promise<void>
+  fn: (selection: ResolvedWorkspaceSelection | undefined) => Promise<void>
 ): Promise<void> {
   await runSdk(deps.sdk, async () => {
     const selection = safeResolveFleetSelection(options);
     warnIfInferredWorkspaceSession(selection, deps.warn);
-    try {
-      await fn();
-    } catch (error) {
-      rethrowWithStoreAuthHint(selection, error);
-    }
+    await withStoreAuthHint(selection, () => fn(selection));
   });
 }
 
@@ -542,9 +549,11 @@ export function registerFleetCommands(
         if (!token) {
           workspace = deps.sdk.createWorkspaceRelay(clientOptions);
           const name = `fleet-status-launcher-${randomUUID().slice(0, 8)}`;
-          const launcher = await workspace.workspace.register(
-            { name, metadata: { purpose: 'fleet-spawn-status' } },
-            { strict: true }
+          const launcher = await withStoreAuthHint(selection, () =>
+            workspace!.workspace.register(
+              { name, metadata: { purpose: 'fleet-spawn-status' } },
+              { strict: true }
+            )
           );
           launcherName = name;
           token = launcher.token;
@@ -573,8 +582,6 @@ export function registerFleetCommands(
           result.placement = { ...spawnPlacementReceipt(receipt), state: 'accepted' };
         }
         printJson(deps.sdk, { invocation: result });
-      } catch (error) {
-        rethrowWithStoreAuthHint(selection, error);
       } finally {
         if (launcherName && workspace) {
           await workspace.workspace
@@ -1452,7 +1459,9 @@ export function registerFleetCommands(
         'Retire provider bindings owned by this identity (implied by --delete-agent)'
       )
   ).action(async (name: string, options: Record<string, unknown>) => {
-    await runFleetSdk(deps, options, async () => {
+    await runSdk(deps.sdk, async () => {
+      const selection = safeResolveFleetSelection(options);
+      warnIfInferredWorkspaceSession(selection, deps.warn);
       const workerName = requiredText(name, 'Worker name');
       const deleteAgent = options.deleteAgent === true;
       const waitTimeoutMs =
@@ -1475,11 +1484,13 @@ export function registerFleetCommands(
       // Stop first so a failed release cannot drop bindings. Keep the roster
       // row until retirement succeeds; --owned-by cannot resolve a deleted
       // identity.
-      const released = await workspace.agents.release({
-        name: workerName,
-        reason,
-        deleteAgent: false,
-      });
+      const released = await withStoreAuthHint(selection, () =>
+        workspace.agents.release({
+          name: workerName,
+          reason,
+          deleteAgent: false,
+        })
+      );
       if (options.unsubscribeBindings === true || deleteAgent) {
         try {
           // Helper progress (`Retired ...`, `Unsubscribed ...`) must not land
@@ -1678,7 +1689,7 @@ async function runFleetAgentList(
   deps: FleetCommandDependencies,
   options: Record<string, unknown>
 ): Promise<void> {
-  await runFleetSdk(deps, options, async () => {
+  await runFleetSdk(deps, options, async (selection) => {
     const clientOptions = sdkOptionsFromOpts(options);
     const relay = deps.sdk.createWorkspaceRelay(clientOptions);
     const requestedNodeName = typeof options.node === 'string' && options.node ? options.node : undefined;
@@ -1714,8 +1725,12 @@ async function runFleetAgentList(
           ...(entry.metadata ? { metadata: entry.metadata } : {}),
         }));
       } catch (error) {
+        const activeHint =
+          selection?.source === 'store' && isUnauthorizedApiKeyError(error)
+            ? ` (active workspace "${selection.workspaceName ?? 'active'}" key rejected; pass --workspace-key/--wk or run \`agent-relay workspace switch <name>\`)`
+            : '';
         deps.warn(
-          `roster unavailable (${describeError(error)}); ` +
+          `roster unavailable (${describeError(error)})${activeHint}; ` +
             'PRESENCE column will not report roster membership.'
         );
       }
