@@ -44,6 +44,10 @@ pub use action::*;
 pub const RELEASE: &str = "release";
 /// Spawns here accept `fork_from` for the harnesses its metadata lists.
 pub const FORK_CAPABILITY: &str = "relay:spawn-fork:v1";
+/// This node parses and enforces per-spawn `approval_profile` values.
+/// Older nodes ignore that input, so callers must find this marker before
+/// sending an explicit policy. The marker grants no approval authority.
+pub const APPROVAL_PROFILE_CAPABILITY: &str = "relay:spawn-approval-profile:v1";
 /// What kind of node this is, in each `spawn:<harness>` capability's
 /// `metadata.configured.node_kind`: a person's desktop.
 pub const NODE_KIND: &str = "desktop";
@@ -288,6 +292,7 @@ impl Advertisement {
                     "metadata": {"live": self.live_agents()},
                 }),
                 json!({"name": ERROR_DETAILS_CAPABILITY, "kind": ERROR_DETAILS_KIND}),
+                json!({"name": APPROVAL_PROFILE_CAPABILITY, "kind": "capacity"}),
             ])
             .chain(self.fork_capability())
             .collect()
@@ -828,6 +833,7 @@ mod tests {
                 "spawn:droid",
                 "release",
                 "relay:spawn-error-details-v1",
+                "relay:spawn-approval-profile:v1",
                 "relay:spawn-fork:v1"
             ]
         );
@@ -839,6 +845,24 @@ mod tests {
         assert_eq!(frame["max_agents"], 8);
         assert_eq!(frame["tags"], json!([]));
         assert_eq!(frame["repo_keys"], json!(["AgentWorkforce/relay-desktop"]));
+    }
+
+    #[test]
+    fn registration_and_heartbeat_advertise_enforced_approval_profiles() {
+        let advertisement = advertisement(&harness::ids(), 0);
+        for frame in [
+            identity().register("node_register_1", &advertisement),
+            identity().heartbeat(&advertisement),
+        ] {
+            let markers: Vec<&Value> = frame["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|capability| capability["name"] == APPROVAL_PROFILE_CAPABILITY)
+                .collect();
+            assert_eq!(markers.len(), 1);
+            assert_eq!(markers[0]["kind"], "capacity");
+        }
     }
 
     #[test]
@@ -1077,6 +1101,27 @@ mod tests {
         assert_eq!(request.approval_profile, Some(ApprovalProfile::Requester));
         // No launch credential sent: none read, a spawn as before.
         assert_eq!(request.launch_credential, None);
+    }
+
+    #[test]
+    fn advertised_approval_profiles_are_parsed_and_omission_keeps_the_node_default() {
+        for (profile, expected) in [
+            (json!("interactive"), Some(ApprovalProfile::Interactive)),
+            (json!("requester"), Some(ApprovalProfile::Requester)),
+            (json!("full_access"), Some(ApprovalProfile::FullAccess)),
+            (Value::Null, None),
+        ] {
+            let mut input = json!({"name": "w1", "task": "go"});
+            if !profile.is_null() {
+                input["approval_profile"] = profile;
+            }
+            let Some(Ok(Invoke::Spawn(request))) = invoke(&json!({
+                "type": "action.invoke", "invocation_id": "inv_1", "action": "spawn:codex", "input": input
+            })) else {
+                panic!("not a spawn")
+            };
+            assert_eq!(request.approval_profile, expected);
+        }
     }
 
     #[test]
