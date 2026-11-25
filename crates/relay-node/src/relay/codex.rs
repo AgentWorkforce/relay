@@ -619,16 +619,23 @@ fn discover_with_signals(
             .iter()
             .map(|session| (session.pid, session.start, session.thread.clone()))
             .collect();
-        let served: BTreeSet<String> = held
+        let proxied: Vec<_> = held
             .iter()
             .filter(|session| processes::is_proxied_app_server(table, session.pid))
+            .collect();
+        let served: BTreeSet<String> = proxied
+            .iter()
             .map(|session| session.thread.clone())
             .collect();
         // Chats sharing the app-server can be told apart on the relay-send
         // socket only by the commands the app-server reports them running:
-        // watch them before their commands start.
+        // watch them before their commands start, through that app-server's
+        // own executable (never another Codex's, which may not reach it).
         if served.len() > 1 {
-            if let Some(executable) = processes::running_executable(table, uid) {
+            if let Some(executable) = proxied
+                .first()
+                .and_then(|session| table.executable(session.pid))
+            {
                 app_server::watch::ensure(&executable, &config.home, &config.sqlite_home);
             }
         }

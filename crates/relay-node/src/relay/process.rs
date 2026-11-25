@@ -721,6 +721,10 @@ pub enum CodexTag {
         thread: String,
         /// The trusted app-server's executable, to ask it through.
         executable: std::path::PathBuf,
+        /// The app-server, as read when its locks were.
+        app_server: ProcessInfo,
+        /// The caller, as read before the app-server was.
+        caller: ProcessInfo,
     },
     /// The nearest trusted Codex is an app-server holding several chats'
     /// locks, but not the tagged thread's.
@@ -774,9 +778,12 @@ pub fn codex_tagged_caller(table: &dyn ProcessTable, pid: i32, uid: u32) -> Code
             }
             if app_server && locks.len() > 1 {
                 return match table.executable(current) {
-                    Some(executable) if locks.contains(&thread) => {
-                        CodexTag::Shared { thread, executable }
-                    }
+                    Some(executable) if locks.contains(&thread) => CodexTag::Shared {
+                        thread,
+                        executable,
+                        app_server: process,
+                        caller,
+                    },
                     _ => CodexTag::Ambiguous,
                 };
             }
@@ -1635,6 +1642,8 @@ mod tests {
             CodexTag::Shared {
                 thread: OTHER.to_string(),
                 executable: codex(),
+                app_server: growing.process(100).unwrap(),
+                caller: growing.process(200).unwrap(),
             }
         );
         // A single chat named by its own tag.

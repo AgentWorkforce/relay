@@ -108,7 +108,7 @@ pub fn started_before_clear(
 /// When `process` started, in milliseconds since the epoch. Linux counts
 /// clock ticks since boot, read against the boot time in `/proc/stat`;
 /// `None` where that cannot be read.
-fn start_epoch_ms(clock: StartClock, process: &ProcessInfo) -> Option<i64> {
+pub(crate) fn start_epoch_ms(clock: StartClock, process: &ProcessInfo) -> Option<i64> {
     match clock {
         StartClock::Micros | StartClock::Windows => i64::try_from(process.start / 1_000).ok(),
         StartClock::Ticks => linux_boot_ms_and_tick_rate().and_then(|(boot_ms, ticks)| {
