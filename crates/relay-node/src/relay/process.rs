@@ -714,7 +714,20 @@ pub enum CodexTag {
     /// The nearest trusted Codex vouches for the thread.
     Named(String),
     /// The nearest trusted Codex is an app-server holding several chats'
-    /// locks: the tag cannot pick among them.
+    /// locks, the tagged thread's among them: the kernel cannot tell which
+    /// chat ran the caller, so the app-server's own record of the command
+    /// must (`codex::app_server::watch`).
+    Shared {
+        thread: String,
+        /// The trusted app-server's executable, to ask it through.
+        executable: std::path::PathBuf,
+        /// The app-server, as read when its locks were.
+        app_server: ProcessInfo,
+        /// The caller, as read before the app-server was.
+        caller: ProcessInfo,
+    },
+    /// The nearest trusted Codex is an app-server holding several chats'
+    /// locks, but not the tagged thread's.
     Ambiguous,
     /// No thread: a missing or invalid tag, no trusted Codex above the
     /// caller, or one that does not vouch for the tag.
@@ -764,7 +777,15 @@ pub fn codex_tagged_caller(table: &dyn ProcessTable, pid: i32, uid: u32) -> Code
                 return CodexTag::Nobody;
             }
             if app_server && locks.len() > 1 {
-                return CodexTag::Ambiguous;
+                return match table.executable(current) {
+                    Some(executable) if locks.contains(&thread) => CodexTag::Shared {
+                        thread,
+                        executable,
+                        app_server: process,
+                        caller,
+                    },
+                    _ => CodexTag::Ambiguous,
+                };
             }
             return if vouches_from(&files, app_server, &thread) {
                 CodexTag::Named(thread)
@@ -1614,8 +1635,17 @@ mod tests {
         };
         assert_eq!(codex_tagged_caller(&growing, 200, UID), CodexTag::Nobody);
         assert_eq!(growing.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
-        // Read again, both chats are held: ambiguous, never the new one.
-        assert_eq!(codex_tagged_caller(&growing, 200, UID), CodexTag::Ambiguous);
+        // Read again, both chats are held: never named from the tag alone;
+        // the app-server must vouch for the command (`Shared`).
+        assert_eq!(
+            codex_tagged_caller(&growing, 200, UID),
+            CodexTag::Shared {
+                thread: OTHER.to_string(),
+                executable: codex(),
+                app_server: growing.process(100).unwrap(),
+                caller: growing.process(200).unwrap(),
+            }
+        );
         // A single chat named by its own tag.
         let one = table();
         assert_eq!(
