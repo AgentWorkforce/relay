@@ -67,8 +67,9 @@ The repository pin always beats the machine-global active workspace, so
 already pinned one.
 
 `workspace create`, `join`, and `switch` select a named workspace globally and
-pin it to the current project. A changed selection records the old name, so an
-accidental create can be undone:
+pin it to the current project. Pass `--no-switch` to `workspace create` to store
+the key without changing the active workspace or project pin. A changed selection
+records the old name, so an accidental create can be undone:
 
 ```bash
 agent-relay workspace restore

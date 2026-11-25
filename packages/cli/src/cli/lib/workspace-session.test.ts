@@ -9,6 +9,7 @@ import {
   persistWorkspaceSession,
   pinProjectWorkspaceSession,
   resolveWorkspaceSessionKey,
+  saveWorkspaceKey,
 } from './workspace-session.js';
 import {
   readProjectWorkspaceKey,
@@ -243,6 +244,38 @@ describe('workspace session persistence', () => {
 
     expect(readProjectWorkspaceKey(projectDataDir)).toBe('rk_live_shared');
     expect(readWorkspaceStore(env).active).toBe('default');
+  });
+
+  it('saveWorkspaceKey stores a named key without switching active workspace or writing a project pin', () => {
+    const root = tempRoot();
+    const projectDataDir = path.join(root, 'project', '.agentworkforce', 'relay');
+    const env = isolatedEnv(root);
+    setWorkspaceKey('default', 'rk_live_default', env);
+    persistWorkspaceSession({ workspaceKey: 'rk_live_pinned', projectDataDir, env });
+
+    saveWorkspaceKey('throwaway', 'rk_live_throwaway', { projectDataDir, env });
+
+    expect(readWorkspaceStore(env)).toEqual({
+      active: 'default',
+      workspaces: {
+        default: { key: 'rk_live_default' },
+        throwaway: { key: 'rk_live_throwaway' },
+      },
+    });
+    expect(readProjectWorkspaceKey(projectDataDir)).toBe('rk_live_pinned');
+  });
+
+  it('saveWorkspaceKey does not activate a workspace when no active workspace exists', () => {
+    const root = tempRoot();
+    const env = isolatedEnv(root);
+
+    saveWorkspaceKey('throwaway', 'rk_live_throwaway', { env });
+
+    expect(readWorkspaceStore(env)).toEqual({
+      workspaces: {
+        throwaway: { key: 'rk_live_throwaway' },
+      },
+    });
   });
 
   it("records a credential issuer's canonical workspace id in the project pin", () => {

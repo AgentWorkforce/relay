@@ -181,6 +181,27 @@ export function persistWorkspaceSession(
   };
 }
 
+/**
+ * Store a named workspace key in the machine-global workspace store without
+ * changing the active workspace or pinning the current project.
+ */
+export function saveWorkspaceKey(
+  name: string,
+  workspaceKey: string,
+  options: WorkspaceSessionOptions = {}
+): void {
+  const trimmedKey = workspaceKey.trim();
+  if (!trimmedKey) {
+    throw new Error('Workspace key is required.');
+  }
+  const workspaceName = validateWorkspaceSessionName(name);
+  saveNamedWorkspace(workspaceName, trimmedKey, {
+    ...options,
+    workspaceKey: trimmedKey,
+    activate: 'never',
+  });
+}
+
 /** Save a named workspace; `setWorkspaceKey` also activates the first one, which `never` rules out. */
 function saveNamedWorkspace(name: string, key: string, options: PersistWorkspaceSessionOptions): void {
   if (options.activate !== 'never') {

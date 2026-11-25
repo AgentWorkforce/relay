@@ -19,6 +19,7 @@ import {
   describeClearedEnrollment,
   persistWorkspaceSession,
   pinProjectWorkspaceSession,
+  saveWorkspaceKey,
   validateWorkspaceSessionName,
   type PersistWorkspaceSessionResult,
 } from '../lib/workspace-session.js';
@@ -139,6 +140,10 @@ export function registerWorkspaceCommands(
     .argument('<name>', 'Workspace name')
     .option('--base-url <url>', 'Override the API base URL')
     .option('--reveal-secrets', 'Include the raw workspace key in the output')
+    .option(
+      '--no-switch',
+      'Store the workspace key without switching the active workspace or pinning this project'
+    )
     .action(async (name: string, o: Record<string, unknown>) => {
       await runSdk(deps, async () => {
         const workspaceName = validateWorkspaceSessionName(name);
@@ -163,13 +168,18 @@ export function registerWorkspaceCommands(
           // The server that minted this key is the only one it may be sent to.
           guardCredentialOrigin(relay.workspaceKey, baseUrl);
         }
-        const previousActive = readWorkspaceStore().active;
-        const persisted = relay.workspaceKey
-          ? persistWorkspaceSession({ name: workspaceName, workspaceKey: relay.workspaceKey })
-          : {};
-        if (relay.workspaceKey && previousActive && previousActive !== workspaceName) {
-          deps.error(`⚠  Active workspace changed: ${previousActive} → ${workspaceName}`);
-          deps.error('   Restore with: agent-relay workspace restore');
+        let persisted: PersistWorkspaceSessionResult = {};
+        if (relay.workspaceKey) {
+          if (o.switch === false) {
+            saveWorkspaceKey(workspaceName, relay.workspaceKey);
+          } else {
+            const previousActive = readWorkspaceStore().active;
+            persisted = persistWorkspaceSession({ name: workspaceName, workspaceKey: relay.workspaceKey });
+            if (previousActive && previousActive !== workspaceName) {
+              deps.error(`⚠  Active workspace changed: ${previousActive} → ${workspaceName}`);
+              deps.error('   Restore with: agent-relay workspace restore');
+            }
+          }
         }
         // The key is persisted to the workspace store either way; the output
         // masks it unless the caller explicitly asks for the raw value. A

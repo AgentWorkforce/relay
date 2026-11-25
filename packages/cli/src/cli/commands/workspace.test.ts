@@ -19,6 +19,7 @@ vi.mock('../lib/workspace-session.js', async (importOriginal) => ({
   // Returns a result object describing what the write changed beyond the key.
   persistWorkspaceSession: vi.fn(() => ({})),
   pinProjectWorkspaceSession: vi.fn(),
+  saveWorkspaceKey: vi.fn(),
   // The real formatter, not a copy: these tests assert on its wording, so a
   // stand-in here would let the command output drift past them.
   describeClearedEnrollment: (await importOriginal<typeof import('../lib/workspace-session.js')>())
@@ -41,6 +42,7 @@ import { registerWorkspaceCommands, type WorkspaceCommandDependencies } from './
 import {
   persistWorkspaceSession,
   pinProjectWorkspaceSession,
+  saveWorkspaceKey,
   validateWorkspaceSessionName,
 } from '../lib/workspace-session.js';
 
@@ -262,6 +264,27 @@ describe('registerWorkspaceCommands', () => {
       name: 'json-workspace',
     });
     expect(deps.error).toHaveBeenCalledWith('⚠  Active workspace changed: default → json-workspace');
+  });
+
+  it('workspace create --no-switch stores the key without switching active workspace or pinning the project', async () => {
+    vi.mocked(readWorkspaceStore).mockReturnValueOnce({
+      active: 'default',
+      workspaces: { default: { key: 'rk_live_default' } },
+    });
+    const { program, deps } = createHarness();
+    vi.mocked(deps.createWorkspace).mockResolvedValueOnce({
+      workspaceKey: 'rk_live_throwaway',
+    } as never);
+
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'create', 'throwaway', '--no-switch']);
+
+    expect(saveWorkspaceKey).toHaveBeenCalledWith('throwaway', 'rk_live_throwaway');
+    expect(persistWorkspaceSession).not.toHaveBeenCalled();
+    expect(deps.error).not.toHaveBeenCalled();
+    expect(JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]))).toEqual({
+      name: 'throwaway',
+      workspaceKey: 'rk_live_…away',
+    });
   });
 
   it('workspace create rejects a blank name before provisioning a remote workspace', async () => {

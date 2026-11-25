@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `agent-relay fleet`: surface a stderr note naming the machine-global active workspace when keyless fleet commands fall back to `~/.agentworkforce/relay/workspaces.json`, and include the active workspace name with remediation when that credential fails with 401.
+- `agent-relay workspace create --no-switch`: store a newly created workspace key without changing the machine-global active workspace or overwriting the current project's pinned workspace.
+
 ## [18.15.0] - 2026-11-24
 
 ### Fixed

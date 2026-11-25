@@ -81,6 +81,8 @@ export interface WorkspaceSelection {
   source: WorkspaceKeySource;
   /** Human-readable origin for diagnostics. Never contains key material. */
   origin: string;
+  /** Workspace name in the machine-global store when `source === 'store'`. */
+  workspaceName?: string;
   /** Workspace id this selection is known to address, when previously recorded. */
   workspaceId?: string;
   relaycastRoute?: 'canonical' | 'agent37-isolated';
@@ -678,6 +680,7 @@ export function resolveActiveWorkspaceSelection(
         key: storeKey,
         source: 'store',
         origin: `${workspaceStorePath(env)} (active: "${activeName}")`,
+        workspaceName: activeName,
         credentialHome: path.resolve(path.dirname(relaycastCredentialStorePath(env))),
         ...(projectDataDir ? { projectDataDir, projectSessionPresent: false } : {}),
       }
