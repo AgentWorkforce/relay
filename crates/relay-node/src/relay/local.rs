@@ -290,16 +290,22 @@ impl LocalSessions {
         let devin_nearest = self.devin_is_nearest(pid, &claude);
         if grok_caller::codex_tag_names_caller(table, pid, uid, opencode_nearest, devin_nearest) {
             // An app-server running several chats holds every one of their
-            // locks, so the tag picks among them unproven: such a caller is
-            // nobody, as under a Grok leader below. One chat per app-server
-            // (or a CLI) is unaffected. The cost is that tools of a Codex
-            // app with several chats open cannot send until the others close.
-            // The gate and the thread's voucher read the app-server's
-            // locks once, together (`codex_tagged_caller`).
+            // locks, so the tag alone picks among them unproven. Such a
+            // caller is named only when the app-server itself reports the
+            // tagged chat running the caller's own command (its
+            // `CODEX_TOOL_CALL_ID`), which no other chat can forge; otherwise
+            // it is nobody, as under a Grok leader below. One chat per
+            // app-server (or a CLI) is unaffected. The gate and the thread's
+            // voucher read the app-server's locks once, together
+            // (`codex_tagged_caller`).
             return match crate::relay::process::codex_tagged_caller(table, pid, uid) {
                 crate::relay::process::CodexTag::Named(id) => {
                     Ok(Target::new(SessionKind::Codex, id))
                 }
+                crate::relay::process::CodexTag::Shared { thread, executable } => self
+                    .shared_codex_caller(pid, &thread, &executable)
+                    .then(|| Target::new(SessionKind::Codex, thread))
+                    .ok_or(CallerMiss::Unattributed),
                 crate::relay::process::CodexTag::Ambiguous => Err(CallerMiss::Unattributed),
                 crate::relay::process::CodexTag::Nobody => Err(self.tag_miss(pid, &claude)),
             };
@@ -343,6 +349,30 @@ impl LocalSessions {
         let stop_at_grok_leaders =
             self.config.existing_grok.is_some() || self.config.spawned_grok.is_some();
         self.walk_caller(pid, &claude, stop_at_grok_leaders)
+    }
+
+    /// Whether the shared Codex app-server reports `thread` running the
+    /// command `pid` is: its `CODEX_TOOL_CALL_ID` is a command of that
+    /// chat's now (`codex::app_server::watch`), and the caller is the same
+    /// process after the wait.
+    fn shared_codex_caller(&self, pid: i32, thread: &str, executable: &Path) -> bool {
+        let table = &*self.table;
+        let Some(caller) = table.process(pid) else {
+            return false;
+        };
+        let Some(call) = table
+            .environment_var(pid, "CODEX_TOOL_CALL_ID")
+            .map(|call| call.trim().to_string())
+        else {
+            return false;
+        };
+        codex::app_server::watch::ensure(
+            executable,
+            &self.config.codex.home,
+            &self.config.codex.sqlite_home,
+        );
+        codex::app_server::watch::runs(thread, &call, codex::app_server::watch::ANNOUNCE_WAIT)
+            && table.process(pid) == Some(caller)
     }
 
     /// Why a session tag in the caller's environment named nobody: the
@@ -2871,6 +2901,71 @@ mod tests {
             .sessions
             .caller_among_held(410, &held(second))
             .is_none());
+    }
+
+    // Codex's app-server daemon runs every terminal chat's commands, so it
+    // holds several chats' locks and a command's `CODEX_THREAD_ID` alone
+    // names nobody. The app-server's own report that the tagged chat is
+    // running this very command (`CODEX_TOOL_CALL_ID`) names it.
+    #[test]
+    fn a_shared_app_server_caller_is_named_by_the_command_its_chat_runs() {
+        let world = world();
+        let second = "019a0000-0000-7000-8000-0000000000c2";
+        let lock = |thread: &str| {
+            PathBuf::from(format!(
+                "/Users/me/.codex/thread-writer-locks/{thread}.lock"
+            ))
+        };
+        world.table.insert(
+            400,
+            FakeProcess {
+                executable: Some(codex_exe()),
+                arguments: vec!["codex".into(), "app-server".into()],
+                open_files: vec![lock(THREAD), lock(second)],
+                ..process(1, 130)
+            },
+        );
+        let tool = |thread: &str, call: &str| FakeProcess {
+            environment: [
+                ("CODEX_THREAD_ID".to_string(), thread.to_string()),
+                ("CODEX_TOOL_CALL_ID".to_string(), call.to_string()),
+            ]
+            .into(),
+            ..process(400, 140)
+        };
+        let codex = |id: &str| Target::new(SessionKind::Codex, id);
+        // The app-server reports nothing yet: nobody.
+        world
+            .table
+            .insert(410, tool(THREAD, "exec-shared-caller-unseen"));
+        assert!(matches!(
+            world.sessions.caller(410),
+            Err(CallerMiss::Unattributed)
+        ));
+        // It reports the tagged chat running this command: that chat.
+        codex::app_server::watch::seed(THREAD, "exec-shared-caller-own");
+        world
+            .table
+            .insert(410, tool(THREAD, "exec-shared-caller-own"));
+        assert_eq!(
+            world.sessions.caller(410).map(|row| row.target).ok(),
+            Some(codex(THREAD))
+        );
+        // Another chat on the same app-server claiming that command: nobody.
+        world
+            .table
+            .insert(410, tool(second, "exec-shared-caller-own"));
+        assert!(matches!(
+            world.sessions.caller(410),
+            Err(CallerMiss::Unattributed)
+        ));
+        // A chat this app-server does not hold, even with a running command.
+        let elsewhere = "019a0000-0000-7000-8000-0000000000c3";
+        codex::app_server::watch::seed(elsewhere, "exec-shared-caller-elsewhere");
+        world
+            .table
+            .insert(410, tool(elsewhere, "exec-shared-caller-elsewhere"));
+        assert!(world.sessions.caller(410).is_err());
     }
 
     /// A `devin` process (pid 400) holding its session lock open, with a

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `agent-relay-node`: Codex chats can send through the session socket again while Codex's app-server daemon hosts several chats. With the daemon, every terminal chat's commands run under one shared app-server, which holds every chat's lock, so a command's `CODEX_THREAD_ID` could not be proven and every send was refused with `not_a_relay_session`. The core now keeps one proxy connection to the app-server, follows each chat while a turn runs, and names the caller only when the app-server reports the tagged chat running the caller's own command (its `CODEX_TOOL_CALL_ID`), which another chat cannot forge. Commands that started before the core connected, and processes left running after their command finished, are still refused.
+
 ## [18.15.0] - 2026-11-24
 
 ### Fixed
