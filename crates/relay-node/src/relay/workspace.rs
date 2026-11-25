@@ -46,10 +46,10 @@ use std::path::{Path, PathBuf};
 
 /// Where a key with no recorded server goes, and the Cloud sign-in's fallback,
 /// in the default build only (a site build has neither fallback).
-/// New hosted workspaces live on armadillo, but their keys are bound to it: an
-/// unbound key predates that default, so this must not move with it.
+/// New hosted workspaces are created here too; their keys stay unbound.
 pub const DEFAULT_BASE_URL: &str = "https://cast.agentrelay.com";
-/// The hosted gateway `relay init --hosted` creates workspaces on.
+/// The hosted gateway that issued `ar_ws_`/`ar_ag_` credentials. Its keys stay
+/// bound to it; `relay init --hosted` no longer creates workspaces here.
 #[cfg(feature = "relay-cli")]
 pub const ARMADILLO_ORIGIN: &str = "https://armadillo.agentrelay.com";
 

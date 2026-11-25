@@ -22,10 +22,20 @@ import { withFileLock, writeFileAtomically } from './locked-json-file.js';
  */
 export const ORIGIN_BINDINGS_FILE = 'relaycast-origins.json';
 
-/** Where new hosted workspaces are created. Their keys are bound to it. */
+/**
+ * Armadillo: where `ar_ws_`/`ar_ag_` credentials live. Keys it minted are bound
+ * to it. New hosted workspaces are no longer created here (see
+ * {@link NEW_HOSTED_WORKSPACE_ORIGIN}).
+ */
 export const DEFAULT_HOSTED_ORIGIN = ARMADILLO_RELAYCAST_ORIGIN;
 /** Where a credential with no recorded server goes. Never the new default: such keys predate it. */
 export const UNBOUND_CREDENTIAL_ORIGIN = CANONICAL_RELAYCAST_ORIGIN;
+/**
+ * Where `relay init --hosted` and `relay workspace create` create workspaces:
+ * cast, since armadillo kept hitting its limits. Cast keys stay unbound, and
+ * unbound keys already go to cast.
+ */
+export const NEW_HOSTED_WORKSPACE_ORIGIN = CANONICAL_RELAYCAST_ORIGIN;
 const BASE_URL_LABEL = 'The Relaycast base URL (--base-url or RELAY_BASE_URL)';
 const FINGERPRINT_PATTERN = /^[0-9a-f]{32}$/;
 /** Armadillo's credentials name their server: `ar_ws_…` keys and `ar_ag_…` agent tokens. */

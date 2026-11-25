@@ -57,7 +57,6 @@ function createHarness() {
     createAgentRelay: vi.fn() as never,
     createWorkspaceRelay: vi.fn() as never,
     createWorkspace: vi.fn() as never,
-    desktopPresent: vi.fn(async () => false),
     log: vi.fn(() => undefined),
     error: vi.fn(() => undefined),
     exit,
@@ -178,19 +177,15 @@ describe('registerWorkspaceCommands', () => {
     });
   });
 
-  it('workspace create uses cast with the desktop app here, armadillo without it', async () => {
+  it('workspace create uses cast unless a base URL is given', async () => {
     const { program, deps } = createHarness();
     vi.mocked(deps.createWorkspace).mockResolvedValue({ workspaceKey: 'rk_live_cast' } as never);
 
     await program.parseAsync(['node', 'agent-relay', 'workspace', 'create', 'plain']);
-    expect(deps.createWorkspace).toHaveBeenLastCalledWith('plain', 'https://armadillo.agentrelay.com');
-    expect(deps.error).not.toHaveBeenCalledWith(expect.stringContaining('desktop app'));
-
-    vi.mocked(deps.desktopPresent!).mockResolvedValue(true);
-    await program.parseAsync(['node', 'agent-relay', 'workspace', 'create', 'with-desktop']);
-    expect(deps.createWorkspace).toHaveBeenLastCalledWith('with-desktop', 'https://cast.agentrelay.com');
-    expect(deps.error).toHaveBeenCalledWith(
-      'Creating on cast.agentrelay.com, the only server the desktop app here works with.'
+    expect(deps.createWorkspace).toHaveBeenLastCalledWith('plain', 'https://cast.agentrelay.com');
+    expect(deps.createWorkspace).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'https://armadillo.agentrelay.com'
     );
 
     await program.parseAsync([
@@ -323,7 +318,7 @@ describe('registerWorkspaceCommands', () => {
     }
   });
 
-  it('workspace create defaults to armadillo and binds the new key there', async () => {
+  it('workspace create defaults to cast and leaves the new key unbound', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-create-home-'));
     vi.stubEnv('AGENT_RELAY_HOME', home);
     vi.stubEnv('RELAY_BASE_URL', '');
@@ -333,8 +328,9 @@ describe('registerWorkspaceCommands', () => {
 
       await program.parseAsync(['node', 'agent-relay', 'workspace', 'create', 'fresh']);
 
-      expect(deps.createWorkspace).toHaveBeenCalledWith('fresh', 'https://armadillo.agentrelay.com');
-      expect(boundOrigin('rk_live_fresh')).toBe('https://armadillo.agentrelay.com');
+      expect(deps.createWorkspace).toHaveBeenCalledWith('fresh', 'https://cast.agentrelay.com');
+      // Unbound keys already go to cast, on any machine.
+      expect(boundOrigin('rk_live_fresh')).toBeUndefined();
     } finally {
       vi.unstubAllEnvs();
       fs.rmSync(home, { recursive: true, force: true });

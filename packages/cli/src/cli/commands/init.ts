@@ -11,6 +11,7 @@ import {
   boundOrigin,
   configuredOrigin,
   DEFAULT_HOSTED_ORIGIN,
+  NEW_HOSTED_WORKSPACE_ORIGIN,
   guardCredentialOrigin,
   isJoinableHostedOrigin,
   UNBOUND_CREDENTIAL_ORIGIN,
@@ -883,8 +884,7 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     const name = choice.name ?? defaultHostedName(deps.toolContext().projectRoot);
     const activation = await sharedActivation(deps);
     refuseActiveName(name, undefined, activation);
-    const desktop = await desktopOnMachine(deps);
-    const origin = desktop ? UNBOUND_CREDENTIAL_ORIGIN : DEFAULT_HOSTED_ORIGIN;
+    const origin = NEW_HOSTED_WORKSPACE_ORIGIN;
     assertOriginBindingsWritable(origin);
     const relay = await deps.createWorkspace(name, origin);
     if (!relay.workspaceKey) throw new Error('The hosted service did not return a workspace key.');
@@ -897,9 +897,6 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
       origin,
       headline: `Created hosted workspace "${name}".`,
       details: [
-        ...(desktop
-          ? [`On ${new URL(origin).hostname}, the only server the desktop app here works with.`]
-          : []),
         ...(choice.name ? [] : [`Named after you and this folder; pass --name to choose another.`]),
         ...lines,
         'On another machine, run this in the project to join it and connect its agent tools ' +

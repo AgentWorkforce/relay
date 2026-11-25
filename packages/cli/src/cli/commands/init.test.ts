@@ -214,21 +214,18 @@ describe('relay init', () => {
   it('creates a hosted workspace and prints the one command another machine runs to join', async () => {
     const { run, logs, createWorkspace } = setup({ cliVersion: '15.0.0-next.6' });
     await run('--hosted', '--name', 'team');
-    expect(createWorkspace).toHaveBeenCalledWith('team', 'https://armadillo.agentrelay.com');
+    expect(createWorkspace).toHaveBeenCalledWith('team', 'https://cast.agentrelay.com');
     const output = logs.join('\n');
     // The teammate's command is init itself, through npx so Relay need not
     // be installed there: it joins and sets up injection in one step.
     expect(output).toContain('treat this key like a password');
-    expect(output).toContain(
-      "  npx -y agent-relay@next init --url https://armadillo.agentrelay.com --key 'rk_live_team_remote'"
-    );
+    expect(output).toContain("  npx -y agent-relay@next init --key 'rk_live_team_remote'");
+    expect(output).not.toContain('armadillo');
     expect(output).not.toContain('relay workspace join');
     expect(output).not.toContain('--name');
-    // Bound, because a key with no recorded server goes to cast.
-    expect(boundOrigin('rk_live_team_remote')).toBe('https://armadillo.agentrelay.com');
-    expect(resolveWorkspaceTransport({ workspaceKey: 'rk_live_team_remote' }).baseUrl).toBe(
-      'https://armadillo.agentrelay.com'
-    );
+    // Unbound, because a key with no recorded server already goes to cast.
+    expect(boundOrigin('rk_live_team_remote')).toBeUndefined();
+    expect(resolveWorkspaceTransport({ workspaceKey: 'rk_live_team_remote' }).baseUrl).toBeUndefined();
   });
 
   it('does not create a hosted workspace whose key could not be bound', async () => {
@@ -273,9 +270,7 @@ describe('relay init', () => {
   ])('names the npx package for CLI version %s', async (cliVersion, spec) => {
     const { run, logs } = setup({ cliVersion });
     await run('--hosted', '--name', 'team');
-    expect(logs.join('\n')).toContain(
-      `npx -y ${spec} init --url https://armadillo.agentrelay.com --key 'rk_live_team_remote'`
-    );
+    expect(logs.join('\n')).toContain(`npx -y ${spec} init --key 'rk_live_team_remote'`);
   });
 
   it('names a hosted workspace after the person and the folder, without asking', async () => {
@@ -297,13 +292,13 @@ describe('relay init', () => {
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '');
     const name = [user, folder].filter(Boolean).join('-').slice(0, 40);
-    expect(createWorkspace).toHaveBeenCalledWith(name, 'https://armadillo.agentrelay.com');
+    expect(createWorkspace).toHaveBeenCalledWith(name, 'https://cast.agentrelay.com');
     const output = logs.join('\n');
     expect(output).toContain(`Created hosted workspace "${name}".`);
     expect(output).toContain('pass --name to choose another');
     // A second one here gets a name of its own instead of replacing it.
     await run('--hosted');
-    expect(createWorkspace).toHaveBeenLastCalledWith(`${name}-2`, 'https://armadillo.agentrelay.com');
+    expect(createWorkspace).toHaveBeenLastCalledWith(`${name}-2`, 'https://cast.agentrelay.com');
   });
 
   it('joins a hosted workspace with --key alone, named as the server names it', async () => {
@@ -1360,7 +1355,7 @@ describe('relay init joining a team after solo relay init', () => {
 
     expect(readWorkspaceStore().active).toBe('team');
     expect(readWorkspaceStore().workspaces.local).toBeDefined();
-    expect(boundOrigin('rk_live_team_remote')).toBe('https://armadillo.agentrelay.com');
+    expect(boundOrigin('rk_live_team_remote')).toBeUndefined();
     const output = logs.join('\n');
     expect(logs).toContain('Switched this machine to workspace "team"');
     expect(output).toContain('Moved running sessions to "team": codex-api.');
@@ -1917,7 +1912,6 @@ describe('relay init message injection', () => {
       await run('--hosted', '--name', 'team');
       expect(castWorkspace).toHaveBeenCalledWith('team', CAST);
       const output = logs.join('\n');
-      expect(output).toContain('On cast.agentrelay.com, the only server the desktop app here works with.');
       expect(output).toContain("  npx -y agent-relay@next init --key 'rk_live_cast_team'");
       expect(output).not.toContain('armadillo');
       // Unbound, so a teammate's bare --key reaches cast on any machine.
@@ -1968,13 +1962,16 @@ describe('relay init message injection', () => {
     });
   });
 
-  it('prints a join line with no server for an armadillo workspace key', async () => {
+  it('names the creating server in the join line when the key format points elsewhere', async () => {
+    // An armadillo-format key from cast: a bare --key would send it to armadillo.
     const { run, logs } = setup({
       cliVersion: '15.0.0-next.6',
       createWorkspace: vi.fn(async () => ({ workspaceKey: 'ar_ws_team', name: 'team' })),
     });
     await run('--hosted', '--name', 'team');
-    expect(logs.join('\n')).toContain("  npx -y agent-relay@next init --key 'ar_ws_team'");
+    expect(logs.join('\n')).toContain(
+      "  npx -y agent-relay@next init --url https://cast.agentrelay.com --key 'ar_ws_team'"
+    );
   });
 
   it('attaches to a core it did not start, such as the desktop app, and never starts a second one', async () => {

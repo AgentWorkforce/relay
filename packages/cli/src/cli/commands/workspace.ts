@@ -4,15 +4,14 @@ import { resolveActiveWorkspace } from '@agent-relay/cloud';
 
 import { shellWord } from '../lib/agent-registration.js';
 import { maskSecret } from '../lib/redact.js';
-import { desktopPresent } from '../lib/desktop-presence.js';
 import { printJson, runSdk, withSdkDefaults, type SdkCommandDeps } from '../lib/sdk-command.js';
 import { readWorkspaceStore, setWorkspaceKey } from '../lib/workspace-store.js';
 import {
   assertOriginBindingsWritable,
   configuredBaseUrl,
   boundOrigin,
-  DEFAULT_HOSTED_ORIGIN,
   guardCredentialOrigin,
+  NEW_HOSTED_WORKSPACE_ORIGIN,
   UNBOUND_CREDENTIAL_ORIGIN,
 } from '../lib/relaycast-origin-binding.js';
 import {
@@ -23,10 +22,7 @@ import {
   type PersistWorkspaceSessionResult,
 } from '../lib/workspace-session.js';
 
-export interface WorkspaceCommandDependencies extends SdkCommandDeps {
-  /** Whether the desktop app, whose core serves cast only, is on this machine. */
-  desktopPresent?: () => Promise<boolean>;
-}
+export type WorkspaceCommandDependencies = SdkCommandDeps;
 
 /**
  * Say so when moving workspaces drops this project's enrolled fleet node.
@@ -143,14 +139,7 @@ export function registerWorkspaceCommands(
       await runSdk(deps, async () => {
         const workspaceName = validateWorkspaceSessionName(name);
         const explicitBaseUrl = (o.baseUrl as string | undefined) ?? process.env.RELAY_BASE_URL?.trim();
-        const desktop = !explicitBaseUrl && (await (overrides.desktopPresent ?? desktopPresent)());
-        const requestedBaseUrl =
-          explicitBaseUrl || (desktop ? UNBOUND_CREDENTIAL_ORIGIN : DEFAULT_HOSTED_ORIGIN);
-        if (desktop) {
-          deps.error(
-            `Creating on ${new URL(requestedBaseUrl).hostname}, the only server the desktop app here works with.`
-          );
-        }
+        const requestedBaseUrl = explicitBaseUrl || NEW_HOSTED_WORKSPACE_ORIGIN;
         const baseUrl = configuredBaseUrl(
           requestedBaseUrl,
           'The Relaycast base URL (--base-url or RELAY_BASE_URL)'
