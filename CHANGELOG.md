@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [18.16.0] - 2026-11-25
+
+### Changed
+
+- Round-11 delegation contract details
+
 ## [18.15.0] - 2026-11-24
 
 ### Fixed
