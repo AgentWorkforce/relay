@@ -25,6 +25,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import {
   AgentRelay,
+  RelayError,
   RELAYCAST_SDK_VERSION,
   createAgentClient,
   createObserverToken,
@@ -44,10 +45,13 @@ import {
 import { isAgentAlreadyExists, takeOverAgent } from './lib/agent-takeover.js';
 import { pickAvailableName, sessionBaseName } from './lib/mcp-session-name.js';
 import {
+  AgentRegistrationTimeoutError,
   DEFAULT_AGENT_REGISTRATION_TIMEOUT_MS,
   withAgentRegistrationDeadline,
   withDeadline,
 } from './lib/agent-registration.js';
+import { sanitizeForTerminalLine } from './lib/formatting.js';
+import { maskSecretsInText } from './lib/redact.js';
 import { attributableReleaseReason } from './lib/release-reason.js';
 import {
   sanitizedSpawnReceipt,
@@ -2129,6 +2133,37 @@ function isRelaycastAgentToken(token: string | undefined): token is string {
   return typeof token === 'string' && (token.startsWith('at_live_') || token.startsWith('ar_ag_'));
 }
 
+/** A short, plain identifier: safe to print whoever chose it. */
+const PLAIN_IDENTIFIER = /^[A-Za-z]\w{0,63}$/;
+
+/**
+ * Relaycast's own error code, which RelayError keeps as `rawCode` beside the
+ * SDK's coarser `code` (an unmapped `internal_error` normalizes to
+ * `transport_error`). The server chooses it, so anything but a plain
+ * identifier falls back to `code`. `unknown_error` is what the SDK substitutes
+ * for an error body it could not read, so it is not reported as Relaycast's.
+ */
+function relaycastErrorCode(error: RelayError): string {
+  const raw = error.rawCode;
+  return typeof raw === 'string' && raw !== 'unknown_error' && PLAIN_IDENTIFIER.test(raw) ? raw : error.code;
+}
+
+/**
+ * What to say about a failed bootstrap registration. A typed RelayError has a
+ * code, status and API message to report; the deadline's own message carries
+ * the recovery commands. Anything else is an unknown exception whose message
+ * may echo the request, so only its class name is reported.
+ */
+function bootstrapRegistrationDetail(error: unknown): string {
+  if (error instanceof AgentRegistrationTimeoutError) return error.message;
+  if (error instanceof RelayError) {
+    const status = typeof error.statusCode === 'number' ? ` (HTTP ${error.statusCode})` : '';
+    return `${relaycastErrorCode(error)}${status}: ${safeRelayErrorMessage(error)}`;
+  }
+  const name = error instanceof Error && PLAIN_IDENTIFIER.test(error.name) ? error.name : 'unknown error';
+  return `${name} (details withheld; they may include request credentials)`;
+}
+
 export async function resolveStdioBootstrapOptions(
   options: AgentRelayMcpServerOptions
 ): Promise<AgentRelayMcpServerOptions> {
@@ -2144,14 +2179,31 @@ export async function resolveStdioBootstrapOptions(
 
   const relay = createWorkspaceClient({ workspaceKey, baseUrl: options.baseUrl });
 
-  const registered = await withAgentRegistrationDeadline(
-    () =>
-      relay.agents.registerOrRotate({
-        name: options.agentName!,
-        type: options.agentType,
-      }),
-    options.agentName
-  );
+  let registered: Awaited<ReturnType<typeof relay.agents.registerOrRotate>>;
+  try {
+    registered = await withAgentRegistrationDeadline(
+      () =>
+        relay.agents.registerOrRotate({
+          name: options.agentName!,
+          type: options.agentType,
+        }),
+      options.agentName
+    );
+  } catch (error) {
+    // Startup still fails closed; this only says which identity failed and why.
+    // The message reaches stderr, so credentials in it are masked, including a
+    // credential pasted into the agent name. The cause is deliberately dropped:
+    // it can hold request headers, and the entrypoint prints the whole stack.
+    const message = maskSecretsInText(
+      sanitizeForTerminalLine(
+        `Relaycast MCP bootstrap registration for ${JSON.stringify(options.agentName)} failed: ` +
+          bootstrapRegistrationDetail(error)
+      ),
+      [workspaceKey, options.apiKey, options.agentToken]
+    );
+    // eslint-disable-next-line preserve-caught-error -- the cause may carry credentials
+    throw new Error(message);
+  }
   return {
     ...options,
     agentToken: registered.token,

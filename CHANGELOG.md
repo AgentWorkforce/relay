@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `agent-relay mcp`: when startup registration of the configured `RELAY_AGENT_NAME` fails, the error names the agent and the bootstrap phase, with the Relaycast error code, HTTP status and message (for example `Relaycast MCP bootstrap registration for "worker-a" failed: internal_error (HTTP 500): Internal server error`). The code is the one Relaycast sent; when there is none, or it is not a short plain identifier, the SDK's normalized code (such as `transport_error`) is shown instead. Before, only the upstream exception was printed. Relay credentials, URL passwords and common third-party token formats (GitHub, Slack, AWS, OpenAI, Anthropic, JWTs) in the message are masked, including one pasted into the agent name; an unexpected non-Relaycast error is reported by its type only, since its message can echo request headers. Startup still fails before any tools are served.
 
 ## [18.16.1] - 2026-11-25
 

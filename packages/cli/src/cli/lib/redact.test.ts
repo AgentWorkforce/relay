@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 
-import { maskSecret, redactSecrets } from './redact.js';
+import { maskSecret, maskSecretsInText, redactSecrets } from './redact.js';
 
 describe('redactSecrets', () => {
   it('redacts credential-named fields and preserves the rest', () => {
@@ -107,5 +107,82 @@ describe('maskSecret', () => {
 
   it('masks unknown-shaped tokens to an ellipsis and the last four characters', () => {
     expect(maskSecret('some-opaque-access-token')).toBe('…oken');
+  });
+});
+
+describe('maskSecretsInText', () => {
+  it('masks live credentials embedded anywhere in the text', () => {
+    expect(maskSecretsInText('key rk_live_0123456789abcdef for "at_live_fedcba9876543210".')).toBe(
+      'key rk_live_…cdef for "at_live_…3210".'
+    );
+    expect(maskSecretsInText('agent my_br_0123456789abcdef')).toBe('agent my_br_…cdef');
+  });
+
+  it('masks every occurrence of a known secret whatever its shape', () => {
+    const jwt = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ3b3JrZXIifQ.c2lnbmF0dXJl';
+    expect(maskSecretsInText(`${jwt} then '${jwt}'`, [jwt])).toBe(`…dXJl then '…dXJl'`);
+  });
+
+  it('masks a known secret whole when it contains another', () => {
+    expect(maskSecretsInText('opaque-token-0123456789', ['opaque-token', 'opaque-token-0123456789'])).toBe(
+      '…6789'
+    );
+  });
+
+  it.each([
+    ['a GitHub token', `ghp_${'a1B2'.repeat(9)}`, '…a1B2'],
+    ['a GitHub fine-grained token', `github_pat_${'A1'.repeat(11)}_${'b2'.repeat(29)}c`, '…2b2c'],
+    [
+      'a Slack token',
+      ['xoxb', '123456789012', '1234567890123', 'AbCdEfGhIjKlMnOpQrStUvWx'].join('-'),
+      '…UvWx',
+    ],
+    [
+      'a Slack user token',
+      ['xoxp', '1234567890', '1234567890', '1234567890', 'a1b2c3d4'.repeat(4)].join('-'),
+      '…c3d4',
+    ],
+    ['an AWS access key ID', ['AKIA', 'IOSFODNN7EXAMPLE'].join(''), '…MPLE'],
+    ['an Anthropic key', `sk-ant-api03-${'Xy9_'.repeat(23)}AA`, '…9_AA'],
+    ['an OpenAI legacy key', `sk-${'Ab3'.repeat(16)}`, '…3Ab3'],
+    ['a JWT', 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJib3QifQ.c2lnbmF0dXJl', '…dXJl'],
+  ])('masks %s embedded in the text', (_kind, secret, masked) => {
+    expect(maskSecretsInText(`agent "${secret}" failed`)).toBe(`agent "${masked}" failed`);
+  });
+
+  it('masks the userinfo of a URL', () => {
+    expect(maskSecretsInText('fetch https://user:hunter22@relay.example/v1 and http://token@h:8080')).toBe(
+      'fetch https://…@relay.example/v1 and http://…@h:8080'
+    );
+    // A URL parser splits at the last `@`, so an unencoded one belongs to the password.
+    expect(maskSecretsInText('https://ops:p@ss@word@relay.example/v1')).toBe('https://…@relay.example/v1');
+    expect(maskSecretsInText('mail ops@relay.example, see https://relay.example/@team')).toBe(
+      'mail ops@relay.example, see https://relay.example/@team'
+    );
+  });
+
+  it('leaves ordinary words alone, including ones that contain a prefix', () => {
+    // `redactCredentialValues` masks the last three, since it matches a prefix anywhere.
+    const text =
+      'task-runner desk-bot sk-reviewer Bearer-of-news "WorkerA" cobr_worker chat_live_bot solar_ws_bot';
+    expect(maskSecretsInText(text, [undefined, 'short'])).toBe(text);
+  });
+
+  it('leaves names that only resemble a third-party format alone', () => {
+    const text = [
+      'ghp_reviewer',
+      'gho_builder',
+      'github_pat_bot',
+      'xoxb-bot',
+      'xoxb-202611-build',
+      'xoxb-20261123-nightly-build-for-the-release-train',
+      'AKIA-bot',
+      'sk-ant-helper',
+      'sk-proj-planner',
+      'sk-reviewer-for-the-billing-service-team-2026',
+      'eyJ-bot',
+      'release.eyJ.v2',
+    ].join(' ');
+    expect(maskSecretsInText(text)).toBe(text);
   });
 });

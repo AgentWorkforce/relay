@@ -1,9 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import os from 'node:os';
+import path from 'node:path';
+
+import { DEFAULT_AGENT_REGISTRATION_TIMEOUT_MS } from './lib/agent-registration.js';
+
 type LoadOptions = {
   connectThrows?: boolean;
   forceEntrypoint?: boolean;
   persistedWorkspaceKey?: string;
+  // Registration behavior in place before module load, for entrypoint tests.
+  registerImpl?: RelayBehavior['registerImpl'];
   sharedSessionToolNames?: string[];
   workspaceSpawnResult?: Record<string, unknown>;
 };
@@ -40,10 +47,13 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
   if (options.forceEntrypoint) {
     process.argv = ['node', '/entry'];
     const realpathSync = vi.fn(() => '/entry');
-    vi.doMock('node:fs', () => ({
-      default: { realpathSync },
-      realpathSync,
-    }));
+    vi.doMock('node:fs', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('node:fs')>();
+      return { ...actual, default: { ...actual, realpathSync }, realpathSync };
+    });
+  } else {
+    // resetModules keeps mocks registered, so a later load would run as the entrypoint too.
+    vi.doUnmock('node:fs');
   }
 
   const serverInstances: FakeMcpServer[] = [];
@@ -79,7 +89,7 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
       unreadDms: [],
       recentReactions: [],
     })),
-    registerImpl: vi.fn(async ({ name }) => ({ name, token: `at_live_${name}` })),
+    registerImpl: options.registerImpl ?? vi.fn(async ({ name }) => ({ name, token: `at_live_${name}` })),
     releaseImpl: vi.fn(async (input) => ({
       name: input.name,
       released: true,
@@ -2298,6 +2308,229 @@ describe('resolveStdioBootstrapOptions', () => {
   });
 });
 
+describe('resolveStdioBootstrapOptions registration failures', () => {
+  const workspaceKey = 'rk_live_0123456789abcdefwxyz';
+  const options = { apiKey: workspaceKey, agentName: 'WorkerA', agentType: 'agent' as const };
+
+  // Load first: RelayError must come from the same module graph as the code under test.
+  async function bootstrapFailure(
+    rejection: (relay: typeof import('@relaycast/sdk')) => unknown,
+    overrides: Record<string, unknown> = {}
+  ): Promise<Error> {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    const relay = await import('@relaycast/sdk');
+    const reason = rejection(relay);
+    mocks.behavior.registerImpl = vi.fn(async () => {
+      throw reason;
+    });
+    const error = await mod.resolveStdioBootstrapOptions({ ...options, ...overrides }).then(
+      () => undefined,
+      (caught: Error) => caught
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect(mocks.serverInstances).toHaveLength(0);
+    return error!;
+  }
+
+  it('names the agent, phase, code and status of a typed Relaycast failure', async () => {
+    // relayErrorFromApi is how the SDK client turns an error response into a RelayError.
+    const error = await bootstrapFailure(({ relayErrorFromApi }) =>
+      relayErrorFromApi('internal_error', 'Internal server error', 500)
+    );
+
+    // The SDK normalizes this code to `transport_error`; Relaycast's own code is reported.
+    expect(error.message).toBe(
+      'Relaycast MCP bootstrap registration for "WorkerA" failed: internal_error (HTTP 500): Internal server error'
+    );
+    expect(error.cause).toBeUndefined();
+  });
+
+  it.each([
+    ['agent_already_exists', 409],
+    ['agent_name_reserved', 409],
+    ['workspace_mismatch', 403],
+    ['Rate_Limit_Exceeded', 429],
+  ])('reports the Relaycast code %s (HTTP %i) as sent', async (rawCode, statusCode) => {
+    const error = await bootstrapFailure(({ relayErrorFromApi }) =>
+      relayErrorFromApi(rawCode, 'Registration refused', statusCode)
+    );
+
+    expect(error.message).toBe(
+      `Relaycast MCP bootstrap registration for "WorkerA" failed: ${rawCode} (HTTP ${statusCode}): Registration refused`
+    );
+  });
+
+  it.each([
+    ['no Relaycast code', undefined, 502],
+    ["the SDK's stand-in for an unreadable error body", 'unknown_error', 502],
+    ['an empty code', '', 502],
+    ['a code with spaces', 'internal error', 502],
+    ['a code with a line break', 'internal_error\nnext', 502],
+    ['a code with a terminal escape', 'internal_error\u001b[2J', 502],
+    ['a code with markup', '<b>internal_error</b>', 502],
+    ['a code with shell syntax', '$(id)', 502],
+    ['a code longer than 64 characters', `e${'x'.repeat(64)}`, 502],
+    ['a malformed 409 code', 'name conflict!', 409],
+  ])('falls back to the SDK code for %s', async (_case, rawCode, statusCode) => {
+    const error = await bootstrapFailure(
+      ({ RelayError, normalizeRelayErrorCode }) =>
+        new RelayError(normalizeRelayErrorCode(rawCode, statusCode), 'Upstream failure', {
+          statusCode,
+          rawCode,
+        })
+    );
+    const code = statusCode === 409 ? 'name_conflict' : 'transport_error';
+
+    expect(error.message).toBe(
+      `Relaycast MCP bootstrap registration for "WorkerA" failed: ${code} (HTTP ${statusCode}): Upstream failure`
+    );
+  });
+
+  it('collapses database diagnostics in a typed failure', async () => {
+    const error = await bootstrapFailure(({ relayErrorFromApi }) =>
+      relayErrorFromApi(
+        'internal_error',
+        'Failed query: select id from agents where name = $1 params: WorkerA',
+        500
+      )
+    );
+
+    expect(error.message).toBe(
+      'Relaycast MCP bootstrap registration for "WorkerA" failed: internal_error (HTTP 500): ' +
+        'Relay service could not complete the request. Retry, or contact the workspace operator if the problem persists.'
+    );
+  });
+
+  it.each([
+    ['the workspace key', workspaceKey, 'rk_live_…wxyz'],
+    ['a GitHub token', `ghp_${'a1B2'.repeat(9)}`, '…a1B2'],
+  ])('masks %s returned as the Relaycast code', async (_case, rawCode, masked) => {
+    const error = await bootstrapFailure(({ relayErrorFromApi }) =>
+      relayErrorFromApi(rawCode, 'Registration refused', 400)
+    );
+
+    expect(error.message).toBe(
+      `Relaycast MCP bootstrap registration for "WorkerA" failed: ${masked} (HTTP 400): Registration refused`
+    );
+    expect(`${error.stack}`).not.toContain(rawCode);
+  });
+
+  it('masks a credential that an upstream message echoes back', async () => {
+    const error = await bootstrapFailure(
+      ({ RelayError }) =>
+        new RelayError('unauthorized', `Workspace key ${workspaceKey} was rejected`, { statusCode: 401 })
+    );
+
+    expect(error.message).toBe(
+      'Relaycast MCP bootstrap registration for "WorkerA" failed: unauthorized (HTTP 401): ' +
+        'Workspace key rk_live_…wxyz was rejected'
+    );
+  });
+
+  it('masks a password in a base URL that fetch rejected', async () => {
+    // fetch refuses a URL with userinfo and puts the whole URL in its message.
+    const error = await bootstrapFailure(
+      ({ RelayError }) =>
+        new RelayError(
+          'transport_error',
+          'Network request failed: Request cannot be constructed from a URL that includes credentials: ' +
+            'https://ops:hunter22@relay.example/v1/agents'
+        )
+    );
+
+    expect(error.message).toBe(
+      'Relaycast MCP bootstrap registration for "WorkerA" failed: transport_error: Network request failed: ' +
+        'Request cannot be constructed from a URL that includes credentials: https://…@relay.example/v1/agents'
+    );
+  });
+
+  it('withholds the message, stack and cause of an untyped exception', async () => {
+    const error = await bootstrapFailure(() => {
+      const transport = new TypeError(`fetch failed; authorization: Bearer ${workspaceKey}`);
+      transport.cause = { headers: { authorization: `Bearer ${workspaceKey}` } };
+      return transport;
+    });
+
+    expect(error.message).toBe(
+      'Relaycast MCP bootstrap registration for "WorkerA" failed: TypeError (details withheld; they may include request credentials)'
+    );
+    expect(error.cause).toBeUndefined();
+    expect(`${error.stack}`).not.toContain('Bearer');
+    expect(`${error.stack}`).not.toContain('0123456789abcdef');
+  });
+
+  it('does not echo a non-Error rejection', async () => {
+    const error = await bootstrapFailure(() => `authorization: Bearer ${workspaceKey}`);
+
+    expect(error.message).toBe(
+      'Relaycast MCP bootstrap registration for "WorkerA" failed: unknown error (details withheld; they may include request credentials)'
+    );
+  });
+
+  const externalToken = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ3b3JrZXIifQ.c2lnbmF0dXJl';
+  it.each([
+    ['the workspace key', workspaceKey, {}, '"rk_live_…wxyz"'],
+    ['the external agent token', externalToken, { agentToken: externalToken }, '"…dXJl"'],
+    ['an unrelated live credential', 'at_live_fedcba9876543210', {}, '"at_live_…3210"'],
+    ['a GitHub token', `ghp_${'a1B2'.repeat(9)}`, {}, '"…a1B2"'],
+  ])('masks %s pasted into the agent name', async (_case, agentName, overrides, rendered) => {
+    // The upstream message echoes the name too, the way a validation error would.
+    const error = await bootstrapFailure(
+      ({ RelayError }) =>
+        new RelayError('transport_error', `Invalid agent name ${agentName}`, { statusCode: 400 }),
+      { agentName, ...overrides }
+    );
+
+    expect(error.message).toContain(`Relaycast MCP bootstrap registration for ${rendered} failed`);
+    expect(error.message).not.toContain(agentName);
+    expect(`${error.stack}`).not.toContain(agentName);
+  });
+
+  it.each([
+    'WorkerA',
+    'task-runner',
+    'desk-bot',
+    'sk-reviewer',
+    'sk-proj-planner',
+    'ghp_reviewer',
+    'cobr_worker',
+    'chat_live_bot',
+    'solar_ws_bot',
+    'Bearer-of-news',
+    'reviewer.at_live',
+  ])('keeps the ordinary agent name %s verbatim', async (agentName) => {
+    const error = await bootstrapFailure(
+      ({ RelayError }) => new RelayError('name_conflict', 'Agent already exists', { statusCode: 409 }),
+      { agentName }
+    );
+
+    expect(error.message).toBe(
+      `Relaycast MCP bootstrap registration for ${JSON.stringify(agentName)} failed: name_conflict (HTTP 409): Agent already exists`
+    );
+  });
+
+  it('keeps the deadline recovery guidance when registration times out', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mocks.behavior.registerImpl = vi.fn(() => new Promise<never>(() => undefined));
+    vi.useFakeTimers();
+    try {
+      const pending = mod.resolveStdioBootstrapOptions(options);
+      const assertion = expect(pending).rejects.toThrow(
+        new RegExp(
+          '^Relaycast MCP bootstrap registration for "WorkerA" failed: ' +
+            `Agent registration or token rotation for "WorkerA" did not complete within ${DEFAULT_AGENT_REGISTRATION_TIMEOUT_MS}ms\\. ` +
+            "The request outcome is unknown\\. Retry with `agent-relay agent rotate 'WorkerA'`.*" +
+            '`agent-relay agent remove \'WorkerA\' --reason "recover stale token"`'
+        )
+      );
+      await vi.advanceTimersByTimeAsync(DEFAULT_AGENT_REGISTRATION_TIMEOUT_MS);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('startAgentRelayMcpStdio', () => {
   it('boots the MCP server on stdio transport after bootstrap', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
@@ -2459,5 +2692,62 @@ describe('startAgentRelayMcpStdio', () => {
       expect(stderrWrite).toHaveBeenCalledWith(expect.stringContaining('stdio connect failed'));
       expect(exit).toHaveBeenCalledWith(1);
     });
+  });
+
+  it('registers a configured agent and connects without reporting an error', async () => {
+    const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+
+    await mod.startAgentRelayMcpStdio({ apiKey: 'rk_live_workspace', agentName: 'WorkerA' });
+
+    expect(mocks.behavior.registerImpl).toHaveBeenCalledWith({ name: 'WorkerA', type: undefined });
+    expect(mocks.serverInstances[0].connect).toHaveBeenCalledTimes(1);
+    expect(stderrWrite).not.toHaveBeenCalled();
+  });
+
+  it('fails closed without connecting when bootstrap registration fails', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    const { RelayError } = await import('@relaycast/sdk');
+    mocks.behavior.registerImpl = vi.fn(async () => {
+      throw new RelayError('transport_error', 'Internal server error', { statusCode: 500 });
+    });
+
+    await expect(
+      mod.startAgentRelayMcpStdio({ apiKey: 'rk_live_workspace', agentName: 'WorkerA' })
+    ).rejects.toThrow(
+      'Relaycast MCP bootstrap registration for "WorkerA" failed: transport_error (HTTP 500)'
+    );
+
+    expect(mocks.serverInstances).toHaveLength(0);
+  });
+
+  it('reports an entrypoint bootstrap failure to stderr without the workspace key', async () => {
+    const workspaceKey = 'rk_live_0123456789abcdefwxyz';
+    vi.stubEnv('AGENT_RELAY_HOME', path.join(os.tmpdir(), 'agent-relay-mcp-bootstrap-test-missing'));
+    vi.stubEnv('RELAY_WORKSPACE_KEY', workspaceKey);
+    vi.stubEnv('AGENT_RELAY_WORKSPACE_KEY', '');
+    vi.stubEnv('RELAY_API_KEY', '');
+    vi.stubEnv('RELAY_AGENT_NAME', 'WorkerA');
+    vi.stubEnv('RELAY_AGENT_TOKEN', '');
+    vi.stubEnv('RELAY_BASE_URL', '');
+    vi.stubEnv('RELAY_SKIP_BOOTSTRAP', '');
+    const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+    const { mocks } = await loadAgentRelayMcpModule({
+      forceEntrypoint: true,
+      registerImpl: vi.fn(async () => {
+        throw new Error(`request failed with authorization: Bearer ${workspaceKey}`);
+      }),
+    });
+
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(1));
+    const stderr = stderrWrite.mock.calls.map(([chunk]) => String(chunk)).join('');
+    expect(stderr).toContain(
+      'Relaycast MCP bootstrap registration for "WorkerA" failed: Error (details withheld; they may include request credentials)'
+    );
+    expect(stderr).not.toContain('0123456789abcdef');
+    expect(stderr).not.toContain('Bearer');
+    expect(mocks.serverInstances).toHaveLength(0);
   });
 });
