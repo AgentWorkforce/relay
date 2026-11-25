@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay`: `relay init` says "Port N is already in use" when another program holds the local server's port (8787 by default) and does not answer as a Relaycast server. It used to say the server did not start, suggest the install script or Node.js 22 or 24, and print a log tail that began below the server's own "Is port N in use?" line. The CLI now reads everything the server logged during that start and, on `EADDRINUSE`, asks you to stop the other program or choose another port with `--port`.
 - `agent-relay-node`: Codex chats can send through the session socket again while Codex's app-server daemon hosts several chats. With the daemon, every terminal chat's commands run under one shared app-server, which holds every chat's lock, so a command's `CODEX_THREAD_ID` could not be proven and every send was refused with `not_a_relay_session`. The core now keeps one proxy connection to the app-server and follows each loaded chat. It names the caller only when the app-server reports the tagged chat running the caller's command (its `CODEX_TOOL_CALL_ID`), the caller's ancestor directly under the app-server runs exactly that command line and started when it was announced, and no other process has already been vouched for by that command. Copying another chat's tags therefore does not pass. Commands that started before the core connected, and processes left running after their command finished, are still refused.
 
 ## [18.16.0] - 2026-11-25

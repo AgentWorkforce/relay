@@ -356,6 +356,15 @@ async function healthy(deps: InitCommandDependencies, origin: string): Promise<b
   }
 }
 
+/** What `file` gained after byte `start`, or '' when it cannot be read. */
+function logSince(file: string, start: number): string {
+  try {
+    return fs.readFileSync(file).subarray(start).toString('utf8');
+  } catch {
+    return '';
+  }
+}
+
 function logTail(file: string): string {
   try {
     return fs.readFileSync(file, 'utf8').trim().split('\n').slice(-8).join('\n');
@@ -423,6 +432,8 @@ async function ensureLocalServer(deps: InitCommandDependencies, port: number): P
   deps.log(
     `Starting a local Relaycast server on ${origin}${engineInstalled() ? '' : ' (downloading it the first time)'}…`
   );
+  // The log is appended to across runs; only what this start writes says why it failed.
+  const logStart = fs.statSync(logFile, { throwIfNoEntry: false })?.size ?? 0;
   const pid = deps.startEngine({ dataDir: localDir(), port, logFile });
   const deadline = Date.now() + START_TIMEOUT_MS;
   while (Date.now() < deadline) {
@@ -435,6 +446,13 @@ async function ensureLocalServer(deps: InitCommandDependencies, port: number): P
     await deps.sleep(500);
   }
   deps.stop(pid);
+  // Something that does not answer as a Relaycast server holds the port. The server's
+  // "Is port N in use?" line sits above its stack trace, so read the whole start, not the tail.
+  if (logSince(logFile, logStart).includes('EADDRINUSE')) {
+    throw new Error(
+      `Port ${port} is already in use. Stop whatever is using it, or choose another port with --port.`
+    );
+  }
   const tail = logTail(logFile);
   throw new Error(
     `The local Relaycast server did not start. Install the standalone server with the install script ` +

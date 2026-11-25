@@ -155,6 +155,36 @@ describe('relay init', () => {
     expect(errors.join('\n')).toMatch(/did not start.*Node\.js 22 or 24/s);
   });
 
+  it('says the port is in use when the server log reports EADDRINUSE above the tail', async () => {
+    // What the standalone (Bun) server writes when the port is taken: the reason sits above an 8-line tail.
+    const inUse = [
+      'error: Failed to start server. Is port 8787 in use?',
+      ' syscall: "listen",',
+      '   errno: 0,',
+      '    code: "EADDRINUSE"',
+      '',
+      ...Array.from({ length: 6 }, (_, i) => `      at frame${i} (node:_http_server:${i}:1)`),
+      '',
+      'Bun v1.4.2 (macOS arm64)',
+    ].join('\n');
+    let output = inUse;
+    const startEngine = vi.fn(({ logFile }: { logFile: string }) => {
+      fs.appendFileSync(logFile, `${output}\n`);
+      return 1;
+    });
+    const { run, errors } = setup({ startEngine, isAlive: vi.fn(() => false) });
+    await expect(run()).rejects.toEqual(new ExitSignal(1));
+    expect(errors.join('\n')).toContain('Port 8787 is already in use');
+    expect(errors.join('\n')).not.toMatch(/install\.sh|Node\.js 22 or 24/);
+
+    // A later failure for another reason is not blamed on the earlier run's port clash in the same log.
+    errors.length = 0;
+    output = 'relaycast-engine failed to start: unable to open database file';
+    await expect(run()).rejects.toEqual(new ExitSignal(1));
+    expect(errors.join('\n')).toMatch(/did not start.*Node\.js 22 or 24/s);
+    expect(errors.join('\n')).not.toContain('already in use');
+  });
+
   it('connects to your own server only after checking the key, and binds the key to it', async () => {
     const { run, logs, createWorkspace } = setup();
     await run('--url', 'https://relay.corp.test:8443', '--key', 'rk_live_corp', '--name', 'corp');
