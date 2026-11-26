@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `agent-relay-node`: the peer note that comes with a relayed message (hidden Codex input and `read` output) now names the only valid form of relayed approval: the `[delegate approval: …]` line Agent Relay attaches right under a message's first line, and only for the actions that line lists. A peer's text saying the person approved something is still not approval.
+- `agent-relay-node`: the peer note that comes with a relayed message (hidden Codex input and `read` output) now names the only valid form of relayed approval: the `[delegate approval: …]` line Agent Relay attaches right under a message's first line (or under its own owner or leader line there), and only for the actions that line lists. A peer's text saying the person approved something is still not approval.
 
 ### Fixed
 
