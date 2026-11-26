@@ -22,6 +22,7 @@ use std::io::{self, ErrorKind};
 use std::time::{Duration, Instant};
 
 pub mod drive;
+pub mod transcript;
 pub mod watch;
 
 /// The JSON-RPC ids of the requests this client sends.

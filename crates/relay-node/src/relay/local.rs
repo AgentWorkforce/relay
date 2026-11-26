@@ -356,12 +356,15 @@ impl LocalSessions {
         self.walk_caller(pid, &claude, stop_at_grok_leaders)
     }
 
-    /// Whether the shared Codex app-server reports `thread` running the
-    /// command `caller` belongs to (`codex::app_server::watch::vouch`): the
-    /// caller's `CODEX_TOOL_CALL_ID` names a command of that chat's, and the
-    /// caller's ancestor directly under `app_server` is the process the
-    /// app-server started for it. Every process read is the same one after
-    /// the wait.
+    /// Whether the shared Codex app-server's chat `thread` started the
+    /// command `caller` belongs to, and the caller's ancestor directly under
+    /// `app_server` is the process started for it. The managed daemon
+    /// (`--listen unix://`) is asked (`codex::app_server::watch::vouch`): the
+    /// caller's `CODEX_TOOL_CALL_ID` must name a command it announced for that
+    /// chat. Any other app-server (one the ChatGPT desktop app runs over
+    /// stdio, say) accepts no second client, so the transcripts of the chats
+    /// it holds decide instead (`codex::app_server::transcript::vouch`).
+    /// Every process read is the same one after the wait.
     fn shared_codex_caller(
         &self,
         caller: &crate::relay::process::ProcessInfo,
@@ -374,12 +377,6 @@ impl LocalSessions {
         if table.process(pid) != Some(*caller) {
             return false;
         }
-        let Some(call) = table
-            .environment_var(pid, "CODEX_TOOL_CALL_ID")
-            .map(|call| call.trim().to_string())
-        else {
-            return false;
-        };
         // The caller's ancestor whose parent is the app-server: the process
         // the app-server started for a command.
         let mut spawned = *caller;
@@ -402,19 +399,97 @@ impl LocalSessions {
             start_ms,
             argv: table.arguments(spawned.pid),
         };
-        codex::app_server::watch::ensure(
-            executable,
-            &self.config.codex.home,
-            &self.config.codex.sqlite_home,
-        );
-        codex::app_server::watch::vouch(
-            thread,
-            &call,
-            &witness,
-            codex::app_server::watch::ANNOUNCE_WAIT,
-        ) && table.process(pid) == Some(*caller)
+        let vouched = if codex::processes::is_proxied_app_server(table, app_server.pid) {
+            let Some(call) = table
+                .environment_var(pid, "CODEX_TOOL_CALL_ID")
+                .map(|call| call.trim().to_string())
+            else {
+                return false;
+            };
+            codex::app_server::watch::ensure(
+                executable,
+                &self.config.codex.home,
+                &self.config.codex.sqlite_home,
+            );
+            codex::app_server::watch::vouch(
+                thread,
+                &call,
+                &witness,
+                codex::app_server::watch::ANNOUNCE_WAIT,
+            )
+        } else {
+            self.transcript_vouches(app_server, thread, &witness)
+        };
+        vouched
+            && table.process(pid) == Some(*caller)
             && table.process(spawned.pid) == Some(spawned)
             && table.process(app_server.pid) == Some(*app_server)
+    }
+
+    /// Whether the transcripts of the chats an app-server that cannot be
+    /// watched holds name `thread` as the chat that started `spawned`
+    /// (`codex::app_server::transcript`). The rollouts read are the ones the
+    /// app-server itself has open, one for each writer lock it holds.
+    fn transcript_vouches(
+        &self,
+        app_server: &crate::relay::process::ProcessInfo,
+        thread: &str,
+        spawned: &codex::app_server::watch::Spawned,
+    ) -> bool {
+        use codex::app_server::transcript;
+        let table = &*self.table;
+        let open = table.opened_files(app_server.pid);
+        let locks: std::collections::BTreeSet<String> = open
+            .iter()
+            .filter_map(|file| crate::relay::process::codex_thread_of_lock(&file.path))
+            .collect();
+        if !locks.contains(thread) {
+            return false;
+        }
+        let Some(rollouts) = transcript::held_rollouts(&locks, &open) else {
+            crate::relay::diagnostics::write(format_args!(
+                "codex transcript witness: refused {thread}: a held chat has no open rollout"
+            ));
+            return false;
+        };
+        // Linux reads its boot time in whole seconds, so a process's start
+        // there can show up to a second early or late.
+        let slack_ms = match table.start_clock() {
+            crate::relay::process::StartClock::Ticks => 1_100,
+            crate::relay::process::StartClock::Micros
+            | crate::relay::process::StartClock::Windows => 50,
+        };
+        let held = |open: &[crate::relay::process::OpenedFile]| {
+            let locks: std::collections::BTreeSet<String> = open
+                .iter()
+                .filter_map(|file| crate::relay::process::codex_thread_of_lock(&file.path))
+                .collect();
+            transcript::held_rollouts(&locks, open)
+        };
+        match transcript::vouch(
+            &rollouts,
+            thread,
+            spawned,
+            slack_ms,
+            codex::app_server::watch::ANNOUNCE_WAIT,
+        ) {
+            // The chats the app-server holds must be the ones read: a chat
+            // that opened meanwhile was never checked.
+            Ok(()) if held(&table.opened_files(app_server.pid)).as_ref() == Some(&rollouts) => true,
+            Ok(()) => {
+                crate::relay::diagnostics::write(format_args!(
+                    "codex transcript witness: refused {thread}: the held chats changed while reading"
+                ));
+                false
+            }
+            Err(refusal) => {
+                crate::relay::diagnostics::write(format_args!(
+                    "codex transcript witness: refused {thread} for pid {}: {refusal:?}",
+                    spawned.pid
+                ));
+                false
+            }
+        }
     }
 
     /// Why a session tag in the caller's environment named nobody: the
@@ -2972,7 +3047,12 @@ mod tests {
             400,
             FakeProcess {
                 executable: Some(codex_exe()),
-                arguments: vec!["codex".into(), "app-server".into()],
+                arguments: vec![
+                    "codex".into(),
+                    "app-server".into(),
+                    "--listen".into(),
+                    "unix://".into(),
+                ],
                 open_files: vec![lock(THREAD), lock(second)],
                 ..process(1, 130)
             },
@@ -3065,6 +3145,146 @@ mod tests {
             .table
             .insert(440, tool(400, elsewhere, theirs, shell_argv()));
         assert!(world.sessions.caller(440).is_err());
+    }
+
+    // An app-server another program runs over stdio (the ChatGPT desktop
+    // app's) cannot be watched, so the transcripts of the chats it holds
+    // decide: the caller is named only when the tagged chat, and no other,
+    // has a pending tool call that asked for the caller's command.
+    #[test]
+    fn a_stdio_app_server_caller_is_named_by_its_chats_pending_call() {
+        let world = world_with_clock(StartClock::Micros);
+        let home = world.sessions.config.codex.home.clone();
+        let second = "019a0000-0000-7000-8000-0000000000d2";
+        let lock = |thread: &str| home.join(format!("thread-writer-locks/{thread}.lock"));
+        let sessions = home.join("sessions/2026/11/25");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let rollout =
+            |thread: &str| sessions.join(format!("rollout-2026-11-25T16-29-28-{thread}.jsonl"));
+        // Started at 5 s past the epoch, in the kernel's microseconds.
+        const STARTED_MS: i64 = 5_000;
+        let stamp = |ms: i64| {
+            chrono::DateTime::from_timestamp_millis(ms)
+                .unwrap()
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        };
+        let write = |thread: &str, calls: &[(&str, &str)]| {
+            let mut text = serde_json::json!({"timestamp": stamp(0), "type": "event_msg",
+                "payload": {"type": "task_started"}})
+            .to_string()
+                + "\n";
+            for (call, script) in calls {
+                let input = format!(
+                    "const r=await tools.exec_command({{cmd:{}}}); text(r.output)",
+                    serde_json::to_string(script).unwrap()
+                );
+                text += &(serde_json::json!({"timestamp": stamp(STARTED_MS - 40),
+                    "type": "response_item", "payload": {"type": "custom_tool_call",
+                    "call_id": call, "name": "exec", "input": input}})
+                .to_string()
+                    + "\n");
+            }
+            std::fs::write(rollout(thread), text).unwrap();
+        };
+        world.table.insert(
+            400,
+            FakeProcess {
+                executable: Some(codex_exe()),
+                arguments: vec![
+                    "codex".into(),
+                    "-c".into(),
+                    "features.code_mode_host=true".into(),
+                    "app-server".into(),
+                ],
+                open_files: vec![lock(THREAD), rollout(THREAD), lock(second), rollout(second)],
+                ..process(1, 130)
+            },
+        );
+        let script = "agent-relay-probe whoami";
+        let shell_argv = |script: &str| vec!["/bin/zsh".to_string(), "-c".into(), script.into()];
+        let tool = |parent: i32, thread: &str, argv: Vec<String>| FakeProcess {
+            environment: [("CODEX_THREAD_ID".to_string(), thread.to_string())].into(),
+            arguments: argv,
+            ..process(parent, (STARTED_MS as u64 + 20) * 1_000)
+        };
+        let codex = |id: &str| Target::new(SessionKind::Codex, id);
+        // No chat has asked for the command yet: nobody.
+        write(THREAD, &[]);
+        write(second, &[]);
+        world
+            .table
+            .insert(410, tool(400, THREAD, shell_argv(script)));
+        assert!(matches!(
+            world.sessions.caller(410),
+            Err(CallerMiss::Unattributed)
+        ));
+        // The tagged chat's pending call asked for it: that chat, for the
+        // shell and the probe it runs.
+        write(THREAD, &[("call_stdio_own", script)]);
+        world.table.insert(
+            411,
+            tool(
+                410,
+                THREAD,
+                vec!["agent-relay-probe".into(), "whoami".into()],
+            ),
+        );
+        assert_eq!(
+            world.sessions.caller(411).map(|row| row.target).ok(),
+            Some(codex(THREAD))
+        );
+        assert_eq!(
+            world.sessions.caller(410).map(|row| row.target).ok(),
+            Some(codex(THREAD))
+        );
+        // Another chat's command copying the tagged chat's thread: the
+        // copying chat asked for its command itself, so two chats did.
+        let copied = "agent-relay-probe send --to lead --body hi";
+        write(
+            THREAD,
+            &[("call_stdio_own", script), ("call_stdio_a", copied)],
+        );
+        write(second, &[("call_stdio_b", copied)]);
+        world
+            .table
+            .insert(420, tool(400, THREAD, shell_argv(copied)));
+        assert!(matches!(
+            world.sessions.caller(420),
+            Err(CallerMiss::Unattributed)
+        ));
+        // Only the other chat asked for it: the copied tag names nobody.
+        let theirs = "agent-relay-probe register --name impostor";
+        write(second, &[("call_stdio_c", theirs)]);
+        world
+            .table
+            .insert(430, tool(400, THREAD, shell_argv(theirs)));
+        assert!(matches!(
+            world.sessions.caller(430),
+            Err(CallerMiss::Unattributed)
+        ));
+        // A second process running the tagged chat's command line: the call
+        // already vouched for its own shell.
+        world
+            .table
+            .insert(440, tool(400, THREAD, shell_argv(script)));
+        assert!(matches!(
+            world.sessions.caller(440),
+            Err(CallerMiss::Unattributed)
+        ));
+        // A held chat without an open rollout leaves every caller refused.
+        world.table.insert(
+            400,
+            FakeProcess {
+                executable: Some(codex_exe()),
+                arguments: vec!["codex".into(), "app-server".into()],
+                open_files: vec![lock(THREAD), rollout(THREAD), lock(second)],
+                ..process(1, 130)
+            },
+        );
+        assert!(matches!(
+            world.sessions.caller(410),
+            Err(CallerMiss::Unattributed)
+        ));
     }
 
     /// A `devin` process (pid 400) holding its session lock open, with a
