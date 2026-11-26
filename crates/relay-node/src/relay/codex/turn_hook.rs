@@ -340,7 +340,7 @@ impl TurnInbox {
     pub(crate) fn release_probe(
         &self,
         message_id: &str,
-        probe: ProbeClaim,
+        probe: &ProbeClaim,
     ) -> std::io::Result<bool> {
         if !probe.releasable {
             return Ok(false);
@@ -531,7 +531,7 @@ mod tests {
         inbox.offer(THREAD, "m1", &text("m1")).unwrap();
         let probe = inbox.claim_elsewhere("m1").unwrap();
         assert_eq!(inbox.answer(THREAD, HookEvent::PostToolUse), json!({}));
-        assert!(inbox.release_probe("m1", probe).unwrap());
+        assert!(inbox.release_probe("m1", &probe).unwrap());
         inbox.offer(THREAD, "m1", &text("m1")).unwrap();
         assert!(
             inbox.answer(THREAD, HookEvent::PostToolUse)["hookSpecificOutput"]["additionalContext"]
@@ -548,25 +548,25 @@ mod tests {
         let other = TurnInbox::open(dir.path().join("codex-turn-hook.json")).with_clock(|| 1_000);
         inbox.leave("existing").unwrap();
         let probe = inbox.claim_elsewhere("existing").unwrap();
-        assert!(!inbox.release_probe("existing", probe).unwrap());
+        assert!(!inbox.release_probe("existing", &probe).unwrap());
         assert_eq!(inbox.claimed("existing"), Claimed::Elsewhere);
 
         let probe = inbox.claim_elsewhere("superseded").unwrap();
         other.leave("superseded").unwrap();
-        assert!(!inbox.release_probe("superseded", probe).unwrap());
+        assert!(!inbox.release_probe("superseded", &probe).unwrap());
         assert_eq!(inbox.claimed("superseded"), Claimed::Elsewhere);
 
         let first = inbox.claim_elsewhere("concurrent").unwrap();
         let second = other.claim_elsewhere("concurrent").unwrap();
-        assert!(!inbox.release_probe("concurrent", first).unwrap());
-        assert!(!other.release_probe("concurrent", second).unwrap());
+        assert!(!inbox.release_probe("concurrent", &first).unwrap());
+        assert!(!other.release_probe("concurrent", &second).unwrap());
         assert_eq!(inbox.claimed("concurrent"), Claimed::Elsewhere);
 
         let old = inbox.claim_elsewhere("settled").unwrap();
         inbox.settle("settled");
         let current = other.claim_elsewhere("settled").unwrap();
-        assert!(!inbox.release_probe("settled", old).unwrap());
-        assert!(other.release_probe("settled", current).unwrap());
+        assert!(!inbox.release_probe("settled", &old).unwrap());
+        assert!(other.release_probe("settled", &current).unwrap());
     }
 
     #[test]
@@ -576,7 +576,7 @@ mod tests {
         let probe = inbox.claim_elsewhere("m1").unwrap();
         let path = dir.path().join("codex-turn-hook.json");
         std::fs::write(&path, b"invalid json").unwrap();
-        assert!(inbox.release_probe("m1", probe).is_err());
+        assert!(inbox.release_probe("m1", &probe).is_err());
         assert_eq!(inbox.claimed("m1"), Claimed::Unknown);
         assert_eq!(std::fs::read(&path).unwrap(), b"invalid json");
     }

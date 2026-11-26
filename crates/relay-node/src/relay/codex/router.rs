@@ -183,6 +183,8 @@ const HANDOFF_MEMORY: Duration = Duration::from_secs(60 * 60);
 pub struct CodexRouter {
     routes: Arc<dyn CodexRoutes>,
     handed_off: Mutex<HashMap<String, Instant>>,
+    /// Proven no-handoff claims whose guarded release needs another I/O attempt.
+    pending_probe_releases: Mutex<HashMap<String, super::turn_hook::ProbeClaim>>,
     pub(crate) now: Box<dyn Fn() -> Instant + Send + Sync>,
     /// Messages for Conductor chats, handed over by Agent Relay's Codex Stop
     /// hook as a turn Conductor shows ends (`stop_hook`).
@@ -198,6 +200,7 @@ impl CodexRouter {
         CodexRouter {
             routes,
             handed_off: Mutex::default(),
+            pending_probe_releases: Mutex::default(),
             now: Box::new(Instant::now),
             stop_hook: None,
             hidden: HiddenOrder::default(),
@@ -383,6 +386,9 @@ impl CodexRouter {
     ) -> InjectOutcome {
         if !queue::is_thread_id(thread) {
             return InjectOutcome::Refused("not a Codex thread id".into());
+        }
+        if let Err(outcome) = self.retry_host_probe_release(message_id) {
+            return outcome;
         }
         if let Some(outcome) = self.previous_native(thread, message_id) {
             return outcome;
