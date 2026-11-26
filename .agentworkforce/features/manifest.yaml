@@ -45,7 +45,6 @@ verification:
     cloud: cloud-workflows
     cloud-workers: cloud-workers
     cloud-integrations: integrations-and-webhooks
-    cloud-rooms: cloud-workflows
     fleet: fleet-management
     workspace: workspace-management
     skills: skills-installation
@@ -757,67 +756,6 @@ categories:
         name: Disconnect Integration
         cli: relay cloud integration disconnect <provider> [--json]
         description: Disconnect a provider from the workspace
-        location: packages/cli/src/cli/commands/cloud.ts
-        verify_tier: 5
-
-  cloud-rooms:
-    name: Cloud Rooms
-    description: Workspace-scoped multiplayer rooms and their membership
-    criticality: standard
-    features:
-      - id: cloud-room-session
-        name: Create Room Session
-        cli: relay cloud room session
-        description: Create or resume this device's full room-participant session
-        location: packages/cli/src/cli/commands/cloud.ts
-        verify_tier: 5
-
-      - id: cloud-room-revoke-session
-        name: Revoke Room Session
-        cli: relay cloud room revoke-session
-        description: Revoke this member's scoped session for one device
-        location: packages/cli/src/cli/commands/cloud.ts
-        verify_tier: 5
-
-      - id: cloud-room-members
-        name: List Room Members
-        cli: relay cloud room members
-        description: List workspace room members
-        location: packages/cli/src/cli/commands/cloud.ts
-        verify_tier: 5
-
-      - id: cloud-room-remove-member
-        name: Remove Room Member
-        cli: relay cloud room remove-member <member-id>
-        description: Remove a member and revoke their live room access
-        location: packages/cli/src/cli/commands/cloud.ts
-        verify_tier: 5
-
-      - id: cloud-room-invite
-        name: Invite Room Participant
-        cli: relay cloud room invite
-        description: Invite a full participant to a workspace room
-        location: packages/cli/src/cli/commands/cloud.ts
-        verify_tier: 5
-
-      - id: cloud-room-invites
-        name: List Room Invitations
-        cli: relay cloud room invites
-        description: List workspace room invitations
-        location: packages/cli/src/cli/commands/cloud.ts
-        verify_tier: 5
-
-      - id: cloud-room-accept
-        name: Accept Room Invitation
-        cli: relay cloud room accept
-        description: Accept an email-bound room invitation
-        location: packages/cli/src/cli/commands/cloud.ts
-        verify_tier: 6
-
-      - id: cloud-room-revoke-invite
-        name: Revoke Room Invitation
-        cli: relay cloud room revoke-invite <invite-id>
-        description: Revoke an unused workspace room invitation
         location: packages/cli/src/cli/commands/cloud.ts
         verify_tier: 5
 

@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay-node`: Codex chats whose app-server another program runs over stdio (the ChatGPT desktop app's, which holds every open chat) can register and send through the session socket again while more than one chat is open. Before, every command was refused with `not_a_relay_session`, because such an app-server accepts no second client to report which chat ran a command. The core now reads the rollouts that app-server itself has open, one for each chat lock it holds, and names the caller's chat only when that chat, and no other, has a tool call still pending in its current turn that asked for exactly the command line the caller's ancestor directly under the app-server runs (a code-mode script's `cmd`/`command` string literal, or an `exec_command`/`shell` call's command), recorded before that process started. As before, the first process to match binds that requested command, whichever shell form it runs in. A command that copied another chat's `CODEX_THREAD_ID` is still refused, since its own chat asked for it too. A held chat whose current turn cannot be read in full, from a missing rollout, a file other than the one the app-server has open, or a turn longer than 8 MiB, leaves the caller refused. Forging the match means writing a tool call into another chat's rollout file. The app-server daemon (`--listen unix://`) is still asked directly.
 
+### Removed
+
+- Removed `agent-relay cloud room` commands; Rooms were retired from Agent Relay Cloud in August 2026. Invite people from the dashboard (Settings → Invite members) instead.
+
 ## [18.16.1] - 2026-11-25
 
 ### Fixed
