@@ -20,9 +20,13 @@ impl Core {
         let mut registration = self.registration_named(name)?;
         registration.reply_with_final_answer = enabled;
         let agent_id = registration.agent_id.clone();
+        // Off, or a Pi or Oh My Pi agent back at its off default: pending
+        // answers are dropped now, so turning answers on later cannot send
+        // them.
+        let answers_off = !registration.final_answers_on();
         self.store
             .update(|store| {
-                if enabled == Some(false) {
+                if answers_off {
                     for reply in store.replies.iter_mut().flatten() {
                         if reply.agent_id == agent_id {
                             reply.claimed = Some(true);
