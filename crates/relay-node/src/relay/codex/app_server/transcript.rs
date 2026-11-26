@@ -45,7 +45,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use super::watch::{runs_command, Spawned};
+use super::watch::Spawned;
 
 /// The first tail read of a rollout; most turns fit.
 const FIRST_TAIL: u64 = 256 * 1024;
@@ -59,6 +59,9 @@ const SETTLE_MS: i64 = 100;
 const POLL: Duration = Duration::from_millis(50);
 /// The most commands remembered as bound.
 const MAX_BOUND: usize = 4096;
+/// How long a binding is kept before it may make room for another: longer
+/// than any command a call keeps running.
+const BOUND_KEEP: Duration = Duration::from_secs(24 * 3600);
 
 /// One tool call a chat has made in its current turn and has no output for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,7 +92,7 @@ impl Pending {
             .argvs
             .iter()
             .enumerate()
-            .filter(|(_, announced)| runs_command(announced, argv))
+            .filter(|(_, announced)| argv_runs(announced, argv))
             .map(|(at, _)| self.literals.len() + at);
         scripts.chain(arrays).collect()
     }
@@ -104,6 +107,40 @@ const EXEC_TOOLS: [&str; 5] = [
     "container.exec",
 ];
 
+/// Whether a process running `argv` runs the command array `announced`:
+/// exactly, or, when `announced` is `<shell> -c|-lc <script>` for a shell
+/// [`script_runs`] knows, as that script. Another program's `-c` source is
+/// never read as a shell script.
+pub(crate) fn argv_runs(announced: &[String], argv: &[String]) -> bool {
+    if announced.is_empty() || argv.is_empty() {
+        return false;
+    }
+    if announced == argv {
+        return true;
+    }
+    let count = announced.len();
+    count >= 3
+        && is_shell_flag(&announced[0], &announced[count - 2])
+        && script_runs(&announced[count - 1], argv)
+}
+
+/// Whether `program flag <script>` is how a shell runs a script: `sh`,
+/// `bash`, `zsh`, `dash`, `ksh` or `fish` with `-c`/`-lc`, PowerShell with
+/// `-Command`, or `cmd /c`.
+fn is_shell_flag(program: &str, flag: &str) -> bool {
+    let program = program
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    let program = program.strip_suffix(".exe").unwrap_or(&program);
+    let flag = flag.to_ascii_lowercase();
+    (matches!(program, "sh" | "bash" | "zsh" | "dash" | "ksh" | "fish")
+        && matches!(flag.as_str(), "-c" | "-lc"))
+        || (matches!(program, "powershell" | "pwsh") && flag == "-command")
+        || (program == "cmd" && flag == "/c")
+}
+
 /// Whether a process running `argv` runs `script` as Codex runs a command:
 /// `<shell> -c|-lc <script>` (PowerShell's `-Command`, `cmd /c`), or the
 /// script's own words when the shell replaced itself with a lone command.
@@ -112,21 +149,8 @@ pub(crate) fn script_runs(script: &str, argv: &[String]) -> bool {
         return false;
     }
     let count = argv.len();
-    if count >= 3 && argv[count - 1] == script {
-        let program = argv[0]
-            .rsplit(['/', '\\'])
-            .next()
-            .unwrap_or(&argv[0])
-            .to_ascii_lowercase();
-        let program = program.strip_suffix(".exe").unwrap_or(&program);
-        let flag = argv[count - 2].to_ascii_lowercase();
-        let posix = matches!(program, "sh" | "bash" | "zsh" | "dash" | "ksh" | "fish")
-            && matches!(flag.as_str(), "-c" | "-lc");
-        let windows = (matches!(program, "powershell" | "pwsh") && flag == "-command")
-            || (program == "cmd" && flag == "/c");
-        if posix || windows {
-            return true;
-        }
+    if count >= 3 && argv[count - 1] == script && is_shell_flag(&argv[0], &argv[count - 2]) {
+        return true;
     }
     shell_words::split(script).is_ok_and(|words| words == argv)
 }
@@ -135,36 +159,60 @@ pub(crate) fn script_runs(script: &str, argv: &[String]) -> bool {
 /// turn, read from its end. `None` when that turn cannot be read in full, or
 /// the file opened is not the one the app-server has open (`birth_ns`, its
 /// open file's creation time, when the platform reports one).
+#[cfg(test)]
 pub(crate) fn pending_calls(path: &Path, birth_ns: Option<i128>) -> Option<Vec<Pending>> {
-    let mut file = std::fs::File::open(path).ok()?;
-    let metadata = file.metadata().ok()?;
+    match read_pending(path, birth_ns) {
+        Ok(pending) => Some(pending),
+        Err(_) => None,
+    }
+}
+
+/// Why a rollout's current turn could not be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Unread {
+    /// Its last record is still being written: read it again.
+    Writing,
+    /// It cannot be read in full.
+    Unknown,
+}
+
+/// [`pending_calls`], telling a record still being written apart.
+pub(crate) fn read_pending(path: &Path, birth_ns: Option<i128>) -> Result<Vec<Pending>, Unread> {
+    let unknown = |_| Unread::Unknown;
+    let mut file = std::fs::File::open(path).map_err(unknown)?;
+    let metadata = file.metadata().map_err(unknown)?;
     if let Some(expected) = birth_ns {
         let created = metadata
             .created()
-            .ok()?
+            .map_err(unknown)?
             .duration_since(std::time::UNIX_EPOCH)
-            .ok()?;
-        if i128::try_from(created.as_nanos()).ok()? != expected {
-            return None;
+            .map_err(|_| Unread::Unknown)?;
+        if i128::try_from(created.as_nanos()).ok() != Some(expected) {
+            return Err(Unread::Unknown);
         }
     }
     let length = metadata.len();
     let mut window = FIRST_TAIL;
     loop {
         let start = length.saturating_sub(window);
-        file.seek(SeekFrom::Start(start)).ok()?;
+        file.seek(SeekFrom::Start(start)).map_err(unknown)?;
         let mut bytes = Vec::with_capacity((length - start) as usize);
         file.by_ref()
             .take(length - start)
             .read_to_end(&mut bytes)
-            .ok()?;
+            .map_err(unknown)?;
+        // A record without its newline yet may be another call: wait for it
+        // rather than read the turn without it.
+        if bytes.last().is_some_and(|last| *last != b'\n') {
+            return Err(Unread::Writing);
+        }
         let text = String::from_utf8_lossy(&bytes);
         let whole = start == 0;
         if let Some(found) = current_turn(&text, whole) {
-            return Some(found);
+            return Ok(found);
         }
         if whole || window >= MAX_TAIL {
-            return None;
+            return Err(Unread::Unknown);
         }
         window = (window * 4).min(MAX_TAIL);
     }
@@ -368,10 +416,12 @@ fn is_command_value(chars: &[char], quote: usize) -> bool {
     }
 }
 
-/// Words after which a `/` starts a regular expression, not a division.
-const REGEX_AFTER_WORDS: [&str; 13] = [
-    "return", "typeof", "case", "do", "else", "in", "of", "void", "yield", "await", "delete",
-    "throw", "new",
+/// Reserved words after which a `/` starts a regular expression, not a
+/// division (not after a `.`, where they are property names). Contextual
+/// keywords (`of`, `yield`, `await`) can be identifiers, so they are not
+/// here.
+const REGEX_AFTER_WORDS: [&str; 10] = [
+    "return", "typeof", "case", "do", "else", "in", "void", "delete", "throw", "new",
 ];
 
 /// The string literals in a JS source, decoded, each with whether it is a
@@ -385,6 +435,8 @@ fn js_literals(source: &str) -> Vec<(String, bool)> {
     // the word it ends, to tell a regular expression from a division.
     let mut last: Option<char> = None;
     let mut word = String::new();
+    // Whether that word follows a `.` (a property name).
+    let mut word_after_dot = false;
     let mut at = 0;
     while at < chars.len() {
         let c = chars[at];
@@ -405,6 +457,7 @@ fn js_literals(source: &str) -> Vec<(String, bool)> {
             }
             '/' if last.is_none_or(|prev| "(,=:[!&|?{};+-*%<>~^".contains(prev))
                 || (last.is_some_and(|prev| prev.is_ascii_alphanumeric())
+                    && !word_after_dot
                     && REGEX_AFTER_WORDS.contains(&word.as_str())) =>
             {
                 at += 1;
@@ -441,6 +494,7 @@ fn js_literals(source: &str) -> Vec<(String, bool)> {
                 if ident(c) {
                     if at == 0 || !ident(chars[at - 1]) {
                         word.clear();
+                        word_after_dot = last == Some('.');
                     }
                     word.push(c);
                 } else {
@@ -584,6 +638,8 @@ pub(crate) enum Reading {
     Matched(BTreeMap<String, Vec<(String, usize)>>),
     /// A held chat's current turn could not be read.
     Unknown(String),
+    /// A held chat's last record is still being written.
+    Writing(String),
 }
 
 /// Reads every held chat's rollout (`rollouts`: thread → the file the
@@ -597,8 +653,10 @@ pub(crate) fn read(
 ) -> Reading {
     let mut matched = BTreeMap::new();
     for (thread, rollout) in rollouts {
-        let Some(pending) = pending_calls(&rollout.path, rollout.birth_ns) else {
-            return Reading::Unknown(thread.clone());
+        let pending = match read_pending(&rollout.path, rollout.birth_ns) {
+            Ok(pending) => pending,
+            Err(Unread::Writing) => return Reading::Writing(thread.clone()),
+            Err(Unread::Unknown) => return Reading::Unknown(thread.clone()),
         };
         let calls: Vec<(String, usize)> = pending
             .iter()
@@ -693,6 +751,13 @@ pub fn vouch(
     loop {
         match read(rollouts, &spawned.argv, latest_ms) {
             Reading::Unknown(chat) => return Err(Refusal::Unknown(chat)),
+            Reading::Writing(chat) => {
+                if Instant::now() >= deadline {
+                    return Err(Refusal::Unknown(chat));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
             Reading::Matched(matched) if matched.is_empty() => {}
             Reading::Matched(matched) => {
                 let others: Vec<String> = matched
@@ -729,7 +794,7 @@ type CommandKey = (String, String, usize);
 #[derive(Default)]
 struct Bound {
     by_command: HashMap<CommandKey, (i32, u64)>,
-    order: VecDeque<CommandKey>,
+    order: VecDeque<(CommandKey, Instant)>,
 }
 
 fn bound() -> &'static Mutex<Bound> {
@@ -759,12 +824,19 @@ fn bind(thread: &str, calls: &[(String, usize)], spawned: &Spawned) -> bool {
     else {
         return false;
     };
+    // Full: only a binding old enough that its command has surely ended
+    // makes room; otherwise nothing new is vouched for.
     if bound.order.len() >= MAX_BOUND {
-        if let Some(oldest) = bound.order.pop_front() {
-            bound.by_command.remove(&oldest);
+        match bound.order.front() {
+            Some((_, at)) if at.elapsed() >= BOUND_KEEP => {
+                if let Some((oldest, _)) = bound.order.pop_front() {
+                    bound.by_command.remove(&oldest);
+                }
+            }
+            _ => return false,
         }
     }
-    bound.order.push_back(free.clone());
+    bound.order.push_back((free.clone(), Instant::now()));
     bound.by_command.insert(free, me);
     true
 }

@@ -444,3 +444,65 @@ fn a_rollout_put_in_place_of_the_open_one_is_not_read() {
     assert_eq!(pending_calls(&path, Some(born)).map(|p| p.len()), Some(1));
     assert_eq!(pending_calls(&path, Some(born + 1)), None);
 }
+
+#[test]
+fn a_record_still_being_written_is_waited_for_not_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = rollout(dir.path(), B, &[event(STARTED - 5_000, "task_started")]);
+    let mut text = std::fs::read_to_string(&path).unwrap();
+    text.push_str(&exec(STARTED - 30, "call_half", SCRIPT)[..40]);
+    std::fs::write(&path, text).unwrap();
+    assert_eq!(read_pending(&path, None), Err(Unread::Writing));
+    let a = rollout(
+        dir.path(),
+        A,
+        &[
+            event(STARTED - 5_000, "task_started"),
+            exec(STARTED - 40, "call_w", SCRIPT),
+        ],
+    );
+    // The other chat's unfinished record is never read as "no call".
+    assert_eq!(
+        vouch(
+            &rollouts(&[(A, &a), (B, &path)]),
+            A,
+            &shell(9_101, SCRIPT),
+            50,
+            Duration::from_millis(30)
+        ),
+        Err(Refusal::Unknown(B.to_string()))
+    );
+}
+
+#[test]
+fn only_a_shell_array_is_read_as_a_script() {
+    let argv = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+    let probe = argv(&["agent-relay-probe", "whoami"]);
+    assert!(argv_runs(
+        &argv(&["/bin/zsh", "-lc", "agent-relay-probe whoami"]),
+        &probe
+    ));
+    assert!(argv_runs(&probe, &probe));
+    assert!(!argv_runs(
+        &argv(&["python", "-c", "agent-relay-probe whoami"]),
+        &probe
+    ));
+}
+
+#[test]
+fn a_division_after_a_contextual_keyword_or_property_is_not_a_regex() {
+    let source = r#"const of = 8; const ratio = of / 2; const q = x.return / 3; await tools.exec_command({cmd:"agent-relay-probe whoami"});"#;
+    assert_eq!(
+        js_command_literals(source),
+        vec!["agent-relay-probe whoami".to_string()]
+    );
+}
+
+#[test]
+fn a_unicode_jsonl_name_is_not_a_rollout() {
+    let name = format!("a{}.jsonl", "é".repeat(30));
+    assert_eq!(
+        crate::relay::process::rollout_thread_of_path(Path::new(&name)),
+        None
+    );
+}

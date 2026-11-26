@@ -459,6 +459,13 @@ impl LocalSessions {
             crate::relay::process::StartClock::Micros
             | crate::relay::process::StartClock::Windows => 50,
         };
+        let held = |open: &[crate::relay::process::OpenedFile]| {
+            let locks: std::collections::BTreeSet<String> = open
+                .iter()
+                .filter_map(|file| crate::relay::process::codex_thread_of_lock(&file.path))
+                .collect();
+            transcript::held_rollouts(&locks, open)
+        };
         match transcript::vouch(
             &rollouts,
             thread,
@@ -466,7 +473,15 @@ impl LocalSessions {
             slack_ms,
             codex::app_server::watch::ANNOUNCE_WAIT,
         ) {
-            Ok(()) => true,
+            // The chats the app-server holds must be the ones read: a chat
+            // that opened meanwhile was never checked.
+            Ok(()) if held(&table.opened_files(app_server.pid)).as_ref() == Some(&rollouts) => true,
+            Ok(()) => {
+                crate::relay::diagnostics::write(format_args!(
+                    "codex transcript witness: refused {thread}: the held chats changed while reading"
+                ));
+                false
+            }
             Err(refusal) => {
                 crate::relay::diagnostics::write(format_args!(
                     "codex transcript witness: refused {thread} for pid {}: {refusal:?}",
