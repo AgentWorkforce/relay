@@ -912,6 +912,8 @@ pub(crate) mod tests {
         assert!(!terminal_thread_is_live(&table, UID, SESSION));
     }
 
+    // Unix paths: macOS app bundles are recognised only there.
+    #[cfg(unix)]
     #[test]
     fn the_codex_apps_own_app_server_drains_the_queue_of_its_chats() {
         let bundled = PathBuf::from(
@@ -1025,6 +1027,8 @@ pub(crate) mod tests {
         assert!(!is_codex_app_codex(&table, UID, 600));
     }
 
+    // Unix paths: macOS app bundles are recognised only there.
+    #[cfg(unix)]
     #[test]
     fn an_app_bundle_is_the_outermost_one() {
         assert_eq!(

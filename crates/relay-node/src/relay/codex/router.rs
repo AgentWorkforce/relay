@@ -1768,6 +1768,8 @@ mod tests {
 
     // A chat open in the Codex desktop app (the ChatGPT app) is live and
     // queued with the app's own bundled Codex, which runs it once idle.
+    // Unix paths: macOS app bundles are recognised only there.
+    #[cfg(unix)]
     #[test]
     fn a_codex_app_chat_is_live_and_queued_with_the_apps_codex() {
         use crate::relay::codex::processes::tests::{lock, process};
