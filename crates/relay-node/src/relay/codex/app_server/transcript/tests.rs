@@ -506,3 +506,61 @@ fn a_unicode_jsonl_name_is_not_a_rollout() {
         None
     );
 }
+
+#[test]
+fn a_finished_calls_binding_is_retired() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = "agent-relay-probe whoami --retire";
+    let pending = [
+        event(STARTED - 5_000, "task_started"),
+        exec(STARTED - 40, "call_retire", script),
+    ];
+    let a = rollout(dir.path(), A, &pending);
+    let held = rollouts(&[(A, &a)]);
+    let wait = Duration::from_millis(0);
+    assert_eq!(vouch(&held, A, &shell(9_201, script), 50, wait), Ok(()));
+    assert!(bound().lock().unwrap().by_command.contains_key(&(
+        A.to_string(),
+        "call_retire".to_string(),
+        0
+    )));
+    // The call finishes and another asks: its binding goes.
+    let mut done = pending.to_vec();
+    done.push(output(
+        STARTED + 900,
+        "custom_tool_call_output",
+        "call_retire",
+    ));
+    done.push(exec(
+        STARTED - 30,
+        "call_next",
+        "agent-relay-probe whoami --next",
+    ));
+    let a = rollout(dir.path(), A, &done);
+    let held = rollouts(&[(A, &a)]);
+    assert_eq!(
+        vouch(
+            &held,
+            A,
+            &shell(9_202, "agent-relay-probe whoami --next"),
+            50,
+            wait
+        ),
+        Ok(())
+    );
+    assert!(!bound().lock().unwrap().by_command.contains_key(&(
+        A.to_string(),
+        "call_retire".to_string(),
+        0
+    )));
+}
+
+#[test]
+fn a_regex_after_top_level_await_is_skipped() {
+    let source =
+        r#"await /"/.test(text); await tools.exec_command({cmd:"agent-relay-probe whoami"});"#;
+    assert_eq!(
+        js_command_literals(source),
+        vec!["agent-relay-probe whoami".to_string()]
+    );
+}

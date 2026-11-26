@@ -417,11 +417,11 @@ fn is_command_value(chars: &[char], quote: usize) -> bool {
 }
 
 /// Reserved words after which a `/` starts a regular expression, not a
-/// division (not after a `.`, where they are property names). Contextual
-/// keywords (`of`, `yield`, `await`) can be identifiers, so they are not
-/// here.
-const REGEX_AFTER_WORDS: [&str; 10] = [
-    "return", "typeof", "case", "do", "else", "in", "void", "delete", "throw", "new",
+/// division (not after a `.`, where they are property names). `await` is
+/// one too: a code-mode cell is a module with top-level `await`. `of` and
+/// `yield` can be identifiers, so they are not here.
+const REGEX_AFTER_WORDS: [&str; 11] = [
+    "return", "typeof", "case", "do", "else", "in", "void", "delete", "throw", "new", "await",
 ];
 
 /// The string literals in a JS source, decoded, each with whether it is a
@@ -635,7 +635,11 @@ fn decode_unicode_escape(chars: &[char], at: usize) -> Option<(String, usize)> {
 pub(crate) enum Reading {
     /// The chats with a pending call that asked for the command, and those
     /// calls.
-    Matched(BTreeMap<String, Vec<(String, usize)>>),
+    Matched {
+        matched: BTreeMap<String, Vec<(String, usize)>>,
+        /// Every held chat's pending call ids, matching or not.
+        live: BTreeMap<String, BTreeSet<String>>,
+    },
     /// A held chat's current turn could not be read.
     Unknown(String),
     /// A held chat's last record is still being written.
@@ -652,6 +656,7 @@ pub(crate) fn read(
     latest_ms: i64,
 ) -> Reading {
     let mut matched = BTreeMap::new();
+    let mut live = BTreeMap::new();
     for (thread, rollout) in rollouts {
         let pending = match read_pending(&rollout.path, rollout.birth_ns) {
             Ok(pending) => pending,
@@ -670,8 +675,12 @@ pub(crate) fn read(
         if !calls.is_empty() {
             matched.insert(thread.clone(), calls);
         }
+        live.insert(
+            thread.clone(),
+            pending.iter().map(|call| call.call.clone()).collect(),
+        );
     }
-    Reading::Matched(matched)
+    Reading::Matched { matched, live }
 }
 
 /// One held chat's rollout, as the app-server has it open.
@@ -758,8 +767,9 @@ pub fn vouch(
                 std::thread::sleep(Duration::from_millis(10));
                 continue;
             }
-            Reading::Matched(matched) if matched.is_empty() => {}
-            Reading::Matched(matched) => {
+            Reading::Matched { matched, .. } if matched.is_empty() => {}
+            Reading::Matched { matched, live } => {
+                retire(&live);
                 let others: Vec<String> = matched
                     .keys()
                     .filter(|chat| **chat != thread)
@@ -802,6 +812,19 @@ fn bound() -> &'static Mutex<Bound> {
     BOUND.get_or_init(|| Mutex::new(Bound::default()))
 }
 
+/// Forgets the bindings of calls the chats in `live` (each held chat's
+/// pending calls) no longer have pending: a call with recorded output never
+/// asks again, so its binding can go.
+fn retire(live: &BTreeMap<String, BTreeSet<String>>) {
+    let mut bound = bound().lock().unwrap_or_else(|e| e.into_inner());
+    let over = |key: &CommandKey| {
+        live.get(&key.0)
+            .is_some_and(|pending| !pending.contains(&key.1))
+    };
+    bound.by_command.retain(|key, _| !over(key));
+    bound.order.retain(|(key, _)| !over(key));
+}
+
 /// Binds `spawned` to the first of `calls` (one chat's requested commands
 /// it runs) that it already holds or that is free. False when every one
 /// vouched for another process first.
@@ -824,8 +847,8 @@ fn bind(thread: &str, calls: &[(String, usize)], spawned: &Spawned) -> bool {
     else {
         return false;
     };
-    // Full: only a binding old enough that its command has surely ended
-    // makes room; otherwise nothing new is vouched for.
+    // Still full after `retire`: only a binding old enough that its command
+    // has surely ended makes room; otherwise nothing new is vouched for.
     if bound.order.len() >= MAX_BOUND {
         match bound.order.front() {
             Some((_, at)) if at.elapsed() >= BOUND_KEEP => {
