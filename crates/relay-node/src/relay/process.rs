@@ -449,7 +449,7 @@ enum RolloutProof {
 }
 
 /// The thread id at the end of `rollout-…-<uuid>.jsonl`.
-fn rollout_thread_of_path(path: &Path) -> Option<String> {
+pub(crate) fn rollout_thread_of_path(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_str()?;
     let stem = name.strip_suffix(".jsonl")?;
     let split = stem.len().checked_sub(36)?;
