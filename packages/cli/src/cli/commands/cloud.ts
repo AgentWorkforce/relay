@@ -42,7 +42,6 @@ import { sanitizeForTerminalLine } from '../lib/formatting.js';
 import { maskSecret } from '../lib/redact.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
 import { track } from '../telemetry/index.js';
-import { registerCloudRoomCommands } from './cloud-room.js';
 import { registerCloudIntegrationCommands } from './cloud-integration.js';
 import { registerCloudWorkerCommands } from './cloud-worker.js';
 
@@ -650,7 +649,6 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .description('Cloud account, provider auth, and workflow commands');
 
   registerCloudWorkerCommands(cloudCommand, deps);
-  registerCloudRoomCommands(cloudCommand, deps);
   registerCloudIntegrationCommands(cloudCommand, deps);
 
   // ── login ──────────────────────────────────────────────────────────────────

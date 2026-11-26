@@ -143,7 +143,6 @@ describe('registerCloudCommands', () => {
     expect(cloud).toBeDefined();
     expect(cloud?.commands.map((command) => command.name())).toEqual([
       'worker',
-      'room',
       'integration',
       'login',
       'logout',

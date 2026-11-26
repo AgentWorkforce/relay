@@ -349,57 +349,9 @@ pinned independently until you explicitly create or select another workspace.
 
 `agent-relay cloud whoami` also prints the current organization and workspace IDs.
 
-## Cloud multiplayer rooms
+## Cloud integrations
 
-Cloud room membership is scoped to one Relay workspace. Every v1 invite creates
-a trusted full room participant: they receive their own revocable Relaycast
-human credential and may use all ordinary agent-level collaboration actions.
-The workspace key itself is never shared, so owner-key administration and Agent
-Relay Cloud organization administration remain owner-only.
-
-```bash
-# Owner: invite and manage people in this workspace.
-agent-relay cloud room invite \
-  --workspace rw_7ccfea89 \
-  --email teammate@example.com \
-  --token-file ./teammate.room-invite
-agent-relay cloud room invites --workspace rw_7ccfea89
-agent-relay cloud room members --workspace rw_7ccfea89
-
-# Share the owner-only token file over a secure channel. The invitee keeps the
-# token out of shell history and process arguments.
-# Tokens use the consumer-neutral relay_room_inv_ prefix followed by exactly
-# 43 URL-safe characters.
-read -rs ROOM_INVITATION_TOKEN
-printf '%s' "$ROOM_INVITATION_TOKEN" |
-  agent-relay cloud room accept --token-stdin
-unset ROOM_INVITATION_TOKEN
-
-# Trusted clients establish one stable session per device.
-# --json intentionally includes the participant credential; capture it in
-# memory and do not log or persist it.
-agent-relay cloud room session \
-  --workspace rw_7ccfea89 \
-  --device-id client-macbook \
-  --json
-
-# Explicitly ending or replacing the device session revokes the old scoped token.
-agent-relay cloud room revoke-session \
-  --workspace rw_7ccfea89 \
-  --device-id client-macbook
-
-# Participants use their scoped token for agent-level Relaycast operations; an
-# ambient owner workspace key is never consulted when --token is present.
-agent-relay agent presence \
-  --token at_live_... \
-  --base-url https://cast.agentrelay.com
-
-# Owner: revoke access and active room sessions.
-agent-relay cloud room remove-member <membership-id> --workspace rw_7ccfea89
-```
-
-There is no room-specific integration grant or credential service. Connect the
-workspace provider through the existing Cloud integration API, then use the
+Connect a workspace provider through the Cloud integration API, then use the
 normal Relayfile workflow for setup, mounts, reads, and writebacks:
 
 ```bash

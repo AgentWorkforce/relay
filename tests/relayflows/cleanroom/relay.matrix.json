@@ -394,7 +394,7 @@
     },
     {
       "id": "workflow-cloud",
-      "title": "Local Relayflows, Cloud control, rooms, workers and integrations",
+      "title": "Local Relayflows, Cloud control, workers and integrations",
       "requiredArtifacts": ["cli-entrypoint"],
       "routingPriority": 60,
       "issueNumbers": [1265, 1481, 1620, 1621],
@@ -402,7 +402,6 @@
         "local-workflows",
         "cloud",
         "cloud-integrations",
-        "cloud-rooms",
         "cloud-workers",
         "integration",
         "product-surfaces"
@@ -411,7 +410,6 @@
         "workflow",
         "relayflow",
         "Cloud",
-        "room",
         "integration",
         "webhook",
         "subscription",
@@ -428,14 +426,13 @@
       "scenarios": [
         {
           "id": "workflow-cloud-contracts",
-          "title": "Workflow, Cloud, room, worker and integration contracts",
+          "title": "Workflow, Cloud, worker and integration contracts",
           "command": [
             "npx",
             "vitest",
             "run",
             "packages/cli/src/cli/commands/local-workflow.test.ts",
             "packages/cli/src/cli/commands/cloud.test.ts",
-            "packages/cli/src/cli/commands/cloud-room.test.ts",
             "packages/cli/src/cli/commands/cloud-integration.test.ts",
             "packages/cli/src/cli/commands/integration-webhook-create.test.ts",
             "packages/cli/src/cli/commands/integration-subscribe.test.ts",
@@ -450,14 +447,13 @@
             "local-workflows",
             "cloud",
             "cloud-integrations",
-            "cloud-rooms",
             "cloud-workers",
             "integration"
           ]
         },
         {
           "id": "cloud-live-lifecycle",
-          "title": "Disposable Cloud run, logs, cancel, schedule, room, worker and integration lifecycle",
+          "title": "Disposable Cloud run, logs, cancel, schedule, worker and integration lifecycle",
           "kind": "coverage-gap",
           "reason": "Requires a dedicated disposable Cloud workspace, worker enrollment token and capture endpoint; operator sessions are intentionally rejected.",
           "requiredEnvironment": [
@@ -467,7 +463,7 @@
             "VERIFY_RELAY_CAPTURE_URL"
           ],
           "evidence": "integration",
-          "coversCategories": ["cloud", "cloud-integrations", "cloud-rooms", "cloud-workers", "integration"],
+          "coversCategories": ["cloud", "cloud-integrations", "cloud-workers", "integration"],
           "issues": [1265, 1393, 1481, 1620, 1621]
         },
         {
