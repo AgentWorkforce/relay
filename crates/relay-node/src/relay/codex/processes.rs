@@ -113,8 +113,8 @@ pub fn resumed_without_lock(table: &dyn ProcessTable, uid: u32, thread: &str) ->
 }
 
 /// Whether a Codex that drains `codex queue` runs `thread` now: the
-/// interactive TUI, or the app-server Conductor runs for one of its
-/// sessions. A shared app-server's writer lock is not enough.
+/// interactive TUI, or an app-server that runs its threads' queued messages
+/// (`drains_queue`). A shared app-server's writer lock is not enough.
 pub fn terminal_thread_is_live(table: &dyn ProcessTable, uid: u32, thread: &str) -> bool {
     let thread = thread.to_lowercase();
     if !crate::relay::store::is_uuid(&thread) {
@@ -135,11 +135,100 @@ pub fn thread_is_live(table: &dyn ProcessTable, uid: u32, thread: &str) -> bool 
 }
 
 /// Whether `pid` is a trusted Codex that runs queued messages for the
-/// threads it holds: the TUI, or a Conductor session's app-server.
+/// threads it holds: the TUI, a Conductor or Paseo session's app-server, or
+/// the Codex desktop app's own app-server.
 pub fn drains_queue(table: &dyn ProcessTable, uid: u32, pid: i32) -> bool {
     is_terminal_codex(table, pid)
         || is_conductor_codex(table, uid, pid)
         || is_paseo_codex(table, uid, pid)
+        || is_codex_app_codex(table, uid, pid)
+}
+
+/// Whether `pid` is the Codex desktop app's own app-server (the ChatGPT
+/// desktop app, `com.openai.codex`): a trusted Codex `app-server` over stdio
+/// whose parent runs from the same app bundle as its executable. It holds
+/// every chat the app has open and, like Conductor's, runs a chat's queued
+/// messages as soon as the chat is idle, which the app shows as a turn
+/// (verified with the ChatGPT app 26.1120 and its Codex 0.171). The app no
+/// longer runs the window router (`ipc`), so the queue is the route into its
+/// chats. Only macOS app bundles are recognised.
+pub fn is_codex_app_codex(table: &dyn ProcessTable, uid: u32, pid: i32) -> bool {
+    let Some(process) = table.process(pid).filter(|p| p.uid == uid) else {
+        return false;
+    };
+    let Some(executable) = table.executable(pid) else {
+        return false;
+    };
+    let Some(bundle) = outer_app_bundle(&executable) else {
+        return false;
+    };
+    if !is_stdio_app_server(&table.arguments(pid)) || !table.is_trusted_codex(&executable) {
+        return false;
+    }
+    table
+        .process(process.parent)
+        .filter(|parent| parent.uid == uid && process.parent > 1)
+        .and_then(|_| table.executable(process.parent))
+        .and_then(|parent| outer_app_bundle(&parent))
+        .is_some_and(|parent_bundle| parent_bundle == bundle)
+        && table.process(pid) == Some(process)
+}
+
+/// The executable of the Codex desktop app's app-server that holds
+/// `thread` (`is_codex_app_codex`): the `codex` to queue that thread's
+/// messages with, the same build as the one draining them.
+pub fn codex_app_executable(table: &dyn ProcessTable, uid: u32, thread: &str) -> Option<PathBuf> {
+    let thread = thread.to_lowercase();
+    if !crate::relay::store::is_uuid(&thread) {
+        return None;
+    }
+    process_sessions(table, uid, &BTreeSet::from([thread]))
+        .iter()
+        .filter(|session| !session.authorizes_callers)
+        .find(|session| is_codex_app_codex(table, uid, session.pid))
+        .and_then(|session| table.executable(session.pid))
+}
+
+/// Whether `arguments` start a Codex `app-server` that talks over stdio:
+/// no `--listen` address other than `stdio://`, and not its `proxy` or
+/// `daemon` commands.
+fn is_stdio_app_server(arguments: &[String]) -> bool {
+    let Some(at) = arguments.iter().position(|a| a == "app-server") else {
+        return false;
+    };
+    if arguments
+        .get(at + 1)
+        .is_some_and(|next| next == "proxy" || next == "daemon")
+    {
+        return false;
+    }
+    arguments
+        .iter()
+        .enumerate()
+        .filter_map(|(at, argument)| match argument.strip_prefix("--listen=") {
+            Some(address) => Some(Some(address)),
+            None if argument == "--listen" => Some(arguments.get(at + 1).map(String::as_str)),
+            None => None,
+        })
+        .all(|address| address == Some("stdio://"))
+}
+
+/// The outermost macOS app bundle `path` lies in: the path up to its first
+/// component ending in `.app`.
+fn outer_app_bundle(path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let mut bundle = PathBuf::new();
+    for component in path.components() {
+        bundle.push(component);
+        if let std::path::Component::Normal(name) = component {
+            if name.to_str().is_some_and(|name| name.ends_with(".app")) {
+                return (bundle != path).then_some(bundle);
+            }
+        }
+    }
+    None
 }
 
 /// A trusted Codex app-server owned by Paseo. Paseo keeps one such server
@@ -821,6 +910,144 @@ pub(crate) mod tests {
             },
         );
         assert!(!terminal_thread_is_live(&table, UID, SESSION));
+    }
+
+    #[test]
+    fn the_codex_apps_own_app_server_drains_the_queue_of_its_chats() {
+        let bundled = PathBuf::from(
+            "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+        );
+        let node_service = PathBuf::from(
+            "/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/158.0.8127.89/Helpers/Codex (Aperitif).app/Contents/MacOS/Codex (Aperitif)",
+        );
+        let table = FakeProcesses::default();
+        table.trust(bundled.clone());
+        table.insert(
+            500,
+            FakeProcess {
+                executable: Some(node_service),
+                ..process(1, 5)
+            },
+        );
+        let server = |parent, arguments: &[&str]| FakeProcess {
+            executable: Some(bundled.clone()),
+            open_files: vec![lock(SESSION), lock(OTHER)],
+            parent,
+            ..codex_process(10, arguments)
+        };
+        let app = [
+            "codex",
+            "-c",
+            "features.code_mode_host=true",
+            "app-server",
+            "--analytics-default-enabled",
+        ];
+        table.insert(600, server(500, &app));
+        assert!(is_codex_app_codex(&table, UID, 600));
+        assert!(drains_queue(&table, UID, 600));
+        assert!(terminal_thread_is_live(&table, UID, SESSION));
+        assert!(terminal_thread_is_live(&table, UID, OTHER));
+        assert_eq!(
+            codex_app_executable(&table, UID, SESSION),
+            Some(bundled.clone())
+        );
+        assert_eq!(conductor_executable(&table, UID, SESSION), None);
+        // Holding a chat's lock never lets a command under it name the chat.
+        assert_eq!(codex_caller_thread(&table, 600, UID), None);
+
+        // The shared daemon and its proxy, and an app-server on a socket of
+        // its own, are not the app's.
+        for arguments in [
+            &["codex", "app-server", "--listen", "unix://"][..],
+            &["codex", "app-server", "--listen=ws://127.0.0.1:1"],
+            &["codex", "app-server", "proxy"],
+            &["codex", "app-server", "daemon", "pid-update-loop"],
+            &["codex", "exec", "resume", SESSION],
+        ] {
+            table.insert(600, server(500, arguments));
+            assert!(!is_codex_app_codex(&table, UID, 600), "{arguments:?}");
+        }
+        table.insert(
+            600,
+            server(500, &["codex", "app-server", "--listen", "stdio://"]),
+        );
+        assert!(is_codex_app_codex(&table, UID, 600));
+
+        // Started by anything outside the app's bundle: a terminal, another
+        // app, or a process of another user's.
+        table.insert(600, server(500, &app));
+        for (executable, uid) in [
+            ("/bin/zsh", UID),
+            (
+                "/Applications/Other.app/Contents/MacOS/Other",
+                UID,
+            ),
+            (
+                "/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Helpers/Codex (Aperitif).app/Contents/MacOS/Codex (Aperitif)",
+                UID + 1,
+            ),
+        ] {
+            table.insert(
+                500,
+                FakeProcess {
+                    executable: Some(PathBuf::from(executable)),
+                    uid,
+                    ..process(1, 5)
+                },
+            );
+            assert!(!is_codex_app_codex(&table, UID, 600), "{executable}");
+            assert!(!terminal_thread_is_live(&table, UID, SESSION));
+        }
+
+        // Only a trusted Codex, of this user's.
+        let main = || FakeProcess {
+            executable: Some(PathBuf::from(
+                "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+            )),
+            ..process(1, 5)
+        };
+        table.insert(500, main());
+        assert!(is_codex_app_codex(&table, UID, 600));
+        assert!(!is_codex_app_codex(&table, UID + 1, 600));
+        let untrusted = FakeProcesses::default();
+        untrusted.insert(500, main());
+        untrusted.insert(600, server(500, &app));
+        assert!(!is_codex_app_codex(&untrusted, UID, 600));
+        // A Codex outside any app bundle is never the app's.
+        table.trust(codex());
+        table.insert(
+            600,
+            FakeProcess {
+                executable: Some(codex()),
+                ..server(500, &app)
+            },
+        );
+        assert!(!is_codex_app_codex(&table, UID, 600));
+    }
+
+    #[test]
+    fn an_app_bundle_is_the_outermost_one() {
+        assert_eq!(
+            outer_app_bundle(Path::new(
+                "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+            )),
+            Some(PathBuf::from("/Applications/ChatGPT.app"))
+        );
+        assert_eq!(
+            outer_app_bundle(Path::new(
+                "/Users/me/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"
+            )),
+            Some(PathBuf::from("/Users/me/Applications/ChatGPT.app"))
+        );
+        assert_eq!(outer_app_bundle(Path::new("/opt/codex/bin/codex")), None);
+        assert_eq!(
+            outer_app_bundle(Path::new("/Applications/ChatGPT.app")),
+            None
+        );
+        assert_eq!(
+            outer_app_bundle(Path::new("ChatGPT.app/Contents/MacOS/ChatGPT")),
+            None
+        );
     }
 
     // CodexBridge.openThreadIDs (the process half).
