@@ -478,12 +478,13 @@ impl CodexRouter {
         if !self.routes.idle(thread) {
             return Some(self.wait_for_turn(thread, message_id, text, spawned));
         }
-        if let Err(outcome) = self.leave_turn_hook(message_id) {
-            return Some(outcome);
-        }
+        let claim = match self.claim_host_probe(message_id) {
+            Ok(claim) => claim,
+            Err(outcome) => return Some(outcome),
+        };
         match route(self.routes.as_ref(), thread, text, message_id) {
             Ok(true) => Some(self.delivered(thread, message_id, &MessageRef::of(message_id))),
-            Ok(false) => None,
+            Ok(false) => self.release_host_probe(message_id, claim).err(),
             Err(TurnError::Refused(reason)) => Some(self.refused_turn(thread, message_id, reason)),
             Err(TurnError::InDoubt(reason)) => Some(InjectOutcome::InDoubt(reason)),
         }

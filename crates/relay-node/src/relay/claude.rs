@@ -108,9 +108,16 @@ impl ClaudeConfig {
             .chain(windows_claude_locations(env))
             .find_map(|p| runnable(&p))
             .or_else(|| {
-                env("PATH").and_then(|path| {
-                    crate::platform::exe::find_on(std::ffi::OsStr::new(&path), "claude")
-                })
+                env("PATH")
+                    .or_else(|| if cfg!(windows) { env("Path") } else { None })
+                    .and_then(|path| {
+                        // Discovery and launch use different working folders.
+                        // Relative PATH entries cannot identify a stable CLI.
+                        crate::platform::exe::find_in(
+                            std::env::split_paths(&path).filter(|dir| dir.is_absolute()),
+                            "claude",
+                        )
+                    })
             }),
         };
         let app_sessions = cfg!(target_os = "macos")

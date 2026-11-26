@@ -33,6 +33,73 @@ fn context(answer: &serde_json::Value) -> &str {
         .unwrap_or_default()
 }
 
+#[test]
+fn an_idle_hook_only_message_reaches_the_next_turn_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = Fake::new();
+    fake.live.store(true, Ordering::SeqCst);
+    {
+        let (router, inbox, _) = restarted(&fake, dir.path());
+        assert_eq!(
+            router.inject_with(THREAD, "idle", TEXT, &|| None),
+            InjectOutcome::Waiting(WAITING_FOR_CODEX_TURN.into())
+        );
+        assert_eq!(inbox.turns().claimed("idle"), Claimed::Free);
+        assert_eq!(count(&fake.app_sends), 1);
+        assert_eq!(count(&fake.window_sends), 1);
+        assert_eq!(count(&fake.queue_sends), 0);
+    }
+    fake.busy.store(true, Ordering::SeqCst);
+    let (router, inbox, _) = restarted(&fake, dir.path());
+    assert_eq!(
+        router.inject_with(THREAD, "idle", TEXT, &|| None),
+        InjectOutcome::WaitingForTurn(turn_hook::WAITING.into())
+    );
+    assert!(
+        context(&inbox.turns().answer(THREAD, HookEvent::PostToolUse))
+            .ends_with("Can you check CI?")
+    );
+    assert_eq!(
+        inbox.turns().answer(THREAD, HookEvent::PostToolUse),
+        serde_json::json!({})
+    );
+    assert_eq!(
+        router.inject_with(THREAD, "idle", TEXT, &|| None),
+        InjectOutcome::Accepted(RECORDING.into())
+    );
+    assert_eq!(count(&fake.app_sends), 1, "no second host handoff");
+    assert_eq!(count(&fake.window_sends), 1);
+    assert_eq!(count(&fake.queue_sends), 0);
+}
+
+#[test]
+fn an_uncertain_host_probe_never_reopens_the_hook_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = Fake::new();
+    fake.live.store(true, Ordering::SeqCst);
+    *fake.app_server.lock().unwrap() = Some(Err(TurnError::InDoubt("lost answer".into())));
+    {
+        let (router, inbox, _) = restarted(&fake, dir.path());
+        assert_eq!(
+            router.inject_with(THREAD, "uncertain", TEXT, &|| None),
+            InjectOutcome::InDoubt("lost answer".into())
+        );
+        assert_eq!(inbox.turns().claimed("uncertain"), Claimed::Elsewhere);
+    }
+    *fake.app_server.lock().unwrap() = Some(Ok(false));
+    let (router, inbox, _) = restarted(&fake, dir.path());
+    let _ = router.inject_with(THREAD, "uncertain", TEXT, &|| None);
+    assert_eq!(inbox.turns().claimed("uncertain"), Claimed::Elsewhere);
+    fake.busy.store(true, Ordering::SeqCst);
+    let _ = router.inject_with(THREAD, "uncertain", TEXT, &|| None);
+    assert_eq!(inbox.turns().claimed("uncertain"), Claimed::Elsewhere);
+    assert_eq!(
+        inbox.turns().answer(THREAD, HookEvent::PostToolUse),
+        serde_json::json!({})
+    );
+    assert_eq!(count(&fake.queue_sends), 0);
+}
+
 // A message for a terminal Codex in a long turn reaches it at the turn's
 // next tool call, not after the turn, and only the rollout settles it.
 #[test]

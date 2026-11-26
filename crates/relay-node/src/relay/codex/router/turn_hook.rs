@@ -2,7 +2,7 @@
 //! (`codex::turn_hook`), and the claim every other route makes first.
 
 use super::{CodexRouter, HANDOFF_GRACE, RECORDING};
-use crate::relay::codex::turn_hook::{self, Claimed, Taken, TurnInbox};
+use crate::relay::codex::turn_hook::{self, Claimed, ProbeClaim, Taken, TurnInbox};
 use crate::relay::inject::InjectOutcome;
 
 /// What a message says while its route cannot be recorded.
@@ -115,6 +115,33 @@ impl CodexRouter {
             Err(Taken::Hook { at_ms }) => Err(self.taken_by_hook(at_ms)),
             Err(Taken::Unrecorded) => Err(InjectOutcome::Waiting(CLAIM_UNRECORDED.into())),
         }
+    }
+
+    pub(super) fn claim_host_probe(
+        &self,
+        message_id: &str,
+    ) -> Result<Option<ProbeClaim>, InjectOutcome> {
+        let Some(turns) = self.turns() else {
+            return Ok(None);
+        };
+        match turns.claim_elsewhere(message_id) {
+            Ok(claim) => Ok(Some(claim)),
+            Err(Taken::Hook { at_ms }) => Err(self.taken_by_hook(at_ms)),
+            Err(Taken::Unrecorded) => Err(InjectOutcome::Waiting(CLAIM_UNRECORDED.into())),
+        }
+    }
+
+    pub(super) fn release_host_probe(
+        &self,
+        message_id: &str,
+        claim: Option<ProbeClaim>,
+    ) -> Result<(), InjectOutcome> {
+        if let (Some(turns), Some(claim)) = (self.turns(), claim) {
+            turns
+                .release_probe(message_id, claim)
+                .map_err(|_| InjectOutcome::Waiting(CLAIM_UNRECORDED.into()))?;
+        }
+        Ok(())
     }
 
     /// Whether the hook may have handed the message over, so a native turn
