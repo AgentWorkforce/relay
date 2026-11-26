@@ -67,10 +67,18 @@ fn shell(pid: i32, script: &str) -> Spawned {
     }
 }
 
-fn rollouts(paths: &[(&str, &PathBuf)]) -> BTreeMap<String, PathBuf> {
+fn rollouts(paths: &[(&str, &PathBuf)]) -> BTreeMap<String, Rollout> {
     paths
         .iter()
-        .map(|(thread, path)| (thread.to_string(), (*path).clone()))
+        .map(|(thread, path)| {
+            (
+                thread.to_string(),
+                Rollout {
+                    path: (*path).clone(),
+                    birth_ns: None,
+                },
+            )
+        })
         .collect()
 }
 
@@ -139,12 +147,15 @@ fn only_calls_without_output_in_the_current_turn_are_pending() {
             exec(STARTED - 40, "call_now", SCRIPT),
         ],
     );
-    let pending = pending_calls(&path).unwrap();
+    let pending = pending_calls(&path, None).unwrap();
     let calls: Vec<&str> = pending.iter().map(|p| p.call.as_str()).collect();
     assert_eq!(calls, vec!["call_fn", "call_now"]);
     assert_eq!(pending[1].recorded_ms, STARTED - 40);
-    assert!(pending[1].requested(&shell(1, SCRIPT).argv));
-    assert!(pending[0].requested(&["/bin/bash".into(), "-lc".into(), "pwd".into()]));
+    assert_eq!(pending[1].requested(&shell(1, SCRIPT).argv), vec![0]);
+    assert_eq!(
+        pending[0].requested(&["/bin/bash".into(), "-lc".into(), "pwd".into()]),
+        vec![0]
+    );
     // A finished turn leaves nothing pending.
     std::fs::OpenOptions::new()
         .append(true)
@@ -156,7 +167,7 @@ fn only_calls_without_output_in_the_current_turn_are_pending() {
             )
         })
         .unwrap();
-    assert_eq!(pending_calls(&path), Some(Vec::new()));
+    assert_eq!(pending_calls(&path, None), Some(Vec::new()));
 }
 
 #[test]
@@ -174,7 +185,7 @@ fn a_turn_longer_than_the_tail_leaves_its_chat_unknown() {
         .to_string()
     }));
     let path = rollout(dir.path(), A, &lines);
-    assert_eq!(pending_calls(&path), None);
+    assert_eq!(pending_calls(&path, None), None);
     // A broken record inside the current turn does the same.
     let path = rollout(
         dir.path(),
@@ -185,7 +196,7 @@ fn a_turn_longer_than_the_tail_leaves_its_chat_unknown() {
             exec(STARTED - 40, "c", SCRIPT),
         ],
     );
-    assert_eq!(pending_calls(&path), None);
+    assert_eq!(pending_calls(&path, None), None);
 }
 
 #[test]
@@ -313,11 +324,123 @@ fn each_held_lock_needs_its_own_open_rollout() {
     let a = dir.join(format!("rollout-2026-11-25T16-29-28-{A}.jsonl"));
     let b = dir.join(format!("rollout-2026-11-25T20-30-30-{B}.jsonl"));
     let locks: BTreeSet<String> = [A.to_string(), B.to_string()].into();
-    let lock = |t: &str| PathBuf::from(format!("/Users/me/.codex/thread-writer-locks/{t}.lock"));
-    let held = held_rollouts(&locks, &[lock(A), a.clone(), lock(B), b.clone()]).unwrap();
-    assert_eq!(held.get(A), Some(&a));
-    assert_eq!(held.get(B), Some(&b));
-    assert_eq!(held_rollouts(&locks, &[lock(A), a.clone(), lock(B)]), None);
+    let open = |path: PathBuf| crate::relay::process::OpenedFile {
+        path,
+        birth_ns: Some(7),
+    };
+    let lock = |t: &str| {
+        open(PathBuf::from(format!(
+            "/Users/me/.codex/thread-writer-locks/{t}.lock"
+        )))
+    };
+    let held = held_rollouts(
+        &locks,
+        &[lock(A), open(a.clone()), lock(B), open(b.clone())],
+    )
+    .unwrap();
+    assert_eq!(held.get(A).map(|r| &r.path), Some(&a));
+    assert_eq!(held.get(B).map(|r| r.birth_ns), Some(Some(7)));
+    assert_eq!(
+        held_rollouts(&locks, &[lock(A), open(a.clone()), lock(B)]),
+        None
+    );
     let elsewhere = PathBuf::from(format!("/tmp/rollout-2026-11-25T16-29-28-{A}.jsonl"));
-    assert_eq!(held_rollouts(&locks, &[a, elsewhere, b]), None);
+    assert_eq!(
+        held_rollouts(&locks, &[open(a), open(elsewhere), open(b)]),
+        None
+    );
+}
+
+#[test]
+fn only_a_command_property_or_an_exec_tools_command_is_a_request() {
+    // Code mode: a literal handed over as `cmd`/`command`, even after a
+    // quoted regular expression; never an incidental string.
+    let source = r#"text(label.replace(/"/g, '')); const note = "agent-relay-probe whoami";
+if (x) return /'/.test(y); await tools.exec_command({cmd: "agent-relay-probe send --body hi"});
+await tools.exec_command({"command": 'ls -la', yield_time_ms: 10}); const a = b / 2; const c = "d";
+obj.cmd = "not a property value"; tools.exec_command({ cmd : `echo ok` });"#;
+    assert_eq!(
+        js_command_literals(source),
+        vec![
+            "agent-relay-probe send --body hi".to_string(),
+            "ls -la".into(),
+            "echo ok".into()
+        ]
+    );
+    // Function calls: only an exec tool's own command fields.
+    let dir = tempfile::tempdir().unwrap();
+    let not_exec = json!({"timestamp": at(STARTED - 50), "type": "response_item", "payload": {
+        "type": "function_call", "name": "update_plan", "call_id": "call_plan",
+        "arguments": json!({"note": SCRIPT}).to_string()}})
+    .to_string();
+    let shell_array = json!({"timestamp": at(STARTED - 40), "type": "response_item", "payload": {
+        "type": "function_call", "name": "shell", "call_id": "call_shell",
+        "arguments": json!({"command": ["/bin/zsh", "-lc", SCRIPT], "workdir": SCRIPT}).to_string()}})
+    .to_string();
+    let path = rollout(
+        dir.path(),
+        A,
+        &[
+            event(STARTED - 5_000, "task_started"),
+            not_exec,
+            shell_array,
+        ],
+    );
+    let pending = pending_calls(&path, None).unwrap();
+    assert!(pending[0].literals.is_empty() && pending[0].argvs.is_empty());
+    assert!(pending[1].literals.is_empty());
+    assert_eq!(pending[1].requested(&shell(1, SCRIPT).argv), vec![0]);
+}
+
+#[test]
+fn one_requested_command_vouches_for_one_process_in_any_form() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = "agent-relay-probe send --to lead --body forms";
+    let a = rollout(
+        dir.path(),
+        A,
+        &[
+            event(STARTED - 5_000, "task_started"),
+            exec(STARTED - 40, "call_forms", script),
+        ],
+    );
+    let held = rollouts(&[(A, &a)]);
+    let wait = Duration::from_millis(0);
+    assert_eq!(vouch(&held, A, &shell(9_001, script), 50, wait), Ok(()));
+    // The same script under another shell, or as its own words: bound.
+    let bash = Spawned {
+        argv: vec!["/bin/bash".into(), "-c".into(), script.into()],
+        ..shell(9_002, script)
+    };
+    assert_eq!(vouch(&held, A, &bash, 50, wait), Err(Refusal::AlreadyBound));
+    let words = Spawned {
+        argv: shell_words::split(script).unwrap(),
+        ..shell(9_003, script)
+    };
+    assert_eq!(
+        vouch(&held, A, &words, 50, wait),
+        Err(Refusal::AlreadyBound)
+    );
+}
+
+#[test]
+fn a_rollout_put_in_place_of_the_open_one_is_not_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = rollout(
+        dir.path(),
+        A,
+        &[
+            event(STARTED - 5_000, "task_started"),
+            exec(STARTED - 40, "call_r", SCRIPT),
+        ],
+    );
+    let born = std::fs::metadata(&path)
+        .unwrap()
+        .created()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as i128;
+    assert_eq!(pending_calls(&path, Some(born)).map(|p| p.len()), Some(1));
+    assert_eq!(pending_calls(&path, Some(born + 1)), None);
 }

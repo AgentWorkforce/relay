@@ -438,14 +438,10 @@ impl LocalSessions {
     ) -> bool {
         use codex::app_server::transcript;
         let table = &*self.table;
-        let open: Vec<PathBuf> = table
-            .opened_files(app_server.pid)
-            .into_iter()
-            .map(|file| file.path)
-            .collect();
+        let open = table.opened_files(app_server.pid);
         let locks: std::collections::BTreeSet<String> = open
             .iter()
-            .filter_map(|path| crate::relay::process::codex_thread_of_lock(path))
+            .filter_map(|file| crate::relay::process::codex_thread_of_lock(&file.path))
             .collect();
         if !locks.contains(thread) {
             return false;

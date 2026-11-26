@@ -16,21 +16,27 @@
 //! - still pending in its current turn (no output recorded yet),
 //! - recorded no later than the caller's ancestor directly under the
 //!   app-server started, and
-//! - that asked for exactly the command line that ancestor runs: the script
-//!   appears in the call as one whole string literal (JS or JSON), or the
-//!   call's argv is the process's.
+//! - that asked for exactly the command line that ancestor runs: a code-mode
+//!   script hands it as a whole string literal to a `cmd`/`command`
+//!   property, or an `exec_command`/`shell` call names it as its `cmd` or
+//!   `command`. A command built any other way is not seen, and refused.
 //!
-//! Every chat's current turn must be read in full: a rollout the app-server
-//! does not have open, or whose current turn runs past the bounded tail this
-//! reads, leaves the answer unknown, and the caller is refused. A copied
-//! `CODEX_THREAD_ID` therefore names nobody: the copying chat's own pending
-//! call asked for its command too, so two chats would match. As with the
-//! watcher, the first process to ask binds the call.
+//! Every chat's current turn must be read in full. A rollout the app-server
+//! does not have open, a current turn longer than the bounded tail this
+//! reads, or a file that is not the one the app-server has open (its
+//! creation time differs) leaves the answer unknown, and the caller is
+//! refused. A copied `CODEX_THREAD_ID` therefore names nobody: the copying
+//! chat's own pending call asked for its command too, so the claimed chat is
+//! not the only one that did. As with the watcher, the first process to ask
+//! binds the requested command, in every form a process can run it.
 //!
-//! The trust this rests on: a chat cannot write another chat's rollout. Same-user processes
-//! can (any process of this user can write the file), so forging attribution
-//! takes deliberately writing a tool call into another chat's transcript,
-//! not just copying its environment.
+//! The trust this rests on: a chat cannot write another chat's rollout. Any
+//! process of this user can, so forging attribution takes deliberately
+//! writing a tool call into another chat's transcript, not just copying its
+//! environment. As with the watcher, a chat that builds another chat's
+//! pending command line some other way and starts it first is named as that
+//! chat for that one command, whose text the other chat chose; the other
+//! chat's own process is then refused.
 
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -60,23 +66,43 @@ pub(crate) struct Pending {
     pub call: String,
     /// When Codex recorded the call, in milliseconds since the epoch.
     pub recorded_ms: i64,
-    /// The call's string literals: a code-mode script's JS strings, or every
-    /// string in a function call's JSON arguments.
+    /// The command scripts the call asked for: in a code-mode script, each
+    /// whole string literal given as a `cmd`/`command` property; in an
+    /// `exec_command`/`shell` function call, its `cmd` or `command` string.
     pub literals: Vec<String>,
-    /// Argument arrays the call carries (`shell`, `local_shell_call`).
+    /// Command argument arrays the call asked for (`shell`'s `command`,
+    /// `local_shell_call`'s action).
     pub argvs: Vec<Vec<String>>,
 }
 
 impl Pending {
-    /// Whether this call asked for the command `argv` is running.
-    fn requested(&self, argv: &[String]) -> bool {
-        self.literals.iter().any(|script| script_runs(script, argv))
-            || self
-                .argvs
-                .iter()
-                .any(|announced| runs_command(announced, argv))
+    /// Which of this call's requested commands (`literals`, then `argvs`, by
+    /// index) the command `argv` is running is.
+    fn requested(&self, argv: &[String]) -> Vec<usize> {
+        let scripts = self
+            .literals
+            .iter()
+            .enumerate()
+            .filter(|(_, script)| script_runs(script, argv))
+            .map(|(at, _)| at);
+        let arrays = self
+            .argvs
+            .iter()
+            .enumerate()
+            .filter(|(_, announced)| runs_command(announced, argv))
+            .map(|(at, _)| self.literals.len() + at);
+        scripts.chain(arrays).collect()
     }
 }
+
+/// The function tools that run a command line.
+const EXEC_TOOLS: [&str; 5] = [
+    "exec_command",
+    "shell",
+    "shell_command",
+    "local_shell",
+    "container.exec",
+];
 
 /// Whether a process running `argv` runs `script` as Codex runs a command:
 /// `<shell> -c|-lc <script>` (PowerShell's `-Command`, `cmd /c`), or the
@@ -106,10 +132,23 @@ pub(crate) fn script_runs(script: &str, argv: &[String]) -> bool {
 }
 
 /// The tool calls the rollout at `path` shows pending in the chat's current
-/// turn, read from its end. `None` when that turn cannot be read in full.
-pub(crate) fn pending_calls(path: &Path) -> Option<Vec<Pending>> {
+/// turn, read from its end. `None` when that turn cannot be read in full, or
+/// the file opened is not the one the app-server has open (`birth_ns`, its
+/// open file's creation time, when the platform reports one).
+pub(crate) fn pending_calls(path: &Path, birth_ns: Option<i128>) -> Option<Vec<Pending>> {
     let mut file = std::fs::File::open(path).ok()?;
-    let length = file.metadata().ok()?.len();
+    let metadata = file.metadata().ok()?;
+    if let Some(expected) = birth_ns {
+        let created = metadata
+            .created()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?;
+        if i128::try_from(created.as_nanos()).ok()? != expected {
+            return None;
+        }
+    }
+    let length = metadata.len();
     let mut window = FIRST_TAIL;
     loop {
         let start = length.saturating_sub(window);
@@ -195,18 +234,22 @@ pub(crate) fn current_turn(text: &str, whole: bool) -> Option<Vec<Pending>> {
                 match kind {
                     "custom_tool_call" => {
                         if payload["name"] == "exec" {
-                            literals = js_string_literals(payload["input"].as_str().unwrap_or(""));
+                            literals = js_command_literals(payload["input"].as_str().unwrap_or(""));
                         }
                     }
                     "function_call" => {
+                        let exec = payload["name"]
+                            .as_str()
+                            .is_some_and(|name| EXEC_TOOLS.contains(&name));
                         if let Some(arguments) = payload["arguments"]
                             .as_str()
                             .and_then(|a| serde_json::from_str::<Value>(a).ok())
+                            .filter(|_| exec)
                         {
-                            json_strings(&arguments, &mut literals, &mut argvs, 0);
+                            command_fields(&arguments, &mut literals, &mut argvs);
                         }
                     }
-                    _ => json_strings(&payload["action"], &mut literals, &mut argvs, 0),
+                    _ => command_fields(&payload["action"], &mut literals, &mut argvs),
                 }
                 pending.retain(|p| p.call != call);
                 pending.push(Pending {
@@ -246,50 +289,111 @@ fn record_ms(record: &Value) -> Option<i64> {
         .map(|time| time.timestamp_millis())
 }
 
-/// Every string in `value`, and every array of strings as an argv.
-fn json_strings(
-    value: &Value,
-    literals: &mut Vec<String>,
-    argvs: &mut Vec<Vec<String>>,
-    depth: usize,
-) {
-    if depth > 16 {
-        return;
-    }
-    match value {
-        Value::String(text) => literals.push(text.clone()),
-        Value::Array(items) => {
-            let words: Option<Vec<String>> = items
-                .iter()
-                .map(|item| item.as_str().map(str::to_string))
-                .collect();
-            match words {
-                Some(words) if !words.is_empty() => argvs.push(words),
-                _ => items
+/// The command an exec tool's arguments ask for: a `cmd` or `command`
+/// string as a script, or a `command` array of strings as an argv.
+fn command_fields(value: &Value, literals: &mut Vec<String>, argvs: &mut Vec<Vec<String>>) {
+    for field in ["cmd", "command"] {
+        match &value[field] {
+            Value::String(script) => literals.push(script.clone()),
+            Value::Array(items) => {
+                let words: Option<Vec<String>> = items
                     .iter()
-                    .for_each(|item| json_strings(item, literals, argvs, depth + 1)),
+                    .map(|item| item.as_str().map(str::to_string))
+                    .collect();
+                if let Some(words) = words.filter(|words| !words.is_empty()) {
+                    argvs.push(words);
+                }
             }
+            _ => {}
         }
-        Value::Object(fields) => fields
-            .values()
-            .for_each(|item| json_strings(item, literals, argvs, depth + 1)),
-        _ => {}
     }
 }
 
-/// The string literals in a JS source, decoded: `"…"`, `'…'`, and template
-/// literals without substitutions. Comments are skipped; a template with a
-/// `${…}` substitution is not a literal.
+/// The string literals a JS source gives as a `cmd` or `command` property
+/// (`{cmd: "…"}`, `{"command": '…'}`): what a code-mode script hands
+/// `tools.exec_command`. A command built any other way is not seen.
+pub(crate) fn js_command_literals(source: &str) -> Vec<String> {
+    js_literals(source)
+        .into_iter()
+        .filter(|(_, command)| *command)
+        .map(|(literal, _)| literal)
+        .collect()
+}
+
+/// Every string literal in a JS source, decoded.
+#[cfg(test)]
 pub(crate) fn js_string_literals(source: &str) -> Vec<String> {
+    js_literals(source)
+        .into_iter()
+        .map(|(literal, _)| literal)
+        .collect()
+}
+
+/// Whether the literal starting at `quote` is the value of a `cmd` or
+/// `command` property: `cmd:`, `"cmd":` or `'command':` right before it.
+fn is_command_value(chars: &[char], quote: usize) -> bool {
+    let mut at = quote;
+    let skip_space = |at: &mut usize| {
+        while *at > 0 && chars[*at - 1].is_whitespace() {
+            *at -= 1;
+        }
+    };
+    skip_space(&mut at);
+    if at == 0 || chars[at - 1] != ':' {
+        return false;
+    }
+    at -= 1;
+    skip_space(&mut at);
+    let mut end = at;
+    let quoted = at > 0 && matches!(chars[at - 1], '"' | '\'');
+    if quoted {
+        end -= 1;
+    }
+    let mut begin = end;
+    while begin > 0
+        && (chars[begin - 1].is_ascii_alphanumeric() || matches!(chars[begin - 1], '_' | '$'))
+    {
+        begin -= 1;
+    }
+    let key: String = chars[begin..end].iter().collect();
+    if key != "cmd" && key != "command" {
+        return false;
+    }
+    if quoted {
+        begin > 0 && chars[begin - 1] == chars[end]
+    } else {
+        begin == 0
+            || !(chars[begin - 1].is_ascii_alphanumeric()
+                || matches!(chars[begin - 1], '_' | '$' | '.'))
+    }
+}
+
+/// Words after which a `/` starts a regular expression, not a division.
+const REGEX_AFTER_WORDS: [&str; 13] = [
+    "return", "typeof", "case", "do", "else", "in", "of", "void", "yield", "await", "delete",
+    "throw", "new",
+];
+
+/// The string literals in a JS source, decoded, each with whether it is a
+/// `cmd`/`command` property's value: `"…"`, `'…'`, and template literals
+/// without substitutions. Comments and regular expression literals are
+/// skipped; a template with a `${…}` substitution is not a literal.
+fn js_literals(source: &str) -> Vec<(String, bool)> {
     let chars: Vec<char> = source.chars().collect();
     let mut literals = Vec::new();
+    // The last significant character outside literals and comments, and
+    // the word it ends, to tell a regular expression from a division.
+    let mut last: Option<char> = None;
+    let mut word = String::new();
     let mut at = 0;
     while at < chars.len() {
-        match chars[at] {
+        let c = chars[at];
+        match c {
             '/' if chars.get(at + 1) == Some(&'/') => {
                 while at < chars.len() && chars[at] != '\n' {
                     at += 1;
                 }
+                continue;
             }
             '/' if chars.get(at + 1) == Some(&'*') => {
                 at += 2;
@@ -297,16 +401,53 @@ pub(crate) fn js_string_literals(source: &str) -> Vec<String> {
                     at += 1;
                 }
                 at += 2;
-            }
-            quote @ ('"' | '\'' | '`') => {
-                let (literal, next) = js_literal(&chars, at + 1, quote);
-                if let Some(literal) = literal {
-                    literals.push(literal);
-                }
-                at = next;
                 continue;
             }
-            _ => {}
+            '/' if last.is_none_or(|prev| "(,=:[!&|?{};+-*%<>~^".contains(prev))
+                || (last.is_some_and(|prev| prev.is_ascii_alphanumeric())
+                    && REGEX_AFTER_WORDS.contains(&word.as_str())) =>
+            {
+                at += 1;
+                let mut class = false;
+                while at < chars.len() && chars[at] != '\n' {
+                    match chars[at] {
+                        '\\' => at += 1,
+                        '[' => class = true,
+                        ']' => class = false,
+                        '/' if !class => break,
+                        _ => {}
+                    }
+                    at += 1;
+                }
+                at += 1;
+                last = Some('/');
+                word.clear();
+                continue;
+            }
+            quote @ ('"' | '\'' | '`') => {
+                let command = is_command_value(&chars, at);
+                let (literal, next) = js_literal(&chars, at + 1, quote);
+                if let Some(literal) = literal {
+                    literals.push((literal, command));
+                }
+                at = next;
+                last = Some(quote);
+                word.clear();
+                continue;
+            }
+            c if c.is_whitespace() => {}
+            c => {
+                let ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
+                if ident(c) {
+                    if at == 0 || !ident(chars[at - 1]) {
+                        word.clear();
+                    }
+                    word.push(c);
+                } else {
+                    word.clear();
+                }
+                last = Some(c);
+            }
         }
         at += 1;
     }
@@ -440,28 +581,33 @@ fn decode_unicode_escape(chars: &[char], at: usize) -> Option<(String, usize)> {
 pub(crate) enum Reading {
     /// The chats with a pending call that asked for the command, and those
     /// calls.
-    Matched(BTreeMap<String, Vec<String>>),
+    Matched(BTreeMap<String, Vec<(String, usize)>>),
     /// A held chat's current turn could not be read.
     Unknown(String),
 }
 
-/// Reads every held chat's rollout (`rollouts`: thread → the path the
+/// Reads every held chat's rollout (`rollouts`: thread → the file the
 /// app-server has open) for a pending call, recorded by `latest_ms`, that
-/// asked for the command `argv` runs.
+/// asked for the command `argv` runs: each as (call id, which of its
+/// requested commands).
 pub(crate) fn read(
-    rollouts: &BTreeMap<String, PathBuf>,
+    rollouts: &BTreeMap<String, Rollout>,
     argv: &[String],
     latest_ms: i64,
 ) -> Reading {
     let mut matched = BTreeMap::new();
-    for (thread, path) in rollouts {
-        let Some(pending) = pending_calls(path) else {
+    for (thread, rollout) in rollouts {
+        let Some(pending) = pending_calls(&rollout.path, rollout.birth_ns) else {
             return Reading::Unknown(thread.clone());
         };
-        let calls: Vec<String> = pending
+        let calls: Vec<(String, usize)> = pending
             .iter()
-            .filter(|call| call.recorded_ms <= latest_ms && call.requested(argv))
-            .map(|call| call.call.clone())
+            .filter(|call| call.recorded_ms <= latest_ms)
+            .flat_map(|call| {
+                call.requested(argv)
+                    .into_iter()
+                    .map(|which| (call.call.clone(), which))
+            })
             .collect();
         if !calls.is_empty() {
             matched.insert(thread.clone(), calls);
@@ -470,25 +616,38 @@ pub(crate) fn read(
     Reading::Matched(matched)
 }
 
-/// The held chats' rollouts as the app-server has them open: thread → path,
-/// for each lock it holds. `None` when a held chat has no open rollout, or
-/// two that disagree.
-pub(crate) fn held_rollouts(
+/// One held chat's rollout, as the app-server has it open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rollout {
+    pub path: PathBuf,
+    /// The open file's creation time, when the platform reports it: the file
+    /// read must be that same file, not one put in its place.
+    pub birth_ns: Option<i128>,
+}
+
+/// The held chats' rollouts as the app-server has them open: thread →
+/// rollout, for each lock it holds. `None` when a held chat has no open
+/// rollout, or two that disagree.
+pub fn held_rollouts(
     locks: &BTreeSet<String>,
-    open: &[PathBuf],
-) -> Option<BTreeMap<String, PathBuf>> {
-    let mut rollouts: BTreeMap<String, PathBuf> = BTreeMap::new();
-    for path in open {
-        let Some(thread) = crate::relay::process::rollout_thread_of_path(path) else {
+    open: &[crate::relay::process::OpenedFile],
+) -> Option<BTreeMap<String, Rollout>> {
+    let mut rollouts: BTreeMap<String, Rollout> = BTreeMap::new();
+    for file in open {
+        let Some(thread) = crate::relay::process::rollout_thread_of_path(&file.path) else {
             continue;
         };
         if !locks.contains(&thread) {
             continue;
         }
+        let rollout = Rollout {
+            path: file.path.clone(),
+            birth_ns: file.birth_ns,
+        };
         match rollouts.get(&thread) {
-            Some(existing) if existing != path => return None,
+            Some(existing) if *existing != rollout => return None,
             _ => {
-                rollouts.insert(thread, path.clone());
+                rollouts.insert(thread, rollout);
             }
         }
     }
@@ -512,7 +671,7 @@ pub enum Refusal {
 /// start time can lag Codex's clock. The first process to be vouched for
 /// binds the call.
 pub fn vouch(
-    rollouts: &BTreeMap<String, PathBuf>,
+    rollouts: &BTreeMap<String, Rollout>,
     thread: &str,
     spawned: &Spawned,
     slack_ms: i64,
@@ -559,12 +718,18 @@ pub fn vouch(
     }
 }
 
-/// The processes each call's command has vouched for: (thread, call,
-/// command line) → (pid, kernel start).
+/// One command a call asked for: (thread, call id, which of the call's
+/// requested commands).
+type CommandKey = (String, String, usize);
+
+/// The process each requested command has vouched for → (pid, kernel
+/// start). Every process form of one requested command (`zsh -c S`, `bash
+/// -c S`, `S`'s own words) shares its key, so only one process is ever named
+/// for it.
 #[derive(Default)]
 struct Bound {
-    by_command: HashMap<(String, String, Vec<String>), (i32, u64)>,
-    order: VecDeque<(String, String, Vec<String>)>,
+    by_command: HashMap<CommandKey, (i32, u64)>,
+    order: VecDeque<CommandKey>,
 }
 
 fn bound() -> &'static Mutex<Bound> {
@@ -572,15 +737,15 @@ fn bound() -> &'static Mutex<Bound> {
     BOUND.get_or_init(|| Mutex::new(Bound::default()))
 }
 
-/// Binds `spawned` to the first of `calls` (one chat's, each asking for its
-/// command) that it already holds or that is free. False when every one
+/// Binds `spawned` to the first of `calls` (one chat's requested commands
+/// it runs) that it already holds or that is free. False when every one
 /// vouched for another process first.
-fn bind(thread: &str, calls: &[String], spawned: &Spawned) -> bool {
+fn bind(thread: &str, calls: &[(String, usize)], spawned: &Spawned) -> bool {
     let mut bound = bound().lock().unwrap_or_else(|e| e.into_inner());
     let me = (spawned.pid, spawned.start);
-    let keys: Vec<_> = calls
+    let keys: Vec<CommandKey> = calls
         .iter()
-        .map(|call| (thread.to_string(), call.clone(), spawned.argv.clone()))
+        .map(|(call, which)| (thread.to_string(), call.clone(), *which))
         .collect();
     if keys
         .iter()
