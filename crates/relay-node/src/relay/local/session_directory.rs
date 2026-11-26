@@ -94,10 +94,16 @@ impl LocalSessions {
             forced_repositories: Default::default(),
             codex_threads: Default::default(),
             codex_loaded: Default::default(),
+            codex_hook: None,
             managed: None,
             openclaw: Default::default(),
             hermes: Default::default(),
         }
+    }
+
+    pub fn with_codex_hook(mut self, hook: Arc<codex::stop_hook::StopHookInbox>) -> Self {
+        self.codex_hook = Some(hook);
+        self
     }
 
     /// Discovery scans read `scans` instead of the direct table.
@@ -335,13 +341,20 @@ impl LocalSessions {
             &self.codex_loaded,
         )
         .map(|mut rows| {
-            let known: HashSet<_> = rows.iter().map(|s| s.target.clone()).collect();
-            rows.extend(
-                self.codex_runtime_sessions()
-                    .into_iter()
-                    .map(|(s, _)| s)
-                    .filter(|s| !known.contains(&s.target)),
-            );
+            let hook_ready = self.codex_hook.as_ref().is_some_and(|hook| hook.is_ready());
+            for (mut session, proof) in self.codex_runtime_sessions() {
+                // Runtime presence alone does not promise delivery. The
+                // trusted hook is a route into the next running turn, and
+                // the current proof still binds the root user chat, its
+                // owner, process incarnation, writer lock and rollout.
+                session.live = hook_ready
+                    && proof.current(&*self.table, self.config.uid, &self.config.codex.home);
+                if let Some(row) = rows.iter_mut().find(|row| row.target == session.target) {
+                    row.live |= session.live;
+                } else {
+                    rows.push(session);
+                }
+            }
             rows
         });
         self.codex_threads
@@ -585,3 +598,7 @@ mod tests {
         assert!(cache.retained()[0].live);
     }
 }
+
+#[cfg(test)]
+#[path = "tests/codex_hook_runtime.rs"]
+mod codex_hook_runtime;

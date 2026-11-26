@@ -171,6 +171,8 @@ pub struct LocalSessions {
     codex_threads: std::sync::Mutex<session_directory::CodexDiscoveryCache>,
     /// The app-server's loaded threads as last read.
     codex_loaded: codex::LoadedThreads,
+    /// The installed, trusted hook reaches runtime-proven Codex user chats.
+    codex_hook: Option<Arc<codex::stop_hook::StopHookInbox>>,
     managed: Option<Arc<ManagedSessions>>,
     /// The Gateway's agents as last listed.
     openclaw: crate::relay::openclaw::Listing,

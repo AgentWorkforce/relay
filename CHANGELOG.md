@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay-node`: let a Codex chat with current runtime proof receive through its trusted Stop/PostToolUse hook even when its desktop app has no window-router connection. Idle chats wait for their next turn instead of queuing input to a separate host. Archived and subagent chats stay excluded. Windows background hook discovery gets a bounded longer wait for Codex to read its configuration.
+
+- `agent-relay-node`: find Claude Code installed with WinGet on Windows even when the background service has an older PATH. On macOS, Linux and Windows, check PATH after the standard install locations so custom Claude installations can accept spawns.
+
 - `@agent-relay/events-shim`: a wake link's agent name may be up to 128 characters, the longest name Agent Relay hosts give an agent, instead of 100. A bound cloud agent (a Capy thread, say) or Control agent with a 101 to 128 character name was linked and woken but shown as unnamed.
 
 ## [18.14.0] - 2026-11-24

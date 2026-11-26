@@ -163,6 +163,7 @@ pub trait CodexRoutes: Send + Sync {
 }
 
 pub const NOT_RUNNING: &str = "Waiting — session not running";
+pub const WAITING_FOR_CODEX_TURN: &str = "Waiting — start a turn in Codex to receive this message";
 pub const NOT_CONSUMED: &str = "Waiting — terminal session has not consumed the message";
 pub const BEHIND_TURN: &str = "Waiting — queued behind the session's active turn";
 pub const HANDED_NOT_RUNNING: &str = "Waiting — handed off; session not running";
@@ -453,6 +454,12 @@ impl CodexRouter {
             if let Some(outcome) = self.host_turn(route, thread, message_id, text, spawned) {
                 return outcome;
             }
+        }
+        if hooks
+            && self.stop_hook.as_ref().is_some_and(|hook| hook.is_ready())
+            && routes.thread_live(thread)
+        {
+            return InjectOutcome::Waiting(WAITING_FOR_CODEX_TURN.into());
         }
         InjectOutcome::Waiting(NOT_RUNNING.into())
     }
@@ -761,6 +768,25 @@ mod tests {
         fn thread_live(&self, _: &str) -> bool {
             self.live.load(Ordering::SeqCst)
         }
+    }
+
+    #[test]
+    fn an_idle_hook_only_chat_waits_for_a_codex_turn() {
+        let routes = Fake::new();
+        routes.live.store(true, Ordering::SeqCst);
+        let inbox = Arc::new(StopHookInbox::default());
+        inbox.set_ready(true);
+        let router = CodexRouter::new(routes.clone()).with_stop_hook(inbox);
+        assert_eq!(
+            router.inject_with(THREAD, "idle-hook", "hello", &|| None),
+            InjectOutcome::Waiting(WAITING_FOR_CODEX_TURN.into())
+        );
+        assert_eq!(routes.queue_sends.load(Ordering::SeqCst), 0);
+        routes.live.store(false, Ordering::SeqCst);
+        assert_eq!(
+            router.inject_with(THREAD, "closed-hook", "hello", &|| None),
+            InjectOutcome::Waiting(NOT_RUNNING.into())
+        );
     }
 
     // A Conductor chat that is working gets the message from Agent Relay's
