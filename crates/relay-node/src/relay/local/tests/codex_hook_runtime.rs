@@ -8,6 +8,29 @@ const OTHER: &str = "550e8400-e29b-41d4-a716-446655440002";
 const UID: u32 = 501;
 const PID: i32 = 500;
 
+#[test]
+#[ignore = "requires this test to run inside a live Codex root chat"]
+fn current_desktop_root_has_runtime_proof() {
+    use crate::relay::process::{codex_runtime_proofs, SystemProcesses};
+    let home = crate::platform::home_dir().unwrap();
+    let config = LocalConfig::from_env(&|key| std::env::var(key).ok(), &home);
+    let wanted = std::env::var("CODEX_THREAD_ID").expect("run from a Codex root chat");
+    let table = Arc::new(SystemProcesses::default());
+    let proofs = codex_runtime_proofs(&*table, config.uid, &config.codex.home);
+    let proof = proofs.iter().find(|proof| proof.thread() == wanted);
+    assert!(proof.is_some(), "no current-chat proof among {proofs:?}");
+    let proof = proof.unwrap();
+    assert!(proof.current(&*table, config.uid, &config.codex.home));
+    let hook = Arc::new(codex::stop_hook::StopHookInbox::default());
+    hook.set_ready(true);
+    let sessions = LocalSessions::new(config, table).with_codex_hook(hook);
+    let rows = sessions.codex_sessions().unwrap();
+    assert!(
+        rows.iter().any(|row| row.target.id == wanted && row.live),
+        "current chat was not reachable among {rows:?}"
+    );
+}
+
 struct Fixture {
     _temp: tempfile::TempDir,
     sessions: LocalSessions,
@@ -50,7 +73,9 @@ impl Fixture {
             files.extend([lock, rollout]);
         }
         let table = Arc::new(FakeProcesses::default());
-        let executable = temp.path().join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        let executable = temp
+            .path()
+            .join(if cfg!(windows) { "codex.exe" } else { "codex" });
         table.trust(&executable);
         table.insert(
             PID,
