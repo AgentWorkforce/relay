@@ -3,13 +3,57 @@
 use super::*;
 use crate::relay::daemon::{Config, Core, Plugins};
 use crate::relay::paths::CorePaths;
-use crate::relay::process::{codex_runtime_proofs, file_birth_ns, OpenedFile};
+use crate::relay::process::{
+    codex_runtime_proofs, file_birth_ns, FakeProcess, FakeProcesses, OpenedFile, StartClock,
+};
 
 #[path = "../../../../tests/support/fake_relaycast.rs"]
 mod fake_relaycast;
 
 const OTHER: &str = "550e8400-e29b-41d4-a716-446655440099";
 const TURN: &str = "550e8400-e29b-41d4-a716-446655440088";
+const THREAD: &str = "019a0000-0000-7000-8000-000000000001";
+const UID: u32 = 501;
+
+struct World {
+    _temp: tempfile::TempDir,
+    sessions: LocalSessions,
+    table: Arc<FakeProcesses>,
+}
+
+fn codex_exe() -> PathBuf {
+    PathBuf::from(if cfg!(windows) {
+        "C:/codex/codex.exe"
+    } else {
+        "/opt/codex/bin/codex"
+    })
+}
+
+fn process(parent: i32, start: u64) -> FakeProcess {
+    FakeProcess {
+        parent,
+        uid: UID,
+        start,
+        ..FakeProcess::default()
+    }
+}
+
+fn world() -> World {
+    let temp = tempfile::tempdir().unwrap();
+    let mut config = LocalConfig::from_env(&|_| None, temp.path());
+    config.uid = UID;
+    config.auto_activate_excluded_dirs = vec!["/tmp".into(), "/var/tmp".into()];
+    let table = Arc::new(FakeProcesses {
+        clock: Some(StartClock::Ticks),
+        ..Default::default()
+    });
+    table.trust(codex_exe());
+    World {
+        sessions: LocalSessions::new(config, table.clone()),
+        table,
+        _temp: temp,
+    }
+}
 
 fn native_user_turn(trigger: &str) -> serde_json::Value {
     serde_json::json!({"type":"event_msg","payload":{
@@ -302,17 +346,16 @@ fn ambiguous_runtime_owners_and_directory_policy_deny_admission() {
     assert!(w.sessions.automatic_candidates().is_empty());
 }
 
-#[tokio::test]
 /// Admission, retention and cached presentation must agree across a lifecycle.
-async fn loaded_stdio_chats_register_once_and_keep_identity_without_an_idle_route() {
+async fn assert_stdio_chats_register_and_keep_identity(trigger: &str) {
     let w = world();
     let db = seed(&w, &[THREAD, OTHER]);
-    // Real Remote Control desktop rollouts can record user turns while
+    // Real desktop rollouts can record user turns while
     // leaving this catalog flag at zero for the whole conversation.
     db.execute("update threads set has_user_event=0", [])
         .unwrap();
     for id in [THREAD, OTHER] {
-        append_record(&w, id, &native_user_turn("remote_android"));
+        append_record(&w, id, &native_user_turn(trigger));
     }
     let home = w._temp.path();
     let fake = fake_relaycast::FakeRelaycast::start(Default::default()).await;
@@ -399,6 +442,16 @@ async fn loaded_stdio_chats_register_once_and_keep_identity_without_an_idle_rout
     core.activate_new_sessions().await;
     let rows = crate::relay::local_methods::sessions_list(&core).await;
     assert!(rows.sessions.iter().all(|s| s.delivery_wait.is_none()));
+}
+
+#[tokio::test]
+async fn loaded_stdio_chats_register_once_and_keep_identity_without_an_idle_route() {
+    assert_stdio_chats_register_and_keep_identity("remote_android").await;
+}
+
+#[tokio::test]
+async fn composer_stdio_chats_register_once_and_keep_identity_without_an_idle_route() {
+    assert_stdio_chats_register_and_keep_identity("composer").await;
 }
 
 #[test]
@@ -594,7 +647,7 @@ async fn a_hand_registered_stdio_chat_stays_present_while_its_writer_lock_is_hel
     core.rediscover_workspace();
     core.store.update(|s| s.auto_activate = Some(true)).unwrap();
     assert!(sessions.automatic_candidates().is_empty());
-    // The world's live Claude terminal stays; no Codex chat is present.
+    // No Codex chat has a deliverable route or native user evidence yet.
     assert!(sessions
         .present_targets(&sessions.sessions())
         .iter()

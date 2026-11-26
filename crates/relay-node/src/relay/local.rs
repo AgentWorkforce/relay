@@ -2024,13 +2024,18 @@ pub use plugins::{
     ClientProfile,
 };
 
+// Codex runtime admission uses portable process and file fixtures. Keep it
+// outside the Unix-only provider tests so Windows exercises this path too.
+#[cfg(test)]
+#[path = "local/tests/runtime_registration.rs"]
+mod runtime_registration;
+
 // The fixtures are Unix sockets, shell scripts, file modes and `/tmp`, for
 // the Grok, Muse and OpenCode routes Windows does not have.
 #[cfg(test)]
 #[cfg(unix)]
 mod tests {
     mod automatic_admission;
-    mod runtime_registration;
 
     mod spawned_delivery;
     use super::*;
