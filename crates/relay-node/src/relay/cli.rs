@@ -550,8 +550,7 @@ pub fn devin_hook(development: bool) -> Result<()> {
         }
         return Ok(());
     }
-    let config = crate::relay::devin::DevinConfig::from_env(&|key| std::env::var(key).ok(), &home)
-        .development(development);
+    let config = crate::relay::devin::DevinConfig::from_env(&|key| std::env::var(key).ok(), &home);
     let mut answer = crate::relay::devin::hook_answer(&config, &payload);
     // At a Stop not already continuing from a block, the build's turn-end
     // advisory from the core, after any pending messages or alone.
@@ -665,14 +664,13 @@ pub fn cursor_hook(development: bool, wait: bool) -> Result<()> {
     let mut stdout = std::io::stdout();
     let mut answered = false;
     if let Ok(home) = paths::home() {
-        let config =
-            CursorConfig::from_env(&|key| std::env::var(key).ok(), &home).development(development);
+        let config = CursorConfig::from_env(&|key| std::env::var(key).ok(), &home);
         let table = crate::relay::process::SystemProcesses::default();
         // From this process, so its own environment is checked too.
         let pid = std::process::id() as i32;
         let settings = CursorSettings::new(
             &config,
-            CursorSettings::command_for(&std::env::current_exe().unwrap_or_default(), development),
+            CursorSettings::command_for(&std::env::current_exe().unwrap_or_default()),
         );
         let interrupts = wait.then(waiting::Interrupts::install);
         let stopping = || {

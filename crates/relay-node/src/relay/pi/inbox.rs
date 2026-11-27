@@ -1,17 +1,11 @@
 //! Private inbox publication and serialization shared with mode reservations.
 use crate::platform::fs as private_fs;
-use fs2::FileExt;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 
 pub(super) fn delivery_lock(directory: &Path) -> std::io::Result<File> {
-    let mut options = OpenOptions::new();
-    options.write(true).create(true).truncate(false);
-    let lock = private_fs::no_follow(private_fs::private(&mut options))
-        .open(directory.join("delivery.lock"))?;
-    lock.lock_exclusive()?;
-    Ok(lock)
+    private_fs::lock_exclusive(&directory.join("delivery.lock"))
 }
 
 pub(super) fn atomic_write_guarded(

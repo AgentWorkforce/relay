@@ -59,14 +59,13 @@ impl CopilotSettings {
             .map_err(|_| "Could not save Copilot hooks.".into())
     }
 }
-fn managed_value(config: &CopilotConfig, executable: &Path) -> Value {
+fn managed_value(_config: &CopilotConfig, executable: &Path) -> Value {
     let mut hooks = serde_json::Map::new();
     for (event, flag) in EVENTS {
         let command = format!(
-            "exec {} copilot-hook --event {}{}",
+            "exec {} copilot-hook --event {}",
             crate::relay::outbound::shell_quote(&executable.to_string_lossy()),
             flag,
-            if config.development { " --dev" } else { "" }
         );
         hooks.insert((*event).into(), json!([{"type":"command","command":command,
             "timeoutSec":if *flag == "stop" { 3600 } else if *flag == "before" { 60 } else if *flag == "start" { 20 } else { 10 }}]));

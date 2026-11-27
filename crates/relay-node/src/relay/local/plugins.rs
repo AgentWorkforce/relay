@@ -146,9 +146,6 @@ pub fn plugins_with_options(
     }
     let grok_settings = Arc::new(GrokSettings::new(&local.grok));
     let opencode_settings = Arc::new(OpenCodeSettings::new(&local.opencode));
-    // Agent Relay Dev stages into and drains its own Devin inbox, never
-    // production's queue.
-    local.devin = local.devin.development(development);
     local.sources = sources;
     // The person's OpenClaw Gateway, reached on loopback; on unless
     // `AGENT_RELAY_ENABLE_OPENCLAW=0`, and listed only while it answers.
@@ -179,19 +176,16 @@ pub fn plugins_with_options(
         &local.devin,
         devin::DevinSettings::command_for(
             &std::env::current_exe().unwrap_or_else(|_| PathBuf::from("agent-relay-node")),
-            development,
         ),
     ));
-    // Agent Relay Dev stages into and drains its own Cursor, Copilot, and
-    // Antigravity inboxes too.
-    local.cursor = local.cursor.development(development);
-    local.copilot = local.copilot.development(development);
-    local.antigravity = local.antigravity.development(development);
+    // Agent Relay's Antigravity hooks in ~/.gemini/antigravity/hooks.json hand
+    // staged messages to the session at its next tool call or turn end. An
+    // installed copy is brought up to date off the start path in production.
     let antigravity_settings = Arc::new(crate::relay::antigravity::AntigravitySettings::new(
         &local.antigravity,
         std::env::current_exe().unwrap_or_else(|_| PathBuf::from("agent-relay-node")),
     ));
-    if !matches!(build, outbound::Build::Profile(_)) {
+    if production {
         let antigravity_settings = antigravity_settings.clone();
         let _ = std::thread::Builder::new()
             .name("antigravity-hooks".into())
@@ -205,15 +199,14 @@ pub fn plugins_with_options(
     }
     // Agent Relay's Cursor CLI hooks in ~/.cursor/hooks.json hand staged
     // messages to the session at its next tool call or turn end. An
-    // installed copy is brought up to date off the start path.
+    // installed copy is brought up to date off the start path in production.
     let cursor_settings = Arc::new(crate::relay::cursor_cli::CursorSettings::new(
         &local.cursor,
         crate::relay::cursor_cli::CursorSettings::command_for(
             &std::env::current_exe().unwrap_or_else(|_| PathBuf::from("agent-relay-node")),
-            development,
         ),
     ));
-    if !matches!(build, outbound::Build::Profile(_)) {
+    if production {
         let cursor_settings = cursor_settings.clone();
         let _ = std::thread::Builder::new()
             .name("cursor-hooks".into())

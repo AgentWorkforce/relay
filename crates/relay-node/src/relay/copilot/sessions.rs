@@ -114,19 +114,7 @@ pub fn discover(
 }
 fn record_lock(config: &CopilotConfig, sid: &str) -> io::Result<std::fs::File> {
     config.prepare()?;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(false);
-    let lock = crate::platform::fs::no_follow(crate::platform::fs::private(&mut options))
-        .open(config.state().join(format!("{sid}.lock")))?;
-    let metadata = lock.metadata()?;
-    if !metadata.is_file()
-        || !crate::platform::fs::owned_by_current_user(&metadata)
-        || !crate::platform::fs::private_to_owner(&metadata, 0o077)
-    {
-        return Err(io::Error::other("Copilot state lock is not private"));
-    }
-    fs2::FileExt::lock_exclusive(&lock)?;
-    Ok(lock)
+    crate::platform::fs::lock_exclusive(&config.state().join(format!("{sid}.lock")))
 }
 /// Called only by the peer-authenticated session socket. The native runtime
 /// directly launches this hook executable, whose payload names a held session.

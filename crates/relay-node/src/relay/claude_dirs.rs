@@ -581,41 +581,8 @@ struct FileLock {
 
 impl FileLock {
     fn exclusive(path: &Path) -> std::io::Result<FileLock> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let file = crate::platform::fs::private(
-            std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false),
-        )
-        .open(path)?;
-        FileLock::lock(file)
-    }
-
-    /// Windows: `LockFileEx` through fs2, held by the open handle as
-    /// `flock` is by the descriptor.
-    #[cfg(windows)]
-    fn lock(file: std::fs::File) -> std::io::Result<FileLock> {
-        fs2::FileExt::lock_exclusive(&file)?;
+        let file = crate::platform::fs::lock_exclusive(path)?;
         Ok(FileLock { _file: file })
-    }
-
-    #[cfg(unix)]
-    fn lock(file: std::fs::File) -> std::io::Result<FileLock> {
-        use std::os::unix::io::AsRawFd;
-        loop {
-            // SAFETY: `flock` takes the descriptor of a file this owns.
-            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
-                return Ok(FileLock { _file: file });
-            }
-            let error = std::io::Error::last_os_error();
-            if error.kind() != std::io::ErrorKind::Interrupted {
-                return Err(error);
-            }
-        }
     }
 }
 

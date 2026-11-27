@@ -16,7 +16,6 @@ fn executable_discovery_canonicalizes_relative_paths_and_development_matches_plu
         adapter.executable,
         Some(std::fs::canonicalize(binary).unwrap())
     );
-    assert!(!adapter.config.development);
     assert!(matches!(adapter.build, Build::Production));
 }
 

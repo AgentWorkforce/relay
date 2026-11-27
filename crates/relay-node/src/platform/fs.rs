@@ -213,6 +213,66 @@ pub fn lock_held(error: &io::Error) -> bool {
             && error.raw_os_error() == fs2::lock_contended_error().raw_os_error())
 }
 
+/// Opens `path` as a private, non-symlink regular file owned by this user
+/// (`0600`, no group or other access on Unix), creating any missing parent
+/// directories as private (`0700`) first.
+pub fn open_private_lock(path: &Path) -> io::Result<std::fs::File> {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        create_private_dir_all(parent)?;
+    }
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    let file = no_follow(private(&mut options)).open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file()
+        || !owned_by_current_user(&metadata)
+        || !private_to_owner(&metadata, 0o077)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("lock file {} is not private", path.display()),
+        ));
+    }
+    Ok(file)
+}
+
+fn lock_retrying(mut acquire: impl FnMut() -> io::Result<()>) -> io::Result<()> {
+    loop {
+        match acquire() {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Acquires an exclusive advisory lock on a private lock file at `path`.
+/// The lock is released when the returned `File` is dropped.
+pub fn lock_exclusive(path: &Path) -> io::Result<std::fs::File> {
+    let file = open_private_lock(path)?;
+    lock_retrying(|| fs2::FileExt::lock_exclusive(&file))?;
+    Ok(file)
+}
+
+/// Acquires a shared advisory lock on a private lock file at `path`.
+/// The lock is released when the returned `File` is dropped.
+pub fn lock_shared(path: &Path) -> io::Result<std::fs::File> {
+    let file = open_private_lock(path)?;
+    lock_retrying(|| fs2::FileExt::lock_shared(&file))?;
+    Ok(file)
+}
+
+/// Attempts to acquire an exclusive advisory lock on a private lock file at
+/// `path` without blocking. Returns `Ok(None)` when another handle holds it.
+pub fn try_lock_exclusive(path: &Path) -> io::Result<Option<std::fs::File>> {
+    let file = open_private_lock(path)?;
+    match fs2::FileExt::try_lock_exclusive(&file) {
+        Ok(()) => Ok(Some(file)),
+        Err(error) if lock_held(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 /// Creates `dir` and any missing parents, private to this user. A `dir`
 /// that already exists is used only when it is a real directory (not a
 /// symlink) this user owns and no one else can write to; its permissions
@@ -328,5 +388,34 @@ mod tests {
             "refused"
         )));
         assert!(!lock_held(&io::Error::from_raw_os_error(2)));
+    }
+
+    #[test]
+    fn private_lock_helpers_serialize_and_reject_insecure_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("shared.lock");
+        let held = lock_exclusive(&path).unwrap();
+        assert!(try_lock_exclusive(&path).unwrap().is_none());
+        drop(held);
+        let acquired = try_lock_exclusive(&path).unwrap();
+        assert!(acquired.is_some());
+        drop(acquired);
+        let shared = lock_shared(&path).unwrap();
+        assert!(try_lock_exclusive(&path).unwrap().is_none());
+        drop(shared);
+
+        #[cfg(unix)]
+        {
+            let loose = dir.path().join("loose.lock");
+            std::fs::write(&loose, b"").unwrap();
+            set_mode(&loose, 0o644).unwrap();
+            assert_eq!(
+                lock_exclusive(&loose).unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            let link = dir.path().join("link.lock");
+            symlink(&path, &link).unwrap();
+            assert!(lock_exclusive(&link).is_err());
+        }
     }
 }

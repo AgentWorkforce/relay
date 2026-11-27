@@ -4,7 +4,6 @@
 use super::Refusal;
 use crate::platform::fs::{create_private_dir, write_atomic};
 use crate::relay::store::random_uuid;
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -542,15 +541,7 @@ pub(crate) fn edit<T>(
         .map_err(|_| "Could not open the mobile message queue.".to_string())?;
     let path = directory.join("queue.json");
     let lock_path: PathBuf = directory.join("queue.lock");
-    let lock = crate::platform::fs::private(
-        std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true),
-    )
-    .open(lock_path)
-    .map_err(|_| "Could not lock the mobile message queue.".to_string())?;
-    lock.lock_exclusive()
+    let _lock = crate::platform::fs::lock_exclusive(&lock_path)
         .map_err(|_| "Could not lock the mobile message queue.".to_string())?;
     let mut journal = match std::fs::read(&path) {
         Ok(bytes) => serde_json::from_slice(&bytes)

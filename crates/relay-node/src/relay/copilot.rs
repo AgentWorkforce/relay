@@ -24,7 +24,6 @@ pub use delivery::send;
 pub struct CopilotConfig {
     pub home: PathBuf,
     pub data_dir: PathBuf,
-    pub development: bool,
     inbox: Arc<TurnInbox>,
     helper: Arc<RwLock<PathBuf>>,
 }
@@ -33,7 +32,6 @@ impl std::fmt::Debug for CopilotConfig {
         f.debug_struct("CopilotConfig")
             .field("home", &self.home)
             .field("data_dir", &self.data_dir)
-            .field("development", &self.development)
             .finish()
     }
 }
@@ -44,40 +42,24 @@ impl CopilotConfig {
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
             .unwrap_or_else(|| home.join(".copilot"));
+        let state = home.join(".agentworkforce/desktop/copilot");
         Self {
             home: home.into(),
             data_dir,
-            development: false,
-            inbox: Arc::new(TurnInbox::default()),
+            inbox: Arc::new(TurnInbox::open(state.join("claims.json")).retain_claims()),
             helper: Arc::new(RwLock::new(
                 std::env::current_exe().unwrap_or_else(|_| PathBuf::from("agent-relay-node")),
             )),
         }
-        .development(false)
-    }
-    pub fn development(mut self, development: bool) -> Self {
-        self.development = development;
-        self.inbox = Arc::new(TurnInbox::open(self.state().join("claims.json")).retain_claims());
-        self
     }
     pub fn sessions(&self) -> PathBuf {
         self.data_dir.join("session-state")
     }
     pub fn state(&self) -> PathBuf {
-        self.home
-            .join(".agentworkforce/desktop")
-            .join(if self.development {
-                "copilot-dev"
-            } else {
-                "copilot"
-            })
+        self.home.join(".agentworkforce/desktop/copilot")
     }
     pub fn hooks_file(&self) -> PathBuf {
-        self.data_dir.join("hooks").join(if self.development {
-            "agent-relay-dev.json"
-        } else {
-            "agent-relay.json"
-        })
+        self.data_dir.join("hooks").join("agent-relay.json")
     }
     /// The embedder chooses the installed helper, independently of user hook JSON.
     pub fn set_helper(&self, executable: PathBuf) {

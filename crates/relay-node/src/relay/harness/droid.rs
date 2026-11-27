@@ -148,14 +148,13 @@ impl DroidAdapter {
             // Invalid folder names must not select a different build.
             Build::Production
         };
-        let development = build.is_development();
         Self {
             build,
             executable,
             terminate: Arc::new(|table, process| {
                 stop_process(table, process.pid, Some(process.start))
             }),
-            config: DroidConfig::from_env(&|k| cx.var(k), &cx.home).development(development),
+            config: DroidConfig::from_env(&|k| cx.var(k), &cx.home),
             table: cx.table.clone(),
             helper: std::env::current_exe().ok(),
             environment: cx

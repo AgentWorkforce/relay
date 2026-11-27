@@ -83,11 +83,7 @@ pub struct Record {
 }
 
 pub fn runtime(config: &DevinConfig) -> PathBuf {
-    config.data_dir.join("relay").join(if config.development {
-        "spawned-dev"
-    } else {
-        "spawned"
-    })
+    config.data_dir.join("relay").join("spawned")
 }
 
 fn private(path: &Path, directory: bool) -> bool {
@@ -270,11 +266,10 @@ impl DevinAdapter {
     pub fn new(cx: &HarnessContext) -> Self {
         let executable = executable(cx);
         let build = Build::of(&cx.app_data_dir);
-        let development = build.is_development();
         Self {
             build,
             executable,
-            config: DevinConfig::from_env(&|k| cx.var(k), &cx.home).development(development),
+            config: DevinConfig::from_env(&|k| cx.var(k), &cx.home),
             table: cx.table.clone(),
             helper: std::env::current_exe().ok(),
             environment: cx

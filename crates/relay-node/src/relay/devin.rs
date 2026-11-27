@@ -38,16 +38,11 @@ pub struct DevinConfig {
     /// `devin-cloud`'s send resolves `credentials.toml`/`config.json`
     /// from it with the same XDG resolution `data_dir`/`config_dir` used.
     pub home: PathBuf,
-    /// Agent Relay Dev stages and drains its own inbox, so a development
-    /// build's hook never consumes production's queue and the dev core
-    /// never places messages where production's hook reads.
-    pub development: bool,
 }
 
 impl DevinConfig {
     /// Reads `XDG_DATA_HOME` and `XDG_CONFIG_HOME` from `env`; `home` is
-    /// the user's home directory. The production inbox is the default;
-    /// `development` selects Agent Relay Dev's.
+    /// the user's home directory.
     pub fn from_env(env: &dyn Fn(&str) -> Option<String>, home: &Path) -> DevinConfig {
         let xdg = |key: &str, fallback: &[&str]| {
             env(key)
@@ -64,14 +59,7 @@ impl DevinConfig {
             data_dir: xdg("XDG_DATA_HOME", &[".local", "share"]).join("devin"),
             config_dir: xdg("XDG_CONFIG_HOME", &[".config"]).join("devin"),
             home: home.to_path_buf(),
-            development: false,
         }
-    }
-
-    /// This same configuration selecting Agent Relay Dev's inbox.
-    pub fn development(mut self, development: bool) -> DevinConfig {
-        self.development = development;
-        self
     }
 
     /// The CLI's directory: `session_locks/`, `transcripts/`, `sessions.db`.
@@ -84,15 +72,9 @@ impl DevinConfig {
         self.cli().join("session_locks")
     }
 
-    /// The file queue this build's hooks drain into the conversation:
-    /// `inbox.d` for Agent Relay, `inbox-dev.d` for Agent Relay Dev.
+    /// The file queue hooks drain into the conversation.
     pub fn inbox(&self) -> PathBuf {
-        let name = if self.development {
-            "inbox-dev.d"
-        } else {
-            "inbox.d"
-        };
-        self.data_dir.join("relay").join(name)
+        self.data_dir.join("relay").join("inbox.d")
     }
 
     /// Devin's own configuration, whose `hooks` object runs a command at
@@ -817,16 +799,12 @@ impl DevinSettings {
         }
     }
 
-    /// The hook command for `executable`, with `--dev` for Agent Relay Dev.
-    pub fn command_for(executable: &Path, development: bool) -> String {
-        let mut command = format!(
+    /// The hook command for `executable`.
+    pub fn command_for(executable: &Path) -> String {
+        format!(
             "{} {HOOK_SUBCOMMAND}",
             crate::relay::outbound::shell_quote(&executable.to_string_lossy())
-        );
-        if development {
-            command.push_str(" --dev");
-        }
-        command
+        )
     }
 
     /// Devin has run on this computer — its data directory exists, where
@@ -839,13 +817,12 @@ impl DevinSettings {
         platform::SUPPORTED && self.config.data_dir.is_dir()
     }
 
-    /// This build's hook: `<relay binary> devin-hook [--dev]`, where
-    /// the executable is one of ours by name and Agent Relay and Agent
-    /// Relay Dev each keep their own. A command that merely ends with the
+    /// Agent Relay's hook: `<relay binary> devin-hook`, where the executable
+    /// is one of ours by name. A command that merely ends with the
     /// subcommand's spelling — `echo devin-hook`, a shell wrapper —
     /// is the user's own hook and is never removed.
     fn is_ours(&self, command: &str) -> bool {
-        hook_command::is_ours(command, &self.command)
+        hook_command::is_ours(command)
     }
 
     fn read_object(&self) -> Result<serde_json::Map<String, serde_json::Value>, String> {
@@ -1164,7 +1141,6 @@ mod tests {
             data_dir: home.join("devin"),
             config_dir: home.join("config").join("devin"),
             home: home.to_path_buf(),
-            development: false,
         }
     }
 
@@ -1599,27 +1575,6 @@ mod tests {
         assert_eq!(staged.len(), 2, "{staged:?}");
     }
 
-    #[test]
-    fn agent_relay_dev_drains_its_own_inbox_only() {
-        let temp = tempfile::tempdir().unwrap();
-        let config = config(temp.path());
-        // A production message stays put while Agent Relay Dev drains, and
-        // Dev's own queue is the one it empties.
-        place(&config, "real-gallium.1.msg", "production");
-        let dev = config.clone().development(true);
-        place(&dev, "real-gallium.2.msg", "development");
-        let (output, consumed) = hook_answer(
-            &dev,
-            &serde_json::json!({"hook_event_name": "PostToolUse", "session_id": "real-gallium"}),
-        )
-        .unwrap();
-        settle(&consumed);
-        assert!(output.to_string().contains("development"));
-        assert!(!output.to_string().contains("production"));
-        assert!(config.inbox().join("real-gallium.1.msg").exists());
-        assert!(!dev.inbox().join("real-gallium.2.msg").exists());
-    }
-
     /// The question hook: one `ask_user_question` group with a longer
     /// timeout beside the person's own PreToolUse hooks; an install from
     /// before it gains it on reclaim; off takes only ours out.
@@ -1842,48 +1797,43 @@ mod tests {
     #[test]
     fn bundled_mac_helpers_enable_idempotently_and_can_be_turned_off() {
         use crate::relay::agents::SettingsExtension;
-        for (name, development) in [
-            ("Agent Relay Helper", false),
-            ("Agent Relay Dev Helper", true),
-        ] {
-            let temp = tempfile::tempdir().unwrap();
-            let config = config(temp.path());
-            std::fs::create_dir_all(&config.data_dir).unwrap();
-            let executable = temp.path().join("App.app/Contents/Helpers").join(name);
-            let settings = DevinSettings::new(
-                &config,
-                DevinSettings::command_for(&executable, development),
-            );
-            // Existing installs can already contain duplicate hooks from repeated clicks.
-            let mut object = serde_json::Map::new();
-            settings.install_into(&mut object).unwrap();
-            settings.install_into(&mut object).unwrap();
-            object.insert("theme_mode".into(), serde_json::json!("dark"));
-            std::fs::create_dir_all(&config.config_dir).unwrap();
-            std::fs::write(config.config_file(), serde_json::to_vec(&object).unwrap()).unwrap();
-            for _ in 0..2 {
-                settings
-                    .set(SETTING, &serde_json::json!(true))
-                    .unwrap()
-                    .unwrap();
-                assert_eq!(settings.get()[SETTING], true, "{name}");
-                let object = settings.read_object().unwrap();
-                for event in HOOK_EVENTS {
-                    assert_eq!(
-                        object["hooks"][event].as_array().unwrap().len(),
-                        1,
-                        "{name}: {event}"
-                    );
-                }
-                assert_eq!(object["theme_mode"], "dark");
-            }
+        let temp = tempfile::tempdir().unwrap();
+        let config = config(temp.path());
+        std::fs::create_dir_all(&config.data_dir).unwrap();
+        let executable = temp
+            .path()
+            .join("App.app/Contents/Helpers")
+            .join("Agent Relay Helper");
+        let settings = DevinSettings::new(&config, DevinSettings::command_for(&executable));
+        // Existing installs can already contain duplicate hooks from repeated clicks.
+        let mut object = serde_json::Map::new();
+        settings.install_into(&mut object).unwrap();
+        settings.install_into(&mut object).unwrap();
+        object.insert("theme_mode".into(), serde_json::json!("dark"));
+        std::fs::create_dir_all(&config.config_dir).unwrap();
+        std::fs::write(config.config_file(), serde_json::to_vec(&object).unwrap()).unwrap();
+        for _ in 0..2 {
             settings
-                .set(SETTING, &serde_json::json!(false))
+                .set(SETTING, &serde_json::json!(true))
                 .unwrap()
                 .unwrap();
-            assert_eq!(settings.get()[SETTING], false, "{name}");
-            assert!(!settings.read_object().unwrap().contains_key("hooks"));
+            assert_eq!(settings.get()[SETTING], true);
+            let object = settings.read_object().unwrap();
+            for event in HOOK_EVENTS {
+                assert_eq!(
+                    object["hooks"][event].as_array().unwrap().len(),
+                    1,
+                    "{event}"
+                );
+            }
+            assert_eq!(object["theme_mode"], "dark");
         }
+        settings
+            .set(SETTING, &serde_json::json!(false))
+            .unwrap()
+            .unwrap();
+        assert_eq!(settings.get()[SETTING], false);
+        assert!(!settings.read_object().unwrap().contains_key("hooks"));
     }
 
     #[test]
@@ -1910,13 +1860,12 @@ mod tests {
     }
 
     #[test]
-    fn the_setting_ignores_foreign_commands_and_dev_variants() {
+    fn the_setting_ignores_foreign_commands() {
         let temp = tempfile::tempdir().unwrap();
         let config = config(temp.path());
         let settings = settings(&config);
         assert!(settings.is_ours("/opt/relay/agent-relay-probe devin-hook"));
         assert!(settings.is_ours("'/opt/relay dir/agent-relay-probe' devin-hook"));
-        assert!(!settings.is_ours("/opt/relay/agent-relay-probe devin-hook --dev"));
         assert!(!settings.is_ours("/home/user/.config/devin/relay-hook.py"));
         // A command whose arguments merely spell the subcommand — an echo,
         // a wrapper script, some other binary — is the user's, never ours.
@@ -1930,10 +1879,6 @@ mod tests {
             "'/Applications/Agent Relay.app/Contents/Helpers/Agent Relay Helper' relay devin-hook"
         ));
         assert!(!settings.is_ours("echo relay devin-hook"));
-        let dev = DevinSettings::new(&config, "/opt/agent-relay-probe devin-hook --dev".into());
-        assert!(dev.is_ours("/opt/agent-relay-probe devin-hook --dev"));
-        assert!(!dev.is_ours("/opt/agent-relay-probe devin-hook"));
-        assert!(!dev.is_ours("/opt/probe devin-hook --dev"));
     }
 
     /// A symlink whose target is a `pipe:[N]` name, like `/proc/pid/fd`

@@ -1036,35 +1036,16 @@ fn the_setting_fails_closed_and_is_offered_only_where_cursor_cli_ran() {
 }
 
 #[test]
-fn hook_commands_are_recognized_per_build() {
+fn hook_commands_are_recognized() {
     let (_temp, config, _table) = world();
     let settings = settings(&config);
     assert!(settings.is_ours("/opt/relay/agent-relay-probe cursor-hook"));
     assert!(settings.is_ours("'/opt/relay dir/agent-relay-probe' cursor-hook"));
-    assert!(!settings.is_ours("/opt/relay/agent-relay-probe cursor-hook --dev"));
     assert!(!settings.is_ours("/opt/relay/agent-relay-probe devin-hook"));
     assert!(!settings.is_ours("echo cursor-hook"));
-    let dev = CursorSettings::new(&config, "/opt/agent-relay-probe cursor-hook --dev".into());
-    assert!(dev.is_ours("/opt/agent-relay-probe cursor-hook --dev"));
-    assert!(!dev.is_ours("/opt/agent-relay-probe cursor-hook"));
-    // The waiting `stop` entry is each build's too.
+    // The waiting `stop` entry is ours too.
     assert!(settings.is_ours("/opt/relay/agent-relay-probe cursor-hook --wait"));
-    assert!(!settings.is_ours("/opt/relay/agent-relay-probe cursor-hook --wait --dev"));
-    assert!(dev.is_ours("/opt/agent-relay-probe cursor-hook --wait --dev"));
-    assert!(!dev.is_ours("/opt/agent-relay-probe cursor-hook --wait"));
     assert!(!settings.is_ours("/opt/relay/agent-relay-probe cursor-hook --wait --wait"));
-}
-
-#[test]
-fn agent_relay_dev_keeps_its_own_inbox() {
-    let (_temp, config, table) = world();
-    let dev = config.clone().development(true);
-    send(&config, &table, uid(), SESSION, "m-1", "production");
-    send(&dev, &table, uid(), SESSION, "m-2", "development");
-    let payload = json!({"hook_event_name": "postToolUse", "conversation_id": SESSION});
-    let answer = hook_answer(&dev, &payload).unwrap();
-    assert_eq!(answer.output["additional_context"], "development");
-    assert!(config.inbox().join(format!("{SESSION}.m-1.msg")).exists());
 }
 
 /// A real Cursor CLI session, run by `scripts/test-cursor-live.sh`: stages
@@ -1132,11 +1113,9 @@ fn a_hook_with_nothing_to_hand_over_lets_the_prompt_go_on() {
 }
 
 #[test]
-fn every_build_edits_hooks_under_one_lock_and_turning_off_makes_none() {
+fn turning_off_hooks_when_absent_makes_no_lock_file() {
     let temp = tempfile::tempdir().unwrap();
     let config = CursorConfig::from_env(&|_| None, temp.path());
-    let dev = config.clone().development(true);
-    assert_eq!(settings(&config).lock_path(), settings(&dev).lock_path());
     assert_eq!(settings(&config).set(SETTING, &json!(false)), Some(Ok(())));
     assert!(!settings(&config).lock_path().exists());
 }

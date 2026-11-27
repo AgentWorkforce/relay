@@ -33,7 +33,6 @@ use crate::relay::process::ProcessTable;
 use crate::relay::store::random_hex;
 use crate::relay::workspace::Secret;
 use base64::Engine;
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -726,27 +725,8 @@ impl Journal {
 
     fn with_lock<T>(&self, binding: &Binding, run: impl FnOnce() -> T) -> std::io::Result<T> {
         let path = self.lock_path(binding);
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .custom_flags(platform::O_NOFOLLOW)
-            .mode(0o600)
-            .open(path)?;
-        let metadata = file.metadata()?;
-        if !metadata.is_file()
-            || metadata.uid() != platform::getuid()
-            || metadata.mode() & 0o077 != 0
-        {
-            return Err(std::io::Error::new(
-                ErrorKind::PermissionDenied,
-                "OpenCode route lock is not private",
-            ));
-        }
-        file.lock_exclusive()?;
-        let result = run();
-        FileExt::unlock(&file)?;
-        Ok(result)
+        let _file = crate::platform::fs::lock_exclusive(&path)?;
+        Ok(run())
     }
 
     fn claim(&self, request: &Request<'_>) -> std::io::Result<Claim> {

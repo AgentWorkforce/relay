@@ -21,7 +21,6 @@ use crate::relay::process::{ProcessInfo, ProcessTable};
 use crate::relay::sessions::DiscoveredSession;
 use crate::relay::store::{random_hex, SessionKind, Target};
 use crate::relay::{opencode_existing, opencode_serve};
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
@@ -629,21 +628,15 @@ impl ManagedSessions {
         body: impl FnOnce(&mut Vec<SealedRecord>) -> std::io::Result<T>,
     ) -> std::io::Result<T> {
         self.prepare_root()?;
-        let lock = private_open(&self.root.join("bindings.lock"), false)?;
-        lock.lock_exclusive()?;
+        let _lock = crate::platform::fs::lock_exclusive(&self.root.join("bindings.lock"))?;
         let mut records = self.read_sealed_or_quarantine()?;
-        let result = body(&mut records);
-        FileExt::unlock(&lock)?;
-        result
+        body(&mut records)
     }
 
     fn read_records(&self) -> std::io::Result<Vec<Record>> {
         self.prepare_root()?;
-        let lock = private_open(&self.root.join("bindings.lock"), false)?;
-        lock.lock_exclusive()?;
-        let records = self.read_sealed_or_quarantine();
-        FileExt::unlock(&lock)?;
-        records?
+        let _lock = crate::platform::fs::lock_exclusive(&self.root.join("bindings.lock"))?;
+        self.read_sealed_or_quarantine()?
             .into_iter()
             .map(|sealed| {
                 if digest(&sealed.record)? == sealed.digest {

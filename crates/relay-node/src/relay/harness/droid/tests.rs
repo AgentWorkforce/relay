@@ -246,8 +246,7 @@ fn restart_finds_only_its_live_host_and_never_adopts_a_reused_pid() {
     .unwrap();
     write_record(&dir.join(format!("{}.json", record.session_id)), &record).unwrap();
     use crate::relay::sessions::{SessionDirectory, SessionPartition};
-    let mut config = crate::relay::local::LocalConfig::from_env(&|_| None, home.path());
-    config.devin.development = true;
+    let config = crate::relay::local::LocalConfig::from_env(&|_| None, home.path());
     let sessions = crate::relay::local::LocalSessions::new(config, table.clone());
     let rows = sessions
         .discover_partition(SessionPartition::Droid)

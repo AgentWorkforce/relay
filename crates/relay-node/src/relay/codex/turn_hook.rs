@@ -208,12 +208,7 @@ impl TurnInbox {
             .path
             .as_deref()
             .ok_or_else(|| std::io::Error::other("no Codex hook record"))?;
-        let lock = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(path.with_extension("lock"))?;
-        fs2::FileExt::lock_exclusive(&lock)?;
+        let _lock = crate::platform::fs::lock_exclusive(&path.with_extension("lock"))?;
         let mut journal = match std::fs::read(path) {
             Ok(bytes) => {
                 serde_json::from_slice::<Journal>(&bytes).map_err(std::io::Error::other)?
@@ -406,12 +401,7 @@ impl TurnInbox {
             .as_ref()
             .ok_or_else(|| std::io::Error::other("no Codex hook record"))?;
         let path = record.with_extension("releases.json");
-        let lock = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(record.with_extension("releases.lock"))?;
-        fs2::FileExt::lock_exclusive(&lock)?;
+        let _lock = crate::platform::fs::lock_exclusive(&record.with_extension("releases.lock"))?;
         let mut releases = match std::fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(std::io::Error::other)?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
