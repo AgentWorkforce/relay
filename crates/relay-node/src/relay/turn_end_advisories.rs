@@ -122,6 +122,7 @@ pub fn reach(kind: SessionKind) -> Reach {
     match kind {
         SessionKind::Codex => Available("codex_stop_hook (Stop)"),
         SessionKind::Copilot => Available("copilot chat delivery hooks (stop, end_turn)"),
+        SessionKind::Antigravity => Available("antigravity lifecycle hooks (Stop, NO_TOOL_CALL)"),
         SessionKind::Devin => Available("devin_direct_delivery (Stop)"),
         SessionKind::CursorCli => Available("cursor_cli hooks (stop, completed)"),
         SessionKind::ClaudeTerminal => Available("claude_session_hook (Stop)"),
@@ -151,7 +152,7 @@ pub fn reach(kind: SessionKind) -> Reach {
 
 /// Every session kind, for [`reach_report`]. [`reach`] matches each one by
 /// name, so a new kind cannot be added without deciding its reach.
-pub const KINDS: [SessionKind; 16] = [
+pub const KINDS: [SessionKind; 17] = [
     SessionKind::ClaudeTerminal,
     SessionKind::ClaudeCloud,
     SessionKind::Codex,
@@ -168,6 +169,7 @@ pub const KINDS: [SessionKind; 16] = [
     SessionKind::OpenClaw,
     SessionKind::Hermes,
     SessionKind::Droid,
+    SessionKind::Antigravity,
 ];
 
 /// [`reach`] for every kind, as `status.get`-style JSON: `{kind:

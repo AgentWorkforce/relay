@@ -891,6 +891,7 @@ fn socket_response_with(
             | "/connect/join"
             | "/codex/stop-hook"
             | "/copilot/mcp"
+            | "/antigravity/hook"
             | "/settings"
     ) {
         "application/json"
@@ -1409,5 +1410,7 @@ mod tests {
     }
 }
 
+mod antigravity_hook;
+pub use antigravity_hook::antigravity_hook;
 mod copilot_hook;
 pub use copilot_hook::copilot_hook;

@@ -200,6 +200,7 @@ fn partition_order(partition: SessionPartition) -> u8 {
         SessionPartition::OpenClaw => 10,
         SessionPartition::Hermes => 11,
         SessionPartition::Copilot => 9,
+        SessionPartition::Antigravity => 13,
     }
 }
 

@@ -3,6 +3,7 @@
 use super::{payload, Outbound, OutboundError, Purpose, Request};
 use serde_json::Value;
 
+mod antigravity;
 mod codex_stop;
 mod copilot;
 mod turn_end;
@@ -36,6 +37,9 @@ impl Outbound {
         let fields = payload(request, Purpose::Json)?;
         if request.path == "/copilot/hook" {
             return self.copilot_hook(pid, uid, &fields).await;
+        }
+        if request.path == "/antigravity/hook" {
+            return self.antigravity_hook(pid, uid, &fields).await;
         }
         self.codex_stop_hook(pid, uid, &fields).await
     }

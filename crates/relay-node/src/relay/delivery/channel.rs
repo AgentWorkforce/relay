@@ -331,10 +331,10 @@ impl Core {
         posts: &[Delivery],
     ) {
         let injector = self.plugins.injector.clone();
-        let Some(registered) = self
-            .store
-            .read(|store| crate::relay::copilot::delivery_registration(store, registration))
-        else {
+        let Some(registered) = self.store.read(|store| {
+            crate::relay::copilot::delivery_registration(store, registration)
+                .and_then(|r| crate::relay::antigravity::delivery_registration(store, &r))
+        }) else {
             let workspace = self.relaycast_registration_scope(registration, token);
             let settle = Settle {
                 routes: &pin.routes,

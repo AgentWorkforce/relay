@@ -502,6 +502,7 @@ impl Outbound {
             ("POST", "/codex/stop-hook" | "/claude/attestation" | "/copilot/hook") => {
                 self.hook_route(pid, uid, request).await
             }
+            ("POST", "/antigravity/hook") => self.hook_route(pid, uid, request).await,
             ("POST", "/copilot/mcp") => self.hook_route(pid, uid, request).await,
             ("POST", "/turn-end/take" | "/turn-end/shown") => {
                 self.turn_end_route(pid, uid, request).await

@@ -174,6 +174,12 @@ impl ProcessTable for ProcessSnapshot {
     fn is_trusted_copilot_bundle(&self, bundle: &Path) -> bool {
         self.inner.is_trusted_copilot_bundle(bundle)
     }
+    fn is_trusted_antigravity(&self, pid: i32, executable: &Path) -> bool {
+        self.inner.is_trusted_antigravity(pid, executable)
+    }
+    fn is_trusted_antigravity_bundle(&self, bundle: &Path) -> bool {
+        self.inner.is_trusted_antigravity_bundle(bundle)
+    }
     fn is_trusted_copilot_host(&self, pid: i32, executable: &Path, bundle: &Path) -> bool {
         self.inner.is_trusted_copilot_host(pid, executable, bundle)
     }

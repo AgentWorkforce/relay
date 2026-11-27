@@ -94,6 +94,7 @@ pub struct LocalConfig {
     /// Cursor hooks drain.
     pub cursor: CursorConfig,
     pub copilot: crate::relay::copilot::CopilotConfig,
+    pub antigravity: crate::relay::antigravity::AntigravityConfig,
     /// What the build knows about sessions beyond this computer's discovery.
     pub sources: crate::relay::session_sources::SessionSources,
     /// The person's local OpenClaw Gateway and this core's state for it;
@@ -144,6 +145,7 @@ impl LocalConfig {
             devin: DevinConfig::from_env(env, home),
             cursor: CursorConfig::from_env(env, home),
             copilot: crate::relay::copilot::CopilotConfig::from_env(env, home),
+            antigravity: crate::relay::antigravity::AntigravityConfig::from_env(env, home),
             sources: Default::default(),
             openclaw: None,
             hermes: None,
@@ -586,6 +588,19 @@ impl LocalSessions {
                 pi_caller::caller(&self.config, table, current, process, below.as_ref())
             {
                 return caller;
+            }
+            if own && crate::relay::antigravity::proof::is_antigravity_process(table, current, uid)
+            {
+                return crate::relay::antigravity::caller::identify(
+                    &self.config.antigravity,
+                    table,
+                    uid,
+                    pid,
+                    process,
+                    below,
+                )
+                .map(|id| Target::new(SessionKind::Antigravity, id))
+                .ok_or(CallerMiss::Unattributed);
             }
             if let Some(caller) = lock_held::caller(&self.config, table, pid, current, process) {
                 return caller;
@@ -1333,6 +1348,13 @@ impl LocalInjector {
                     .is_some_and(|session| session.can_reply())
             }
             SessionKind::ClaudeCloud | SessionKind::Copilot => false,
+            SessionKind::Antigravity => crate::relay::antigravity::session(
+                &self.config.antigravity,
+                &*self.table,
+                self.config.uid,
+                &target.id,
+            )
+            .is_some(),
             SessionKind::OpenCode => self.managed.as_ref().is_some_and(|managed| {
                 crate::relay::opencode::managed::can_reply(
                     managed,
@@ -1880,6 +1902,9 @@ impl Injector for LocalInjector {
             SessionKind::Copilot => InjectOutcome::Refused(
                 "A Copilot chat takes messages only through its registered Relay identity.".into(),
             ),
+            SessionKind::Antigravity => InjectOutcome::Refused(
+                "An Antigravity conversation takes messages only through its registered Relay identity.".into(),
+            ),
             SessionKind::Droid | SessionKind::Devin | SessionKind::CursorCli => {
                 lock_held::inject(&self.config, &*self.table, target, message_id, text)
             }
@@ -2020,6 +2045,11 @@ impl Injector for LocalInjector {
             SessionKind::Copilot => {
                 crate::relay::copilot::final_answer(&self.config.copilot, &target.id, message_ref)
             }
+            SessionKind::Antigravity => crate::relay::antigravity::final_answer(
+                &self.config.antigravity,
+                &target.id,
+                message_ref,
+            ),
             SessionKind::OpenClaw | SessionKind::Hermes => self.gateway_answer(target, message_ref),
             SessionKind::Codex if is_uuid(&target.id) => {
                 codex::final_answer(&self.config.codex, &target.id, message_ref)
@@ -2401,6 +2431,7 @@ mod tests {
             devin: DevinConfig::from_env(&|_| None, home),
             cursor: CursorConfig::from_env(&|_| None, home),
             copilot: crate::relay::copilot::CopilotConfig::from_env(&|_| None, home),
+            antigravity: crate::relay::antigravity::AntigravityConfig::from_env(&|_| None, home),
             sources: Default::default(),
             openclaw: None,
             hermes: None,

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Minor]
 
+### Added
+
+- `agent-relay-node`: Antigravity desktop conversations (`SessionKind::Antigravity`, `"antigravity"`) are now discovered as live sessions from the Google-signed `Antigravity.app` `language_server`'s held `conversations/<uuid>.db` descriptors, identified as session-socket callers (single-chat kernel proof, multi-chat active-turn `transcript_full.jsonl` `run_command` witness, and `session_token` support) so Antigravity conversations can register and send messages, and reachable for inbound delivery via managed lifecycle hooks (`antigravity-hook` / `POST /antigravity/hook`) in `~/.gemini/config/hooks.json`.
+
 ### Changed
 
 - `agent-relay-node`: **default change for Pi and Oh My Pi.** Their automatic final answers are now off unless turned on for the agent (Reply with final answer, `agents.reply_setting` `enabled: true`); before, they were on by default. Two registered Pi or Oh My Pi sessions no longer wake each other with automatic answers. Answers queued before upgrading follow the new default, so an older exchange does not restart. While a Pi or Oh My Pi session's binding is live, its messages name a reply command, which its tools can run as that session. Other kinds are unchanged.

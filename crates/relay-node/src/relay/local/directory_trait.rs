@@ -28,6 +28,20 @@ impl SessionDirectory for LocalSessions {
         )
     }
 
+    fn configure_antigravity_helper(&self, executable: PathBuf) {
+        self.config.antigravity.set_helper(executable);
+    }
+
+    fn antigravity_hook(&self, pid: i32, payload: &serde_json::Value) -> Option<serde_json::Value> {
+        crate::relay::antigravity::hook_answer(
+            &self.config.antigravity,
+            &*self.table,
+            self.config.uid,
+            pid,
+            payload,
+        )
+    }
+
     fn mobile_claude_config_roots(&self) -> std::collections::BTreeMap<Target, PathBuf> {
         mobile_claude_roots::read(&self.config.claude, &*self.table)
     }
@@ -134,6 +148,7 @@ impl SessionDirectory for LocalSessions {
             SessionPartition::Droid,
             SessionPartition::CursorCli,
             SessionPartition::Copilot,
+            SessionPartition::Antigravity,
             SessionPartition::OpenClaw,
             SessionPartition::Hermes,
         ]
@@ -450,6 +465,7 @@ fn fallback_title(kind: SessionKind) -> &'static str {
         SessionKind::Devin => "Devin session",
         SessionKind::CursorCli => "Cursor CLI session",
         SessionKind::Copilot => "Copilot chat",
+        SessionKind::Antigravity => "Antigravity session",
         SessionKind::OpenClaw => "OpenClaw agent",
         SessionKind::Hermes => "Hermes",
         SessionKind::Pi => "Pi session",
@@ -526,6 +542,12 @@ impl LocalSessions {
             ),
             SessionKind::Copilot => crate::relay::copilot::session(
                 &self.config.copilot,
+                &*self.table,
+                self.config.uid,
+                &target.id,
+            ),
+            SessionKind::Antigravity => crate::relay::antigravity::session(
+                &self.config.antigravity,
                 &*self.table,
                 self.config.uid,
                 &target.id,
@@ -699,7 +721,7 @@ impl LocalSessions {
                 // A Cursor CLI row exists only while a `cursor-agent`
                 // holds its conversation open, which is also its caller
                 // proof; like Codex, it joins only with the opt-in.
-                SessionKind::CursorCli | SessionKind::Copilot => true,
+                SessionKind::CursorCli | SessionKind::Copilot | SessionKind::Antigravity => true,
                 SessionKind::OpenClaw | SessionKind::Hermes => false,
             }
         }
