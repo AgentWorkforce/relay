@@ -130,6 +130,114 @@ fn configuration_reads_the_environment_and_the_install_locations() {
 
 // MARK: Registry and liveness
 
+#[test]
+fn configuration_finds_claude_on_path_and_preserves_explicit_choice() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let binary = bin.join(if cfg!(windows) {
+        "claude.exe"
+    } else {
+        "claude"
+    });
+    std::fs::write(&binary, "").unwrap();
+    #[cfg(unix)]
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let env = |key: &str| (key == "PATH").then(|| bin.to_string_lossy().into_owned());
+    assert_eq!(
+        ClaudeConfig::resolve(&env, &home, &[]).executable,
+        Some(binary)
+    );
+    let overridden = |key: &str| match key {
+        "RELAY_DESKTOP_CLAUDE" => Some(home.join("missing.exe").to_string_lossy().into_owned()),
+        _ => env(key),
+    };
+    assert_eq!(
+        ClaudeConfig::resolve(&overridden, &home, &[]).executable,
+        None
+    );
+}
+
+#[test]
+#[cfg(windows)]
+fn configuration_finds_claude_with_windows_path_spelling() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let binary = bin.join("claude.exe");
+    std::fs::write(&binary, "").unwrap();
+    let env = |key: &str| (key == "Path").then(|| bin.to_string_lossy().into_owned());
+    let home = dir.path().join("home");
+    assert_eq!(
+        ClaudeConfig::resolve(&env, &home, &[]).executable,
+        Some(binary)
+    );
+    let overridden = |key: &str| match key {
+        "RELAY_DESKTOP_CLAUDE" => Some(home.join("missing.exe").to_string_lossy().into_owned()),
+        _ => env(key),
+    };
+    assert_eq!(
+        ClaudeConfig::resolve(&overridden, &home, &[]).executable,
+        None
+    );
+}
+
+#[test]
+fn configuration_skips_relative_path_entries_before_launch() {
+    let relative = tempfile::Builder::new()
+        .prefix("claude-path-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .unwrap();
+    let absolute = tempfile::tempdir().unwrap();
+    let name = if cfg!(windows) {
+        "claude.exe"
+    } else {
+        "claude"
+    };
+    for directory in [relative.path(), absolute.path()] {
+        let binary = directory.join(name);
+        std::fs::write(&binary, "").unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let relative_entry = Path::new(relative.path().file_name().unwrap());
+    let path = std::env::join_paths([Path::new(""), relative_entry, absolute.path()]).unwrap();
+    let env = |key: &str| (key == "PATH").then(|| path.to_string_lossy().into_owned());
+    let home = absolute.path().join("home");
+    assert_eq!(
+        ClaudeConfig::resolve(&env, &home, &[]).executable,
+        Some(absolute.path().join(name))
+    );
+    std::fs::remove_file(absolute.path().join(name)).unwrap();
+    assert_eq!(ClaudeConfig::resolve(&env, &home, &[]).executable, None);
+}
+
+#[test]
+#[cfg(windows)]
+fn configuration_finds_winget_without_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("AppData/Local");
+    let winget = local.join("Microsoft/WinGet");
+    let binary =
+        winget.join("Packages/Anthropic.ClaudeCode_Microsoft.Winget.Source_test/claude.exe");
+    std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+    std::fs::write(&binary, "").unwrap();
+    let env = |key: &str| (key == "LOCALAPPDATA").then(|| local.to_string_lossy().into_owned());
+    let home = dir.path().join("home");
+    assert_eq!(
+        ClaudeConfig::resolve(&env, &home, &[]).executable,
+        Some(binary)
+    );
+    let link = winget.join("Links/claude.exe");
+    std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+    std::fs::write(&link, "").unwrap();
+    assert_eq!(
+        ClaudeConfig::resolve(&env, &home, &[]).executable,
+        Some(link)
+    );
+}
+
 // test_injectable.RegistryTests.test_decodes_a_linux_registry_record.
 #[test]
 fn decodes_a_linux_registry_record() {

@@ -353,6 +353,7 @@ pub fn plugins_with_options(
         sessions: Arc::new(
             LocalSessions::new(local.clone(), table.clone())
                 .with_scans(scans.clone())
+                .with_codex_hook(stop_hook_inbox.clone())
                 .with_managed(managed),
         ),
         settings: {

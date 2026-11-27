@@ -180,6 +180,9 @@ impl SessionDirectory for LocalSessions {
             if self.runtime_admitted(&session) {
                 found
                     .entry(session.target.clone())
+                    // A hook-backed live row still depends on this exact
+                    // runtime proof. Keep it for the admission recheck.
+                    .and_modify(|candidate| candidate.runtime = Some(proof.clone()))
                     .or_insert(AutomaticCandidate {
                         session,
                         runtime: Some(proof),

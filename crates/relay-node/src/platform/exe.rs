@@ -95,18 +95,45 @@ fn has_run_extension(path: &Path, pathext: Option<&str>) -> bool {
 }
 
 /// The first runnable `name` in `directories`, trying each of
-/// `command_names` in each directory before the next.
+/// `command_names` in each directory before the next. Windows discovery
+/// skips scripting-host extensions: `Command` supports native programs and
+/// batch files, but does not invoke file associations for other scripts.
 pub fn find_in<I, P>(directories: I, name: &str) -> Option<PathBuf>
 where
     I: IntoIterator<Item = P>,
     P: AsRef<Path>,
 {
-    let names = command_names(name);
+    #[cfg(windows)]
+    {
+        find_in_windows(directories, name, std::env::var("PATHEXT").ok().as_deref())
+    }
+    #[cfg(not(windows))]
+    {
+        let names = command_names(name);
+        directories.into_iter().find_map(|directory| {
+            names
+                .iter()
+                .map(|candidate| directory.as_ref().join(candidate))
+                .find(|candidate| is_executable(candidate))
+        })
+    }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn find_in_windows<I, P>(directories: I, name: &str, pathext: Option<&str>) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = P>,
+    P: AsRef<Path>,
+{
+    let names: Vec<_> = command_names_with(name, pathext)
+        .into_iter()
+        .filter(|candidate| has_run_extension(Path::new(candidate), Some(DEFAULT_PATHEXT)))
+        .collect();
     directories.into_iter().find_map(|directory| {
         names
             .iter()
             .map(|candidate| directory.as_ref().join(candidate))
-            .find(|candidate| is_executable(candidate))
+            .find(|candidate| candidate.is_file())
     })
 }
 
@@ -310,6 +337,36 @@ mod tests {
         assert!(has_run_extension(Path::new("codex.exe"), Some(".EXE")));
         assert!(!has_run_extension(Path::new("codex"), None));
         assert!(!has_run_extension(Path::new("codex.ps1"), None));
+    }
+
+    #[test]
+    fn windows_discovery_skips_interpreter_scripts_and_keeps_searching() {
+        let folder = tempfile::tempdir().unwrap();
+        let first = folder.path().join("first");
+        let second = folder.path().join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        for directory in [&first, &second] {
+            std::fs::write(directory.join("claude.vbs"), "script").unwrap();
+        }
+        let native = second.join("claude.exe");
+        let shim = second.join("claude.cmd");
+        std::fs::write(&native, "MZ").unwrap();
+        std::fs::write(&shim, "@echo off\r\n").unwrap();
+        let pathext = Some(".vBs;.eXe;.CmD");
+        assert_eq!(
+            find_in_windows([&first, &second], "claude", pathext),
+            Some(native.clone())
+        );
+        std::fs::remove_file(native).unwrap();
+        assert_eq!(
+            find_in_windows([&first, &second], "claude", pathext),
+            Some(shim.clone())
+        );
+        std::fs::remove_file(shim).unwrap();
+        assert_eq!(find_in_windows([&first, &second], "claude", pathext), None);
+        // Explicit command-name enumeration remains available to override callers.
+        assert_eq!(command_names_with("claude.VBS", pathext), ["claude.VBS"]);
     }
 
     #[cfg(windows)]
