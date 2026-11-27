@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `agent-relay-node`: a direct message a Claude Code session took through its mobile handoff no longer holds later direct messages to that session back. Before, the message still counted as waiting until the next queue read succeeded, so with Relaycast slow or unreachable later messages could keep waiting behind one the session had already started. Follows up the in-order delivery in 18.17.0.
 
 ## [18.17.0] - 2026-11-27
 

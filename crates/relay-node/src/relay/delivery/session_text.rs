@@ -470,8 +470,10 @@ impl Core {
     /// `delivery_id`: read its agent's queue now rather than after the
     /// waiting retry, so the sender's receipt follows the outcome. A delivery
     /// with no pending retry is left alone. The retry is made due rather than
-    /// dropped: it keeps what it knows (handed over, so never held behind an
-    /// earlier message) until that read settles it (#2290 review).
+    /// dropped, and it is now the session's: handed over (never held behind
+    /// an earlier message) and holding no later one back, even if that read
+    /// fails (#2290 review). The mobile route answers `Waiting` until then,
+    /// which left it holding later messages back.
     pub(crate) fn settle_delivery_soon(&self, delivery_id: &str) {
         let agent = self
             .receipt_state()
@@ -479,6 +481,8 @@ impl Core {
             .get_mut(delivery_id)
             .map(|retry| {
                 retry.after = Instant::now();
+                retry.handed_over = true;
+                retry.holds_later = false;
                 retry.agent.clone()
             });
         if let Some(agent) = agent {
@@ -520,11 +524,21 @@ impl Core {
             .is_some_and(|retry| retry.handed_over)
     }
 
-    /// Marks `delivery_id`'s retry handed over, as an `Accepted` one is.
+    /// Whether `delivery_id`'s retry holds later messages back.
     #[cfg(test)]
-    pub(crate) fn mark_delivery_handed_over(&self, delivery_id: &str) {
+    pub(crate) fn delivery_holds_later(&self, delivery_id: &str) -> bool {
+        self.receipt_state()
+            .retries
+            .get(delivery_id)
+            .is_some_and(|retry| retry.holds_later)
+    }
+
+    /// Marks `delivery_id`'s retry as a `Waiting` one leaves it: out of the
+    /// session, holding later messages back.
+    #[cfg(test)]
+    pub(crate) fn mark_delivery_waiting(&self, delivery_id: &str) {
         if let Some(retry) = self.receipt_state().retries.get_mut(delivery_id) {
-            retry.handed_over = true;
+            retry.holds_later = true;
         }
     }
 }
@@ -535,10 +549,11 @@ mod tests {
     use serde_json::json;
 
     // #2290 review: a delivery the session's own queue settled is read again
-    // at once, and keeps its handover, so that read is never held behind an
-    // earlier message still waiting.
+    // at once and is the session's: never held behind an earlier message,
+    // and no longer holding later ones back, even if that read fails. The
+    // mobile route left it `Waiting` before the acknowledgement.
     #[tokio::test]
-    async fn settling_soon_makes_the_retry_due_and_keeps_its_handover() {
+    async fn settling_soon_makes_the_retry_due_and_releases_later_messages() {
         use crate::relay::daemon::{Config, Plugins};
         use crate::relay::paths::CorePaths;
         use crate::relay::push::PushTiming;
@@ -556,11 +571,13 @@ mod tests {
         };
         let (core, _signals) = Core::with_plugins(config, Plugins::default());
         core.hold_delivery_retry("del_1", "agent", Duration::from_secs(60));
-        core.mark_delivery_handed_over("del_1");
+        core.mark_delivery_waiting("del_1");
         assert!(core.delivery_retry_pending("del_1"));
+        assert!(core.delivery_holds_later("del_1"));
         core.settle_delivery_soon("del_1");
         assert!(!core.delivery_retry_pending("del_1"));
         assert!(core.delivery_handed_over("del_1"));
+        assert!(!core.delivery_holds_later("del_1"));
     }
 
     #[test]
