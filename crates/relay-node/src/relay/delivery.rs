@@ -157,6 +157,42 @@ struct Retry {
     after: Instant,
     /// Failed attempts in a row, for the backoff.
     failures: u32,
+    /// When a direct message was sent (`direct_sent_at`); `None` for
+    /// anything else, which never holds a direct message back.
+    direct_sent_at: Option<i64>,
+    /// Its last pass left it out of the session (`Waiting` or `Retry`):
+    /// later direct messages to the same agent wait behind it
+    /// (`behind_earlier_message`). Any other end of a pass clears it.
+    holds_later: bool,
+    /// Handed over (`Accepted`, `WaitingForTurn`): the provider orders it
+    /// from here, so it is never held behind an earlier message.
+    handed_over: bool,
+}
+
+impl Retry {
+    fn new(agent: &str, after: Instant, failures: u32, delivery: &Delivery) -> Retry {
+        Retry {
+            agent: agent.to_string(),
+            after,
+            failures,
+            direct_sent_at: direct_sent_at(delivery),
+            holds_later: false,
+            handed_over: false,
+        }
+    }
+}
+
+/// What a direct message waits behind.
+pub(crate) const BEHIND_EARLIER: &str =
+    "Waiting — behind an earlier message to this session that has not gone in yet";
+
+/// When `delivery`, a direct message, was sent: the order direct messages to
+/// one agent go into its session. `None` for channel posts and for a message
+/// whose send time is unknown, which are never held and hold nothing back.
+fn direct_sent_at(delivery: &Delivery) -> Option<i64> {
+    (delivery.reason.as_deref() == Some("dm"))
+        .then_some(delivery.created_at_ms)
+        .flatten()
 }
 
 type TerminalIntegration = (String, String, String);
@@ -908,10 +944,15 @@ impl Core {
                 let Some(line) = state.lines.get_mut(&name) else {
                     return;
                 };
-                if let Some(delivery) = line.pushed.pop_front() {
-                    Work::Pushed(Box::new(delivery))
-                } else if std::mem::take(&mut line.drain) {
+                // A requested queue read goes before what was pushed
+                // meanwhile: it hands the queue over oldest first, so a
+                // message that only the read has (its push missed or
+                // unreadable) is never overtaken by a later pushed one
+                // (#2288).
+                if std::mem::take(&mut line.drain) {
                     Work::Drain
+                } else if let Some(delivery) = line.pushed.pop_front() {
+                    Work::Pushed(Box::new(delivery))
                 } else {
                     state.lines.remove(&name);
                     return;
@@ -923,7 +964,17 @@ impl Core {
                         self.handle(&delivery, &registration, true).await;
                     }
                 }
-                Work::Drain => self.drain(&name).await,
+                Work::Drain => {
+                    let read = self.drain(&name).await;
+                    // What the read handed over is not handled again from
+                    // its pushed copy.
+                    if !read.is_empty() {
+                        let mut state = self.delivery.lock().unwrap();
+                        if let Some(line) = state.lines.get_mut(&name) {
+                            line.pushed.retain(|pushed| !read.contains(&pushed.id));
+                        }
+                    }
+                }
             }
         }
     }
@@ -1010,15 +1061,17 @@ impl Core {
             .is_some_and(|(active, _)| active.agent_id == registration.agent_id)
     }
 
-    async fn drain(self: &Arc<Core>, name: &str) {
+    /// Reads `name`'s queue and handles what is pending; returns the ids of
+    /// the deliveries the read returned (none when nothing was read).
+    async fn drain(self: &Arc<Core>, name: &str) -> HashSet<String> {
         let Some((registration, token)) = self.agent_credential(name) else {
-            return;
+            return HashSet::new();
         };
         // An absent registration's queue is never read, not even by a retry
         // scheduled before its session ended: a read with its token would
         // show the agent active again. Its messages wait on Relaycast.
         if registration.missing_since.is_some() {
-            return;
+            return HashSet::new();
         }
         let workspace = self.relaycast_registration_scope(&registration, &token);
         if !self.relaycast_poll_allowed(&workspace) {
@@ -1026,7 +1079,7 @@ impl Core {
             // call established the workspace pause. Do not let that gated
             // no-op consume this agent's safety-net interval.
             self.delivery.lock().unwrap().last_queue_poll.remove(name);
-            return;
+            return HashSet::new();
         }
         let held_before_read = self.claude_delivery.held_ids_for_agent(name);
         let started = Instant::now();
@@ -1063,6 +1116,7 @@ impl Core {
                     deliveries.len() < client::QUEUE_PAGE as usize,
                 );
                 self.handle_pending(&deliveries, &registration).await;
+                return deliveries.into_iter().map(|d| d.id).collect();
             }
             // A gate agent's token expired or was revoked: it registers
             // again, once, and its queue is read with the new token.
@@ -1089,6 +1143,7 @@ impl Core {
             }
             Err(_) => {}
         }
+        HashSet::new()
     }
 
     fn set_queue_error(&self, name: &str, error: Option<String>) {
@@ -1126,13 +1181,21 @@ impl Core {
             return;
         }
         let (registration, token) = (&registration, &token);
-        let waiting = self
-            .delivery
-            .lock()
-            .unwrap()
-            .retries
-            .get(&delivery.id)
-            .is_some_and(|retry| retry.after > Instant::now());
+        let waiting = {
+            let mut state = self.delivery.lock().unwrap();
+            match state.retries.get_mut(&delivery.id) {
+                Some(retry) if retry.after > Instant::now() => true,
+                // This pass decides again whether it holds later messages
+                // back: only a new `Waiting` or `Retry` keeps it doing so, so
+                // a message held for approval, skipped or settled never
+                // blocks the session.
+                Some(retry) => {
+                    retry.holds_later = false;
+                    false
+                }
+                None => false,
+            }
+        };
         if waiting {
             return;
         }
@@ -1271,6 +1334,19 @@ impl Core {
                 }
                 return;
             }
+        }
+        // Direct messages go in in the order they were sent: one sent after
+        // a message still waiting for its retry would otherwise take the
+        // session's next turn first (#2288). It waits, as any `Waiting`
+        // message does, and goes once the earlier one settles or leaves the
+        // queue; the earliest is never held, so the session is never wedged.
+        if self.behind_earlier_message(registration, delivery) {
+            self.keep_waiting(
+                registration,
+                delivery,
+                &InjectOutcome::Waiting(BEHIND_EARLIER.into()),
+            );
+            return;
         }
         let from =
             |channel: Option<&str>| channel.is_some() && delivery.channel_id.as_deref() == channel;
@@ -1421,14 +1497,15 @@ impl Core {
                         + 1;
                     let units = 30f64.min(3.0 * 2f64.powi(failures as i32 - 1));
                     let delay = self.config.delivery_timing.retry_unit.mul_f64(units);
-                    state.retries.insert(
-                        delivery.id.clone(),
-                        Retry {
-                            agent: registration.name.clone(),
-                            after: Instant::now() + delay,
-                            failures,
-                        },
+                    let mut retry = Retry::new(
+                        &registration.name,
+                        Instant::now() + delay,
+                        failures,
+                        delivery,
                     );
+                    // It certainly did not arrive: later ones wait behind it.
+                    retry.holds_later = true;
+                    state.retries.insert(delivery.id.clone(), retry);
                     units
                 };
                 self.drain_later(registration, units + 0.2);
@@ -1487,38 +1564,81 @@ impl Core {
                     Some(format!("Refused; not retried — {reason}")),
                 );
             }
-            InjectOutcome::Waiting(ref reason)
-            | InjectOutcome::Accepted(ref reason)
-            | InjectOutcome::WaitingForTurn(ref reason) => {
+            InjectOutcome::Waiting(_)
+            | InjectOutcome::Accepted(_)
+            | InjectOutcome::WaitingForTurn(_) => {
                 // Waiting never handed the prompt over. Accepted and
                 // waiting-for-turn did: the command becomes visible before
                 // this delivery is confirmed, so the parent stays allowed.
                 if matches!(outcome, InjectOutcome::Waiting(_)) {
                     self.revoke_reply_parent(registration, &delivery.message_id);
                 }
-                self.note_waiting(registration, delivery, &outcome);
-                {
-                    let mut state = self.delivery.lock().unwrap();
-                    let delay = self.config.delivery_timing.retry_unit.mul_f64(5.0);
-                    state.retries.insert(
-                        delivery.id.clone(),
-                        Retry {
-                            agent: registration.name.clone(),
-                            after: Instant::now() + delay,
-                            failures: 0,
-                        },
-                    );
-                }
-                self.drain_later(registration, 5.2);
-                self.record_settled(
-                    registration,
-                    delivery,
-                    DeliveryOutcome::Waiting,
-                    Some(reason.clone()),
-                    DeliverySettlement::of(&outcome),
-                );
+                self.keep_waiting(registration, delivery, &outcome);
             }
         }
+    }
+
+    /// Leaves a delivery the session has not taken (`Waiting`) or not yet
+    /// confirmed (`Accepted`, `WaitingForTurn`) in the queue, and looks
+    /// again after five retry units.
+    fn keep_waiting(
+        self: &Arc<Core>,
+        registration: &Registration,
+        delivery: &Delivery,
+        outcome: &InjectOutcome,
+    ) {
+        let (InjectOutcome::Waiting(reason)
+        | InjectOutcome::Accepted(reason)
+        | InjectOutcome::WaitingForTurn(reason)) = outcome
+        else {
+            return;
+        };
+        self.note_waiting(registration, delivery, outcome);
+        {
+            let mut state = self.delivery.lock().unwrap();
+            let delay = self.config.delivery_timing.retry_unit.mul_f64(5.0);
+            let mut retry = Retry::new(&registration.name, Instant::now() + delay, 0, delivery);
+            match outcome {
+                InjectOutcome::Waiting(_) => retry.holds_later = true,
+                _ => retry.handed_over = true,
+            }
+            state.retries.insert(delivery.id.clone(), retry);
+        }
+        self.drain_later(registration, 5.2);
+        self.record_settled(
+            registration,
+            delivery,
+            DeliveryOutcome::Waiting,
+            Some(reason.clone()),
+            DeliverySettlement::of(outcome),
+        );
+    }
+
+    /// Whether `delivery`, a direct message, must wait behind an earlier
+    /// direct message to the same agent that is still out of the session
+    /// (its last pass `Waiting` or `Retry`). One already handed over is the
+    /// provider's to order and is never held. Messages are compared by when
+    /// they were sent, so the earliest waiting one is never held itself.
+    fn behind_earlier_message(&self, registration: &Registration, delivery: &Delivery) -> bool {
+        let Some(sent_at) = direct_sent_at(delivery) else {
+            return false;
+        };
+        let state = self.delivery.lock().unwrap();
+        if state
+            .retries
+            .get(&delivery.id)
+            .is_some_and(|retry| retry.handed_over)
+        {
+            return false;
+        }
+        state.retries.iter().any(|(id, retry)| {
+            *id != delivery.id
+                && retry.agent == registration.name
+                && retry.holds_later
+                && retry
+                    .direct_sent_at
+                    .is_some_and(|earlier| earlier < sent_at)
+        })
     }
 
     /// Reads the agent's queue again after `units` retry units, if it is

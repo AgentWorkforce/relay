@@ -1626,6 +1626,145 @@ async fn a_message_handed_over_after_waiting_is_not_counted() {
     h.stop().await;
 }
 
+/// Timing for the ordering tests: a `Waiting` message is tried again after
+/// 500 ms, while the queue is read every 100 ms, so reads come while it waits.
+fn ordering_timing() -> DeliveryTiming {
+    DeliveryTiming {
+        safety_poll: Duration::from_millis(100),
+        fast_poll: Duration::from_millis(100),
+        heartbeat: Duration::from_secs(30),
+        retry_unit: Duration::from_millis(100),
+        replies: Duration::from_millis(50),
+        ..DeliveryTiming::default()
+    }
+}
+
+/// The message ids the injector was asked to take, in order.
+fn attempts(h: &Harness) -> Vec<String> {
+    h.injector
+        .injected()
+        .into_iter()
+        .map(|i| i.message_id)
+        .collect()
+}
+
+// #2288: a direct message sent after one that is waiting (the session was
+// busy) used to take the session's next turn while the first sat on its
+// retry timer, and land first. It waits behind the first instead.
+#[tokio::test]
+async fn a_message_sent_after_a_waiting_one_does_not_go_in_first() {
+    let h = Harness::start_with_timing(|_| None, |_, _| {}, ordering_timing()).await;
+    let mut client = h.client().await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    h.fake.seed_agent("alice", "agent", json!({}));
+    h.injector
+        .then(InjectOutcome::Waiting("Waiting — session busy".into()));
+    let (first, m1) = h.fake.send_dm("alice", "codex-api", "the original");
+    eventually("the first waits", || attempts(&h).len() == 1).await;
+    let (second, m2) = h.fake.send_dm("alice", "codex-api", "the follow-up");
+    eventually("both acked", || {
+        delivered(&h.fake, &first).as_deref() == Some("acked")
+            && delivered(&h.fake, &second).as_deref() == Some("acked")
+    })
+    .await;
+    assert_eq!(attempts(&h), [m1.clone(), m1, m2]);
+    h.stop().await;
+}
+
+// The hold ends with the earlier message: refused, it no longer keeps the
+// later one out.
+#[tokio::test]
+async fn a_refused_earlier_message_releases_the_later_one() {
+    let h = Harness::start_with_timing(|_| None, |_, _| {}, ordering_timing()).await;
+    let mut client = h.client().await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    h.fake.seed_agent("alice", "agent", json!({}));
+    h.injector
+        .then(InjectOutcome::Waiting("Waiting — session busy".into()));
+    h.injector
+        .then(InjectOutcome::Refused("no such session".into()));
+    let (first, m1) = h.fake.send_dm("alice", "codex-api", "the original");
+    eventually("the first waits", || attempts(&h).len() == 1).await;
+    let (second, m2) = h.fake.send_dm("alice", "codex-api", "the follow-up");
+    eventually("the later one acked", || {
+        delivered(&h.fake, &second).as_deref() == Some("acked")
+    })
+    .await;
+    assert_eq!(attempts(&h), [m1.clone(), m1, m2]);
+    assert_ne!(delivered(&h.fake, &first).as_deref(), Some("acked"));
+    h.stop().await;
+}
+
+// And expired from the queue, it no longer keeps the later one out either,
+// so one message the session never takes cannot block it for good.
+#[tokio::test]
+async fn an_expired_earlier_message_releases_the_later_one() {
+    let h = Harness::start_with_timing(|_| None, |_, _| {}, ordering_timing()).await;
+    let mut client = h.client().await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    h.fake.seed_agent("alice", "agent", json!({}));
+    for _ in 0..3 {
+        h.injector
+            .then(InjectOutcome::Waiting("Waiting — session busy".into()));
+    }
+    let (first, m1) = h.fake.send_dm("alice", "codex-api", "the original");
+    eventually("the first waits", || attempts(&h).len() == 1).await;
+    let (second, m2) = h.fake.send_dm("alice", "codex-api", "the follow-up");
+    eventually("the first waits again", || attempts(&h).len() == 2).await;
+    assert!(!attempts(&h).contains(&m2), "held behind the first");
+    assert!(h.fake.expire_delivery(&first));
+    eventually("the later one acked", || {
+        delivered(&h.fake, &second).as_deref() == Some("acked")
+    })
+    .await;
+    let tried = attempts(&h);
+    let last_first = tried.iter().rposition(|id| *id == m1).unwrap();
+    let first_second = tried.iter().position(|id| *id == m2).unwrap();
+    assert!(last_first < first_second, "{tried:?}");
+    h.stop().await;
+}
+
+// #2288 (B): a queue read that was asked for goes before a message pushed
+// meanwhile, so a message only the read has (its push was missed) is not
+// overtaken by a later pushed one, and the pushed copy is not handled again.
+#[tokio::test]
+async fn a_requested_queue_read_goes_before_a_later_push() {
+    let h = Harness::start_with_timing(|_| None, |_, _| {}, ordering_timing()).await;
+    let mut client = h.client().await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    h.fake.seed_agent("alice", "agent", json!({}));
+    // Keep the agent's delivery line busy with a first message.
+    h.injector.hold.store(true, Ordering::SeqCst);
+    let (_, m0) = h.fake.send_dm("alice", "codex-api", "busy");
+    eventually("the line is busy", || {
+        h.injector.holding.load(Ordering::SeqCst)
+    })
+    .await;
+    // Meanwhile: one message only a queue read finds, then a later one that
+    // is also pushed.
+    let (_, m1) = h.fake.send_dm("alice", "codex-api", "the original");
+    h.core.request_drain("codex-api");
+    let (second, m2) = h.fake.send_dm("alice", "codex-api", "the follow-up");
+    h.core.wake(
+        "codex-api".into(),
+        Some(json!({"type": "deliver", "delivery_id": second, "msg_id": m2,
+            "payload": {"type": "dm.received", "data": {"message": {"id": m2, "agent_name": "alice", "text": "the follow-up"}}}})),
+    );
+    h.injector.hold.store(false, Ordering::SeqCst);
+    eventually("the follow-up acked", || {
+        delivered(&h.fake, &second).as_deref() == Some("acked")
+    })
+    .await;
+    // Settle any duplicate before reading the attempts.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(attempts(&h), [m0, m1, m2]);
+    h.stop().await;
+}
+
 #[tokio::test]
 async fn own_and_empty_messages_are_acked_without_injecting() {
     // An ordinary channel post reaches an agent only from a channel it
