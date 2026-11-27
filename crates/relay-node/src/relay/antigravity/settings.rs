@@ -65,7 +65,7 @@ impl AntigravitySettings {
         {
             return Err("Antigravity hooks lock is not private.".into());
         }
-        fs2::FileExt::lock_exclusive(&lock)
+        super::lock_exclusive_bounded(&lock, super::LOCK_TIMEOUT)
             .map_err(|_| "Could not lock Antigravity hooks.".to_string())?;
         Ok(lock)
     }

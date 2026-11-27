@@ -505,6 +505,54 @@ fn hook_rejects_shell_parent_tool_env_wrong_cwd_and_sibling_hook_command() {
     )
     .unwrap();
     assert!(hook_answer(&config, &table, 501, 156, &payload, &|| true).is_some());
+
+    // An in-flight sibling `exec` wrapper (even without literal `antigravity-hook`) is blocked.
+    std::fs::write(
+        logs_a.join("transcript_full.jsonl"),
+        format!(
+            "{}\n{}\n",
+            json!({"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"wrap"}),
+            json!({"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"run_command","args":{"CommandLine":"cd ~/.gemini/config && exec /tmp/wrapper.sh"}}]}),
+        ),
+    )
+    .unwrap();
+    assert!(hook_answer(&config, &table, 501, 156, &payload, &|| true).is_none());
+
+    // A corrupt/unparseable sibling transcript fails closed.
+    std::fs::write(logs_a.join("transcript_full.jsonl"), "not-json\n").unwrap();
+    assert!(hook_answer(&config, &table, 501, 156, &payload, &|| true).is_none());
+    std::fs::remove_file(logs_a.join("transcript_full.jsonl")).unwrap();
+
+    // 7) A hook process attached to a terminal (PTY) must be rejected.
+    table.insert(
+        157,
+        FakeProcess {
+            parent: ls_pid,
+            uid: 501,
+            start: 42,
+            executable: Some(helper),
+            arguments: vec![
+                "agent-relay-probe".into(),
+                "antigravity-hook".into(),
+                "--event".into(),
+                "stop".into(),
+            ],
+            cwd: Some(config.config_dir.clone()),
+            has_terminal: true,
+            ..Default::default()
+        },
+    );
+    assert!(hook_answer(&config, &table, 501, 157, &payload, &|| true).is_none());
+
+    // 8) A payload naming a transcriptPath outside the target conversation's brain dir is rejected.
+    let bad_transcript = json!({
+        "conversationId": SID_B,
+        "relayEvent": "stop",
+        "terminationReason": "NO_TOOL_CALL",
+        "relayBinding": "agent-b:1",
+        "transcriptPath": config.brain().join(SID_A).join(".system_generated/logs/transcript_full.jsonl").to_string_lossy(),
+    });
+    assert!(hook_answer(&config, &table, 501, 156, &bad_transcript, &|| true).is_none());
 }
 
 #[test]
@@ -775,4 +823,34 @@ fn settings_extension_refresh_and_dev_isolation() {
     updated.refresh().unwrap();
     assert!(!updated.enabled());
     assert!(dev.enabled());
+}
+
+#[test]
+fn hooks_lock_times_out_cleanly_without_modifying_hooks_json() {
+    if !proof::SUPPORTED {
+        return;
+    }
+    let home = tempfile::tempdir().unwrap();
+    let config = AntigravityConfig::from_env(&|_| None, home.path());
+    std::fs::create_dir_all(&config.config_dir).unwrap();
+    let initial = serde_json::to_vec_pretty(&json!({"user-hook": {}})).unwrap();
+    std::fs::write(config.hooks_file(), &initial).unwrap();
+
+    let lock_dir = home.path().join(".agentworkforce/desktop");
+    crate::platform::fs::create_private_dir_all(&lock_dir).unwrap();
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(false);
+    let holder = crate::platform::fs::private(&mut opts)
+        .open(lock_dir.join(".antigravity-hooks.lock"))
+        .unwrap();
+    fs2::FileExt::lock_exclusive(&holder).unwrap();
+
+    let settings = AntigravitySettings::new(&config, PathBuf::from("/opt/agent-relay-probe"));
+    assert!(settings.set_enabled(true).is_err());
+    assert!(settings.refresh().is_err());
+    assert_eq!(std::fs::read(config.hooks_file()).unwrap(), initial);
+
+    fs2::FileExt::unlock(&holder).unwrap();
+    settings.set_enabled(true).unwrap();
+    assert!(settings.enabled());
 }

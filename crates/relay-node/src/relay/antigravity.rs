@@ -2,8 +2,10 @@
 //! identification, and lifecycle-hook delivery (`~/.gemini/config/hooks.json`).
 //! Passive history acquisition remains in RelayHistory's `antigravity` provider.
 use crate::relay::codex::turn_hook::TurnInbox;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 pub mod caller;
 mod delivery;
@@ -111,6 +113,35 @@ impl AntigravityConfig {
 
     fn prepare(&self) -> std::io::Result<()> {
         crate::platform::fs::create_private_dir_all(&self.state())
+    }
+}
+
+#[cfg(not(test))]
+pub(super) const LOCK_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(test)]
+pub(super) const LOCK_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// Acquire an exclusive advisory lock with bounded exponential backoff so a
+/// stalled peer process cannot block settings or hook state updates forever.
+pub(super) fn lock_exclusive_bounded(lock: &std::fs::File, max_wait: Duration) -> io::Result<()> {
+    let deadline = Instant::now() + max_wait;
+    let mut backoff = Duration::from_millis(5);
+    loop {
+        match fs2::FileExt::try_lock_exclusive(lock) {
+            Ok(()) => return Ok(()),
+            Err(err) if crate::platform::fs::lock_held(&err) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "timed out waiting for exclusive Antigravity lock",
+                    ));
+                }
+                std::thread::sleep(backoff.min(deadline - now));
+                backoff = (backoff * 2).min(Duration::from_millis(100));
+            }
+            Err(err) => return Err(err),
+        }
     }
 }
 

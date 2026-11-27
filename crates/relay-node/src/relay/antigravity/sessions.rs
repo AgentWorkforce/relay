@@ -108,36 +108,38 @@ fn read_summary(config: &AntigravityConfig, sid: &str) -> Option<Option<Summary>
 
 /// Collect child subagent conversation IDs recorded under any held parent's
 /// `<brain>/<sid>/.system_generated/subagents/*.json` directory.
-fn subagent_ids(config: &AntigravityConfig, held_sids: &[String]) -> HashSet<String> {
+/// Returns `None` if an existing subagents directory or entry cannot be read,
+/// so discovery fails closed rather than exposing an unclassified subagent.
+fn subagent_ids(config: &AntigravityConfig, held_sids: &[String]) -> Option<HashSet<String>> {
     let mut children = HashSet::new();
     for sid in held_sids {
         if !is_uuid(sid) {
             continue;
         }
         let dir = config.brain().join(sid).join(".system_generated/subagents");
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+            Err(_) => return None,
         };
-        for entry in entries.flatten().take(256) {
+        for entry in entries {
+            let entry = entry.ok()?;
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
-            if entry.metadata().is_ok_and(|m| m.len() > 64 * 1024) {
+            let meta = entry.metadata().ok()?;
+            if meta.len() > 64 * 1024 {
                 continue;
             }
-            let Ok(bytes) = std::fs::read(&path) else {
-                continue;
-            };
-            let Ok(val) = serde_json::from_slice::<Value>(&bytes) else {
-                continue;
-            };
+            let bytes = std::fs::read(&path).ok()?;
+            let val = serde_json::from_slice::<Value>(&bytes).ok()?;
             if let Some(child_id) = val["conversationId"].as_str().filter(|s| is_uuid(s)) {
                 children.insert(child_id.to_owned());
             }
         }
     }
-    children
+    Some(children)
 }
 
 fn fresh_record(config: &AntigravityConfig, sid: &str, runtime: ProcessInfo) -> Option<Record> {
@@ -222,7 +224,7 @@ pub fn discover(
         }
     }
     let held_sids: Vec<String> = held_entries.iter().map(|(_, sid)| sid.clone()).collect();
-    let children = subagent_ids(config, &held_sids);
+    let children = subagent_ids(config, &held_sids)?;
     let mut sessions = Vec::new();
     for (runtime, sid) in held_entries {
         if children.contains(&sid) {
@@ -272,7 +274,7 @@ pub fn session(
                 let held = proof::held(config, table, runtime.pid, uid);
                 if held.iter().any(|id| id == sid) {
                     let all_sids = all_held_sids(config, table, uid);
-                    if subagent_ids(config, &all_sids).contains(sid) {
+                    if subagent_ids(config, &all_sids)?.contains(sid) {
                         return None;
                     }
                     let summary = read_summary(config, sid)?;
@@ -301,7 +303,7 @@ pub fn session(
         }
     }
     let runtime = matched_runtime?;
-    if subagent_ids(config, &all_sids).contains(sid) {
+    if subagent_ids(config, &all_sids)?.contains(sid) {
         return None;
     }
     let summary = read_summary(config, sid)?;
@@ -327,7 +329,7 @@ fn record_lock(config: &AntigravityConfig, sid: &str) -> io::Result<std::fs::Fil
     {
         return Err(io::Error::other("Antigravity state lock is not private"));
     }
-    fs2::FileExt::lock_exclusive(&lock)?;
+    super::lock_exclusive_bounded(&lock, super::LOCK_TIMEOUT)?;
     Ok(lock)
 }
 
@@ -373,6 +375,27 @@ fn observe(
     crate::platform::fs::write_atomic(&config.state().join(format!("{sid}.json")), &bytes).ok()
 }
 
+fn transcript_path_belongs_to_sid(config: &AntigravityConfig, sid: &str, raw: &str) -> bool {
+    let path = Path::new(raw);
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return false;
+    }
+    let lexical_brain = config.brain().join(sid);
+    let resolved_brain = std::fs::canonicalize(config.brain())
+        .map(|b| b.join(sid))
+        .unwrap_or_else(|_| lexical_brain.clone());
+    let candidates = [lexical_brain, resolved_brain];
+    let resolved_path = std::fs::canonicalize(path);
+    match resolved_path {
+        Ok(canon) => candidates.iter().any(|brain| canon.starts_with(brain)),
+        Err(_) => candidates.iter().any(|brain| path.starts_with(brain)),
+    }
+}
+
 /// Handle a peer-authenticated Antigravity lifecycle hook request from the
 /// session socket (`POST /antigravity/hook`).
 ///
@@ -389,6 +412,11 @@ pub fn hook_answer(
 ) -> Option<Value> {
     let table = table.uncached().unwrap_or(table);
     let sid = payload["conversationId"].as_str().filter(|s| is_uuid(s))?;
+    if let Some(transcript_path) = payload["transcriptPath"].as_str().filter(|s| !s.is_empty()) {
+        if !transcript_path_belongs_to_sid(config, sid, transcript_path) {
+            return None;
+        }
+    }
     let event = payload["relayEvent"].as_str()?;
     if !matches!(event, "start" | "pre" | "post" | "stop") || !config.enabled() {
         return None;

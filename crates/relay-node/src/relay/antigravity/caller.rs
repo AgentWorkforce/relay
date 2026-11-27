@@ -169,17 +169,47 @@ fn active_turn_commands(config: &AntigravityConfig, sid: &str) -> Option<Vec<Str
     Some(commands)
 }
 
-/// Whether `sid` currently has an in-flight `run_command` tool call that
-/// actually invokes the managed hook helper for `event` (not a completed
-/// command and not harmless text like `rg antigravity-hook`).
+/// Parse the tail rows of `sid`'s transcript for the in-flight hook check.
+/// Returns `Some(rows)` (empty when no transcript file exists yet), or `None`
+/// when an existing transcript cannot be read or contains invalid JSON.
+fn recent_turn_rows(config: &AntigravityConfig, sid: &str) -> Option<Vec<Value>> {
+    let path = match transcript_file(config, sid) {
+        TranscriptFile::Absent => return Some(Vec::new()),
+        TranscriptFile::Unreadable => return None,
+        TranscriptFile::Readable(path) => path,
+    };
+    let (tail, _truncated) = read_tail_checked(&path, TAIL_BYTES)?;
+    let mut rows = Vec::new();
+    for line in tail.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(row) = serde_json::from_str::<Value>(line) else {
+            return None;
+        };
+        rows.push(row);
+    }
+    let user_idx = rows.iter().rposition(|row| {
+        row["source"].as_str() == Some("USER_EXPLICIT")
+            && row["type"].as_str() == Some("USER_INPUT")
+    });
+    let turn_start = user_idx.map_or(0, |idx| idx + 1);
+    Some(rows.split_off(turn_start))
+}
+
+/// Whether `sid` currently has an in-flight `run_command` tool call that could
+/// invoke the managed hook helper directly under `language_server` (either by
+/// invoking the helper for `antigravity-hook`, or by replacing its shell via
+/// `exec`), or has an unreadable/corrupt transcript (fail closed). Harmless
+/// commands like `rg antigravity-hook` and completed commands return `false`.
 pub(super) fn inflight_hook_invocation(
     config: &AntigravityConfig,
     sid: &str,
     helper: &Path,
     event: &str,
 ) -> bool {
-    let Some(rows) = active_turn_rows(config, sid) else {
-        return false;
+    let Some(rows) = recent_turn_rows(config, sid) else {
+        return true;
     };
     let Some(last_planner_idx) = rows
         .iter()
@@ -217,18 +247,42 @@ pub(super) fn inflight_hook_invocation(
         .any(|cmd| command_invokes_hook_helper(cmd, helper_name, event))
 }
 
+fn is_redirection_prefix(word: &str) -> bool {
+    let trimmed = word.trim_start_matches(|c: char| c.is_ascii_digit());
+    trimmed.starts_with('<') || trimmed.starts_with('>')
+}
+
 fn command_invokes_hook_helper(cmd: &str, helper_name: &str, event: &str) -> bool {
-    if helper_name.is_empty() || !cmd.contains("antigravity-hook") {
+    if helper_name.is_empty() {
         return false;
     }
     for segment in cmd.split([';', '|', '&', '\n']) {
         let Ok(words) = shell_words::split(segment) else {
+            // Unparseable shell syntax mentioning exec or the hook subcommand fails closed.
+            if segment.contains("antigravity-hook") || segment.contains("exec") {
+                return true;
+            }
             continue;
         };
         let mut idx = 0;
         while idx < words.len() {
             let word = words[idx].as_str();
-            if word == "exec" || word == "command" || word == "env" {
+            if is_redirection_prefix(word) {
+                // Skip `<file` or `< file` leading redirections before the command word.
+                let op = word.trim_start_matches(|c: char| c.is_ascii_digit());
+                if matches!(op, "<" | ">" | ">>" | "<<<" | "<>" | "<&" | ">&") {
+                    idx += 2;
+                } else {
+                    idx += 1;
+                }
+                continue;
+            }
+            if word == "exec" {
+                // Any in-flight `exec ...` in a sibling shell can replace the
+                // shell so the spawned helper's direct parent is language_server.
+                return true;
+            }
+            if word == "command" || word == "env" {
                 idx += 1;
                 if word == "env" {
                     while idx < words.len() {
@@ -257,13 +311,10 @@ fn command_invokes_hook_helper(cmd: &str, helper_name: &str, event: &str) -> boo
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("");
-        if prog_name != helper_name {
-            continue;
-        }
         let rest = &words[idx + 1..];
-        if rest.first().map(String::as_str) == Some("antigravity-hook")
-            && rest.windows(2).any(|w| w[0] == "--event" && w[1] == event)
-        {
+        let invokes_subcommand = rest.first().map(String::as_str) == Some("antigravity-hook")
+            && rest.windows(2).any(|w| w[0] == "--event" && w[1] == event);
+        if invokes_subcommand && (prog_name == helper_name || prog.starts_with('$')) {
             return true;
         }
     }

@@ -129,6 +129,8 @@ pub fn hook_runtime(table: &dyn ProcessTable, pid: i32, uid: u32) -> Option<Proc
 /// Antigravity `hooks.json` invocation rather than an agent `run_command` tool
 /// invocation:
 /// - the helper's environment must be readable (it is not an Apple SIP binary)
+/// - the helper must not be attached to a controlling terminal (`run_command`
+///   runs in a PTY whereas `hooks.json` invokes commands non-interactively)
 /// - `ANTIGRAVITY_SOURCE_METADATA` (set on `run_command` tool shells) must be
 ///   absent
 /// - if `ANTIGRAVITY_CONVERSATION_ID` is present, it must match `sid`
@@ -140,7 +142,7 @@ pub fn hook_environment_ok(
     pid: i32,
     sid: &str,
 ) -> bool {
-    if !table.environment_readable(pid) {
+    if !table.environment_readable(pid) || table.has_terminal(pid) {
         return false;
     }
     if table

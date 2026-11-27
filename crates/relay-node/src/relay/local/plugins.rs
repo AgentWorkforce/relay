@@ -76,8 +76,8 @@ pub fn plugins_with_options(
     let development = build.is_development();
     // Agent Relay itself: the one build that owns the integrations whose
     // files or inboxes every build would share (Pi, OMP, Grok, OpenCode,
-    // Devin, Cursor, OpenClaw, Hermes, the other Claude logins). Agent
-    // Relay Dev and profile builds leave them to it.
+    // Devin, Cursor, Antigravity, OpenClaw, Hermes, the other Claude logins).
+    // Agent Relay Dev and profile builds leave them to it.
     let production = build == outbound::Build::Production;
     let clients = profile;
     let client_home = clients
@@ -377,6 +377,8 @@ pub fn plugins_with_options(
         settings: {
             let mut extensions: Vec<Arc<dyn crate::relay::agents::SettingsExtension>> =
                 if development {
+                    // Agent Relay Dev leaves shared user-level hook settings
+                    // (Devin, Cursor, Antigravity, etc.) to the production build.
                     vec![settings.clone()]
                 } else if !production {
                     // A profile build's own hooks, marked with its session
