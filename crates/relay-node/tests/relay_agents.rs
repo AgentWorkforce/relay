@@ -7512,3 +7512,130 @@ async fn the_gate_backoff_holds_across_the_first_device_token_read() {
     assert_eq!(h.fake.calls("GET", "/v1/deliveries").len(), held);
     h.stop().await;
 }
+
+const OMP_A: &str = "c3d4e5f6-0000-4000-8000-0000000000c1";
+const OMP_B: &str = "c3d4e5f6-0000-4000-8000-0000000000c2";
+
+/// Two registered Oh My Pi sessions, as the app adds them: each listed with
+/// a live extension binding.
+async fn two_omp_sessions(h: &Harness, client: &mut Client) {
+    for (id, name) in [(OMP_A, "omp-a"), (OMP_B, "omp-b")] {
+        let target = Target::new(SessionKind::Omp, id);
+        h.sessions
+            .0
+            .lock()
+            .unwrap()
+            .push(session(SessionKind::Omp, id, "/work/invented"));
+        h.sessions.bind_route(
+            target,
+            &format!("omp:{}:1:0123456789abcdef0123456789abcdef", 4800),
+        );
+        h.register(client, "omp", id, Some(name)).await;
+    }
+}
+
+/// omp-a's message to omp-b, delivered, and omp-b's turn finished with an
+/// answer. The reply route a forwarded answer would use.
+async fn omp_b_answers(h: &Harness) -> String {
+    let (delivery, message) = h.fake.send_dm("omp-a", "omp-b", "an invented question");
+    eventually("acked", || {
+        delivered(&h.fake, &delivery).as_deref() == Some("acked")
+    })
+    .await;
+    let reference = agent_relay_node::relay::delivery::policy::MessageRef::of(&message);
+    h.injector
+        .answers
+        .lock()
+        .unwrap()
+        .insert(reference, "an invented answer".into());
+    format!("/v1/messages/{message}/replies")
+}
+
+#[tokio::test]
+async fn two_registered_omp_sessions_do_not_answer_each_other_automatically() {
+    let h = Harness::start(|_| {}).await;
+    let mut client = h.client().await;
+    two_omp_sessions(&h, &mut client).await;
+    let replies = omp_b_answers(&h).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(h.fake.calls("POST", &replies).is_empty(), "no answer back");
+    assert!(h.fake.calls("POST", "/v1/dm").len() <= 1, "no exchange");
+    // Other kinds keep their default.
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    h.fake.seed_agent("alice", "agent", json!({}));
+    let (delivery, message) = h.fake.send_dm("alice", "codex-api", "an invented question");
+    eventually("acked", || {
+        delivered(&h.fake, &delivery).as_deref() == Some("acked")
+    })
+    .await;
+    h.injector.answers.lock().unwrap().insert(
+        agent_relay_node::relay::delivery::policy::MessageRef::of(&message),
+        "an invented answer".into(),
+    );
+    let codex = format!("/v1/messages/{message}/replies");
+    eventually("answered", || !h.fake.calls("POST", &codex).is_empty()).await;
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn an_omp_session_with_automatic_answers_turned_on_still_answers() {
+    let h = Harness::start(|_| {}).await;
+    let mut client = h.client().await;
+    two_omp_sessions(&h, &mut client).await;
+    client
+        .ok(
+            "agents.reply_setting",
+            json!({"name": "omp-b", "enabled": true}),
+        )
+        .await;
+    let replies = omp_b_answers(&h).await;
+    eventually("answered", || !h.fake.calls("POST", &replies).is_empty()).await;
+    assert_eq!(
+        h.fake.calls("POST", &replies)[0].body["text"],
+        "an invented answer"
+    );
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn an_omp_answer_queued_under_the_old_default_is_not_sent() {
+    let h = Harness::start(|_| {}).await;
+    let mut client = h.client().await;
+    two_omp_sessions(&h, &mut client).await;
+    // Queued while answers were on, as every one was before this default,
+    // then left at the default.
+    client
+        .ok(
+            "agents.reply_setting",
+            json!({"name": "omp-b", "enabled": true}),
+        )
+        .await;
+    let (delivery, message) = h.fake.send_dm("omp-a", "omp-b", "an invented question");
+    eventually("acked", || {
+        delivered(&h.fake, &delivery).as_deref() == Some("acked")
+    })
+    .await;
+    eventually("queued", || {
+        h.store()["replies"]
+            .as_array()
+            .is_some_and(|replies| !replies.is_empty())
+    })
+    .await;
+    client
+        .ok(
+            "agents.reply_setting",
+            json!({"name": "omp-b", "enabled": null}),
+        )
+        .await;
+    h.injector.answers.lock().unwrap().insert(
+        agent_relay_node::relay::delivery::policy::MessageRef::of(&message),
+        "an invented answer".into(),
+    );
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(h
+        .fake
+        .calls("POST", &format!("/v1/messages/{message}/replies"))
+        .is_empty());
+    h.stop().await;
+}

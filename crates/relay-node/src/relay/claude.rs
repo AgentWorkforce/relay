@@ -106,7 +106,19 @@ impl ClaudeConfig {
             .into_iter()
             .chain(system_claude.iter().cloned())
             .chain(windows_claude_locations(env))
-            .find_map(|p| runnable(&p)),
+            .find_map(|p| runnable(&p))
+            .or_else(|| {
+                env("PATH")
+                    .or_else(|| if cfg!(windows) { env("Path") } else { None })
+                    .and_then(|path| {
+                        // Discovery and launch use different working folders.
+                        // Relative PATH entries cannot identify a stable CLI.
+                        crate::platform::exe::find_in(
+                            std::env::split_paths(&path).filter(|dir| dir.is_absolute()),
+                            "claude",
+                        )
+                    })
+            }),
         };
         let app_sessions = cfg!(target_os = "macos")
             .then(|| home.join("Library/Application Support/Claude/local-agent-mode-sessions"));
@@ -183,15 +195,36 @@ fn runnable(path: &Path) -> Option<PathBuf> {
 
 /// Where `claude` installs itself on Windows beyond the user's home: npm's
 /// global folder (`%APPDATA%\npm`), which an app started from the Start
-/// menu may not have on its `PATH`.
+/// menu may not have on its `PATH`, and WinGet's per-user installs.
 fn windows_claude_locations(env: &dyn Fn(&str) -> Option<String>) -> Vec<PathBuf> {
     if !cfg!(windows) {
         return Vec::new();
     }
-    env("APPDATA")
+    let mut locations: Vec<PathBuf> = env("APPDATA")
         .filter(|value| !value.is_empty())
         .map(|appdata| vec![Path::new(&appdata).join("npm").join("claude")])
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if let Some(local) = env("LOCALAPPDATA").filter(|value| !value.trim().is_empty()) {
+        let winget = Path::new(&local).join("Microsoft/WinGet");
+        locations.push(winget.join("Links/claude"));
+        // WinGet may put the package directory directly on PATH rather
+        // than create a link. A logon task may retain an older PATH.
+        if let Ok(packages) = std::fs::read_dir(winget.join("Packages")) {
+            let mut packages: Vec<PathBuf> = packages
+                .flatten()
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("Anthropic.ClaudeCode_")
+                })
+                .map(|entry| entry.path().join("claude"))
+                .collect();
+            packages.sort();
+            locations.extend(packages);
+        }
+    }
+    locations
 }
 
 /// The command name an agent environment is chosen by: the file name, and

@@ -129,6 +129,8 @@ pub struct FakeSessions(
     /// Pids under a host process holding several sessions: their caller is
     /// unattributed, and these are the sessions that host holds.
     pub Mutex<HashMap<i32, Vec<DiscoveredSession>>>,
+    /// The live route binding a registration of each target is pinned to.
+    pub Mutex<HashMap<Target, String>>,
 );
 
 pub struct CopilotReceiptGate {
@@ -159,7 +161,14 @@ impl FakeSessions {
             Mutex::default(),
             Mutex::default(),
             Mutex::default(),
+            Mutex::default(),
         )
+    }
+
+    /// Makes `reference` the live route binding of `target`, as a Pi
+    /// session's extension registry gives one.
+    pub fn bind_route(&self, target: Target, reference: &str) {
+        self.14.lock().unwrap().insert(target, reference.into());
     }
 
     /// Makes `pid` a process under a host holding `held`, so its caller is
@@ -186,6 +195,10 @@ impl FakeSessions {
 }
 
 impl SessionDirectory for FakeSessions {
+    fn route_binding(&self, target: &Target) -> Option<String> {
+        self.14.lock().unwrap().get(target).cloned()
+    }
+
     fn copilot_context_accepted(&self, sid: &str, context: &str) -> bool {
         let gate = self.11.lock().unwrap().take();
         if let Some(gate) = gate {

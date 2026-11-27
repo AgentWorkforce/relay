@@ -2,7 +2,7 @@
 //! (`codex::turn_hook`), and the claim every other route makes first.
 
 use super::{CodexRouter, HANDOFF_GRACE, RECORDING};
-use crate::relay::codex::turn_hook::{self, Claimed, Taken, TurnInbox};
+use crate::relay::codex::turn_hook::{self, Claimed, ProbeClaim, Taken, TurnInbox};
 use crate::relay::inject::InjectOutcome;
 
 /// What a message says while its route cannot be recorded.
@@ -115,6 +115,58 @@ impl CodexRouter {
             Err(Taken::Hook { at_ms }) => Err(self.taken_by_hook(at_ms)),
             Err(Taken::Unrecorded) => Err(InjectOutcome::Waiting(CLAIM_UNRECORDED.into())),
         }
+    }
+
+    pub(super) fn claim_host_probe(
+        &self,
+        message_id: &str,
+    ) -> Result<Option<ProbeClaim>, InjectOutcome> {
+        let Some(turns) = self.turns() else {
+            return Ok(None);
+        };
+        self.retry_host_probe_release(message_id)?;
+        match turns.claim_elsewhere(message_id) {
+            Ok(claim) => Ok(Some(claim)),
+            Err(Taken::Hook { at_ms }) => Err(self.taken_by_hook(at_ms)),
+            Err(Taken::Unrecorded) => Err(InjectOutcome::Waiting(CLAIM_UNRECORDED.into())),
+        }
+    }
+
+    pub(super) fn release_host_probe(
+        &self,
+        message_id: &str,
+        claim: Option<ProbeClaim>,
+    ) -> Result<(), InjectOutcome> {
+        if let (Some(turns), Some(claim)) = (self.turns(), claim) {
+            // This is called only after Ok(false), so the token proves there
+            // was no handoff. Keep that proof if writing the release fails.
+            let mut pending = self.pending_probe_releases.lock().unwrap();
+            if turns.release_probe(message_id, &claim).is_err() {
+                pending.insert(message_id.to_owned(), claim);
+                return Err(InjectOutcome::Waiting(CLAIM_UNRECORDED.into()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Retry before either offering to the hook or acquiring another host
+    /// claim. A replacement claim would invalidate the original token.
+    pub(super) fn retry_host_probe_release(&self, message_id: &str) -> Result<(), InjectOutcome> {
+        let mut pending = self.pending_probe_releases.lock().unwrap();
+        if let (Some(turns), Some(claim)) = (self.turns(), pending.get(message_id)) {
+            turns
+                .release_probe(message_id, claim)
+                .map_err(|_| InjectOutcome::Waiting(CLAIM_UNRECORDED.into()))?;
+        }
+        if let Some(turns) = self.turns() {
+            turns
+                .retry_probe_release(message_id)
+                .map_err(|_| InjectOutcome::Waiting(CLAIM_UNRECORDED.into()))?;
+        }
+        // A successful check also forgets superseded tokens: their guarded
+        // release leaves the newer route's claim untouched.
+        pending.remove(message_id);
+        Ok(())
     }
 
     /// Whether the hook may have handed the message over, so a native turn

@@ -163,6 +163,7 @@ pub trait CodexRoutes: Send + Sync {
 }
 
 pub const NOT_RUNNING: &str = "Waiting — session not running";
+pub const WAITING_FOR_CODEX_TURN: &str = "Waiting — start a turn in Codex to receive this message";
 pub const NOT_CONSUMED: &str = "Waiting — terminal session has not consumed the message";
 pub const BEHIND_TURN: &str = "Waiting — queued behind the session's active turn";
 pub const HANDED_NOT_RUNNING: &str = "Waiting — handed off; session not running";
@@ -182,6 +183,8 @@ const HANDOFF_MEMORY: Duration = Duration::from_secs(60 * 60);
 pub struct CodexRouter {
     routes: Arc<dyn CodexRoutes>,
     handed_off: Mutex<HashMap<String, Instant>>,
+    /// Proven no-handoff claims whose guarded release needs another I/O attempt.
+    pending_probe_releases: Mutex<HashMap<String, super::turn_hook::ProbeClaim>>,
     pub(crate) now: Box<dyn Fn() -> Instant + Send + Sync>,
     /// Messages for Conductor chats, handed over by Agent Relay's Codex Stop
     /// hook as a turn Conductor shows ends (`stop_hook`).
@@ -197,6 +200,7 @@ impl CodexRouter {
         CodexRouter {
             routes,
             handed_off: Mutex::default(),
+            pending_probe_releases: Mutex::default(),
             now: Box::new(Instant::now),
             stop_hook: None,
             hidden: HiddenOrder::default(),
@@ -383,6 +387,9 @@ impl CodexRouter {
         if !queue::is_thread_id(thread) {
             return InjectOutcome::Refused("not a Codex thread id".into());
         }
+        if let Err(outcome) = self.retry_host_probe_release(message_id) {
+            return outcome;
+        }
         if let Some(outcome) = self.previous_native(thread, message_id) {
             return outcome;
         }
@@ -454,6 +461,12 @@ impl CodexRouter {
                 return outcome;
             }
         }
+        if hooks
+            && self.stop_hook.as_ref().is_some_and(|hook| hook.is_ready())
+            && routes.thread_live(thread)
+        {
+            return InjectOutcome::Waiting(WAITING_FOR_CODEX_TURN.into());
+        }
         InjectOutcome::Waiting(NOT_RUNNING.into())
     }
 
@@ -471,12 +484,13 @@ impl CodexRouter {
         if !self.routes.idle(thread) {
             return Some(self.wait_for_turn(thread, message_id, text, spawned));
         }
-        if let Err(outcome) = self.leave_turn_hook(message_id) {
-            return Some(outcome);
-        }
+        let claim = match self.claim_host_probe(message_id) {
+            Ok(claim) => claim,
+            Err(outcome) => return Some(outcome),
+        };
         match route(self.routes.as_ref(), thread, text, message_id) {
             Ok(true) => Some(self.delivered(thread, message_id, &MessageRef::of(message_id))),
-            Ok(false) => None,
+            Ok(false) => self.release_host_probe(message_id, claim).err(),
             Err(TurnError::Refused(reason)) => Some(self.refused_turn(thread, message_id, reason)),
             Err(TurnError::InDoubt(reason)) => Some(InjectOutcome::InDoubt(reason)),
         }
@@ -761,6 +775,25 @@ mod tests {
         fn thread_live(&self, _: &str) -> bool {
             self.live.load(Ordering::SeqCst)
         }
+    }
+
+    #[test]
+    fn an_idle_hook_only_chat_waits_for_a_codex_turn() {
+        let routes = Fake::new();
+        routes.live.store(true, Ordering::SeqCst);
+        let inbox = Arc::new(StopHookInbox::default());
+        inbox.set_ready(true);
+        let router = CodexRouter::new(routes.clone()).with_stop_hook(inbox);
+        assert_eq!(
+            router.inject_with(THREAD, "idle-hook", "hello", &|| None),
+            InjectOutcome::Waiting(WAITING_FOR_CODEX_TURN.into())
+        );
+        assert_eq!(routes.queue_sends.load(Ordering::SeqCst), 0);
+        routes.live.store(false, Ordering::SeqCst);
+        assert_eq!(
+            router.inject_with(THREAD, "closed-hook", "hello", &|| None),
+            InjectOutcome::Waiting(NOT_RUNNING.into())
+        );
     }
 
     // A Conductor chat that is working gets the message from Agent Relay's
